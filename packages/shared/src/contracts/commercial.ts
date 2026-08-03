@@ -384,4 +384,14 @@ export interface VerificationDto {
   lines: VerificationLineDto[];
   /** every exception across every line, deduplicated — what the dispute reason is built from */
   exceptions: VerificationExceptionKind[];
+  /**
+   * Where the CLAIM stands, alongside what the TRIPLE says (Codex round-4). These answer different
+   * questions and the payload carries both so neither can be mistaken for the other: the verdict
+   * is §E's arithmetic over ordered/accepted/billed, while the status is the claim's disposition,
+   * which a §G bound at submission or a withdrawal guard can move without any §E verdict existing.
+   * A claim disputed for its evidence and then re-evidenced reads `matched` with a `disputed`
+   * status — true on both counts, and §E is explicit that an exception "does not auto-reject": it
+   * takes an attributable amendment to move the claim, not a recomputation that now agrees.
+   */
+  billStatus: VendorBillStatus;
 }

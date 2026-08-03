@@ -44,6 +44,38 @@ Byte-equality asserted programmatically.
   read is a second snapshot, and §E's whole point is that every side of the triple is taken under
   one lock.
 
+### Added by the Codex round-4 corrections
+
+- **The triple COUNTS the claim being judged.** Every billed side is a §0 set, and §0 excludes a
+  `draft`/`disputed`/`rejected`/`resolved` bill from all of them — so for a claim in any of those
+  states the triple was computed against everything EXCEPT the subject, and answered a vacuous
+  `matched`. `CommercialBillService.evaluateBounds` already carried exactly this rule
+  (`countLinesAsLive`); this is that rule at its second site, not a second rule.
+- **A recorded verdict answers only while the claim has not moved to a state that contradicts it.**
+  A withdrawal guard disputes a verified claim in the reversal's own transaction and appends no
+  verdict, so the stored `matched` went on being reported over a dispute. `matched` vs `disputed`
+  is the single contradiction, stated as one predicate rather than a whitelist of agreeing statuses
+  — Task 6 adds states past `verified`, and a whitelist would silently start recomputing under each.
+- **`VerificationDto.billStatus`**, so the verdict and the disposition are never reported apart.
+  They answer different questions: §E's arithmetic over ordered/accepted/billed, and where the
+  claim stands. A claim disputed for its evidence and then re-evidenced reads `matched` with a
+  `disputed` status — true on both counts, and §E is explicit that an exception "does not
+  auto-reject".
+- **The provenance seal binds the verdict to the command that PRODUCED it**, in two halves split by
+  when each is knowable: the BEFORE trigger checks `commandType` (the ledger row is still `reserved`
+  while the transition runs), and a DEFERRABLE INITIALLY DEFERRED constraint trigger checks
+  `CommandExecution.resultRef = BillVerification.id` and `status = 'succeeded'` at COMMIT, where
+  `executeCommand` has written the receipt inside the same transaction. A UNIQUE on
+  `(projectId, sourceCommandId)` makes one command produce at most one verdict, so a spent verify
+  command id cannot be copied onto a forged row at all.
+- **`verified → submitted` requires the amendment that justifies it** — the live version must
+  supersede the version whose matched verdict made the bill `verified`. Round 1 opened the arrow
+  because `amend` takes it, without requiring the amendment.
+- **The exception array is constrained to the six kinds §E defines**, NULL elements included (`<@`
+  evaluates to NULL on a NULL element and a CHECK passes on NULL, so containment alone is not
+  enough). The vocabulary now lives in the shared const and the CHECK, so a probe reads the CHECK
+  back out of `pg_constraint` and compares both ways rather than trusting two hand-kept copies.
+
 ## Invariant matrix
 
 | Invariant | Risk in this change | Verification |
@@ -94,35 +126,50 @@ it, and when a probe cannot reach its case, say so in the probe.
 
 ## Gates
 
-- `pnpm check` **EXIT 0** — web 42 files/543 tests, API 56 files/720 tests, builds clean
-- Focused `phase5-t5a-verification.test.ts` **11/11** on live PostgreSQL
+- `pnpm check` **EXIT 0** — web 42 files/543 tests, API 57 files/722 tests, builds clean
+- Focused `phase5-t5a-verification.test.ts` **27/27** on live PostgreSQL — 16 of them the round-1..4
+  findings, each proven RED against the tree before its fix (the six round-4 probes reproduced
+  against `7e33e97` with the fixes stashed and the database re-migrated to that head)
+- FULL integration suite on a pristine migrated database: **77 files / 829 tests**
 - Migration applies from a **from-scratch** `migrate deploy`, not only as an incremental patch
+- `upgrade-proof.sh` **PASSED** over the legacy fixture — the round-4 seals reject the four new
+  forgeries (a verify-typed command that produced something else; a second verdict on a spent
+  command; an exception recorded as prose; an exception array holding NULL) and
+  `verified → submitted` with no replacement version, while the honest
+  `under-verification → verified` is still ACCEPTED, so the seals are precise and not merely strict
 - Tripwires advanced in the same PR: mutating routes 157 → 158, the commercial controller's ordered
   route signatures, the command/query site tables, the service triage and the manifest route list
 
 ## Files
 
-**25 files / ~1,876 lines — OVER both thresholds, carrying the `justified-large` marker rather than
+**26 files / ~2,792 lines — OVER both thresholds, carrying the `justified-large` marker rather than
 claiming otherwise.**
 
-The figure here was written when 5A was 14 files / 1,276 lines and was not updated as two Codex
-correction rounds landed. Codex round 2 caught the packet telling reviewers the opposite of what the
-diff says, and that is the worse half of the finding: a stale number is a mistake, but a packet
-asserting a gate was cleared when it was not is a packet a reviewer cannot trust. The PR body carries
-`<!-- review-size: justified-large -->` and the complete invariant matrix that marker requires.
+The figure here was first written when 5A was 14 files / 1,276 lines and was not updated as two
+Codex correction rounds landed. Codex round 2 caught the packet telling reviewers the opposite of
+what the diff says, and that is the worse half of the finding: a stale number is a mistake, but a
+packet asserting a gate was cleared when it was not is a packet a reviewer cannot trust. It is now
+re-measured on every head. The PR body carries `<!-- review-size: justified-large -->` and the
+complete invariant matrix that marker requires.
+
+**Four correction rounds have added ~900 lines to a unit that was 1,276 when review opened**, and
+the composition below shows where: the probe suite has roughly doubled, because every finding is
+proven RED before its fix and the RED proof is the deliverable. That is a real cost and it is
+recorded rather than argued away — `docs/reviews/pr-276-convergence.md` names the root that
+produced the rounds and the mechanical closures now standing against it.
 
 The justification, stated so it can be checked rather than taken on faith:
 
 | Part | Lines | Reviewable implementation surface? |
 |---|---|---|
-| Probe suite (`phase5-t5a-verification.test.ts`) | ~660 | No — it is the evidence for everything else |
+| Probe suite (`phase5-t5a-verification.test.ts`) | ~1,012 | No — it is the evidence for everything else |
 | §E carried into the plan VERBATIM from `a4d469b` | 195 | No — mandated by the plan; byte-equality asserted |
-| This packet | ~110 | No |
-| Verification service | ~380 | **Yes** |
-| Migration — the verdict table and ONE arrow | ~180 | **Yes** |
-| Contracts, controller, query, participant locks, tripwires | ~180 | **Yes** |
+| This packet and the convergence audit | ~368 | No |
+| Verification service | ~519 | **Yes** |
+| Migration — the verdict table, ONE arrow, the two-half provenance seal | ~302 | **Yes** |
+| Contracts, controller, query, participant locks, closure test, tripwires, upgrade proof | ~396 | **Yes** |
 
-~740 lines are the unit under review; ~965 are its evidence and its mandated carry-forward. 5A is
+~1,217 lines are the unit under review; ~1,575 are its evidence and its mandated carry-forward. 5A is
 already the FIRST of three increments, and splitting further would separate `BillVerification` from
 the verification that produces it — shipping a seal apart from the fact it seals, which is the §0b
 failure mode the budget rule exists to prevent.

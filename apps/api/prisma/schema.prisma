@@ -3340,9 +3340,15 @@ model BillVerification {
   verifiedBy   User     @relation("billVerificationsVerified", fields: [verifiedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   verifiedById String
 
+  /// the `commercial.bill.verify` execution that PRODUCED this verdict. The composite FK to
+  /// `CommandExecution(projectId, id)` and the `resultRef` back-reference are raw SQL — see
+  /// `VendorBill_verified_provenance`, the deferred half of the seal.
   sourceCommandId String
 
   @@unique([projectId, id])
+  /// one command produces at most one verdict — a second row citing a spent command is the reuse
+  /// the provenance seal exists to refuse
+  @@unique([projectId, sourceCommandId])
   @@index([projectId, billId])
   @@index([projectId, versionId])
 }

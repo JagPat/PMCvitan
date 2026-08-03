@@ -1,6 +1,6 @@
 # PR #276 — architectural convergence audit (Phase 5 Task 5A)
 
-Three finding-bearing heads, eleven Codex findings, and three CI failures that were the same defect
+Four finding-bearing heads, sixteen Codex findings, and three CI failures that were the same defect
 class arriving through a different door. Per `CLAUDE.md`, this stops being another isolated patch:
 it names the ROOT they share and leaves a mechanical closure behind.
 
@@ -9,13 +9,14 @@ it names the ROOT they share and leaves a mechanical closure behind.
 | `76eda23` | 5 | 2×P1, 3×P2 |
 | `26af605` | 3 | 1×P1, 2×P2 — two of them the round-1 fixes, one level short |
 | `d4d9773` | 3 | 1×P1, 2×P2 — one of them root A a THIRD time on the same set |
+| `7e33e97` | 5 | 1×P1, 4×P2 — the same set a FOURTH and FIFTH time, plus two more round-N fixes one level short |
 
 Plus, on the way: `upgrade-proof` and the `api` suite failed on `bd351e9`, and `api-e2e` failed on
 `3e2e8d4`. Neither was a flake. Both belong in this audit because they are the same root.
 
 ---
 
-## The fourteen
+## The nineteen
 
 | # | Head | Sev | What was wrong | The SET it belonged to |
 |---|---|---|---|---|
@@ -33,19 +34,33 @@ Plus, on the way: `upgrade-proof` and the `api` suite failed on `bd351e9`, and `
 | 9 | `d4d9773` | P1 | The trigger trusted ANY `matched` row — a maintenance path could insert one and flip the status | — (see root D) |
 | 10 | `d4d9773` | P2 | The verification READ refolded without the claim it was reporting on | places that report a verdict |
 | 11 | `d4d9773` | P2 | The duplicate scan compared LINES, so re-partitioning 60+40 vs 100 hid a twin | the unit a claim is compared in |
+| 12 | `7e33e97` | P2 | The read's FALLBACK recomputed over folds §0 excludes the subject claim from, so a claim disputed at submission read `matched` | computations over the billed fold that must count the subject |
+| 13 | `7e33e97` | P2 | The read returned a recorded `matched` after a withdrawal guard disputed the bill without appending a verdict | places that report a verdict |
+| 14 | `7e33e97` | P1 | The provenance seal checked the command's TYPE, not that the command PRODUCED this verdict | — (see root D) |
+| 15 | `7e33e97` | P2 | `verified → submitted` was opened for `amend` without requiring the amendment | arrows opened with the evidence that makes them safe |
+| 16 | `7e33e97` | P2 | `exceptions` accepted any text, so `['looks wrong']` was a recordable verdict | the §E exception vocabulary |
 
 ---
 
-## Root A — the member, not the set (eleven of the fourteen)
+## Root A — the member, not the set (fifteen of the nineteen)
 
-Every one of findings 1, 2, 3, 4, 6, 8, 10, 11 and all three CI failures is the same sentence: **I
-changed a member and not the set it belongs to.** ELEVEN instances, ten distinct sets, one increment.
+Every one of findings 1, 2, 3, 4, 6, 8, 10, 11, 12, 13, 15, 16 and all three CI failures is the same
+sentence: **I changed a member and not the set it belongs to.** FIFTEEN instances, twelve distinct
+sets, one increment.
 
-Finding 10 is the sharpest, because it is the same set THREE TIMES. "Places that report a verdict"
-has three members — the verify transition, the idempotency replay, and the read endpoint. Round 1
-fixed the first, round 2 fixed the second, round 3 found the third. Each round I fixed the member the
-finding named and left its siblings, in a set with only three members, having already written this
-rule down twice.
+Findings 10, 12 and 13 are the sharpest, because they are the same set FIVE TIMES. "Places that
+report a verdict" has three members — the verify transition, the idempotency replay, and the read
+endpoint. Round 1 fixed the first, round 2 fixed the second, round 3 found the third, and round 4
+found the third one's two remaining doors: its fallback and its record branch. Each round I fixed
+the member the finding named and left its siblings, in a set with only three members, having
+already written this rule down three times.
+
+Finding 12 deserves its own sentence because the set it belongs to was already CLOSED elsewhere in
+the same module. `CommercialBillService.evaluateBounds` carries a `countLinesAsLive` parameter,
+added by a Task-4 round for exactly this reason: §0 excludes a non-live bill from every billed
+fold, so a computation about that bill measures everything except the claim it is judging. §E's
+triple is the second computation over the same fold and it did not carry the rule. Not a missing
+idea — a missing SECOND SITE for an idea this repository had already had, written down, and shipped.
 
 Finding 11 is the same shape in a different dimension: the duplicate comparison was fixed twice — for
 rejected predecessors (round 1) and for tax/freight components (round 2) — while the UNIT of
@@ -57,7 +72,7 @@ The uncomfortable part is that this repository had already named it. The PR #274
 > if a finding names a status, a column, or a layer, the fix belongs to the SET that member came
 > from, not the member.
 
-I wrote that sentence, and then violated it nine times in the next increment. So the rule is not
+I wrote that sentence, and then violated it fifteen times in the next increment. So the rule is not
 wrong, it is **insufficient** — and the reason is worth stating precisely, because it is the whole
 value of this audit.
 
@@ -86,6 +101,7 @@ leaves it:
 | Set | Derived or hand-kept? |
 |---|---|
 | tables closed under inbound FKs | **derived** (DMMF) — new this PR |
+| the §E exception vocabulary (shared const ↔ PG CHECK) | **derived** (`pg_get_constraintdef` compared both ways) — new in round 4 |
 | model → owning module | **derived** (DMMF vs manifests) — the boundary test already caught CI-b correctly |
 | routes → policy | **derived** (controller reflection) |
 | writers of `BILLED_AMOUNT` | hand-kept docblock — *this is the one that failed* |
@@ -118,7 +134,7 @@ The general form, and the reason this is a root rather than a bug: any command w
 JUDGEMENT rather than a mutation must persist the judgement and replay it by command identity.
 Tasks 5B and 6 both have one — certification and payment approval — and each has the same trap.
 
-## Root D — presence is not provenance (finding 9)
+## Root D — presence is not provenance (findings 9, 14)
 
 The trigger required a `matched` verdict to exist and did not ask where it came from, so a
 maintenance path could insert one and flip the status in two statements — bypassing the §E check the
@@ -137,6 +153,17 @@ Worth recording because it cost a cycle: the first version of this seal also req
 command to be `succeeded`, which is UNSATISFIABLE — the trigger fires DURING the verify command,
 while its own ledger row is still in flight, so it refused every honest verification. A seal that
 can only ever refuse is not a seal, and the probe battery caught it immediately.
+
+**And that unsatisfiability is what made finding 14 possible**, which is the part worth learning.
+Having discovered that the ledger row is incomplete at trigger time, I dropped every clause that
+depended on it and kept the one that did not — the command TYPE. The result was provenance-SHAPED
+without being provenance: any verify-typed command satisfied it, including a spent one whose id was
+copied onto a forged row. The correct response to "this cannot be checked HERE" is to ask *where it
+CAN be checked*, not to settle for the residue. It is checkable at COMMIT, because `executeCommand`
+writes the receipt inside the same transaction — so the seal is now two halves of one rule split by
+WHEN each is knowable: the BEFORE trigger checks the type, and a DEFERRABLE INITIALLY DEFERRED
+constraint trigger checks `resultRef = verification.id` and `status = 'succeeded'` at commit, with a
+UNIQUE on `(projectId, sourceCommandId)` so one command can only ever produce one verdict.
 
 ## Root C — a packet that contradicts the diff (finding 6)
 
@@ -172,7 +199,7 @@ It would also have deleted rows nobody declared and hidden every future instance
 
 | Gate | Result |
 |---|---|
-| Focused probe suite `phase5-t5a-verification.test.ts` | **21/21** — 11 of them the round-1..3 findings, each RED before its fix |
+| Focused probe suite `phase5-t5a-verification.test.ts` | **27/27** — 16 of them the round-1..4 findings, each RED before its fix |
 | `pnpm check` | EXIT 0 — web 543/543, API 722/722 |
 | Full integration suite, pristine migrated DB | **77 files / 813 tests**, confirmed independently by CI |
 | `upgrade-proof.sh` | PASSED — the verified arrow refused without a verdict and accepted with one, the verdict unrewritable, a self-contradicting verdict rejected, `certified` and beyond still closed |

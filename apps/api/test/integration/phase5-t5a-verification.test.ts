@@ -17,6 +17,7 @@ import { CommercialBudgetQuery } from '../../src/commercial/commercial-budget.qu
 import { CommercialBillService } from '../../src/commercial/commercial-bill.service';
 import { CommercialVerificationService } from '../../src/commercial/commercial-verification.service';
 import { CommercialMeasurementService } from '../../src/commercial/commercial-measurement.service';
+import { VERIFICATION_EXCEPTION_KINDS } from '@vitan/shared';
 import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import { lockProjectReadiness } from '../../src/common/readiness-lock';
 import type { AuthUser } from '../../src/common/auth';
@@ -807,5 +808,205 @@ describe('Phase 5 Task 5A — §E three-way verification (live PG)', () => {
     const verdict = await verification.verify(projectId, { billId: whole.id }, pmc(projectId));
     expect(verdict.exceptions).toContain('duplicate-claim');
     expect(await statusOf(projectId, whole.id)).toBe('disputed');
+  });
+
+  // ── Codex round-4 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R4-F1 and R4-F2 are the SAME set for the fourth and fifth time — "places that report a
+   * verdict" — arriving from the two directions round 3 left open, so they are fixed as one rule
+   * and proven as one pair.
+   *
+   * R4-F1 is the fallback: with no verdict recorded, the read recomputed over §0's LIVE folds, and
+   * §0 excludes a `draft`/`disputed`/`rejected`/`resolved` bill from all of them. So the triple was
+   * computed against everything EXCEPT the claim being judged, and a claim disputed at SUBMISSION
+   * for exceeding its evidence read back as `matched` — a statement about nothing.
+   */
+  it('R4-F1 (§E): a claim disputed at SUBMISSION does not read as matched', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '50');
+    // 100 claimed against 50 accepted — Task 4's §G bound 2 disputes it at submission, and no §E
+    // verdict is ever recorded because the claim never reaches verification
+    const over = await claim(projectId, line.vendorId, line.poLineId, '100', { number: 'R4-F1' });
+    expect(await statusOf(projectId, over.id)).toBe('disputed');
+    expect(await t.prisma.billVerification.count({ where: { projectId, billId: over.id } })).toBe(0);
+
+    const read = await verification.readVerification(projectId, over.id, pmc(projectId));
+    expect(read.verdict).toBe('exception');
+    expect(read.exceptions).toContain('qty-over-accepted');
+    // the claim's own 100 is counted back in, which is the whole of the fix
+    expect(read.lines[0]!.billedQty).toBe('100');
+    expect(read.lines[0]!.evidenceQty).toBe('50');
+    expect(read.billStatus).toBe('disputed');
+  });
+
+  /**
+   * R4-F2 is the recorded half: a withdrawal guard disputes a VERIFIED claim in the reversal's own
+   * transaction and appends no verdict, so the last one recorded — `matched` — went on standing and
+   * the read reported a match over a dispute. A record answers only while the claim has not moved
+   * to a state that contradicts it; otherwise the answer is recomputed, which R4-F1's fix makes
+   * honest for a claim §0 has excluded.
+   */
+  it('R4-F2 (§E): a verdict contradicted by a later dispute is not reported', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    const accepted = await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '100', { number: 'R4-F2' });
+    await underVerification(projectId, bill.id);
+    expect((await verification.verify(projectId, { billId: bill.id }, pmc(projectId))).verdict).toBe('matched');
+
+    // …and while that `matched` verdict stands unopposed it IS the answer, so the probe proves a
+    // rule rather than a blanket refusal to report records
+    expect((await verification.readVerification(projectId, bill.id, pmc(projectId))).verdict).toBe('matched');
+
+    await inventory.reverse(projectId, { txId: accepted.acceptanceTxId, reason: 'quality re-test failed' }, pmc(projectId));
+    expect(await statusOf(projectId, bill.id)).toBe('disputed');
+    // the stored verdict is untouched — it is history, and history is not rewritten
+    const stored = await t.prisma.billVerification.findFirstOrThrow({ where: { projectId, billId: bill.id } });
+    expect(stored.verdict).toBe('matched');
+
+    const read = await verification.readVerification(projectId, bill.id, pmc(projectId));
+    expect(read.verdict).toBe('exception');
+    expect(read.exceptions).toContain('qty-over-accepted');
+    expect(read.billStatus).toBe('disputed');
+  });
+
+  /**
+   * R4-F3 — round 3's provenance seal, one level short. It asked whether a `commercial.bill.verify`
+   * command existed behind the verdict, not whether THAT command produced THIS verdict, so an
+   * already-spent verify command id copied onto a forged `matched` row walked the status past §E
+   * exactly as before. The type was provenance-shaped without being provenance.
+   *
+   * Two arms, because the reuse and the forgery fail in different places: `(projectId,
+   * sourceCommandId)` is UNIQUE, so a spent command cannot produce a second verdict at all; and the
+   * `resultRef` binding is checked at COMMIT, where the ledger row is finally complete.
+   */
+  it('R4-F3 (§E): a verdict must be the one its own verify command PRODUCED', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '200', baseRate: '1' });
+    await acceptOnLine(projectId, line, '200', '200');
+
+    // an honest verification, whose command is now SPENT
+    const honest = await claim(projectId, line.vendorId, line.poLineId, '100', { number: 'R4-F3-OK' });
+    await underVerification(projectId, honest.id);
+    expect((await verification.verify(projectId, { billId: honest.id }, pmc(projectId))).verdict).toBe('matched');
+    const spent = await t.prisma.billVerification.findFirstOrThrow({ where: { projectId, billId: honest.id } });
+    const command = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId, id: spent.sourceCommandId } });
+    // the ledger row states, in its own column, which verdict it produced
+    expect(command.resultRef).toBe(spent.id);
+    expect(command.status).toBe('succeeded');
+
+    const bad = await claim(projectId, line.vendorId, line.poLineId, '100', { rate: '2', number: 'R4-F3-BAD' });
+    await underVerification(projectId, bad.id);
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({
+      where: { projectId, billId: bad.id, supersededAt: null },
+    });
+
+    // ARM 1 — reuse the spent command. One command produces one verdict.
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillVerification" ("id","projectId","billId","versionId","verdict","verifiedById","sourceCommandId")
+       VALUES ('r4f3-reuse',$1,$2,$3,'matched',$4,$5)`,
+      projectId, bad.id, version.id, f.memberUser.id, spent.sourceCommandId,
+    )).rejects.toThrow(/"projectId", "sourceCommandId"|already exists/u);
+
+    // ARM 2 — a verify-TYPED command that produced something else. The insert is accepted (the
+    // row is well formed) and the status flip fails at COMMIT, which is where `resultRef` exists.
+    const forged = await t.prisma.commandExecution.create({
+      data: {
+        scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId: f.memberUser.id,
+        commandType: 'commercial.bill.verify', idempotencyKey: `r4f3-forged-${seq++}`,
+        requestHash: 'forged', status: 'succeeded', resultRef: 'some-other-entity',
+      },
+    });
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillVerification" ("id","projectId","billId","versionId","verdict","verifiedById","sourceCommandId")
+       VALUES ('r4f3-forged',$1,$2,$3,'matched',$4,$5)`,
+      projectId, bad.id, version.id, f.memberUser.id, forged.id,
+    );
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='verified', "statusChangedAt"=now() WHERE "id"=$1`, bad.id,
+    )).rejects.toThrow(/PRODUCED|resultRef|result/u);
+    expect(await statusOf(projectId, bad.id)).toBe('under-verification');
+  });
+
+  /**
+   * R4-F4 — round 1 opened `verified -> submitted` because `amend` has always taken it, and opened
+   * it without requiring the amendment. A bare status flip then re-opened a verified claim for
+   * re-verification with no new claim behind it: the same "a status is not a fact" defect the
+   * `verified` arrow itself was found for, one arrow along.
+   */
+  it('R4-F4 (§F): `verified -> submitted` requires the amendment that justifies it', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '60', { number: 'R4-F4' });
+    await underVerification(projectId, bill.id);
+    expect((await verification.verify(projectId, { billId: bill.id }, pmc(projectId))).verdict).toBe('matched');
+
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='submitted', "statusChangedAt"=now() WHERE "id"=$1`, bill.id,
+    )).rejects.toThrow(/AMENDED/u);
+    expect(await statusOf(projectId, bill.id)).toBe('verified');
+
+    // …and the honest path is UNCHANGED, which is what makes the refusal above evidence rather
+    // than a seal that refuses everything
+    const amended = await bills.amend(projectId, {
+      billId: bill.id, reason: 'vendor corrected the delivered quantity',
+      lines: [{ poLineId: line.poLineId, quantity: '50', rate: '1' }],
+    }, pmc(projectId));
+    expect(amended.status).toBe('submitted');
+  });
+
+  /**
+   * R4-F5 — `verdict` has carried a CHECK since the first head while `exceptions` accepted any text
+   * at all, so an `exception` verdict could be recorded as `['looks wrong']` or a typo of a real
+   * kind and satisfy every constraint on the table. §E names six kinds and each names its own
+   * check; a seventh string is a defect that reads as a verdict.
+   */
+  it('R4-F5 (§E): an exception names a KIND §E defines, and nothing else', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '60', { number: 'R4-F5' });
+    await underVerification(projectId, bill.id);
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({
+      where: { projectId, billId: bill.id, supersededAt: null },
+    });
+    const command = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId } });
+    const insert = (id: string, kinds: string) => t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillVerification" ("id","projectId","billId","versionId","verdict","exceptions","verifiedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,'exception',${kinds},$5,$6)`,
+      id, projectId, bill.id, version.id, f.memberUser.id, command.id,
+    );
+
+    await expect(insert('r4f5-prose', `ARRAY['looks wrong']::TEXT[]`))
+      .rejects.toThrow(/BillVerification_exception_kinds/u);
+    await expect(insert('r4f5-typo', `ARRAY['qty-over-acceptedd']::TEXT[]`))
+      .rejects.toThrow(/BillVerification_exception_kinds/u);
+    // a NULL element passes `<@` on its own — containment involving NULL is NULL, and a CHECK
+    // passes on NULL — which is why the constraint tests for it separately
+    await expect(insert('r4f5-null', `ARRAY[NULL]::TEXT[]`))
+      .rejects.toThrow(/BillVerification_exception_kinds/u);
+    // …and a real kind is ACCEPTED, so the constraint is precise rather than merely strict
+    await insert('r4f5-real', `ARRAY['rate-mismatch']::TEXT[]`);
+    expect((await t.prisma.billVerification.findFirstOrThrow({ where: { id: 'r4f5-real' } })).exceptions)
+      .toEqual(['rate-mismatch']);
+  });
+
+  /**
+   * The DERIVED closure for R4-F5's set. The exception vocabulary now lives in two places — the
+   * `@vitan/shared` const the service builds verdicts from, and the CHECK PostgreSQL enforces —
+   * and two hand-kept copies of one set is the root this PR's convergence audit names. So the
+   * copies are not left to memory: the CHECK is read back out of `pg_constraint` and compared, in
+   * BOTH directions, against the shared const.
+   */
+  it('R4-F5 (closure): the CHECK vocabulary and `VERIFICATION_EXCEPTION_KINDS` are the SAME set', async () => {
+    const [row] = await t.prisma.$queryRawUnsafe<Array<{ def: string }>>(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'BillVerification_exception_kinds'`,
+    );
+    expect(row, 'the exception-kind CHECK must exist').toBeTruthy();
+    const inSql = [...row!.def.matchAll(/'([^']+)'/gu)].map((m) => m[1]!).sort();
+    expect(inSql).toEqual([...VERIFICATION_EXCEPTION_KINDS].sort());
   });
 });

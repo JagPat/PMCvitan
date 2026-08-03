@@ -1,8 +1,8 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
-  ROLE_POLICY,
-  type VerificationDto, type VerificationExceptionKind, type VerificationLineDto,
+  ROLE_POLICY, isLiveBillStatus,
+  type VendorBillStatus, type VerificationDto, type VerificationExceptionKind, type VerificationLineDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
@@ -36,6 +36,28 @@ function totalsFor(
     tax: mine.reduce((a, l) => a.add(l.claimedTax), new Prisma.Decimal(0)),
     freight: mine.reduce((a, l) => a.add(l.claimedFreight), new Prisma.Decimal(0)),
   };
+}
+
+/**
+ * Has the claim moved to a state that CONTRADICTS this recorded verdict? (Codex round-4)
+ *
+ * A verdict is a judgement made at a moment, and the claim can move afterwards for reasons §E
+ * never saw — a §G bound at submission, or a withdrawal guard disputing it because the evidence
+ * underneath was reversed. Neither appends a verdict, so the last one recorded goes on standing.
+ *
+ * Exactly one of those movements makes the record a lie rather than merely older: a project that
+ * has DISPUTED a claim has said it does not match, whoever said it, so a stored `matched` no
+ * longer describes it. Everything else is compatible — a matched claim REJECTED for commercial
+ * reasons was still matched, and §F's later states are reached THROUGH a match. Stating it as the
+ * one contradiction rather than as a whitelist of agreeing statuses is deliberate: Task 6 adds
+ * states past `verified`, and a whitelist would silently start recomputing under each new one.
+ *
+ * When it is contradicted the answer is recomputed rather than patched, and the recomputation is
+ * honest because `computeTriple` counts the subject claim that §0 has excluded — so the bill
+ * disputed for `qty-over-accepted` re-derives exactly that.
+ */
+function contradicted(verdict: string, status: VendorBillStatus): boolean {
+  return verdict === 'matched' && status === 'disputed';
 }
 
 /** One claim line resolved against its ordered snapshot — the row §E's triple is computed over. */
@@ -140,8 +162,22 @@ export class CommercialVerificationService {
     projectId: string,
     billId: string,
     vendorId: string,
+    billStatus: VendorBillStatus,
   ): Promise<VerificationDto> {
     const { versionId, lines } = await this.claimLines(tx, projectId, billId);
+
+    // Codex round-4 — COUNT THE CLAIM BEING JUDGED. Every billed side here is a §0 set, and §0
+    // excludes a `draft`, `disputed`, `rejected` or `resolved` bill from all of them — so for a
+    // claim in any of those states the fold does not contain the very lines being verified, and
+    // the triple is computed against everything EXCEPT the subject. The result is a vacuous
+    // `matched`: a 200-unit draft against 100 accepted reads 0 billed, and a claim disputed at
+    // submission for exceeding its evidence reads as matching the moment the dispute removes it.
+    //
+    // `CommercialBillService.evaluateBounds` already carries this exact parameter (`countLinesAsLive`,
+    // added for the resolving amendment, which is disputed while its replacement is written). Two
+    // computations over the same fold need the same rule, so this is that rule at its second site
+    // rather than a second rule: when §0 does not count the subject, the subject is added back.
+    const subjectFolded = isLiveBillStatus(billStatus);
 
     // ONE total order over every PO line the bill touches — material and labour together
     const targets = [...new Set(lines.map((l) => `${l.kind} ${l.poLineId}`))].sort();
@@ -175,8 +211,13 @@ export class CommercialVerificationService {
       const o = ordered.get(key)!;
       const exceptions: VerificationExceptionKind[] = [];
 
-      const billedQty = (await this.bills.billedQtyFor(tx, projectId, l.kind, [l.poLineId])).get(l.poLineId) ?? ZERO;
-      const billedAmount = (await this.bills.billedAmountFor(tx, projectId, l.kind, [l.poLineId])).get(l.poLineId) ?? ZERO;
+      // the subject claim's own totals on THIS purchase-order line, added back when §0's live rule
+      // leaves them out of the fold (see `subjectFolded` above)
+      const subject = subjectFolded ? null : totalsFor(lines, l.kind, l.poLineId);
+      const billedQty = ((await this.bills.billedQtyFor(tx, projectId, l.kind, [l.poLineId])).get(l.poLineId) ?? ZERO)
+        .add(subject?.quantity ?? ZERO);
+      const billedAmount = ((await this.bills.billedAmountFor(tx, projectId, l.kind, [l.poLineId])).get(l.poLineId) ?? ZERO)
+        .add(subject?.amount ?? ZERO);
       const evidence = l.kind === 'material'
         ? (await this.inventory.acceptedFor(tx, projectId, [l.poLineId])).get(l.poLineId) ?? ZERO
         : (await this.measured.measuredForPoLines(tx, projectId, [l.poLineId])).get(l.poLineId) ?? ZERO;
@@ -204,7 +245,11 @@ export class CommercialVerificationService {
         : ZERO;
       const taxCap = o.tax.mul(scale).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
       const freightCap = o.freight.mul(scale).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
-      const claimed = await this.bills.billedTaxAndFreightFor(tx, projectId, l.kind, l.poLineId);
+      const folded = await this.bills.billedTaxAndFreightFor(tx, projectId, l.kind, l.poLineId);
+      const claimed = {
+        tax: folded.tax.add(subject?.tax ?? ZERO),
+        freight: folded.freight.add(subject?.freight ?? ZERO),
+      };
       if (claimed.tax.greaterThan(taxCap)) exceptions.push('tax-mismatch');
       if (claimed.freight.greaterThan(freightCap)) exceptions.push('freight-mismatch');
 
@@ -269,6 +314,7 @@ export class CommercialVerificationService {
       verdict: all.length === 0 ? 'matched' : 'exception',
       lines: out,
       exceptions: all,
+      billStatus,
     };
   }
 
@@ -300,7 +346,9 @@ export class CommercialVerificationService {
             `A ${bill.status} claim cannot be verified — verification applies to a claim under verification`,
           );
         }
-        verdict = await this.computeTriple(tx, projectId, input.billId, bill.vendorId);
+        const triple = await this.computeTriple(
+          tx, projectId, input.billId, bill.vendorId, bill.status as VendorBillStatus,
+        );
 
         // Codex round-1 F2/F5 — RECORD the verdict before the transition it justifies. It is what
         // the database checks before accepting `verified`, and what a replay returns instead of
@@ -308,20 +356,24 @@ export class CommercialVerificationService {
         // set, so the retry would answer `matched` and contradict the dispute that happened.
         const recorded = await tx.billVerification.create({
           data: {
-            projectId, billId: input.billId, versionId: verdict.versionId,
-            verdict: verdict.verdict, exceptions: verdict.exceptions,
+            projectId, billId: input.billId, versionId: triple.versionId,
+            verdict: triple.verdict, exceptions: triple.exceptions,
             verifiedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
 
-        if (verdict.verdict === 'matched') {
+        const moved: VendorBillStatus = triple.verdict === 'matched' ? 'verified' : 'disputed';
+        if (triple.verdict === 'matched') {
           await this.cas(tx, projectId, input.billId, 'under-verification', 'verified', null);
         } else {
           await this.cas(
             tx, projectId, input.billId, 'under-verification', 'disputed',
-            `verification-exception: ${verdict.exceptions.join(', ')}`,
+            `verification-exception: ${triple.exceptions.join(', ')}`,
           );
         }
+        // the claim's state as this call LEAVES it — the triple was computed while it was still
+        // `under-verification`, and reporting that would describe a bill that no longer exists
+        verdict = { ...triple, billStatus: moved };
         // §B (Codex round-1 F1) — a verdict MOVES the claim between the live and non-live billed
         // sets, so it is a headroom mover like every other bill transition. `disputed` leaves the
         // live fold, and leaving the register unevaluated lets the budget READ drop the exposure
@@ -362,11 +414,18 @@ export class CommercialVerificationService {
       where: { projectId, id: verificationId },
     });
     if (!recorded) throw new NotFoundException(`Verification ${verificationId} not found in this project`);
+    // the VERDICT is what that call concluded and is replayed verbatim; the STATUS is a fact about
+    // now, and a retry after a lost response is exactly when a caller needs to know where the
+    // claim actually ended up
+    const bill = await this.prisma.vendorBill.findFirst({
+      where: { projectId, id: recorded.billId }, select: { status: true },
+    });
     return {
       billId: recorded.billId, versionId: recorded.versionId,
       verdict: recorded.verdict as VerificationDto['verdict'],
       lines: [],
       exceptions: recorded.exceptions as VerificationExceptionKind[],
+      billStatus: bill!.status as VendorBillStatus,
     };
   }
 
@@ -384,13 +443,33 @@ export class CommercialVerificationService {
    * A recomputation is only meaningful while the claim is IN the fold it is measured against. Once
    * a verdict exists for the current version it is the answer, because it is what was actually
    * decided; the preview is for the window before one does.
+   *
+   * Codex round-4 found the same set a FOURTH and FIFTH time, from the two directions round 3 left
+   * open, and they close as one rule rather than two patches:
+   *
+   *  - with NO verdict recorded, the fallback recomputed over folds §0 excludes the claim from, so
+   *    a claim disputed at submission for exceeding its evidence read `matched` — the fold no
+   *    longer contained the lines being judged. `computeTriple` now counts the subject claim
+   *    whenever §0 does not, which is the rule `evaluateBounds` already carries;
+   *  - with a verdict recorded, a `matched` row was returned unconditionally, so a withdrawal
+   *    guard that disputed the bill without appending a verdict left the read reporting a match
+   *    over a dispute. A record is returned only while the claim has not moved to a state that
+   *    contradicts it (see `contradicted`), and otherwise the answer is recomputed — honestly,
+   *    because of the fix above.
+   *
+   * The replay path is deliberately NOT reconciled this way and that is not an oversight: a replay
+   * owes the caller what THAT CALL concluded, not what the world would conclude now. It reports
+   * the current status beside the recorded verdict instead.
    */
   async readVerification(projectId: string, billId: string, user: AuthUser): Promise<VerificationDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
     return this.prisma.$transaction(async (tx) => {
-      const bill = await tx.vendorBill.findFirst({ where: { projectId, id: billId }, select: { vendorId: true } });
+      const bill = await tx.vendorBill.findFirst({
+        where: { projectId, id: billId }, select: { vendorId: true, status: true },
+      });
       if (!bill) throw new NotFoundException('Vendor bill not found in this project');
+      const status = bill.status as VendorBillStatus;
       const version = await tx.vendorBillVersion.findFirst({
         where: { projectId, billId, supersededAt: null }, select: { id: true },
       });
@@ -399,16 +478,17 @@ export class CommercialVerificationService {
           where: { projectId, billId, versionId: version.id },
           orderBy: [{ verifiedAt: 'desc' }, { id: 'desc' }],
         });
-        if (recorded) {
+        if (recorded && !contradicted(recorded.verdict, status)) {
           return {
             billId, versionId: recorded.versionId,
             verdict: recorded.verdict as VerificationDto['verdict'],
             lines: [],
             exceptions: recorded.exceptions as VerificationExceptionKind[],
+            billStatus: status,
           };
         }
       }
-      return this.computeTriple(tx, projectId, billId, bill.vendorId);
+      return this.computeTriple(tx, projectId, billId, bill.vendorId, status);
     });
   }
 
