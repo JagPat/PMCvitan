@@ -127,7 +127,9 @@ describe('Phase 3 Task 5 — reservations, issues, site flows, mismatch resoluti
         select: { id: true },
       });
       await tx.commandExecution.update({
-        where: { id: created.id }, data: { status: 'succeeded', completedAt: new Date() },
+        // a non-blank `resultRef` is required on `succeeded` — a real command records the entity
+        // it produced, and this fixture stands in for one
+        where: { id: created.id }, data: { status: 'succeeded', resultRef: `fixture-${created.id}`, completedAt: new Date() },
       });
       return created;
     });

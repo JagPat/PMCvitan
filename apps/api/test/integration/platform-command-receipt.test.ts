@@ -160,6 +160,37 @@ describe('Platform — the command receipt protocol is database-enforced (live P
       .rejects.toThrow(/COMPLETED command receipt is immutable/u);
   });
 
+  /**
+   * Codex round-2 on this PR: the seal rejected a result on `failed` and said nothing about its
+   * absence on `succeeded`. `ExecuteResult.resultRef` is a required `string` and every command site
+   * returns an entity id, so this is the type system's rule restated where the database can hold
+   * it — and left open it is worse than untidy: the replay path returns `prior.resultRef ?? ''`, so
+   * a succeeded receipt with no result SUPPRESSES the retry that would have produced the entity and
+   * hands the caller success with nothing in it.
+   */
+  it('a SUCCEEDED receipt must record the result it produced', async () => {
+    await expect(t.prisma.$transaction(async (tx) => {
+      const row = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId: f.projectA.id,
+          actorId: f.memberUser.id, commandType: 'test.receipt', requestHash: 'x',
+          idempotencyKey: `receipt-noresult-${(seq += 1)}`, status: 'reserved',
+        },
+        select: { id: true },
+      });
+      await tx.commandExecution.update({
+        where: { id: row.id }, data: { status: 'succeeded', completedAt: new Date() },
+      });
+    })).rejects.toThrow(/SUCCEEDED command recorded no result/u);
+
+    // …and blank is not a result either, under the same §0b whitespace rule as every other
+    // identity column in this system
+    const id = await reserved();
+    await expect(raw(
+      `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='   ', "completedAt"=now() WHERE "id"=$1`, id,
+    )).rejects.toThrow(/SUCCEEDED command recorded no result/u);
+  });
+
   it('a FAILED receipt carries no result, and an honest failure is accepted', async () => {
     const bad = await reserved();
     await expect(raw(

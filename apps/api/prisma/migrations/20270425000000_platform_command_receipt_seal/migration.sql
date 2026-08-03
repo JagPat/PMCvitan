@@ -28,7 +28,8 @@
 --   * a receipt cannot be minted already terminal, with a chosen result and no reservation;
 --   * a receipt's identity cannot be re-pointed at a different actor or command after the fact;
 --   * a completed receipt cannot be re-pointed at a different result, re-opened, or backdated;
---   * a receipt cannot be completed by a LATER transaction than the one that reserved it.
+--   * a receipt cannot be completed by a LATER transaction than the one that reserved it;
+--   * a SUCCEEDED receipt cannot record an empty result, and a FAILED one cannot record any.
 --
 -- Those are the shapes an application bug, a careless maintenance UPDATE, or a future path that
 -- bypasses `executeCommand` actually produce, and each was a single statement away before. What
@@ -127,6 +128,17 @@ BEGIN
   END IF;
   IF NEW."status" = 'failed' AND NEW."resultRef" IS NOT NULL THEN
     RAISE EXCEPTION 'A FAILED command produced no result — a result reference on it would be provenance for something that did not happen (%)', OLD."id";
+  END IF;
+  -- …and the converse, which the first head left open (Codex round-2): a SUCCEEDED command
+  -- produced something, and `resultRef` is what says what. `ExecuteResult.resultRef` is a required
+  -- `string` in TypeScript and every one of the hundred-odd command sites returns an entity id, so
+  -- this is the type system's rule restated where the database can enforce it. Left open, a
+  -- succeeded receipt with no result SUPPRESSES the retry that would have produced the entity —
+  -- the replay path returns `prior.resultRef ?? ''` — so the caller is told the command succeeded
+  -- and handed nothing. Non-blank as well as non-null, under the same §0b whitespace rule every
+  -- other identity column in this system uses.
+  IF NEW."status" = 'succeeded' AND (NEW."resultRef" IS NULL OR btrim(NEW."resultRef") = '') THEN
+    RAISE EXCEPTION 'A SUCCEEDED command recorded no result — a replay would report success and hand back nothing, and every provenance join reading `resultRef` would find no entity (%)', OLD."id";
   END IF;
 
   -- RESERVE AND COMPLETE ARE ONE TRANSACTION. Phase 2 states it as the protocol —

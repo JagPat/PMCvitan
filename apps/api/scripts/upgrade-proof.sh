@@ -782,12 +782,12 @@ INSERT INTO "DeliveryCommitment"("id","projectId","poLineId","status","createdBy
 -- row is the forgery that seal refuses (20270425000000_platform_command_receipt_seal).
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','reserved');
-UPDATE "CommandExecution" SET "status"='succeeded', "completedAt"=now() WHERE "id"='UP45-CMD';
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP45-LOT', "completedAt"=now() WHERE "id"='UP45-CMD';
 -- reserved-then-completed: the receipt protocol is DB-sealed, and a directly minted `succeeded`
 -- row is the forgery that seal refuses (20270425000000_platform_command_receipt_seal).
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   VALUES('UP45-CMD2','project','org-legacy','p2','USER-1','test.up45','up45b','x','reserved');
-UPDATE "CommandExecution" SET "status"='succeeded', "completedAt"=now() WHERE "id"='UP45-CMD2';
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP45-LOT2', "completedAt"=now() WHERE "id"='UP45-CMD2';
 INSERT INTO "StockLot"("id","projectId","poLineId","commitmentId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","baseUom","specFingerprint","receivedById")
   VALUES('UP45-LOT','p1','UP45-POL','UP45-DC','UP45-ROOT',1,'Cement','UltraTech','OPC 53','grey','bag','FP-UP45','USER-1');
 INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","poLineId","commitmentId","recordedById","sourceCommandId")
@@ -1201,7 +1201,7 @@ $PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T3: a coherent §C time-
 BEGIN;
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   SELECT 'UPL-CMD1','project',"orgId",'p1','USER-1','labour.allocation.allocate','upl-t3-key','upl-t3-hash','reserved' FROM "Project" WHERE "id"='p1';
-UPDATE "CommandExecution" SET "status"='succeeded', "completedAt"=now() WHERE "id"='UPL-CMD1';
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UPL-T3A', "completedAt"=now() WHERE "id"='UPL-CMD1';
 INSERT INTO "Worker"("id","projectId","name","tradeCode","activeFrom","createdById") VALUES('UPL-T3W','p1','Mason A','mason','2026-01-01','USER-1');
 INSERT INTO "WorkerSkill"("projectId","workerId","skillCode") VALUES('p1','UPL-T3W','bar-bending');
 INSERT INTO "WorkerDevice"("id","projectId","token","workerId") VALUES('UPL-T3DEV','p1','upl-t3-token','UPL-T3W');

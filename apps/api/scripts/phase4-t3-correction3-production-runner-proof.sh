@@ -121,8 +121,13 @@ INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES ('p1',
 INSERT INTO "Worker"("id","projectId","name","tradeCode","activeFrom","createdById")
   VALUES ('W-1','p1','Ramesh','mason','2026-01-01','USER-1');
 INSERT INTO "WorkerSkill"("projectId","workerId","skillCode") VALUES ('p1','W-1','bar-bending');
+-- reserved-then-completed IN ONE TRANSACTION: the receipt protocol is DB-sealed
+-- (20270425000000_platform_command_receipt_seal), and a directly minted `succeeded` row — or one
+-- completed by a later transaction — is exactly the forgery that seal refuses.
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-  VALUES ('CMD-1','project','org-p4t3','p1','USER-1','labour.attendance.record','k-1','h-1','succeeded');
+  VALUES ('CMD-1','project','org-p4t3','p1','USER-1','labour.attendance.record','k-1','h-1','reserved');
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='ATT-1', "completedAt"=now()
+ WHERE "id"='CMD-1';
 COMMIT;
 SQL
 }

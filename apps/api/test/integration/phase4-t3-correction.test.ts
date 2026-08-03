@@ -279,7 +279,7 @@ describe('Phase 4 Task 3 correction — the four review findings (live PG)', () 
         data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType: 'labour.allocation.allocate', idempotencyKey: `f3-${seq++}`, requestHash: 'f3', status: 'reserved' },
       });
       await tx.commandExecution.update({
-        where: { id: created.id }, data: { status: 'succeeded', completedAt: new Date() },
+        where: { id: created.id }, data: { status: 'succeeded', resultRef: `fixture-${created.id}`, completedAt: new Date() },
       });
       return created;
     });

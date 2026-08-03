@@ -37,6 +37,7 @@ followed:
 | The completion comes from the SAME transaction that reserved | Phase 2 states the protocol as reserve→execute→receipt in ONE transaction, so a completion arriving later did not come from a command run. Without it, a receipt reserved at any point in the past can be adopted and completed against a result chosen afterwards |
 | A completed receipt is immutable | A re-pointable `resultRef` is a re-pointable provenance chain — the same defect as forging the row |
 | A `failed` receipt carries no result | A result reference on a failed command is provenance for something that did not happen |
+| A `succeeded` receipt carries a NON-BLANK result | The converse half, missing from the first head. `ExecuteResult.resultRef` is a required `string` and every command site returns an entity id, so this is the type system's rule where the database can hold it. Left open, a succeeded receipt with no result SUPPRESSES the retry that would have produced the entity — the replay path returns `prior.resultRef ?? ''` — and hands the caller success with nothing in it |
 
 **DELETE stays permitted, deliberately.** Phase 2 decided in as many words that receipts are
 "disposable idempotency records, not an immutable audit trail", and gave both tenant FKs
@@ -137,7 +138,7 @@ run — for this PR or any future one.
 
 ## Gates
 
-- Focused `platform-command-receipt.test.ts` **9/9** on live PostgreSQL — the refusal probes proven
+- Focused `platform-command-receipt.test.ts` **10/10** on live PostgreSQL — the refusal probes proven
   RED against `main` with the migration removed and the database rebuilt from scratch (the
   acceptance probes pass in both states, which is what makes them the precision half)
 - `command-receipt-abort-proof.sh` PASSED — both abort shapes, the documented repair, and the

@@ -136,7 +136,9 @@ describe('Phase 4 Task 3 correction 2 — the three re-review findings (live PG)
         data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType, idempotencyKey: `c2-${Date.now()}-${seq++}`, requestHash: 'c2', status: 'reserved' },
       });
       await tx.commandExecution.update({
-        where: { id: created.id }, data: { status: 'succeeded', completedAt: new Date() },
+        // a non-blank `resultRef` is required on `succeeded` — a real command records the entity
+        // it produced, and this fixture stands in for one
+        where: { id: created.id }, data: { status: 'succeeded', resultRef: `fixture-${created.id}`, completedAt: new Date() },
       });
       return created;
     });

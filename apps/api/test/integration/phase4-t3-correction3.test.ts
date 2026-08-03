@@ -154,7 +154,9 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
         data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType, idempotencyKey: `c3-${Date.now()}-${seq++}`, requestHash: 'c3', status: 'reserved' },
       });
       await tx.commandExecution.update({
-        where: { id: created.id }, data: { status: 'succeeded', completedAt: new Date() },
+        // a non-blank `resultRef` is required on `succeeded` — a real command records the entity
+        // it produced, and this fixture stands in for one
+        where: { id: created.id }, data: { status: 'succeeded', resultRef: `fixture-${created.id}`, completedAt: new Date() },
       });
       return created;
     });
