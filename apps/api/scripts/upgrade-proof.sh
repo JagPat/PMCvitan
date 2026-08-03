@@ -1766,10 +1766,18 @@ assert_rejects "commercial T4 R6-F3: PRE-LOADING an exit reason at creation (a j
   "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"statusReason\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-BP','p1','UP45-VEN','INV-PRE','2026-08-26','draft','pre-loaded','USER-1','UP45-CMD')"
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
-assert_rejects "commercial T4 R2-F3: the arrow into VERIFIED, whose safety is the §E verdict Task 5 ships" \
-  "UPDATE \"VendorBill\" SET \"status\"='verified' WHERE \"id\"='UPT4-B3'"
-assert_rejects "commercial T4 R2-F3: the arrow into CERTIFIED, with no certificate table in this tree" \
+# Task 5A — the §E verdict now EXISTS, so the arrow whose safety is that verdict opens. This
+# assertion is inverted deliberately, and its Task-4 label said so in advance: "whose safety is the
+# §E verdict Task 5 ships". A seal is only correct while the evidence behind it is absent.
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
+  && printf 'ok      %s\n' "commercial T5A §E: under-verification -> VERIFIED is ACCEPTED (the arrow the verdict makes safe)" \
+  || { printf 'FAILED  %s\n' "commercial T5A §E: the verified arrow was rejected"; FAIL=1; }
+# …and NOT one step further. `certified` is 5B's, with the certificate that is its evidence; the
+# arrows past it are Task 6's. A status whose evidence does not exist is a status nobody can justify.
+assert_rejects "commercial T5A §F: the arrow into CERTIFIED, with no certificate table in this tree" \
   "UPDATE \"VendorBill\" SET \"status\"='certified' WHERE \"id\"='UPT4-B3'"
+assert_rejects "commercial T5A §F: the arrow into APPROVED-FOR-PAYMENT, whose evidence is Task 6's" \
+  "UPDATE \"VendorBill\" SET \"status\"='approved-for-payment' WHERE \"id\"='UPT4-B3'"
 # …while the arrows this task DOES own still work — the seal is precise, not merely strict
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
   && printf 'ok      %s\n' "commercial T4 R2-F3: under-verification -> disputed is ACCEPTED (the arrows this task owns still work)" \

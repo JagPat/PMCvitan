@@ -116,6 +116,13 @@ describe('Phase 5 Task 5A — §E three-way verification (live PG)', () => {
   afterAll(async () => {
     await t?.prisma.$executeRawUnsafe(TRUNCATE);
     await t?.prisma.vendor.deleteMany({ where: { orgId: f.orgA.id } });
+    // This suite creates its OWN projects (`freshProject`, plus the never-activated one the §D
+    // probe needs), and the shared fixture cleanup deletes the ORG. A project left behind holds an
+    // FK to that org, so the org delete fails — and because the database is shared, it fails in
+    // whichever suite happens to tear down last rather than in the one that leaked. Cleaning up
+    // what this file created keeps the failure attributable to its author.
+    await t?.prisma.membership.deleteMany({ where: { projectId: { startsWith: 'it-p5t5a-' } } });
+    await t?.prisma.project.deleteMany({ where: { id: { startsWith: 'it-p5t5a-' } } });
     await f?.cleanup();
     await t?.close();
   });

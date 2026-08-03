@@ -1012,12 +1012,15 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await bills.beginVerification(projectId, { billId: bill.id }, pmc(projectId));
     expect(await statusOf(projectId, bill.id)).toBe('under-verification');
 
-    for (const status of ['verified', 'certified', 'approved-for-payment', 'paid']) {
+    // Task 5A INVERTED the first of these deliberately: `verified` is the state whose safety IS the
+    // §E verdict, and that verdict now exists, so the arrow opens. This probe's Task-4 comment said
+    // as much in advance — "Task 5 adds these arrows WITH the evidence that makes them safe" — and
+    // a seal is only correct while the evidence behind it is absent. The rest stay closed.
+    for (const status of ['certified', 'approved-for-payment', 'paid']) {
       await expect(t.prisma.$executeRawUnsafe(
         `UPDATE "VendorBill" SET "status"=$2 WHERE "id"=$1`, bill.id, status,
       )).rejects.toThrow(/cannot move from/u);
     }
-    // the transitions this task DOES own still work
     expect(await statusOf(projectId, bill.id)).toBe('under-verification');
     await bills.reject(projectId, { billId: bill.id, reason: 'duplicate of an earlier invoice' }, pmc(projectId));
     expect(await statusOf(projectId, bill.id)).toBe('rejected');
