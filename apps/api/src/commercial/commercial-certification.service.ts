@@ -9,6 +9,7 @@ import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { InventoryParticipant, type AcceptedEvidenceRow } from '../inventory/inventory.participant';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialBillQuery } from './commercial-bill.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
@@ -21,6 +22,14 @@ const ZERO = new Prisma.Decimal(0);
 interface MeasurementDraw {
   measurementId: string;
   consumedQty: Prisma.Decimal;
+}
+
+/** One acceptance row a certificate is about to freeze — the SAME decision §I asks about. */
+interface AcceptanceDraw {
+  stockTransactionId: string;
+  consumedQty: Prisma.Decimal;
+  /** who recorded it. §I's question, answered from the evidence rather than a second read. */
+  recordedById: string;
 }
 
 /**
@@ -46,6 +55,9 @@ export class CommercialCertificationService {
     private readonly bills: CommercialBillQuery,
     private readonly measured: CommercialMeasurementQuery,
     private readonly verification: CommercialVerificationService,
+    // §I's approver standing is an ORGS question — `Membership`/`OrgMembership` are orgs-owned and
+    // the owner states the rule. `commercial.workflowParticipants` already declares this edge.
+    private readonly orgs: OrgsParticipant,
   ) {}
 
   private assertCertify(user: AuthUser): void {
@@ -99,6 +111,31 @@ export class CommercialCertificationService {
       run: async (tx, ctx) => {
         // 1
         await lockProjectReadiness(tx, projectId);
+
+        // Which PO lines this claim touches, read WITHOUT any lock. It is only a plan for what to
+        // lock; every fact it produces is re-read under the locks below, and the set itself is
+        // re-derived and compared once the bill is held.
+        const planned = await this.verification.claimLines(tx, projectId, input.billId);
+
+        // 2 — the accepted evidence, LOTS locked ascending, BEFORE the bill.
+        //
+        // Codex round-1 P1. §0b says "the BILL is taken FIRST, before any foreign row", and that
+        // rule is right for every OTHER commercial write — but it collides here with an order
+        // inventory established first and cannot be asked to change. `stock.reverse` locks the LOT,
+        // then disputes the affected `VendorBill` through `CommercialParticipant`. Taking the bill
+        // first therefore deadlocks exactly: certification holds bill B and waits for lot L, while
+        // a concurrent reversal holds L and waits to dispute B. Neither proceeds.
+        //
+        // So certification adopts the reversal's order — lots, then the bill — and pays for it by
+        // re-deriving the claim under the bill lock (below) rather than trusting the unlocked read.
+        // The general rule this leaves: a total lock order is a property of the SYSTEM, not of one
+        // module, and the module that arrives later adopts it.
+        const evidenceByLine = new Map<string, AcceptedEvidenceRow[]>();
+        for (const poLineId of [...new Set(planned.lines.filter((l) => l.kind === 'material').map((l) => l.poLineId))].sort()) {
+          evidenceByLine.set(poLineId, await this.inventoryParticipant.lockAcceptedEvidence(tx, projectId, poLineId));
+        }
+
+        // 3 — the BILL, and every side re-read under it
         const bill = await this.lockBill(tx, projectId, input.billId);
         if (bill.status !== 'verified') {
           throw new ConflictException(
@@ -107,13 +144,18 @@ export class CommercialCertificationService {
         }
         const { versionId, lines } = await this.verification.claimLines(tx, projectId, input.billId);
 
-        // 2 — the accepted evidence, LOTS locked ascending, BEFORE any PO line
-        const evidenceByLine = new Map<string, AcceptedEvidenceRow[]>();
-        for (const poLineId of [...new Set(lines.filter((l) => l.kind === 'material').map((l) => l.poLineId))].sort()) {
-          evidenceByLine.set(poLineId, await this.inventoryParticipant.lockAcceptedEvidence(tx, projectId, poLineId));
+        // The lots were chosen from an UNLOCKED read, so an amendment committing in between could
+        // have moved the claim onto a purchase-order line whose evidence this transaction never
+        // locked — and certifying it would rest on rows a concurrent reversal is free to withdraw.
+        // Refuse rather than lock the difference now: locking late is how the deadlock above comes
+        // back, and a caller that reloads gets a coherent plan on the next attempt.
+        const plannedTargets = [...new Set(planned.lines.map((l) => `${l.kind} ${l.poLineId}`))].sort().join(',');
+        const actualTargets = [...new Set(lines.map((l) => `${l.kind} ${l.poLineId}`))].sort().join(',');
+        if (plannedTargets !== actualTargets) {
+          throw new ConflictException('This claim was amended onto different orders while certification was preparing — reload and retry');
         }
 
-        // 3 and the re-read of every side happen inside `computeTriple`, which takes the PO lines
+        // 4 and the re-read of every side happen inside `computeTriple`, which takes the PO lines
         // in ONE ascending order over the whole bill
         const verdict = await this.verification.computeTriple(
           tx, projectId, input.billId, bill.vendorId, bill.status as VendorBillStatus,
@@ -124,8 +166,16 @@ export class CommercialCertificationService {
           );
         }
 
-        // 4 and 5 — labour
+        // 5 and 6 — labour
         const measurementDraws = await this.drawMeasurements(tx, projectId, lines);
+
+        // The MATERIAL draw, decided ONCE. Codex round-1 P2: §I must ask about the rows this
+        // certificate actually rests on, and the previous spelling asked about every positive
+        // accepted row on the line — so a store user whose acceptance was already fully consumed
+        // by an earlier live certificate was refused for evidence this act does not touch. The
+        // plan is computed here, the SoD check reads it, and the freeze WRITES it: one decision,
+        // three readers, rather than the freeze silently disagreeing with the check that preceded it.
+        const acceptanceDraws = await this.drawAcceptances(tx, projectId, lines, evidenceByLine);
 
         // §G bound 3 — `CERTIFIED(bill) <= BILLED_AMOUNT(bill)`. The certified amount IS that
         // fold, taken from the ONE owned place, so this command satisfies the bound BY
@@ -143,7 +193,7 @@ export class CommercialCertificationService {
         // rather than stashed: a Nest provider is a singleton, and an instance field holding
         // per-request state would let two concurrent certifications read each other's override.
         const sod = await this.assertSegregation(
-          tx, projectId, input, actor.actorId, lines, evidenceByLine, measurementDraws,
+          tx, projectId, input, actor.actorId, acceptanceDraws, measurementDraws,
         );
 
         const certificate = await tx.billCertificate.create({
@@ -167,7 +217,14 @@ export class CommercialCertificationService {
           });
         }
 
-        await this.freezeAcceptanceConsumption(tx, projectId, certificate.id, lines, evidenceByLine);
+        for (const a of acceptanceDraws) {
+          await tx.certifiedAcceptanceConsumption.create({
+            data: {
+              projectId, certificateId: certificate.id,
+              stockTransactionId: a.stockTransactionId, consumedQty: a.consumedQty,
+            },
+          });
+        }
         for (const m of measurementDraws) {
           await tx.certifiedMeasurementConsumption.create({
             data: {
@@ -248,7 +305,7 @@ export class CommercialCertificationService {
   }
 
   /**
-   * §E — freeze WHICH acceptance rows this certificate consumed AND HOW MUCH OF EACH.
+   * §E — DECIDE which acceptance rows this certificate consumes and how much of each.
    *
    * Row identity alone is too coarse and the aggregate is too weak: one 100-unit acceptance with
    * an 80-unit certificate needs the pair, so the unused 20 stays reversible while the consumed 80
@@ -256,14 +313,22 @@ export class CommercialCertificationService {
    * against acceptance A recorded by store user X, accept another 100 by user Y, reverse A, and
    * the aggregate is still 100 while the payable certificate rests on different rows, by a
    * different actor, than the §E triple and the §I SoD rule ever evaluated.
+   *
+   * Codex round-1 P2 — this DECIDES and does not WRITE. The draw is the answer to "which rows does
+   * this certificate rest on", and §I asks the same question one step earlier, so computing it in
+   * the writer meant the segregation check had to approximate it — and its approximation was every
+   * positive row on the line, which is a strictly larger set. One decision, read by both.
+   *
+   * The draw is greedy over the locked rows in ascending id order: deterministic, so two
+   * certifications of the same line cannot disagree about which row they consumed.
    */
-  private async freezeAcceptanceConsumption(
+  private async drawAcceptances(
     tx: Prisma.TransactionClient,
     projectId: string,
-    certificateId: string,
-    lines: ReadonlyArray<{ billLineId: string; kind: 'material' | 'labour'; poLineId: string; claimedQty: Prisma.Decimal }>,
+    lines: ReadonlyArray<{ kind: 'material' | 'labour'; poLineId: string; claimedQty: Prisma.Decimal }>,
     evidenceByLine: ReadonlyMap<string, AcceptedEvidenceRow[]>,
-  ): Promise<void> {
+  ): Promise<AcceptanceDraw[]> {
+    const draws: AcceptanceDraw[] = [];
     // per PO LINE, not per bill line: two claim lines against one order draw from ONE pool, and
     // consuming per bill line would let each take the same row's free quantity
     for (const poLineId of [...new Set(lines.filter((l) => l.kind === 'material').map((l) => l.poLineId))].sort()) {
@@ -276,9 +341,7 @@ export class CommercialCertificationService {
         const free = row.available.sub(already);
         if (free.lessThanOrEqualTo(0)) continue;
         const take = Prisma.Decimal.min(remaining, free);
-        await tx.certifiedAcceptanceConsumption.create({
-          data: { projectId, certificateId, stockTransactionId: row.id, consumedQty: take },
-        });
+        draws.push({ stockTransactionId: row.id, consumedQty: take, recordedById: row.recordedById });
         remaining = remaining.sub(take);
       }
       if (remaining.greaterThan(0)) {
@@ -287,6 +350,7 @@ export class CommercialCertificationService {
         );
       }
     }
+    return draws;
   }
 
   /** How much of one acceptance row LIVE certificates already rest on (§E, `(rowId, qty)`). */
@@ -387,17 +451,15 @@ export class CommercialCertificationService {
     projectId: string,
     input: CertifyBillInput,
     actorId: string,
-    lines: ReadonlyArray<{ kind: 'material' | 'labour'; poLineId: string }>,
-    evidenceByLine: ReadonlyMap<string, AcceptedEvidenceRow[]>,
+    acceptanceDraws: readonly AcceptanceDraw[],
     measurementDraws: readonly MeasurementDraw[],
   ): Promise<{ rule: string; actorId: string; approverId: string; reason: string } | null> {
     const evidenceActors = new Set<string>();
-    // the recorder travels WITH the evidence, from the inventory participant that locked it —
-    // `StockTransaction` is inventory-owned and read-encapsulated, so commercial asks the owner
-    // rather than reaching into the ledger for a second read of rows it already holds
-    for (const l of lines.filter((x) => x.kind === 'material')) {
-      for (const row of evidenceByLine.get(l.poLineId) ?? []) evidenceActors.add(row.recordedById);
-    }
+    // the DRAW, not the pool. Codex round-1 P2: reading every positive accepted row on the line
+    // refused a store user whose acceptance an earlier live certificate had already consumed —
+    // evidence this act does not rest on. The recorder travels WITH the draw, from the inventory
+    // participant that locked it, so commercial never reads the owned ledger for a second time.
+    for (const draw of acceptanceDraws) evidenceActors.add(draw.recordedById);
     if (measurementDraws.length > 0) {
       const rows = await tx.measurement.findMany({
         where: { projectId, id: { in: measurementDraws.map((m) => m.measurementId) } },
@@ -410,21 +472,27 @@ export class CommercialCertificationService {
     if (!input.sodOverride) {
       throw new ForbiddenException(
         'Segregation of duties: the actor who recorded the evidence under this claim may not certify it. '
-        + 'An active pmc may authorise an exception, which is recorded with its reason against this certificate.',
+        + 'A pmc with standing on this project may authorise an exception, which is recorded with its reason against this certificate.',
       );
     }
-    // the override needs an authority at least as strong as the act it excuses, and the approver
-    // must be a DIFFERENT person — a row where the actor approves their own override is a
-    // signature on a mirror, which the DB CHECK also refuses
-    const approver = await tx.membership.findFirst({
-      where: { projectId, userId: input.sodOverride.approverId, status: 'active', role: 'pmc' },
-      select: { userId: true },
-    });
-    if (!approver) {
-      throw new ForbiddenException('A segregation-of-duties exception must be authorised by an active pmc on this project');
-    }
-    if (approver.userId === actorId) {
+    // The override needs an authority at least as strong as the act it excuses, and the approver
+    // must be a DIFFERENT person — a row where the actor approves their own override is a signature
+    // on a mirror, which the DB CHECK also refuses.
+    //
+    // Codex round-1 P2 — the standing question goes to `OrgsParticipant`, not to a direct read of
+    // `Membership`. That table is orgs-owned, and this file's own §I comment says the owner states
+    // the rule: the participant folds in the org owner/admin PMC fallback a direct row read misses,
+    // so an approver entitled through org-admin standing was being refused. `forUpdate` because
+    // this IS an authority decision — `MembersService.updateRole` writes without the readiness
+    // lock, so an unlocked read lets a concurrent downgrade commit behind an approval it granted.
+    if (input.sodOverride.approverId === actorId) {
       throw new ForbiddenException('A segregation-of-duties exception cannot be authorised by the actor it excuses');
+    }
+    const entitled = await this.orgs.hasProjectRoleStanding(
+      tx, projectId, input.sodOverride.approverId, ['pmc'], { forUpdate: true },
+    );
+    if (!entitled) {
+      throw new ForbiddenException('A segregation-of-duties exception must be authorised by a pmc with standing on this project');
     }
     return {
       rule: 'evidence-recorder-may-not-certify',

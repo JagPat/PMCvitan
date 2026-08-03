@@ -52,22 +52,39 @@ absent field forces the caller to wait for the ledger that makes it true.
 | 12 | A REPLAY returns the certificate THAT call made | `resultRef` → `certificateById`, never a bill-scoped read | PROBE 10 |
 | 13 | Every surface is absent off-pilot | `capabilities.assertEnabled` on all three entry points | PROBE 14 |
 | 14 | The four tables upgrade ROW-FREE over a legacy database | migration's closing `DO` block | upgrade proof |
+| 15 | A live certificate exists for a bill IF AND ONLY IF that bill is `certified` | `phase5_t5_certificate_projection_check` at COMMIT, from BOTH tables | R1-F2 (both directions); upgrade proof |
+| 16 | A frozen acceptance row is an `acceptance` on a PO line this bill claims | `phase5_t5_consumption_evidence_check` at COMMIT | R1-F3/F4; upgrade proof (a real receipt refused) |
+| 17 | A frozen measurement is an ORIGINAL on a labour PO line this bill claims | …the same function, second caller | R1-F4 |
+| 18 | §I asks about the rows this certificate DRAWS on, not every row on the line | `drawAcceptances` decided once, read by §I and written by the freeze | R1-F5 |
+| 19 | Approver standing is the ORGS module's question | `OrgsParticipant.hasProjectRoleStanding` (`forUpdate`) | R1-F6 |
+| 20 | Certification cannot deadlock against a concurrent acceptance reversal | the lock order below | R1-F1 (RED = PG `40P01`) |
 
 ## §E's lock order, implemented literally
 
 1. `lockProjectReadiness(projectId)`
 2. every contributing stock LOT, ascending by id — `InventoryParticipant.lockAcceptedEvidence`
-3. EVERY PO line the bill touches, material and labour together, in ONE ascending
+3. the BILL, and every side re-read under it
+4. EVERY PO line the bill touches, material and labour together, in ONE ascending
    order taken BEFORE any per-line work — inside `computeTriple`
-4. the contributing measurements — `CommercialMeasurementQuery.lockMeasurementsFor`
-5. the ACTIVITY each measurement rests on — `ActivityParticipant.measurableTarget`
+5. the contributing measurements — `CommercialMeasurementQuery.lockMeasurementsFor`
+6. the ACTIVITY each measurement rests on — `ActivityParticipant.measurableTarget`
 
-Step 2 before step 3 is not a free choice. Every inventory write already runs
+Step 2 before steps 3–4 is not a free choice. Every inventory write already runs
 `lockProjectReadiness → lockLot → applyReceiptProgress`, and `applyReceiptProgress`
 is what takes the PO line; inverting the order would let certification hold a PO
 line waiting for a lot while a concurrent rejection holds that lot waiting for the
 PO line. Commercial adopts the established order rather than asking four cleared
 modules to migrate to a new one.
+
+**The BILL moved BELOW the lots in Codex round 1, and this is the deeper version of
+the same rule.** §0b says "the BILL is taken FIRST, before any foreign row", and
+that is right for every other commercial write — but `stock.reverse` locks the LOT
+and then disputes the bill through `CommercialParticipant`, so a bill-first
+certifier deadlocks against it exactly: certification holds bill B waiting for lot
+L while the reversal holds L waiting to dispute B. The price of moving the bill down
+is that the lot set is chosen from an UNLOCKED read, so the claim is re-derived once
+the bill is held and a divergence is a 409 rather than a late lock — locking late is
+how the deadlock returns.
 
 Step 5 is not covered by step 4, and the reason is in §E: a measurement can be old
 and entirely valid while the sign-off underneath it is withdrawn concurrently.
@@ -87,6 +104,31 @@ The boundary analyzer caught the first draft of `assertSegregation` reading the
 inventory-owned `StockTransaction` directly. The fix is not a waiver: the
 acceptance recorder now travels WITH the evidence the participant already
 returned, so §I never reads a foreign ledger at all.
+
+## Codex round 1 — six findings, all fixed forward
+
+| # | Sev | What was wrong | Where the fix lives |
+|---|---|---|---|
+| 1 | P1 | Certification took the BILL before the LOTS, while `stock.reverse` takes the LOT and then disputes the bill — a real deadlock, not a theoretical one | `certify` adopts the reversal's order; the unlocked plan is re-derived under the bill lock and a divergence is a 409 |
+| 2 | P1 | A standalone supersession left `VendorBill.status = 'certified'` with no live certificate — a bill claiming to be payable whose `readCertificate` 404s | `phase5_t5_certificate_projection_check`, a BICONDITIONAL fired at COMMIT from BOTH `BillCertificate` and `VendorBill` |
+| 3 | P2 | The consumption FK proved the stock row existed, not that it was an `acceptance` on a line this bill claims | `phase5_t5_consumption_evidence_check`, one function |
+| 4 | P2 | Same on the labour side: a CORRECTION row could be frozen as evidence | …the same function, second caller |
+| 5 | P2 | §I read every positive accepted row on the line, so a store user whose acceptance an earlier certificate had already consumed was refused for evidence this act does not rest on | `drawAcceptances` decides once; §I reads the draw and the freeze writes it |
+| 6 | P2 | Approver standing was a direct read of the orgs-owned `Membership`, missing the org owner/admin PMC fallback | `OrgsParticipant.hasProjectRoleStanding` with `forUpdate` |
+
+**Every one is RED before its fix**, and finding 1's probe had to be fixed twice before it was
+evidence: the first draft used a 300 ms sleep and passed against the *old* order, because
+certification had not yet reached its lock when the holder released. The barrier is now
+condition-based (`pg_stat_activity`) with an explicit acquisition signal, and against the old order
+it fails in 2.7 s with PostgreSQL error **40P01, deadlock detected** — the exact defect, named by
+the database.
+
+Two of these are the roots this phase keeps paying for. Finding 1 is root A pointing outward: a
+total lock order is a property of the SYSTEM, and the module arriving later adopts it rather than
+asserting its own §0b rule locally. Finding 5 is the gap between a docblock and its code — the
+method's own comment already said "the rows consulted are exactly the ones this certificate is
+about to freeze", and it consulted a strictly larger set. Fixing it by computing the draw ONCE and
+having three readers share it is root H.
 
 ## Gate results
 

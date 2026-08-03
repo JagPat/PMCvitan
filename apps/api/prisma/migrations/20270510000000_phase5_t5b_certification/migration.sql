@@ -316,6 +316,160 @@ CREATE CONSTRAINT TRIGGER "VendorBillLine_certified_sealed"
   AFTER INSERT ON "VendorBillLine" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t5_bill_certified_recheck();
 
+-- ── §E — the CONSUMED ROW must be evidence THIS claim actually rests on ────────────────────────
+--
+-- Codex round-1 P2, both sides. The composite FKs prove a consumption row names a real
+-- `StockTransaction`/`Measurement` in the project, and that is all they prove. They do NOT prove
+-- the stock row is an `acceptance` rather than a receipt or a reversal, nor that its lot hangs off
+-- a purchase-order line this certificate's bill actually claims; and on the labour side they do
+-- not prove the measurement is an ORIGINAL rather than a correction row, nor that its labour PO
+-- line is one this bill claims. Left there, a direct SQL path or a later writer could freeze a
+-- reversal, or another bill's acceptance, as the evidence behind a payable certificate — and
+-- `readCertificate` and both withdrawal guards would then audit rows the bill never consumed.
+--
+-- ONE function, two callers. §E states the rule once ("certification freezes the rows it consumed")
+-- and it applies identically to both fact families, so a second implementation would be the drift
+-- §0 exists to name — and the two copies would disagree the first time either changed.
+CREATE OR REPLACE FUNCTION phase5_t5_consumption_evidence_check(
+  p_project text, p_certificate text, p_kind text, p_row text
+) RETURNS void AS $$
+DECLARE
+  v_bill text;
+  v_ok   boolean;
+BEGIN
+  SELECT c."billId" INTO v_bill FROM "BillCertificate" c
+   WHERE c."projectId" = p_project AND c."id" = p_certificate;
+  IF v_bill IS NULL THEN
+    RAISE EXCEPTION 'Consumption row cites certificate % which does not exist in project %', p_certificate, p_project;
+  END IF;
+
+  IF p_kind = 'acceptance' THEN
+    -- the row is an ACCEPTANCE, and its lot hangs off a purchase-order line the bill's LIVE claim
+    -- names. `VendorBillLine.poLineId` is the material arm of the XOR Task 4 sealed.
+    SELECT EXISTS (
+      SELECT 1
+        FROM "StockTransaction" t
+        JOIN "StockLot" lot ON lot."projectId" = t."projectId" AND lot."id" = t."lotId"
+        JOIN "VendorBillLine" bl ON bl."projectId" = lot."projectId" AND bl."poLineId" = lot."poLineId"
+        JOIN "VendorBillVersion" v ON v."projectId" = bl."projectId" AND v."id" = bl."versionId"
+       WHERE t."projectId" = p_project AND t."id" = p_row
+         AND t."type" = 'acceptance'
+         AND v."billId" = v_bill
+         AND v."supersededAt" IS NULL
+    ) INTO v_ok;
+    IF NOT v_ok THEN
+      RAISE EXCEPTION 'Certificate % may only freeze an ACCEPTANCE row on a purchase-order line its own bill claims — % is not one', p_certificate, p_row;
+    END IF;
+  ELSE
+    -- the row is an ORIGINAL measurement (a correction is the amendment OF evidence, never
+    -- evidence itself) on a labour purchase-order line the bill's LIVE claim names
+    SELECT EXISTS (
+      SELECT 1
+        FROM "Measurement" m
+        JOIN "VendorBillLine" bl ON bl."projectId" = m."projectId" AND bl."labourPoLineId" = m."labourPoLineId"
+        JOIN "VendorBillVersion" v ON v."projectId" = bl."projectId" AND v."id" = bl."versionId"
+       WHERE m."projectId" = p_project AND m."id" = p_row
+         AND m."correctsId" IS NULL
+         AND v."billId" = v_bill
+         AND v."supersededAt" IS NULL
+    ) INTO v_ok;
+    IF NOT v_ok THEN
+      RAISE EXCEPTION 'Certificate % may only freeze an ORIGINAL measurement on a labour purchase-order line its own bill claims — % is not one', p_certificate, p_row;
+    END IF;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t5_acceptance_consumption_sealed() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t5_consumption_evidence_check(NEW."projectId", NEW."certificateId", 'acceptance', NEW."stockTransactionId");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t5_measurement_consumption_sealed() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t5_consumption_evidence_check(NEW."projectId", NEW."certificateId", 'measurement', NEW."measurementId");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- DEFERRED, because the certificate and its consumption rows are written in ONE transaction and a
+-- BEFORE trigger would fire before the certificate row it must read exists.
+DROP TRIGGER IF EXISTS "CertifiedAcceptanceConsumption_evidence_sealed" ON "CertifiedAcceptanceConsumption";
+CREATE CONSTRAINT TRIGGER "CertifiedAcceptanceConsumption_evidence_sealed"
+  AFTER INSERT ON "CertifiedAcceptanceConsumption" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_acceptance_consumption_sealed();
+DROP TRIGGER IF EXISTS "CertifiedMeasurementConsumption_evidence_sealed" ON "CertifiedMeasurementConsumption";
+CREATE CONSTRAINT TRIGGER "CertifiedMeasurementConsumption_evidence_sealed"
+  AFTER INSERT ON "CertifiedMeasurementConsumption" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_measurement_consumption_sealed();
+
+-- ── §F — the STATUS and the CERTIFICATE move together, or neither commits ──────────────────────
+--
+-- Codex round-1 P1. The `certified` shadow rule in the lifecycle trigger closes one direction: a
+-- status cannot be asserted without a certificate. It says nothing about the other: a standalone
+-- supersession of the live certificate commits happily while `VendorBill.status` stays `certified`,
+-- leaving a bill that claims to be certified and a `readCertificate` that 404s — and from there the
+-- bill can be amended as though its certification never happened, with no live certificate to
+-- refuse the withdrawal of the evidence underneath it.
+--
+-- The invariant is a BICONDITIONAL, and §F makes it one: a live certificate exists for a bill IF
+-- AND ONLY IF that bill is `certified`. `certify` writes both; `supersede` clears both. Anything
+-- that moves one without the other is incoherent by construction.
+--
+-- It must be DEFERRED: `certify` inserts the certificate and then CASes the status, and `supersede`
+-- stamps and then CASes, so both are transiently incoherent mid-transaction. COMMIT is the only
+-- instant at which the question has an answer — which is root D from the 5A audit, at its next site.
+CREATE OR REPLACE FUNCTION phase5_t5_certificate_projection_check(p_project text, p_bill text)
+RETURNS void AS $$
+DECLARE
+  v_live   bigint;
+  v_status text;
+BEGIN
+  SELECT b."status" INTO v_status FROM "VendorBill" b
+   WHERE b."projectId" = p_project AND b."id" = p_bill;
+  -- the bill is gone: nothing to be coherent WITH, and `VendorBill` rows are never deleted anyway
+  IF v_status IS NULL THEN RETURN; END IF;
+
+  SELECT COUNT(*) INTO v_live FROM "BillCertificate" c
+   WHERE c."projectId" = p_project AND c."billId" = p_bill AND c."supersededAt" IS NULL;
+
+  IF v_status = 'certified' AND v_live <> 1 THEN
+    RAISE EXCEPTION 'Bill % is `certified` with % live certificate(s) — the status is the certificate''s projection and the two move together', p_bill, v_live;
+  END IF;
+  IF v_status <> 'certified' AND v_live <> 0 THEN
+    RAISE EXCEPTION 'Bill % is `%` while a LIVE certificate still stands — superseding a certificate must return the claim to `verified` in the SAME transaction', p_bill, v_status;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t5_certificate_projection_sealed() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t5_certificate_projection_check(NEW."projectId", NEW."billId");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t5_bill_projection_sealed() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t5_certificate_projection_check(NEW."projectId", NEW."id");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Fired from BOTH sides, because either side alone can break it: the certificate writer (a
+-- supersession that leaves the status behind) and the bill writer (a status flip that leaves the
+-- certificate behind). One predicate, two triggers — root H.
+DROP TRIGGER IF EXISTS "BillCertificate_projection_sealed" ON "BillCertificate";
+CREATE CONSTRAINT TRIGGER "BillCertificate_projection_sealed"
+  AFTER INSERT OR UPDATE ON "BillCertificate" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_certificate_projection_sealed();
+DROP TRIGGER IF EXISTS "VendorBill_certificate_projection_sealed" ON "VendorBill";
+CREATE CONSTRAINT TRIGGER "VendorBill_certificate_projection_sealed"
+  AFTER INSERT OR UPDATE ON "VendorBill" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_bill_projection_sealed();
+
 -- The migration is ADDITIVE and these tables are NEW, so a legacy database upgrades ROW-FREE.
 -- Asserted rather than assumed, the Phase-4 discipline: if any row exists here the migration is
 -- being applied to a database it was not written for, and it stops rather than guessing.

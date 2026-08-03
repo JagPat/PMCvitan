@@ -1920,9 +1920,16 @@ assert_rejects "commercial T5B §E: a certificate naming ANOTHER bill's claim ve
 assert_rejects "commercial T5B §F: a HALF-STAMPED supersession (unattributable history)" \
   "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"supersededAt\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CH','p1','UPT4-B3','UPT4-BV3',3.00,now(),'USER-1','UP45-CMD')"
 # …and the coherent certificate is ACCEPTED, so every refusal above is about ITS OWN rule
-$PSQL >/dev/null -c "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C1','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD')" \
-  && printf 'ok      %s\n' "commercial T5B §G: a certificate AT the claimed amount is ACCEPTED (the bound seal is precise, not merely strict)" \
+# The certificate and the bill STATUS move TOGETHER — the round-1 projection seal. Each `psql -c`
+# is its own transaction, so the coherent case is written as ONE transaction; a fixture that left
+# the status behind would be building exactly the incoherence the seal exists to refuse.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C1','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T5B §G/§F: a certificate AT the claimed amount, with its status projection, is ACCEPTED (both seals precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T5B §G: a coherent certificate was rejected"; FAIL=1; }
+assert_rejects "commercial T5B R1-F2: a STANDALONE supersession, leaving the bill claiming to be certified" \
+  "UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='orphaned' WHERE \"id\"='UPT5B-C1'"
+assert_rejects "commercial T5B R1-F2: moving the bill OFF certified while its certificate still stands" \
+  "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
 assert_rejects "commercial T5B §F: a SECOND live certificate on one bill (bounds 3-5 read the live one)" \
   "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C2','p1','UPT4-B3','UPT4-BV3',1.00,'USER-1','UP45-CMD')"
 assert_rejects "commercial T5B §F: EDITING the amount a certificate authorised" \
@@ -1932,6 +1939,10 @@ assert_rejects "commercial T5B §F: DELETING a certificate (the correction path 
 # §E — the frozen evidence set. `consumedQty` must be real, and the row it names must be real too.
 assert_rejects "commercial T5B §E: a consumption row naming a NONEXISTENT acceptance (identity, not a label)" \
   "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A0','p1','UPT5B-C1','NO-SUCH-ROW',1)"
+# Codex round-1 P2 — the FK proves the row EXISTS; the seal proves it is evidence THIS claim rests
+# on. A receipt is a real, in-project, same-lot stock row and is still not acceptance evidence.
+assert_rejects "commercial T5B R1-F3: freezing a RECEIPT as acceptance evidence (a real row that is not evidence)" \
+  "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AR','p1','UPT5B-C1','UP45-RCPT',1)"
 assert_rejects "commercial T5B §E: a ZERO-quantity consumption row (evidence that says nothing)" \
   "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A1','p1','UPT5B-C1','UP45-ACC',0)"
 $PSQL >/dev/null -c "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A2','p1','UPT5B-C1','UP45-ACC',3)" \
@@ -1957,18 +1968,15 @@ $PSQL >/dev/null -c "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certifi
   || { printf 'FAILED  %s\n' "commercial T5B §I: a coherent exception was rejected"; FAIL=1; }
 assert_rejects "commercial T5B §I: REWRITING the reason an override was granted for" \
   "UPDATE \"SodException\" SET \"reason\"='a different story' WHERE \"id\"='UPT5B-S3'"
-# the certificate now stands, so the arrow into `certified` is ACCEPTED — the shadow rule, proven
-# in both directions rather than only as a refusal
-$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
-  && printf 'ok      %s\n' "commercial T5B §F: verified -> CERTIFIED is ACCEPTED behind a live certificate (the shadow rule, precise)" \
-  || { printf 'FAILED  %s\n' "commercial T5B §F: the certified arrow was rejected behind a live certificate"; FAIL=1; }
-# …and back, which is §F's ONE correction path past certification
-$PSQL >/dev/null -c "UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='restated' WHERE \"id\"='UPT5B-C1'" 2>/dev/null
+# §F's ONE correction path past certification: the supersession stamp and the return to `verified`
+# in ONE transaction. The `verified -> certified` arrow was already proven ACCEPTED above, by the
+# transaction that created the certificate — the projection seal makes those the same act, so
+# asserting it twice would be asserting a state the database no longer lets exist on its own.
+$PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='restated' WHERE \"id\"='UPT5B-C1'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T5B §F: supersession + certified -> verified in ONE transaction is ACCEPTED (the correction path)" \
+  || { printf 'FAILED  %s\n' "commercial T5B §F: the supersession return arrow was rejected"; FAIL=1; }
 assert_rejects "commercial T5B §F: REWRITING a supersession stamp (a superseded certificate is history)" \
   "UPDATE \"BillCertificate\" SET \"supersedeReason\"='rewritten' WHERE \"id\"='UPT5B-C1'"
-$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
-  && printf 'ok      %s\n' "commercial T5B §F: certified -> verified on supersession is ACCEPTED (the correction path)" \
-  || { printf 'FAILED  %s\n' "commercial T5B §F: the supersession return arrow was rejected"; FAIL=1; }
 # Codex round-4 — `verified -> submitted` is the AMENDMENT arrow. Opened without requiring the
 # amendment, one UPDATE re-opens a verified claim for re-verification with no new claim behind it.
 assert_rejects "commercial T5A R4-F4: VERIFIED -> submitted with no replacement version (the amendment arrow without the amendment)" \
