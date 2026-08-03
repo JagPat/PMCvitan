@@ -58,6 +58,10 @@ absent field forces the caller to wait for the ledger that makes it true.
 | 18 | §I asks about the rows this certificate DRAWS on, not every row on the line | `drawAcceptances` decided once, read by §I and written by the freeze | R1-F5 |
 | 19 | Approver standing is the ORGS module's question | `OrgsParticipant.hasProjectRoleStanding` (`forUpdate`) | R1-F6 |
 | 20 | Certification cannot deadlock against a concurrent acceptance reversal | the lock order below | R1-F1 (RED = PG `40P01`) |
+| 21 | A live certificate FREEZES evidence covering every line its claim states | `phase5_t5_certificate_complete_check` at COMMIT, from `BillCertificate` AND `VendorBillVersion` | R2-F1 |
+| 22 | A certificate by an evidence RECORDER carries an attributable `SodException` | …the same function — §I asked of the frozen set, at the database | R2-F2 |
+| 23 | Frozen `consumedQty` never exceeds the evidence that exists | `phase5_t5_consumption_evidence_check`, both arms | R2-F3 |
+| 24 | A live certificate names the bill's LIVE claim version | `phase5_t5_certificate_complete_check` | R2-F4 |
 
 ## §E's lock order, implemented literally
 
@@ -129,6 +133,19 @@ asserting its own §0b rule locally. Finding 5 is the gap between a docblock and
 method's own comment already said "the rows consulted are exactly the ones this certificate is
 about to freeze", and it consulted a strictly larger set. Fixing it by computing the draw ONCE and
 having three readers share it is root H.
+
+## Codex round 2 — four findings, one root
+
+All four are the same defect at four angles: **a row seal cannot see an absence.** Round 1's
+findings 3/4 asked "does this prove the row is the right row", I built a per-row validator that
+answered exactly that, and every question about the CERTIFICATE as a whole stayed unaskable in the
+place I had put the check — is it complete (F1), is it attributable (F2), is it about the current
+claim (F4) — while identity said nothing about quantity (F3).
+
+The closure is ONE deferred `phase5_t5_certificate_complete_check`, fired from `BillCertificate` and
+from `VendorBillVersion`, plus the quantity bound added to both arms of the per-row seal. The full
+reasoning, and the diagnostic that would have caught it in round 1, is in
+`docs/reviews/pr-279-convergence.md`.
 
 ## Gate results
 

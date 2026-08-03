@@ -334,8 +334,10 @@ CREATE OR REPLACE FUNCTION phase5_t5_consumption_evidence_check(
   p_project text, p_certificate text, p_kind text, p_row text
 ) RETURNS void AS $$
 DECLARE
-  v_bill text;
-  v_ok   boolean;
+  v_bill      text;
+  v_ok        boolean;
+  v_available numeric;
+  v_frozen    numeric;
 BEGIN
   SELECT c."billId" INTO v_bill FROM "BillCertificate" c
    WHERE c."projectId" = p_project AND c."id" = p_certificate;
@@ -360,6 +362,29 @@ BEGIN
     IF NOT v_ok THEN
       RAISE EXCEPTION 'Certificate % may only freeze an ACCEPTANCE row on a purchase-order line its own bill claims — % is not one', p_certificate, p_row;
     END IF;
+
+    -- Codex round-2 P2 — identity is not QUANTITY. Proving the row is the right KIND of evidence
+    -- says nothing about how much of it exists: a direct insert could freeze `consumedQty = 100`
+    -- against a one-unit acceptance, and every other seal would pass while `readCertificate`
+    -- reported evidence that never existed and the withdrawal guard blocked reversals on the
+    -- strength of it. The bound is the §0 `ACCEPTED` arithmetic per row — the acceptance quantity
+    -- less the reversals OF THAT ROW — and it is a SUM over every LIVE certificate, because two
+    -- certificates may each rest on part of one acceptance but never on more of it than exists.
+    SELECT a."qty" - COALESCE((
+             SELECT SUM(r."qty") FROM "StockTransaction" r
+              WHERE r."projectId" = a."projectId" AND r."reversedTxId" = a."id" AND r."type" = 'reversal'
+           ), 0)
+      INTO v_available
+      FROM "StockTransaction" a
+     WHERE a."projectId" = p_project AND a."id" = p_row;
+    SELECT COALESCE(SUM(cc."consumedQty"), 0) INTO v_frozen
+      FROM "CertifiedAcceptanceConsumption" cc
+      JOIN "BillCertificate" c ON c."projectId" = cc."projectId" AND c."id" = cc."certificateId"
+     WHERE cc."projectId" = p_project AND cc."stockTransactionId" = p_row
+       AND c."supersededAt" IS NULL;
+    IF v_frozen > v_available THEN
+      RAISE EXCEPTION 'Live certificates freeze % base units of acceptance % but only % remain accepted on it — frozen evidence cannot exceed the evidence', v_frozen, p_row, v_available;
+    END IF;
   ELSE
     -- the row is an ORIGINAL measurement (a correction is the amendment OF evidence, never
     -- evidence itself) on a labour purchase-order line the bill's LIVE claim names
@@ -375,6 +400,21 @@ BEGIN
     ) INTO v_ok;
     IF NOT v_ok THEN
       RAISE EXCEPTION 'Certificate % may only freeze an ORIGINAL measurement on a labour purchase-order line its own bill claims — % is not one', p_certificate, p_row;
+    END IF;
+
+    -- the labour twin of the same bound. The available quantity here is the row's NET — its own
+    -- quantity plus every correction addressed to it — which is what `CommercialMeasurementQuery.netOf`
+    -- folds in TypeScript. Same rule, two languages, stated once in each.
+    SELECT COALESCE(SUM(m2."quantity"), 0) INTO v_available
+      FROM "Measurement" m2
+     WHERE m2."projectId" = p_project AND (m2."id" = p_row OR m2."correctsId" = p_row);
+    SELECT COALESCE(SUM(mc."consumedQty"), 0) INTO v_frozen
+      FROM "CertifiedMeasurementConsumption" mc
+      JOIN "BillCertificate" c ON c."projectId" = mc."projectId" AND c."id" = mc."certificateId"
+     WHERE mc."projectId" = p_project AND mc."measurementId" = p_row
+       AND c."supersededAt" IS NULL;
+    IF v_frozen > v_available THEN
+      RAISE EXCEPTION 'Live certificates freeze % person-shifts of measurement % but only % stand on it — frozen evidence cannot exceed the evidence', v_frozen, p_row, v_available;
     END IF;
   END IF;
 END;
@@ -404,6 +444,141 @@ DROP TRIGGER IF EXISTS "CertifiedMeasurementConsumption_evidence_sealed" ON "Cer
 CREATE CONSTRAINT TRIGGER "CertifiedMeasurementConsumption_evidence_sealed"
   AFTER INSERT ON "CertifiedMeasurementConsumption" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t5_measurement_consumption_sealed();
+
+-- ── §E/§I — the CERTIFICATE AS A WHOLE, asked once at COMMIT ──────────────────────────────────
+--
+-- Codex round 2, three findings with ONE root: every seal above validates a ROW AS IT LANDS, and
+-- none of them ever asks whether the CERTIFICATE is coherent. A row-level validator cannot see an
+-- ABSENCE. So a direct SQL path could:
+--
+--   * insert a certificate, move the bill to `certified`, and write NO consumption rows at all —
+--     bound 3 and the projection seal both pass, `readCertificate` reports empty evidence arrays,
+--     and the withdrawal guards then find no frozen rows and permit the very reversal the
+--     certificate exists to block;
+--   * do the same as the evidence RECORDER with no `SodException` — every trigger passes and §I's
+--     attributable override is simply missing from the audit trail;
+--   * point `versionId` at a SUPERSEDED version of its own bill, so the certificate is reported
+--     against a claim that is no longer live while the bound checks read the live one.
+--
+-- This is root A at the database layer: the per-row seals fix the MEMBER, and the SET — the
+-- certificate — had no seal of its own. One deferred function asks the whole question.
+--
+-- SUPERSEDED certificates return early and deliberately. A superseded certificate is HISTORY: the
+-- claim may legitimately have moved on since, and re-validating it against today's world would
+-- refuse the correction path §F requires. Only a LIVE certificate must be coherent with now.
+CREATE OR REPLACE FUNCTION phase5_t5_certificate_complete_check(p_project text, p_certificate text)
+RETURNS void AS $$
+DECLARE
+  v_bill         text;
+  v_version      text;
+  v_certifier    text;
+  v_superseded   timestamp(3);
+  v_live_version text;
+  v_frozen       numeric;
+  v_recorder     boolean;
+  v_excepted     boolean;
+  r              record;
+BEGIN
+  SELECT c."billId", c."versionId", c."certifiedById", c."supersededAt"
+    INTO v_bill, v_version, v_certifier, v_superseded
+    FROM "BillCertificate" c
+   WHERE c."projectId" = p_project AND c."id" = p_certificate;
+  IF v_bill IS NULL OR v_superseded IS NOT NULL THEN RETURN; END IF;
+
+  -- (a) the certificate names the bill's LIVE claim version, not merely a version of that bill
+  SELECT v."id" INTO v_live_version FROM "VendorBillVersion" v
+   WHERE v."projectId" = p_project AND v."billId" = v_bill AND v."supersededAt" IS NULL;
+  IF v_version IS DISTINCT FROM v_live_version THEN
+    RAISE EXCEPTION 'Certificate % names claim version % while the live version of bill % is % — a certificate reports the claim it certified, so it cannot outlive it', p_certificate, v_version, v_bill, COALESCE(v_live_version, '(none)');
+  END IF;
+
+  -- (b) every claimed line is COVERED by frozen evidence. `certify` refuses to write a certificate
+  -- it cannot cover; this is that same refusal, stated where no writer can go around it.
+  FOR r IN
+    SELECT bl."poLineId" AS po_line, bl."labourPoLineId" AS labour_line, SUM(bl."quantity") AS claimed
+      FROM "VendorBillLine" bl
+     WHERE bl."projectId" = p_project AND bl."versionId" = v_version
+     GROUP BY bl."poLineId", bl."labourPoLineId"
+  LOOP
+    IF r.po_line IS NOT NULL THEN
+      SELECT COALESCE(SUM(cc."consumedQty"), 0) INTO v_frozen
+        FROM "CertifiedAcceptanceConsumption" cc
+        JOIN "StockTransaction" t ON t."projectId" = cc."projectId" AND t."id" = cc."stockTransactionId"
+        JOIN "StockLot" lot ON lot."projectId" = t."projectId" AND lot."id" = t."lotId"
+       WHERE cc."projectId" = p_project AND cc."certificateId" = p_certificate
+         AND lot."poLineId" = r.po_line;
+      IF v_frozen < r.claimed THEN
+        RAISE EXCEPTION 'Certificate % claims % base units on purchase-order line % but freezes only % of accepted evidence — a certificate must name the evidence it rests on', p_certificate, r.claimed, r.po_line, v_frozen;
+      END IF;
+    ELSE
+      SELECT COALESCE(SUM(mc."consumedQty"), 0) INTO v_frozen
+        FROM "CertifiedMeasurementConsumption" mc
+        JOIN "Measurement" m ON m."projectId" = mc."projectId" AND m."id" = mc."measurementId"
+       WHERE mc."projectId" = p_project AND mc."certificateId" = p_certificate
+         AND m."labourPoLineId" = r.labour_line;
+      IF v_frozen < r.claimed THEN
+        RAISE EXCEPTION 'Certificate % claims % person-shifts on labour purchase-order line % but freezes only % of measured evidence — a certificate must name the evidence it rests on', p_certificate, r.claimed, r.labour_line, v_frozen;
+      END IF;
+    END IF;
+  END LOOP;
+
+  -- (c) §I — if the certifier RECORDED any of the frozen evidence, an attributable exception for
+  -- THIS certificate naming THAT actor must exist. The rule is evaluated against the frozen set,
+  -- exactly as the service evaluates it against the draw: same question, same rows, two layers.
+  SELECT EXISTS (
+    SELECT 1
+      FROM "CertifiedAcceptanceConsumption" cc
+      JOIN "StockTransaction" t ON t."projectId" = cc."projectId" AND t."id" = cc."stockTransactionId"
+     WHERE cc."projectId" = p_project AND cc."certificateId" = p_certificate
+       AND t."recordedById" = v_certifier
+    UNION ALL
+    SELECT 1
+      FROM "CertifiedMeasurementConsumption" mc
+      JOIN "Measurement" m ON m."projectId" = mc."projectId" AND m."id" = mc."measurementId"
+     WHERE mc."projectId" = p_project AND mc."certificateId" = p_certificate
+       AND m."takenById" = v_certifier
+  ) INTO v_recorder;
+  IF v_recorder THEN
+    SELECT EXISTS (
+      SELECT 1 FROM "SodException" s
+       WHERE s."projectId" = p_project AND s."certificateId" = p_certificate
+         AND s."actorId" = v_certifier
+    ) INTO v_excepted;
+    IF NOT v_excepted THEN
+      RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no segregation-of-duties exception — §I permits the act only with an attributable override', p_certificate, v_certifier;
+    END IF;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t5_certificate_complete_sealed() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t5_certificate_complete_check(NEW."projectId", NEW."id");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- The CLAIM side fires it too: a new live version supersedes the one a live certificate names, so
+-- an amendment written around §F's arrows would strand the certificate on dead claim evidence.
+-- One predicate, every writer of either side — the shape bound 3 already has.
+CREATE OR REPLACE FUNCTION phase5_t5_version_certificate_recheck() RETURNS trigger AS $$
+DECLARE v_cert text;
+BEGIN
+  SELECT c."id" INTO v_cert FROM "BillCertificate" c
+   WHERE c."projectId" = NEW."projectId" AND c."billId" = NEW."billId" AND c."supersededAt" IS NULL;
+  IF v_cert IS NOT NULL THEN PERFORM phase5_t5_certificate_complete_check(NEW."projectId", v_cert); END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "BillCertificate_complete_sealed" ON "BillCertificate";
+CREATE CONSTRAINT TRIGGER "BillCertificate_complete_sealed"
+  AFTER INSERT OR UPDATE ON "BillCertificate" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_certificate_complete_sealed();
+DROP TRIGGER IF EXISTS "VendorBillVersion_certificate_sealed" ON "VendorBillVersion";
+CREATE CONSTRAINT TRIGGER "VendorBillVersion_certificate_sealed"
+  AFTER INSERT OR UPDATE ON "VendorBillVersion" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_version_certificate_recheck();
 
 -- ── §F — the STATUS and the CERTIFICATE move together, or neither commits ──────────────────────
 --

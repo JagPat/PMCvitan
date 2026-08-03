@@ -1923,9 +1923,18 @@ assert_rejects "commercial T5B §F: a HALF-STAMPED supersession (unattributable 
 # The certificate and the bill STATUS move TOGETHER — the round-1 projection seal. Each `psql -c`
 # is its own transaction, so the coherent case is written as ONE transaction; a fixture that left
 # the status behind would be building exactly the incoherence the seal exists to refuse.
-$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C1','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
-  && printf 'ok      %s\n' "commercial T5B §G/§F: a certificate AT the claimed amount, with its status projection, is ACCEPTED (both seals precise, not merely strict)" \
+# The COMPLETE coherent act, in ONE transaction: the certificate, the EVIDENCE it rests on, and the
+# status projection. Round 2 added the certificate-side completeness seal, so a certificate that
+# freezes nothing is refused however it is written — and §I refuses one certified by the actor who
+# RECORDED that evidence unless an exception names them, so `USER-2` certifies what `USER-1`
+# accepted. Every refusal below is therefore about ITS OWN rule rather than about a missing piece.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C1','p1','UPT4-B3','UPT4-BV3',3.00,'USER-2','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A2','p1','UPT5B-C1','UP45-ACC',3); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T5B §G/§F/§E: a certificate AT the claimed amount, with its frozen evidence and its status projection, is ACCEPTED (every seal precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T5B §G: a coherent certificate was rejected"; FAIL=1; }
+# Codex round-2 P2 — a certificate that rests on NOTHING. Every row-level seal passes; only the
+# certificate-side completeness check sees the absence.
+assert_rejects "commercial T5B R2-F1: a certificate freezing NO evidence at all (a row seal cannot see an absence)" \
+  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CE','p1','UPT4-B3','UPT4-BV3',3.00,'USER-2','UP45-CMD')"
 assert_rejects "commercial T5B R1-F2: a STANDALONE supersession, leaving the bill claiming to be certified" \
   "UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='orphaned' WHERE \"id\"='UPT5B-C1'"
 assert_rejects "commercial T5B R1-F2: moving the bill OFF certified while its certificate still stands" \
@@ -1945,9 +1954,10 @@ assert_rejects "commercial T5B R1-F3: freezing a RECEIPT as acceptance evidence 
   "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AR','p1','UPT5B-C1','UP45-RCPT',1)"
 assert_rejects "commercial T5B §E: a ZERO-quantity consumption row (evidence that says nothing)" \
   "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A1','p1','UPT5B-C1','UP45-ACC',0)"
-$PSQL >/dev/null -c "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A2','p1','UPT5B-C1','UP45-ACC',3)" \
-  && printf 'ok      %s\n' "commercial T5B §E: a coherent (rowId, consumedQty) freeze is ACCEPTED" \
-  || { printf 'FAILED  %s\n' "commercial T5B §E: a coherent consumption row was rejected"; FAIL=1; }
+# Codex round-2 P2 — identity is not QUANTITY. `UP45-ACC` accepted 5 units; freezing 50 of them is
+# evidence that never existed, and every identity seal passes.
+assert_rejects "commercial T5B R2-F3: freezing MORE of an acceptance than was ever accepted" \
+  "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AQ','p1','UPT5B-C1','UP45-ACC',50)"
 assert_rejects "commercial T5B §E: a SECOND consumption row for the same (certificate, acceptance) — double-counting" \
   "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A3','p1','UPT5B-C1','UP45-ACC',1)"
 assert_rejects "commercial T5B §E: RESTATING how much of a row a certificate consumed" \

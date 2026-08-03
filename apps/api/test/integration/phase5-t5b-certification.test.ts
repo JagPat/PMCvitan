@@ -575,11 +575,22 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // is the round-1 projection seal doing its job: a live certificate on a bill that is not
     // `certified` is exactly the incoherence R1-F2 closes, so an acceptance case that left the
     // status behind would be testing a state the database is right to refuse.
+    // …with its EVIDENCE and its status, all in ONE transaction. Round 2 added the completeness
+    // seal, so a certificate resting on nothing is refused however it is written — an acceptance
+    // case that omitted the consumption rows would be testing a state the database is right to
+    // refuse, and would prove nothing about bound 3.
+    const acceptanceRow = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, type: 'acceptance' }, select: { id: true },
+    });
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
          SELECT 'coherent-bound', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ('coherent-bound-ev',$1,'coherent-bound',$2,100)`, projectId, acceptanceRow.id,
       ),
       t.prisma.$executeRawUnsafe(
         `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
@@ -792,6 +803,144 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // a user with NO standing anywhere is still refused, so the routing did not widen the rule
     const other = await freshProject();
     await acceptOnLine(other, await issuedMaterialLine(other, { qty: '10' }), '10', pmc(other));
+  });
+
+  // ── Codex round-2 findings: the CERTIFICATE as a whole, not the row as it lands ──────────────
+
+  it('R2-F1 (§E): a certificate with NO frozen evidence cannot commit, however it is written', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+
+    // a certificate + its status, coherent by every ROW-level seal, and resting on NOTHING. The
+    // withdrawal guards would find no frozen rows and permit the reversal it exists to block.
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         SELECT 'evidence-free', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        projectId, billId, version.id, cert.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ])).rejects.toThrow(/freezes only 0 of accepted evidence/u);
+  });
+
+  it('R2-F2 (§I): a certificate by the evidence RECORDER with no exception cannot commit', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    // the member records the acceptance AND certifies — §I's case, with the override
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const cert = await certification.certify(projectId, {
+      billId, sodOverride: { approverId: approver, reason: 'two-person practice' },
+    }, pmc(projectId));
+    expect(cert.sodException).not.toBeNull();
+
+    // DELETING the exception leaves a certified bill by the recorder with no attributable override
+    // — the audit trail losing the very fact §I exists to preserve. The register is append-only,
+    // so the attempt is refused there first; what this proves is that the certificate-side seal
+    // ALSO refuses to let such a certificate exist, which is the direction a fresh insert takes.
+    await expect(t.prisma.$executeRawUnsafe(
+      `DELETE FROM "SodException" WHERE "projectId"=$1 AND "certificateId"=$2`, projectId, cert.id,
+    )).rejects.toThrow(/append-only/u);
+
+    // the fresh-insert direction: supersede, then write a recorder-certified certificate with its
+    // evidence but WITHOUT the exception
+    const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, type: 'acceptance' }, select: { id: true },
+    });
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         SELECT 'no-exception', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        projectId, billId, version.id, cert.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ('no-exception-ev',$1,'no-exception',$2,100)`, projectId, acceptance.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ])).rejects.toThrow(/no segregation-of-duties exception/u);
+  });
+
+  it('R2-F3 (§E): frozen evidence cannot exceed the evidence that exists', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    // ONE unit accepted, and a claim for one unit — coherent
+    const { acceptanceTxId } = await acceptOnLine(projectId, line, '1');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '1');
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.acceptanceConsumption).toEqual([{ rowId: acceptanceTxId, consumedQty: '1' }]);
+
+    // A FRESH certificate freezing 100 units of that ONE-unit acceptance — Codex's scenario
+    // exactly. Identity is right, the line is right, completeness passes (a 1-unit claim is more
+    // than covered by a 100-unit freeze), bound 3 passes; only the QUANTITY never existed.
+    //
+    // It has to be a fresh certificate rather than a second row on the existing one: a second row
+    // for the same `(certificate, acceptance)` pair trips the per-pair unique FIRST, and a
+    // refusal from the wrong seal proves nothing about this one.
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         SELECT 'inflated', $1, $2, $3, 1, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        projectId, billId, version.id, cert.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ('inflated-ev',$1,'inflated',$2,100)`, projectId, acceptanceTxId,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ])).rejects.toThrow(/frozen evidence cannot exceed the evidence/u);
+  });
+
+  it('R2-F4 (§E/§F): a live certificate must name the bill\'s LIVE claim version', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    const { acceptanceTxId } = await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    const v1 = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    expect(cert.versionId).toBe(v1.id);
+
+    // supersede, amend (which supersedes v1 and makes v2 live), then write a certificate that
+    // points BACK at v1 — reported against a claim that is no longer live while every bound check
+    // reads v2
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    await bills.amend(projectId, {
+      billId, reason: 'corrected quantity',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId));
+    const v2 = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    expect(v2.id).not.toBe(v1.id);
+
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         SELECT 'stale-version', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        projectId, billId, v1.id, cert.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ('stale-version-ev',$1,'stale-version',$2,100)`, projectId, acceptanceTxId,
+      ),
+    ])).rejects.toThrow(/cannot outlive it/u);
   });
 
   it('PROBE 15 (§0): the four new tables are closed under the shared-database reset', async () => {
