@@ -293,6 +293,13 @@ export interface VendorBillDto {
   statusChangedAt: string;
   /** why the claim left the live set — always present on `disputed` and `rejected` */
   statusReason: string | null;
+  /**
+   * §F — WHY the claim was DISPUTED, if it ever was. Separate from `statusReason` because the two
+   * are different facts: the breach is the EVIDENCE that took the claim out of the live fold, and a
+   * later rejection is a JUDGEMENT about the claim. Captured by the database at the moment of the
+   * dispute and unwritable thereafter, so a rejection cannot erase it.
+   */
+  disputeReason: string | null;
   createdAt: string;
   createdById: string;
   versions: VendorBillVersionDto[];

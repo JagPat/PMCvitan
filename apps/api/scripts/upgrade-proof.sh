@@ -774,6 +774,14 @@ INSERT INTO "StockLot"("id","projectId","poLineId","commitmentId","requirementId
   VALUES('UP45-LOT','p1','UP45-POL','UP45-DC','UP45-ROOT',1,'Cement','UltraTech','OPC 53','grey','bag','FP-UP45','USER-1');
 INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","poLineId","commitmentId","recordedById","sourceCommandId")
   VALUES('UP45-RCPT','p1','UP45-LOT','main','receipt',100,NULL,'quarantine','UP45-POL','UP45-DC','USER-1','UP45-CMD');
+-- Codex round-5 — a SMALL acceptance. Without any accepted evidence at all, every §G claim path in
+-- this proof could only ever end in refusal, and a seal that is never shown to ACCEPT is not shown
+-- to be precise. Five units lets a 3-unit claim go legitimately live while the 10-unit claim below
+-- still breaches, so both directions are proven against the same line.
+INSERT INTO "Media"("id","projectId","kind","mime","sizeBytes","uploadedBy")
+  VALUES('UP45-MED','p1','photo','image/jpeg',1024,'USER-1');
+INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","recordedById","sourceCommandId","qualityResult","evidenceMediaId")
+  VALUES('UP45-ACC','p1','UP45-LOT','main','acceptance',5,'quarantine','acceptedOnHand','USER-1','UP45-CMD','pass','UP45-MED');
 INSERT INTO "MaterialIssue"("id","projectId","lotId","storeLocation","activityId","qty","issuedById")
   VALUES('UP45-MI','p1','UP45-LOT','main','ACT-1',20,'USER-1');
 INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","activityId","issueId","recordedById","sourceCommandId")
@@ -1710,7 +1718,7 @@ assert_rejects "commercial T4 §F: a claim naming ANOTHER project's purchase-ord
 # §G — the DEFERRED bound seal. `UP45-POL` orders 100 and has NOTHING accepted, so making this
 # claim LIVE breaches bound 2 at COMMIT. This is the seal in the direction a BEFORE trigger cannot
 # reach: the line was inserted while the bill was `draft`, and only the transition makes it live.
-assert_rejects "commercial T4 §G: making a claim LIVE against a line with no accepted evidence (deferred bound seal)" \
+assert_rejects "commercial T4 §G: making a claim LIVE beyond the accepted evidence behind it (deferred bound seal)" \
   "UPDATE \"VendorBill\" SET \"status\"='submitted' WHERE \"id\"='UPT4-B1'"
 # §F — a live version must state the money ITS OWN lines make, and must HAVE lines
 assert_rejects "commercial T4 §F: a claim version with no line at all (a claim for nothing no bound can check)" \
@@ -1737,7 +1745,24 @@ assert_rejects "commercial T4 R2-F1: EDITING lineCount, the evidence that closes
 # Codex round-3 F3 — a claim is CREATED at draft and walks its arrows; this fixture used to insert
 # straight at `under-verification`, and the new creation guard correctly refuses that. Walking the
 # arrows is also a better fixture: it exercises the transitions this task owns on the way in.
-$PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-B3','p1','UP45-VEN','INV-003','2026-08-22','draft','USER-1','UP45-CMD')" 2>/dev/null
+# Codex round-5 F1 — a LIVE bill must STATE something, so this fixture now carries the version and
+# line it always implied. It claims 3 of the 5 accepted units, which is what lets it walk the arrows
+# below at all: the deferred seal checks the bound on every transition into a live state.
+$PSQL >/dev/null <<SQL
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-B3','p1','UP45-VEN','INV-003','2026-08-22','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV3','p1','UPT4-B3','UP45-VEN',1,3.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL3','p1','UPT4-BV3','UPT4-B3','UP45-VEN','material','UP45-POL',3,1,0,0,3.00);
+COMMIT;
+SQL
+# R5-F1 — a bill with NO current version cannot enter a live state at all: the seal used to iterate
+# an empty set and pass, leaving a live claim that said nothing while holding the document number.
+$PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-BE','p1','UP45-VEN','INV-EMPTY','2026-08-26','draft','USER-1','UP45-CMD')" 2>/dev/null
+assert_rejects "commercial T4 R5-F1: making a bill LIVE with no current version (the seal used to iterate an empty set and pass)" \
+  "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-BE'"
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
 assert_rejects "commercial T4 R2-F3: the arrow into VERIFIED, whose safety is the §E verdict Task 5 ships" \
@@ -1788,6 +1813,36 @@ $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusCh
 assert "commercial T4 R2-F2: the resolved bill still records WHY it left the live fold" \
   "SELECT \"statusReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B4';" \
   "evidence withdrawn"
+# R5-F2 — the dispute EVIDENCE outlives a later rejection. `statusReason` explains the CURRENT
+# status, so `disputed -> rejected` legitimately writes its judgement over it; the breach that first
+# took the claim out of the live fold is captured by the trigger and is unwritable.
+$PSQL >/dev/null <<SQL
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-B5','p1','UP45-VEN','INV-005','2026-08-27','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV5','p1','UPT4-B5','UP45-VEN',1,2.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL5','p1','UPT4-BV5','UPT4-B5','UP45-VEN','material','UP45-POL',2,1,0,0,2.00);
+COMMIT;
+SQL
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='qty-over-accepted: evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B5'" 2>/dev/null
+assert "commercial T4 R5-F2: the DATABASE captured the dispute reason (no writer supplies it)" \
+  "SELECT \"disputeReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B5';" \
+  "qty-over-accepted: evidence withdrawn"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='rejected', \"statusReason\"='duplicate invoice', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B5'" \
+  && printf 'ok      %s\n' "commercial T4 R5-F2: rejecting a DISPUTED claim is ACCEPTED (the judgement is a real transition)" \
+  || { printf 'FAILED  %s\n' "commercial T4 R5-F2: a legal disputed->rejected transition was refused"; FAIL=1; }
+assert "commercial T4 R5-F2: the rejection JUDGEMENT is recorded" \
+  "SELECT \"statusReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B5';" \
+  "duplicate invoice"
+assert "commercial T4 R5-F2: and the dispute EVIDENCE survived it" \
+  "SELECT \"disputeReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B5';" \
+  "qty-over-accepted: evidence withdrawn"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"disputeReason\"='a different story' WHERE \"id\"='UPT4-B5'" >/dev/null 2>&1
+assert "commercial T4 R5-F2: a direct write to the captured dispute reason is DISCARDED by the trigger" \
+  "SELECT \"disputeReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B5';" \
+  "qty-over-accepted: evidence withdrawn"
 # ── Codex round-4: the duplicate-document key is the NORMALIZED number ───────────────────────
 # `UPT4-B3` still holds `INV-003` and is `disputed`, which §F counts as live for this key.
 assert_rejects "commercial T4 R4-F2: a second live claim whose number differs only in LETTER CASE" \

@@ -1,6 +1,6 @@
 # PR #274 — architectural convergence audit (Phase 5 Task 4)
 
-Four finding-bearing heads, sixteen findings. Per `CLAUDE.md`, from the third head on this stops
+Five finding-bearing heads, twenty findings. Per `CLAUDE.md`, from the third head on this stops
 being another isolated patch: it names the ROOT the findings share and leaves a mechanical closure
 behind.
 
@@ -10,10 +10,11 @@ behind.
 | `b4bb720` | 4 | 4×P2 — two of them the round-1 fixes, one level short |
 | `a1a4087` | 3 | 3×P2 — one the round-2 fix one level short, two more entry points of root B |
 | `f2c7a21` | 5 | 5×P2 — three of them root C a fourth time, at the level BELOW the commands round 3 fixed |
+| `4d0a936` | 4 | 4×P2 — three of them root C a FIFTH time, plus a new shape: a guard satisfied by an empty set |
 
 ---
 
-## The sixteen findings
+## The twenty findings
 
 | # | Head | Sev | Finding | Root |
 |---|---|---|---|---|
@@ -33,6 +34,10 @@ behind.
 | 14 | `f2c7a21` | P2 | The automatic dispute evaluated no heads at all, so every head the disputed claim touched but the withdrawal site kept a stale exception | **C** |
 | 15 | `f2c7a21` | P2 | A lost dispute CAS kept the stale billed total and over-disputed the next claim | **C** |
 | 16 | `f2c7a21` | P2 | `disputed → resolved` released the duplicate-document key with no correction behind it | **B** |
+| 17 | `4d0a936` | P2 | The status seal LOOPED over the current version's lines, so a bill with NO version went live having stated nothing | **E** |
+| 18 | `4d0a936` | P2 | `disputed → rejected` overwrote the dispute reason — round 2's fix at a second entry point | **C** |
+| 19 | `4d0a936` | P2 | The dispute CAS guarded the status but not the VERSION the disputed quantity was read from | **C** |
+| 20 | `4d0a936` | P2 | A resolving amendment was never bound-checked, so a 150-unit "correction" of a 120-unit breach resolved cleanly | **C** |
 
 ---
 
@@ -144,6 +149,23 @@ rather than hand-kept — and the mechanical closure here is the same: `claim` i
 `HeadroomMover`, admitted by the register's CHECK, and the probe asserts the raise AND the clear so
 a mover that stops evaluating fails a named assertion.
 
+## Root E — a guard satisfied by the empty set (finding 17)
+
+New in round 5, and worth its own root because it is not a missing rule — it is a rule that **reads
+as present and is not**. `phase5_t4_bill_status_sealed` loops over the current version's lines and
+checks each. With no version at all the loop body never runs, so the strongest seal in the task
+passes silently on the one input that says nothing: a LIVE claim with no immutable version, no
+lines, and the vendor's document number held against their real invoice.
+
+A loop over a set is not a check on the set. Phase 4 met this exact class once already — "an empty
+due-today set can never vacuously yield `ok`" — and it recurred here because the code shape reads
+like enforcement.
+
+**Closure.** The seal asserts the set is non-empty *before* inspecting it, for every status §0
+counts as live. The generalisable form, and the reason this is a checklist rather than another
+principle: when a guard is written, state (a) what makes it fire, (b) what makes it pass, and
+(c) **whether "pass" includes "there was nothing to check"**.
+
 ## Root D — a fold with no caller (finding 8)
 
 `billedAmountFor` was written, tested by nothing, and read by nobody, so the budget surface kept
@@ -157,6 +179,21 @@ is the assertion a future omission trips over — a bucket added without its cou
 sum, where a value assertion would simply be updated.
 
 ---
+
+## Root C in round 5 — the same root, three more times
+
+Findings 18, 19 and 20 are all my own earlier corrections one level short, and 20 is the sharpest
+instance in the whole PR: round 4's F5 required a resolution to CARRY an amendment; finding 20 says
+that amendment must also be VALID. Existence and sufficiency, one round apart, in the same fix.
+Finding 18 is round 2's reason-freeze at a second entry point. Finding 19 is round 4's F4 one column
+short — I refolded the quantity and did not guard the version the quantity was read from.
+
+Five rounds is enough to stop treating this as a lesson and treat it as a *procedure*. The
+enumeration closure from round 4 worked for the fold it named — no new `BILLED_AMOUNT` writer was
+missed this round. What it did not cover is guards that are not folds. So the procedure generalises:
+for every guard, enumerate the **entry points into the guarded state** and the **inputs the decision
+read**, and probe each one — because in all three findings the fix was correct and the *coverage* of
+where it applied was not.
 
 ## What this PR got right, and should not be re-litigated
 
@@ -185,8 +222,8 @@ returns the number the probe was hoping for.
 
 | Gate | Result |
 |---|---|
-| Focused probe suite `phase5-t4-vendor-bill.test.ts` | **31/31** — 16 of them the round-1..4 findings, each RED before its fix |
-| Full integration suite, pristine migrated DB | **76 files / 790 tests**, zero failures |
+| Focused probe suite `phase5-t4-vendor-bill.test.ts` | **35/35** — 20 of them the round-1..5 findings, each RED before its fix |
+| Full integration suite, pristine migrated DB | **76 files / 799 tests**, zero failures |
 | `pnpm check` | EXIT 0 — web 543/543, API 718/718 |
 | `upgrade-proof.sh` | PASSED — Task-4 assertions with acceptance cases beside the rejections |
 | `test:e2e:api:allmodules` / `:outbox` | 35/35 · 29/29 |

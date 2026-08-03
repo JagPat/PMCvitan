@@ -110,6 +110,14 @@ export class CommercialBillService {
     tx: Prisma.TransactionClient,
     projectId: string,
     lines: readonly ClaimLine[],
+    /**
+     * Count `lines` as though they were already LIVE (Codex round-5). Every ordinary caller leaves
+     * this false because the claim being evaluated is live at the moment of the call, so
+     * `BILLED_QTY` already folds it. The RESOLVING amendment is the one case where it is not: the
+     * bill is `disputed` while its replacement is written, §0 keeps a disputed bill out of every
+     * billed set, and the verdict would therefore be computed as if the correction claimed nothing.
+     */
+    countLinesAsLive = false,
   ): Promise<BoundVerdict[]> {
     // A space cannot occur in a cuid, so the join is unambiguous — and sorting the JOINED key
     // is what gives every transaction the SAME total order over the rows it will lock.
@@ -122,7 +130,10 @@ export class CommercialBillService {
         : await this.labour.lockOrderedLineForClaim(tx, projectId, poLineId);
       if (!ordered) throw new NotFoundException(`Purchase-order line ${poLineId} not found in this project`);
 
-      const billed = (await this.bills.billedQtyFor(tx, projectId, kind, [poLineId])).get(poLineId) ?? ZERO;
+      const folded = (await this.bills.billedQtyFor(tx, projectId, kind, [poLineId])).get(poLineId) ?? ZERO;
+      const billed = countLinesAsLive
+        ? lines.filter((l) => l.kind === kind && l.poLineId === poLineId).reduce((acc, l) => acc.add(l.quantity), folded)
+        : folded;
       const evidence = kind === 'material'
         ? (await this.inventory.acceptedFor(tx, projectId, [poLineId])).get(poLineId) ?? ZERO
         : (await this.measured.measuredForPoLines(tx, projectId, [poLineId])).get(poLineId) ?? ZERO;
@@ -181,20 +192,30 @@ export class CommercialBillService {
       // nothing live is left to dispute: the remaining excess is not this disposition's to fix,
       // and the deferred bound seal will abort the transaction if it is real
       if (!claim) break;
-      // CAS on the status we believe it holds — a concurrent transition that already took this
-      // claim out of the live set must not be double-stamped.
+      // CAS on the status we believe it holds AND on the VERSION the quantity came from (Codex
+      // round-5). Guarding the status alone guards less than the decision rested on: the amount
+      // being disputed was read off `claim.versionId`, and a concurrent AMENDMENT can replace that
+      // version while leaving the status untouched. With 80 accepted, this transaction reads bill
+      // B's v1 at 100, B is amended to a v2 of 70 and stays `submitted`, and a status-only CAS
+      // disputes a claim that is now perfectly valid — 70 ≤ 80. A CAS must guard everything the
+      // decision read, not everything that is convenient to put in a `where`.
       const { count } = await tx.vendorBill.updateMany({
-        where: { id: claim.billId, projectId, status: { notIn: [...BILL_STATUSES_NOT_LIVE] } },
+        where: {
+          id: claim.billId, projectId, status: { notIn: [...BILL_STATUSES_NOT_LIVE] },
+          versions: { some: { id: claim.versionId, supersededAt: null } },
+        },
         data: { status: 'disputed', statusChangedAt: new Date(), statusReason: reason },
       });
       if (count === 0) {
-        // Codex round-4 — a LOST CAS means a concurrent transaction already took this claim out
-        // of the live set, so the running total we are subtracting from counted a claim that is
-        // no longer in the fold. Carrying it forward over-disputes: with 100 accepted and claims
-        // of 60 and 40, if the 40 was disputed concurrently the stale total still reads 100 and
-        // the 60 — which is now the whole of a fold that already holds — is disputed too. Both
-        // the fold AND the live set are re-read, and the re-read is what terminates the loop: a
-        // claim that lost its CAS is no longer live, so `liveClaimsOn` cannot return it again.
+        // Codex round-4 — a LOST CAS means a concurrent transaction already changed something this
+        // claim's number rested on (round 5: its STATUS or its VERSION), so the running total we
+        // are subtracting from counted a quantity that is no longer in the fold. Carrying it
+        // forward over-disputes: with 100 accepted and claims of 60 and 40, if the 40 was disputed
+        // concurrently the stale total still reads 100 and the 60 — which is now the whole of a
+        // fold that already holds — is disputed too. Both the fold AND the live set are re-read,
+        // and the re-read is what terminates the loop: a claim that lost its CAS is either no
+        // longer live or no longer that version, so `liveClaimsOn` cannot return the same
+        // `(bill, version)` pair again.
         billed = await refold();
         claims = await this.bills.liveClaimsOn(tx, projectId, kind, poLineId);
         continue;
@@ -378,7 +399,27 @@ export class CommercialBillService {
         // a resolved dispute is TERMINAL; an ordinary amendment keeps the claim where it was,
         // except from `verified`, where a new claim has not been verified and must be re-checked
         const nextStatus: VendorBillStatus = resolving ? 'resolved' : bill.status === 'verified' ? 'submitted' : (bill.status as VendorBillStatus);
+        // §G (Codex round-5) — the RESOLVING amendment is checked BEFORE it is allowed to resolve.
+        // `resolved` is terminal AND releases the duplicate-document key, and §0 keeps a disputed
+        // bill's lines out of every billed set — so evaluating after the fact measured a
+        // correction that, as far as the folds were concerned, claimed nothing. A 120-unit claim
+        // against 100 accepted could be "corrected" to 150 and resolve cleanly, freeing the
+        // document number on the strength of a correction that corrects nothing.
+        //
+        // Round 4 required the resolution to CARRY an amendment; that only made the evidence
+        // exist. This requires the evidence to be VALID, which is the same finding one level down.
+        //
+        // It REFUSES rather than disputing, and the difference from §E's dispute-not-refuse rule is
+        // what is being protected: that rule exists so a submitted claim's record survives, and it
+        // does — the original 120-unit claim and its breach stay exactly as they are. What is
+        // refused is an AMENDMENT that would end the dispute without settling it.
         if (resolving) {
+          const still = (await this.evaluateBounds(tx, projectId, lines, true)).find((v) => v.breach)?.breach ?? null;
+          if (still) {
+            throw new ConflictException(
+              `This correction does not resolve the dispute — ${still}. Amend to a claim the evidence supports, or reject the claim.`,
+            );
+          }
           // Codex round-2 — `null`, deliberately: the bill's `statusReason` records why the claim
           // LEFT the live fold, and overwriting a `qty-over-accepted` breach with an amendment
           // note erases the only evidence of the dispute this resolution is resolving. The
@@ -391,10 +432,9 @@ export class CommercialBillService {
         } else if (nextStatus !== bill.status) {
           await this.cas(tx, projectId, bill.id, bill.status, nextStatus, null);
         }
-        const verdicts = await this.evaluateBounds(tx, projectId, lines);
-        const breach = verdicts.find((v) => v.breach)?.breach ?? null;
-        if (breach && !resolving) {
-          await this.cas(tx, projectId, bill.id, nextStatus, 'disputed', breach);
+        if (!resolving) {
+          const breach = (await this.evaluateBounds(tx, projectId, lines)).find((v) => v.breach)?.breach ?? null;
+          if (breach) await this.cas(tx, projectId, bill.id, nextStatus, 'disputed', breach);
         }
         // §B — an amendment replaces the live claim, so BOTH the retired and the new lines' heads
         // are re-evaluated: the union of the set captured before the swap and the set written by it.
@@ -726,6 +766,7 @@ function serialize(b: BillRow): VendorBillDto {
     status: b.status as VendorBillStatus,
     statusChangedAt: b.statusChangedAt.toISOString(),
     statusReason: b.statusReason,
+    disputeReason: b.disputeReason,
     createdAt: b.createdAt.toISOString(),
     createdById: b.createdById,
     versions: b.versions.map<VendorBillVersionDto>((v) => ({

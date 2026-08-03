@@ -188,6 +188,11 @@ CREATE TABLE IF NOT EXISTS "VendorBill" (
     -- earlier one. Comparing timestamps would have worked too and would have made a resolution
     -- depend on two clocks agreeing; a version number the database captures itself does not.
     "disputedAtVersion" INTEGER,
+    -- Codex round-5 — and WHY it was disputed, captured the same way. `statusReason` explains the
+    -- CURRENT status, so a later `disputed -> rejected` legitimately writes a rejection judgement
+    -- over it and the record loses why the claim first left the live fold. Both facts are real and
+    -- both are permanent: the breach is the EVIDENCE, the rejection is a JUDGEMENT about it.
+    "disputeReason" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "createdById" TEXT NOT NULL,
     "sourceCommandId" TEXT NOT NULL,
@@ -198,6 +203,7 @@ CREATE TABLE IF NOT EXISTS "VendorBill" (
 -- retry-safety: a re-run after this migration created the table but before it finished must still
 -- reach the round-4 column, which `CREATE TABLE IF NOT EXISTS` above would skip past
 ALTER TABLE "VendorBill" ADD COLUMN IF NOT EXISTS "disputedAtVersion" INTEGER;
+ALTER TABLE "VendorBill" ADD COLUMN IF NOT EXISTS "disputeReason" TEXT;
 
 CREATE TABLE IF NOT EXISTS "VendorBillVersion" (
     "id" TEXT NOT NULL,
@@ -481,8 +487,15 @@ BEGIN
       SELECT v."version" FROM "VendorBillVersion" v
        WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL
     );
+    -- Codex round-5 — the breach that took the claim out of the live fold, captured at the moment
+    -- it happened. Round 2 stopped `disputed -> resolved` from overwriting `statusReason`; the same
+    -- hole was still open at `disputed -> rejected`, which is a legitimate transition carrying its
+    -- own required reason. Rather than forbid the rejection judgement or discard it, the dispute
+    -- evidence gets its own column that no writer can reach — the `disputedAtVersion` precedent.
+    NEW."disputeReason" := NEW."statusReason";
   ELSE
     NEW."disputedAtVersion" := OLD."disputedAtVersion";
+    NEW."disputeReason" := OLD."disputeReason";
   END IF;
   -- Codex round-4 — a RESOLUTION must carry the correction it claims to be. `resolved` is a
   -- terminal state that RELEASES the duplicate-document key, so marking a disputed claim resolved
@@ -538,8 +551,9 @@ BEGIN
   IF NEW."status" <> 'draft' THEN
     RAISE EXCEPTION 'A vendor bill is created at ''draft'' and moves by attributable transition — it cannot start life at ''%'' (%)', NEW."status", NEW."id";
   END IF;
-  -- a claim that has never been disputed has no disputed version, whatever the insert supplied
+  -- a claim that has never been disputed has no dispute evidence, whatever the insert supplied
   NEW."disputedAtVersion" := NULL;
+  NEW."disputeReason" := NULL;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -769,8 +783,27 @@ $$ LANGUAGE plpgsql;
 -- A status change moves a whole version in or out of the live fold, so it re-checks every PO
 -- line the bill's current version touches.
 CREATE OR REPLACE FUNCTION phase5_t4_bill_status_sealed() RETURNS trigger AS $$
-DECLARE r record;
+DECLARE r record; v_current bigint; v_lines bigint;
 BEGIN
+  -- Codex round-5 — a seal that only inspects the MEMBERS of a set passes vacuously when the set is
+  -- empty. Insert a `draft` bill with no version at all, move it to `submitted`, and the loop below
+  -- iterates nothing: no version check, no line check, no bound check. What stands is a LIVE claim
+  -- with no immutable claim version and no lines, still holding the duplicate-document key against
+  -- the vendor — a claim for an unstated amount that blocks the real invoice. A live bill is one
+  -- that SAYS something, so the seal asserts the set is non-empty before inspecting it.
+  IF NEW."status" NOT IN ('draft', 'rejected', 'disputed', 'resolved') THEN
+    SELECT COUNT(*) INTO v_current FROM "VendorBillVersion" v
+     WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL;
+    IF v_current <> 1 THEN
+      RAISE EXCEPTION 'Vendor bill % cannot be % with % current version(s) — a live claim states exactly one immutable version', NEW."id", NEW."status", v_current;
+    END IF;
+    SELECT COUNT(*) INTO v_lines FROM "VendorBillLine" l
+      JOIN "VendorBillVersion" v ON v."projectId" = l."projectId" AND v."id" = l."versionId"
+     WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL;
+    IF v_lines = 0 THEN
+      RAISE EXCEPTION 'Vendor bill % cannot be % with no claim line — a live claim for nothing cannot be bounded, and it would hold the document number against a claim that says nothing', NEW."id", NEW."status";
+    END IF;
+  END IF;
   FOR r IN
     SELECT DISTINCT l."poLineId", l."labourPoLineId"
       FROM "VendorBillLine" l

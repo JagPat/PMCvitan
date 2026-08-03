@@ -46,6 +46,41 @@ import type { CreateRequirementInput } from '../../src/contracts';
  *   5h   §0 unit discipline — bound 1 compares UNITS to units
  *   7    §F append-only — PG rejects an UPDATE/DELETE of a claim line and a superseded version
  */
+/**
+ * Run `once` immediately before the FIRST `vendorBill.updateMany` this transaction client issues.
+ *
+ * The dispute disposition reads the billed fold and the live claim set, then CASes. Two round-4/5
+ * findings live in the gap between the read and the CAS, and both need the world to change exactly
+ * there. Wrapping the client produces that ordering deterministically — no sleeps, no polling, no
+ * flake — and nothing here holds a lock the disposition would have waited on, which is the point:
+ * the guard is being asked to hold on its own rather than on another lock happening to be there.
+ */
+function wedgeFirstBillUpdate(
+  tx: Prisma.TransactionClient, once: () => Promise<void>,
+): Prisma.TransactionClient {
+  let fired = false;
+  return new Proxy(tx, {
+    get(target, prop) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const value = (target as any)[prop];
+      if (prop !== 'vendorBill') return typeof value === 'function' ? value.bind(target) : value;
+      return new Proxy(value, {
+        get(delegate, method) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const fn = (delegate as any)[method];
+          if (method !== 'updateMany') return typeof fn === 'function' ? fn.bind(delegate) : fn;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return async (args: any) => {
+            if (!fired) { fired = true; await once(); }
+            return fn.call(delegate, args);
+          };
+        },
+      });
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  }) as any;
+}
+
 describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
@@ -1311,34 +1346,9 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     const { PrismaClient } = await import('@prisma/client');
     const outside = new PrismaClient();
     try {
-      // wedge: the newest claim leaves the live set between the disposition's read and its CAS
-      const wedge = (tx: Prisma.TransactionClient, once: () => Promise<void>): Prisma.TransactionClient => {
-        let fired = false;
-        return new Proxy(tx, {
-          get(target, prop) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const value = (target as any)[prop];
-            if (prop !== 'vendorBill') return typeof value === 'function' ? value.bind(target) : value;
-            return new Proxy(value, {
-              get(delegate, method) {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const fn = (delegate as any)[method];
-                if (method !== 'updateMany') return typeof fn === 'function' ? fn.bind(delegate) : fn;
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                return async (args: any) => {
-                  if (!fired) { fired = true; await once(); }
-                  return fn.call(delegate, args);
-                };
-              },
-            });
-          },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        }) as any;
-      };
-
       // ACCEPTED falls to 80. The honest disposition disputes the newest (40) and stops at 60 ≤ 80.
       const disputed = await t.prisma.$transaction(async (tx) => bills.disputeClaimsBeyondEvidence(
-        wedge(tx, async () => {
+        wedgeFirstBillUpdate(tx, async () => {
           await outside.vendorBill.updateMany({
             where: { id: newer.id, projectId },
             data: { status: 'rejected', statusChangedAt: new Date(), statusReason: 'withdrawn by the vendor' },
@@ -1391,5 +1401,138 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     }, pmc(projectId));
     expect(resolved.status).toBe('resolved');
     expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { id: over.id } })).disputedAtVersion).toBe(1);
+  });
+
+  // ── Codex round-5 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R5-F1 — a seal that inspects the MEMBERS of a set passes vacuously when the set is EMPTY. A
+   * `draft` bill written with no version at all, then moved to `submitted`, iterated nothing: no
+   * version check, no line check, no bound check. What stood was a LIVE claim with no immutable
+   * version and no lines, holding the duplicate-document key against the vendor's real invoice.
+   */
+  it('R5-F1 (§F/§G): a bill cannot become LIVE with no current version or no lines', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const commandId = (await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId } })).id;
+
+    // a bare bill root, legally created at `draft` — with nothing to claim
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "VendorBill" ("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+       VALUES ('r5f1-empty',$1,$2,'R5-F1','2026-08-20','draft',$3,$4)`,
+      projectId, line.vendorId, f.memberUser.id, commandId,
+    );
+    // `submitted` is the ONLY live state reachable from `draft` — the arrows past it are sealed by
+    // the transition graph (R2-F3), so this is the whole of the hole the empty seal left open
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='submitted', "statusChangedAt"=now() WHERE "id"='r5f1-empty'`,
+    )).rejects.toThrow(/current version|no claim line/u);
+    expect(await statusOf(projectId, 'r5f1-empty')).toBe('draft');
+
+    // …and the ordinary claim still submits, so the seal is precise rather than merely strict
+    const real = await claim(projectId, line.vendorId, line.poLineId, '10');
+    expect(real.status).toBe('submitted');
+  });
+
+  /**
+   * R5-F2 — round 2 stopped `disputed → resolved` overwriting the dispute reason. The same hole was
+   * still open at `disputed → rejected`, which is a legal transition carrying its OWN required
+   * reason. Both facts are real: the breach is the EVIDENCE that took the claim out of the live
+   * fold, the rejection is a JUDGEMENT about the claim — so neither is discarded.
+   */
+  it('R5-F2 (§F): rejecting a DISPUTED claim keeps why it was disputed', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '120', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const over = await claim(projectId, line.vendorId, line.poLineId, '120');
+    expect(over.status).toBe('disputed');
+    expect(over.statusReason).toMatch(/qty-over-accepted/u);
+
+    const rejected = await bills.reject(projectId, {
+      billId: over.id, reason: 'duplicate of invoice V-1 already on file',
+    }, pmc(projectId));
+    expect(rejected.status).toBe('rejected');
+    // the JUDGEMENT is recorded…
+    expect(rejected.statusReason).toBe('duplicate of invoice V-1 already on file');
+    // …and the EVIDENCE for why it left the live fold survives it
+    expect(rejected.disputeReason).toMatch(/qty-over-accepted/u);
+
+    // the captured evidence is unwritable, like the version it was captured with
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "disputeReason"='a different story' WHERE "id"=$1`, over.id,
+    )).resolves.toBeDefined();
+    expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { id: over.id } })).disputeReason)
+      .toMatch(/qty-over-accepted/u);
+  });
+
+  /**
+   * R5-F3 — the dispute CAS guarded the bill's STATUS, but the quantity being disputed was read off
+   * its current VERSION. A concurrent amendment replaces the version without touching the status,
+   * so the CAS succeeded and disputed a claim that had just become valid.
+   *
+   * Deterministic, not raced: the transaction client is wrapped so the concurrent amendment commits
+   * between the disposition's read and its CAS — the exact ordering the defect needs.
+   */
+  it('R5-F3 (§E): the dispute CAS guards the VERSION its quantity came from', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '120', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '100', { number: 'R5-F3' });
+    expect(bill.status).toBe('submitted');
+
+    const disputed = await t.prisma.$transaction(async (tx) => bills.disputeClaimsBeyondEvidence(
+      wedgeFirstBillUpdate(tx, async () => {
+        // the vendor corrects 100 → 70 while the disposition is mid-flight; the bill stays
+        // `submitted`, so a status-only CAS cannot tell that the number it read is gone
+        await bills.amend(projectId, {
+          billId: bill.id, reason: 'vendor corrected the claimed quantity',
+          lines: [{ poLineId: line.poLineId, quantity: '70', rate: '1' }],
+        }, pmc(projectId));
+      }),
+      projectId, 'material', line.poLineId, new Prisma.Decimal('80'),
+      'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, role: 'pmc' },
+    ));
+
+    // 70 ≤ 80 — the corrected claim is valid and must be left alone
+    expect(disputed).toEqual([]);
+    expect(await statusOf(projectId, bill.id)).toBe('submitted');
+    expect(await billedQty(projectId, line.poLineId, 'material')).toBe('70');
+  });
+
+  /**
+   * R5-F4 — round 4 required a resolution to CARRY an amendment; that only made the evidence EXIST.
+   * Because §0 keeps a disputed bill out of every billed set, the replacement was measured as
+   * claiming nothing, so a 120-unit claim against 100 accepted could be "corrected" to 150 and
+   * resolve cleanly — releasing the duplicate-document key on a correction that corrects nothing.
+   */
+  it('R5-F4 (§G): a resolution whose replacement still breaches the evidence is REFUSED', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '200', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const over = await claim(projectId, line.vendorId, line.poLineId, '120', { number: 'R5-F4' });
+    expect(over.status).toBe('disputed');
+
+    await expect(bills.amend(projectId, {
+      billId: over.id, reason: 'vendor insists the figure is higher',
+      lines: [{ poLineId: line.poLineId, quantity: '150', rate: '1' }],
+    }, pmc(projectId))).rejects.toThrow(/does not resolve the dispute/u);
+
+    // the claim is untouched — still disputed, still on v1, still holding its document number
+    expect(await statusOf(projectId, over.id)).toBe('disputed');
+    const reloaded = await bills.readOne(projectId, over.id, pmc(projectId));
+    expect(reloaded.versions).toHaveLength(1);
+    expect(reloaded.versions[0]!.supersededAt).toBeNull();
+    await expect(bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: 'R5-F4', documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId))).rejects.toThrow(/already/u);
+
+    // …and an HONEST correction resolves, so the guard is precise rather than merely strict
+    const resolved = await bills.amend(projectId, {
+      billId: over.id, reason: 'vendor corrected the claim to the delivered quantity',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId));
+    expect(resolved.status).toBe('resolved');
   });
 });

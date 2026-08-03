@@ -89,14 +89,14 @@ Each guard was instead proven by removing it from **this** tree and confirming i
 The first two are the strongest evidence in the PR: with the service guard gone, the database
 refused the transaction on its own. The seal and the guard are independently real.
 
-## Probe coverage (31 tests, `phase5-t4-vendor-bill.test.ts`)
+## Probe coverage (35 tests, `phase5-t4-vendor-bill.test.ts`)
 
 `4`/`5ak` dispute-not-refuse + 80/20 acceptance fold + reversal disputes · `5` bound-2 race (DB and
 service) · `5ac`/`5av` a dispute frees the fold and never returns · `5d` amended bill folds once ·
 `5an` the disposition disputes the MINIMUM, newest-first · `5bl` the labour twin · `5bf`/`5ag`/`5au`
 line seals precise not merely strict · `5bg`/`5bj` duplicate-claim key · `5f`/`5ao`/`5ax` vendor
 pinning + backfill · `5h` unit discipline · `7` append-only · §D/§I capability + authority · §C
-idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings · `R3-F1`–`R3-F3` the round-3 findings · `R4-F1`–`R4-F5` the round-4 findings.
+idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings · `R3-F1`–`R3-F3` the round-3 findings · `R4-F1`–`R4-F5` the round-4 findings · `R5-F1`–`R5-F4` the round-5 findings.
 
 ## Deliberately NOT in this task
 
@@ -240,10 +240,44 @@ R4-F5 chose a captured version number over a timestamp comparison deliberately. 
 correction's stamp against the dispute's would have made a legitimate resolution depend on two
 clocks agreeing; a version number the database captures itself does not.
 
+## Codex round 5 — four findings, three of them my own fixes one level short (again)
+
+| # | Finding | What was wrong | Fix |
+|---|---|---|---|
+| R5-F1 | P2 — require a current version when a bill becomes live | The status seal LOOPED over the current version's lines. With no version at all it iterated nothing and passed: a LIVE claim with no immutable version and no lines, holding the duplicate-document key against the vendor's real invoice | The seal asserts the set is NON-EMPTY before inspecting it — exactly one current version, at least one line — for any status §0 counts as live |
+| R5-F2 | P2 — preserve the dispute reason when rejecting a disputed claim | Round 2 stopped `disputed → resolved` overwriting `statusReason`. The same hole was open at `disputed → rejected`, a legal transition carrying its own required reason, so a `duplicate invoice` judgement erased the `qty-over-accepted` breach | The trigger CAPTURES `disputeReason` when the claim enters `disputed` and carries it forward untouched — the `disputedAtVersion` precedent. Neither fact is discarded: the breach is evidence, the rejection is a judgement |
+| R5-F3 | P2 — guard the dispute CAS with the claim version | The CAS guarded the bill's STATUS; the quantity being disputed was read off its current VERSION. A concurrent amendment replaces the version without touching the status, so with 80 accepted a v1 of 100 amended to a v2 of 70 was still disputed — at 70 ≤ 80 | The CAS guards the version too; the round-4 lost-CAS handler already refolds, so the two compose |
+| R5-F4 | P2 — validate the resolving amendment before releasing the bill | Round 4 required a resolution to CARRY an amendment. §0 keeps a disputed bill out of every billed set, so the replacement was measured as claiming nothing: a 120-unit claim against 100 accepted could be "corrected" to 150 and resolve, releasing the document number | The replacement is evaluated with its own lines counted as live BEFORE the resolve, and a still-breaching correction is REFUSED |
+
+**Root C, a fifth consecutive round — and R5-F4 is the sharpest instance yet.** Round 4's F5 required
+the amendment to EXIST; R5-F4 says it must be VALID. That is the same finding one level down, in the
+same fix, one round later. R5-F2 is round 2's fix at a second entry point. R5-F3 is round 4's F4 fix
+one column short — I refolded the quantity and did not guard the version the quantity came from.
+
+R5-F1 is a distinct and worth-naming shape: **a guard that inspects the members of a set is
+vacuously satisfied by the empty set.** Phase 4 met this exact class once already ("an empty
+due-today set can never yield `ok`"), and it recurred here because a loop reads as a check.
+
+The rule this round adds, and the reason it is a *checklist* rather than another principle: when a
+guard is written, state (a) what makes it fire, (b) what makes it pass, and (c) **whether "pass"
+includes "there was nothing to check"** — and probe each distinct entry point into the guarded
+state, not only the one the finding named. This repo already had the precision rule (*a rejection is
+only evidence when an otherwise-identical case is ACCEPTED*); its missing twin is coverage.
+
+R5-F4 REFUSES where §E's rule is otherwise dispute-not-refuse, and the distinction is what each
+protects. Dispute-not-refuse exists so a submitted claim's record survives — and it does: the
+original 120-unit claim and its breach are untouched. What is refused is an AMENDMENT that would end
+the dispute without settling it.
+
+The upgrade proof gained a five-unit ACCEPTANCE in the legacy fixture. Until now every §G claim path
+in that proof could only end in refusal, and a seal never shown to accept is not shown to be
+precise; five accepted units let a 3-unit claim go legitimately live while the 10-unit claim still
+breaches, proving both directions against the same line.
+
 ## Gates
 
 - `pnpm check` **EXIT 0** — web 42 files/543 tests, API 56 files/718 tests, builds clean
-- Full integration suite **76 files / 790 tests** on a pristine migrated DB
+- Full integration suite **76 files / 799 tests** on a pristine migrated DB
 - `boundary.test.ts` / `module-registry.test.ts` / `cross-module-graph.test.ts` green (mutating
   routes 152 → 157; MODEL_OWNER + owned/read-encapsulated sets extended)
 - `upgrade-proof.sh` **PASSED** — the three tables upgrade ROW-FREE; the vendor-pinning backfill runs

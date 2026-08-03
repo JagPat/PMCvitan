@@ -3170,6 +3170,10 @@ model VendorBill {
   /// duplicate-document key, so one with no correction behind it would free the vendor's number
   /// for a claim nobody fixed.
   disputedAtVersion Int?
+  /// §F — WHY it was disputed, captured by the same trigger and equally unwritable. `statusReason`
+  /// explains the CURRENT status, so a later `disputed → rejected` writes its own judgement over it;
+  /// the breach that first took the claim out of the live fold is evidence and survives here.
+  disputeReason     String?
 
   createdAt   DateTime @default(now())
   createdBy   User     @relation("vendorBillsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
