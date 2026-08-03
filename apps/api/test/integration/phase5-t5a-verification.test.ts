@@ -910,14 +910,35 @@ describe('Phase 5 Task 5A — §E three-way verification (live PG)', () => {
       projectId, bad.id, version.id, f.memberUser.id, spent.sourceCommandId,
     )).rejects.toThrow(/"projectId", "sourceCommandId"|already exists/u);
 
-    // ARM 2 — a verify-TYPED command that produced something else. The insert is accepted (the
-    // row is well formed) and the status flip fails at COMMIT, which is where `resultRef` exists.
-    const forged = await t.prisma.commandExecution.create({
+    // ARM 2a — the platform FLOOR, merged as PR #277 after this finding exposed it. Minting the
+    // receipt this forgery needs is now refused one level below §E: a receipt is INSERTED
+    // `reserved` and becomes terminal only by completing.
+    await expect(t.prisma.commandExecution.create({
       data: {
         scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId: f.memberUser.id,
-        commandType: 'commercial.bill.verify', idempotencyKey: `r4f3-forged-${seq++}`,
+        commandType: 'commercial.bill.verify', idempotencyKey: `r4f3-mint-${seq++}`,
         requestHash: 'forged', status: 'succeeded', resultRef: 'some-other-entity',
       },
+    })).rejects.toThrow(/INSERTED as `reserved`/u);
+
+    // ARM 2b — …and §E's OWN seal still holds against a receipt built through the protocol. This
+    // is the arm that matters now: the receipt below is perfectly well formed — reserved and
+    // completed in one transaction, carrying a real result — it simply produced something that is
+    // not this verdict. `resultRef` is the binding, and the status flip fails at COMMIT.
+    const forged = await t.prisma.$transaction(async (tx) => {
+      const row = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId: f.memberUser.id,
+          commandType: 'commercial.bill.verify', idempotencyKey: `r4f3-forged-${seq++}`,
+          requestHash: 'forged', status: 'reserved',
+        },
+        select: { id: true },
+      });
+      await tx.commandExecution.update({
+        where: { id: row.id },
+        data: { status: 'succeeded', resultRef: 'some-other-entity', completedAt: new Date() },
+      });
+      return row;
     });
     await t.prisma.$executeRawUnsafe(
       `INSERT INTO "BillVerification" ("id","projectId","billId","versionId","verdict","verifiedById","sourceCommandId")

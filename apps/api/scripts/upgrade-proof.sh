@@ -1851,18 +1851,24 @@ assert_rejects "commercial T5A §E: marking a claim VERIFIED with no §E verdict
   "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
 # A verdict is only a verdict if `commercial.bill.verify` produced it, so the fixture needs a command
 # of that type — `UP45-CMD` is a `test.up45` row, and the provenance seal correctly refuses it.
-$PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5A-CMD','project','org-legacy','p1','USER-1','commercial.bill.verify','upt5a-verify','x','succeeded')" 2>/dev/null
+# The fixture receipts follow the PROTOCOL — reserved and completed in ONE transaction, carrying
+# a result — because the platform seal (20270425000000) now refuses anything else. That is the
+# floor this §E provenance seal rests on, and building the fixture through it is what makes the
+# assertions below about §E rather than about the floor.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5A-CMDX','project','org-legacy','p1','USER-1','commercial.bill.verify','upt5a-elsewhere','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='SOME-OTHER-ENTITY', \"completedAt\"=now() WHERE \"id\"='UPT5A-CMDX'; COMMIT;" 2>/dev/null
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5A-CMD','project','org-legacy','p1','USER-1','commercial.bill.verify','upt5a-verify','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5A-V1', \"completedAt\"=now() WHERE \"id\"='UPT5A-CMD'; COMMIT;" 2>/dev/null
 $PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-VX','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UP45-CMD')" 2>/dev/null
 assert_rejects "commercial T5A §E: a verdict whose source command is NOT commercial.bill.verify cannot license VERIFIED (provenance, not mere presence)" \
   "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
-$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-V1','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UPT5A-CMD')" 2>/dev/null
 # Codex round-4 — the command must have PRODUCED this verdict, not merely be of the right type.
-# `UPT5A-CMD` has not recorded a result yet, so the deferred half of the seal refuses at COMMIT even
-# though the BEFORE trigger's type check is satisfied. This is the "spent command id copied onto a
-# forged row" path, reproduced with the copy still unbound.
+# `UPT5A-CMDX` is a perfectly well-formed verify receipt: reserved and completed in one transaction,
+# carrying a real result. It simply produced something that is not this verdict, and `resultRef` is
+# the binding, so the deferred half of the seal refuses at COMMIT.
+$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-VE','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UPT5A-CMDX')" 2>/dev/null
 assert_rejects "commercial T5A R4-F3: a verify-TYPED command that did not produce this verdict cannot license VERIFIED (resultRef, not just commandType)" \
   "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
-$PSQL >/dev/null -c "UPDATE \"CommandExecution\" SET \"resultRef\"='UPT5A-V1', \"completedAt\"=now() WHERE \"id\"='UPT5A-CMD'" 2>/dev/null
+$PSQL >/dev/null -c "DELETE FROM \"BillVerification\" WHERE \"id\"='UPT5A-VE'" 2>/dev/null
+$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-V1','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UPT5A-CMD')" 2>/dev/null
 assert_rejects "commercial T5A R4-F3: a SECOND verdict citing a command that already produced one (one command, one verdict)" \
   "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-V2','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UPT5A-CMD')"
 assert_rejects "commercial T5A §E: EDITING a recorded verdict (a rewritable verdict is no verdict)" \

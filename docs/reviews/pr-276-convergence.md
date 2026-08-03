@@ -181,12 +181,19 @@ was nothing: `CommandExecution` carries no triggers at all, so the receipt this 
 minted `succeeded` with any `resultRef` its author likes. Each round I secured the thing the last
 finding named and did not ask what secured THAT.
 
-The floor is the platform kernel, and it is not this PR's to move. Fifteen `sourceCommandId`
+The floor is the platform kernel, and it was not this PR's to move. Fifteen `sourceCommandId`
 columns across Phases 3, 4 and 5 cite the same table, so sealing it inside a commercial PR would be
 the same mistake one level up — a change every merged phase depends on, buried where its reviewer
-is looking at §E. It ships as its own PR, and this one rests on it. That is the general lesson worth
-more than the fix: **a provenance chain is exactly as strong as its floor, and the floor is usually
-in someone else's module.**
+is looking at §E. It shipped as its own PR — #277, merged at `5b0a54a` — and this branch now rests on it. That is
+the general lesson worth more than the fix: **a provenance chain is exactly as strong as its floor,
+and the floor is usually in someone else's module.**
+
+Worth recording what that cost, because it is an argument for finding the floor EARLY rather than a
+reason to avoid looking: #277 was one trigger and took three review rounds and eight findings of its
+own. Two of those (the diagnostic diverging from the trigger; a guard that was itself a no-op) are
+roots this branch inherits as review questions, and one of them found a latent bug nobody was
+looking for — a backticked word inside an unquoted heredoc that had been executing on every
+upgrade-proof run since it was written.
 
 ## Root E — a workaround outlived its cause (finding 19)
 

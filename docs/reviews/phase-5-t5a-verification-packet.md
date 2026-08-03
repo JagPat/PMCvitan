@@ -127,10 +127,14 @@ it, and when a probe cannot reach its case, say so in the probe.
 ## Gates
 
 - `pnpm check` **EXIT 0** — web 42 files/543 tests, API 57 files/722 tests, builds clean
-- Focused `phase5-t5a-verification.test.ts` **27/27** on live PostgreSQL — 16 of them the round-1..4
-  findings, each proven RED against the tree before its fix (the six round-4 probes reproduced
-  against `7e33e97` with the fixes stashed and the database re-migrated to that head)
-- FULL integration suite on a pristine migrated database: **77 files / 829 tests**
+- Focused `phase5-t5a-verification.test.ts` **29/29** on live PostgreSQL — 18 of them the round-1..5
+  findings, each proven RED against the tree before its fix (the round-4 and round-5 probes
+  reproduced with the fixes stashed and the database re-migrated to the reviewed head)
+- FULL integration suite on a pristine migrated database: **78 files / 841 tests**
+- `upgrade-proof.sh` PASSED on the tree with PR #277's command-receipt seal merged in. The §E
+  fixture receipts now follow the protocol — reserved and completed in ONE transaction, carrying a
+  result — because the floor refuses anything else, which is what makes these assertions about §E
+  rather than about the floor
 - Migration applies from a **from-scratch** `migrate deploy`, not only as an incremental patch
 - `upgrade-proof.sh` **PASSED** over the legacy fixture — the round-4 seals reject the four new
   forgeries (a verify-typed command that produced something else; a second verdict on a spent
