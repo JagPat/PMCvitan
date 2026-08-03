@@ -89,14 +89,14 @@ Each guard was instead proven by removing it from **this** tree and confirming i
 The first two are the strongest evidence in the PR: with the service guard gone, the database
 refused the transaction on its own. The seal and the guard are independently real.
 
-## Probe coverage (35 tests, `phase5-t4-vendor-bill.test.ts`)
+## Probe coverage (38 tests, `phase5-t4-vendor-bill.test.ts`)
 
 `4`/`5ak` dispute-not-refuse + 80/20 acceptance fold + reversal disputes · `5` bound-2 race (DB and
 service) · `5ac`/`5av` a dispute frees the fold and never returns · `5d` amended bill folds once ·
 `5an` the disposition disputes the MINIMUM, newest-first · `5bl` the labour twin · `5bf`/`5ag`/`5au`
 line seals precise not merely strict · `5bg`/`5bj` duplicate-claim key · `5f`/`5ao`/`5ax` vendor
 pinning + backfill · `5h` unit discipline · `7` append-only · §D/§I capability + authority · §C
-idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings · `R3-F1`–`R3-F3` the round-3 findings · `R4-F1`–`R4-F5` the round-4 findings · `R5-F1`–`R5-F4` the round-5 findings.
+idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings · `R3-F1`–`R3-F3` the round-3 findings · `R4-F1`–`R4-F5` the round-4 findings · `R5-F1`–`R5-F4` the round-5 findings · `R6-F1`–`R6-F3` the round-6 findings.
 
 ## Deliberately NOT in this task
 
@@ -273,6 +273,34 @@ The upgrade proof gained a five-unit ACCEPTANCE in the legacy fixture. Until now
 in that proof could only end in refusal, and a seal never shown to accept is not shown to be
 precise; five accepted units let a 3-unit claim go legitimately live while the 10-unit claim still
 breaches, proving both directions against the same line.
+
+## Codex round 6 — three findings, every one a round-5 fix one level short
+
+| # | Finding | What was wrong | Fix |
+|---|---|---|---|
+| R6-F1 | P2 — validate resolved amendments in the SQL seal | Round 5's resolution check was SERVICE-only. A direct writer could hold the bill `disputed`, supersede v1, insert an over-bound v2 (the folds count zero because `disputed` is not live) and resolve — releasing the document key for a correction that still breaches | `phase5_t4_billed_bound_check` gains an as-if-live version parameter, and a new `phase5_t4_resolution_bound_check` runs the replacement through §G from the lifecycle trigger itself |
+| R6-F2 | P2 — require disputed claims to carry a version | Round 5's empty-set seal covered LIVE statuses only, so a version-less bill could be `disputed`: out of every fold, yet holding the vendor's document number, with no lines and no `disputedAtVersion`, so it could never be resolved either | Replaced, not extended — see below |
+| R6-F3 | P2 — clear prefilled exit reasons on bill creation | Round 5 cleared the dispute evidence at creation and left `statusReason` — the original evidence column — pre-loadable, so a `draft → rejected` read as reasoned with a justification written before anything was decided | Creation clears EVERY exit-evidence column: `statusReason`, `disputeReason`, `disputedAtVersion` |
+
+**R6-F2 is not patched, it is replaced.** Adding `disputed` to a status list would have been the
+third patch of one invariant. The invariant is not about live claims:
+
+> A `VendorBill` row IS a claim, and a claim states exactly one thing — one current version with at
+> least one line — in EVERY state, `draft` included, enforced on INSERT as well as UPDATE.
+
+That is strictly stronger than the finding asked for: it also closes the version-less `draft` nobody
+named, which holds the document number just the same. The seal is deferred, so `record` assembling
+bill → version → lines in one transaction still passes at commit.
+
+The three findings name the three ways a fix can be scoped too narrowly — the wrong LAYER (service,
+not database), the wrong SUBSET (live statuses, not every state), the wrong COLUMN (the newest
+evidence, not all of it). The convergence audit records the resulting test: **if a finding names a
+status, a column, or a layer, the fix belongs to the set that member came from.**
+
+The upgrade proof needed three fixture repairs, and each is the new invariant working: a
+version-less bill is now refused at CREATION rather than at its first transition; a resolution whose
+replacement exceeded the remaining accepted evidence was correctly rejected (the fixture's
+replacement is now sized to fit); and the re-filed document number had to become a real claim.
 
 ## Gates
 

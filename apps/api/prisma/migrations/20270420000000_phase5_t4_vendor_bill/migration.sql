@@ -436,6 +436,28 @@ DO $$ BEGIN
   END IF;
 END $$;
 
+-- Codex round-6 — the RESOLUTION guard in SQL. Round 5 put this check in the service and left the
+-- database proving only that a replacement version EXISTS. A direct writer can hold the bill at
+-- `disputed`, supersede v1, insert an over-bound v2 (the line and bound triggers fold zero, because
+-- `disputed` is not live) and then move to `resolved` — the EXISTS passes, the status seal skips
+-- `resolved`, and the duplicate-document key is released for a correction that still breaches.
+-- Existence was never the invariant; SUFFICIENCY is.
+CREATE OR REPLACE FUNCTION phase5_t4_resolution_bound_check(p_project text, p_bill text)
+RETURNS void AS $$
+DECLARE r record; v_version text;
+BEGIN
+  SELECT v."id" INTO v_version FROM "VendorBillVersion" v
+   WHERE v."projectId" = p_project AND v."billId" = p_bill AND v."supersededAt" IS NULL;
+  IF v_version IS NULL THEN RETURN; END IF;
+  FOR r IN
+    SELECT DISTINCT l."poLineId", l."labourPoLineId" FROM "VendorBillLine" l
+     WHERE l."projectId" = p_project AND l."versionId" = v_version
+  LOOP
+    PERFORM phase5_t4_billed_bound_check(p_project, r."poLineId", r."labourPoLineId", v_version);
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
 -- §F — the bill ROOT's identity is FROZEN and its lifecycle is a closed transition graph.
 --
 -- The freeze is §0b's "a key that groups facts is frozen after write": `vendorBillNumber` and
@@ -514,6 +536,10 @@ BEGIN
     ) THEN
       RAISE EXCEPTION 'A disputed claim is resolved by AMENDING it — version % must be superseded by a corrected version, and a resolution with no correction behind it would release the document number for a claim nobody fixed (%)', COALESCE(OLD."disputedAtVersion"::text, '?'), OLD."id";
     END IF;
+    -- …and the correction must actually CORRECT: the replacement is run through §G as though it
+    -- were live, because releasing the document key on a still-breaching claim is the same defect
+    -- the resolution requirement was added to prevent, one level down (Codex round-6).
+    PERFORM phase5_t4_resolution_bound_check(NEW."projectId", NEW."id");
   END IF;
   IF NEW."status" IS DISTINCT FROM OLD."status" THEN
     IF NOT (
@@ -551,7 +577,13 @@ BEGIN
   IF NEW."status" <> 'draft' THEN
     RAISE EXCEPTION 'A vendor bill is created at ''draft'' and moves by attributable transition — it cannot start life at ''%'' (%)', NEW."status", NEW."id";
   END IF;
-  -- a claim that has never been disputed has no dispute evidence, whatever the insert supplied
+  -- A claim that has just been created has left nothing, so it carries no exit evidence at all —
+  -- whatever the insert supplied. Round 5 cleared the dispute pair and left `statusReason` itself
+  -- writable at creation (Codex round-6): a bill inserted with a pre-filled reason and then moved
+  -- `draft -> rejected` reads as reasoned, while the justification was written before anyone
+  -- decided anything. The lifecycle admits a reason only as part of the transition that sets it,
+  -- and that rule is only true if creation cannot pre-load one.
+  NEW."statusReason" := NULL;
   NEW."disputedAtVersion" := NULL;
   NEW."disputeReason" := NULL;
   RETURN NEW;
@@ -636,7 +668,15 @@ CREATE TRIGGER "VendorBillLine_append_only" BEFORE UPDATE OR DELETE ON "VendorBi
 -- bill's status is neither `draft` nor `rejected` nor an unresolved `disputed` nor a terminal
 -- `resolved`. The set is written as a NOT IN so it keeps meaning the same thing when Task 5 adds
 -- the transitions into `verified` and beyond.
-CREATE OR REPLACE FUNCTION phase5_t4_billed_bound_check(p_project text, p_material text, p_labour text)
+DROP FUNCTION IF EXISTS phase5_t4_billed_bound_check(text, text, text);
+CREATE OR REPLACE FUNCTION phase5_t4_billed_bound_check(
+  p_project text, p_material text, p_labour text,
+  -- Codex round-6 — count THIS version's lines as though the bill were already live. Every
+  -- ordinary caller leaves it NULL. The RESOLUTION is the one case that needs it: §0 keeps a
+  -- `disputed` bill out of every billed set, so the replacement is invisible to the fold at the
+  -- exact moment the lifecycle is deciding whether it is a correction at all.
+  p_include_version text DEFAULT NULL
+)
 RETURNS void AS $$
 DECLARE
   v_billed numeric;
@@ -667,6 +707,18 @@ BEGIN
      WHERE l."projectId" = p_project AND l."poLineId" = p_material
        AND v."supersededAt" IS NULL
        AND b."status" NOT IN ('draft', 'rejected', 'disputed', 'resolved');
+
+    IF p_include_version IS NOT NULL THEN
+      SELECT v_billed + COALESCE(SUM(l."quantity"), 0) INTO v_billed
+        FROM "VendorBillLine" l
+       WHERE l."projectId" = p_project AND l."labourPoLineId" = p_labour AND l."versionId" = p_include_version;
+    END IF;
+
+    IF p_include_version IS NOT NULL THEN
+      SELECT v_billed + COALESCE(SUM(l."quantity"), 0) INTO v_billed
+        FROM "VendorBillLine" l
+       WHERE l."projectId" = p_project AND l."poLineId" = p_material AND l."versionId" = p_include_version;
+    END IF;
 
     IF v_billed > v_ordered THEN
       RAISE EXCEPTION 'Bound 1 breached on purchase-order line %: live claims total % base units against an ordered authority of % (qty + approvedOverage, or ZERO once the version is no longer live)', p_material, v_billed, v_ordered;
@@ -785,33 +837,42 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION phase5_t4_bill_status_sealed() RETURNS trigger AS $$
 DECLARE r record; v_current bigint; v_lines bigint;
 BEGIN
-  -- Codex round-5 — a seal that only inspects the MEMBERS of a set passes vacuously when the set is
-  -- empty. Insert a `draft` bill with no version at all, move it to `submitted`, and the loop below
-  -- iterates nothing: no version check, no line check, no bound check. What stands is a LIVE claim
-  -- with no immutable claim version and no lines, still holding the duplicate-document key against
-  -- the vendor — a claim for an unstated amount that blocks the real invoice. A live bill is one
-  -- that SAYS something, so the seal asserts the set is non-empty before inspecting it.
-  IF NEW."status" NOT IN ('draft', 'rejected', 'disputed', 'resolved') THEN
-    SELECT COUNT(*) INTO v_current FROM "VendorBillVersion" v
-     WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL;
-    IF v_current <> 1 THEN
-      RAISE EXCEPTION 'Vendor bill % cannot be % with % current version(s) — a live claim states exactly one immutable version', NEW."id", NEW."status", v_current;
-    END IF;
-    SELECT COUNT(*) INTO v_lines FROM "VendorBillLine" l
-      JOIN "VendorBillVersion" v ON v."projectId" = l."projectId" AND v."id" = l."versionId"
-     WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL;
-    IF v_lines = 0 THEN
-      RAISE EXCEPTION 'Vendor bill % cannot be % with no claim line — a live claim for nothing cannot be bounded, and it would hold the document number against a claim that says nothing', NEW."id", NEW."status";
-    END IF;
+  -- Codex round-5/6 — A BILL STATES EXACTLY ONE THING, IN EVERY STATE.
+  --
+  -- Round 5 found this seal iterating an empty set and passing, and I fixed it for the statuses §0
+  -- counts as LIVE. Round 6 found the same hole at `disputed`: a version-less bill could be
+  -- disputed, which keeps it out of every billed fold but still holds the duplicate-document key
+  -- against the vendor's real invoice, with no lines saying what was claimed and no
+  -- `disputedAtVersion`, so it can never be resolved either.
+  --
+  -- Enumerating one more status would have been the third patch of one invariant. The invariant is
+  -- not about live claims: a `VendorBill` row IS a claim, and a claim that states nothing is not a
+  -- claim in any state — `draft` included, because a version-less draft holds the document number
+  -- just the same. So it is asserted for every row, on INSERT as well as UPDATE. It is DEFERRED, so
+  -- `record` assembling bill → version → lines in one transaction passes at commit.
+  SELECT COUNT(*) INTO v_current FROM "VendorBillVersion" v
+   WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL;
+  IF v_current <> 1 THEN
+    RAISE EXCEPTION 'Vendor bill % has % current version(s) — a claim states exactly one immutable version, in every state', NEW."id", v_current;
   END IF;
-  FOR r IN
-    SELECT DISTINCT l."poLineId", l."labourPoLineId"
-      FROM "VendorBillLine" l
-      JOIN "VendorBillVersion" v ON v."projectId" = l."projectId" AND v."id" = l."versionId"
-     WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL
-  LOOP
-    PERFORM phase5_t4_billed_bound_check(NEW."projectId", r."poLineId", r."labourPoLineId");
-  END LOOP;
+  SELECT COUNT(*) INTO v_lines FROM "VendorBillLine" l
+    JOIN "VendorBillVersion" v ON v."projectId" = l."projectId" AND v."id" = l."versionId"
+   WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL;
+  IF v_lines = 0 THEN
+    RAISE EXCEPTION 'Vendor bill % has no claim line — a claim for nothing cannot be bounded, and it would hold the vendor''s document number against a claim that says nothing', NEW."id";
+  END IF;
+
+  -- the §G bound is re-checked only when the claim actually MOVED between the live set and out of it
+  IF TG_OP = 'UPDATE' AND NEW."status" IS DISTINCT FROM OLD."status" THEN
+    FOR r IN
+      SELECT DISTINCT l."poLineId", l."labourPoLineId"
+        FROM "VendorBillLine" l
+        JOIN "VendorBillVersion" v ON v."projectId" = l."projectId" AND v."id" = l."versionId"
+       WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL
+    LOOP
+      PERFORM phase5_t4_billed_bound_check(NEW."projectId", r."poLineId", r."labourPoLineId");
+    END LOOP;
+  END IF;
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -853,9 +914,8 @@ CREATE CONSTRAINT TRIGGER "VendorBillVersion_lines_sealed"
 
 DROP TRIGGER IF EXISTS "VendorBill_bound_sealed" ON "VendorBill";
 CREATE CONSTRAINT TRIGGER "VendorBill_bound_sealed"
-  AFTER UPDATE ON "VendorBill" DEFERRABLE INITIALLY DEFERRED
-  FOR EACH ROW WHEN (NEW."status" IS DISTINCT FROM OLD."status")
-  EXECUTE FUNCTION phase5_t4_bill_status_sealed();
+  AFTER INSERT OR UPDATE ON "VendorBill" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t4_bill_status_sealed();
 
 DROP TRIGGER IF EXISTS "StockTransaction_billed_bound_sealed" ON "StockTransaction";
 CREATE CONSTRAINT TRIGGER "StockTransaction_billed_bound_sealed"

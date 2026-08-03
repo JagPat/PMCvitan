@@ -1760,9 +1760,10 @@ COMMIT;
 SQL
 # R5-F1 — a bill with NO current version cannot enter a live state at all: the seal used to iterate
 # an empty set and pass, leaving a live claim that said nothing while holding the document number.
-$PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-BE','p1','UP45-VEN','INV-EMPTY','2026-08-26','draft','USER-1','UP45-CMD')" 2>/dev/null
-assert_rejects "commercial T4 R5-F1: making a bill LIVE with no current version (the seal used to iterate an empty set and pass)" \
-  "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-BE'"
+assert_rejects "commercial T4 R5-F1/R6-F2: CREATING a bill with no claim version at all (a claim that states nothing is not a claim in ANY state)" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-BE','p1','UP45-VEN','INV-EMPTY','2026-08-26','draft','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 R6-F3: PRE-LOADING an exit reason at creation (a justification written before anything was decided)" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"statusReason\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-BP','p1','UP45-VEN','INV-PRE','2026-08-26','draft','pre-loaded','USER-1','UP45-CMD')"
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
 assert_rejects "commercial T4 R2-F3: the arrow into VERIFIED, whose safety is the §E verdict Task 5 ships" \
@@ -1799,9 +1800,9 @@ $PSQL >/dev/null <<SQL
 BEGIN;
 UPDATE "VendorBillVersion" SET "supersededAt"=now(), "supersededById"='USER-1', "supersedeReason"='vendor corrected the claim' WHERE "id"='UPT4-BV4A';
 INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","supersedesVersion","claimedAmount","lineCount","createdById")
-  VALUES('UPT4-BV4B','p1','UPT4-B4','UP45-VEN',2,1,10.00,1,'USER-1');
+  VALUES('UPT4-BV4B','p1','UPT4-B4','UP45-VEN',2,1,2.00,1,'USER-1');
 INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
-  VALUES('UPT4-BL4B','p1','UPT4-BV4B','UPT4-B4','UP45-VEN','material','UP45-POL',10,1,0,0,10.00);
+  VALUES('UPT4-BL4B','p1','UPT4-BV4B','UPT4-B4','UP45-VEN','material','UP45-POL',2,1,0,0,2.00);
 COMMIT;
 SQL
 # R2-F2 — resolving a dispute must not overwrite WHY it was disputed
@@ -1852,9 +1853,19 @@ assert_rejects "commercial T4 R4-F2: a second live claim whose number differs on
 assert_rejects "commercial T4 R4-F2: STORING a padded document number (the read surface and the key would disagree)" \
   "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XN3','p1','UP45-VEN','  INV-005  ','2026-08-25','draft','USER-1','UP45-CMD')"
 # …and the RESOLVED bill released its number, case-normalized, exactly as a terminal state should
-$PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-N4','p1','UP45-VEN','inv-004','2026-08-25','draft','USER-1','UP45-CMD')" \
-  && printf 'ok      %s\n' "commercial T4 R4-F2: re-filing a RESOLVED claim's number is ACCEPTED (the normalized key releases with the lifecycle)" \
-  || { printf 'FAILED  %s\n' "commercial T4 R4-F2: the normalized key did not release on a terminal state"; FAIL=1; }
+if $PSQL >/dev/null <<SQL
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-N4','p1','UP45-VEN','inv-004','2026-08-25','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-NV4','p1','UPT4-N4','UP45-VEN',1,1.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-NL4','p1','UPT4-NV4','UPT4-N4','UP45-VEN','material','UP45-POL',1,1,0,0,1.00);
+COMMIT;
+SQL
+then printf 'ok      %s\n' "commercial T4 R4-F2: re-filing a RESOLVED claim's number is ACCEPTED (the normalized key releases with the lifecycle)"
+else printf 'FAILED  %s\n' "commercial T4 R4-F2: the normalized key did not release on a terminal state"; FAIL=1
+fi
 # ── Codex round-3 findings, sealed at PostgreSQL ─────────────────────────────────────────────
 # R3-F2 — WHEN a claim left the live fold is evidence too
 assert_rejects "commercial T4 R3-F2: rewriting statusChangedAt outside the transition that set it" \

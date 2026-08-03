@@ -1,6 +1,6 @@
 # PR #274 — architectural convergence audit (Phase 5 Task 4)
 
-Five finding-bearing heads, twenty findings. Per `CLAUDE.md`, from the third head on this stops
+Six finding-bearing heads, twenty-three findings. Per `CLAUDE.md`, from the third head on this stops
 being another isolated patch: it names the ROOT the findings share and leaves a mechanical closure
 behind.
 
@@ -11,10 +11,11 @@ behind.
 | `a1a4087` | 3 | 3×P2 — one the round-2 fix one level short, two more entry points of root B |
 | `f2c7a21` | 5 | 5×P2 — three of them root C a fourth time, at the level BELOW the commands round 3 fixed |
 | `4d0a936` | 4 | 4×P2 — three of them root C a FIFTH time, plus a new shape: a guard satisfied by an empty set |
+| `4aeb6cf` | 3 | 3×P2 — ALL THREE root C, a SIXTH time: every one of them a round-5 fix one level short |
 
 ---
 
-## The twenty findings
+## The twenty-three findings
 
 | # | Head | Sev | Finding | Root |
 |---|---|---|---|---|
@@ -38,6 +39,9 @@ behind.
 | 18 | `4d0a936` | P2 | `disputed → rejected` overwrote the dispute reason — round 2's fix at a second entry point | **C** |
 | 19 | `4d0a936` | P2 | The dispute CAS guarded the status but not the VERSION the disputed quantity was read from | **C** |
 | 20 | `4d0a936` | P2 | A resolving amendment was never bound-checked, so a 150-unit "correction" of a 120-unit breach resolved cleanly | **C** |
+| 21 | `4aeb6cf` | P2 | Finding 20's fix was SERVICE-only; the SQL seal still proved the replacement merely EXISTS | **C** |
+| 22 | `4aeb6cf` | P2 | Finding 17's fix covered LIVE statuses only, so a version-less bill could still be `disputed` | **C** |
+| 23 | `4aeb6cf` | P2 | Finding 18's fix cleared the dispute evidence at creation and left `statusReason` pre-loadable | **C** |
 
 ---
 
@@ -195,6 +199,35 @@ for every guard, enumerate the **entry points into the guarded state** and the *
 read**, and probe each one — because in all three findings the fix was correct and the *coverage* of
 where it applied was not.
 
+## Root C in round 6 — all three, and what finally changed
+
+Every round-6 finding is a round-5 fix one level short, and the three of them name the three ways
+that keeps happening:
+
+- **21 — the wrong LAYER.** I fixed the resolution check in the service and left the database
+  proving only that a replacement exists. Existence was never the invariant; sufficiency is.
+- **22 — the wrong SUBSET.** I fixed the empty-set seal for the statuses §0 counts as live, and
+  `disputed` has the same hole: out of every fold, still holding the document key.
+- **23 — the wrong COLUMN.** I cleared the dispute evidence at creation and left `statusReason`,
+  the original evidence column, pre-loadable.
+
+Six rounds of this is not a lesson that needs restating; it is a defect in how I was choosing the
+scope of a fix. Every round I fixed *the instance the finding described* and every round the
+finding's own siblings were left. So round 6 does not patch the three sites. It replaces the rule
+they each violated with ONE invariant stated over the whole lifecycle:
+
+> **A `VendorBill` row IS a claim, and a claim states exactly one thing — one current version with
+> at least one line — in EVERY state, `draft` included, enforced on INSERT as well as UPDATE.**
+
+That single sentence subsumes findings 17 and 22, and it is strictly stronger than either: it also
+closes the version-less `draft` neither finding named, which held the vendor's document number just
+the same. The resolution seal moves into SQL beside the service check (21), and creation clears
+*every* exit-evidence column rather than the two most recently added (23).
+
+The test for whether a fix is scoped correctly, which I should have been applying from round 2: **if
+the finding names a status, a column, or a layer, the fix almost certainly belongs to the set that
+member came from.** Fixing the member is what produces the next round.
+
 ## What this PR got right, and should not be re-litigated
 
 Three things survived both rounds untouched, and the audit records them so a later head does not
@@ -222,7 +255,7 @@ returns the number the probe was hoping for.
 
 | Gate | Result |
 |---|---|
-| Focused probe suite `phase5-t4-vendor-bill.test.ts` | **35/35** — 20 of them the round-1..5 findings, each RED before its fix |
+| Focused probe suite `phase5-t4-vendor-bill.test.ts` | **38/38** — 23 of them the round-1..6 findings, each RED before its fix |
 | Full integration suite, pristine migrated DB | **76 files / 799 tests**, zero failures |
 | `pnpm check` | EXIT 0 — web 543/543, API 718/718 |
 | `upgrade-proof.sh` | PASSED — Task-4 assertions with acceptance cases beside the rejections |

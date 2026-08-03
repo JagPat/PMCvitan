@@ -1417,18 +1417,16 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await acceptOnLine(projectId, line, '100', '100');
     const commandId = (await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId } })).id;
 
-    // a bare bill root, legally created at `draft` — with nothing to claim
-    await t.prisma.$executeRawUnsafe(
+    // a bare bill root with nothing to claim. Round 5 sealed this for LIVE statuses only; round 6
+    // showed `disputed` had the same hole, so the invariant now holds for EVERY state — a bill row
+    // IS a claim, and a claim that states nothing is not a claim in any state. It is therefore
+    // refused at the moment it is created, which is the strongest form of the same rule.
+    await expect(t.prisma.$executeRawUnsafe(
       `INSERT INTO "VendorBill" ("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
        VALUES ('r5f1-empty',$1,$2,'R5-F1','2026-08-20','draft',$3,$4)`,
       projectId, line.vendorId, f.memberUser.id, commandId,
-    );
-    // `submitted` is the ONLY live state reachable from `draft` — the arrows past it are sealed by
-    // the transition graph (R2-F3), so this is the whole of the hole the empty seal left open
-    await expect(t.prisma.$executeRawUnsafe(
-      `UPDATE "VendorBill" SET "status"='submitted', "statusChangedAt"=now() WHERE "id"='r5f1-empty'`,
     )).rejects.toThrow(/current version|no claim line/u);
-    expect(await statusOf(projectId, 'r5f1-empty')).toBe('draft');
+    expect(await t.prisma.vendorBill.findFirst({ where: { id: 'r5f1-empty' } })).toBeNull();
 
     // …and the ordinary claim still submits, so the seal is precise rather than merely strict
     const real = await claim(projectId, line.vendorId, line.poLineId, '10');
@@ -1534,5 +1532,110 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
       lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
     }, pmc(projectId));
     expect(resolved.status).toBe('resolved');
+  });
+
+  /**
+   * R6-F1 — round 5 put the resolution check in the SERVICE and left the database proving only that
+   * a replacement version EXISTS. Existence was never the invariant; sufficiency is. A direct writer
+   * can hold the bill at `disputed`, supersede v1, insert an over-bound v2 (the line and bound
+   * triggers fold zero, because a disputed bill is not live) and then resolve — releasing the
+   * duplicate-document key for a correction that still breaches the evidence.
+   */
+  it('R6-F1 (§G): the DATABASE runs a resolution\'s replacement through the bound check', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '200', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const over = await claim(projectId, line.vendorId, line.poLineId, '120', { number: 'R6-F1' });
+    expect(over.status).toBe('disputed');
+    const v1 = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId: over.id, supersededAt: null } });
+
+    // straight past the service: supersede v1 and enter a v2 that claims MORE, all while disputed.
+    // ONE transaction, because the deferred seals are commit-scoped — a lone supersede would leave
+    // the bill with no current version and be refused on its own.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `UPDATE "VendorBillVersion" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='vendor insists' WHERE "id"=$1`,
+        v1.id, f.memberUser.id,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "VendorBillVersion" ("id","projectId","billId","vendorIdPin","version","supersedesVersion","claimedAmount","lineCount","createdById")
+         VALUES ('r6f1-v2',$1,$2,$3,2,1,150.00,1,$4)`,
+        projectId, over.id, line.vendorId, f.memberUser.id,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "VendorBillLine" ("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+         VALUES ('r6f1-l2',$1,'r6f1-v2',$2,$3,'material',$4,150,1,0,0,150.00)`,
+        projectId, over.id, line.vendorId, line.poLineId,
+      );
+    });
+
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='resolved', "statusChangedAt"=now() WHERE "id"=$1`, over.id,
+    )).rejects.toThrow(/Bound 2 breached/u);
+    expect(await statusOf(projectId, over.id)).toBe('disputed');
+  });
+
+  /**
+   * R6-F2 — `draft → disputed` was accepted while the evidence seal only covered LIVE statuses, so a
+   * version-less bill could be disputed: out of every billed fold, yet still holding the vendor's
+   * document number, with no lines saying what was claimed and no `disputedAtVersion`, so it could
+   * never be resolved either. The invariant is now stated over the whole lifecycle.
+   */
+  it('R6-F2 (§F): a claim must state something in EVERY state, disputed included', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const commandId = (await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId } })).id;
+
+    for (const status of ['draft', 'disputed', 'rejected']) {
+      await expect(t.prisma.$executeRawUnsafe(
+        `INSERT INTO "VendorBill" ("id","projectId","vendorId","vendorBillNumber","documentDate","status","statusReason","createdById","sourceCommandId")
+         VALUES ($1,$2,$3,$4,'2026-08-20','draft','seeded',$5,$6)`,
+        `r6f2-${status}`, projectId, line.vendorId, `R6-F2-${status}`, f.memberUser.id, commandId,
+      )).rejects.toThrow(/current version|no claim line/u);
+    }
+    // …and a real claim is unaffected, so the invariant is precise rather than merely strict
+    const real = await claim(projectId, line.vendorId, line.poLineId, '10');
+    expect(real.status).toBe('submitted');
+  });
+
+  /**
+   * R6-F3 — round 5 cleared the dispute evidence at creation and left `statusReason` itself
+   * pre-loadable. A bill inserted with a reason already populated then moved `draft → rejected`
+   * reads as reasoned, while the justification was written before anyone decided anything.
+   */
+  it('R6-F3 (§F): an exit reason cannot be pre-loaded at creation', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const commandId = (await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId } })).id;
+
+    // a complete, legal claim — except that it arrives with its exit justification already written
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "VendorBill" ("id","projectId","vendorId","vendorBillNumber","documentDate","status","statusReason","createdById","sourceCommandId")
+         VALUES ('r6f3',$1,$2,'R6-F3','2026-08-20','draft','pre-loaded justification',$3,$4)`,
+        projectId, line.vendorId, f.memberUser.id, commandId,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "VendorBillVersion" ("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+         VALUES ('r6f3-v1',$1,'r6f3',$2,1,10.00,1,$3)`,
+        projectId, line.vendorId, f.memberUser.id,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "VendorBillLine" ("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+         VALUES ('r6f3-l1',$1,'r6f3-v1','r6f3',$2,'material',$3,10,1,0,0,10.00)`,
+        projectId, line.vendorId, line.poLineId,
+      );
+    });
+
+    // the creation guard DISCARDS it: a claim that has just been created has left nothing
+    expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { id: 'r6f3' } })).statusReason).toBeNull();
+
+    // …so an exit can no longer INHERIT a justification nobody wrote at the time it was decided
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='rejected', "statusChangedAt"=now() WHERE "id"='r6f3'`,
+    )).rejects.toThrow(/reason|nonblank|check/iu);
+    expect(await statusOf(projectId, 'r6f3')).toBe('draft');
   });
 });
