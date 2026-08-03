@@ -53,6 +53,95 @@ In ALL states the deploy aborts loudly (sampled rows, named repair) on forged/un
 spec provenance or approver identities naming no user — repair the data explicitly and re-run
 `prisma migrate deploy`; never null provenance to force it through.
 
+## §CMDR. Command-receipt seal — abort states and repair (one-time, diagnostic-first)
+
+`20270425000000_platform_command_receipt_seal` makes PostgreSQL enforce the receipt protocol
+`executeCommand` has always followed: a row is INSERTED `reserved`, its identity is frozen, and it
+is completed exactly once — to `succeeded` or `failed`, recording when — **by the same transaction
+that reserved it**. Terminal rows are then immutable.
+
+This matters because receipts are PROVENANCE: fifteen `sourceCommandId` columns across Phases 3, 4
+and 5 cite `CommandExecution` to answer *which command produced this fact*, and those joins read
+`status`, `commandType` and `resultRef`.
+
+### §CMDR.0 The abort states
+
+The migration runs its diagnostic BEFORE installing the trigger — so a repair is not blocked by the
+seal — and ABORTS rather than warning, because a seal installed over rows it never checked makes
+those rows read as verified provenance. It names both counts:
+
+```
+platform_command_receipt_seal: N command receipt(s) are in a shape `executeCommand` cannot
+produce … Resolve them before this seal is installed (docs/RUNBOOK.md §CMDR). First 10:
+  <id> (<status>): <the reason, in words>
+```
+
+The message already names up to ten rows and WHY each is incoherent. List them all — and note
+the query does not restate the rule, it asks the same function the seal does, so this listing can
+never disagree with what aborted:
+
+```sql
+SELECT "id", "projectId", "commandType", "status", "resultRef", "completedAt",
+       platform_command_receipt_incoherence("status", "resultRef", "completedAt") AS reason
+  FROM "CommandExecution"
+ WHERE platform_command_receipt_incoherence("status", "resultRef", "completedAt") IS NOT NULL
+ ORDER BY "createdAt";
+```
+
+The shapes it reports are a terminal receipt with no completion time, a `failed` receipt carrying
+a result, and a `succeeded` receipt whose result is missing or blank.
+
+`executeCommand` cannot produce either shape, so every row listed was written by something else.
+
+### §CMDR.1 Repair — DELETE, never invent
+
+No shape can be repaired by supplying data: nobody knows when a receipt with no completion time
+completed, which entity a resultless success produced, or what a result on a failed command could
+refer to. So the
+repair makes the row NON-AUTHORITATIVE by removing it. Take a backup first, then, one row at a
+time:
+
+```sql
+DELETE FROM "CommandExecution" WHERE "id" = '<id>';
+```
+
+The outcome is the diagnosis, and both outcomes are useful:
+
+- **The delete succeeds.** Nothing cited that receipt. It was an orphaned or hand-written row and
+  it is gone. Prisma has recorded the aborted migration as FAILED and will refuse to continue until
+  you say so — the same three-state handling as §T45.1 — so mark it rolled back, then deploy:
+
+  ```bash
+  pnpm --filter api exec prisma migrate resolve --rolled-back 20270425000000_platform_command_receipt_seal
+  pnpm --filter api exec prisma migrate deploy
+  ```
+- **PostgreSQL refuses it** with a foreign-key violation naming a table such as
+  `StockTransaction`, `LabourAttendance` or `BillVerification`. Every citing row holds an
+  `ON DELETE NO ACTION` composite FK, so this is the database telling you a recorded FACT rests on
+  a receipt no command produced. **Do not force it.** Identify the citing rows, decide with the
+  project owner whether the fact is real, and correct the fact through its own module's documented
+  path (§T45, §P4T2C, or the module's reversal command) before retrying. Deleting the receipt out
+  from under a live fact would leave the fact with unverifiable provenance, which is the state this
+  seal exists to prevent.
+
+Both outcomes, and the `resolve`-then-`deploy` sequence, are driven end to end by
+`apps/api/scripts/command-receipt-abort-proof.sh` on throwaway databases — including the refusal,
+so "just delete it" is a proven-safe instruction rather than a hopeful one.
+
+### §CMDR.2 What the seal does NOT do — a privilege note
+
+No trigger can distinguish *the application ran* from *SQL that reproduced what the application
+would have written*. Someone with INSERT/UPDATE on `CommandExecution` can always perform the
+protocol by hand in one transaction. The seal removes every SHAPE forgery — minting a terminal
+row, backdating, re-pointing a result, rewriting identity, adopting a stale reservation — which are
+the shapes bugs and careless maintenance actually produce, and each was one statement away before.
+
+The remainder is a privilege question, not a trigger question. **The role used for maintenance and
+migrations should not be the role the application runs as, and only the application role needs
+INSERT/UPDATE on `CommandExecution`.** Where the deployment uses a single role today, that is the
+gap; splitting it is the fix, and it applies to every provenance seal in the system, not only this
+one.
+
 ## §T45. Tasks 4–5 integrity-correction migration + repair (one-time, diagnostic-first)
 
 `20261231000000_phase3_t45_integrity_correction` makes PostgreSQL enforce the physical-truth

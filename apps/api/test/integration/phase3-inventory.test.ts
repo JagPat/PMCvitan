@@ -135,10 +135,21 @@ describe('Phase 3 Task 4 — inventory: receipts, acceptance, the §C stock ledg
   // NOT NULL before reaching the constraint under test.
   const freshCommand = async (projectId: string): Promise<string> => {
     const { orgId } = await t.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { orgId: true } });
-    const c = await t.prisma.commandExecution.create({
-      data: { scopeKind: 'project', organizationId: orgId, projectId, actorId: f.memberUser.id,
-        commandType: 'test.seal', idempotencyKey: `seal-${Date.now() % 1e6}-${seq++}`, requestHash: 'x', status: 'succeeded' },
-      select: { id: true },
+    // The receipt protocol is DB-sealed (20270425000000): a row is inserted `reserved` and
+    // completes exactly once. A fixture that minted a `succeeded` row directly is the forgery
+    // that seal exists to refuse, so the fixture follows the protocol like every real command.
+    const c = await t.prisma.$transaction(async (tx) => {
+      const created = await tx.commandExecution.create({
+        data: { scopeKind: 'project', organizationId: orgId, projectId, actorId: f.memberUser.id,
+          commandType: 'test.seal', idempotencyKey: `seal-${Date.now() % 1e6}-${seq++}`, requestHash: 'x', status: 'reserved' },
+        select: { id: true },
+      });
+      await tx.commandExecution.update({
+        // a non-blank `resultRef` is required on `succeeded` — a real command records the entity
+        // it produced, and this fixture stands in for one
+        where: { id: created.id }, data: { status: 'succeeded', resultRef: `fixture-${created.id}`, completedAt: new Date() },
+      });
+      return created;
     });
     return c.id;
   };

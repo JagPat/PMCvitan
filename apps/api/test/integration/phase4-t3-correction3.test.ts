@@ -147,8 +147,18 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
   /** a CommandExecution row so a RAW (service-bypassing) insert satisfies its provenance FK */
   const rawCommand = async (projectId: string, commandType: string): Promise<string> => {
     const project = await t.prisma.project.findFirstOrThrow({ where: { id: projectId }, select: { orgId: true } });
-    const c = await t.prisma.commandExecution.create({
-      data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType, idempotencyKey: `c3-${Date.now()}-${seq++}`, requestHash: 'c3', status: 'succeeded' },
+    // reserved-then-completed: the receipt protocol is DB-sealed (20270425000000), and a
+    // directly minted `succeeded` row is exactly the forgery it refuses.
+    const c = await t.prisma.$transaction(async (tx) => {
+      const created = await tx.commandExecution.create({
+        data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType, idempotencyKey: `c3-${Date.now()}-${seq++}`, requestHash: 'c3', status: 'reserved' },
+      });
+      await tx.commandExecution.update({
+        // a non-blank `resultRef` is required on `succeeded` — a real command records the entity
+        // it produced, and this fixture stands in for one
+        where: { id: created.id }, data: { status: 'succeeded', resultRef: `fixture-${created.id}`, completedAt: new Date() },
+      });
+      return created;
     });
     return c.id;
   };
