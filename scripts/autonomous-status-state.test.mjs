@@ -333,31 +333,47 @@ test('the committed docs/STATUS.md always leaves the runner a move', async () =>
 // before `work_item` is ever consulted. The test above passed while the runner was being pointed at
 // work that no longer exists as a unit.
 //
-// So the live file is asserted for AGREEMENT, not merely for a move: when the Now block names a
-// concrete `work_item`, the resolved next step must be that work item. Anything else means STATUS
-// is saying two different things to a human and to the runner, and the runner wins.
-test('the committed docs/STATUS.md sends the runner where it says it is sending it', async () => {
+// The first version of THIS test then made the mirror-image mistake, and review caught that too: it
+// demanded `work_item:*` exactly, with a hand-written exemption for open PRs — and a directive
+// recorded from `in_progress` legitimately outranks `work_item`, so the documented fix-forward path
+// would have failed CI. An exemption LIST is the wrong shape; it is one member short the first time
+// the module gains a precedence rule.
+//
+// So the assertion states the DEFECT instead. `directive:*` and `pr:*` are explicit higher-priority
+// claims that a reader of STATUS can see. `task:*` is the one outcome that ignores a named
+// `work_item` entirely and silently substitutes the parent — and it is the only one this can be
+// wrong about, because when `work_item` is set those four are the module's whole range.
+test('a named work_item is never silently overridden by a bare task step', async () => {
   const { now, maintenanceQueue } = await loadStatusDocument();
   const verdict = assessRunnerState(now, maintenanceQueue);
   const workItem = (now.work_item ?? '').trim().toLowerCase();
   if (!workItem || workItem === 'none') return;
 
-  // An open PR legitimately outranks the work item — it IS the current work until it closes.
-  const openPr = (now.open_pr ?? '').trim().toLowerCase();
-  if (openPr && openPr !== 'none') {
-    assert.equal(
-      verdict.nextStep,
-      `pr:${now.open_pr}`,
-      'an open PR must be the next step while it is open',
-    );
-    return;
-  }
-
-  assert.equal(
+  assert.ok(
     verdict.nextStep,
-    `work_item:${now.work_item}`,
-    `docs/STATUS.md names work_item '${now.work_item}' but the runner resolves `
-    + `'${verdict.nextStep}' — the prose and the machine input disagree, and the runner wins. `
-    + 'A merged increment must record task_state: merged so work_item is consulted.',
+    `docs/STATUS.md names work_item '${now.work_item}' but resolves no next step at all: ${verdict.reason}`,
   );
+  assert.ok(
+    !verdict.nextStep.startsWith('task:'),
+    `docs/STATUS.md names work_item '${now.work_item}' but the runner resolves `
+    + `'${verdict.nextStep}' — a bare task step ignores the work item and sends the loop to the `
+    + 'parent task. A merged increment must record task_state: merged so work_item is consulted.',
+  );
+});
+
+// …and the exemption is PROVEN rather than assumed: a directive recorded from `in_progress` with a
+// work item still in place must resolve to the directive, and must NOT trip the assertion above.
+test('a directive outranks work_item without tripping the override guard', () => {
+  const verdict = assessRunnerState({
+    phase: '5',
+    task: '5',
+    task_state: 'in_progress',
+    work_item: 'phase-5-task-5b',
+    open_pr: 'none',
+    blocking_directive: 'fix-forward-something',
+    next_task: 'phase-5-task-6',
+  });
+  assert.equal(verdict.actionable, true);
+  assert.equal(verdict.nextStep, 'directive:fix-forward-something');
+  assert.ok(!verdict.nextStep.startsWith('task:'), 'a directive is not a bare task step');
 });
