@@ -23,6 +23,7 @@ import { CommercialService } from './commercial.service';
 import { CommercialBudgetService } from './commercial-budget.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
 import { CommercialBillService } from './commercial-bill.service';
+import { CommercialVerificationService } from './commercial-verification.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
@@ -48,6 +49,7 @@ export class CommercialController {
     private readonly budget: CommercialBudgetService,
     private readonly measurement: CommercialMeasurementService,
     private readonly bills: CommercialBillService,
+    private readonly verification: CommercialVerificationService,
   ) {}
 
   /** §B — set or REVISE the live budget for one cost head. One command for both: v1 and a
@@ -183,6 +185,34 @@ export class CommercialController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.bills.beginVerification(projectId, body, user, idempotencyKey);
+  }
+
+  /**
+   * §E (Task 5A) — the three-way VERDICT. A matched claim moves `under-verification -> verified`;
+   * an exception moves it to `disputed`, naming the exception. It never auto-rejects: §E is
+   * explicit that an exception "requires a responsible review with an attributable reason to
+   * proceed" (spec §16), and the claim's own record is the evidence that review is about.
+   */
+  @Post('commercial/bills/verify')
+  @RolesFor('commercial.verify')
+  verifyBill(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(vendorBillStepSchema)) body: VendorBillStepInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.verification.verify(projectId, body, user, idempotencyKey);
+  }
+
+  /** §E — the triple as a READ, so a reviewer can see the verdict without moving the claim. */
+  @Get('commercial/bills/:billId/verification')
+  @RolesFor('commercial.read')
+  readVerification(
+    @Param('projectId') projectId: string,
+    @Param('billId') billId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.verification.readVerification(projectId, billId, user);
   }
 
   /** §F — amend into a NEW version retaining the prior verbatim; also RESOLVES a dispute. */

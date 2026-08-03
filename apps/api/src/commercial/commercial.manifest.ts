@@ -32,11 +32,11 @@ export const commercialManifest: ModuleManifest = {
   // `BILLED_QTY`/`BILLED_AMOUNT` are commercial folds and nothing outside commercial reads them.
   ownsModels: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
-    'vendorBill', 'vendorBillVersion', 'vendorBillLine',
+    'vendorBill', 'vendorBillVersion', 'vendorBillLine', 'billVerification',
   ],
   readEncapsulated: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
-    'vendorBill', 'vendorBillVersion', 'vendorBillLine',
+    'vendorBill', 'vendorBillVersion', 'vendorBillLine', 'billVerification',
   ],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the
@@ -64,6 +64,8 @@ export const commercialManifest: ModuleManifest = {
     'POST /projects/:projectId/commercial/bills',
     'POST /projects/:projectId/commercial/bills/submit',
     'POST /projects/:projectId/commercial/bills/begin-verification',
+    // Phase 5 Task 5A (§E) — the three-way verdict
+    'POST /projects/:projectId/commercial/bills/verify',
     'POST /projects/:projectId/commercial/bills/amend',
     'POST /projects/:projectId/commercial/bills/reject',
   ],

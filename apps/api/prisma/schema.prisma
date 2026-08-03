@@ -44,6 +44,7 @@ enum InspectionResult {
 }
 
 model Project {
+  billVerifications BillVerification[]
   id           String   @id
   name         String
   short        String
@@ -837,6 +838,7 @@ model DrawingAck {
 // dev auth (the "Viewing as" persona switch) is separate and gated by
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
+  billVerificationsVerified BillVerification[] @relation("billVerificationsVerified")
   id                String    @id @default(cuid())
   project           Project   @relation(fields: [projectId], references: [id])
   projectId         String
@@ -3182,7 +3184,8 @@ model VendorBill {
   /// §C rule ii — every fact records the command that produced it
   sourceCommandId String
 
-  versions VendorBillVersion[]
+  versions      VendorBillVersion[]
+  verifications BillVerification[]
 
   @@unique([projectId, id])
   /// the FK target proving a VERSION belongs to a bill of this vendor, and a LINE in turn
@@ -3300,4 +3303,52 @@ model VendorBillLine {
   @@index([projectId, labourPoLineId])
   // The XOR CHECK, the type↔reference correspondence, the sign CHECKs, the labour tax/freight
   // pin and the derived-amount CHECK all live in the migration.
+}
+
+/// Phase 5 Task 5A (§E) — the VERDICT, recorded.
+///
+/// §E says the triple is "derived, never stored", and this does not store it: the triple is still
+/// recomputed at every transition that depends on it. What this records is that a verification
+/// HAPPENED, by whom, over which claim version, and what it concluded — which is a different fact
+/// from the triple itself, and one the system needs for two reasons a derivation cannot serve:
+///
+///  1. `verified` must be the SHADOW OF A FACT, not a status a writer may assert. Without this row
+///     the database has no way to tell a verified claim from one somebody marked verified, and a
+///     2× over-rate claim can be walked straight past the §E check by direct SQL.
+///  2. An idempotency REPLAY must return what the original call concluded. Recomputing after the
+///     first call already disputed the bill folds WITHOUT it — §0 excludes a disputed claim — so a
+///     retry would answer `matched` and contradict the dispute that actually happened.
+///
+/// Append-only: it is the evidence behind a status, and a rewritable verdict is no verdict.
+model BillVerification {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  bill   VendorBill @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  billId String
+  /// the claim version verified. An amendment supersedes it, so a verdict cannot outlive the claim
+  /// it was computed over — which is what makes the trigger's check meaningful.
+  versionId String
+
+  /// `matched` | `exception`
+  verdict String
+  /// the §E exception kinds, empty on a match. Stored as the durable evidence a replay returns.
+  exceptions String[]
+
+  verifiedAt   DateTime @default(now())
+  verifiedBy   User     @relation("billVerificationsVerified", fields: [verifiedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  verifiedById String
+
+  /// the `commercial.bill.verify` execution that PRODUCED this verdict. The composite FK to
+  /// `CommandExecution(projectId, id)` and the `resultRef` back-reference are raw SQL — see
+  /// `VendorBill_verified_provenance`, the deferred half of the seal.
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  /// one command produces at most one verdict — a second row citing a spent command is the reuse
+  /// the provenance seal exists to refuse
+  @@unique([projectId, sourceCommandId])
+  @@index([projectId, billId])
+  @@index([projectId, versionId])
 }

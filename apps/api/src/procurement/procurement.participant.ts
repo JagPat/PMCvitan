@@ -290,11 +290,23 @@ export class ProcurementParticipant {
     tx: Prisma.TransactionClient,
     projectId: string,
     poLineId: string,
-  ): Promise<{ vendorId: string; uom: string; ordered: Prisma.Decimal; live: boolean; status: string } | null> {
+  ): Promise<{
+    vendorId: string; uom: string; ordered: Prisma.Decimal; live: boolean; status: string;
+    /** Phase 5 Task 5 (§E) — the FROZEN commercial terms the three-way check compares a claim
+     *  against. They are returned from the same locked read rather than fetched separately: a
+     *  second read is a second snapshot, and §E's whole point is that every side of the triple is
+     *  taken under one lock. `orderedQty` is the frozen quantity WITHOUT overage, because §E's
+     *  pro-rata tax and freight cap scales by `min(BILLED_QTY, qty) / qty` — overage is authorised
+     *  as QUANTITY and freezes no additional tax or freight. */
+    rate: Prisma.Decimal; taxAmount: Prisma.Decimal; freightAmount: Prisma.Decimal; orderedQty: Prisma.Decimal;
+  } | null> {
     const rows = await tx.$queryRaw<
-      Array<{ vendorId: string; uom: string; qty: Prisma.Decimal; approvedOverage: Prisma.Decimal; poVersionId: string }>
+      Array<{
+        vendorId: string; uom: string; qty: Prisma.Decimal; approvedOverage: Prisma.Decimal; poVersionId: string;
+        rate: Prisma.Decimal; taxAmount: Prisma.Decimal; freightAmount: Prisma.Decimal;
+      }>
     >`
-      SELECT "vendorId", "uom", "qty", "approvedOverage", "poVersionId"
+      SELECT "vendorId", "uom", "qty", "approvedOverage", "poVersionId", "rate", "taxAmount", "freightAmount"
         FROM "PurchaseOrderLine"
        WHERE "projectId" = ${projectId} AND "id" = ${poLineId}
        FOR UPDATE`;
@@ -314,6 +326,10 @@ export class ProcurementParticipant {
       ordered: line.qty.add(line.approvedOverage),
       live: ['issued', 'partially_received', 'completed', 'closed_short'].includes(version.status),
       status: version.status,
+      rate: line.rate,
+      taxAmount: line.taxAmount,
+      freightAmount: line.freightAmount,
+      orderedQty: line.qty,
     };
   }
 

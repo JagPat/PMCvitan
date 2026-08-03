@@ -88,6 +88,35 @@ export class CommercialBillQuery {
   }
 
   /**
+   * `BILLED_TAX(poLine)` and `BILLED_FREIGHT(poLine)` (§0) — the same LIVE rule, in the two money
+   * components §E caps PRO-RATA rather than comparing whole.
+   *
+   * They are folded here beside `BILLED_QTY` and `BILLED_AMOUNT` for the reason §0 exists at all:
+   * a caller that re-derived "which rows count" locally would get it wrong in its own way, and
+   * these two are compared against a frozen LINE-level ordered amount, so a drifted filter shows
+   * up as a vendor disputed for an honest partial bill.
+   */
+  async billedTaxAndFreightFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: 'material' | 'labour',
+    poLineId: string,
+  ): Promise<{ tax: Prisma.Decimal; freight: Prisma.Decimal }> {
+    const rows = await tx.vendorBillLine.findMany({
+      where: {
+        projectId,
+        ...(kind === 'material' ? { poLineId } : { labourPoLineId: poLineId }),
+        version: { is: LIVE_VERSION },
+      },
+      select: { taxAmount: true, freightAmount: true },
+    });
+    return {
+      tax: rows.reduce((a, r) => a.add(r.taxAmount), ZERO),
+      freight: rows.reduce((a, r) => a.add(r.freightAmount), ZERO),
+    };
+  }
+
+  /**
    * The LIVE claims drawing on ONE purchase-order line, NEWEST FIRST.
    *
    * Newest-first is the order the withdrawal disposition disputes in (§E, probe 5an), and it is

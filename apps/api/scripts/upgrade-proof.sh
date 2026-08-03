@@ -1842,10 +1842,58 @@ assert_rejects "commercial T4 R6-F3: PRE-LOADING an exit reason at creation (a j
   "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"statusReason\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-BP','p1','UP45-VEN','INV-PRE','2026-08-26','draft','pre-loaded','USER-1','UP45-CMD')"
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
-assert_rejects "commercial T4 R2-F3: the arrow into VERIFIED, whose safety is the §E verdict Task 5 ships" \
-  "UPDATE \"VendorBill\" SET \"status\"='verified' WHERE \"id\"='UPT4-B3'"
-assert_rejects "commercial T4 R2-F3: the arrow into CERTIFIED, with no certificate table in this tree" \
+# Task 5A — the §E verdict now EXISTS, so the arrow whose safety is that verdict opens. This
+# assertion is inverted deliberately, and its Task-4 label said so in advance: "whose safety is the
+# §E verdict Task 5 ships". A seal is only correct while the evidence behind it is absent.
+# …but ONLY behind the verdict that makes it safe. `verified` is the SHADOW of a matched §E verdict
+# over the CURRENT claim version, so the bare status update is refused first.
+assert_rejects "commercial T5A §E: marking a claim VERIFIED with no §E verdict recorded (a status is not a verdict)" \
+  "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
+# A verdict is only a verdict if `commercial.bill.verify` produced it, so the fixture needs a command
+# of that type — `UP45-CMD` is a `test.up45` row, and the provenance seal correctly refuses it.
+# The fixture receipts follow the PROTOCOL — reserved and completed in ONE transaction, carrying
+# a result — because the platform seal (20270425000000) now refuses anything else. That is the
+# floor this §E provenance seal rests on, and building the fixture through it is what makes the
+# assertions below about §E rather than about the floor.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5A-CMDX','project','org-legacy','p1','USER-1','commercial.bill.verify','upt5a-elsewhere','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='SOME-OTHER-ENTITY', \"completedAt\"=now() WHERE \"id\"='UPT5A-CMDX'; COMMIT;" 2>/dev/null
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5A-CMD','project','org-legacy','p1','USER-1','commercial.bill.verify','upt5a-verify','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5A-V1', \"completedAt\"=now() WHERE \"id\"='UPT5A-CMD'; COMMIT;" 2>/dev/null
+$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-VX','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UP45-CMD')" 2>/dev/null
+assert_rejects "commercial T5A §E: a verdict whose source command is NOT commercial.bill.verify cannot license VERIFIED (provenance, not mere presence)" \
+  "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
+# Codex round-4 — the command must have PRODUCED this verdict, not merely be of the right type.
+# `UPT5A-CMDX` is a perfectly well-formed verify receipt: reserved and completed in one transaction,
+# carrying a real result. It simply produced something that is not this verdict, and `resultRef` is
+# the binding, so the deferred half of the seal refuses at COMMIT.
+$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-VE','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UPT5A-CMDX')" 2>/dev/null
+assert_rejects "commercial T5A R4-F3: a verify-TYPED command that did not produce this verdict cannot license VERIFIED (resultRef, not just commandType)" \
+  "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
+$PSQL >/dev/null -c "DELETE FROM \"BillVerification\" WHERE \"id\"='UPT5A-VE'" 2>/dev/null
+$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-V1','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UPT5A-CMD')" 2>/dev/null
+assert_rejects "commercial T5A R4-F3: a SECOND verdict citing a command that already produced one (one command, one verdict)" \
+  "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-V2','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UPT5A-CMD')"
+assert_rejects "commercial T5A §E: EDITING a recorded verdict (a rewritable verdict is no verdict)" \
+  "UPDATE \"BillVerification\" SET \"verdict\"='exception' WHERE \"id\"='UPT5A-V1'"
+assert_rejects "commercial T5A §E: a MATCHED verdict carrying exceptions (a verdict that says both is not a verdict)" \
+  "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"exceptions\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-X1','p1','UPT4-B3','UPT4-BV3','matched',ARRAY['rate-mismatch'],'USER-1','UP45-CMD')"
+# Codex round-4 — the exception VOCABULARY, not merely its cardinality: §E names six kinds and each
+# names its own check, so a seventh string is a defect that reads as a verdict.
+assert_rejects "commercial T5A R4-F5: an exception recorded as free prose (a name with no check behind it)" \
+  "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"exceptions\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-X2','p1','UPT4-B3','UPT4-BV3','exception',ARRAY['looks wrong'],'USER-1','UP45-CMD')"
+assert_rejects "commercial T5A R4-F5: an exception array holding NULL (containment alone passes on NULL)" \
+  "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"exceptions\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-X3','p1','UPT4-B3','UPT4-BV3','exception',ARRAY[NULL]::TEXT[],'USER-1','UP45-CMD')"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
+  && printf 'ok      %s\n' "commercial T5A §E: under-verification -> VERIFIED is ACCEPTED once a MATCHED verdict stands (the seal is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T5A §E: the verified arrow was rejected behind a matched verdict"; FAIL=1; }
+# …and NOT one step further. `certified` is 5B's, with the certificate that is its evidence; the
+# arrows past it are Task 6's. A status whose evidence does not exist is a status nobody can justify.
+assert_rejects "commercial T5A §F: the arrow into CERTIFIED, with no certificate table in this tree" \
   "UPDATE \"VendorBill\" SET \"status\"='certified' WHERE \"id\"='UPT4-B3'"
+assert_rejects "commercial T5A §F: the arrow into APPROVED-FOR-PAYMENT, whose evidence is Task 6's" \
+  "UPDATE \"VendorBill\" SET \"status\"='approved-for-payment' WHERE \"id\"='UPT4-B3'"
+# Codex round-4 — `verified -> submitted` is the AMENDMENT arrow. Opened without requiring the
+# amendment, one UPDATE re-opens a verified claim for re-verification with no new claim behind it.
+assert_rejects "commercial T5A R4-F4: VERIFIED -> submitted with no replacement version (the amendment arrow without the amendment)" \
+  "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
 # …while the arrows this task DOES own still work — the seal is precise, not merely strict
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
   && printf 'ok      %s\n' "commercial T4 R2-F3: under-verification -> disputed is ACCEPTED (the arrows this task owns still work)" \
