@@ -113,6 +113,19 @@ export const ROLE_POLICY = {
   // verification (`submitted → under-verification`); the VERDICT and everything it authorises
   // land in Task 5 with the evidence that makes them safe.
   'commercial.verify': ['pmc'],
+  // Phase 5 Task 5B (§E/§F/§I) — CERTIFYING a claim, and SUPERSEDING a certificate.
+  //
+  // Separate from `commercial.verify` even though both resolve to `pmc` today, because they are
+  // different authorities that happen to coincide: verification is an arithmetic check anyone
+  // trusted with the register may run, certification CREATES MONEY someone may approve. Collapsing
+  // them would mean a later widening of the verification surface silently widened the payment
+  // authority too — and §I's own rule is that a permission the manifest does not declare is not a
+  // documentation gap, it is an unauthorized write path.
+  //
+  // §I's segregation rule is NOT this permission. It is a per-act check against the evidence the
+  // certificate consumes, evaluated server-side under the bill lock, with a named and attributable
+  // exception path — a role list cannot express "not the person who recorded THIS evidence".
+  'commercial.certify': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

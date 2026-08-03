@@ -51,6 +51,8 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     // reads four modules' evidence under a five-step lock order, and folding that into the claim
     // lifecycle would make one file own both "what the vendor says" and "whether it is true".
     'commercial.bill.verify': { file: 'commercial/commercial-verification.service.ts', needle: "'commercial.bill.verify'" },
+    'commercial.bill.certify': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.bill.certify'" },
+    'commercial.certificate.supersede': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.certificate.supersede'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
     'commercial.costHeads': "Get('commercial/cost-heads')",
@@ -60,6 +62,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.bills': "Get('commercial/bills')",
     'commercial.bill': "Get('commercial/bills/:billId')",
     'commercial.verification': "Get('commercial/bills/:billId/verification')",
+    'commercial.certificate': "Get('commercial/bills/:billId/certificate')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {

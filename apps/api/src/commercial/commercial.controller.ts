@@ -1,21 +1,25 @@
 import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
 import {
   amendVendorBillSchema,
+  certifyBillSchema,
   correctMeasurementSchema,
   defineCostHeadSchema,
   reattributeSchema,
   recordVendorBillSchema,
   rejectVendorBillSchema,
   setBudgetSchema,
+  supersedeCertificateSchema,
   takeMeasurementSchema,
   vendorBillStepSchema,
   type AmendVendorBillInput,
+  type CertifyBillInput,
   type CorrectMeasurementInput,
   type DefineCostHeadInput,
   type ReattributeInput,
   type RecordVendorBillInput,
   type RejectVendorBillInput,
   type SetBudgetInput,
+  type SupersedeCertificateInput,
   type TakeMeasurementInput,
   type VendorBillStepInput,
 } from '../contracts';
@@ -24,6 +28,7 @@ import { CommercialBudgetService } from './commercial-budget.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
 import { CommercialBillService } from './commercial-bill.service';
 import { CommercialVerificationService } from './commercial-verification.service';
+import { CommercialCertificationService } from './commercial-certification.service';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
@@ -50,6 +55,7 @@ export class CommercialController {
     private readonly measurement: CommercialMeasurementService,
     private readonly bills: CommercialBillService,
     private readonly verification: CommercialVerificationService,
+    private readonly certification: CommercialCertificationService,
   ) {}
 
   /** §B — set or REVISE the live budget for one cost head. One command for both: v1 and a
@@ -213,6 +219,48 @@ export class CommercialController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.verification.readVerification(projectId, billId, user);
+  }
+
+  /**
+   * §E/§F/§I (Task 5B) — CERTIFY a verified claim. `verified -> certified`, with the certificate
+   * as the fact and the status as its projection.
+   *
+   * `commercial.certify` rather than `commercial.verify`: certification creates money someone may
+   * approve, and collapsing the two would mean a later widening of the verification surface
+   * silently widened the payment authority too.
+   */
+  @Post('commercial/bills/certify')
+  @RolesFor('commercial.certify')
+  certifyBill(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(certifyBillSchema)) body: CertifyBillInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.certification.certify(projectId, body, user, idempotencyKey);
+  }
+
+  /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */
+  @Post('commercial/certificates/supersede')
+  @RolesFor('commercial.certify')
+  supersedeCertificate(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(supersedeCertificateSchema)) body: SupersedeCertificateInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.certification.supersede(projectId, body, user, idempotencyKey);
+  }
+
+  /** §E — the LIVE certificate on a claim, with the evidence it froze. 404 when none stands. */
+  @Get('commercial/bills/:billId/certificate')
+  @RolesFor('commercial.read')
+  readCertificate(
+    @Param('projectId') projectId: string,
+    @Param('billId') billId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.certification.readCertificate(projectId, billId, user);
   }
 
   /** §F — amend into a NEW version retaining the prior verbatim; also RESOLVES a dispute. */
