@@ -256,7 +256,7 @@ returns the number the probe was hoping for.
 | Gate | Result |
 |---|---|
 | Focused probe suite `phase5-t4-vendor-bill.test.ts` | **38/38** — 23 of them the round-1..6 findings, each RED before its fix |
-| Full integration suite, pristine migrated DB | **76 files / 799 tests**, zero failures |
+| Full integration suite, pristine migrated DB | **76 files / 802 tests**, zero failures |
 | `pnpm check` | EXIT 0 — web 543/543, API 718/718 |
 | `upgrade-proof.sh` | PASSED — Task-4 assertions with acceptance cases beside the rejections |
 | `test:e2e:api:allmodules` / `:outbox` | 35/35 · 29/29 |
