@@ -207,6 +207,9 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     return bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
   };
 
+  const openExceptions = (projectId: string) =>
+    t.prisma.budgetException.findMany({ where: { projectId, clearedAt: null }, orderBy: { costHeadCode: 'asc' } });
+
   const positionOf = (projectId: string, code: string) =>
     t.prisma.$transaction(async (tx) => (await budgetQuery.positionsFor(tx, projectId, [code])).get(code)!);
 
@@ -1018,6 +1021,86 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     position = await positionOf(projectId, 'CIVIL');
     expect(position.receivedNotBilled.toString()).toBe('100');
     expect(position.awaitingCertification.toString()).toBe('0');
+  });
+
+  // ── Codex round-3 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R3-F1 — the other half of R2-F4, and my own fix one level short AGAIN. Wiring `BILLED_AMOUNT`
+   * into the position made a live claim able to MOVE exposure — my own clamp comment said so ("an
+   * unverified over-rate claim IS extra exposure") — and §B's rule is that every write which can
+   * move headroom raises or clears the exception in the SAME transaction. The bill transitions
+   * moved the money and evaluated nothing, so the budget READ could report negative headroom while
+   * the exception register stayed empty: two surfaces built from the same folds disagreeing.
+   */
+  it('R3-F1 (§B): a claim that moves exposure raises the over-budget exception in its own transaction, and clears it when the claim leaves', async () => {
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+
+    expect(await openExceptions(projectId)).toHaveLength(0);
+    expect((await positionOf(projectId, 'CIVIL')).headroom!.toString()).toBe('0');
+
+    // the §E RATE check is Task 5's, so a claim at TWICE the ordered rate passes the quantity
+    // bounds and lands live — carrying ₹200 of exposure against a ₹100 budget
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '100', { rate: '2' });
+    expect(bill.status).toBe('submitted');
+    const breached = await positionOf(projectId, 'CIVIL');
+    expect(breached.awaitingCertification.toString()).toBe('200');
+    expect(breached.headroom!.toString()).toBe('-100');
+    const open = await openExceptions(projectId);
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ costHeadCode: 'CIVIL', raisedBy: 'claim' });
+
+    // …and rejecting the claim gives the exposure back and CLEARS it — an append-only register
+    // left flagging a breach that no longer exists is the same defect in the other direction
+    await bills.reject(projectId, { billId: bill.id, reason: 'rate does not match the order' }, pmc(projectId));
+    expect((await positionOf(projectId, 'CIVIL')).headroom!.toString()).toBe('0');
+    expect(await openExceptions(projectId)).toHaveLength(0);
+  });
+
+  /** R3-F2 — `statusChangedAt` records WHEN a claim left the live fold; same-status rewrites erase it. */
+  it('R3-F2 (§F): statusChangedAt moves only WITH the transition that sets it', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '10');
+    await bills.reject(projectId, { billId: bill.id, reason: 'wrong purchase order' }, pmc(projectId));
+    const stamped = (await t.prisma.vendorBill.findFirstOrThrow({ where: { id: bill.id } })).statusChangedAt;
+
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "statusChangedAt"='2020-01-01T00:00:00Z' WHERE "id"=$1`, bill.id,
+    )).rejects.toThrow(/FROZEN/u);
+    expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { id: bill.id } })).statusChangedAt.toISOString())
+      .toBe(stamped.toISOString());
+  });
+
+  /**
+   * R3-F3 — round 2 sealed the ARROWS and left CREATION open: the lifecycle trigger was BEFORE
+   * UPDATE OR DELETE only, so a direct insert could start a bill AT `certified` and skip every
+   * arrow. The statuses have to stay in the CHECK vocabulary for §0's LIVE rule, which is exactly
+   * why the entry point needs its own guard.
+   */
+  it('R3-F3 (§F): a claim can only be CREATED at draft — a bill cannot start life past its evidence', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const commandId = (await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId } })).id;
+
+    for (const status of ['certified', 'verified', 'paid', 'submitted']) {
+      await expect(t.prisma.$executeRawUnsafe(
+        `INSERT INTO "VendorBill" ("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+         VALUES ($1,$2,$3,$4,'2026-08-20',$5,$6,$7)`,
+        `r3f3-${status}`, projectId, line.vendorId, `R3-${status}`, status, f.memberUser.id, commandId,
+      )).rejects.toThrow(/created at 'draft'/u);
+    }
+    // …and the legitimate creation still works, so the guard is precise rather than merely strict
+    const ok = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: 'R3-OK', documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
+    }, pmc(projectId));
+    expect(ok.status).toBe('draft');
   });
 
   // ── §D/§I — capability gating and authority ───────────────────────────────────────────────────

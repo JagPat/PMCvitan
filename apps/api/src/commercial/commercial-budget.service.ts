@@ -44,6 +44,11 @@ import type { SetBudgetInput } from '../contracts';
  * The DB CHECK on `BudgetException.raisedBy` pins exactly this set.
  */
 export type HeadroomMover =
+  // Phase 5 Task 4 (Codex round-3) — a live CLAIM moves exposure. Wiring `BILLED_AMOUNT` into the
+  // position is what made it a mover: an over-rate claim (the §E rate check is Task 5's) carries
+  // more exposure than the received value it draws on, so §B's "every write that can move headroom
+  // raises or clears the exception in the SAME transaction" now covers the bill lifecycle too.
+  | 'claim'
   | 'commitment'
   | 'budget_revision'
   | 'reattribution'

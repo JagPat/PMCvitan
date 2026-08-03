@@ -89,7 +89,7 @@ async function main(): Promise<void> {
           new CommercialBillService(
             prisma, capabilitiesService, new ProcurementParticipant(new RequirementsQueryService()),
             new LabourRequirementParticipant(), new InventoryQuery(prisma),
-            new CommercialBillQuery(), new CommercialMeasurementQuery(),
+            new CommercialBillQuery(), new CommercialMeasurementQuery(), budgetService,
           ),
         ),
         new ProcurementQuery(prisma),

@@ -429,6 +429,13 @@ BEGIN
      AND (NEW."status" IS NOT DISTINCT FROM OLD."status" OR NEW."status" NOT IN ('disputed', 'rejected')) THEN
     RAISE EXCEPTION 'A vendor bill''s exit reason is FROZEN — it explains the transition that set it, and a rewritable justification is no justification (%)', OLD."id";
   END IF;
+  -- Codex round-3 — and so is WHEN it happened. `statusChangedAt` is the other half of the same
+  -- evidence: the read surface reports it, and a same-status update could rewrite when a claim
+  -- left the live fold with no transition having occurred. It moves only WITH the arrow.
+  IF NEW."statusChangedAt" IS DISTINCT FROM OLD."statusChangedAt"
+     AND NEW."status" IS NOT DISTINCT FROM OLD."status" THEN
+    RAISE EXCEPTION 'A vendor bill''s status timestamp is FROZEN outside its transition — it records WHEN the claim moved (%)', OLD."id";
+  END IF;
   IF NEW."status" IS DISTINCT FROM OLD."status" THEN
     IF NOT (
       -- Codex round-2 — Task 4 stops SHORT of `verified`, and the ARROWS have to stop there too.
@@ -453,6 +460,25 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS "VendorBill_lifecycle" ON "VendorBill";
 CREATE TRIGGER "VendorBill_lifecycle" BEFORE UPDATE OR DELETE ON "VendorBill"
   FOR EACH ROW EXECUTE FUNCTION phase5_t4_bill_lifecycle();
+
+-- Codex round-3 — the ENTRY POINT needed its own guard. Round 2 stopped the arrows past
+-- `under-verification`, but the lifecycle trigger fires on UPDATE and DELETE only, so a direct
+-- insert could START a claim at `certified` and skip every arrow that was just sealed. The
+-- statuses must stay in the CHECK vocabulary (§0's LIVE rule is defined over the whole set), which
+-- is precisely why creation has to be constrained separately: a claim begins where the evidence
+-- for it begins, and in this tree that is `draft`.
+CREATE OR REPLACE FUNCTION phase5_t4_bill_created_draft() RETURNS trigger AS $$
+BEGIN
+  IF NEW."status" <> 'draft' THEN
+    RAISE EXCEPTION 'A vendor bill is created at ''draft'' and moves by attributable transition — it cannot start life at ''%'' (%)', NEW."status", NEW."id";
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "VendorBill_created_draft" ON "VendorBill";
+CREATE TRIGGER "VendorBill_created_draft" BEFORE INSERT ON "VendorBill"
+  FOR EACH ROW EXECUTE FUNCTION phase5_t4_bill_created_draft();
 
 -- §F — a claim VERSION is immutable except the ONE supersession stamp, and a claim LINE is
 -- fully immutable. The ordinary append-only shape this repository already uses.
@@ -779,6 +805,13 @@ CREATE CONSTRAINT TRIGGER "Measurement_billed_bound_sealed"
   AFTER INSERT ON "Measurement" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW WHEN (NEW."quantity" < 0)
   EXECUTE FUNCTION phase5_t4_measurement_withdrawn();
+
+-- Codex round-3 — a live CLAIM is a headroom mover (§B), because wiring `BILLED_AMOUNT` into the
+-- position made it one: an over-rate claim raises exposure above the received value. The exception
+-- register's own vocabulary has to admit the label, or the raise fails its CHECK.
+ALTER TABLE "BudgetException" DROP CONSTRAINT IF EXISTS "BudgetException_raisedBy_check";
+ALTER TABLE "BudgetException" ADD CONSTRAINT "BudgetException_raisedBy_check"
+  CHECK ("raisedBy" IN ('commitment', 'budget_revision', 'reattribution', 'acceptance', 'receipt_progress', 'measurement', 'claim'));
 
 -- A legacy database upgrades with the three new tables ROW-FREE. Nothing here creates a bill:
 -- the vendor pinning above copies an existing chain onto existing lines, and a claim is always

@@ -1734,24 +1734,43 @@ assert_rejects "commercial T4 F3: stamping the ONLY version superseded with no r
 assert_rejects "commercial T4 R2-F1: EDITING lineCount, the evidence that closes a version's line set" \
   "UPDATE \"VendorBillVersion\" SET \"lineCount\"=2 WHERE \"id\"='UPT4-BV1'"
 # R2-F3 — Task 4 owns the arrows up to `under-verification`; the rest wait for their evidence
-$PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-B3','p1','UP45-VEN','INV-003','2026-08-22','under-verification','USER-1','UP45-CMD')" 2>/dev/null
+# Codex round-3 F3 — a claim is CREATED at draft and walks its arrows; this fixture used to insert
+# straight at `under-verification`, and the new creation guard correctly refuses that. Walking the
+# arrows is also a better fixture: it exercises the transitions this task owns on the way in.
+$PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-B3','p1','UP45-VEN','INV-003','2026-08-22','draft','USER-1','UP45-CMD')" 2>/dev/null
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
 assert_rejects "commercial T4 R2-F3: the arrow into VERIFIED, whose safety is the §E verdict Task 5 ships" \
   "UPDATE \"VendorBill\" SET \"status\"='verified' WHERE \"id\"='UPT4-B3'"
 assert_rejects "commercial T4 R2-F3: the arrow into CERTIFIED, with no certificate table in this tree" \
   "UPDATE \"VendorBill\" SET \"status\"='certified' WHERE \"id\"='UPT4-B3'"
 # …while the arrows this task DOES own still work — the seal is precise, not merely strict
-$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='evidence withdrawn' WHERE \"id\"='UPT4-B3'" \
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
   && printf 'ok      %s\n' "commercial T4 R2-F3: under-verification -> disputed is ACCEPTED (the arrows this task owns still work)" \
   || { printf 'FAILED  %s\n' "commercial T4 R2-F3: a legal Task-4 transition was rejected"; FAIL=1; }
 # R2-F2 — resolving a dispute must not overwrite WHY it was disputed
 assert_rejects "commercial T4 R2-F2: overwriting a dispute reason on the way to RESOLVED" \
   "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusReason\"='vendor corrected the claim' WHERE \"id\"='UPT4-B3'"
-$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='resolved' WHERE \"id\"='UPT4-B3'" \
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
   && printf 'ok      %s\n' "commercial T4 R2-F2: resolving WITHOUT touching the reason is ACCEPTED, and the dispute evidence survives" \
   || { printf 'FAILED  %s\n' "commercial T4 R2-F2: a clean resolution was rejected"; FAIL=1; }
 assert "commercial T4 R2-F2: the resolved bill still records WHY it left the live fold" \
   "SELECT \"statusReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B3';" \
   "evidence withdrawn"
+# ── Codex round-3 findings, sealed at PostgreSQL ─────────────────────────────────────────────
+# R3-F2 — WHEN a claim left the live fold is evidence too
+assert_rejects "commercial T4 R3-F2: rewriting statusChangedAt outside the transition that set it" \
+  "UPDATE \"VendorBill\" SET \"statusChangedAt\"='2020-01-01T00:00:00Z' WHERE \"id\"='UPT4-B3'"
+# R3-F3 — round 2 sealed the ARROWS; creation needed its own guard
+assert_rejects "commercial T4 R3-F3: CREATING a claim already at 'certified', skipping every arrow" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XC','p1','UP45-VEN','INV-CERT','2026-08-23','certified','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 R3-F3: CREATING a claim already at 'submitted'" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XS','p1','UP45-VEN','INV-SUB','2026-08-23','submitted','USER-1','UP45-CMD')"
+# R3-F1 — a live CLAIM is a headroom mover, so the register's vocabulary admits it
+$PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPT4-BXCL','p1','MEP',-25.00,100.00,125.00,'claim','USER-1')" \
+  && printf 'ok      %s\n' "commercial T4 R3-F1: an exception raised by a live CLAIM is accepted (the seventh mover)" \
+  || { printf 'FAILED  %s\n' "commercial T4 R3-F1: the claim-raised exception was rejected"; FAIL=1; }
+$PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPT4-BXCL'" >/dev/null
 
 echo ""
 if [ "$FAIL" = "0" ]; then

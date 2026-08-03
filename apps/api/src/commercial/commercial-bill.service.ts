@@ -17,6 +17,7 @@ import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBillQuery } from './commercial-bill.query';
+import { CommercialBudgetService } from './commercial-budget.service';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import type {
   AmendVendorBillInput, RecordVendorBillInput, RejectVendorBillInput, VendorBillStepInput,
@@ -69,6 +70,7 @@ export class CommercialBillService {
     private readonly inventory: InventoryQuery,
     private readonly bills: CommercialBillQuery,
     private readonly measured: CommercialMeasurementQuery,
+    private readonly budget: CommercialBudgetService,
   ) {}
 
   private assertBill(user: AuthUser): void {
@@ -355,6 +357,10 @@ export class CommercialBillService {
         if (breach && !resolving) {
           await this.cas(tx, projectId, bill.id, nextStatus, 'disputed', breach);
         }
+        // §B — an amendment replaces the live claim, so BOTH the retired and the new lines' heads
+        // are re-evaluated: the union is what `claimTargets` returns after the swap plus the lines
+        // this amendment dropped.
+        await this.evaluateClaimHeads(tx, projectId, { actorId: actor.actorId, role: user.role }, [...lines, ...await this.claimTargets(tx, projectId, bill.id)]);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.amend', entity: 'VendorBill', entityId: bill.id,
         });
@@ -420,6 +426,9 @@ export class CommercialBillService {
             await this.cas(tx, projectId, billId, opts.to, 'disputed', breach);
           }
         }
+        // §B — the claim entered or left the live fold, so the heads it touches are re-evaluated
+        // in THIS transaction (Codex round-3)
+        await this.evaluateClaimHeads(tx, projectId, { actorId: actor.actorId, role: user.role }, await this.claimTargets(tx, projectId, billId));
         await recordAudit(tx, { projectId, actor, action: opts.commandType, entity: 'VendorBill', entityId: billId });
         return { resultRef: billId, events: [] };
       },
@@ -433,6 +442,64 @@ export class CommercialBillService {
    * illegal arrow too; this returns the honest 409 rather than letting a raw trigger error
    * surface as a 500.
    */
+  /**
+   * §B (Codex round-3) — a claim entering or leaving the LIVE fold moves exposure, so every path
+   * that moves one re-evaluates the affected cost heads in its OWN transaction.
+   *
+   * Wiring `BILLED_AMOUNT` into the position (round 2) is what made a claim a headroom mover: while
+   * a claim stays within the received value the money only changes BUCKET and headroom is
+   * unchanged, but an over-rate claim carries more exposure than the receipt it draws on — the §E
+   * rate check that would refuse it is Task 5's. Leaving the register unevaluated let the budget
+   * READ report negative headroom while the exception table stayed empty: two surfaces built from
+   * the same folds disagreeing, which is exactly what §B's same-transaction rule exists to prevent.
+   *
+   * The heads are resolved from commercial's own attribution register by the participant, so this
+   * path never has to learn which cost head carries which PO line.
+   */
+  private async evaluateClaimHeads(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: { actorId: string; role: string },
+    lines: ReadonlyArray<{ kind: 'material' | 'labour'; poLineId: string }>,
+  ): Promise<void> {
+    const seen = new Set<string>();
+    const heads = new Set<string>();
+    for (const l of lines) {
+      const key = `${l.kind} ${l.poLineId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // commercial's OWN attribution register answers which head carries this line — the same
+      // question `CommercialParticipant.evaluateForTarget` asks, resolved here because the
+      // participant already injects THIS service and the reverse edge would close a cycle.
+      const active = await tx.commitmentAttribution.findFirst({
+        where: {
+          projectId, supersededAt: null,
+          ...(l.kind === 'material' ? { poLineId: l.poLineId } : { labourPoLineId: l.poLineId }),
+        },
+        select: { costHeadCode: true },
+      });
+      // an UNATTRIBUTED line carries no head to evaluate — nothing a budget can measure moved
+      if (active) heads.add(active.costHeadCode);
+    }
+    if (heads.size > 0) {
+      await this.budget.evaluate(tx, projectId, actor.actorId, [...heads], 'claim');
+    }
+  }
+
+  /** The PO lines a bill's CURRENT version claims against — the heads a transition may move. */
+  private async claimTargets(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<Array<{ kind: 'material' | 'labour'; poLineId: string }>> {
+    const version = await tx.vendorBillVersion.findFirst({
+      where: { projectId, billId, supersededAt: null },
+      select: { lines: { select: { type: true, poLineId: true, labourPoLineId: true } } },
+    });
+    return (version?.lines ?? []).map((l) => ({
+      kind: l.type as 'material' | 'labour',
+      poLineId: (l.poLineId ?? l.labourPoLineId)!,
+    }));
+  }
+
   private async cas(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
     from: string, to: VendorBillStatus, reason: string | null,

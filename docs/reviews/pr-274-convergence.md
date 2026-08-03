@@ -1,12 +1,14 @@
 # PR #274 — architectural convergence audit (Phase 5 Task 4)
 
-Two finding-bearing heads, eight findings. Per `CLAUDE.md`, from the third head on this stops being
-another isolated patch: it names the ROOT the findings share and leaves a mechanical closure behind.
+Three finding-bearing heads, eleven findings. Per `CLAUDE.md`, from the third head on this stops
+being another isolated patch: it names the ROOT the findings share and leaves a mechanical closure
+behind.
 
 | Head | Findings | |
 |---|---|---|
 | `61adb3d` | 4 | 1×P1 a bound reading a stale authority, 3×P2 seals that froze the wrong thing |
 | `b4bb720` | 4 | 4×P2 — two of them the round-1 fixes, one level short |
+| `a1a4087` | 3 | 3×P2 — one the round-2 fix one level short, two more entry points of root B |
 
 ---
 
@@ -22,6 +24,9 @@ another isolated patch: it names the ROOT the findings share and leaves a mechan
 | 6 | `b4bb720` | P2 | Finding 2's own fix keyed on "the status changed", so `disputed → resolved` still overwrote the breach reason with an amendment note | **C** |
 | 7 | `b4bb720` | P2 | The PG lifecycle listed the whole §F graph, so maintenance SQL could mark a claim `verified`/`certified` in a tree with no verdict and no certificate | **A** |
 | 8 | `b4bb720` | P2 | `billedAmountFor` was built and never called, so a live claim left the budget reporting billed work as unbilled | **D** |
+| 9 | `a1a4087` | P2 | Finding 8's own fix made a claim a headroom mover and did not evaluate the exception, so the budget READ could report negative headroom with the register empty | **C** |
+| 10 | `a1a4087` | P2 | `statusChangedAt` — WHEN a claim left the live fold — was rewritable on a same-status update | **B** |
+| 11 | `a1a4087` | P2 | The lifecycle trigger was `BEFORE UPDATE OR DELETE`, so a direct INSERT could START a bill at `certified`, skipping every arrow round 2 had just sealed | **B** |
 
 ---
 
@@ -70,20 +75,29 @@ proves it writable.**
   permitted transition* was not — and the partial unique forbade two current versions while
   permitting zero.
 - The line was frozen against edit and delete; the *set of lines* was not.
+- (round 3) The status and its reason were frozen; the *timestamp recording when it changed* was
+  not — finding 10.
+- (round 3) Every ARROW was sealed; the *entry point* was not, so a direct insert could start a
+  claim at `certified` and skip the graph entirely — finding 11. Sealing transitions without
+  sealing creation is the same omission at the one place a lifecycle has no predecessor.
 
 Each is defensible in isolation and indefensible together, which is what makes it a root rather than
 three mistakes. The discipline this repository already states — AGENTS.md's "immutable after write
 except a single explicit permitted transition" — is about the *transition*, and in all three cases I
 protected the row and left the transition's evidence unguarded.
 
-## Root C — the round-1 fixes, one level short (findings 5, 6)
+## Root C — my own fixes, one level short (findings 5, 6, 9)
 
 This is the root that matters most, because it is not about vendor bills.
 
 Finding 5 is finding 4's fix with the same defect finding 4 had: I closed the line set with a
 `lineCount` and did not freeze `lineCount`. Finding 6 is finding 2's fix with the same defect
 finding 2 had: I froze the reason against a same-status rewrite and left the cross-status one open.
-**Both corrections reproduced the exact error class they were correcting.**
+Finding 9 is finding 8's fix in the same shape a round later: wiring `BILLED_AMOUNT` into the
+position made a claim a HEADROOM MOVER — my own code comment said so in as many words, "an
+unverified over-rate claim IS extra exposure" — and I did not wire the exception evaluation §B
+requires of every mover. **Three corrections reproduced the error class they were correcting, in
+three consecutive rounds.**
 
 The PR-#270 audit named this in Task 2 and named it twice — a closure that was a hand-kept list, and
 a label decision pushed to a caller that could not make it. The pattern is that a fix aimed at the
@@ -96,6 +110,16 @@ same change. Mechanically: `lineCount` now sits in the version's immutable colum
 moved", so both are enforced by the same trigger that enforces the fact. The upgrade proof carries
 an acceptance case beside each rejection, which is what would have caught both: a seal that only
 ever refuses is not shown to be precise.
+
+**Finding 9 widens the rule past evidence, and that is the round-3 correction to this root.** A fix
+does not only introduce evidence — it can change what a WRITE means. Making `BILLED_AMOUNT` part of
+the position turned every bill transition into a headroom mover, and §B's closure row already
+enumerates what a mover owes. So the rule has a second clause: **when a fix adds an input to a
+FOLD, every writer of that input joins the fold's closure row in the same change.** Task 2's own
+audit reached this conclusion once — its mover set is DERIVED from what the fold reads (`FOLD_INPUTS`)
+rather than hand-kept — and the mechanical closure here is the same: `claim` is now a
+`HeadroomMover`, admitted by the register's CHECK, and the probe asserts the raise AND the clear so
+a mover that stops evaluating fails a named assertion.
 
 ## Root D — a fold with no caller (finding 8)
 

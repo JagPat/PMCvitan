@@ -126,7 +126,7 @@ export interface BudgetExceptionDto {
    *  case (§G authorises more than the ordered quantity and no commitment releases against the
    *  extra units); `receipt_progress` is a receipt recorded, rejected or reversed, which re-prices
    *  a CLOSED-SHORT line's released remainder with nothing accepted at all. */
-  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement';
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim';
   raisedAt: string;
   raisedById: string;
   clearedAt: string | null;

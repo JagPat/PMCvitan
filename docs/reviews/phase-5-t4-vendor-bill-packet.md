@@ -89,14 +89,14 @@ Each guard was instead proven by removing it from **this** tree and confirming i
 The first two are the strongest evidence in the PR: with the service guard gone, the database
 refused the transaction on its own. The seal and the guard are independently real.
 
-## Probe coverage (23 tests, `phase5-t4-vendor-bill.test.ts`)
+## Probe coverage (26 tests, `phase5-t4-vendor-bill.test.ts`)
 
 `4`/`5ak` dispute-not-refuse + 80/20 acceptance fold + reversal disputes · `5` bound-2 race (DB and
 service) · `5ac`/`5av` a dispute frees the fold and never returns · `5d` amended bill folds once ·
 `5an` the disposition disputes the MINIMUM, newest-first · `5bl` the labour twin · `5bf`/`5ag`/`5au`
 line seals precise not merely strict · `5bg`/`5bj` duplicate-claim key · `5f`/`5ao`/`5ax` vendor
 pinning + backfill · `5h` unit discipline · `7` append-only · §D/§I capability + authority · §C
-idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings.
+idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings · `R3-F1`–`R3-F3` the round-3 findings.
 
 ## Deliberately NOT in this task
 
@@ -177,6 +177,26 @@ R2-F4 is a different kind of miss: a fold written for a caller that was never wi
 comment named the obligation and I built the fold without discharging it. The probe now asserts the
 partition invariant (`committed + receivedNotBilled + awaitingCertification` totals the received
 money, headroom unchanged), which is what makes a future omission visible instead of quiet.
+
+## Codex round 3 — three findings, one of them my round-2 fix one level short
+
+| # | Finding | What was wrong | Fix |
+|---|---|---|---|
+| R3-F1 | P2 — re-evaluate budget exceptions when claims go live | Round 2 wired `BILLED_AMOUNT` into the position, which made a claim a HEADROOM MOVER — my own comment said so — but the bill transitions evaluated nothing. The budget READ could report −₹100 headroom while `BudgetException` stayed empty: two surfaces from the same folds disagreeing | `claim` becomes a `HeadroomMover` (admitted by the register's CHECK); every status-moving bill path evaluates the heads its lines touch, in its own transaction. The probe asserts the RAISE and the CLEAR |
+| R3-F2 | P2 — freeze `statusChangedAt` outside lifecycle transitions | The status and its reason were frozen; the timestamp recording WHEN the claim left the live fold was rewritable on a same-status update | It moves only WITH the arrow that sets it |
+| R3-F3 | P2 — validate initial bill status on insert | The lifecycle trigger was `BEFORE UPDATE OR DELETE`, so a direct insert could START a bill at `certified`, skipping every arrow round 2 had just sealed | A `BEFORE INSERT` guard limits creation to `draft`. The statuses stay in the CHECK vocabulary because §0's LIVE rule needs them — which is exactly why the entry point needs its own guard |
+
+**R3-F1 is the third consecutive round in which a correction of mine reproduced the error class it
+was correcting** (see the convergence audit's Root C). The rule that came out of rounds 1–2 —
+*when a fix introduces evidence, that evidence takes the same seal as the fact it evidences* —
+did not cover this one, because finding 8's fix introduced no evidence: it changed what a WRITE
+MEANS. So the rule gains a second clause: **when a fix adds an input to a FOLD, every writer of
+that input joins the fold's closure row in the same change.** Task 2's audit reached the same
+conclusion once and made its mover set derived from what the fold reads rather than hand-kept.
+
+R3-F3 also caught the upgrade proof's own fixture, which had been inserting a bill straight at
+`under-verification`. The fixture now walks the arrows — a better fixture as well as a legal one,
+since it exercises the transitions this task owns on the way in.
 
 ## Gates
 
