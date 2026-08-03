@@ -200,9 +200,19 @@ export class LabourRequirementParticipant {
     tx: Prisma.TransactionClient,
     projectId: string,
     labourPoLineId: string,
-  ): Promise<{ vendorId: string; ordered: Prisma.Decimal; live: boolean; status: string } | null> {
-    const rows = await tx.$queryRaw<Array<{ vendorId: string; personShiftQty: number; poVersionId: string }>>`
-      SELECT "vendorId", "personShiftQty", "poVersionId"
+  ): Promise<{
+    vendorId: string; ordered: Prisma.Decimal; live: boolean; status: string;
+    /** Phase 5 Task 5 (§E) — the frozen labour terms, from the SAME locked read. §E compares a
+     *  labour claim against `ratePerPersonShift + shiftPremium` COMBINED, because that is the one
+     *  combined figure the ordered side freezes; and there is no tax or freight to return, which
+     *  is exactly why a labour claim line's tax and freight are CHECK-pinned to zero. */
+    rate: Prisma.Decimal;
+  } | null> {
+    const rows = await tx.$queryRaw<Array<{
+      vendorId: string; personShiftQty: number; poVersionId: string;
+      ratePerPersonShift: Prisma.Decimal; shiftPremium: Prisma.Decimal;
+    }>>`
+      SELECT "vendorId", "personShiftQty", "poVersionId", "ratePerPersonShift", "shiftPremium"
         FROM "LabourPurchaseOrderLine"
        WHERE "projectId" = ${projectId} AND "id" = ${labourPoLineId}
        FOR UPDATE`;
@@ -217,6 +227,7 @@ export class LabourRequirementParticipant {
       ordered: new Prisma.Decimal(line.personShiftQty),
       live: ['issued', 'partially_committed', 'completed', 'closed_short'].includes(version.status),
       status: version.status,
+      rate: line.ratePerPersonShift.add(line.shiftPremium),
     };
   }
 }

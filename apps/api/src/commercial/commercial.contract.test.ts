@@ -47,6 +47,10 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.bill.beginVerification': { file: 'commercial/commercial-bill.service.ts', needle: "'commercial.bill.beginVerification'" },
     'commercial.bill.amend': { file: 'commercial/commercial-bill.service.ts', needle: "commandType: 'commercial.bill.amend'" },
     'commercial.bill.reject': { file: 'commercial/commercial-bill.service.ts', needle: "'commercial.bill.reject'" },
+    // Phase 5 Task 5A (§E) — the verdict lives in its OWN service, not on the bill service: it
+    // reads four modules' evidence under a five-step lock order, and folding that into the claim
+    // lifecycle would make one file own both "what the vendor says" and "whether it is true".
+    'commercial.bill.verify': { file: 'commercial/commercial-verification.service.ts', needle: "'commercial.bill.verify'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
     'commercial.costHeads': "Get('commercial/cost-heads')",
@@ -55,6 +59,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.measurements': "Get('commercial/labour-po-lines/:labourPoLineId/measurements')",
     'commercial.bills': "Get('commercial/bills')",
     'commercial.bill': "Get('commercial/bills/:billId')",
+    'commercial.verification': "Get('commercial/bills/:billId/verification')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {

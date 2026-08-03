@@ -64,6 +64,8 @@ export const commercialManifest: ModuleManifest = {
     'POST /projects/:projectId/commercial/bills',
     'POST /projects/:projectId/commercial/bills/submit',
     'POST /projects/:projectId/commercial/bills/begin-verification',
+    // Phase 5 Task 5A (§E) — the three-way verdict
+    'POST /projects/:projectId/commercial/bills/verify',
     'POST /projects/:projectId/commercial/bills/amend',
     'POST /projects/:projectId/commercial/bills/reject',
   ],
