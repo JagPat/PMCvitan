@@ -326,3 +326,38 @@ test('the committed docs/STATUS.md always leaves the runner a move', async () =>
     'the Maintenance queue section must parse to at least one named item',
   );
 });
+
+// `actionable` alone is too weak, and a review finding proved it: a Now block recording
+// `task: 5 / task_state: not_started / work_item: phase-5-task-5b` is perfectly ACTIONABLE and
+// resolves to `task:5` — the already-split PARENT — because an open task state returns the task id
+// before `work_item` is ever consulted. The test above passed while the runner was being pointed at
+// work that no longer exists as a unit.
+//
+// So the live file is asserted for AGREEMENT, not merely for a move: when the Now block names a
+// concrete `work_item`, the resolved next step must be that work item. Anything else means STATUS
+// is saying two different things to a human and to the runner, and the runner wins.
+test('the committed docs/STATUS.md sends the runner where it says it is sending it', async () => {
+  const { now, maintenanceQueue } = await loadStatusDocument();
+  const verdict = assessRunnerState(now, maintenanceQueue);
+  const workItem = (now.work_item ?? '').trim().toLowerCase();
+  if (!workItem || workItem === 'none') return;
+
+  // An open PR legitimately outranks the work item — it IS the current work until it closes.
+  const openPr = (now.open_pr ?? '').trim().toLowerCase();
+  if (openPr && openPr !== 'none') {
+    assert.equal(
+      verdict.nextStep,
+      `pr:${now.open_pr}`,
+      'an open PR must be the next step while it is open',
+    );
+    return;
+  }
+
+  assert.equal(
+    verdict.nextStep,
+    `work_item:${now.work_item}`,
+    `docs/STATUS.md names work_item '${now.work_item}' but the runner resolves `
+    + `'${verdict.nextStep}' — the prose and the machine input disagree, and the runner wins. `
+    + 'A merged increment must record task_state: merged so work_item is consulted.',
+  );
+});
