@@ -12,6 +12,8 @@ import { LabourProcurementService } from '../../src/labour/labour-procurement.se
 import { LabourCapacityService } from '../../src/labour/labour-capacity.service';
 import { ActivitiesService } from '../../src/activities/activities.service';
 import { CommercialActivationService } from '../../src/commercial/commercial-activation.service';
+import { CommercialBudgetService } from '../../src/commercial/commercial-budget.service';
+import { CommercialBudgetQuery } from '../../src/commercial/commercial-budget.query';
 import { CommercialBillService } from '../../src/commercial/commercial-bill.service';
 import { CommercialMeasurementService } from '../../src/commercial/commercial-measurement.service';
 import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
@@ -58,6 +60,8 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
   let activities: ActivitiesService;
   let activation: CommercialActivationService;
   let bills: CommercialBillService;
+  let budget: CommercialBudgetService;
+  let budgetQuery: CommercialBudgetQuery;
   let measurement: CommercialMeasurementService;
   let capabilities: CapabilitiesService;
   let seq = 0;
@@ -84,6 +88,8 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     activities = t.app.get(ActivitiesService);
     activation = t.app.get(CommercialActivationService);
     bills = t.app.get(CommercialBillService);
+    budget = t.app.get(CommercialBudgetService);
+    budgetQuery = t.app.get(CommercialBudgetQuery);
     measurement = t.app.get(CommercialMeasurementService);
     capabilities = t.app.get(CapabilitiesService);
   });
@@ -200,6 +206,9 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     }, pmc(projectId));
     return bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
   };
+
+  const positionOf = (projectId: string, code: string) =>
+    t.prisma.$transaction(async (tx) => (await budgetQuery.positionsFor(tx, projectId, [code])).get(code)!);
 
   const statusOf = async (projectId: string, billId: string): Promise<string> =>
     (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).status;
@@ -897,6 +906,118 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
       projectId, versionId, bill.id, line.vendorId, other.poLineId,
     )).rejects.toThrow();
     expect(await billedQty(projectId, other.poLineId)).toBe('0');
+  });
+
+  // ── Codex round-2 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R2-F1 — my own round-1 fix, one level short. `lineCount` closes the line set only if it is
+   * itself frozen: bump it 1 → 2 and insert the extra zero-money line in the SAME transaction and
+   * the deferred check sees a count that matches. A seal whose own evidence is editable is not a
+   * seal — the same shape as round 1's F3, one table over.
+   */
+  it('R2-F1 (§F): the line-set seal is itself FROZEN — lineCount cannot be bumped to admit a late line', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    const other = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1', vendorId: line.vendorId });
+    await acceptOnLine(projectId, line, '100', '100');
+    await acceptOnLine(projectId, other, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '10');
+    const versionId = bill.versions[0]!.id;
+
+    await expect(t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`UPDATE "VendorBillVersion" SET "lineCount"=2 WHERE "id"=$1`, versionId);
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "VendorBillLine" ("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+         VALUES ('r2f1-late',$1,$2,$3,$4,'material',$5,50,0,0,0,0)`,
+        projectId, versionId, bill.id, line.vendorId, other.poLineId,
+      );
+    })).rejects.toThrow(/IMMUTABLE/u);
+    expect(await billedQty(projectId, other.poLineId)).toBe('0');
+  });
+
+  /**
+   * R2-F2 — the dispute reason is the evidence for WHY a claim left the live fold, and resolving
+   * the dispute overwrote it with an amendment note. The resolution has its own place to live: the
+   * superseded version's `supersedeReason`.
+   */
+  it('R2-F2 (§F): resolving a dispute PRESERVES why it was disputed, and records the resolution separately', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '120', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const over = await claim(projectId, line.vendorId, line.poLineId, '120');
+    expect(over.status).toBe('disputed');
+    expect(over.statusReason).toMatch(/qty-over-accepted/u);
+
+    const resolved = await bills.amend(projectId, {
+      billId: over.id, reason: 'vendor corrected the claim to the delivered quantity',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId));
+    expect(resolved.status).toBe('resolved');
+    // the breach that took it out of the fold is still on the record…
+    expect(resolved.statusReason).toMatch(/qty-over-accepted/u);
+    // …and the resolution is on the version it superseded, where an amendment's reason belongs
+    expect(resolved.versions[0]!.supersedeReason).toBe('vendor corrected the claim to the delivered quantity');
+  });
+
+  /**
+   * R2-F3 — Task 4 stops SHORT of `verified`, but PostgreSQL still accepted the arrow into it and
+   * on to `certified`. The statuses stay in the vocabulary because §0's LIVE rule is defined over
+   * the whole set; the ARROWS wait for the evidence that justifies them (§E, Task 5).
+   */
+  it('R2-F3 (§F): the arrows into verified and beyond are REFUSED until the task that produces their evidence', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '10');
+    await bills.beginVerification(projectId, { billId: bill.id }, pmc(projectId));
+    expect(await statusOf(projectId, bill.id)).toBe('under-verification');
+
+    for (const status of ['verified', 'certified', 'approved-for-payment', 'paid']) {
+      await expect(t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"=$2 WHERE "id"=$1`, bill.id, status,
+      )).rejects.toThrow(/cannot move from/u);
+    }
+    // the transitions this task DOES own still work
+    expect(await statusOf(projectId, bill.id)).toBe('under-verification');
+    await bills.reject(projectId, { billId: bill.id, reason: 'duplicate of an earlier invoice' }, pmc(projectId));
+    expect(await statusOf(projectId, bill.id)).toBe('rejected');
+  });
+
+  /**
+   * R2-F4 — `BILLED_AMOUNT` was folded and never read. §J's buckets PARTITION the money, so a
+   * ₹40 live claim against a ₹100 receipt has to move ₹40 out of `received-not-billed` and into
+   * `awaiting-certification` — reporting the full ₹100 as unbilled says billed work is unbilled.
+   * Task 2's own DTO comment promised this ("Tasks 4–6 subtract `BILLED_AMOUNT` from it").
+   */
+  it('R2-F4 (§J): a live claim moves money from received-not-billed into awaiting-certification, and the buckets still partition', async () => {
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+
+    let position = await positionOf(projectId, 'CIVIL');
+    expect(position.committed.toString()).toBe('0');
+    expect(position.receivedNotBilled.toString()).toBe('100');
+    expect(position.awaitingCertification.toString()).toBe('0');
+    const headroomBefore = position.headroom!.toString();
+
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '40');
+    expect(bill.status).toBe('submitted');
+
+    position = await positionOf(projectId, 'CIVIL');
+    expect(position.receivedNotBilled.toString()).toBe('60');
+    expect(position.awaitingCertification.toString()).toBe('40');
+    // the money moved BUCKET, so total exposure and headroom are unchanged — that is what
+    // "the buckets partition the money" means, and it is the RED half of this probe
+    expect(position.committed.add(position.receivedNotBilled).add(position.awaitingCertification).toString()).toBe('100');
+    expect(position.headroom!.toString()).toBe(headroomBefore);
+
+    // …and a claim that leaves the live fold gives the money back
+    await bills.reject(projectId, { billId: bill.id, reason: 'wrong purchase order' }, pmc(projectId));
+    position = await positionOf(projectId, 'CIVIL');
+    expect(position.receivedNotBilled.toString()).toBe('100');
+    expect(position.awaitingCertification.toString()).toBe('0');
   });
 
   // ── §D/§I — capability gating and authority ───────────────────────────────────────────────────

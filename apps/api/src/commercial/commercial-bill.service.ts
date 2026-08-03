@@ -338,7 +338,12 @@ export class CommercialBillService {
         // except from `verified`, where a new claim has not been verified and must be re-checked
         const nextStatus: VendorBillStatus = resolving ? 'resolved' : bill.status === 'verified' ? 'submitted' : (bill.status as VendorBillStatus);
         if (resolving) {
-          await this.cas(tx, projectId, bill.id, 'disputed', 'resolved', input.reason);
+          // Codex round-2 — `null`, deliberately: the bill's `statusReason` records why the claim
+          // LEFT the live fold, and overwriting a `qty-over-accepted` breach with an amendment
+          // note erases the only evidence of the dispute this resolution is resolving. The
+          // resolution's own reason is on the version it superseded, which is where an
+          // amendment's justification belongs.
+          await this.cas(tx, projectId, bill.id, 'disputed', 'resolved', null);
           // the corrected claim is a NEW bill document reusing the same vendor reference: the
           // duplicate-document index has released on `resolved`, which is exactly the release
           // §F's terminal states are for

@@ -420,19 +420,28 @@ BEGIN
   -- `rejected` could therefore replace the justification afterwards, so the record would say the
   -- claim was rejected for a reason nobody recorded at the time. It is writable only as part of the
   -- transition that sets it.
-  IF NEW."statusReason" IS DISTINCT FROM OLD."statusReason" AND NEW."status" IS NOT DISTINCT FROM OLD."status" THEN
+  -- Codex round-2 — and only a transition INTO a state that REQUIRES a reason may write one. The
+  -- round-1 fix keyed on "the status changed", which still let `disputed -> resolved` overwrite a
+  -- `qty-over-accepted` breach with an amendment note, losing the evidence for why the claim left
+  -- the live fold at all. A resolution has its own place to live: the superseded version's
+  -- `supersedeReason`.
+  IF NEW."statusReason" IS DISTINCT FROM OLD."statusReason"
+     AND (NEW."status" IS NOT DISTINCT FROM OLD."status" OR NEW."status" NOT IN ('disputed', 'rejected')) THEN
     RAISE EXCEPTION 'A vendor bill''s exit reason is FROZEN — it explains the transition that set it, and a rewritable justification is no justification (%)', OLD."id";
   END IF;
   IF NEW."status" IS DISTINCT FROM OLD."status" THEN
     IF NOT (
+      -- Codex round-2 — Task 4 stops SHORT of `verified`, and the ARROWS have to stop there too.
+      -- The first head listed the whole §F graph, so after an ordinary `beginVerification` any
+      -- maintenance SQL could mark a claim `verified` or `certified` and PostgreSQL would call it
+      -- legal — in a tree with no three-way verdict and no certificate table to justify either.
+      -- The STATUSES stay in the CHECK vocabulary because §0's LIVE rule is defined over the whole
+      -- set and the billed folds must keep meaning the same thing; Task 5 adds these arrows WITH
+      -- the evidence that makes them safe, which is the same reason `verified` is Task 5's at all.
       (OLD."status" = 'draft'              AND NEW."status" IN ('submitted', 'disputed', 'rejected'))
       OR (OLD."status" = 'submitted'          AND NEW."status" IN ('under-verification', 'disputed', 'rejected'))
-      OR (OLD."status" = 'under-verification' AND NEW."status" IN ('verified', 'disputed', 'rejected'))
-      OR (OLD."status" = 'verified'           AND NEW."status" IN ('certified', 'disputed', 'rejected'))
+      OR (OLD."status" = 'under-verification' AND NEW."status" IN ('disputed', 'rejected'))
       OR (OLD."status" = 'disputed'           AND NEW."status" IN ('resolved', 'rejected'))
-      OR (OLD."status" = 'certified'          AND NEW."status" IN ('approved-for-payment', 'certified'))
-      OR (OLD."status" IN ('approved-for-payment', 'part-paid', 'paid')
-          AND NEW."status" IN ('certified', 'approved-for-payment', 'part-paid', 'paid'))
     ) THEN
       RAISE EXCEPTION 'A vendor bill cannot move from % to % — a resolved or rejected claim is terminal and a disputed one is corrected by a NEW version, never revived (%)', OLD."status", NEW."status", OLD."id";
     END IF;
@@ -456,6 +465,11 @@ BEGIN
      OR NEW."vendorIdPin" <> OLD."vendorIdPin" OR NEW."version" <> OLD."version"
      OR NEW."supersedesVersion" IS DISTINCT FROM OLD."supersedesVersion"
      OR NEW."claimedAmount" <> OLD."claimedAmount"
+     -- Codex round-2 — `lineCount` is the EVIDENCE that closes the line set (round-1 F4), so it
+     -- has to be frozen with everything else it stands beside. Left mutable, the seal defeats
+     -- itself: bump it 1 -> 2 and insert the extra zero-money line in the SAME transaction and the
+     -- deferred check sees a count that matches. A seal whose own evidence is editable is not one.
+     OR NEW."lineCount" <> OLD."lineCount"
      OR NEW."createdAt" <> OLD."createdAt" OR NEW."createdById" <> OLD."createdById" THEN
     RAISE EXCEPTION 'A vendor bill version is IMMUTABLE — correct a claim by amending into a new version (%)', OLD."id";
   END IF;

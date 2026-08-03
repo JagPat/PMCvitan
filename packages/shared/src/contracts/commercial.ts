@@ -103,8 +103,12 @@ export interface CostHeadPositionDto {
   budgetVersion: number | null;
   /** OUTSTANDING obligation — gross committed less the consumed and released parts (§0) */
   committed: string;
-  /** received-but-unbilled value; Tasks 4–6 subtract `BILLED_AMOUNT` from it */
+  /** received-but-unbilled value — the received side LESS whatever has been claimed against it */
   receivedNotBilled: string;
+  /** §J `awaiting-certification` — live `BILLED_AMOUNT`: claimed, not yet certified. Together with
+   *  `receivedNotBilled` this PARTITIONS the received money, so a claim arriving changes WHERE the
+   *  exposure sits and not how much there is (Phase 5 Task 4). */
+  awaitingCertification: string;
   /** `BUDGET − Σ exposure`, NEGATIVE when over-committed; null when unbudgeted */
   headroom: string | null;
   /** the OPEN over-budget exception on this head, if one stands right now */

@@ -73,7 +73,7 @@ async function main(): Promise<void> {
       const budgetService = new CommercialBudgetService(
         prisma,
         capabilitiesService,
-        new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma), new CommercialMeasurementQuery()),
+        new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma), new CommercialMeasurementQuery(), new CommercialBillQuery()),
       );
       const activation = new CommercialActivationService(
         prisma,

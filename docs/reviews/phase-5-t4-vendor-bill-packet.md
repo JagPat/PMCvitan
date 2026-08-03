@@ -89,14 +89,14 @@ Each guard was instead proven by removing it from **this** tree and confirming i
 The first two are the strongest evidence in the PR: with the service guard gone, the database
 refused the transaction on its own. The seal and the guard are independently real.
 
-## Probe coverage (19 tests, `phase5-t4-vendor-bill.test.ts`)
+## Probe coverage (23 tests, `phase5-t4-vendor-bill.test.ts`)
 
 `4`/`5ak` dispute-not-refuse + 80/20 acceptance fold + reversal disputes · `5` bound-2 race (DB and
 service) · `5ac`/`5av` a dispute frees the fold and never returns · `5d` amended bill folds once ·
 `5an` the disposition disputes the MINIMUM, newest-first · `5bl` the labour twin · `5bf`/`5ag`/`5au`
 line seals precise not merely strict · `5bg`/`5bj` duplicate-claim key · `5f`/`5ao`/`5ax` vendor
 pinning + backfill · `5h` unit discipline · `7` append-only · §D/§I capability + authority · §C
-idempotency · `F1`–`F4` the Codex round-1 findings.
+idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings.
 
 ## Deliberately NOT in this task
 
@@ -154,6 +154,29 @@ turned out to be material-only, so passing it a labour line folded zero rows and
 claim that was live. My first F1 probe asserted exactly that `0` and would have passed while
 proving nothing — the third instance of this failure mode in Phase 5, after Task 3's three. The
 helper now requires the kind explicitly rather than defaulting to one.
+
+## Codex round 2 — four findings, two of them my own round-1 fixes one level short
+
+| # | Finding | What was wrong | Fix |
+|---|---|---|---|
+| R2-F1 | P2 — freeze `lineCount` with the version evidence | Round 1 closed the line set with a frozen `lineCount`, but did not freeze `lineCount` itself: bump it 1 → 2 and insert the extra zero-money line in the SAME transaction and the deferred check sees a count that matches | `lineCount` joins the version's immutable column list |
+| R2-F2 | P2 — preserve the original dispute reason on resolution | Round 1's reason freeze keyed on "the status changed", which still let `disputed → resolved` overwrite a `qty-over-accepted` breach with an amendment note — erasing the only evidence for why the claim left the live fold | A reason is writable only by a transition INTO a state that requires one (`disputed`/`rejected`); the resolve CAS passes `null`, and the resolution lives on the superseded version's `supersedeReason` |
+| R2-F3 | P2 — block pre-Task-5 lifecycle arrows | The PG lifecycle listed the whole §F graph, so after an ordinary `beginVerification` maintenance SQL could mark a claim `verified` or `certified` — in a tree with no three-way verdict and no certificate table | The arrows stop at `under-verification`. The STATUSES stay in the CHECK vocabulary because §0's LIVE rule is defined over the whole set; Task 5 adds the arrows with the evidence that justifies them |
+| R2-F4 | P2 — wire billed amounts into the budget fold | `billedAmountFor` was built and never called, so a ₹40 live claim against a ₹100 receipt still reported the whole ₹100 as `receivedNotBilled` — the surface saying billed work is unbilled. Task 2's own DTO comment had promised this ("Tasks 4–6 subtract `BILLED_AMOUNT` from it") | The position gains §J's `awaiting-certification` bucket; a live claim moves money OUT of received-not-billed and INTO it. **Headroom does not change** — that is what "the buckets partition" means, and the probe asserts it |
+
+**Two of the four are the same shape as the round-1 finding they follow**, and that is worth naming
+rather than smoothing over: R2-F1 sealed a set with evidence I left editable, and R2-F2 fixed the
+overwrite I keyed on the wrong condition. Both are the "one level too shallow" pattern the
+PR-#270 audit named twice in Task 2. The corrective here is not another patch but the rule the
+audit already stated: **when a fix introduces evidence, the evidence needs the same seal as the
+thing it evidences** — which is why `lineCount` now sits in the immutable list beside
+`claimedAmount`, and why the reason freeze is now keyed on the destination state rather than on
+"something moved".
+
+R2-F4 is a different kind of miss: a fold written for a caller that was never wired. Task 2's DTO
+comment named the obligation and I built the fold without discharging it. The probe now asserts the
+partition invariant (`committed + receivedNotBilled + awaitingCertification` totals the received
+money, headroom unchanged), which is what makes a future omission visible instead of quiet.
 
 ## Gates
 
