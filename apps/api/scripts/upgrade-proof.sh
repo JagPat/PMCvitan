@@ -32,6 +32,40 @@
 
 set -u
 
+# A misspelled or not-yet-defined helper used to vanish onto stderr while the run still reported
+# PASSED — which is the exact failure this whole script exists to prevent, turned on itself. It
+# was found the honest way: five assertions added above `assert_rejects`'s definition proved
+# nothing and the proof passed anyway.
+#
+# The FIRST version of this guard set `FAIL=1` in the handler and did nothing at all, because bash
+# invokes `command_not_found_handle` "in a separate execution environment" — a subshell — so the
+# assignment never reached the parent. A guard against silent no-ops that was itself a silent
+# no-op. It is a FILE now, which crosses that boundary, and the mechanism is PROVEN below rather
+# than trusted.
+CNF_SENTINEL="${TMPDIR:-/tmp}/upgrade-proof-missing-command.$$"
+CNF_SELFTEST="${TMPDIR:-/tmp}/upgrade-proof-selftest.$$"
+rm -f "$CNF_SENTINEL" "$CNF_SELFTEST"
+trap 'rm -f "$CNF_SENTINEL" "$CNF_SELFTEST"' EXIT
+command_not_found_handle() {
+  printf 'FAILED  upgrade-proof: `%s` is not a command here — an assertion silently did nothing\n' "$1"
+  # RECORD the name, not just the fact. The printf above goes to the caller's stdout, and plenty of
+  # this script's callers are redirected to /dev/null — so a missing command inside one of those is
+  # invisible unless the sentinel carries its own message.
+  printf '%s\n' "$1" >> "$CNF_SENTINEL"
+  return 127
+}
+
+# Prove the guard, in a subshell pointed at a throwaway sentinel, so the proof cannot pass while
+# its own guard is broken — which is precisely how the first version shipped.
+( CNF_SENTINEL="$CNF_SELFTEST"; a_command_that_does_not_exist ) >/dev/null 2>&1
+if [ -e "$CNF_SELFTEST" ]; then
+  printf 'ok      %s\n' "upgrade-proof: a missing command is caught and FAILS the run (the guard is proven, not assumed)"
+  rm -f "$CNF_SELFTEST"
+else
+  printf 'FAILED  %s\n' "upgrade-proof: the missing-command guard did not fire — every assertion below could be a silent no-op"
+  exit 1
+fi
+
 export PGHOST="${PGHOST:-localhost}"
 export PGPORT="${PGPORT:-5432}"
 export PGUSER="${PGUSER:-postgres}"
@@ -288,8 +322,8 @@ plant_pre_t4_chains() {
 BEGIN;
 -- a project of its OWN. Several assertions further down prove that a given migration WROTE NO
 -- ROWS by counting a table, and rows this script plants deliberately would silently confound
--- them — a fixture that breaks an existing proof is not a fixture, it is a regression. `p3`
--- keeps the two claims separable: those assertions exclude it by name and still mean exactly
+-- them — a fixture that breaks an existing proof is not a fixture, it is a regression. Project
+-- p3 keeps the two claims separable: those assertions exclude it by name and still mean exactly
 -- what they meant before.
 INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
   VALUES('p3','org-legacy','Pre-T4 Backfill Subject','LC','','Finishing','LC-01','01 Jan 2026','31 Dec 2026',50,30,60);
@@ -497,6 +531,8 @@ assert "the composite project-scoped tenant FK (organizationId, projectId) -> Pr
 assert "the additive migration wrote NO receipts — a legacy client that sends no key keeps working" \
   "SELECT COUNT(*) FROM \"CommandExecution\";" \
   "0"
+
+
 
 # Phase 2 Task 6 — the per-consumer transactional outbox is a pure, row-free capability addition
 assert "the OutboxDelivery / ProcessedEvent / ProjectionCursor tables exist" \
@@ -766,10 +802,16 @@ INSERT INTO "PurchaseOrderVersion"("id","projectId","poId","version","requisitio
 INSERT INTO "PurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","specFingerprint","uom","purchaseUom","purchaseQty","conversionToBase","qty","rate","taxAmount","freightAmount","landedAmount","committedAmountBase","purchaseOrderId","vendorId")
   VALUES('UP45-POL','p1','UP45-POV','UP45-RL','UP45-REQ','UP45-ROOT',1,'FP-UP45','bag','bag',100,1,100,100,50,25,999.99,100,'UP45-PO','UP45-VEN');
 INSERT INTO "DeliveryCommitment"("id","projectId","poLineId","status","createdById") VALUES('UP45-DC','p1','UP45-POL','committed','USER-1');
+-- reserved-then-completed: the receipt protocol is DB-sealed, and a directly minted succeeded
+-- row is the forgery that seal refuses (20270425000000_platform_command_receipt_seal).
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-  VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','succeeded');
+  VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','reserved');
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP45-LOT', "completedAt"=now() WHERE "id"='UP45-CMD';
+-- reserved-then-completed: the receipt protocol is DB-sealed, and a directly minted succeeded
+-- row is the forgery that seal refuses (20270425000000_platform_command_receipt_seal).
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-  VALUES('UP45-CMD2','project','org-legacy','p2','USER-1','test.up45','up45b','x','succeeded');
+  VALUES('UP45-CMD2','project','org-legacy','p2','USER-1','test.up45','up45b','x','reserved');
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP45-LOT2', "completedAt"=now() WHERE "id"='UP45-CMD2';
 INSERT INTO "StockLot"("id","projectId","poLineId","commitmentId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","baseUom","specFingerprint","receivedById")
   VALUES('UP45-LOT','p1','UP45-POL','UP45-DC','UP45-ROOT',1,'Cement','UltraTech','OPC 53','grey','bag','FP-UP45','USER-1');
 INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","poLineId","commitmentId","recordedById","sourceCommandId")
@@ -1182,7 +1224,8 @@ assert "the §C conservation exclusions + the 6 time-capacity triggers are insta
 $PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T3: a coherent §C time-capacity chain is accepted (seals are precise)" || { printf 'FAILED  %s\n' "labour T3 coherent chain rejected"; FAIL=1; }
 BEGIN;
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-  SELECT 'UPL-CMD1','project',"orgId",'p1','USER-1','labour.allocation.allocate','upl-t3-key','upl-t3-hash','succeeded' FROM "Project" WHERE "id"='p1';
+  SELECT 'UPL-CMD1','project',"orgId",'p1','USER-1','labour.allocation.allocate','upl-t3-key','upl-t3-hash','reserved' FROM "Project" WHERE "id"='p1';
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UPL-T3A', "completedAt"=now() WHERE "id"='UPL-CMD1';
 INSERT INTO "Worker"("id","projectId","name","tradeCode","activeFrom","createdById") VALUES('UPL-T3W','p1','Mason A','mason','2026-01-01','USER-1');
 INSERT INTO "WorkerSkill"("projectId","workerId","skillCode") VALUES('p1','UPL-T3W','bar-bending');
 INSERT INTO "WorkerDevice"("id","projectId","token","workerId") VALUES('UPL-T3DEV','p1','upl-t3-token','UPL-T3W');
@@ -1668,6 +1711,39 @@ COMMIT;
 SQL
 # §F vendor pinning (probes 5f/5ao) — WITHIN one project, Vendor A's claim cannot name Vendor B's
 # order line. A same-project FK alone would only stop a cross-PROJECT line.
+# ── the RECEIPT PROTOCOL, database-enforced (20270425000000) ───────────────────────────────────
+# Fifteen `sourceCommandId` columns cite this table to answer "which command produced this fact".
+# Every one of those provenance seals is exactly as strong as the receipt behind it, and until
+# this migration a receipt could simply be minted already `succeeded` with a chosen `resultRef`.
+assert "the receipt-protocol trigger is installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname='CommandExecution_receipt_protocol' AND NOT tgisinternal;" \
+  "1"
+assert_rejects "platform: MINTING a receipt already \`succeeded\` (a command that never ran, usable as provenance for anything)" \
+  "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\",\"resultRef\",\"completedAt\") VALUES('UPCR-FORGE','project','org-legacy','p1','USER-1','commercial.bill.verify','upcr-forge','x','succeeded','FORGED-RESULT',now())"
+assert_rejects "platform: a RESERVED receipt pre-loaded with a result (a result before the command ran)" \
+  "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\",\"resultRef\") VALUES('UPCR-PRE','project','org-legacy','p1','USER-1','test.upcr','upcr-pre','x','reserved','FORGED-RESULT')"
+# …and the HONEST protocol is accepted, so the seal is precise rather than merely strict
+# the honest protocol — reserve and complete in ONE transaction, exactly as `executeCommand` does
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPCR-OK','project','org-legacy','p1','USER-1','test.upcr','upcr-ok','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='REAL-RESULT', \"completedAt\"=now() WHERE \"id\"='UPCR-OK'; COMMIT;" \
+  && printf 'ok      %s\n' "platform: reserve -> succeeded with a result, in ONE transaction, is ACCEPTED (the seal enforces the protocol, it does not forbid it)" \
+  || { printf 'FAILED  %s\n' "platform: the honest reserve/complete protocol was rejected"; FAIL=1; }
+assert_rejects "platform: RE-POINTING a completed receipt's result (a re-pointable receipt is a re-pointable provenance chain)" \
+  "UPDATE \"CommandExecution\" SET \"resultRef\"='OTHER-RESULT' WHERE \"id\"='UPCR-OK'"
+assert_rejects "platform: re-opening a COMPLETED receipt" \
+  "UPDATE \"CommandExecution\" SET \"status\"='failed' WHERE \"id\"='UPCR-OK'"
+assert_rejects "platform: re-pointing a receipt's COMMAND TYPE after the fact (identity is who did what)" \
+  "UPDATE \"CommandExecution\" SET \"commandType\"='commercial.bill.verify' WHERE \"id\"='UPCR-OK'"
+$PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPCR-NOTIME','project','org-legacy','p1','USER-1','test.upcr','upcr-notime','x','reserved')" 2>/dev/null
+assert_rejects "platform: completing a receipt with no completion time (a terminal receipt records WHEN)" \
+  "UPDATE \"CommandExecution\" SET \"status\"='succeeded' WHERE \"id\"='UPCR-NOTIME'"
+assert_rejects "platform: a FAILED receipt carrying a result (provenance for something that did not happen)" \
+  "UPDATE \"CommandExecution\" SET \"status\"='failed', \"resultRef\"='X', \"completedAt\"=now() WHERE \"id\"='UPCR-NOTIME'"
+# Codex round-1 on this PR — reserve in one transaction and complete in another is a protocol
+# violation: Phase 2 states the reserve/execute/receipt sequence is ONE transaction, so a
+# completion arriving later did not come from a command run.
+assert_rejects "platform: ADOPTING a stale reserved receipt from a later transaction (a completion that came from no command run)" \
+  "UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='FORGED', \"completedAt\"=now() WHERE \"id\"='UPCR-NOTIME'"
+
 assert_rejects "commercial T4 §F: a claim line naming ANOTHER vendor's purchase-order line in the SAME project (composite FK)" \
   "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X1','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UPT4-POL',1,1,0,0,1)"
 # §F/probe 5bf — EXACTLY ONE target, and the discriminator must agree with it
@@ -1882,6 +1958,13 @@ $PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"cost
 $PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPT4-BXCL'" >/dev/null
 
 echo ""
+# a missing command anywhere above is a failed run, however far from here it happened — and it
+# names itself, because the handler's own output may have been redirected away by its caller
+if [ -e "$CNF_SENTINEL" ]; then
+  FAIL=1
+  echo "FAILED  upgrade-proof: these commands do not exist here, so whatever they were asserting did nothing:"
+  sort -u "$CNF_SENTINEL" | sed 's/^/          /'
+fi
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."
 else

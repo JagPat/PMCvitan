@@ -111,8 +111,15 @@ INSERT INTO "PurchaseOrderVersion"("id","projectId","poId","version","requisitio
 INSERT INTO "PurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","specFingerprint","uom","purchaseUom","purchaseQty","conversionToBase","qty","rate","taxAmount","freightAmount","landedAmount","committedAmountBase")
   VALUES('UP45-POL','p1','UP45-POV','UP45-RL','UP45-REQ','UP45-ROOT',1,'FP-UP45','bag','bag',100,1,100,100,50,25,999.99,100);
 INSERT INTO "DeliveryCommitment"("id","projectId","poLineId","status","createdById") VALUES('UP45-DC','p1','UP45-POL','committed','USER-1');
+-- reserved-then-completed IN ONE TRANSACTION: the receipt protocol is DB-sealed
+-- (20270425000000_platform_command_receipt_seal), and a directly minted succeeded row — or one
+-- completed by a later transaction — is exactly the forgery that seal refuses.
+-- NB: no backticks in a heredoc comment. Several of this repo's heredocs are UNQUOTED, where a
+-- backticked word is COMMAND SUBSTITUTION, not prose.
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
-  VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','succeeded');
+  VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','reserved');
+UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP45-LOT', "completedAt"=now()
+ WHERE "id"='UP45-CMD';
 INSERT INTO "StockLot"("id","projectId","poLineId","commitmentId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","baseUom","specFingerprint","receivedById")
   VALUES('UP45-LOT','p1','UP45-POL','UP45-DC','UP45-ROOT',1,'Cement','UltraTech','OPC 53','grey','bag','FP-UP45','USER-1');
 INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","poLineId","commitmentId","recordedById","sourceCommandId")
