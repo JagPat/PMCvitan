@@ -31,7 +31,26 @@ describe('Platform — the command receipt protocol is database-enforced (live P
     decisions = t.app.get(DecisionsService);
   });
 
-  afterAll(async () => { await t?.close(); });
+  /**
+   * The integration config runs files SERIALLY against ONE shared database, so a suite that leaves
+   * rows behind hands them to every file after it — and to a local re-run. The real-command probe
+   * creates a decision, its domain event, its outbox rows and its receipt, so this suite restores
+   * the clean fixture state the same way every other `createTwoProjectFixture` suite does.
+   */
+  afterAll(async () => {
+    // reverse foreign-key order — the real-command probe's decision carries options and its own
+    // event log, and `f.cleanup()` does not know about them (it truncates DomainEvent, which is a
+    // different table). The change-request and approval-revision deletes are defensive: this suite
+    // creates neither today, and a future probe that does should not silently strand rows.
+    const inProject = { decision: { projectId: f.projectA.id } };
+    await t?.prisma.decisionOption.deleteMany({ where: inProject });
+    await t?.prisma.decisionEvent.deleteMany({ where: inProject });
+    await t?.prisma.changeRequest.deleteMany({ where: inProject });
+    await t?.prisma.decisionApprovalRevision.deleteMany({ where: { projectId: f.projectA.id } });
+    await t?.prisma.decision.deleteMany({ where: { projectId: f.projectA.id } });
+    await f?.cleanup();
+    await t?.close();
+  });
 
   afterEach(async () => {
     await t.prisma.commandExecution.deleteMany({ where: { commandType: { startsWith: 'test.receipt' } } });
@@ -49,6 +68,28 @@ describe('Platform — the command receipt protocol is database-enforced (live P
     });
     return row.id;
   };
+
+  /**
+   * The protocol as `executeCommand` performs it: reserve and complete inside ONE transaction.
+   * The acceptance probes go through here so they exercise the shape the seal describes rather
+   * than a shape it merely tolerates.
+   */
+  const reserveAndComplete = async (
+    resultRef: string | null, status: 'succeeded' | 'failed' = 'succeeded',
+  ): Promise<string> => t.prisma.$transaction(async (tx) => {
+    const row = await tx.commandExecution.create({
+      data: {
+        scopeKind: 'project', organizationId: f.orgA.id, projectId: f.projectA.id,
+        actorId: f.memberUser.id, commandType: 'test.receipt', requestHash: 'x',
+        idempotencyKey: `receipt-${(seq += 1)}-${Date.now() % 1e6}`, status: 'reserved',
+      },
+      select: { id: true },
+    });
+    await tx.commandExecution.update({
+      where: { id: row.id }, data: { status, resultRef, completedAt: new Date() },
+    });
+    return row.id;
+  });
 
   const raw = (sql: string, ...params: unknown[]) => t.prisma.$executeRawUnsafe(sql, ...params);
 
@@ -78,21 +119,31 @@ describe('Platform — the command receipt protocol is database-enforced (live P
 
   // ── UPDATE — one direction, exactly once ─────────────────────────────────────────────────────
 
-  it('reserve → succeeded with a result is ACCEPTED (the seal enforces the protocol, it does not forbid it)', async () => {
-    const id = await reserved();
-    await t.prisma.commandExecution.update({
-      where: { id }, data: { status: 'succeeded', resultRef: 'REAL', completedAt: new Date() },
-    });
+  it('reserve → succeeded with a result is ACCEPTED in ONE transaction (the seal enforces the protocol, it does not forbid it)', async () => {
+    const id = await reserveAndComplete('REAL');
     const row = await t.prisma.commandExecution.findFirstOrThrow({ where: { id } });
     expect(row.status).toBe('succeeded');
     expect(row.resultRef).toBe('REAL');
   });
 
-  it('a COMPLETED receipt cannot be re-pointed at a different result', async () => {
+  /**
+   * Codex round-1 on this PR: the first head's seal still allowed a two-statement forgery — reserve
+   * in one transaction, complete in another with a chosen `resultRef`. That does not close under a
+   * trigger (see the migration's trust-boundary note; SQL that reproduces the protocol is
+   * indistinguishable from the protocol), but the SEPARATE-transaction half of it is a real
+   * protocol violation and is now refused: Phase 2 states the reserve/execute/receipt sequence is
+   * ONE transaction, so a completion arriving later did not come from a command run.
+   */
+  it('a receipt cannot be adopted and completed by a LATER transaction', async () => {
     const id = await reserved();
-    await t.prisma.commandExecution.update({
-      where: { id }, data: { status: 'succeeded', resultRef: 'REAL', completedAt: new Date() },
-    });
+    await expect(raw(
+      `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='FORGED', "completedAt"=now() WHERE "id"=$1`, id,
+    )).rejects.toThrow(/SAME transaction that reserved it/u);
+    expect((await t.prisma.commandExecution.findFirstOrThrow({ where: { id } })).status).toBe('reserved');
+  });
+
+  it('a COMPLETED receipt cannot be re-pointed at a different result', async () => {
+    const id = await reserveAndComplete('REAL');
     await expect(raw(`UPDATE "CommandExecution" SET "resultRef"='OTHER' WHERE "id"=$1`, id))
       .rejects.toThrow(/COMPLETED command receipt is immutable/u);
     await expect(raw(`UPDATE "CommandExecution" SET "status"='failed' WHERE "id"=$1`, id))
@@ -104,10 +155,8 @@ describe('Platform — the command receipt protocol is database-enforced (live P
     const id = await reserved();
     await expect(raw(`UPDATE "CommandExecution" SET "status"='succeeded' WHERE "id"=$1`, id))
       .rejects.toThrow(/records WHEN it completed/u);
-    await t.prisma.commandExecution.update({
-      where: { id }, data: { status: 'succeeded', resultRef: 'REAL', completedAt: new Date() },
-    });
-    await expect(raw(`UPDATE "CommandExecution" SET "status"='reserved', "completedAt"=NULL WHERE "id"=$1`, id))
+    const done = await reserveAndComplete('REAL');
+    await expect(raw(`UPDATE "CommandExecution" SET "status"='reserved', "completedAt"=NULL WHERE "id"=$1`, done))
       .rejects.toThrow(/COMPLETED command receipt is immutable/u);
   });
 
@@ -118,8 +167,8 @@ describe('Platform — the command receipt protocol is database-enforced (live P
     )).rejects.toThrow(/FAILED command produced no result/u);
     // `failed` is in Phase 2's status vocabulary and no code path writes it today; the arrow stays
     // open because the vocabulary is a cleared decision and a rollback records a real outcome
-    await raw(`UPDATE "CommandExecution" SET "status"='failed', "completedAt"=now() WHERE "id"=$1`, bad);
-    expect((await t.prisma.commandExecution.findFirstOrThrow({ where: { id: bad } })).status).toBe('failed');
+    const failed = await reserveAndComplete(null, 'failed');
+    expect((await t.prisma.commandExecution.findFirstOrThrow({ where: { id: failed } })).status).toBe('failed');
   });
 
   // ── identity ────────────────────────────────────────────────────────────────────────────────

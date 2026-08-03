@@ -34,6 +34,7 @@ followed:
 | INSERT only as `reserved`, with no result and no completion time | A receipt records that a command RAN. Minting one already terminal records a command that never did — and with a chosen `resultRef` it is provenance for anything |
 | Identity frozen (`scopeKind`, org, project, actor, `commandType`, key, `requestHash`, `createdAt`) | The replay lookup and every provenance join read these. A rewritable identity re-points a real receipt at a different actor or command after the fact |
 | `reserved` completes exactly once, to `succeeded` or `failed`, recording WHEN | One direction, one time. A receipt that can return to `reserved` can be completed twice with different results |
+| The completion comes from the SAME transaction that reserved | Phase 2 states the protocol as reserve→execute→receipt in ONE transaction, so a completion arriving later did not come from a command run. Without it, a receipt reserved at any point in the past can be adopted and completed against a result chosen afterwards |
 | A completed receipt is immutable | A re-pointable `resultRef` is a re-pointable provenance chain — the same defect as forging the row |
 | A `failed` receipt carries no result | A result reference on a failed command is provenance for something that did not happen |
 
@@ -60,23 +61,57 @@ the schema documents.
 | offline-reconciliation | None — no client surface | — |
 | ui-server-parity | None — no UI, no contract change | — |
 
-## Legacy databases
+## What this does NOT close — stated because the first head overclaimed
 
-The migration is additive and constrains INSERTs and TRANSITIONS from now on; it neither reads nor
-rewrites an existing row, so a legacy database upgrades untouched and no operator repair exists
-because none is needed.
+The review was right and this is the correction. **No database trigger can distinguish "the
+application ran" from "SQL that reproduced what the application would have written."** Someone with
+INSERT/UPDATE on this table can always perform the protocol by hand inside one transaction, and
+nothing here prevents it. That is the trust boundary every trigger-based seal in this repository has
+always had; it is written down now because this is the table the others rest on.
 
-Two incoherent shapes are **reported, not aborted on**: a terminal receipt with no `completedAt`,
-and a `failed` receipt carrying a result. `executeCommand` cannot produce either, so their presence
-means something else wrote the ledger and an operator should know. They are not upgrade blockers
-because neither can satisfy a provenance seal falsely — §E's join requires `status = 'succeeded'`
-AND a `resultRef` equal to the citing row's id — and aborting an upgrade over data no seal depends
-on would be strictness for its own sake. That reasoning is stated in the migration so a reviewer can
-disagree with it in one place.
+What the seal does is make the protocol's shape the ONLY representable shape — no minting a
+terminal row, no backdating, no re-pointing a result, no rewriting identity, no adopting a stale
+reservation. Those are the shapes a bug, a careless maintenance UPDATE or a future path that
+bypasses `executeCommand` actually produce, and each was one statement away before.
+
+The remainder is a **privilege** question, not a trigger question: the role used for maintenance
+and migrations should not be the role the application runs as, and only the application role needs
+INSERT/UPDATE here. Where the deployment uses a single role today, that is the gap — recorded in
+`docs/RUNBOOK.md §CMDR.2`, and it applies to every provenance seal in the system rather than only
+this one.
+
+## Legacy databases — the diagnostic ABORTS
+
+The first head only raised a NOTICE on the two incoherent shapes (`succeeded`/`failed` with no
+`completedAt`; `failed` carrying a `resultRef`), reasoning that neither could satisfy a provenance
+seal falsely. **That reasoning was wrong**, and it is the more instructive of the two corrections:
+§E's join reads `status = 'succeeded'`, `commandType` and `resultRef` — it never reads
+`completedAt`. So a pre-existing hand-written `succeeded` receipt with a chosen `resultRef`
+validates a hand-written verdict the moment the seal is installed, and a seal installed over rows
+it never checked is worse than none, because everything downstream then reads as verified
+provenance.
+
+The diagnostic now runs BEFORE the trigger is created (so a repair is not blocked by the seal) and
+ABORTS, naming both counts and pointing at `docs/RUNBOOK.md §CMDR`.
+
+**The repair is DELETE, never invention.** Nobody knows when a receipt with no completion time
+completed. Deleting makes the row non-authoritative, and it is self-diagnosing: DELETE is permitted
+on this table, every citing row holds an `ON DELETE NO ACTION` composite FK, so PostgreSQL removes
+a receipt nothing rests on and REFUSES one a fact depends on — which tells the operator they have
+found a fact resting on a receipt no command produced.
+
+`apps/api/scripts/command-receipt-abort-proof.sh` drives all of it on throwaway databases: each
+shape planted independently, the migration aborting with the trigger NOT installed and the
+migration NOT recorded as applied, the `migrate resolve --rolled-back` + `deploy` sequence, and the
+refusal for a receipt an `ApprovedSkillSubstitution` cites. **The proof found two defects in its
+own subject**: §CMDR omitted the `resolve` step (without which the redeploy is refused, exactly as
+in production), and the first shape-C fixture silently failed to create its citing fact — which
+would have made the refusal assertion pass while proving nothing.
 
 ## Fixtures that had to change, and what that says
 
-**Ten sites** minted `succeeded` receipts directly — seven integration-test helpers across Phases
+**Ten sites** minted `succeeded` receipts directly, and after the same-transaction rule was added,
+each also had to perform the completion inside the reserving transaction — seven integration-test helpers across Phases
 3, 4 and 5, and three inserts in the upgrade-proof's legacy chain. Each now reserves and completes,
 like every real command.
 
@@ -102,9 +137,11 @@ run — for this PR or any future one.
 
 ## Gates
 
-- Focused `platform-command-receipt.test.ts` **8/8** on live PostgreSQL — the six refusal probes
-  proven RED against `main` with the migration removed and the database rebuilt from scratch (the
-  two acceptance probes pass in both states, which is what makes them the precision half)
+- Focused `platform-command-receipt.test.ts` **9/9** on live PostgreSQL — the refusal probes proven
+  RED against `main` with the migration removed and the database rebuilt from scratch (the
+  acceptance probes pass in both states, which is what makes them the precision half)
+- `command-receipt-abort-proof.sh` PASSED — both abort shapes, the documented repair, and the
+  refusal that makes it safe
 - `pnpm check` **EXIT 0** — web 42 files/543 tests, API 56 files/718 tests, builds clean
 - Full integration suite **77 files / 810 tests** on a pristine migrated database
 - `upgrade-proof.sh` PASSED with all eight new assertions actually executing (see above): the six

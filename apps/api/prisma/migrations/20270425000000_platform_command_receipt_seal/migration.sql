@@ -13,19 +13,68 @@
 -- this fact": the Phase-3 stock ledger (§C rule ii), the Phase-4 labour facts, and the Phase-5
 -- commercial documents. Every one of those seals is exactly as strong as the receipt behind it.
 --
--- The finding that surfaced it is Phase 5 Task 5A's: `verified` on a vendor bill requires a
--- MATCHED §E verdict whose `sourceCommandId` names a SUCCEEDED `commercial.bill.verify` execution
--- with `resultRef` equal to that verdict. Sound — until you notice that a maintenance path could
--- simply INSERT such a receipt, already succeeded, already pointing at a hand-written verdict.
--- The seal rested on a table that sealed nothing. Sealing it there would have been the same
--- mistake one level up, so it is sealed HERE, once, for every fact that cites a command.
+-- ── WHAT THIS CLOSES, AND WHAT IT DOES NOT ─────────────────────────────────────────────────────
+--
+-- Stated plainly, because the first head of this migration overclaimed and the review was right to
+-- say so. **No database trigger can distinguish "the application ran" from "SQL that reproduced
+-- what the application would have written."** An operator with write access to this table can
+-- always perform the protocol by hand — reserve, then complete, in one transaction — and nothing
+-- here prevents that. The same is true of every trigger-based seal in this repository; it is the
+-- trust boundary those seals have always had, and it is written down here because this is the
+-- table the others rest on.
+--
+-- What the seal DOES do is make the protocol's shape the ONLY representable shape:
+--
+--   * a receipt cannot be minted already terminal, with a chosen result and no reservation;
+--   * a receipt's identity cannot be re-pointed at a different actor or command after the fact;
+--   * a completed receipt cannot be re-pointed at a different result, re-opened, or backdated;
+--   * a receipt cannot be completed by a LATER transaction than the one that reserved it.
+--
+-- Those are the shapes an application bug, a careless maintenance UPDATE, or a future path that
+-- bypasses `executeCommand` actually produce, and each was a single statement away before. What
+-- remains is a deliberate multi-statement forgery inside one transaction, and the answer to THAT
+-- is not another trigger — it is that a maintenance role should not hold INSERT/UPDATE on this
+-- table at all. That is a privilege-grant decision, recorded in `docs/RUNBOOK.md §CMDR`, not
+-- something a trigger can assert.
 --
 -- **This enforces the protocol the code already follows, so no runtime change accompanies it.**
--- `executeCommand` has exactly two writers — the `reserved` insert and the completing update —
--- and there is no raw SQL, no second creator and no delete path anywhere in the API. A probe
--- drives a real command end to end to prove that, rather than asserting it in a comment.
+-- `executeCommand` has exactly two writers — the `reserved` insert and the completing update, both
+-- inside one `$transaction` — and there is no raw SQL, no second creator and no delete path
+-- anywhere in the API. A probe drives a real command end to end to prove that, rather than
+-- asserting it in a comment.
+
+-- ── legacy rows: DIAGNOSTIC FIRST, and this one ABORTS ─────────────────────────────────────────
+--
+-- Run BEFORE the trigger exists, so an operator's repair is not itself blocked by the seal.
+--
+-- The first head of this migration only raised a NOTICE here, on the reasoning that neither
+-- incoherent shape could satisfy a provenance seal falsely. That reasoning was WRONG and the
+-- review caught it: §E's join reads `status = 'succeeded'`, `commandType` and `resultRef` — it
+-- does NOT read `completedAt`. So a pre-existing hand-written `succeeded` receipt with a chosen
+-- `resultRef` and no completion time validates a hand-written verdict the moment this seal is
+-- installed, and installing a seal that trusts rows it never checked is worse than installing
+-- none: everything downstream then reads as verified provenance.
+--
+-- So it aborts. Neither shape can be repaired by inventing data — nobody knows when a receipt with
+-- no completion time completed — so the repair is to make the row NON-AUTHORITATIVE by deleting
+-- it. That is safe and self-diagnosing: DELETE is permitted on this table, and every citing row
+-- holds an ON DELETE NO ACTION composite FK, so PostgreSQL removes a receipt nothing rests on and
+-- REFUSES one a fact depends on — which tells the operator they have found a fact resting on a
+-- receipt no command produced. `docs/RUNBOOK.md §CMDR` walks both outcomes.
+DO $$
+DECLARE v_no_completed bigint; v_failed_with_result bigint;
+BEGIN
+  SELECT COUNT(*) INTO v_no_completed
+    FROM "CommandExecution" WHERE "status" <> 'reserved' AND "completedAt" IS NULL;
+  SELECT COUNT(*) INTO v_failed_with_result
+    FROM "CommandExecution" WHERE "status" = 'failed' AND "resultRef" IS NOT NULL;
+  IF v_no_completed <> 0 OR v_failed_with_result <> 0 THEN
+    RAISE EXCEPTION 'platform_command_receipt_seal: % terminal receipt(s) carry no completion time and % failed receipt(s) carry a result. `executeCommand` cannot produce either shape, so those rows were written by something else — and a `succeeded` row with a chosen `resultRef` satisfies every provenance join downstream. Resolve them before this seal is installed: see docs/RUNBOOK.md §CMDR.', v_no_completed, v_failed_with_result;
+  END IF;
+END $$;
 
 CREATE OR REPLACE FUNCTION platform_command_receipt_protocol() RETURNS trigger AS $$
+DECLARE v_reserved_here boolean;
 BEGIN
   IF TG_OP = 'INSERT' THEN
     -- A receipt is a record that a command RAN. Minting one already terminal records a command
@@ -79,6 +128,22 @@ BEGIN
   IF NEW."status" = 'failed' AND NEW."resultRef" IS NOT NULL THEN
     RAISE EXCEPTION 'A FAILED command produced no result — a result reference on it would be provenance for something that did not happen (%)', OLD."id";
   END IF;
+
+  -- RESERVE AND COMPLETE ARE ONE TRANSACTION. Phase 2 states it as the protocol —
+  -- "reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens
+  -- exactly once" — and `executeCommand` does exactly that, so a completion arriving from a LATER
+  -- transaction did not come from a command run. Enforcing it is what makes this seal a faithful
+  -- description of the protocol rather than a partial one: without it, a receipt reserved at any
+  -- point in the past can be adopted and completed later against a result chosen afterwards.
+  --
+  -- `xmin` is the transaction that inserted the row; `txid_current()::text::xid` truncates the
+  -- 64-bit counter to the 32-bit xid the row carries, which is the standard comparison. It is read
+  -- back rather than taken from OLD because system columns are not exposed on trigger records.
+  SELECT c."xmin" = txid_current()::text::xid INTO v_reserved_here
+    FROM "CommandExecution" c WHERE c."id" = OLD."id";
+  IF NOT COALESCE(v_reserved_here, false) THEN
+    RAISE EXCEPTION 'A command receipt is completed by the SAME transaction that reserved it — a completion arriving later did not come from a command run (%)', OLD."id";
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -96,27 +161,6 @@ CREATE TRIGGER "CommandExecution_receipt_protocol"
 -- contradict a cleared decision and break that cascade. It also would not buy anything: deleting
 -- a receipt cannot forge provenance, it can only remove it, and every provenance join then finds
 -- nothing and FAILS CLOSED. Where a fact must outlive its receipt the fact says so itself — a
--- `BillVerification`, a `StockTransaction` and every other citing row holds an ON DELETE NO
--- ACTION composite FK, so PostgreSQL already refuses to delete a receipt something rests on.
---
--- ── legacy rows ────────────────────────────────────────────────────────────────────────────────
---
--- This migration is additive and constrains TRANSITIONS and INSERTS from now on; it neither reads
--- nor rewrites an existing row, so a legacy database upgrades untouched. Two incoherent shapes
--- would nevertheless be worth an operator's attention, because `executeCommand` cannot produce
--- either and their presence means something else wrote the ledger. They are REPORTED rather than
--- aborted on, deliberately: the new invariant is about what happens next, and neither shape can
--- satisfy a provenance seal falsely (§E's join requires `status = 'succeeded'` AND a `resultRef`
--- that equals the citing row's id). Aborting an upgrade over data no seal depends on would be
--- strictness for its own sake.
-DO $$
-DECLARE v_no_completed bigint; v_failed_with_result bigint;
-BEGIN
-  SELECT COUNT(*) INTO v_no_completed
-    FROM "CommandExecution" WHERE "status" <> 'reserved' AND "completedAt" IS NULL;
-  SELECT COUNT(*) INTO v_failed_with_result
-    FROM "CommandExecution" WHERE "status" = 'failed' AND "resultRef" IS NOT NULL;
-  IF v_no_completed <> 0 OR v_failed_with_result <> 0 THEN
-    RAISE NOTICE 'platform_command_receipt_seal: % terminal receipt(s) with no completion time and % failed receipt(s) carrying a result predate this seal. They are left exactly as they are — no provenance seal can rest on either — but they were not written by executeCommand.', v_no_completed, v_failed_with_result;
-  END IF;
-END $$;
+-- `StockTransaction` and every other citing row holds an ON DELETE NO ACTION composite FK, so
+-- PostgreSQL already refuses to delete a receipt something rests on. That refusal is also what
+-- makes the §CMDR repair safe.

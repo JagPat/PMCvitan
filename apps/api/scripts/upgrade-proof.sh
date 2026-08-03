@@ -1699,9 +1699,9 @@ assert_rejects "platform: MINTING a receipt already \`succeeded\` (a command tha
 assert_rejects "platform: a RESERVED receipt pre-loaded with a result (a result before the command ran)" \
   "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\",\"resultRef\") VALUES('UPCR-PRE','project','org-legacy','p1','USER-1','test.upcr','upcr-pre','x','reserved','FORGED-RESULT')"
 # …and the HONEST protocol is accepted, so the seal is precise rather than merely strict
-$PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPCR-OK','project','org-legacy','p1','USER-1','test.upcr','upcr-ok','x','reserved')" \
-  && $PSQL >/dev/null -c "UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='REAL-RESULT', \"completedAt\"=now() WHERE \"id\"='UPCR-OK'" \
-  && printf 'ok      %s\n' "platform: reserve -> succeeded with a result is ACCEPTED (the seal enforces the protocol, it does not forbid it)" \
+# the honest protocol — reserve and complete in ONE transaction, exactly as `executeCommand` does
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPCR-OK','project','org-legacy','p1','USER-1','test.upcr','upcr-ok','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='REAL-RESULT', \"completedAt\"=now() WHERE \"id\"='UPCR-OK'; COMMIT;" \
+  && printf 'ok      %s\n' "platform: reserve -> succeeded with a result, in ONE transaction, is ACCEPTED (the seal enforces the protocol, it does not forbid it)" \
   || { printf 'FAILED  %s\n' "platform: the honest reserve/complete protocol was rejected"; FAIL=1; }
 assert_rejects "platform: RE-POINTING a completed receipt's result (a re-pointable receipt is a re-pointable provenance chain)" \
   "UPDATE \"CommandExecution\" SET \"resultRef\"='OTHER-RESULT' WHERE \"id\"='UPCR-OK'"
@@ -1714,6 +1714,11 @@ assert_rejects "platform: completing a receipt with no completion time (a termin
   "UPDATE \"CommandExecution\" SET \"status\"='succeeded' WHERE \"id\"='UPCR-NOTIME'"
 assert_rejects "platform: a FAILED receipt carrying a result (provenance for something that did not happen)" \
   "UPDATE \"CommandExecution\" SET \"status\"='failed', \"resultRef\"='X', \"completedAt\"=now() WHERE \"id\"='UPCR-NOTIME'"
+# Codex round-1 on this PR — reserve in one transaction and complete in another is a protocol
+# violation: Phase 2 states the reserve/execute/receipt sequence is ONE transaction, so a
+# completion arriving later did not come from a command run.
+assert_rejects "platform: ADOPTING a stale reserved receipt from a later transaction (a completion that came from no command run)" \
+  "UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='FORGED', \"completedAt\"=now() WHERE \"id\"='UPCR-NOTIME'"
 
 assert_rejects "commercial T4 §F: a claim line naming ANOTHER vendor's purchase-order line in the SAME project (composite FK)" \
   "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X1','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UPT4-POL',1,1,0,0,1)"
