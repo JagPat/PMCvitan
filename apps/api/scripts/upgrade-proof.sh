@@ -1748,15 +1748,58 @@ assert_rejects "commercial T4 R2-F3: the arrow into CERTIFIED, with no certifica
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
   && printf 'ok      %s\n' "commercial T4 R2-F3: under-verification -> disputed is ACCEPTED (the arrows this task owns still work)" \
   || { printf 'FAILED  %s\n' "commercial T4 R2-F3: a legal Task-4 transition was rejected"; FAIL=1; }
+# ── Codex round-4: a RESOLUTION must carry the correction it claims to be ────────────────────
+# `resolved` is terminal and RELEASES the duplicate-document key, so a bill marked resolved with no
+# amendment behind it frees the vendor's number while the disputed claim is still the only version
+# that ever existed. `UPT4-B4` therefore carries real version LINEAGE — the R2-F2 reason assertions
+# move onto it, because they are assertions about a legitimate resolution.
+$PSQL >/dev/null <<SQL
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-B4','p1','UP45-VEN','INV-004','2026-08-24','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV4A','p1','UPT4-B4','UP45-VEN',1,12.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL4A','p1','UPT4-BV4A','UPT4-B4','UP45-VEN','material','UP45-POL',12,1,0,0,12.00);
+COMMIT;
+SQL
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B4'" 2>/dev/null
+assert "commercial T4 R4-F5: the DATABASE captured which version was disputed (no writer supplies it)" \
+  "SELECT \"disputedAtVersion\"::text FROM \"VendorBill\" WHERE \"id\"='UPT4-B4';" \
+  "1"
+assert_rejects "commercial T4 R4-F5: RESOLVING a dispute with no amendment behind it (it would release the document number for a claim nobody fixed)" \
+  "UPDATE \"VendorBill\" SET \"status\"='resolved' WHERE \"id\"='UPT4-B4'"
+# the real correction: supersede the disputed version and enter the corrected claim
+$PSQL >/dev/null <<SQL
+BEGIN;
+UPDATE "VendorBillVersion" SET "supersededAt"=now(), "supersededById"='USER-1', "supersedeReason"='vendor corrected the claim' WHERE "id"='UPT4-BV4A';
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","supersedesVersion","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV4B','p1','UPT4-B4','UP45-VEN',2,1,10.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL4B','p1','UPT4-BV4B','UPT4-B4','UP45-VEN','material','UP45-POL',10,1,0,0,10.00);
+COMMIT;
+SQL
 # R2-F2 — resolving a dispute must not overwrite WHY it was disputed
 assert_rejects "commercial T4 R2-F2: overwriting a dispute reason on the way to RESOLVED" \
-  "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusReason\"='vendor corrected the claim' WHERE \"id\"='UPT4-B3'"
-$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
-  && printf 'ok      %s\n' "commercial T4 R2-F2: resolving WITHOUT touching the reason is ACCEPTED, and the dispute evidence survives" \
-  || { printf 'FAILED  %s\n' "commercial T4 R2-F2: a clean resolution was rejected"; FAIL=1; }
+  "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusReason\"='vendor corrected the claim' WHERE \"id\"='UPT4-B4'"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B4'" \
+  && printf 'ok      %s\n' "commercial T4 R2-F2/R4-F5: a resolution WITH its amendment behind it is ACCEPTED (the seal is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T4 R2-F2/R4-F5: a legitimate resolution was rejected"; FAIL=1; }
 assert "commercial T4 R2-F2: the resolved bill still records WHY it left the live fold" \
-  "SELECT \"statusReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B3';" \
+  "SELECT \"statusReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B4';" \
   "evidence withdrawn"
+# ── Codex round-4: the duplicate-document key is the NORMALIZED number ───────────────────────
+# `UPT4-B3` still holds `INV-003` and is `disputed`, which §F counts as live for this key.
+assert_rejects "commercial T4 R4-F2: a second live claim whose number differs only in LETTER CASE" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XN1','p1','UP45-VEN','inv-003','2026-08-25','draft','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 R4-F2: a second live claim whose number differs only in INTERNAL whitespace" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XN2','p1','UP45-VEN','INV -003','2026-08-25','draft','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 R4-F2: STORING a padded document number (the read surface and the key would disagree)" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XN3','p1','UP45-VEN','  INV-005  ','2026-08-25','draft','USER-1','UP45-CMD')"
+# …and the RESOLVED bill released its number, case-normalized, exactly as a terminal state should
+$PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-N4','p1','UP45-VEN','inv-004','2026-08-25','draft','USER-1','UP45-CMD')" \
+  && printf 'ok      %s\n' "commercial T4 R4-F2: re-filing a RESOLVED claim's number is ACCEPTED (the normalized key releases with the lifecycle)" \
+  || { printf 'FAILED  %s\n' "commercial T4 R4-F2: the normalized key did not release on a terminal state"; FAIL=1; }
 # ── Codex round-3 findings, sealed at PostgreSQL ─────────────────────────────────────────────
 # R3-F2 — WHEN a claim left the live fold is evidence too
 assert_rejects "commercial T4 R3-F2: rewriting statusChangedAt outside the transition that set it" \

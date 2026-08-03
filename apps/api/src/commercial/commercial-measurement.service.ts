@@ -362,7 +362,9 @@ export class CommercialMeasurementService {
         // transaction is committing, not the one it started from. The deferred DB bound seal then
         // aborts the whole transaction if the disposition left the bound broken.
         if (row.quantity.isNegative()) {
-          await this.participant.assertMeasurementWithdrawable(tx, projectId, row.labourPoLineId, after);
+          await this.participant.assertMeasurementWithdrawable(
+            tx, projectId, row.labourPoLineId, after, { actorId: actor.actorId, role: user.role },
+          );
         }
         // §B — MEASURED is a `COMMITTED` fold input, so this write is a headroom mover and
         // re-evaluates in its own transaction. As the arithmetic stands it is exposure-NEUTRAL

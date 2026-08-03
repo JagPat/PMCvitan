@@ -684,7 +684,9 @@ export class InventoryService {
         // Only an ACCEPTANCE reversal moves `ACCEPTED(poLine)`: a receipt or rejection reversal
         // moves quarantine and `receivedQty`, which no §G bound reads.
         if (target.type === 'acceptance') {
-          await this.commercialParticipant.assertAcceptanceReversible(tx, projectId, lot.poLineId);
+          await this.commercialParticipant.assertAcceptanceReversible(
+            tx, projectId, lot.poLineId, { actorId: actor.actorId, role: user.role },
+          );
         }
         if (target.type === 'acceptance' || target.type === 'receipt' || target.type === 'rejection') {
           await this.evaluateBudgetForLine(

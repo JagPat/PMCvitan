@@ -3164,6 +3164,12 @@ model VendorBill {
   statusChangedAt DateTime @default(now())
   /// why the claim left the live set — required on `rejected` and on `disputed` (non-blank CHECK)
   statusReason   String?
+  /// §F — the version that was live when this claim was DISPUTED, captured by the lifecycle
+  /// trigger and overwritten on every update, so no writer can supply it. `disputed → resolved`
+  /// requires a live version superseding exactly this one: a resolution releases the
+  /// duplicate-document key, so one with no correction behind it would free the vendor's number
+  /// for a claim nobody fixed.
+  disputedAtVersion Int?
 
   createdAt   DateTime @default(now())
   createdBy   User     @relation("vendorBillsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)

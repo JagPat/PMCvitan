@@ -1,6 +1,6 @@
 # PR #274 — architectural convergence audit (Phase 5 Task 4)
 
-Three finding-bearing heads, eleven findings. Per `CLAUDE.md`, from the third head on this stops
+Four finding-bearing heads, sixteen findings. Per `CLAUDE.md`, from the third head on this stops
 being another isolated patch: it names the ROOT the findings share and leaves a mechanical closure
 behind.
 
@@ -9,10 +9,11 @@ behind.
 | `61adb3d` | 4 | 1×P1 a bound reading a stale authority, 3×P2 seals that froze the wrong thing |
 | `b4bb720` | 4 | 4×P2 — two of them the round-1 fixes, one level short |
 | `a1a4087` | 3 | 3×P2 — one the round-2 fix one level short, two more entry points of root B |
+| `f2c7a21` | 5 | 5×P2 — three of them root C a fourth time, at the level BELOW the commands round 3 fixed |
 
 ---
 
-## The eight findings
+## The sixteen findings
 
 | # | Head | Sev | Finding | Root |
 |---|---|---|---|---|
@@ -27,6 +28,11 @@ behind.
 | 9 | `a1a4087` | P2 | Finding 8's own fix made a claim a headroom mover and did not evaluate the exception, so the budget READ could report negative headroom with the register empty | **C** |
 | 10 | `a1a4087` | P2 | `statusChangedAt` — WHEN a claim left the live fold — was rewritable on a same-status update | **B** |
 | 11 | `a1a4087` | P2 | The lifecycle trigger was `BEFORE UPDATE OR DELETE`, so a direct INSERT could START a bill at `certified`, skipping every arrow round 2 had just sealed | **B** |
+| 12 | `f2c7a21` | P2 | The amendment read its claim targets AFTER superseding, so a head it DROPPED a claim from was never re-evaluated | **C** |
+| 13 | `f2c7a21` | P2 | The duplicate-document index keyed RAW text, so ` V-9 ` and `v-9` were separate live documents for one vendor invoice | **B** |
+| 14 | `f2c7a21` | P2 | The automatic dispute evaluated no heads at all, so every head the disputed claim touched but the withdrawal site kept a stale exception | **C** |
+| 15 | `f2c7a21` | P2 | A lost dispute CAS kept the stale billed total and over-disputed the next claim | **C** |
+| 16 | `f2c7a21` | P2 | `disputed → resolved` released the duplicate-document key with no correction behind it | **B** |
 
 ---
 
@@ -111,6 +117,23 @@ moved", so both are enforced by the same trigger that enforces the fact. The upg
 an acceptance case beside each rejection, which is what would have caught both: a seal that only
 ever refuses is not shown to be precise.
 
+**Findings 12, 14 and 15 are this root a FOURTH time, and they are what forced the closure down a
+level.** Round 3's fix made the bill COMMANDS evaluate their heads. But the automatic dispute and
+the lines an amendment DROPS move the same fold, and neither of them is a command — so a fix
+written at the command layer was, once again, exactly one level short of the writers. The closure
+is no longer "every command evaluates": the evaluation now lives INSIDE the disposition that moves
+claims out of the fold, and inside the amendment beside the supersession that retires them, which
+is the only place a future caller cannot be one level short of. Finding 15 is the same root in its
+smallest form — a fold read once and then arithmetic'd forward, so a CAS that failed because the
+world moved left the arithmetic describing a world that no longer existed.
+
+The mechanical closure this time is an explicit ENUMERATION rather than a rule: the docblock on
+`evaluateClaimHeads` now lists all five writers that can move `BILLED_AMOUNT` and states what
+discharges each — the two inert ones (a `draft` bill is not in the fold) as well as the three that
+evaluate. That is the form Task 2's audit landed on for its mover set, and it is what makes a
+sixth writer added without evaluation visible at the place it would be written rather than at the
+next review.
+
 **Finding 9 widens the rule past evidence, and that is the round-3 correction to this root.** A fix
 does not only introduce evidence — it can change what a WRITE means. Making `BILLED_AMOUNT` part of
 the position turned every bill transition into a headroom mover, and §B's closure row already
@@ -162,10 +185,10 @@ returns the number the probe was hoping for.
 
 | Gate | Result |
 |---|---|
-| Focused probe suite `phase5-t4-vendor-bill.test.ts` | **23/23** — 8 of them the round-1 and round-2 findings, each RED before its fix |
-| Full integration suite, pristine migrated DB | **76 files / 787 tests**, zero failures |
+| Focused probe suite `phase5-t4-vendor-bill.test.ts` | **31/31** — 16 of them the round-1..4 findings, each RED before its fix |
+| Full integration suite, pristine migrated DB | **76 files / 790 tests**, zero failures |
 | `pnpm check` | EXIT 0 — web 543/543, API 718/718 |
-| `upgrade-proof.sh` | PASSED — 40 Task-4 assertions, acceptance cases beside the rejections |
+| `upgrade-proof.sh` | PASSED — Task-4 assertions with acceptance cases beside the rejections |
 | `test:e2e:api:allmodules` / `:outbox` | 35/35 · 29/29 |
 
 One `api-e2e` failure landed on the superseded head `84f5e1b` and is recorded here rather than

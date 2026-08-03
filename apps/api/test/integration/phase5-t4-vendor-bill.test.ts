@@ -116,7 +116,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
 
   // ── fixtures ─────────────────────────────────────────────────────────────────────────────────
 
-  const freshProject = async (): Promise<string> => {
+  const freshProject = async (extraHeads: ReadonlyArray<{ code: string; name: string }> = []): Promise<string> => {
     const id = `it-p5t4-${Date.now() % 1e6}-${seq++}`;
     await t.prisma.project.create({
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
@@ -124,7 +124,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
     await capabilities.enable(id, MATERIALS_CAPABILITY, f.memberUser.id);
     await activation.activate(id, f.memberUser.id, {
-      costHeads: [{ code: 'CIVIL', name: 'Civil works' }], materialLines: [], labourLines: [], reason: 'pilot activation',
+      costHeads: [{ code: 'CIVIL', name: 'Civil works' }, ...extraHeads], materialLines: [], labourLines: [], reason: 'pilot activation',
     });
     return id;
   };
@@ -143,7 +143,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
   /** requirement → approved comparison → ISSUED material PO line, with its vendor. */
   const issuedMaterialLine = async (
     projectId: string,
-    opts: { qty?: string; baseRate?: string; taxAmount?: string; freightAmount?: string; vendorId?: string } = {},
+    opts: { qty?: string; baseRate?: string; taxAmount?: string; freightAmount?: string; vendorId?: string; costHeadCode?: string } = {},
   ): Promise<{ poId: string; poLineId: string; vendorId: string; commitmentId: string }> => {
     const qty = opts.qty ?? '100';
     const activityId = await freshActivity(projectId);
@@ -172,7 +172,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     const approved = await procurement.approveComparison(projectId, rfq.id, { selectedQuoteId: quoteId, reason: 'single quote, in spec' }, pmc(projectId));
     const po = await pos.create(projectId, { comparisonId: approved.comparison!.id, lines: [{ requisitionLineId: lineId, purchaseQty: qty }] }, pmc(projectId));
     const line = await t.prisma.purchaseOrderLine.findFirstOrThrow({ where: { projectId, requisitionLineId: lineId } });
-    await pos.issue(projectId, po.id, { costHeads: [{ poLineId: line.id, costHeadCode: 'CIVIL' }] }, pmc(projectId));
+    await pos.issue(projectId, po.id, { costHeads: [{ poLineId: line.id, costHeadCode: opts.costHeadCode ?? 'CIVIL' }] }, pmc(projectId));
     const commitment = await pos.commitDelivery(projectId, { poLineId: line.id, promisedDate: '2026-09-01' }, pmc(projectId));
     return { poId: po.id, poLineId: line.id, vendorId, commitmentId: commitment.id };
   };
@@ -840,6 +840,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await t.prisma.$transaction(async (tx) => {
       await bills.disputeClaimsBeyondEvidence(
         tx, projectId, 'labour', line.poLineId, new Prisma.Decimal(0), 'order-not-live: supplier reneged',
+        { actorId: f.memberUser.id, role: 'pmc' },
       );
       await tx.$executeRawUnsafe(
         `UPDATE "LabourPurchaseOrderVersion" SET "status"='cancelled', "cancelledAt"=now(), "cancelReason"='supplier reneged' WHERE "id"=$1`,
@@ -1162,5 +1163,233 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await bills.submit(projectId, { billId: first.id }, pmc(projectId), 'key-2');
     await bills.submit(projectId, { billId: first.id }, pmc(projectId), 'key-2');
     expect(await statusOf(projectId, first.id)).toBe('submitted');
+  });
+
+  // ── Codex round-4 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R4-F1 — an amendment REMOVES claims as well as adding them, and the removal was invisible.
+   * The head evaluation read `claimTargets` AFTER the supersession, so it saw the replacement set
+   * twice and never saw the lines the amendment dropped: the head carrying a dropped line kept an
+   * open exception for exposure that had just left the fold.
+   */
+  it('R4-F1 (§B): an amendment re-evaluates the heads it DROPPED a claim from, not only the ones it kept', async () => {
+    const projectId = await freshProject([{ code: 'FINISH', name: 'Finishes' }]);
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    await budget.setBudget(projectId, { costHeadCode: 'FINISH', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    const civil = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    const finish = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1', costHeadCode: 'FINISH', vendorId: civil.vendorId });
+    await acceptOnLine(projectId, civil, '100', '100');
+    await acceptOnLine(projectId, finish, '100', '100');
+
+    // ONE claim across BOTH heads, each at twice the ordered rate, so each head is over budget
+    const recorded = await bills.record(projectId, {
+      vendorId: civil.vendorId, vendorBillNumber: 'R4-F1', documentDate: '2026-08-20',
+      lines: [
+        { poLineId: civil.poLineId, quantity: '100', rate: '2' },
+        { poLineId: finish.poLineId, quantity: '100', rate: '2' },
+      ],
+    }, pmc(projectId));
+    await bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
+    expect((await openExceptions(projectId)).map((e) => e.costHeadCode)).toEqual(['CIVIL', 'FINISH']);
+
+    // amend DOWN to the civil line alone — the finishes claim is withdrawn
+    await bills.amend(projectId, {
+      billId: recorded.id, reason: 'the finishes line was billed against the wrong order',
+      lines: [{ poLineId: civil.poLineId, quantity: '100', rate: '2' }],
+    }, pmc(projectId));
+
+    // the money left FINISH, so its exception must be cleared — CIVIL's is still real
+    expect((await positionOf(projectId, 'FINISH')).awaitingCertification.toString()).toBe('0');
+    expect((await positionOf(projectId, 'FINISH')).headroom!.toString()).toBe('0');
+    expect((await openExceptions(projectId)).map((e) => e.costHeadCode)).toEqual(['CIVIL']);
+  });
+
+  /**
+   * R4-F2 — the duplicate-document key was the RAW text, so ` V-9 ` and `v-9` were three different
+   * live documents for one vendor invoice, each free to draw on the same accepted quantity.
+   */
+  it('R4-F2 (§F): the duplicate-claim key is NORMALIZED — padding and letter case do not make a second live document', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const first = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: 'V-9', documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
+    }, pmc(projectId));
+    expect(first.vendorBillNumber).toBe('V-9');
+
+    for (const variant of ['  V-9  ', 'v-9', 'V-9', '\tV-9\n']) {
+      await expect(bills.record(projectId, {
+        vendorId: line.vendorId, vendorBillNumber: variant, documentDate: '2026-08-20',
+        lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
+      }, pmc(projectId))).rejects.toThrow(/already/u);
+    }
+    // a GENUINELY different number is still accepted, so the key is precise rather than merely strict
+    const other = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: 'V-90', documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
+    }, pmc(projectId));
+    expect(other.vendorBillNumber).toBe('V-90');
+
+    // internal spacing is transcription noise too, at ANY position — the key holds no whitespace
+    await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: 'W 1', documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
+    }, pmc(projectId));
+    for (const variant of ['W  1', 'W1', 'w 1', 'W\t1']) {
+      await expect(bills.record(projectId, {
+        vendorId: line.vendorId, vendorBillNumber: variant, documentDate: '2026-08-20',
+        lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
+      }, pmc(projectId))).rejects.toThrow(/already/u);
+    }
+
+    // …and the stored text cannot carry padding at all: the read surface and the key agree
+    const commandId = (await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId } })).id;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "VendorBill" ("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+       VALUES ($1,$2,$3,'  V-77  ','2026-08-20','draft',$4,$5)`,
+      'r4f2-padded', projectId, line.vendorId, f.memberUser.id, commandId,
+    )).rejects.toThrow(/VendorBill_number_trimmed/u);
+  });
+
+  /**
+   * R4-F3 — a disputed claim leaves the live fold WHOLE. Its lines on other purchase-order lines
+   * stop counting too, so every head the bill touched moved — and only the withdrawal site's head
+   * was re-evaluated, leaving the others flagging exposure the budget read had already released.
+   */
+  it('R4-F3 (§B): an automatic dispute re-evaluates EVERY head the claim touched, not just the withdrawal site', async () => {
+    const projectId = await freshProject([{ code: 'FINISH', name: 'Finishes' }]);
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    await budget.setBudget(projectId, { costHeadCode: 'FINISH', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    const civil = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    const finish = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1', costHeadCode: 'FINISH', vendorId: civil.vendorId });
+    const accepted = await acceptOnLine(projectId, civil, '100', '100');
+    await acceptOnLine(projectId, finish, '100', '100');
+
+    const recorded = await bills.record(projectId, {
+      vendorId: civil.vendorId, vendorBillNumber: 'R4-F3', documentDate: '2026-08-20',
+      lines: [
+        { poLineId: civil.poLineId, quantity: '100', rate: '2' },
+        { poLineId: finish.poLineId, quantity: '100', rate: '2' },
+      ],
+    }, pmc(projectId));
+    await bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
+    expect((await openExceptions(projectId)).map((e) => e.costHeadCode)).toEqual(['CIVIL', 'FINISH']);
+
+    // withdraw the CIVIL evidence — the whole claim is disputed, so BOTH heads' exposure went
+    await inventory.reverse(projectId, {
+      txId: accepted.acceptanceTxId, reason: 'the acceptance was recorded against the wrong lot',
+    }, pmc(projectId));
+    expect(await statusOf(projectId, recorded.id)).toBe('disputed');
+    expect((await positionOf(projectId, 'FINISH')).awaitingCertification.toString()).toBe('0');
+    expect(await openExceptions(projectId)).toHaveLength(0);
+  });
+
+  /**
+   * R4-F4 — the disposition subtracted from a RUNNING TOTAL and treated a lost CAS as "skip this
+   * one". A lost CAS means a concurrent transaction already took that claim out of the fold, so the
+   * total was stale by exactly that claim, and the next claim was measured against a number that
+   * counted it twice — disputing a claim the fold already had room for.
+   *
+   * The interleaving is produced deterministically rather than raced: the transaction client is
+   * wrapped so the FIRST dispute update runs the concurrent rejection (on its own connection, to
+   * commit) immediately before it. That is the exact ordering the defect needs — the fold and the
+   * live set are read, then the world changes, then the CAS runs — with no timing to be flaky
+   * about. Nothing here holds a lock the disposition would have waited on, which is precisely the
+   * point: the service paths serialize on the readiness lock, so the guard is being asked to hold
+   * on its own rather than on another lock happening to be there.
+   */
+  it('R4-F4 (§E): a LOST dispute CAS re-reads the fold instead of over-disputing the next claim', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const older = await claim(projectId, line.vendorId, line.poLineId, '60', { number: 'R4-F4-OLD' });
+    const newer = await claim(projectId, line.vendorId, line.poLineId, '40', { number: 'R4-F4-NEW' });
+    expect(await billedQty(projectId, line.poLineId, 'material')).toBe('100');
+
+    const { PrismaClient } = await import('@prisma/client');
+    const outside = new PrismaClient();
+    try {
+      // wedge: the newest claim leaves the live set between the disposition's read and its CAS
+      const wedge = (tx: Prisma.TransactionClient, once: () => Promise<void>): Prisma.TransactionClient => {
+        let fired = false;
+        return new Proxy(tx, {
+          get(target, prop) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const value = (target as any)[prop];
+            if (prop !== 'vendorBill') return typeof value === 'function' ? value.bind(target) : value;
+            return new Proxy(value, {
+              get(delegate, method) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const fn = (delegate as any)[method];
+                if (method !== 'updateMany') return typeof fn === 'function' ? fn.bind(delegate) : fn;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                return async (args: any) => {
+                  if (!fired) { fired = true; await once(); }
+                  return fn.call(delegate, args);
+                };
+              },
+            });
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any;
+      };
+
+      // ACCEPTED falls to 80. The honest disposition disputes the newest (40) and stops at 60 ≤ 80.
+      const disputed = await t.prisma.$transaction(async (tx) => bills.disputeClaimsBeyondEvidence(
+        wedge(tx, async () => {
+          await outside.vendorBill.updateMany({
+            where: { id: newer.id, projectId },
+            data: { status: 'rejected', statusChangedAt: new Date(), statusReason: 'withdrawn by the vendor' },
+          });
+        }),
+        projectId, 'material', line.poLineId, new Prisma.Decimal('80'),
+        'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, role: 'pmc' },
+      ));
+
+      // the concurrent rejection already removed 40, so the fold is 60 and there is NOTHING left to
+      // dispute. Carrying the stale 100 forward disputes the 60 the fold has room for.
+      expect(disputed).toEqual([]);
+      expect(await statusOf(projectId, older.id)).toBe('submitted');
+      expect(await billedQty(projectId, line.poLineId, 'material')).toBe('60');
+    } finally {
+      await outside.$disconnect();
+    }
+  });
+
+  /**
+   * R4-F5 — `resolved` is TERMINAL and it RELEASES the duplicate-document key. Marking a disputed
+   * claim resolved with no correction behind it therefore frees the vendor's invoice number while
+   * the disputed claim is still the only version that ever existed, so the same invoice can be
+   * filed again, live, against the evidence that failed it the first time.
+   */
+  it('R4-F5 (§F): a resolution must carry the amendment that corrected the disputed version', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '120', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const over = await claim(projectId, line.vendorId, line.poLineId, '120', { number: 'R4-F5' });
+    expect(over.status).toBe('disputed');
+
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='resolved' WHERE "id"=$1`, over.id,
+    )).rejects.toThrow(/resolved by AMENDING it/u);
+    // the database captured WHICH version was disputed, and no writer can say otherwise
+    expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { id: over.id } })).disputedAtVersion).toBe(1);
+    expect(await statusOf(projectId, over.id)).toBe('disputed');
+    // …so the document number is still held: the same invoice cannot be re-filed alongside it
+    await expect(bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: 'R4-F5', documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId))).rejects.toThrow(/already/u);
+
+    // the REAL resolution — an amendment superseding the disputed version — still works, so the
+    // seal is precise rather than merely strict
+    const resolved = await bills.amend(projectId, {
+      billId: over.id, reason: 'vendor corrected the claim to the delivered quantity',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId));
+    expect(resolved.status).toBe('resolved');
+    expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { id: over.id } })).disputedAtVersion).toBe(1);
   });
 });

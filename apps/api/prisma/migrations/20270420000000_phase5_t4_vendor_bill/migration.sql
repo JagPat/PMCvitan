@@ -182,12 +182,22 @@ CREATE TABLE IF NOT EXISTS "VendorBill" (
     "status" TEXT NOT NULL DEFAULT 'draft',
     "statusChangedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "statusReason" TEXT,
+    -- Codex round-4 — the version that was live WHEN the claim was disputed. Maintained by the
+    -- lifecycle trigger and by nothing else (the trigger overwrites whatever a writer supplies),
+    -- because it is the evidence that a resolution corrected THE DISPUTED CLAIM rather than some
+    -- earlier one. Comparing timestamps would have worked too and would have made a resolution
+    -- depend on two clocks agreeing; a version number the database captures itself does not.
+    "disputedAtVersion" INTEGER,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "createdById" TEXT NOT NULL,
     "sourceCommandId" TEXT NOT NULL,
 
     CONSTRAINT "VendorBill_pkey" PRIMARY KEY ("id")
 );
+
+-- retry-safety: a re-run after this migration created the table but before it finished must still
+-- reach the round-4 column, which `CREATE TABLE IF NOT EXISTS` above would skip past
+ALTER TABLE "VendorBill" ADD COLUMN IF NOT EXISTS "disputedAtVersion" INTEGER;
 
 CREATE TABLE IF NOT EXISTS "VendorBillVersion" (
     "id" TEXT NOT NULL,
@@ -242,8 +252,27 @@ CREATE INDEX        IF NOT EXISTS "VendorBillLine_projectId_labourPoLineId_idx" 
 -- dispute was RESOLVED (both are settled), but a second `V-1` while one is `submitted`,
 -- `under-verification`, `verified`, `certified` or `disputed` is a duplicate claim and refused.
 -- A predicate naming a state §F does not define (`WHERE NOT cancelled`) would never release.
+--
+-- Codex round-4 — the key is the NORMALIZED number, not the raw text. Keyed raw, ` V-1 `, `V-1`
+-- and `v-1` are three distinct live documents, so the same vendor invoice could be claimed three
+-- times over, each copy drawing on the same accepted quantity and each passing every §G bound on
+-- its own. A document number is an identifier a human copies off paper; the differences whitespace
+-- and letter case make to it are transcription noise, not identity.
+--
+-- The normalization is in the KEY, not in the stored value: the row keeps the vendor's verbatim
+-- text (modulo the surrounding whitespace the CHECK below forbids), because what the vendor
+-- printed is evidence and rewriting `INV-7` to `inv-7` in the record would be this repository
+-- inventing a fact. Both functions are IMMUTABLE, which is what lets them index.
+--
+-- Whitespace is REMOVED rather than collapsed. An earlier revision of this fix compressed runs to
+-- a single space, which still left `INV -003` and `INV-003` as two live documents — the same
+-- defect the fix was for, one transcription away, and the upgrade proof caught it. Whitespace is
+-- not part of a document number's identity at any position, so the key holds none of it.
 CREATE UNIQUE INDEX IF NOT EXISTS "VendorBill_live_document_key"
-  ON "VendorBill"("projectId", "vendorId", "vendorBillNumber")
+  ON "VendorBill"(
+    "projectId", "vendorId",
+    lower(regexp_replace("vendorBillNumber", '\s', '', 'g'))
+  )
   WHERE "status" NOT IN ('rejected', 'resolved');
 
 -- §F — exactly one CURRENT version per bill. Without it an amendment could leave two live
@@ -309,6 +338,14 @@ DO $$ BEGIN
   -- vendor evidence.
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'VendorBill_number_nonblank') THEN
     ALTER TABLE "VendorBill" ADD CONSTRAINT "VendorBill_number_nonblank" CHECK (btrim("vendorBillNumber", E' \t\n\x0B\f\r') <> '');
+  END IF;
+  -- Codex round-4 — and it is STORED normalized at its edges. The index above already keys past
+  -- surrounding whitespace, so this is not what makes duplicates collide; it is what stops the
+  -- READ surface and the stored evidence from disagreeing with the key, by making a padded value
+  -- unrepresentable rather than merely equivalent. Trimming is the one normalization safe to apply
+  -- to the stored text: leading and trailing whitespace is never part of a printed number.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'VendorBill_number_trimmed') THEN
+    ALTER TABLE "VendorBill" ADD CONSTRAINT "VendorBill_number_trimmed" CHECK ("vendorBillNumber" = btrim("vendorBillNumber", E' \t\n\x0B\f\r'));
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'VendorBill_reason_nonblank') THEN
     ALTER TABLE "VendorBill" ADD CONSTRAINT "VendorBill_reason_nonblank" CHECK ("statusReason" IS NULL OR btrim("statusReason", E' \t\n\x0B\f\r') <> '');
@@ -436,6 +473,35 @@ BEGIN
      AND NEW."status" IS NOT DISTINCT FROM OLD."status" THEN
     RAISE EXCEPTION 'A vendor bill''s status timestamp is FROZEN outside its transition — it records WHEN the claim moved (%)', OLD."id";
   END IF;
+  -- Codex round-4 — the disputed version is CAPTURED BY THE DATABASE, never supplied. A writer's
+  -- value is discarded on every update, so this column can only ever say what was live at the
+  -- moment the claim was disputed.
+  IF NEW."status" = 'disputed' AND OLD."status" IS DISTINCT FROM 'disputed' THEN
+    NEW."disputedAtVersion" := (
+      SELECT v."version" FROM "VendorBillVersion" v
+       WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL
+    );
+  ELSE
+    NEW."disputedAtVersion" := OLD."disputedAtVersion";
+  END IF;
+  -- Codex round-4 — a RESOLUTION must carry the correction it claims to be. `resolved` is a
+  -- terminal state that RELEASES the duplicate-document key, so marking a disputed claim resolved
+  -- with no amendment behind it frees the vendor's document number while the disputed claim is
+  -- still the only version that ever existed: the same invoice can then be filed again, live,
+  -- against the evidence that failed it the first time. §F's resolution path is an amendment —
+  -- supersede the disputed version, enter the corrected claim as a new one — and this is that
+  -- sentence at PostgreSQL. Matching on `supersedesVersion` rather than on a timestamp is what
+  -- makes it exact: an amendment made BEFORE the dispute supersedes an earlier version and does
+  -- not satisfy this.
+  IF NEW."status" = 'resolved' AND OLD."status" IS DISTINCT FROM 'resolved' THEN
+    IF OLD."disputedAtVersion" IS NULL OR NOT EXISTS (
+      SELECT 1 FROM "VendorBillVersion" v
+       WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id"
+         AND v."supersededAt" IS NULL AND v."supersedesVersion" = OLD."disputedAtVersion"
+    ) THEN
+      RAISE EXCEPTION 'A disputed claim is resolved by AMENDING it — version % must be superseded by a corrected version, and a resolution with no correction behind it would release the document number for a claim nobody fixed (%)', COALESCE(OLD."disputedAtVersion"::text, '?'), OLD."id";
+    END IF;
+  END IF;
   IF NEW."status" IS DISTINCT FROM OLD."status" THEN
     IF NOT (
       -- Codex round-2 — Task 4 stops SHORT of `verified`, and the ARROWS have to stop there too.
@@ -472,6 +538,8 @@ BEGIN
   IF NEW."status" <> 'draft' THEN
     RAISE EXCEPTION 'A vendor bill is created at ''draft'' and moves by attributable transition — it cannot start life at ''%'' (%)', NEW."status", NEW."id";
   END IF;
+  -- a claim that has never been disputed has no disputed version, whatever the insert supplied
+  NEW."disputedAtVersion" := NULL;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

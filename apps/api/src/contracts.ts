@@ -1405,8 +1405,11 @@ export const vendorBillLineSchema = z
 export const recordVendorBillSchema = z
   .object({
     vendorId: z.string().min(1),
-    // the duplicate-claim key: frozen after write at PostgreSQL, so it is validated here too
-    vendorBillNumber: commercialNonBlank('vendorBillNumber', 128),
+    // The duplicate-claim key: frozen after write at PostgreSQL, so it is validated here too — and
+    // NORMALIZED here (Codex round-4), because surrounding whitespace is never part of a number a
+    // vendor printed. Trimming at the contract also makes the idempotency `requestHash` stable, so
+    // a retry that re-sends ` V-1 ` is recognised as the same request rather than a second claim.
+    vendorBillNumber: commercialNonBlank('vendorBillNumber', 128).transform((s) => s.trim()),
     documentDate: isoCivilDateSchema,
     lines: z.array(vendorBillLineSchema).min(1).max(200),
   })

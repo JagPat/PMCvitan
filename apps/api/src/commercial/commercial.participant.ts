@@ -310,6 +310,7 @@ export class CommercialParticipant {
     tx: Prisma.TransactionClient,
     projectId: string,
     poLineId: string,
+    actor: AttributionActor,
   ): Promise<void> {
     if (!(await this.isActive(tx, projectId))) return;
     // read the evidence AFTER the reversal row is appended — the guard is about the state the
@@ -318,6 +319,7 @@ export class CommercialParticipant {
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, 'material', poLineId, accepted,
       `qty-over-accepted: an acceptance on purchase-order line ${poLineId} was reversed, leaving ${accepted.toString()} base units of accepted evidence`,
+      actor,
     );
   }
 
@@ -336,11 +338,13 @@ export class CommercialParticipant {
     projectId: string,
     labourPoLineId: string,
     measured: Prisma.Decimal,
+    actor: AttributionActor,
   ): Promise<void> {
     if (!(await this.isActive(tx, projectId))) return;
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, 'labour', labourPoLineId, measured,
       `qty-over-accepted: measured work on labour purchase-order line ${labourPoLineId} was corrected down to ${measured.toString()} person-shifts`,
+      actor,
     );
   }
 
@@ -366,6 +370,7 @@ export class CommercialParticipant {
   private async withdrawOrderedAuthority(
     tx: Prisma.TransactionClient,
     projectId: string,
+    actor: AttributionActor,
     target: AttributionTarget,
     reason: string,
   ): Promise<void> {
@@ -375,6 +380,7 @@ export class CommercialParticipant {
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, kind, poLineId, new Prisma.Decimal(0),
       `order-not-live: purchase-order line ${poLineId} is no longer ordered — ${reason}`,
+      actor,
     );
   }
 
@@ -513,7 +519,7 @@ export class CommercialParticipant {
       const retired = 'poLineId' in row.from
         ? !('poLineId' in row.to && row.to.poLineId === row.from.poLineId)
         : !('labourPoLineId' in row.to && row.to.labourPoLineId === row.from.labourPoLineId);
-      if (retired) await this.withdrawOrderedAuthority(tx, projectId, row.from, row.reason);
+      if (retired) await this.withdrawOrderedAuthority(tx, projectId, actor, row.from, row.reason);
       const reclassified = Boolean(active) && active!.costHeadCode !== code;
       const raisedBy: HeadroomMover = reclassified ? 'reattribution' : 'commitment';
       touched.push({ code, raisedBy });
@@ -545,7 +551,7 @@ export class CommercialParticipant {
       // Codex round-1 F1 — a cancelled version orders nothing, so every live claim against its
       // lines is disputed here. This runs even when the line carries NO attribution: the claim
       // exists independently of which cost head was carrying the money.
-      await this.withdrawOrderedAuthority(tx, projectId, target, reason);
+      await this.withdrawOrderedAuthority(tx, projectId, actor, target, reason);
       const active = await this.activeFor(tx, projectId, target);
       if (active) {
         await this.supersede(tx, projectId, actor, active.id, reason);

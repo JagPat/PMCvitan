@@ -1,7 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
-  ROLE_POLICY, isLiveBillStatus,
+  BILL_STATUSES_NOT_LIVE, ROLE_POLICY, isLiveBillStatus,
   type VendorBillDto, type VendorBillLineDto, type VendorBillListDto, type VendorBillStatus,
   type VendorBillVersionDto,
 } from '@vitan/shared';
@@ -169,23 +169,48 @@ export class CommercialBillService {
     poLineId: string,
     evidence: Prisma.Decimal,
     reason: string,
+    actor: { actorId: string; role: string },
   ): Promise<string[]> {
-    let billed = (await this.bills.billedQtyFor(tx, projectId, kind, [poLineId])).get(poLineId) ?? ZERO;
+    const refold = async () => (await this.bills.billedQtyFor(tx, projectId, kind, [poLineId])).get(poLineId) ?? ZERO;
+    let billed = await refold();
     if (billed.lessThanOrEqualTo(evidence)) return [];
-    const claims = await this.bills.liveClaimsOn(tx, projectId, kind, poLineId);
+    let claims = await this.bills.liveClaimsOn(tx, projectId, kind, poLineId);
     const disputed: string[] = [];
-    for (const claim of claims) {
-      if (billed.lessThanOrEqualTo(evidence)) break;
+    while (billed.greaterThan(evidence)) {
+      const claim = claims.shift();
+      // nothing live is left to dispute: the remaining excess is not this disposition's to fix,
+      // and the deferred bound seal will abort the transaction if it is real
+      if (!claim) break;
       // CAS on the status we believe it holds — a concurrent transition that already took this
-      // claim out of the live set must not be double-stamped, and a 0-count is not an error here:
-      // the fold below re-reads the truth either way.
+      // claim out of the live set must not be double-stamped.
       const { count } = await tx.vendorBill.updateMany({
-        where: { id: claim.billId, projectId, status: { notIn: ['draft', 'rejected', 'disputed', 'resolved'] } },
+        where: { id: claim.billId, projectId, status: { notIn: [...BILL_STATUSES_NOT_LIVE] } },
         data: { status: 'disputed', statusChangedAt: new Date(), statusReason: reason },
       });
-      if (count === 0) continue;
+      if (count === 0) {
+        // Codex round-4 — a LOST CAS means a concurrent transaction already took this claim out
+        // of the live set, so the running total we are subtracting from counted a claim that is
+        // no longer in the fold. Carrying it forward over-disputes: with 100 accepted and claims
+        // of 60 and 40, if the 40 was disputed concurrently the stale total still reads 100 and
+        // the 60 — which is now the whole of a fold that already holds — is disputed too. Both
+        // the fold AND the live set are re-read, and the re-read is what terminates the loop: a
+        // claim that lost its CAS is no longer live, so `liveClaimsOn` cannot return it again.
+        billed = await refold();
+        claims = await this.bills.liveClaimsOn(tx, projectId, kind, poLineId);
+        continue;
+      }
       disputed.push(claim.billId);
       billed = billed.sub(claim.quantity);
+    }
+    // §B (Codex round-4) — a disputed claim leaves the live fold WHOLE. Its lines on OTHER
+    // purchase-order lines stop counting too, so every head the bill touched moved, not just the
+    // head carrying the line whose evidence was withdrawn. Evaluating only the withdrawal site
+    // left a stale open exception on the others: the budget READ folded the departed claim out
+    // while the register still reported the breach it no longer had.
+    if (disputed.length > 0) {
+      const targets: Array<{ kind: 'material' | 'labour'; poLineId: string }> = [];
+      for (const billId of disputed) targets.push(...await this.claimTargets(tx, projectId, billId));
+      await this.evaluateClaimHeads(tx, projectId, actor, targets);
     }
     return disputed;
   }
@@ -206,6 +231,13 @@ export class CommercialBillService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const documentDate = fromIsoCivilDate(input.documentDate);
     if (!documentDate) throw new ConflictException(`"${input.documentDate}" is not a civil date`);
+    // §F (Codex round-4) — the document number is the duplicate-claim key, so it is stored WITHOUT
+    // surrounding whitespace. Padding is never part of a number a vendor printed, and leaving it in
+    // made ` V-1 ` a different live document from `V-1`: two claims for the same invoice, both
+    // live, each drawing on the same accepted quantity. The stored text is otherwise the vendor's
+    // verbatim (a DB CHECK makes an untrimmed value unrepresentable, and the live-duplicate index
+    // keys a case- and whitespace-normalized form so the seal does not rest on this call alone).
+    const vendorBillNumber = input.vendorBillNumber.trim();
 
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'commercial.bill.record', idempotencyKey, requestHash: hashRequest(input),
@@ -219,10 +251,10 @@ export class CommercialBillService {
         const bill = await tx.vendorBill.create({
           data: {
             projectId, vendorId: input.vendorId,
-            vendorBillNumber: input.vendorBillNumber, documentDate,
+            vendorBillNumber, documentDate,
             status: 'draft', createdById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
-        }).catch((e) => this.rethrowDuplicateClaim(e, input.vendorBillNumber));
+        }).catch((e) => this.rethrowDuplicateClaim(e, vendorBillNumber));
         await this.writeVersion(tx, projectId, bill.id, input.vendorId, 1, null, actor.actorId, lines);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.record', entity: 'VendorBill', entityId: bill.id,
@@ -321,6 +353,13 @@ export class CommercialBillService {
           );
         }
         const resolving = bill.status === 'disputed';
+        // §B (Codex round-4) — the lines the amendment RETIRES have to be captured BEFORE the
+        // supersession, because after it `claimTargets` returns the replacement set. A head that
+        // only the retired version touched is a head this amendment removed a claim from, and
+        // reading the targets afterwards silently dropped exactly those: amend a two-line claim
+        // down to one and the head carrying the dropped line kept an open exception the budget
+        // read no longer agreed with.
+        const retired = await this.claimTargets(tx, projectId, bill.id);
         const lines = await this.resolveLines(tx, projectId, bill.vendorId, input.lines);
         const current = await tx.vendorBillVersion.findFirstOrThrow({
           where: { projectId, billId: bill.id, supersededAt: null },
@@ -358,9 +397,8 @@ export class CommercialBillService {
           await this.cas(tx, projectId, bill.id, nextStatus, 'disputed', breach);
         }
         // §B — an amendment replaces the live claim, so BOTH the retired and the new lines' heads
-        // are re-evaluated: the union is what `claimTargets` returns after the swap plus the lines
-        // this amendment dropped.
-        await this.evaluateClaimHeads(tx, projectId, { actorId: actor.actorId, role: user.role }, [...lines, ...await this.claimTargets(tx, projectId, bill.id)]);
+        // are re-evaluated: the union of the set captured before the swap and the set written by it.
+        await this.evaluateClaimHeads(tx, projectId, { actorId: actor.actorId, role: user.role }, [...retired, ...lines]);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.amend', entity: 'VendorBill', entityId: bill.id,
         });
@@ -455,6 +493,23 @@ export class CommercialBillService {
    *
    * The heads are resolved from commercial's own attribution register by the participant, so this
    * path never has to learn which cost head carries which PO line.
+   *
+   * **The closure row for `BILLED_AMOUNT` — every writer that can move it, and what discharges it**
+   * (Codex round-4; round 3 wrote this list at the COMMAND layer and was one level short, because
+   * neither of the last two entries is a command):
+   *
+   *   - `tx.vendorBill.create` in `record` — creates at `draft`, which §0 counts as NOT live, so
+   *     nothing enters the fold and there is nothing to evaluate
+   *   - `tx.vendorBillVersion.create` in `writeVersion` — reached only from `record` (inert, above)
+   *     and from `amend`, which evaluates
+   *   - `cas()` — every lifecycle transition; `transition` and `amend` both evaluate after it
+   *   - `tx.vendorBillVersion.updateMany` in `amend` (the supersession) — `amend` evaluates the
+   *     UNION of the retired and replacement targets, the retired set captured before the swap
+   *   - `tx.vendorBill.updateMany` in `disputeClaimsBeyondEvidence` — evaluates inside the
+   *     disposition itself, over every head of every bill it disputed
+   *
+   * A new writer added without a row here is a budget read that disagrees with the exception
+   * register, which is the defect §B's same-transaction rule exists to prevent.
    */
   private async evaluateClaimHeads(
     tx: Prisma.TransactionClient,

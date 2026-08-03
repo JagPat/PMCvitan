@@ -89,14 +89,14 @@ Each guard was instead proven by removing it from **this** tree and confirming i
 The first two are the strongest evidence in the PR: with the service guard gone, the database
 refused the transaction on its own. The seal and the guard are independently real.
 
-## Probe coverage (26 tests, `phase5-t4-vendor-bill.test.ts`)
+## Probe coverage (31 tests, `phase5-t4-vendor-bill.test.ts`)
 
 `4`/`5ak` dispute-not-refuse + 80/20 acceptance fold + reversal disputes · `5` bound-2 race (DB and
 service) · `5ac`/`5av` a dispute frees the fold and never returns · `5d` amended bill folds once ·
 `5an` the disposition disputes the MINIMUM, newest-first · `5bl` the labour twin · `5bf`/`5ag`/`5au`
 line seals precise not merely strict · `5bg`/`5bj` duplicate-claim key · `5f`/`5ao`/`5ax` vendor
 pinning + backfill · `5h` unit discipline · `7` append-only · §D/§I capability + authority · §C
-idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings · `R3-F1`–`R3-F3` the round-3 findings.
+idempotency · `F1`–`F4` the Codex round-1 findings · `R2-F1`–`R2-F4` the round-2 findings · `R3-F1`–`R3-F3` the round-3 findings · `R4-F1`–`R4-F5` the round-4 findings.
 
 ## Deliberately NOT in this task
 
@@ -198,10 +198,52 @@ R3-F3 also caught the upgrade proof's own fixture, which had been inserting a bi
 `under-verification`. The fixture now walks the arrows — a better fixture as well as a legal one,
 since it exercises the transitions this task owns on the way in.
 
+## Codex round 4 — five findings, three of them one root: a disposition that changed the fold without closing it
+
+| # | Finding | What was wrong | Fix |
+|---|---|---|---|
+| R4-F1 | P2 — include superseded bill heads in amendment evaluation | The amendment read `claimTargets` AFTER superseding, so it saw the replacement set twice and never saw the lines it dropped. A head that only the retired version touched kept an open exception for exposure that had left the fold | The retired set is captured BEFORE the supersession; the evaluation is the union of before and after |
+| R4-F2 | P2 — normalize bill numbers for duplicate detection | The duplicate-document index keyed RAW text, so ` V-9 `, `V-9` and `v-9` were three distinct live documents for one vendor invoice, each free to draw on the same accepted quantity | The index keys `lower(regexp_replace(n,'\s','','g'))` — whitespace removed, not collapsed; the stored text stays the vendor's verbatim, with a `VendorBill_number_trimmed` CHECK making a padded value unrepresentable and the contract trimming so the idempotency `requestHash` is stable |
+| R4-F3 | P2 — re-evaluate all bill heads after automatic disputes | A disputed claim leaves the live fold WHOLE, so every head it touched moved — and only the withdrawal site's head was evaluated. The others kept flagging exposure the budget read had already released | `disputeClaimsBeyondEvidence` evaluates the heads of EVERY bill it disputed, from inside the disposition itself, so no present or future caller can forget to |
+| R4-F4 | P2 — recompute the billed fold after a lost dispute CAS | A lost CAS means a concurrent transaction already took that claim out of the fold, so the running total was stale by exactly that claim and the next claim was measured against a number counting it twice — disputing a claim the fold had room for | On a lost CAS both the fold AND the live set are re-read. The re-read is also what terminates the loop: a claim that lost its CAS is no longer live, so it cannot be returned again |
+| R4-F5 | P2 — require resolved bills to carry amendment evidence | `disputed → resolved` is terminal and RELEASES the duplicate-document key, so marking a claim resolved with no correction behind it freed the vendor's number while the disputed claim was still the only version that ever existed | The lifecycle trigger CAPTURES the version that was live when the claim was disputed (`disputedAtVersion`, overwritten on every update so no writer supplies it) and refuses `resolved` unless a live version supersedes exactly that one |
+
+**Root C, a fourth consecutive time.** R4-F1, R4-F3 and R4-F4 are one root and it is the root the
+round-3 audit had already named: *when a fix adds an input to a fold, every writer of that input
+joins the fold's closure row in the same change.* Round 3 made the bill COMMANDS evaluate their
+heads and stopped there — but the automatic dispute and the amendment's dropped lines move the same
+fold, and neither is a command. So the closure moves down a level: the evaluation now lives inside
+the DISPOSITION rather than in each of its callers, which is the only version of this fix that a
+future caller cannot be one level short of.
+
+R4-F4 is worth one honest sentence about reachability, in the same shape as round 1's F1. Every
+service path that transitions a bill takes `lockProjectReadiness`, so within a project the CAS
+cannot currently be lost — the defect is real, its consequence is not reachable through a route
+this tree exposes. The probe therefore produces the interleaving deterministically, by wrapping the
+transaction client so the concurrent rejection commits between the disposition's read and its CAS.
+The fix is made anyway on the same principle as round 1: a guard that holds only because another
+lock happens to be held is not the guard holding.
+
+R4-F2's normalization is in the KEY, not in the stored value. `INV-7` is what the vendor printed
+and rewriting it to `inv-7` in the record would be this repository inventing a fact; trimming is
+the one normalization applied to storage, because leading and trailing whitespace is never part of
+a printed number.
+
+**And the first version of that fix was itself one transcription short**, which the upgrade proof
+caught rather than a reviewer: the key collapsed whitespace RUNS, so ` V-9 ` and `v-9` collided
+but `INV -003` and `INV-003` still did not. Whitespace is not part of a document number's identity
+at any position, so the key now holds none of it. The proof caught it because the round-4
+assertions were written as a table of transcription variants rather than as the one case the
+finding named — which is the same discipline as putting an acceptance case beside every rejection.
+
+R4-F5 chose a captured version number over a timestamp comparison deliberately. Comparing the
+correction's stamp against the dispute's would have made a legitimate resolution depend on two
+clocks agreeing; a version number the database captures itself does not.
+
 ## Gates
 
 - `pnpm check` **EXIT 0** — web 42 files/543 tests, API 56 files/718 tests, builds clean
-- Full integration suite **76 files / 779 tests** on a pristine migrated DB
+- Full integration suite **76 files / 790 tests** on a pristine migrated DB
 - `boundary.test.ts` / `module-registry.test.ts` / `cross-module-graph.test.ts` green (mutating
   routes 152 → 157; MODEL_OWNER + owned/read-encapsulated sets extended)
 - `upgrade-proof.sh` **PASSED** — the three tables upgrade ROW-FREE; the vendor-pinning backfill runs
