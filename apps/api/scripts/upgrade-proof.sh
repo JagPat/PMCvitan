@@ -1641,8 +1641,8 @@ assert "§F the pinning columns are NOT NULL and both chain-sealing FK pairs are
   "SELECT (SELECT COUNT(*) FROM information_schema.columns WHERE table_name IN ('PurchaseOrderLine','LabourPurchaseOrderLine') AND column_name IN ('vendorId','purchaseOrderId') AND is_nullable='NO')::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('PurchaseOrderLine_version_order_fkey','PurchaseOrderLine_order_vendor_fkey','LabourPurchaseOrderLine_version_order_fkey','LabourPurchaseOrderLine_order_vendor_fkey'))::text;" \
   "4|4"
 assert "§F/§G the bill seals + the DEFERRED bound triggers are installed on all five firing sites" \
-  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('VendorBill_lifecycle','VendorBillVersion_append_only','VendorBillLine_append_only') AND NOT tgisinternal)::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('VendorBillLine_bound_sealed','VendorBillVersion_lines_sealed','VendorBill_bound_sealed','StockTransaction_billed_bound_sealed','Measurement_billed_bound_sealed') AND tgdeferrable AND tginitdeferred)::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('VendorBill_live_document_key','VendorBillVersion_one_current_key'))::text;" \
-  "3|5|2"
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('VendorBill_lifecycle','VendorBillVersion_append_only','VendorBillLine_append_only') AND NOT tgisinternal)::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('VendorBillLine_bound_sealed','VendorBillVersion_lines_sealed','VendorBill_bound_sealed','StockTransaction_billed_bound_sealed','Measurement_billed_bound_sealed','PurchaseOrderVersion_billed_bound_sealed','LabourPurchaseOrderVersion_billed_bound_sealed') AND tgdeferrable AND tginitdeferred)::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('VendorBill_live_document_key','VendorBillVersion_one_current_key'))::text;" \
+  "3|7|2"
 
 # A COHERENT claim FIRST — a draft bill, its v1 and one material line against the legacy `UP45-POL`
 # order, whose vendor `UP45-VEN` it names. This is what makes every rejection below attributable:
@@ -1652,8 +1652,8 @@ $PSQL >/dev/null <<SQL && printf 'ok      %s\n' "commercial T4 §F: a coherent v
 BEGIN;
 INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
   VALUES('UPT4-B1','p1','UP45-VEN','INV-001','2026-08-20','draft','USER-1','UP45-CMD');
-INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","createdById")
-  VALUES('UPT4-BV1','p1','UPT4-B1','UP45-VEN',1,10.00,'USER-1');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV1','p1','UPT4-B1','UP45-VEN',1,10.00,1,'USER-1');
 INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
   VALUES('UPT4-BL1','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',10,1,0,0,10.00);
 COMMIT;
@@ -1681,7 +1681,7 @@ assert_rejects "commercial T4 §A: a hand-written claim amount that its own comp
   "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X8','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',1,1,0,0,999)"
 # probe 5au — a LABOUR claim line carries no tax or freight: the labour PO snapshot freezes none
 $PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-B2','p1','UPL-T2V','LAB-001','2026-08-20','draft','USER-1','UP45-CMD')" 2>/dev/null
-$PSQL >/dev/null -c "INSERT INTO \"VendorBillVersion\"(\"id\",\"projectId\",\"billId\",\"vendorIdPin\",\"version\",\"claimedAmount\",\"createdById\") VALUES('UPT4-BV2','p1','UPT4-B2','UPL-T2V',1,1000.00,'USER-1')" 2>/dev/null
+$PSQL >/dev/null -c "INSERT INTO \"VendorBillVersion\"(\"id\",\"projectId\",\"billId\",\"vendorIdPin\",\"version\",\"claimedAmount\",\"lineCount\",\"createdById\") VALUES('UPT4-BV2','p1','UPT4-B2','UPL-T2V',1,1000.00,1,'USER-1')" 2>/dev/null
 assert_rejects "commercial T4 §E: a LABOUR claim line carrying tax (the ordered snapshot freezes none to verify it against)" \
   "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"labourPoLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X9','p1','UPT4-BV2','UPT4-B2','UPL-T2V','labour','UPL-T2POL',1,1000,5,0,1005)"
 # §0b/probe 5bg — the duplicate-claim KEY: non-blank, frozen, and unique among LIVE claims
@@ -1714,7 +1714,21 @@ assert_rejects "commercial T4 §G: making a claim LIVE against a line with no ac
   "UPDATE \"VendorBill\" SET \"status\"='submitted' WHERE \"id\"='UPT4-B1'"
 # §F — a live version must state the money ITS OWN lines make, and must HAVE lines
 assert_rejects "commercial T4 §F: a claim version with no line at all (a claim for nothing no bound can check)" \
-  "INSERT INTO \"VendorBillVersion\"(\"id\",\"projectId\",\"billId\",\"vendorIdPin\",\"version\",\"claimedAmount\",\"createdById\") VALUES('UPT4-XV1','p1','UPT4-B2','UPL-T2V',2,50.00,'USER-1')"
+  "INSERT INTO \"VendorBillVersion\"(\"id\",\"projectId\",\"billId\",\"vendorIdPin\",\"version\",\"claimedAmount\",\"lineCount\",\"createdById\") VALUES('UPT4-XV1','p1','UPT4-B2','UPL-T2V',2,50.00,1,'USER-1')"
+# ── Codex round-1 findings, sealed at PostgreSQL ─────────────────────────────────────────────
+# F2 — the reason a claim LEFT the live fold is evidence, so it is frozen once it explains the exit
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='rejected', \"statusReason\"='wrong purchase order' WHERE \"id\"='UPT4-B1'" 2>/dev/null
+assert_rejects "commercial T4 F2: REWRITING a claim's exit reason after the transition that set it" \
+  "UPDATE \"VendorBill\" SET \"statusReason\"='a different story' WHERE \"id\"='UPT4-B1'"
+# F4 — a recorded version's LINE SET is closed. The exploit is a ZERO-money line: `claimedAmount`
+# still equals the line total, so the money check passes while QUANTITY enters `BILLED_QTY`.
+assert_rejects "commercial T4 F4: APPENDING a zero-money claim line to an already-recorded version" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-F4','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',50,0,0,0,0)"
+# F3 — the supersession stamp is the evidence for the ONE permitted amendment transition
+assert_rejects "commercial T4 F3: PRE-FILLING a supersession reason on a still-current version" \
+  "UPDATE \"VendorBillVersion\" SET \"supersedeReason\"='pre-filled' WHERE \"id\"='UPT4-BV1'"
+assert_rejects "commercial T4 F3: stamping the ONLY version superseded with no replacement (a bill with no current version)" \
+  "UPDATE \"VendorBillVersion\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='no replacement' WHERE \"id\"='UPT4-BV1'"
 
 echo ""
 if [ "$FAIL" = "0" ]; then

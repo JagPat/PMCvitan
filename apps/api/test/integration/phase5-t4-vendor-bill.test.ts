@@ -204,11 +204,18 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
   const statusOf = async (projectId: string, billId: string): Promise<string> =>
     (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).status;
 
-  /** the LIVE `BILLED_QTY(poLine)` fold, read straight from the rows so the probe is independent. */
-  const billedQty = async (projectId: string, poLineId: string): Promise<string> => {
+  /**
+   * The LIVE `BILLED_QTY(poLine)` fold, read straight from the rows so the probe is independent of
+   * the service's own query. `kind` is REQUIRED rather than defaulted: an earlier revision of this
+   * helper was material-only, so passing it a labour line silently folded zero rows and the F1
+   * probe read `0` for a claim that was very much live — a probe passing while proving nothing,
+   * for the third time in this phase.
+   */
+  const billedQty = async (projectId: string, poLineId: string, kind: 'material' | 'labour' = 'material'): Promise<string> => {
     const rows = await t.prisma.vendorBillLine.findMany({
       where: {
-        projectId, poLineId,
+        projectId,
+        ...(kind === 'material' ? { poLineId } : { labourPoLineId: poLineId }),
         version: { is: { supersededAt: null, bill: { is: { status: { notIn: ['draft', 'rejected', 'disputed', 'resolved'] } } } } },
       },
       select: { quantity: true },
@@ -752,6 +759,144 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "VendorBillVersion" SET "supersededAt"=now() WHERE "id"=$1`, v1.id,
     )).rejects.toThrow(/already superseded/u);
+  });
+
+  // ── Codex round-1 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * F1 (P1) — ORDERED AUTHORITY and the §G seal.
+   *
+   * Codex's MECHANISM was right and is fixed: the bound check read the line's frozen quantity
+   * without ever asking whether its version was still live, and no vendor-bill trigger fired when
+   * one stopped being live. The seal now joins the version status and treats a non-live version as
+   * ZERO authority, and both PO-version tables became firing sites — so withdrawing ordered
+   * authority re-checks bound 1 exactly as an acceptance reversal re-checks bound 2.
+   *
+   * Codex's CONSEQUENCE — "a later `labour.po.amend`/cancel can move the old version to
+   * `amended`/`cancelled` while the bill stays live" — turns out NOT to be reachable through any
+   * service path in this tree, and this probe pins the three independent guards that close it,
+   * because each belongs to a different task and any one of them relaxing would open the door:
+   *
+   *   1. Task 2 refuses labour cancel/amend while a LIVE capacity commitment stands.
+   *   2. Task 3 refuses defaulting that commitment below MEASURED — and a labour claim needs
+   *      `MEASURED > 0`, so the commitment can never be cleared out of the way.
+   *   3. Phase 3 refuses a material cancel with accepted receipts and permits amend only from
+   *      `issued` — and a material claim needs `ACCEPTED > 0`, which moves the version off it.
+   *
+   * The seal is still the right fix: §G asks the DATABASE to hold the bound independently of the
+   * service, and "some other task's guard happens to block the only route" is not the database
+   * holding anything. The second half of this probe drives the withdrawal directly at PostgreSQL,
+   * where those three service guards do not apply, and the seal catches it.
+   */
+  it('F1 (§G): withdrawing ordered authority is refused by three existing guards, and the DB seal now catches it directly', async () => {
+    const projectId = await freshProject();
+    const line = await labourMeasurableLine(projectId, 2);
+    await measurement.take(projectId, { labourPoLineId: line.poLineId, activityId: line.activityId, quantity: '2', citedOutputId: line.outputId }, pmc(projectId));
+    const recorded = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: 'F1-1', documentDate: '2026-08-20',
+      lines: [{ labourPoLineId: line.poLineId, quantity: '2', rate: '1000' }],
+    }, pmc(projectId));
+    const bill = await bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
+    expect(bill.status).toBe('submitted');
+
+    const poLine = await t.prisma.labourPurchaseOrderLine.findFirstOrThrow({
+      where: { projectId, id: line.poLineId }, select: { purchaseOrderId: true, poVersionId: true },
+    });
+    const commitment = await t.prisma.capacityCommitment.findFirstOrThrow({
+      where: { projectId, poLineId: line.poLineId, status: { in: ['committed', 'revised'] } },
+    });
+
+    // guard 1 (Task 2) — a live commitment is never orphaned
+    await expect(labourCommercial.cancelPo(projectId, poLine.purchaseOrderId, { reason: 'scope withdrawn' }, pmc(projectId)))
+      .rejects.toMatchObject({ status: 409 });
+    // guard 2 (Task 3) — and the commitment cannot be cleared out of the way under a measurement
+    await expect(labourCommercial.defaultCapacity(projectId, commitment.id, pmc(projectId)))
+      .rejects.toMatchObject({ status: 409 });
+    expect(await statusOf(projectId, bill.id)).toBe('submitted');
+
+    // …so the only way to reach the state is to go around all three, straight at the rows — which
+    // is precisely where a database seal has to hold on its own. Cancelling the version under a
+    // live 2-shift claim now aborts at COMMIT naming bound 1.
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "LabourPurchaseOrderVersion" SET "status"='cancelled', "cancelledAt"=now(), "cancelReason"='forced past every service guard' WHERE "id"=$1`,
+      poLine.poVersionId,
+    )).rejects.toThrow(/Bound 1 breached/u);
+    expect(await billedQty(projectId, line.poLineId, 'labour')).toBe('2');
+
+    // and the paired DISPOSITION is what keeps a legitimate withdrawal possible rather than merely
+    // impossible: disputing the claim first frees the order, and the same statement then commits.
+    await t.prisma.$transaction(async (tx) => {
+      await bills.disputeClaimsBeyondEvidence(
+        tx, projectId, 'labour', line.poLineId, new Prisma.Decimal(0), 'order-not-live: supplier reneged',
+      );
+      await tx.$executeRawUnsafe(
+        `UPDATE "LabourPurchaseOrderVersion" SET "status"='cancelled', "cancelledAt"=now(), "cancelReason"='supplier reneged' WHERE "id"=$1`,
+        poLine.poVersionId,
+      );
+    });
+    expect(await statusOf(projectId, bill.id)).toBe('disputed');
+    expect(await billedQty(projectId, line.poLineId, 'labour')).toBe('0');
+  });
+
+  /** F2 (P2) — the reason a claim LEFT the live fold is evidence, so it cannot be rewritten later. */
+  it('F2 (§F): a claim\'s exit reason is FROZEN once it explains the exit', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '10');
+    await bills.reject(projectId, { billId: bill.id, reason: 'wrong purchase order' }, pmc(projectId));
+
+    // the status is unchanged, so the first head's lifecycle trigger never looked — and the
+    // justification for an append-only exit could be silently replaced afterwards
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "statusReason"='something else entirely' WHERE "id"=$1`, bill.id,
+    )).rejects.toThrow(/FROZEN/u);
+    expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { id: bill.id } })).statusReason)
+      .toBe('wrong purchase order');
+  });
+
+  /** F3 (P2) — the supersession stamp is the evidence for the ONE permitted amendment transition. */
+  it('F3 (§F): supersession fields cannot be pre-filled, and a bill is never left with no current version', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '10');
+    const versionId = bill.versions[0]!.id;
+
+    // pre-filling the reason while the version is still CURRENT leaves a rewritable justification
+    // for a transition that has not happened
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBillVersion" SET "supersedeReason"='pre-filled' WHERE "id"=$1`, versionId,
+    )).rejects.toThrow(/supersession/u);
+
+    // …and stamping the only version superseded with NO replacement would drop the whole claim out
+    // of the billed fold while the bill is still live
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBillVersion" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='no replacement' WHERE "id"=$1`,
+      versionId, f.memberUser.id,
+    )).rejects.toThrow(/current version/u);
+    expect(await billedQty(projectId, line.poLineId)).toBe('10');
+  });
+
+  /** F4 (P2) — a recorded version's LINE SET is closed; a later append mutates immutable history. */
+  it('F4 (§F): a claim line cannot be appended to a version that was already recorded', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    const other = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1', vendorId: line.vendorId });
+    await acceptOnLine(projectId, line, '100', '100');
+    await acceptOnLine(projectId, other, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '10');
+    const versionId = bill.versions[0]!.id;
+
+    // the reviewer's exact exploit: a ZERO-money line keeps `claimedAmount` equal to the line total
+    // (so the derived-amount check still passes) while adding quantity to `BILLED_QTY` — and on a
+    // PO line the original claim never named
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "VendorBillLine" ("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+       VALUES ('f4-late',$1,$2,$3,$4,'material',$5,50,0,0,0,0)`,
+      projectId, versionId, bill.id, line.vendorId, other.poLineId,
+    )).rejects.toThrow();
+    expect(await billedQty(projectId, other.poLineId)).toBe('0');
   });
 
   // ── §D/§I — capability gating and authority ───────────────────────────────────────────────────

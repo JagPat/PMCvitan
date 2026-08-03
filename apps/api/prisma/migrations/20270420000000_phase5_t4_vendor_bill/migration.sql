@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS "VendorBillVersion" (
     "version" INTEGER NOT NULL,
     "supersedesVersion" INTEGER,
     "claimedAmount" DECIMAL(18,2) NOT NULL,
+    "lineCount" INTEGER NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "createdById" TEXT NOT NULL,
     "supersededAt" TIMESTAMP(3),
@@ -414,6 +415,14 @@ BEGIN
      OR NEW."sourceCommandId" <> OLD."sourceCommandId" THEN
     RAISE EXCEPTION 'A vendor bill''s identity is FROZEN — the document number and date are the duplicate-claim key (%)', OLD."id";
   END IF;
+  -- Codex round-1 F2 — the reason a claim LEFT the live fold is EVIDENCE, and the first head only
+  -- looked at this row when the status itself moved. An update that keeps a bill `disputed` or
+  -- `rejected` could therefore replace the justification afterwards, so the record would say the
+  -- claim was rejected for a reason nobody recorded at the time. It is writable only as part of the
+  -- transition that sets it.
+  IF NEW."statusReason" IS DISTINCT FROM OLD."statusReason" AND NEW."status" IS NOT DISTINCT FROM OLD."status" THEN
+    RAISE EXCEPTION 'A vendor bill''s exit reason is FROZEN — it explains the transition that set it, and a rewritable justification is no justification (%)', OLD."id";
+  END IF;
   IF NEW."status" IS DISTINCT FROM OLD."status" THEN
     IF NOT (
       (OLD."status" = 'draft'              AND NEW."status" IN ('submitted', 'disputed', 'rejected'))
@@ -452,6 +461,15 @@ BEGIN
   END IF;
   IF OLD."supersededAt" IS NOT NULL THEN
     RAISE EXCEPTION 'This bill version is already superseded — it is history and cannot be stamped twice (%)', OLD."id";
+  END IF;
+  -- Codex round-1 F3 — the supersession columns are the EVIDENCE for the one permitted transition,
+  -- so they become writable only as part of it. The first head checked the immutable columns and
+  -- then returned, which let maintenance SQL pre-fill `supersededById`/`supersedeReason` on a still
+  -- CURRENT version and rewrite them freely until the amendment eventually landed.
+  IF NEW."supersededAt" IS NULL
+     AND (NEW."supersededById" IS DISTINCT FROM OLD."supersededById"
+          OR NEW."supersedeReason" IS DISTINCT FROM OLD."supersedeReason") THEN
+    RAISE EXCEPTION 'A bill version''s supersession evidence is writable only WITH the supersession itself — an amendment stamps all three together (%)', OLD."id";
   END IF;
   RETURN NEW;
 END;
@@ -502,13 +520,23 @@ DECLARE
   v_billed numeric;
   v_ordered numeric;
   v_evidence numeric;
+  v_version text;
 BEGIN
   IF p_material IS NOT NULL THEN
     -- serialize on the constraining row FIRST: two sessions that each counted a fold nobody was
     -- holding would both pass and both commit (Phase-4 T3 F3).
-    SELECT "qty" + "approvedOverage" INTO v_ordered
+    SELECT "qty" + "approvedOverage", "poVersionId" INTO v_ordered, v_version
       FROM "PurchaseOrderLine" WHERE "projectId" = p_project AND "id" = p_material FOR UPDATE;
     IF v_ordered IS NULL THEN RETURN; END IF;
+    -- Codex round-1 F1 — a DEAD order authorises NOTHING, and the first head read the line''s
+    -- frozen quantity without ever asking whether its version was still live. `pos.cancel`/amend
+    -- moves the old version to `cancelled`/`amended` long after a claim was submitted, and the
+    -- service only disputes `order-not-live` at SUBMISSION — so a claim submitted BEFORE the
+    -- cancel stayed live against an order nobody owes. Ordered authority is the THIRD withdrawal
+    -- path, alongside acceptance reversal and measurement correction (§0b: same rule, every site).
+    SELECT CASE WHEN "status" IN ('issued','partially_received','completed','closed_short')
+                THEN v_ordered ELSE 0 END INTO v_ordered
+      FROM "PurchaseOrderVersion" WHERE "projectId" = p_project AND "id" = v_version;
 
     SELECT COALESCE(SUM(l."quantity"), 0) INTO v_billed
       FROM "VendorBillLine" l
@@ -519,7 +547,7 @@ BEGIN
        AND b."status" NOT IN ('draft', 'rejected', 'disputed', 'resolved');
 
     IF v_billed > v_ordered THEN
-      RAISE EXCEPTION 'Bound 1 breached on purchase-order line %: live claims total % base units against an ordered authority of % (qty + approvedOverage)', p_material, v_billed, v_ordered;
+      RAISE EXCEPTION 'Bound 1 breached on purchase-order line %: live claims total % base units against an ordered authority of % (qty + approvedOverage, or ZERO once the version is no longer live)', p_material, v_billed, v_ordered;
     END IF;
 
     -- `ACCEPTED(poLine)` per §0: acceptance movements NET of reversals whose target is an
@@ -541,9 +569,14 @@ BEGIN
   END IF;
 
   IF p_labour IS NOT NULL THEN
-    SELECT "personShiftQty" INTO v_ordered
+    SELECT "personShiftQty", "poVersionId" INTO v_ordered, v_version
       FROM "LabourPurchaseOrderLine" WHERE "projectId" = p_project AND "id" = p_labour FOR UPDATE;
     IF v_ordered IS NULL THEN RETURN; END IF;
+    -- the labour twin of the same rule (its live set names `partially_committed`, not
+    -- `partially_received` — the two chains have their own version vocabularies)
+    SELECT CASE WHEN "status" IN ('issued','partially_committed','completed','closed_short')
+                THEN v_ordered ELSE 0 END INTO v_ordered
+      FROM "LabourPurchaseOrderVersion" WHERE "projectId" = p_project AND "id" = v_version;
 
     SELECT COALESCE(SUM(l."quantity"), 0) INTO v_billed
       FROM "VendorBillLine" l
@@ -555,7 +588,7 @@ BEGIN
 
     -- a labour line has no overage column: §G's ordered authority for labour is `personShiftQty`
     IF v_billed > v_ordered THEN
-      RAISE EXCEPTION 'Bound 1 breached on labour purchase-order line %: live claims total % person-shifts against an ordered % ', p_labour, v_billed, v_ordered;
+      RAISE EXCEPTION 'Bound 1 breached on labour purchase-order line %: live claims total % person-shifts against an ordered % (ZERO once the version is no longer live)', p_labour, v_billed, v_ordered;
     END IF;
 
     -- `MEASURED(poLine)` per §0 — the signed fold, corrections included, never a stored total
@@ -575,9 +608,10 @@ $$ LANGUAGE plpgsql;
 -- into the billed fold that no bound can ever check, because every bound folds over a PO line.
 CREATE OR REPLACE FUNCTION phase5_t4_bill_version_check(p_project text, p_version text)
 RETURNS void AS $$
-DECLARE v_stated numeric; v_lines numeric; v_count bigint;
+DECLARE v_stated numeric; v_lines numeric; v_count bigint; v_declared int; v_bill text; v_current bigint;
 BEGIN
-  SELECT "claimedAmount" INTO v_stated FROM "VendorBillVersion" WHERE "projectId" = p_project AND "id" = p_version;
+  SELECT "claimedAmount", "lineCount", "billId" INTO v_stated, v_declared, v_bill
+    FROM "VendorBillVersion" WHERE "projectId" = p_project AND "id" = p_version;
   IF v_stated IS NULL THEN RETURN; END IF;
   SELECT COUNT(*), COALESCE(SUM("amount"), 0) INTO v_count, v_lines
     FROM "VendorBillLine" WHERE "projectId" = p_project AND "versionId" = p_version;
@@ -586,6 +620,25 @@ BEGIN
   END IF;
   IF v_stated <> v_lines THEN
     RAISE EXCEPTION 'Bill version % states % but its lines total % — the claimed amount is DERIVED from the lines', p_version, v_stated, v_lines;
+  END IF;
+  -- Codex round-1 F4 — the LINE SET is closed once the version is recorded. The money check alone
+  -- does not close it: a ZERO-money line (`rate = 0`, no tax or freight) leaves `claimedAmount`
+  -- exactly equal to the line total while adding QUANTITY to `BILLED_QTY`, on a purchase-order line
+  -- the original claim never named. `lineCount` is frozen at creation and re-derived here, so a
+  -- later append breaks it in any LATER transaction while the service''s own
+  -- create-version-then-insert-its-lines sequence — one transaction, one deferred check — is
+  -- unaffected. It is deliberately a COUNT and not a quantity: a version can carry base units and
+  -- person-shifts at once, and those do not sum to anything.
+  IF v_count <> v_declared THEN
+    RAISE EXCEPTION 'Bill version % was recorded with % claim line(s) and now has % — a recorded claim''s line set is closed, and a correction is a NEW version', p_version, v_declared, v_count;
+  END IF;
+  -- Codex round-1 F3 — a bill always has EXACTLY ONE current version. The partial unique forbids
+  -- two; nothing forbade ZERO, so stamping the only version superseded with no replacement would
+  -- drop a live bill''s whole claim out of the billed folds with the bill still standing.
+  SELECT COUNT(*) INTO v_current FROM "VendorBillVersion"
+   WHERE "projectId" = p_project AND "billId" = v_bill AND "supersededAt" IS NULL;
+  IF v_current <> 1 THEN
+    RAISE EXCEPTION 'Vendor bill % has % current version(s) — an amendment supersedes the prior version and issues its replacement in ONE transaction', v_bill, v_current;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
@@ -648,9 +701,13 @@ CREATE CONSTRAINT TRIGGER "VendorBillLine_bound_sealed"
   AFTER INSERT ON "VendorBillLine" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t4_line_sealed();
 
+-- Codex round-1 F3 — also on UPDATE. Stamping a version superseded changes which version is
+-- CURRENT, so the "exactly one current version" rule has to be re-checked there; firing on INSERT
+-- alone let the only version of a live bill be stamped with no replacement, dropping the whole
+-- claim out of the billed folds while the bill still stood.
 DROP TRIGGER IF EXISTS "VendorBillVersion_lines_sealed" ON "VendorBillVersion";
 CREATE CONSTRAINT TRIGGER "VendorBillVersion_lines_sealed"
-  AFTER INSERT ON "VendorBillVersion" DEFERRABLE INITIALLY DEFERRED
+  AFTER INSERT OR UPDATE ON "VendorBillVersion" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t4_version_sealed();
 
 DROP TRIGGER IF EXISTS "VendorBill_bound_sealed" ON "VendorBill";
@@ -664,6 +721,44 @@ CREATE CONSTRAINT TRIGGER "StockTransaction_billed_bound_sealed"
   AFTER INSERT ON "StockTransaction" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW WHEN (NEW."type" = 'reversal')
   EXECUTE FUNCTION phase5_t4_acceptance_withdrawn();
+
+-- Codex round-1 F1 — WITHDRAWING ORDERED AUTHORITY. `StockTransaction` and `Measurement` already
+-- fire this check when they lower bound 2's right-hand side; a PO version leaving its live set
+-- lowers bound 1's the same way, and nothing fired. Deferred like the others, so the amend/cancel
+-- path can dispose of the affected claims in its own transaction and commit — and cannot skip it.
+CREATE OR REPLACE FUNCTION phase5_t4_material_order_withdrawn() RETURNS trigger AS $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT "id" FROM "PurchaseOrderLine"
+            WHERE "projectId" = NEW."projectId" AND "poVersionId" = NEW."id" LOOP
+    PERFORM phase5_t4_billed_bound_check(NEW."projectId", r."id", NULL);
+  END LOOP;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t4_labour_order_withdrawn() RETURNS trigger AS $$
+DECLARE r record;
+BEGIN
+  FOR r IN SELECT "id" FROM "LabourPurchaseOrderLine"
+            WHERE "projectId" = NEW."projectId" AND "poVersionId" = NEW."id" LOOP
+    PERFORM phase5_t4_billed_bound_check(NEW."projectId", NULL, r."id");
+  END LOOP;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "PurchaseOrderVersion_billed_bound_sealed" ON "PurchaseOrderVersion";
+CREATE CONSTRAINT TRIGGER "PurchaseOrderVersion_billed_bound_sealed"
+  AFTER UPDATE ON "PurchaseOrderVersion" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (NEW."status" IS DISTINCT FROM OLD."status")
+  EXECUTE FUNCTION phase5_t4_material_order_withdrawn();
+
+DROP TRIGGER IF EXISTS "LabourPurchaseOrderVersion_billed_bound_sealed" ON "LabourPurchaseOrderVersion";
+CREATE CONSTRAINT TRIGGER "LabourPurchaseOrderVersion_billed_bound_sealed"
+  AFTER UPDATE ON "LabourPurchaseOrderVersion" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (NEW."status" IS DISTINCT FROM OLD."status")
+  EXECUTE FUNCTION phase5_t4_labour_order_withdrawn();
 
 DROP TRIGGER IF EXISTS "Measurement_billed_bound_sealed" ON "Measurement";
 CREATE CONSTRAINT TRIGGER "Measurement_billed_bound_sealed"

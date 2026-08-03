@@ -3205,6 +3205,12 @@ model VendorBillVersion {
   /// the claim total, DERIVED from the lines and re-derived by a deferred constraint trigger, so
   /// a version's stated money can never disagree with the lines `BILLED_AMOUNT` actually folds
   claimedAmount Decimal @db.Decimal(18, 2)
+  /// how many claim lines this version was RECORDED with, frozen and re-derived by the same
+  /// deferred check (Codex round-1 F4). The money check alone does not close the line set: a
+  /// ZERO-money line leaves `claimedAmount` exactly equal to the line total while adding QUANTITY
+  /// to `BILLED_QTY`. A COUNT rather than a quantity, because one version can carry base units and
+  /// person-shifts at once and those do not sum to anything.
+  lineCount     Int
 
   createdAt   DateTime @default(now())
   createdBy   User     @relation("vendorBillVersionsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)

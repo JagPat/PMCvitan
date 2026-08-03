@@ -89,14 +89,14 @@ Each guard was instead proven by removing it from **this** tree and confirming i
 The first two are the strongest evidence in the PR: with the service guard gone, the database
 refused the transaction on its own. The seal and the guard are independently real.
 
-## Probe coverage (15 tests, `phase5-t4-vendor-bill.test.ts`)
+## Probe coverage (19 tests, `phase5-t4-vendor-bill.test.ts`)
 
 `4`/`5ak` dispute-not-refuse + 80/20 acceptance fold + reversal disputes · `5` bound-2 race (DB and
 service) · `5ac`/`5av` a dispute frees the fold and never returns · `5d` amended bill folds once ·
 `5an` the disposition disputes the MINIMUM, newest-first · `5bl` the labour twin · `5bf`/`5ag`/`5au`
 line seals precise not merely strict · `5bg`/`5bj` duplicate-claim key · `5f`/`5ao`/`5ax` vendor
 pinning + backfill · `5h` unit discipline · `7` append-only · §D/§I capability + authority · §C
-idempotency.
+idempotency · `F1`–`F4` the Codex round-1 findings.
 
 ## Deliberately NOT in this task
 
@@ -120,6 +120,40 @@ idempotency.
 permission a route needs and the manifest does not declare … is an unauthorized write path".
 `commercial.verify` is §I's own name and is declared here because `beginVerification` needs it; its
 verdict lands in Task 5.
+
+## Codex round 1 — four findings, all fixed forward
+
+Head `61adb3d` drew four findings, every one correct about its mechanism. Each was reproduced RED
+before the fix and is RED again with the fix reverted (verified by stashing the migration and the
+participant and re-running: 4 failed / 15 passed).
+
+| # | Finding | What was actually wrong | Fix |
+|---|---|---|---|
+| F1 | P1 — recheck PO version status when sealing billed bounds | The bound check read the line's frozen quantity without asking whether its version was still live, and **no vendor-bill trigger fired when one stopped being live**. Ordered authority is the THIRD withdrawal path and §0b's closure row does not name it | The seal joins the version status and treats a non-live version as ZERO authority; both PO-version tables become deferred firing sites (5 → 7); `withdrawOrderedAuthority` disputes the affected claims from `replaceAttribution`/`releaseAttribution` — the one channel all eight lifecycle sites already reach |
+| F2 | P2 — freeze status reasons after they explain a claim exit | The lifecycle trigger only looked when the status itself moved, so a later update could rewrite the justification for an append-only exit | `statusReason` is writable only as part of the transition that sets it |
+| F3 | P2 — seal supersession fields until the actual amendment | The trigger checked the immutable columns and returned, so `supersededById`/`supersedeReason` could be pre-filled and rewritten on a still-current version; and nothing forbade ZERO current versions | Those two columns are writable only WITH `supersededAt`; the deferred check gains an exactly-one-current-version rule and now fires on UPDATE, not only INSERT |
+| F4 | P2 — reject late bill-line inserts into existing versions | The line trigger froze updates and deletes but not inserts. The reviewer's exploit is exact: a **zero-money** line leaves `claimedAmount` equal to the line total, so the money check passes while QUANTITY enters `BILLED_QTY` — on a PO line the original claim never named | `lineCount` frozen at creation and re-derived by the same deferred check. A COUNT, not a quantity: one version can carry base units and person-shifts, which do not sum |
+
+**F1 is worth reading in full, because the mechanism was right and the consequence was not.** Codex
+said an amend/cancel could strand a live claim. Chasing it down, that turns out to be unreachable
+through any service path in this tree — three guards from three different tasks close it: Task 2
+refuses labour cancel/amend while a live capacity commitment stands, Task 3 refuses defaulting that
+commitment below `MEASURED` (and a labour claim needs `MEASURED > 0`), and Phase 3 refuses a
+material cancel with accepted receipts while permitting amend only from `issued` (and a material
+claim needs `ACCEPTED > 0`, which moves the version off it). The probe now pins all three, because
+each belongs to a different task and any one relaxing would open the door silently.
+
+The seal was still wrong and is still fixed. §G asks the **database** to hold the bound
+independently of the service, and "another task's guard happens to block the only route" is not the
+database holding anything. The probe's second half drives the withdrawal straight at PostgreSQL,
+where those guards do not apply, and the seal aborts the commit naming bound 1 — then shows the
+paired disposition letting a legitimate withdrawal through.
+
+**A fourth vacuous probe, found the same way.** While fixing F1 the suite's `billedQty` helper
+turned out to be material-only, so passing it a labour line folded zero rows and reported `0` for a
+claim that was live. My first F1 probe asserted exactly that `0` and would have passed while
+proving nothing — the third instance of this failure mode in Phase 5, after Task 3's three. The
+helper now requires the kind explicitly rather than defaulting to one.
 
 ## Gates
 

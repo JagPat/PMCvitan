@@ -344,6 +344,40 @@ export class CommercialParticipant {
     );
   }
 
+  /**
+   * Phase 5 Task 4, Codex round-1 F1 (§G) — WITHDRAWAL GUARD, ORDERED side.
+   *
+   * §0b's closure row names three withdrawal paths: acceptance reversal, sign-off revert and
+   * measurement correction. It does not name PO amend/cancel, and the first head read that list as
+   * exhaustive — but cancelling or amending a purchase order withdraws the ORDERED side of bound 1
+   * exactly as a reversal withdraws the accepted side of bound 2. The service disputes
+   * `order-not-live` at SUBMISSION; nothing re-evaluated a claim submitted BEFORE the cancel, so a
+   * live claim stood against an order nobody owes.
+   *
+   * A dead line authorises NOTHING, so the whole live claim on it goes — `evidence = 0` disputes
+   * every one. This runs from `replaceAttribution` and `releaseAttribution`, which is the ONE
+   * channel all eight material and labour lifecycle sites already reach, so closing it here closes
+   * it for every site at once rather than at whichever one a reviewer happens to name (§0b).
+   *
+   * It is not optional politeness: the deferred DB seal now re-checks bound 1 when a PO version
+   * leaves its live set, so an amend or cancel that failed to dispose of its claims would abort at
+   * commit. Guard and seal are the same rule at two levels, as everywhere else in this task.
+   */
+  private async withdrawOrderedAuthority(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    target: AttributionTarget,
+    reason: string,
+  ): Promise<void> {
+    if (!(await this.isActive(tx, projectId))) return;
+    const kind = 'poLineId' in target ? 'material' : 'labour';
+    const poLineId = 'poLineId' in target ? target.poLineId : target.labourPoLineId;
+    await this.bills.disputeClaimsBeyondEvidence(
+      tx, projectId, kind, poLineId, new Prisma.Decimal(0),
+      `order-not-live: purchase-order line ${poLineId} is no longer ordered — ${reason}`,
+    );
+  }
+
   /** Off-pilot this whole surface does not exist: the caller's transaction is untouched (§D). */
   async isActive(tx: Prisma.TransactionClient, projectId: string): Promise<boolean> {
     return this.capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY, tx);
@@ -472,6 +506,14 @@ export class CommercialParticipant {
       // was reclassified — say so. If it did not, the same head simply carries a different amount,
       // which is a COMMITMENT that moved. The caller cannot decide this for the whole call, because
       // ONE amend can do both on different lines.
+      // Codex round-1 F1 — an AMEND retires the `from` line and issues the `to` line, so a live
+      // claim against the retired one now names an order that authorises nothing. A CLOSE-SHORT
+      // passes the SAME line on both sides — the version stays live and the frozen ordered
+      // quantity does not move — so nothing is withdrawn there.
+      const retired = 'poLineId' in row.from
+        ? !('poLineId' in row.to && row.to.poLineId === row.from.poLineId)
+        : !('labourPoLineId' in row.to && row.to.labourPoLineId === row.from.labourPoLineId);
+      if (retired) await this.withdrawOrderedAuthority(tx, projectId, row.from, row.reason);
       const reclassified = Boolean(active) && active!.costHeadCode !== code;
       const raisedBy: HeadroomMover = reclassified ? 'reattribution' : 'commitment';
       touched.push({ code, raisedBy });
@@ -500,6 +542,10 @@ export class CommercialParticipant {
     this.assertAttributeAuthority(actor);
     const touched: HeadroomTouch[] = [];
     for (const target of targets) {
+      // Codex round-1 F1 — a cancelled version orders nothing, so every live claim against its
+      // lines is disputed here. This runs even when the line carries NO attribution: the claim
+      // exists independently of which cost head was carrying the money.
+      await this.withdrawOrderedAuthority(tx, projectId, target, reason);
       const active = await this.activeFor(tx, projectId, target);
       if (active) {
         await this.supersede(tx, projectId, actor, active.id, reason);

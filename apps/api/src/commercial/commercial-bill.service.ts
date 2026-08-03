@@ -518,7 +518,7 @@ export class CommercialBillService {
     const row = await tx.vendorBillVersion.create({
       data: {
         projectId, billId, vendorIdPin: vendorId, version, supersedesVersion,
-        claimedAmount, createdById: actorId,
+        claimedAmount, lineCount: lines.length, createdById: actorId,
       },
     });
     for (const l of lines) {
