@@ -305,7 +305,7 @@ replacement is now sized to fit); and the re-filed document number had to become
 ## Gates
 
 - `pnpm check` **EXIT 0** — web 42 files/543 tests, API 56 files/718 tests, builds clean
-- Full integration suite **76 files / 799 tests** on a pristine migrated DB
+- Full integration suite **76 files / 802 tests** on a pristine migrated DB
 - `boundary.test.ts` / `module-registry.test.ts` / `cross-module-graph.test.ts` green (mutating
   routes 152 → 157; MODEL_OWNER + owned/read-encapsulated sets extended)
 - `upgrade-proof.sh` **PASSED** — the three tables upgrade ROW-FREE; the vendor-pinning backfill runs
