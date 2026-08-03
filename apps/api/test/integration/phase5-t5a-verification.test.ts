@@ -658,4 +658,70 @@ describe('Phase 5 Task 5A — §E three-way verification (live PG)', () => {
     // and it appended nothing: one verdict, one command
     expect(await t.prisma.billVerification.count({ where: { projectId, billId: bill.id } })).toBe(1);
   });
+
+  // ── Codex round-2 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R2-F2 — round 1's replay fix, one level short. It looked the verdict up by the bill's CURRENT
+   * version, so verifying v1, losing the response, amending to v2 and retrying the same key would
+   * 404 (v2 has no verdict) or return a LATER v2 verdict as the answer to a call made about v1.
+   * A replay owes the caller what THAT call concluded, so it is keyed to the original command.
+   */
+  it('R2-F2 (§C): a replay after an AMENDMENT still returns the original call\'s verdict', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '60', { number: 'R2-F2' });
+    await bills.beginVerification(projectId, { billId: bill.id }, pmc(projectId));
+
+    const first = await verification.verify(projectId, { billId: bill.id }, pmc(projectId), 'r2f2-key');
+    expect(first.verdict).toBe('matched');
+    const v1 = first.versionId;
+
+    // the claim is amended before the client retries — v1 is superseded and v2 has no verdict
+    await bills.amend(projectId, {
+      billId: bill.id, reason: 'vendor corrected the delivered quantity',
+      lines: [{ poLineId: line.poLineId, quantity: '50', rate: '1' }],
+    }, pmc(projectId));
+
+    const replayed = await verification.verify(projectId, { billId: bill.id }, pmc(projectId), 'r2f2-key');
+    expect(replayed.verdict).toBe('matched');
+    // …and it is the verdict about v1, not a fresh one about v2
+    expect(replayed.versionId).toBe(v1);
+    expect(await t.prisma.billVerification.count({ where: { projectId, billId: bill.id } })).toBe(1);
+  });
+
+  /**
+   * R2-F3 — round 1's duplicate fix, one level short. Comparing only quantity and rate made a
+   * CORRECTED resubmission indistinguishable from an unchanged one, so a vendor could never fix a
+   * rejection whose only defect was tax: the corrected claim was disputed as `duplicate-claim`.
+   */
+  it('R2-F3 (§E): a resubmission that CORRECTS tax is not a duplicate', async () => {
+    const projectId = await freshProject();
+    // 100 ordered carrying ₹1,800 tax, all 100 accepted. A 50-unit claim's pro-rata tax cap is
+    // ₹900 — and the FULL 100 is accepted deliberately, so the third claim below is judged by the
+    // duplicate rule rather than being disputed by §G bound 2 before verification ever runs.
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1', taxAmount: '1800' });
+    await acceptOnLine(projectId, line, '100', '100');
+
+    const over = await claim(projectId, line.vendorId, line.poLineId, '50', { number: 'R2-F3-A', tax: '1800' });
+    await bills.beginVerification(projectId, { billId: over.id }, pmc(projectId));
+    expect((await verification.verify(projectId, { billId: over.id }, pmc(projectId))).exceptions)
+      .toContain('tax-mismatch');
+    await bills.reject(projectId, { billId: over.id, reason: 'tax claimed for the full order' }, pmc(projectId));
+
+    // the vendor does exactly what the rejection asked: same quantity and rate, CORRECTED tax
+    const fixed = await claim(projectId, line.vendorId, line.poLineId, '50', { number: 'R2-F3-B', tax: '900' });
+    await bills.beginVerification(projectId, { billId: fixed.id }, pmc(projectId));
+    const verdict = await verification.verify(projectId, { billId: fixed.id }, pmc(projectId));
+    expect(verdict.exceptions).not.toContain('duplicate-claim');
+    expect(verdict.verdict).toBe('matched');
+    expect(await statusOf(projectId, fixed.id)).toBe('verified');
+
+    // …while an UNCHANGED replay of a rejected claim still is a duplicate, so R1-F4 still holds
+    const unchanged = await claim(projectId, line.vendorId, line.poLineId, '50', { number: 'R2-F3-C', tax: '900' });
+    await bills.beginVerification(projectId, { billId: unchanged.id }, pmc(projectId));
+    expect((await verification.verify(projectId, { billId: unchanged.id }, pmc(projectId))).exceptions)
+      .toContain('duplicate-claim');
+  });
 });

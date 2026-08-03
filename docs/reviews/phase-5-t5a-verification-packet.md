@@ -102,5 +102,27 @@ it, and when a probe cannot reach its case, say so in the probe.
 
 ## Files
 
-14 changed, 1,276 lines — **within the 20-file / 1,500-line budget**. Roughly a sixth is the §E
-carry-forward into the plan.
+**25 files / ~1,876 lines — OVER both thresholds, carrying the `justified-large` marker rather than
+claiming otherwise.**
+
+The figure here was written when 5A was 14 files / 1,276 lines and was not updated as two Codex
+correction rounds landed. Codex round 2 caught the packet telling reviewers the opposite of what the
+diff says, and that is the worse half of the finding: a stale number is a mistake, but a packet
+asserting a gate was cleared when it was not is a packet a reviewer cannot trust. The PR body carries
+`<!-- review-size: justified-large -->` and the complete invariant matrix that marker requires.
+
+The justification, stated so it can be checked rather than taken on faith:
+
+| Part | Lines | Reviewable implementation surface? |
+|---|---|---|
+| Probe suite (`phase5-t5a-verification.test.ts`) | ~660 | No — it is the evidence for everything else |
+| §E carried into the plan VERBATIM from `a4d469b` | 195 | No — mandated by the plan; byte-equality asserted |
+| This packet | ~110 | No |
+| Verification service | ~380 | **Yes** |
+| Migration — the verdict table and ONE arrow | ~180 | **Yes** |
+| Contracts, controller, query, participant locks, tripwires | ~180 | **Yes** |
+
+~740 lines are the unit under review; ~965 are its evidence and its mandated carry-forward. 5A is
+already the FIRST of three increments, and splitting further would separate `BillVerification` from
+the verification that produces it — shipping a seal apart from the fact it seals, which is the §0b
+failure mode the budget rule exists to prevent.

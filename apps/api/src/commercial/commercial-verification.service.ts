@@ -209,8 +209,17 @@ export class CommercialVerificationService {
         where: {
           projectId,
           ...(l.kind === 'material' ? { poLineId: l.poLineId } : { labourPoLineId: l.poLineId }),
+          // Codex round-2 — the comparison spans EVERY money component of the claim line, not just
+          // quantity and rate. Round 1 compared the two and called it a duplicate, which made a
+          // corrected resubmission indistinguishable from an unchanged one: reject a 50-unit claim
+          // at rate 1 carrying ₹1,800 tax, and the vendor's corrected ₹900-tax claim — the exact
+          // fix the rejection asked for — was disputed as `duplicate-claim` and could never be
+          // filed. A duplicate is an UNCHANGED replay; anything the vendor actually changed is a
+          // correction, and this predicate has to be able to tell them apart.
           quantity: l.claimedQty,
           rate: l.claimedRate,
+          taxAmount: l.claimedTax,
+          freightAmount: l.claimedFreight,
           id: { not: l.billLineId },
           version: {
             is: {
@@ -266,7 +275,7 @@ export class CommercialVerificationService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     let verdict: VerificationDto | null = null;
 
-    await executeCommand(this.prisma, {
+    const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'commercial.bill.verify', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
@@ -283,7 +292,7 @@ export class CommercialVerificationService {
         // the database checks before accepting `verified`, and what a replay returns instead of
         // recomputing: refolding after the first call disputed the bill excludes it from the live
         // set, so the retry would answer `matched` and contradict the dispute that happened.
-        await tx.billVerification.create({
+        const recorded = await tx.billVerification.create({
           data: {
             projectId, billId: input.billId, versionId: verdict.versionId,
             verdict: verdict.verdict, exceptions: verdict.exceptions,
@@ -307,13 +316,22 @@ export class CommercialVerificationService {
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.verify', entity: 'VendorBill', entityId: input.billId,
         });
-        return { resultRef: input.billId, events: [] };
+        // the VERDICT is this command's result, not the bill. `executeCommand` replays `resultRef`
+        // verbatim, so a retry can find the exact verdict this execution reached — see the replay
+        // below for why the bill is not enough.
+        return { resultRef: recorded.id, events: [] };
       },
     });
     // Codex round-1 F5 — a REPLAY skips the closure, so `verdict` is null. Return what the original
     // call CONCLUDED, from the durable record, rather than recomputing: the first call has already
     // moved the bill, and §0's live rule means the refold no longer sees the claim it judged.
-    if (!verdict) verdict = await this.replayVerdict(projectId, input.billId);
+    //
+    // Codex round-2 — and it is found by the ORIGINAL COMMAND'S result, not by the bill's current
+    // version. Scoping to the current version was round-1's fix one level short: verify v1, lose
+    // the response, amend to v2, then retry the same key — the lookup would 404 because v2 has no
+    // verdict, or worse, return a LATER v2 verdict as though it were the answer to a call made
+    // about v1. A replay owes the caller what THAT call concluded.
+    if (!verdict) verdict = await this.replayVerdict(projectId, outcome.resultRef!);
     return verdict;
   }
 
@@ -325,17 +343,13 @@ export class CommercialVerificationService {
    * is what the original call concluded — the verdict and its exceptions — which is exactly what
    * was recorded.
    */
-  private async replayVerdict(projectId: string, billId: string): Promise<VerificationDto> {
-    const version = await this.prisma.vendorBillVersion.findFirst({
-      where: { projectId, billId, supersededAt: null }, select: { id: true },
-    });
+  private async replayVerdict(projectId: string, verificationId: string): Promise<VerificationDto> {
     const recorded = await this.prisma.billVerification.findFirst({
-      where: { projectId, billId, ...(version ? { versionId: version.id } : {}) },
-      orderBy: [{ verifiedAt: 'desc' }, { id: 'desc' }],
+      where: { projectId, id: verificationId },
     });
-    if (!recorded) throw new NotFoundException(`Vendor bill ${billId} has no recorded verification`);
+    if (!recorded) throw new NotFoundException(`Verification ${verificationId} not found in this project`);
     return {
-      billId, versionId: recorded.versionId,
+      billId: recorded.billId, versionId: recorded.versionId,
       verdict: recorded.verdict as VerificationDto['verdict'],
       lines: [],
       exceptions: recorded.exceptions as VerificationExceptionKind[],
