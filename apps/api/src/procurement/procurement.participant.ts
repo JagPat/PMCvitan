@@ -269,6 +269,54 @@ export class ProcurementParticipant {
     return result;
   }
 
+  /**
+   * Phase 5 Task 4 (§G bounds 1–2) — FOR-UPDATE-lock a material PO line and return the ORDERED
+   * side a vendor claim is bounded by. Called INSIDE the commercial bill transaction, through the
+   * declared `commercial → procurement` participant edge.
+   *
+   * The lock is the point (§G, the Phase-4 Task-3 F3 lesson): "a trigger that counts without
+   * serializing is not an invariant". Two concurrent submissions against a line with capacity for
+   * one would each read the same billed fold, each pass bound 1, and both commit. Reading through
+   * `ProcurementQuery` instead would give the same numbers with none of the serialization, and
+   * would additionally let `pos.closeShort`/amend move the ordered authority underneath a claim
+   * mid-flight.
+   *
+   * `live` is the version-status set the attribution lifecycle already maintains: a `cancelled`
+   * or superseded (`amended`) version orders nothing, so a claim against it has no ordered
+   * authority to be bounded by at all. A `closed_short` version stays live — it keeps its
+   * received portion, which is a real obligation someone still owes and may still bill for.
+   */
+  async lockOrderedLineForClaim(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    poLineId: string,
+  ): Promise<{ vendorId: string; uom: string; ordered: Prisma.Decimal; live: boolean; status: string } | null> {
+    const rows = await tx.$queryRaw<
+      Array<{ vendorId: string; uom: string; qty: Prisma.Decimal; approvedOverage: Prisma.Decimal; poVersionId: string }>
+    >`
+      SELECT "vendorId", "uom", "qty", "approvedOverage", "poVersionId"
+        FROM "PurchaseOrderLine"
+       WHERE "projectId" = ${projectId} AND "id" = ${poLineId}
+       FOR UPDATE`;
+    const line = rows[0];
+    if (!line) return null;
+    const version = await tx.purchaseOrderVersion.findFirstOrThrow({
+      where: { projectId, id: line.poVersionId },
+      select: { status: true },
+    });
+    return {
+      vendorId: line.vendorId,
+      uom: line.uom,
+      // §G bound 1 for a MATERIAL line is `qty + approvedOverage`: overage is quantity the
+      // practice explicitly authorised receiving, so it is quantity a vendor may legitimately
+      // bill for. (Its VALUE is another matter — §J prices overage at rate only, because the PO
+      // froze tax and freight for `qty` alone.)
+      ordered: line.qty.add(line.approvedOverage),
+      live: ['issued', 'partially_received', 'completed', 'closed_short'].includes(version.status),
+      status: version.status,
+    };
+  }
+
   /** §F bound 3: Σ (accepted + quarantined) per PO line ≤ ordered + approvedOverage. */
   private assertReceiptFits(
     ordered: Prisma.Decimal,

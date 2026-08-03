@@ -4,6 +4,7 @@ import { LabourRequirementQuery } from '../labour/labour.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
+import { CommercialBillQuery } from './commercial-bill.query';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -33,6 +34,11 @@ export interface CostHeadPosition {
   /** Received-but-unbilled value. At this task there is no bill, so this is the whole received
    *  side; Tasks 4–6 subtract `BILLED_AMOUNT` from it. */
   receivedNotBilled: Prisma.Decimal;
+  /** §J `awaiting-certification` — live `BILLED_AMOUNT`, the money a vendor has CLAIMED against
+   *  this head and nobody has certified. Phase 5 Task 4 (Codex round-2): the fold existed and had
+   *  no caller, so a ₹40 claim against a ₹100 receipt still reported the whole ₹100 as unbilled —
+   *  the surface saying billed work is unbilled. The two buckets PARTITION the received money. */
+  awaitingCertification: Prisma.Decimal;
   /** `Σ exposure` — the buckets that measure against the budget, rounded to the money scale.
    *  Carried explicitly so the exception row's `headroom = budget - exposure` CHECK holds by
    *  construction rather than by a caller re-deriving the same subtraction. */
@@ -77,6 +83,7 @@ export class CommercialBudgetQuery {
     private readonly labour: LabourRequirementQuery,
     private readonly inventory: InventoryQuery,
     private readonly measurement: CommercialMeasurementQuery,
+    private readonly bills: CommercialBillQuery,
   ) {}
 
   /**
@@ -108,7 +115,7 @@ export class CommercialBudgetQuery {
 
     const materialIds = attributions.map((a) => a.poLineId).filter((v): v is string => v !== null);
     const labourIds = attributions.map((a) => a.labourPoLineId).filter((v): v is string => v !== null);
-    const [materialLines, labourLines, accepted, measured] = await Promise.all([
+    const [materialLines, labourLines, accepted, measured, billedMaterial, billedLabour] = await Promise.all([
       this.procurement.committedLinesFor(tx, projectId, materialIds),
       this.labour.committedLinesFor(tx, projectId, labourIds),
       this.inventory.acceptedFor(tx, projectId, materialIds),
@@ -116,11 +123,16 @@ export class CommercialBudgetQuery {
       // this at zero and said so in the code rather than hiding it; the fact that supplies it
       // ships in Task 3, so the term ships with it.
       this.measurement.measuredForPoLines(tx, projectId, labourIds),
+      // Phase 5 Task 4 (§J) — live `BILLED_AMOUNT` per line, the term Task 2's own DTO comment
+      // promised ("Tasks 4–6 subtract `BILLED_AMOUNT` from it").
+      this.bills.billedAmountFor(tx, projectId, 'material', materialIds),
+      this.bills.billedAmountFor(tx, projectId, 'labour', labourIds),
     ]);
 
     for (const code of heads) {
       let committed = ZERO;
       let receivedNotBilled = ZERO;
+      let awaitingCertification = ZERO;
       for (const a of attributions) {
         if (a.costHeadCode !== code) continue;
         if (a.poLineId) {
@@ -158,7 +170,16 @@ export class CommercialBudgetQuery {
             ? ZERO
             : line.rate.mul(acceptedQty)
                 .add(line.taxAmount.add(line.freightAmount).mul(clampedQty).div(line.qty));
-          receivedNotBilled = receivedNotBilled.add(receivedValue);
+          // §J — the live claim moves money OUT of received-not-billed and INTO
+          // awaiting-certification. The two are clamped so the pair never goes negative: a claim
+          // may legitimately exceed the received value here, because the §E RATE check is Task 5's
+          // and a vendor can claim a rate the order never froze. Carrying the excess in
+          // awaiting-certification is the honest reading — an unverified over-rate claim IS extra
+          // exposure until §E disputes it — and it is conservative for the budget rather than
+          // flattering.
+          const billed = billedMaterial.get(a.poLineId) ?? ZERO;
+          receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(receivedValue.sub(billed), ZERO));
+          awaitingCertification = awaitingCertification.add(billed);
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
@@ -176,26 +197,33 @@ export class CommercialBudgetQuery {
                 .div(line.personShiftQty)
             : ZERO;
           committed = committed.add(Prisma.Decimal.max(line.committedAmountBase.sub(consumed).sub(released), ZERO));
-          // the measured value moves to received-not-billed — the buckets PARTITION the money, and
-          // Tasks 4-6 subtract `BILLED_AMOUNT` from this side as bills arrive
-          receivedNotBilled = receivedNotBilled.add(consumed);
+          // the measured value moves to received-not-billed, less whatever has been CLAIMED
+          // against it — the labour twin of the material split above
+          const billed = billedLabour.get(a.labourPoLineId) ?? ZERO;
+          receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(consumed.sub(billed), ZERO));
+          awaitingCertification = awaitingCertification.add(billed);
         }
       }
       const budget = budgetOf.get(code) ?? null;
       // §J — budget is the CEILING the exposure buckets are measured against, never a bucket
-      // itself. Headroom subtracts every exposure bucket that EXISTS at this task; Tasks 4–6 add
-      // the billing buckets as their facts arrive.
+      // itself. Headroom subtracts every exposure bucket that EXISTS at this task; Tasks 5–6 add
+      // the certified/approved/paid residuals as their facts arrive.
+      //
+      // Note that adding `awaitingCertification` does NOT move headroom on its own: the money it
+      // holds came OUT of received-not-billed. That is the point — §J's buckets partition, so a
+      // claim arriving changes WHERE the exposure sits, not how much there is.
       //
       // Exposure is rounded ONCE, from the full-precision sum, and headroom is derived from that
       // rounded figure — not from separately rounded buckets, whose two half-paisa errors could
       // add to a phantom cent of breach. The displayed buckets are rounded for reporting; the
       // DECISION is made on `exposure`.
-      const exposure = money(committed.add(receivedNotBilled));
+      const exposure = money(committed.add(receivedNotBilled).add(awaitingCertification));
       out.set(code, {
         costHeadCode: code,
         budget,
         committed: money(committed),
         receivedNotBilled: money(receivedNotBilled),
+        awaitingCertification: money(awaitingCertification),
         exposure,
         headroom: budget === null ? null : budget.sub(exposure),
       });

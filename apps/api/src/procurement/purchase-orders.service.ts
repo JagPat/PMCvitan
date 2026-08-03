@@ -307,6 +307,13 @@ export class PurchaseOrdersService {
     requisitionId: string, selectedQuoteId: string,
     lines: CreatePoInput['lines'],
   ): Promise<void> {
+    // Phase 5 Task 4 (§F) — the VENDOR PINNING copied onto every line. It is read from this
+    // version's OWN root rather than taken as a parameter, so a caller can never supply a vendor
+    // the order does not have; the two composite FKs then seal the copy back to this same chain.
+    const chain = await tx.purchaseOrderVersion.findFirstOrThrow({
+      where: { projectId, id: poVersionId },
+      select: { poId: true, po: { select: { vendorId: true } } },
+    });
     const seen = new Set<string>();
     for (const input of lines) {
       if (seen.has(input.requisitionLineId)) throw new BadRequestException('Each requisition line may appear at most once per PO version');
@@ -361,6 +368,7 @@ export class PurchaseOrdersService {
           purchaseQty, conversionToBase, qty,
           rate: quoteLine.baseRate, taxAmount, freightAmount,
           landedAmount: quoteLine.landedCost, committedAmountBase,
+          purchaseOrderId: chain.poId, vendorId: chain.po.vendorId,
         },
       });
       await this.refreshOrderedFlag(tx, projectId, line.id);

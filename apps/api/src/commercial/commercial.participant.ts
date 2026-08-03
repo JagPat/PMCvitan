@@ -2,7 +2,9 @@ import { ConflictException, ForbiddenException, Injectable } from '@nestjs/commo
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY } from '@vitan/shared';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
+import { CommercialBillService } from './commercial-bill.service';
 
 /** The acting identity a lifecycle site passes in; the participant never re-derives it. */
 export interface AttributionActor {
@@ -52,6 +54,8 @@ export class CommercialParticipant {
   constructor(
     private readonly capabilities: CapabilitiesService,
     private readonly budget: CommercialBudgetService,
+    private readonly inventory: InventoryQuery,
+    private readonly bills: CommercialBillService,
   ) {}
 
   /**
@@ -278,6 +282,108 @@ export class CommercialParticipant {
     }
   }
 
+  /**
+   * Phase 5 Task 4 (§E/§G/§K) — WITHDRAWAL GUARD, INVENTORY side. `stock.reverse` asks this when
+   * it withdraws ACCEPTED material, so a live claim can never be left standing above the evidence
+   * behind it.
+   *
+   * §K assigns this guard to §E, and it ships HERE for the reason the plan's own task table
+   * gives: Task 4 is the task that first creates a LIVE bill, so it is the first tree in which
+   * accept 100 → bill 100 → reverse the acceptance can leave `BILLED_QTY = 100 > ACCEPTED = 0`.
+   * A guard that arrived with §E would leave a whole task in which that state is reachable.
+   *
+   * The disposition is a DISPUTE, not a refusal, and the difference is the whole design. §E
+   * refuses only against a live CERTIFICATE — money someone has already authorised — while an
+   * uncertified claim is disputed and returned for correction. Refusing every reversal under any
+   * live claim would block the store from correcting its own record on the strength of a bill
+   * nobody has verified.
+   *
+   * **At the Task-4 tree there is no certificate, so no refusal arm can be written yet** — the
+   * `certified` status is unreachable until Task 5 ships the §E verdict and the certificate it
+   * produces. What ships here is the half that is real now: the aggregate dispute. Task 5 adds
+   * the refusal in front of it, against the certificate table it introduces.
+   *
+   * Off-pilot this is a no-op, so a non-commercial project's reversal behaves byte-for-byte as it
+   * did before Phase 5.
+   */
+  async assertAcceptanceReversible(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    poLineId: string,
+    actor: AttributionActor,
+  ): Promise<void> {
+    if (!(await this.isActive(tx, projectId))) return;
+    // read the evidence AFTER the reversal row is appended — the guard is about the state the
+    // transaction is about to commit, not the one it started from
+    const accepted = (await this.inventory.acceptedFor(tx, projectId, [poLineId])).get(poLineId) ?? new Prisma.Decimal(0);
+    await this.bills.disputeClaimsBeyondEvidence(
+      tx, projectId, 'material', poLineId, accepted,
+      `qty-over-accepted: an acceptance on purchase-order line ${poLineId} was reversed, leaving ${accepted.toString()} base units of accepted evidence`,
+      actor,
+    );
+  }
+
+  /**
+   * Phase 5 Task 4 (§D/§G) — WITHDRAWAL GUARD, MEASUREMENT side. The measurement correction path
+   * asks this after appending a REDUCING delta.
+   *
+   * The task table is explicit about why it belongs here rather than with the measurement:
+   * "Task 3 ships the signed-delta correction route while no `BILLED_QTY` row can exist, so its
+   * guard has only the zero floor; the §D live-claim floor has to ship HERE or measure 100 → bill
+   * 100 live → correct −50 leaves `BILLED_QTY = 100 > MEASURED = 50`." Same rule, both sites
+   * (§0b) — this is the exact twin of the acceptance guard above, in person-shifts.
+   */
+  async assertMeasurementWithdrawable(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    labourPoLineId: string,
+    measured: Prisma.Decimal,
+    actor: AttributionActor,
+  ): Promise<void> {
+    if (!(await this.isActive(tx, projectId))) return;
+    await this.bills.disputeClaimsBeyondEvidence(
+      tx, projectId, 'labour', labourPoLineId, measured,
+      `qty-over-accepted: measured work on labour purchase-order line ${labourPoLineId} was corrected down to ${measured.toString()} person-shifts`,
+      actor,
+    );
+  }
+
+  /**
+   * Phase 5 Task 4, Codex round-1 F1 (§G) — WITHDRAWAL GUARD, ORDERED side.
+   *
+   * §0b's closure row names three withdrawal paths: acceptance reversal, sign-off revert and
+   * measurement correction. It does not name PO amend/cancel, and the first head read that list as
+   * exhaustive — but cancelling or amending a purchase order withdraws the ORDERED side of bound 1
+   * exactly as a reversal withdraws the accepted side of bound 2. The service disputes
+   * `order-not-live` at SUBMISSION; nothing re-evaluated a claim submitted BEFORE the cancel, so a
+   * live claim stood against an order nobody owes.
+   *
+   * A dead line authorises NOTHING, so the whole live claim on it goes — `evidence = 0` disputes
+   * every one. This runs from `replaceAttribution` and `releaseAttribution`, which is the ONE
+   * channel all eight material and labour lifecycle sites already reach, so closing it here closes
+   * it for every site at once rather than at whichever one a reviewer happens to name (§0b).
+   *
+   * It is not optional politeness: the deferred DB seal now re-checks bound 1 when a PO version
+   * leaves its live set, so an amend or cancel that failed to dispose of its claims would abort at
+   * commit. Guard and seal are the same rule at two levels, as everywhere else in this task.
+   */
+  private async withdrawOrderedAuthority(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: AttributionActor,
+    target: AttributionTarget,
+    reason: string,
+  ): Promise<void> {
+    if (!(await this.isActive(tx, projectId))) return;
+    const kind = 'poLineId' in target ? 'material' : 'labour';
+    const poLineId = 'poLineId' in target ? target.poLineId : target.labourPoLineId;
+    await this.bills.disputeClaimsBeyondEvidence(
+      tx, projectId, kind, poLineId, new Prisma.Decimal(0),
+      `order-not-live: purchase-order line ${poLineId} is no longer ordered — ${reason}`,
+      actor,
+    );
+  }
+
   /** Off-pilot this whole surface does not exist: the caller's transaction is untouched (§D). */
   async isActive(tx: Prisma.TransactionClient, projectId: string): Promise<boolean> {
     return this.capabilities.isEnabled(projectId, COMMERCIAL_CAPABILITY, tx);
@@ -406,6 +512,14 @@ export class CommercialParticipant {
       // was reclassified — say so. If it did not, the same head simply carries a different amount,
       // which is a COMMITMENT that moved. The caller cannot decide this for the whole call, because
       // ONE amend can do both on different lines.
+      // Codex round-1 F1 — an AMEND retires the `from` line and issues the `to` line, so a live
+      // claim against the retired one now names an order that authorises nothing. A CLOSE-SHORT
+      // passes the SAME line on both sides — the version stays live and the frozen ordered
+      // quantity does not move — so nothing is withdrawn there.
+      const retired = 'poLineId' in row.from
+        ? !('poLineId' in row.to && row.to.poLineId === row.from.poLineId)
+        : !('labourPoLineId' in row.to && row.to.labourPoLineId === row.from.labourPoLineId);
+      if (retired) await this.withdrawOrderedAuthority(tx, projectId, actor, row.from, row.reason);
       const reclassified = Boolean(active) && active!.costHeadCode !== code;
       const raisedBy: HeadroomMover = reclassified ? 'reattribution' : 'commitment';
       touched.push({ code, raisedBy });
@@ -434,6 +548,10 @@ export class CommercialParticipant {
     this.assertAttributeAuthority(actor);
     const touched: HeadroomTouch[] = [];
     for (const target of targets) {
+      // Codex round-1 F1 — a cancelled version orders nothing, so every live claim against its
+      // lines is disputed here. This runs even when the line carries NO attribution: the claim
+      // exists independently of which cost head was carrying the money.
+      await this.withdrawOrderedAuthority(tx, projectId, actor, target, reason);
       const active = await this.activeFor(tx, projectId, target);
       if (active) {
         await this.supersede(tx, projectId, actor, active.id, reason);

@@ -848,6 +848,13 @@ export class LabourProcurementService {
     tx: Prisma.TransactionClient, projectId: string, poVersionId: string,
     requisitionId: string, comparisonId: string, selectedQuoteId: string, lines: CreateLabourPoInput['lines'],
   ): Promise<void> {
+    // Phase 5 Task 4 (§F) — the VENDOR PINNING copied onto every line, read from this version's
+    // OWN root (never a parameter) and FK-sealed back to that chain. The labour twin of the
+    // material path, for the reason §C gives: the labour line is labour-owned.
+    const chain = await tx.labourPurchaseOrderVersion.findFirstOrThrow({
+      where: { projectId, id: poVersionId },
+      select: { poId: true, po: { select: { vendorId: true } } },
+    });
     const seen = new Set<string>();
     for (const input of lines) {
       if (seen.has(input.requisitionLineId)) throw new BadRequestException('Each requisition line may appear at most once per PO version');
@@ -866,6 +873,7 @@ export class LabourProcurementService {
           labourSpecFingerprint: line.labourSpecFingerprint, personShiftQty: input.personShiftQty,
           ratePerPersonShift: quoteLine.ratePerPersonShift, shiftPremium: quoteLine.shiftPremium, committedAmountBase,
           comparisonId, selectedQuoteId, selectedQuoteLineId: quoteLine.id,
+          purchaseOrderId: chain.poId, vendorId: chain.po.vendorId,
         },
       });
       await this.refreshOrderedFlag(tx, projectId, line.id);

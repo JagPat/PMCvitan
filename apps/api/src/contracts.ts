@@ -1371,3 +1371,71 @@ export const correctMeasurementSchema = z
   })
   .strict();
 export type CorrectMeasurementInput = z.infer<typeof correctMeasurementSchema>;
+
+// ── Phase 5 Task 4 — the VENDOR BILL (plan §F/§G) ────────────────────────────────────────────
+
+/**
+ * ONE claim line. The target is EXACTLY ONE PO line, mirroring the PG XOR CHECK plus the `type`
+ * discriminator that must agree with it — a request naming both or neither is refused at the
+ * boundary rather than surfacing as a constraint violation mid-transaction.
+ *
+ * Tax and freight are NON-negative (a zero-tax PO is legitimate and the claim must be able to
+ * match it exactly), while the quantity is strictly positive: a credit is a separate document
+ * with its own semantics, not a negative line inside a conservation fold, and Phase 5 has no
+ * credit note (§0b).
+ */
+export const vendorBillLineSchema = z
+  .object({
+    poLineId: z.string().min(1).optional(),
+    labourPoLineId: z.string().min(1).optional(),
+    quantity: z
+      .string().trim()
+      .regex(/^\d+(\.\d{1,6})?$/u, 'quantity must be a positive decimal with at most 6 places')
+      .refine((v) => Number(v) > 0, 'a claim line for zero claims nothing'),
+    rate: z.string().trim().regex(/^\d+(\.\d{1,2})?$/u, 'rate must be a non-negative decimal with at most 2 places'),
+    taxAmount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/u, 'taxAmount must be a non-negative decimal with at most 2 places').optional(),
+    freightAmount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/u, 'freightAmount must be a non-negative decimal with at most 2 places').optional(),
+  })
+  .strict()
+  .refine(
+    (v) => (v.poLineId == null) !== (v.labourPoLineId == null),
+    'a claim line names EXACTLY ONE purchase-order line — with neither, no §G bound can run; with both, the fold owner is ambiguous',
+  );
+
+export const recordVendorBillSchema = z
+  .object({
+    vendorId: z.string().min(1),
+    // The duplicate-claim key: frozen after write at PostgreSQL, so it is validated here too — and
+    // NORMALIZED here (Codex round-4), because surrounding whitespace is never part of a number a
+    // vendor printed. Trimming at the contract also makes the idempotency `requestHash` stable, so
+    // a retry that re-sends ` V-1 ` is recognised as the same request rather than a second claim.
+    vendorBillNumber: commercialNonBlank('vendorBillNumber', 128).transform((s) => s.trim()),
+    documentDate: isoCivilDateSchema,
+    lines: z.array(vendorBillLineSchema).min(1).max(200),
+  })
+  .strict();
+export type RecordVendorBillInput = z.infer<typeof recordVendorBillSchema>;
+
+/**
+ * §F — an amendment issues a NEW version retaining the prior verbatim. It is also how a DISPUTED
+ * claim is RESOLVED: the disputed version stays terminal as history and the corrected claim
+ * enters `submitted`, where the ordinary bounds apply.
+ */
+export const amendVendorBillSchema = z
+  .object({
+    billId: z.string().min(1),
+    reason: z.string().trim().min(1).max(1000),
+    lines: z.array(vendorBillLineSchema).min(1).max(200),
+  })
+  .strict();
+export type AmendVendorBillInput = z.infer<typeof amendVendorBillSchema>;
+
+/** §F — a JUDGEMENT about the claim (distinct from a dispute, which says its evidence moved). */
+export const rejectVendorBillSchema = z
+  .object({ billId: z.string().min(1), reason: z.string().trim().min(1).max(1000) })
+  .strict();
+export type RejectVendorBillInput = z.infer<typeof rejectVendorBillSchema>;
+
+/** §F — a bare lifecycle step: submit the recorded claim, or open the §E check on it. */
+export const vendorBillStepSchema = z.object({ billId: z.string().min(1) }).strict();
+export type VendorBillStepInput = z.infer<typeof vendorBillStepSchema>;

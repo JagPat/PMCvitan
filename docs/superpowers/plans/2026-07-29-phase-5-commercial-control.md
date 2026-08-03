@@ -448,6 +448,259 @@ line**. It has a different unit, a different authority and a different lifecycle
   read through `InventoryQuery`. A parallel manual measurement of delivered material would
   be a second truth about the same physical event.
 
+### §F. Bill lifecycle and immutable versions
+
+**Carried forward VERBATIM from `claude/phase5-planning` @ `a4d469b` by the Task-4 PR, per this
+plan's own rule: "a task PR that reaches its section MUST carry that text forward rather than
+re-derive it". Not one word is changed.**
+
+```text
+draft → submitted → under-verification → { verified | disputed }
+submitted → disputed                     (evidence withdrawn under a live UNCERTIFIED claim)
+under-verification → disputed            (the §E verdict, or evidence withdrawn)
+verified  → disputed                     (evidence withdrawn under a live UNCERTIFIED claim)
+disputed → resolved                      (terminal; resolution supersedes into a NEW version)
+verified → certified → approved-for-payment → { part-paid → paid }
+paid | part-paid → (payment reversal) → RE-DERIVED from PAID vs APPROVED, never left stale
+draft | submitted | under-verification |
+  disputed | verified → rejected            (attributable reason required)
+
+`submitted → disputed` and `verified → disputed` both exist because the §E/§G withdrawal guard needs
+somewhere to put a claim it invalidates, and a claim is LIVE from the moment it is submitted. An
+earlier revision added only the `verified` arrow, which leaves the most ordinary case unhandled: a
+vendor submits a 100-unit bill and an acceptance reversal or measurement correction lands before
+verification even starts, so the participant is required to dispute a live claim with no legal CAS
+target from `submitted`. Every uncertified live state therefore has the arrow. A `verified` bill is LIVE and UNCERTIFIED, so reversing accepted material under it
+must dispute it — and an earlier revision of the lifecycle offered only `under-verification →
+disputed`, which left two bad options: follow the lifecycle and leave a verified bill live with
+`BILLED_QTY > ACCEPTED` (§G bound 2 broken with no state that says so), or use `verified →
+rejected` and throw the vendor's claim out of the retained dispute path instead of returning it for
+correction. Rejection is a JUDGEMENT about the claim; a dispute is a statement that its EVIDENCE
+moved. Those are different facts and the withdrawal guard is making the second one. `disputed`
+remains terminal — correction is a new version, per §0.
+```
+
+**Payment status is DERIVED, and a reversal re-derives it under CAS.** The forward arrows above
+are not the whole lifecycle: a payment-reversal row lowers `PAID(bill)` (§0), so a ₹100 bill that
+reached `paid` and is then fully reversed has `PAID = 0` while a stored `paid` would still claim
+the cash left the practice. So `payments.reverse` re-derives the status from the folds in its own
+transaction — `PAID = 0 → approved-for-payment`, `0 < PAID < APPROVED → part-paid`,
+`PAID = APPROVED → paid` — as a CAS transition on the status it read, exactly the stored-versus-
+derived discipline Phase 4 Task 2 needed twice (a defaulted commitment left a requisition line
+STALE, and a post-closure default left a closed parent with an open child).
+
+**A retention RELEASE re-derives it too, and the derivation is against `NET_PAYABLE`, not
+`APPROVED`.** A release raises `NET_PAYABLE` (§H), which makes money payable that no approval
+covers — and the reversal rule above compares `PAID` to `APPROVED` only, so it cannot see it.
+Certify ₹100 with ₹10 retention, approve and pay the ₹90, then release ₹5: `APPROVED = PAID = ₹90`
+so every clause above says `paid`, while §J correctly reports ₹5 sitting in `certified-payable`.
+The bill would read fully paid with cash still owed — a stored status contradicting the forecast
+built from the same folds, which is the exact failure this paragraph exists to prevent.
+
+**And the derivation never invents an approval.** An earlier revision fixed the stale `paid` by
+making any `NET_PAYABLE > APPROVED` derive `approved-for-payment`, which manufactures the opposite
+error: release ₹5 on a ₹100/₹10-retention certificate before anyone approves anything and the bill
+enters the POST-approval lifecycle state with `APPROVED = 0`. Payment would later be refused by
+bound 4, but the stored status and every workflow reading it already claim an approval nobody
+recorded — and a status that overstates authority is worse than one that understates cash, because
+the first invites a payment and the second only delays one. Unapproved payable and
+approved-not-paid are different states and the derivation must tell them apart. All three folds
+therefore participate, in this order:
+
+| Condition | Status |
+|---|---|
+| `NET_PAYABLE = PAID` | `paid` — nothing remains payable. THE FIRST ARM, and the only terminal one |
+| `APPROVED = 0` | `certified` — payable, not yet approved |
+| `PAID = APPROVED < NET_PAYABLE` | `certified` — the approved portion is settled; what remains is UNAPPROVED, not unpaid |
+| `PAID = 0 < APPROVED` | `approved-for-payment` |
+| `0 < PAID < APPROVED` | `part-paid` |
+
+**`NET_PAYABLE = PAID` is evaluated FIRST, and that ordering is load-bearing.** An earlier revision
+put `APPROVED = 0` first and made `PAID = APPROVED = NET_PAYABLE` the terminal arm, which strands a
+fully-offset certificate forever: certify ₹100 and offset it entirely with a ₹100 advance-recovery
+and `NET_PAYABLE = APPROVED = PAID = 0`, so the `APPROVED = 0` arm wins and the bill sits at
+`certified` — while approval and payment rows are STRICTLY POSITIVE (§H), so there exists no legal
+row anyone can write to advance it. A bill with nothing left to pay is settled, and the status has
+to be able to say so. Asking "is anything still payable?" before "has anything been approved?"
+answers both cases with one comparison: a ₹0 net bill is `paid` with no cash movement (the state
+means nothing remains payable, not that money was sent), and the ₹95-net/₹90-paid bill from the
+release case is still `certified` because ₹5 remains — which is what probe 5bk pins.
+
+`deductions.release` performs that same CAS re-derivation in its own transaction, under the bill
+lock, exactly as `payments.reverse` does. One derivation, every writer that can move ANY of the
+three folds. A status column that
+can disagree with its own fold is the same defect in a third phase.
+
+**A `disputed` version is never revived.** Round 11 wrote the reason into §0 — "a disputed
+version re-enters the fold only when resolved into a NEW live version" — and this table still
+moved the same version back to `under-verification`, which is that rule's stale sibling. Moving
+a 120-unit claim out of `disputed` against 100 accepted makes `BILLED_QTY = 120` live again
+BEFORE the quantity changes, breaking bound 2 and blocking the corrected 100-unit claim the
+dispute exists to enable. So resolution supersedes into a new version carrying the corrected
+quantity (or the vendor withdraws and the version stays `disputed` as history), and the new
+version enters `submitted` where the ordinary bounds apply. The disputed version's claimed 120
+remains readable on the dispute — the record of what was claimed is never edited.
+
+Rejection stops at `verified`. A certified bill has produced append-only payable facts — the
+certificate, and possibly an approval or a part payment — and §0 removes every `rejected`
+bill from the billed sets, so rejecting one would free its accepted quantity for a second
+bill while the certificate that consumed it still stands. Past certification the correction
+path is a superseding certificate, attributable, never a status flip that makes the prior facts
+orphans.
+
+**A superseding certificate must carry its downstream facts with it, in the same
+transaction.** A certificate is not a leaf: approvals hang off it and payments hang off
+those, and both are append-only, so lowering the certificate alone leaves an authorisation
+and possibly cash standing at an amount nobody certified. Both are handled by the §0 set
+definitions rather than by prose an implementer has to remember:
+
+- **Deductions.** Scoped to the LIVE certificate exactly as approvals are, and for the same
+  reason: a deduction is a ledger row AGAINST a certificate, not against the bill. Certify ₹100
+  with ₹10 retention and supersede to ₹50 — carrying the old row caps the new certificate at ₹40
+  by a withholding attached to an amount nobody certified, and silently dropping it makes a
+  retained balance vanish with no release. Supersession therefore RE-STATES the deductions on the
+  new certificate in the same transaction (the superseded rows survive as history on the
+  superseded certificate), and `NET_PAYABLE` reads only the live certificate's rows. Retention
+  released later is released against the live certificate.
+- **Releases are re-stated WITH the deductions, in the same transaction.** The rule above was
+  stated for deduction rows and not carried to the release rows that discharge them, and a
+  retained balance is a fold over BOTH: `retention` minus `retention-release` (§H). Certify ₹100
+  with ₹10 retention, release ₹5, then supersede to ₹50 re-stating only the ₹10 deduction — the
+  live certificate now reads ₹10 retained and ₹0 released, which claws back ₹5 the vendor was
+  already told it could have, with the release row stranded on a superseded certificate as
+  immutable evidence of a payment the live truth denies. The alternative spelling — folding
+  releases across certificates while deductions are certificate-scoped — is worse: it ties the
+  live retained balance to a superseded fact, so the two halves of one subtraction live in
+  different scopes. So supersession re-scopes the release rows onto the new certificate exactly
+  as it re-states the deductions, atomically, and the released portion stays released. Both
+  halves of the fold always share one scope: whatever certificate `NET_PAYABLE` reads, it reads
+  BOTH row kinds from.
+- **Approvals.** `APPROVED(bill)` is scoped to the LIVE certificate (§0), so supersession
+  lowers it automatically and the reduced amount must be RE-approved by someone holding the
+  authority for it. Certify ₹100, approve ₹100, supersede to ₹50: approved reads ₹0, bound 4
+  holds, and the ₹50 needs a fresh attributable approval. The ₹100 approval row survives as
+  history attached to the superseded certificate — it records what was authorised then, which
+  is exactly what an audit needs.
+- **Payments.** `PAID(bill)` nets payment rows against payment-REVERSAL rows (§0), and the
+  reversal is its own row type because every append-only money row here is strictly positive
+  with the TYPE carrying direction (§H): a positive ₹50 "reversing payment" would read ₹150
+  paid and a negative one is refused by the CHECK — neither is a reversal. **Where cash moved,
+  the FULL paid amount is reversed BEFORE the supersession, per the ordering stated below — not
+  "the excess".** An earlier revision of this bullet said excess-only, which contradicts that
+  ordering: reverse ₹50 of ₹100, supersede to ₹50, and `APPROVED` is ₹0 while `PAID` is ₹50, so
+  the guard refuses the very correction it is meant to permit.
+
+**Ordering, because the obvious rule deadlocks.** Stating only "refused if it would leave
+`PAID > APPROVED`" makes the intended correction impossible: reverse ₹50 of a ₹100 payment,
+then supersede to ₹50, and `APPROVED` is ₹0 (the new live certificate has no approval yet)
+while `PAID` is ₹50 — so the guard refuses, and skipping it breaks bound 5. Partial cash cannot
+be re-covered by an approval that does not exist yet, and creating one inside the supersession
+would approve an amount nobody has certified.
+
+So the rule is a SEQUENCE, and cash goes first:
+
+1. **Reverse the cash in full** — `PAID(bill)` must be 0 before a certificate carrying payments
+   may be superseded. Reversal is its own append-only row with the payer's authority (§H); it
+   does not need the certificate to move.
+2. **Supersede the certificate** with a reason. `APPROVED` falls to 0 with it (§0), and both
+   sides of bound 5 are 0, which holds trivially.
+3. **Re-approve** the reduced amount, attributable, within the approver's limit — and re-pay.
+
+Full reversal rather than partial is deliberate: a residual paid amount is cash standing against
+an amount nobody has certified, and there is no honest fold in which that is legal. It costs one
+extra reversal row on a rare correction and buys an invariant with no window in which it is
+false. The refusal names the outstanding `PAID` so the operator knows exactly what to reverse.
+
+- **The vendor-pinning columns need a BACKFILL, not only issuance-time copying.** Both PO-line
+  tables are already deployed and projects may hold lines before Task 4 runs, so copying
+  `vendorId`/`purchaseOrderId` at issuance populates future rows only: making the composite-FK
+  keys `NOT NULL` then fails the migration, and leaving them nullable leaves old lines
+  un-pinned, so their first commercial bill is either unrepresentable or not PG-bound to the
+  vendor. Task 4's migration therefore backfills every existing line from the PO root/version
+  chain it already references, ABORTS diagnostically if any line cannot be resolved (never
+  inventing a vendor), and only then adds the FK and the non-null seal — the diagnostic-first
+  shape every Phase-3/4 correction migration used.
+- Every transition is a CAS `updateMany(id, projectId, expectedStatus)` — a deterministic
+  409 on a concurrent second attempt, the Phase-3/4 machine.
+- A `VendorBill` carries immutable versions exactly like `PurchaseOrder`: an amendment
+  issues a NEW version retaining the prior verbatim with `supersedesVersion` lineage.
+  Certificates are immutable versions in the same sense — a certificate is never edited,
+  only superseded with a reason.
+- **An amendment is admissible only BEFORE certification** — `submitted`, `verified` or
+  `disputed`, and never once a live certificate exists. CAS-guarded on that status set, so a
+  concurrent certification and amendment cannot both commit. §0 removes a superseded version
+  from `BILLED_AMOUNT(bill)`, so amending a certified bill orphans every payable fact that
+  rests on it: certify a live ₹100 bill, amend to a ₹50 version, and the ₹100 claim lines are
+  no longer live while the ₹100 certificate, its approval and any payment row still stand —
+  the bill is simultaneously in breach of bound 3 and payable against a claim that has been
+  withdrawn. The correction path after certification is the one §F already states for every
+  post-certification change: supersede the certificate with a reason — the FULL rule stated
+  above, so approvals fall out with the superseded certificate and cash is reversed by its own
+  row type, never a certificate row in isolation — which returns the bill to an amendable
+  status, and only then amend. One rule, so the append-only chain is never left resting on a
+  retired claim.
+- `certified`, `approved-for-payment` and every payment row are **append-only at PG**, with
+  the same trigger discipline the §C ledger and the promise registers already use.
+- A bill line is bound to its PO line so that **PostgreSQL** refuses a cross-vendor claim. The
+  obvious spelling does not work: `PurchaseOrderLine` and `LabourPurchaseOrderLine` carry no
+  `vendorId` — the vendor lives on the PO ROOT — and PG cannot express a transitive join as a
+  FK, so a composite FK "carrying `vendorId` to the line" is unimplementable as written and would
+  silently degrade to a service check. So Task 4 adds a FROZEN `vendorId` (and `purchaseOrderId`)
+  to the PO-LINE snapshot, copied at issuance under the existing column-freeze discipline, and
+  the bill line then carries a real composite FK to `(projectId, id, vendorId)` on the line. That
+  is a procurement schema change and it is scheduled IN Task 4 rather than assumed to exist. A
+  same-project FK alone only stops a cross-project line: both PO roots carry
+  their own `vendorId`, so within one project Vendor A's bill could name Vendor B's PO line,
+  pass the ordered and accepted checks, and attribute a payable amount to the wrong
+  counterparty. Binding the vendor makes that unrepresentable rather than merely unlikely.
+- **And PostgreSQL enforces EXACTLY ONE PO-line target per bill line.** A material claim points at
+  a `PurchaseOrderLine` and a labour claim at a `LabourPurchaseOrderLine`, which means two
+  nullable reference columns — and an FK on each constrains only the reference that is PRESENT.
+  Both degenerate cases are then representable and both defeat §G: a line with NEITHER reference
+  carries ₹100 into `BILLED_AMOUNT(bill)` and certifies while bounds 1–2 never run, because they
+  are folds over a PO line and there is no PO line to fold against; a line with BOTH leaves the
+  fold owner ambiguous, so the same ₹100 draws down two ordered quantities or, depending on which
+  side a given fold reads, neither. So the table carries a CHECK that exactly one of the two
+  references is non-null (`(material IS NULL) <> (labour IS NULL)`), and the `type` discriminator
+  must agree with whichever is present — the same type↔detail correspondence Phase 4 Task 1
+  sealed for `ActivityRequirement`. Bounds 1–2 can then be stated without a "if a PO line exists"
+  qualifier, because for a live claim line one always does.
+
+### §G. Conservation bounds (the §F-bounds analogue, one per hand-off)
+
+**Carried forward VERBATIM from `claude/phase5-planning` @ `a4d469b` by the Task-4 PR, per this
+plan's own rule. Not one word is changed.**
+
+Each is re-derived in-service under `FOR UPDATE` on the constraining row AND sealed by a
+PostgreSQL constraint — the Phase-4 Task-3 F3 lesson: a trigger that counts without
+serializing is not an invariant.
+
+1. `BILLED_QTY(poLine)` ≤ `qty + approvedOverage` (materials) / `personShiftQty` (labour)
+2. `BILLED_QTY(poLine)` ≤ `ACCEPTED(poLine)` (materials) / `MEASURED(poLine)` (labour)
+3. `CERTIFIED(bill)` ≤ `BILLED_AMOUNT(bill)` — the BILL-scoped set (§0), never the po-line one
+4. `APPROVED(bill)` ≤ `NET_PAYABLE(bill)` = `CERTIFIED(bill)` − unreleased deductions
+   (§H fold over EVERY declared type: retention + advance-recovery + penalty + `other`, minus
+   releases for the types that support release). All four, because §H declares four: omitting
+   `other` from the fold makes a ₹10 `other` deduction informational — the bill still approves
+   and pays the gross ₹100 — which is the one thing a deduction must never be. A type that
+   exists in the enum and not in the fold is a withholding that withholds nothing.
+5. `PAID(bill)` ≤ `APPROVED(bill)` — both §0 sets, both folds net of their reversal/supersession
+   rows. Neither side may be a raw `Σ` over positive rows: a corrected-down payment must lower
+   the left side and a superseded certificate's approvals must lower the right, or the bound
+   compares two overstated totals and passes a bill that is in breach.
+
+Bound 4 is NET, not gross. Capping approval at the gross certificate would let a ₹100
+certification carrying a ₹10 retention approve and pay the full ₹100, which makes the §H
+deduction ledger decorative — it would record a withholding that never withheld anything.
+
+Every left- and right-hand side is a §0 set. Bounds 3–5 use the LIVE certificate for the
+same reason the billed side uses live claim lines: a superseded certificate is retained
+history, and summing it would read a corrected ₹100 certification as ₹200 — blocking the
+correction or overstating the forecast.
+
+Bound 2 is the one that makes the phase worth building: it is structurally impossible to
+bill for material that never arrived or work never measured.
+
 ### §I. Authority, segregation of duties, approval limits
 
 - New permissions: `commercial.read`, **`commercial.budget`** (create a `CostHead`, create or

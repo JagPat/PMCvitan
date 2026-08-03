@@ -180,4 +180,43 @@ export class LabourRequirementParticipant {
       });
     }
   }
+
+  /**
+   * Phase 5 Task 4 (§G bounds 1–2) — the LABOUR twin of
+   * `ProcurementParticipant.lockOrderedLineForClaim`, called INSIDE the commercial bill
+   * transaction through the declared `commercial → labour` participant edge.
+   *
+   * It exists separately for the reason §C gives for the whole fold: `LabourPurchaseOrderLine`
+   * is LABOUR-owned, so a spelling where procurement is the universal owner would either drop
+   * labour claims from the bound entirely or make procurement read labour-owned rows. One rule,
+   * two owners, each read — and each LOCKED — through its own contract.
+   *
+   * A labour line has no `approvedOverage` column, so §G bound 1's ordered authority is
+   * `personShiftQty` exactly. That is not an omission: Phase-4 Task 2 pinned
+   * `committedQty <= personShiftQty` and bound the commitment to its PO-line slice, so the labour
+   * chain's overage headroom is STRUCTURALLY ZERO — adding one here would reopen Task 2.
+   */
+  async lockOrderedLineForClaim(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    labourPoLineId: string,
+  ): Promise<{ vendorId: string; ordered: Prisma.Decimal; live: boolean; status: string } | null> {
+    const rows = await tx.$queryRaw<Array<{ vendorId: string; personShiftQty: number; poVersionId: string }>>`
+      SELECT "vendorId", "personShiftQty", "poVersionId"
+        FROM "LabourPurchaseOrderLine"
+       WHERE "projectId" = ${projectId} AND "id" = ${labourPoLineId}
+       FOR UPDATE`;
+    const line = rows[0];
+    if (!line) return null;
+    const version = await tx.labourPurchaseOrderVersion.findFirstOrThrow({
+      where: { projectId, id: line.poVersionId },
+      select: { status: true },
+    });
+    return {
+      vendorId: line.vendorId,
+      ordered: new Prisma.Decimal(line.personShiftQty),
+      live: ['issued', 'partially_committed', 'completed', 'closed_short'].includes(version.status),
+      status: version.status,
+    };
+  }
 }

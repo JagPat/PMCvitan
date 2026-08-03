@@ -127,6 +127,10 @@ model Project {
   budgetLines               BudgetLine[]
   budgetExceptions          BudgetException[]
   measurements      Measurement[]
+  // Phase 5 Task 4 (§F) — the vendor claim
+  vendorBills        VendorBill[]
+  vendorBillVersions VendorBillVersion[]
+  vendorBillLines    VendorBillLine[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -897,6 +901,9 @@ model User {
   budgetLinesSuperseded      BudgetLine[]            @relation("budgetLinesSuperseded")
   budgetExceptionsRaised     BudgetException[]       @relation("budgetExceptionsRaised")
   measurementsTaken Measurement[] @relation("measurementsTaken")
+  vendorBillsCreated          VendorBill[]        @relation("vendorBillsCreated")
+  vendorBillVersionsCreated   VendorBillVersion[] @relation("vendorBillVersionsCreated")
+  vendorBillVersionsSuperseded VendorBillVersion[] @relation("vendorBillVersionsSuperseded")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -1190,6 +1197,8 @@ model ProjectVendor {
 
   quotes         VendorQuote[]
   purchaseOrders PurchaseOrder[]
+  // Phase 5 Task 4 (§F) — the bills this counterparty has claimed on this project
+  vendorBills    VendorBill[]
 
   @@unique([projectId, vendorId])
   @@unique([projectId, id])
@@ -1387,10 +1396,15 @@ model PurchaseOrder {
   createdById   String
 
   versions PurchaseOrderVersion[]
+  // Phase 5 Task 4 (§F) — the lines carrying this order's pinned identity
+  pinnedLines PurchaseOrderLine[]
 
   @@unique([projectId, id])
   // F4-r2: the FK target sealing every VERSION's containment to this PO's requisition
   @@unique([projectId, id, requisitionId])
+  // Phase 5 Task 4 (§F vendor pinning) — the FK target proving a LINE's copied `vendorId` is
+  // this order's own vendor, not a value someone wrote onto the line.
+  @@unique([projectId, id, vendorId])
 }
 
 // §F — ONE version of a PO. draft → issued → partially_received → completed;
@@ -1427,6 +1441,9 @@ model PurchaseOrderVersion {
   @@unique([projectId, id])
   // F4-r2: the FK target sealing every LINE's containment to this version's requisition
   @@unique([projectId, id, requisitionId])
+  // Phase 5 Task 4 (§F vendor pinning) — the FK target proving a LINE's copied
+  // `purchaseOrderId` is its own version's order.
+  @@unique([projectId, id, poId])
 }
 
 // §F — a PO line's FROZEN commercial snapshot, copied from the comparison-approved quote
@@ -1472,14 +1489,37 @@ model PurchaseOrderLine {
   overageReason       String?
   receivedQty         Decimal              @default(0) @db.Decimal(18, 6)
 
+  // Phase 5 Task 4 (§F) — VENDOR PINNING, copied at line creation and column-frozen with the
+  // rest of the snapshot. The obvious spelling of "bind a bill line to its vendor" does not
+  // work: the vendor lives on the PO ROOT, and PostgreSQL cannot express a transitive join as a
+  // foreign key, so a composite FK "carrying vendorId to the line" is unimplementable and would
+  // silently degrade to a service check. A same-project FK alone only stops a CROSS-PROJECT
+  // line — within one project Vendor A's bill could still name Vendor B's PO line, pass the
+  // ordered and accepted checks, and attribute a payable amount to the wrong counterparty.
+  //
+  // These two columns are not new truth: they are the version→root chain this row already
+  // references, copied so PostgreSQL can reach it. Both are FK-sealed BACK to that chain
+  // (`(projectId, poVersionId, purchaseOrderId)` → the version's own order, and
+  // `(projectId, purchaseOrderId, vendorId)` → that order's own vendor), so the copy cannot
+  // disagree with the source it was copied from.
+  purchaseOrder   PurchaseOrder @relation(fields: [projectId, purchaseOrderId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseOrderId String
+  vendorId        String
+
   commitments DeliveryCommitment[]
   // Phase 3 Task 4 — received batches + receipt ledger rows against this line
   stockLots         StockLot[]
   stockTransactions StockTransaction[]
   // Phase 5 Task 1 (§C) — the commercial-owned cost-head attribution history for this line
   attributions      CommitmentAttribution[]
+  // Phase 5 Task 4 (§F) — the vendor claim lines drawn against this order line
+  billLines         VendorBillLine[]
 
   @@unique([projectId, id])
+  // Phase 5 Task 4 (§F) — the FK target a bill line binds to, so a claim can only ever name a
+  // PO line belonging to ITS OWN vendor. Unique because `(projectId, id)` already is: widening a
+  // unique key adds an FK target, it never constrains what may be stored.
+  @@unique([projectId, id, vendorId])
   @@index([projectId, requisitionLineId])
 }
 
@@ -2457,9 +2497,13 @@ model LabourPurchaseOrder {
   createdById      String
 
   versions LabourPurchaseOrderVersion[]
+  // Phase 5 Task 4 (§F) — the lines carrying this order's pinned identity
+  pinnedLines LabourPurchaseOrderLine[]
 
   @@unique([projectId, id])
   @@unique([projectId, id, requisitionId])
+  // Phase 5 Task 4 (§F vendor pinning) — the labour twin of the material FK target.
+  @@unique([projectId, id, vendorId])
 }
 
 // A labour PO version — the frozen-identity CAS lifecycle. Mirrors PurchaseOrderVersion. An amendment
@@ -2490,6 +2534,8 @@ model LabourPurchaseOrderVersion {
   @@unique([poId, version])
   @@unique([projectId, id])
   @@unique([projectId, id, requisitionId])
+  // Phase 5 Task 4 (§F vendor pinning) — the labour twin of the material FK target.
+  @@unique([projectId, id, poId])
 }
 
 // A labour PO LINE — the FROZEN rate snapshot for ONE demand slice. Mirrors PurchaseOrderLine. The
@@ -2518,13 +2564,24 @@ model LabourPurchaseOrderLine {
   selectedQuoteId       String
   selectedQuoteLineId   String
 
+  // Phase 5 Task 4 (§F) — VENDOR PINNING, the labour twin. Same reasoning, same seals: the
+  // vendor lives on the labour PO ROOT, so the line copies it (and its order) and both copies
+  // are FK-sealed back to the version→root chain they came from.
+  labourPurchaseOrder   LabourPurchaseOrder @relation(fields: [projectId, purchaseOrderId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  purchaseOrderId       String
+  vendorId              String
+
   commitments CapacityCommitment[]
   // Phase 5 Task 1 (§C) — the commercial-owned cost-head attribution history for this line
   attributions CommitmentAttribution[]
 
   measurements Measurement[]
+  // Phase 5 Task 4 (§F) — the vendor claim lines drawn against this order line
+  billLines    VendorBillLine[]
 
   @@unique([projectId, id])
+  // Phase 5 Task 4 (§F) — the FK target a labour bill line binds to.
+  @@unique([projectId, id, vendorId])
   @@index([projectId, requisitionLineId])
 }
 
@@ -3060,4 +3117,187 @@ model BudgetException {
   // Exactly one OPEN exception per head — a partial unique in the migration, so a second
   // headroom-moving write on an already-excepted head does not stack duplicate Inbox actions:
   //   (projectId, costHeadCode) WHERE "clearedAt" IS NULL
+}
+
+// ─── Phase 5 Task 4 (§F/§G) — the VENDOR BILL: the vendor's CLAIM ────────────────────────────
+//
+// A bill is what the counterparty says it is owed. It is NOT a payable: §G bounds it against
+// operational evidence (bound 1 — ordered authority; bound 2 — what actually arrived or was
+// measured), and only Task 5's three-way verification and certification can make money payable.
+//
+// The split across three tables follows §F literally:
+//   • `VendorBill`        the IDENTITY and the current lifecycle state — the duplicate-claim key
+//                         `(projectId, vendorId, vendorBillNumber)` lives here, frozen after write
+//   • `VendorBillVersion` an IMMUTABLE claim version; an amendment issues a NEW one retaining the
+//                         prior verbatim with `supersedesVersion` lineage, exactly like a PO
+//   • `VendorBillLine`    one immutable claim line, bound to EXACTLY ONE PO line whose vendor is
+//                         PG-proven to be this bill's vendor
+//
+// The status lives on the ROOT rather than the version because the duplicate-document index is a
+// predicate on the lifecycle's own terminal release states (§F, probe 5bj), and a partial unique
+// can only read columns of the row it indexes.
+model VendorBill {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  /// the counterparty, bound to this project. A LINE's PO line is FK-proven to carry the SAME
+  /// vendor, so Vendor A claiming against Vendor B's order is unrepresentable (§F).
+  binding  ProjectVendor @relation(fields: [projectId, vendorId], references: [projectId, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  vendorId String
+
+  /// §0b "a key that groups facts is FROZEN after write" — probe 5bg makes this the
+  /// duplicate-claim key, so an editable number would let a vendor re-submit the same claim under
+  /// a new number after the first is verified and duplicate detection would stop resting on
+  /// immutable vendor evidence. Non-blank CHECK + column-freeze trigger, both.
+  vendorBillNumber String
+  /// the vendor's own document date. Frozen with the number: the two together are the claim's
+  /// identity, and a movable date re-dates a claim after it has been checked.
+  documentDate     DateTime @db.Date
+
+  /// §F. draft → submitted → under-verification → { verified | disputed }; disputed → resolved;
+  /// every uncertified live state → disputed; draft|submitted|under-verification|disputed|
+  /// verified → rejected. Task 4 ships the lifecycle UP TO `under-verification` plus `disputed`,
+  /// `resolved` and `rejected`. `verified` and everything past it belong to the task that
+  /// produces their evidence (§E, Task 5) — a control ships with the transition it guards.
+  status         String    @default("draft")
+  statusChangedAt DateTime @default(now())
+  /// why the claim left the live set — required on `rejected` and on `disputed` (non-blank CHECK)
+  statusReason   String?
+  /// §F — the version that was live when this claim was DISPUTED, captured by the lifecycle
+  /// trigger and overwritten on every update, so no writer can supply it. `disputed → resolved`
+  /// requires a live version superseding exactly this one: a resolution releases the
+  /// duplicate-document key, so one with no correction behind it would free the vendor's number
+  /// for a claim nobody fixed.
+  disputedAtVersion Int?
+  /// §F — WHY it was disputed, captured by the same trigger and equally unwritable. `statusReason`
+  /// explains the CURRENT status, so a later `disputed → rejected` writes its own judgement over it;
+  /// the breach that first took the claim out of the live fold is evidence and survives here.
+  disputeReason     String?
+
+  createdAt   DateTime @default(now())
+  createdBy   User     @relation("vendorBillsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  /// §C rule ii — every fact records the command that produced it
+  sourceCommandId String
+
+  versions VendorBillVersion[]
+
+  @@unique([projectId, id])
+  /// the FK target proving a VERSION belongs to a bill of this vendor, and a LINE in turn
+  @@unique([projectId, id, vendorId])
+  @@index([projectId, vendorId])
+  // The DUPLICATE-DOCUMENT partial unique lives in the migration (Prisma cannot express one):
+  //   (projectId, vendorId, vendorBillNumber) WHERE "status" NOT IN ('rejected','resolved')
+  // It releases on the LIFECYCLE'S OWN terminal states and on nothing else (§F, probe 5bj): a
+  // predicate naming a state §F does not define would never release at all.
+}
+
+/// §F — an IMMUTABLE claim version. Amending issues a NEW version and supersedes this one; §0's
+/// LIVE rule then drops the retained version from every billed set, so v1 100 → v2 100 folds to
+/// 100 and not 200 (probe 5d). Append-only at PostgreSQL except the ONE supersession stamp.
+model VendorBillVersion {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  bill   VendorBill @relation(fields: [projectId, billId, vendorIdPin], references: [projectId, id, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  billId String
+  /// the bill's vendor, denormalized and FK-sealed to the root above, so a LINE can be
+  /// vendor-sealed in turn without a transitive join PostgreSQL cannot express
+  vendorIdPin String
+  /// monotonic within the bill; v1 is the first claim
+  version Int
+  /// the amended prior version this reissue replaces — the PO's `supersedesVersion` lineage
+  supersedesVersion Int?
+
+  /// the claim total, DERIVED from the lines and re-derived by a deferred constraint trigger, so
+  /// a version's stated money can never disagree with the lines `BILLED_AMOUNT` actually folds
+  claimedAmount Decimal @db.Decimal(18, 2)
+  /// how many claim lines this version was RECORDED with, frozen and re-derived by the same
+  /// deferred check (Codex round-1 F4). The money check alone does not close the line set: a
+  /// ZERO-money line leaves `claimedAmount` exactly equal to the line total while adding QUANTITY
+  /// to `BILLED_QTY`. A COUNT rather than a quantity, because one version can carry base units and
+  /// person-shifts at once and those do not sum to anything.
+  lineCount     Int
+
+  createdAt   DateTime @default(now())
+  createdBy   User     @relation("vendorBillVersionsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  /// the ONE permitted transition. A row with `supersededAt IS NULL` is the CURRENT version.
+  supersededAt    DateTime?
+  supersededBy    User?     @relation("vendorBillVersionsSuperseded", fields: [supersededById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  supersededById  String?
+  supersedeReason String?
+
+  lines VendorBillLine[]
+
+  @@unique([projectId, id])
+  @@unique([projectId, billId, version]) // versions are monotonic and never reused
+  /// the FK target sealing every LINE to its version's own bill and vendor
+  @@unique([projectId, id, billId, vendorIdPin])
+  @@index([projectId, billId])
+  // The partial unique — exactly one CURRENT version per bill — lives in the migration:
+  //   (projectId, billId) WHERE "supersededAt" IS NULL
+}
+
+/// §F — ONE immutable claim line, naming EXACTLY ONE PO line.
+///
+/// A material claim points at a `PurchaseOrderLine` and a labour claim at a
+/// `LabourPurchaseOrderLine`, which means two nullable reference columns — and an FK on each
+/// constrains only the reference that is PRESENT. Both degenerate shapes defeat §G: a line with
+/// NEITHER carries money into `BILLED_AMOUNT` and certifies while bounds 1–2 never run (they are
+/// folds over a PO line and there is no PO line to fold against); a line with BOTH leaves the
+/// fold owner ambiguous, so the same money draws down two ordered quantities or, depending on
+/// which side a fold reads, neither. Hence the XOR CHECK plus a `type` discriminator that must
+/// AGREE with whichever reference is present — the same type↔detail correspondence Phase 4
+/// Task 1 sealed for `ActivityRequirement`.
+model VendorBillLine {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  version   VendorBillVersion @relation(fields: [projectId, versionId, billId, vendorId], references: [projectId, id, billId, vendorIdPin], onDelete: NoAction, onUpdate: NoAction)
+  versionId String
+  /// denormalized so the line's vendor can be sealed to BOTH its bill and its PO line
+  billId    String
+  vendorId  String
+
+  /// 'material' | 'labour' — CHECK-bound to agree with the reference present
+  type String
+
+  poLine         PurchaseOrderLine?       @relation(fields: [projectId, poLineId, vendorId], references: [projectId, id, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  poLineId       String?
+  labourPoLine   LabourPurchaseOrderLine? @relation(fields: [projectId, labourPoLineId, vendorId], references: [projectId, id, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  labourPoLineId String?
+
+  /// the claimed quantity in the PO line's own unit — base units for material, person-shifts for
+  /// labour. STRICTLY POSITIVE (§0b): a credit is a separate document with its own semantics, not
+  /// a negative line inside a conservation fold, and Phase 5 has no credit note. A live −100-unit
+  /// claim beside a 200-unit bill would leave cumulative `BILLED_QTY` at 100 and pass bounds 1–2
+  /// against 100 accepted while the second bill certifies against its own bill-scoped amount.
+  quantity Decimal @db.Decimal(18, 6)
+  /// the claimed per-base-unit rate. §E compares it to the frozen ordered rate in Task 5; here it
+  /// is the money the claim is made of.
+  rate     Decimal @db.Decimal(18, 2)
+  /// NON-NEGATIVE, not strictly positive (§0b): `PurchaseOrderLine`'s own CHECK is
+  /// `taxAmount >= 0 AND freightAmount >= 0`, so a zero-tax / zero-freight PO is legitimate and a
+  /// strictly-positive claim check would refuse a bill that matches the ordered evidence EXACTLY.
+  /// A LABOUR line's two are CHECK-pinned to zero: the `LabourPurchaseOrderLine` snapshot freezes
+  /// no ordered tax or freight, so there is nothing to verify such a claim against (probe 5au).
+  taxAmount     Decimal @db.Decimal(18, 2)
+  freightAmount Decimal @db.Decimal(18, 2)
+  /// DERIVED = round(rate × quantity, 2) + tax + freight, re-derived by a DB CHECK so the money a
+  /// fold reads is always the money the line's own components make (§A: half-up at 2 decimals,
+  /// applied only where a value is persisted)
+  amount        Decimal @db.Decimal(18, 2)
+
+  @@unique([projectId, id])
+  @@index([projectId, versionId])
+  @@index([projectId, poLineId])
+  @@index([projectId, labourPoLineId])
+  // The XOR CHECK, the type↔reference correspondence, the sign CHECKs, the labour tax/freight
+  // pin and the derived-amount CHECK all live in the migration.
 }

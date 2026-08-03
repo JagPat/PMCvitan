@@ -675,6 +675,19 @@ export class InventoryService {
         // line's released remainder. Reversing a 50-unit receipt on a closed-short ₹100 order
         // releases the full ₹100 and must CLEAR the exception the ₹50 exposure raised (Codex
         // round-3 P2) — the acceptance-only branch left that breach standing forever.
+        // Phase 5 Task 4 (§E/§K) — WITHDRAWING ACCEPTED MATERIAL. A live vendor claim resting on
+        // this acceptance can never be left standing above the evidence behind it, so the
+        // commercial participant is asked INSIDE this transaction, with the reversal row already
+        // appended so it reads the state this transaction is about to commit. Off-pilot it is a
+        // no-op and the reversal behaves byte-for-byte as it did before Phase 5.
+        //
+        // Only an ACCEPTANCE reversal moves `ACCEPTED(poLine)`: a receipt or rejection reversal
+        // moves quarantine and `receivedQty`, which no §G bound reads.
+        if (target.type === 'acceptance') {
+          await this.commercialParticipant.assertAcceptanceReversible(
+            tx, projectId, lot.poLineId, { actorId: actor.actorId, role: user.role },
+          );
+        }
         if (target.type === 'acceptance' || target.type === 'receipt' || target.type === 'rejection') {
           await this.evaluateBudgetForLine(
             tx, projectId, actor, user.role, lot.poLineId,

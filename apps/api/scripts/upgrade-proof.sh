@@ -274,6 +274,80 @@ after_count=$($PSQL -tAc 'SELECT COUNT(*) FROM "DecisionApprovalRevision";')
 [ "$before_count" = "$after_count" ] || { echo "FAILED: the history migration is not idempotent ($before_count -> $after_count rows)"; exit 1; }
 echo "history migration idempotency: $before_count rows before and after the re-run"
 
+# A material and a labour purchase-order chain on the PRE-Task-4 schema, so the §F vendor-pinning
+# migration has real rows to back-fill (probe 5ax). Both roots carry a vendor; neither LINE can,
+# because the columns do not exist yet — which is precisely the state the backfill exists for.
+plant_pre_t4_chains() {
+  echo ""
+  echo "=== planting PRE-Task-4 purchase-order chains (the §F vendor-pinning backfill subjects) ==="
+  # the canonical §B fingerprint for THIS chain's own trade/skill. The catalog rows use ids of
+  # their own (`mason-t4`/`bar-bending-t4`) because the post-migration fixture plants `mason`/
+  # `bar-bending` later, and a project-contained catalog key can only be claimed once.
+  local fpd="encode(digest('lsf.v1'||chr(31)||'trade:mason-t4'||chr(31)||'skill:bar-bending-t4'||chr(31)||'shift:day','sha256'),'hex')"
+  $PSQL -q <<SQL || { echo "pre-Task-4 chain planting failed"; exit 1; }
+BEGIN;
+-- a project of its OWN. Several assertions further down prove that a given migration WROTE NO
+-- ROWS by counting a table, and rows this script plants deliberately would silently confound
+-- them — a fixture that breaks an existing proof is not a fixture, it is a regression. `p3`
+-- keeps the two claims separable: those assertions exclude it by name and still mean exactly
+-- what they meant before.
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+  VALUES('p3','org-legacy','Pre-T4 Backfill Subject','LC','','Finishing','LC-01','01 Jan 2026','31 Dec 2026',50,30,60);
+INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd","status") VALUES('ACT-P3','p3','Pre-T4 activity','Hall',0,5,'done');
+INSERT INTO "Vendor"("id","orgId","name","createdById") VALUES('UPT4-VEN','org-legacy','Pre-T4 Material Vendor','USER-1');
+INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById") VALUES('UPT4-PV','p3','org-legacy','UPT4-VEN','USER-1');
+INSERT INTO "ActivityRequirementRoot"("id","projectId","createdById") VALUES('UPT4-ROOT','p3','USER-1');
+INSERT INTO "ActivityRequirement"("id","projectId","requirementId","revision","activityId","type","requiredQty","baseUom","requiredBy","criticality","status","createdById")
+  VALUES('UPT4-AR','p3','UPT4-ROOT',1,'ACT-P3','material',100,'bag','2026-08-15','normal','open','USER-1');
+INSERT INTO "MaterialRequirementSpec"("id","projectId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","specFingerprint")
+  VALUES('UPT4-MS','p3','UPT4-ROOT',1,'Cement','UltraTech','OPC 53','grey','FP-UPT4');
+INSERT INTO "Requisition"("id","projectId","title","status","createdById") VALUES('UPT4-REQ','p3','pre-t4','approved','USER-1');
+INSERT INTO "RequisitionLine"("id","projectId","requisitionId","requirementId","revision","qty","status")
+  VALUES('UPT4-RL','p3','UPT4-REQ','UPT4-ROOT',1,100,'ordered');
+INSERT INTO "Rfq"("id","projectId","requisitionId","status","issuedById") VALUES('UPT4-RFQ','p3','UPT4-REQ','closed','USER-1');
+INSERT INTO "VendorQuote"("id","projectId","rfqId","requisitionId","vendorId","status","validUntil","recordedById")
+  VALUES('UPT4-VQ','p3','UPT4-RFQ','UPT4-REQ','UPT4-VEN','recorded','2027-01-01','USER-1');
+INSERT INTO "VendorQuoteLine"("id","projectId","quoteId","requisitionLineId","requisitionId","baseRate","taxAmount","freightAmount","landedCost","quotedMake","matchesSpecification")
+  VALUES('UPT4-VQL','p3','UPT4-VQ','UPT4-RL','UPT4-REQ',100,50,25,999.99,'UltraTech OPC',true);
+INSERT INTO "QuoteComparison"("id","projectId","rfqId","requisitionId","status","selectedQuoteId","selectedVendorId","reason","createdById","approvedById","approvedAt")
+  VALUES('UPT4-CMP','p3','UPT4-RFQ','UPT4-REQ','approved','UPT4-VQ','UPT4-VEN','ok','USER-1','USER-1',now());
+INSERT INTO "PurchaseOrder"("id","projectId","vendorId","requisitionId","comparisonId","comparisonStatus","createdById")
+  VALUES('UPT4-PO','p3','UPT4-VEN','UPT4-REQ','UPT4-CMP','approved','USER-1');
+INSERT INTO "PurchaseOrderVersion"("id","projectId","poId","version","requisitionId","status","issuedById","issuedAt","createdById")
+  VALUES('UPT4-POV','p3','UPT4-PO',1,'UPT4-REQ','issued','USER-1',now(),'USER-1');
+INSERT INTO "PurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","specFingerprint","uom","purchaseUom","purchaseQty","conversionToBase","qty","rate","taxAmount","freightAmount","landedAmount","committedAmountBase")
+  VALUES('UPT4-POL','p3','UPT4-POV','UPT4-RL','UPT4-REQ','UPT4-ROOT',1,'FP-UPT4','bag','bag',100,1,100,100,50,25,999.99,100);
+
+INSERT INTO "Vendor"("id","orgId","name","createdById") VALUES('UPT4-LVEN','org-legacy','Pre-T4 Labour Supplier','USER-1');
+INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById") VALUES('UPT4-LPV','p3','org-legacy','UPT4-LVEN','USER-1');
+INSERT INTO "LabourTrade"("projectId","code","name","createdById") VALUES('p3','mason-t4','Mason (pre-T4)','USER-1');
+INSERT INTO "LabourSkill"("projectId","code","name","createdById") VALUES('p3','bar-bending-t4','Bar Bending (pre-T4)','USER-1');
+INSERT INTO "ActivityRequirementRoot"("id","projectId","createdById") VALUES('UPT4-LROOT','p3','USER-1');
+INSERT INTO "ActivityRequirement"("id","projectId","requirementId","revision","activityId","type","requiredQty","baseUom","requiredBy","createdById")
+  VALUES('UPT4-LAR','p3','UPT4-LROOT',1,'ACT-P3','labour',3,'person-shift','2026-08-12','USER-1');
+INSERT INTO "LabourRequirementSpec"("id","projectId","requirementId","revision","tradeCode","skillCode","shift","labourSpecFingerprint")
+  VALUES('UPT4-LSPEC','p3','UPT4-LROOT',1,'mason-t4','bar-bending-t4','day',$fpd);
+INSERT INTO "LabourDemandSlice"("id","projectId","requirementId","revision","civilDate","personShiftQty") VALUES('UPT4-LSLICE','p3','UPT4-LROOT',1,'2026-08-12',3);
+INSERT INTO "LabourRequisition"("id","projectId","title","status","createdById","approvedById","approvedAt") VALUES('UPT4-LREQ','p3','pre-t4 crew','approved','USER-1','USER-1',now());
+INSERT INTO "LabourRequisitionLine"("id","projectId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","status")
+  VALUES('UPT4-LRL','p3','UPT4-LREQ','UPT4-LROOT',1,'2026-08-12','day',$fpd,3,'ordered');
+INSERT INTO "LabourRfq"("id","projectId","requisitionId","issuedById") VALUES('UPT4-LRFQ','p3','UPT4-LREQ','USER-1');
+INSERT INTO "SupplierLabourQuote"("id","projectId","rfqId","requisitionId","vendorId","status","validUntil","recordedById") VALUES('UPT4-LQ','p3','UPT4-LRFQ','UPT4-LREQ','UPT4-LVEN','recorded','2026-12-31','USER-1');
+INSERT INTO "SupplierLabourQuoteLine"("id","projectId","quoteId","requisitionLineId","requisitionId","ratePerPersonShift","shiftPremium","landedPerPersonShift","matchesSpecification") VALUES('UPT4-LQL','p3','UPT4-LQ','UPT4-LRL','UPT4-LREQ',1000,100,1100,true);
+INSERT INTO "LabourQuoteComparison"("id","projectId","rfqId","requisitionId","status","selectedQuoteId","selectedVendorId","reason","createdById","approvedById","approvedAt") VALUES('UPT4-LCMP','p3','UPT4-LRFQ','UPT4-LREQ','approved','UPT4-LQ','UPT4-LVEN','ok','USER-1','USER-1',now());
+INSERT INTO "LabourPurchaseOrder"("id","projectId","vendorId","requisitionId","comparisonId","comparisonStatus","createdById") VALUES('UPT4-LPO','p3','UPT4-LVEN','UPT4-LREQ','UPT4-LCMP','approved','USER-1');
+INSERT INTO "LabourPurchaseOrderVersion"("id","projectId","poId","version","requisitionId","comparisonId","status","issuedById","issuedAt","createdById") VALUES('UPT4-LPOV','p3','UPT4-LPO',1,'UPT4-LREQ','UPT4-LCMP','issued','USER-1',now(),'USER-1');
+INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase","comparisonId","selectedQuoteId","selectedQuoteLineId")
+  VALUES('UPT4-LPOL','p3','UPT4-LPOV','UPT4-LRL','UPT4-LREQ','UPT4-LROOT',1,'2026-08-12','day',$fpd,3,1000,100,3300,'UPT4-LCMP','UPT4-LQ','UPT4-LQL');
+COMMIT;
+SQL
+  # the state the backfill exists FOR: the lines carry no pinning yet
+  local unpinned
+  unpinned=$($PSQL -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='PurchaseOrderLine' AND column_name='vendorId';")
+  [ "$unpinned" = "0" ] || { echo "pre-Task-4 planting ran AFTER the pinning migration — the backfill proof would be vacuous"; exit 1; }
+  echo "pre-Task-4 chains planted (material UPT4-POL, labour UPT4-LPOL), both lines UNPINNED"
+}
+
 # ---- 3f. the remaining ledger to HEAD ----------------------------------------------------
 # Migrations stamped after the round-2 stop (Task 2 procurement onward) also land in
 # phase3_r2_dirs; the explicit round-2/3 stops above covered exactly two of them. Apply every
@@ -281,6 +355,15 @@ echo "history migration idempotency: $before_count rows before and after the re-
 for d in "${phase3_r2_dirs[@]}"; do
   case "$(basename "$d")" in
     "$(basename "$R2_PROVENANCE")"|"$(basename "$R3_HISTORY")") continue ;;
+    # ── Phase 5 Task 4 STOP — the §F vendor-pinning BACKFILL needs rows to back-fill ──────────
+    # Every other fixture in this script is planted AFTER the whole ledger has run, which is the
+    # right shape for hostile-insert seals but proves nothing about a migration that MIGRATES
+    # EXISTING DATA. `PurchaseOrderLine`/`LabourPurchaseOrderLine` are already deployed and real
+    # projects hold lines predating Task 4, so the migration must resolve each one from its own
+    # version→root chain — and a proof over an empty table would pass while proving nothing.
+    # These two chains are therefore planted on the PRE-Task-4 schema, where the pinning columns
+    # do not exist yet, and the assertions further down read what the backfill wrote.
+    20270420000000_*) plant_pre_t4_chains ;;
   esac
   apply_one "$d"
 done
@@ -383,7 +466,7 @@ assert "the composite tenant identity (orgId, id) is database-enforced" \
   "SELECT COUNT(*) FROM pg_indexes WHERE indexname='Project_orgId_id_key';" \
   "1"
 assert "every legacy project was backfilled its stream counter at position 0" \
-  "SELECT COUNT(*) FILTER (WHERE \"nextPosition\" = 0)::text || '/' || COUNT(*)::text FROM \"ProjectEventStream\";" \
+  "SELECT COUNT(*) FILTER (WHERE \"nextPosition\" = 0)::text || '/' || COUNT(*)::text FROM \"ProjectEventStream\" WHERE \"projectId\" <> 'p3';" \
   "2/2"
 assert "the append-only trigger guards the event store" \
   "SELECT COUNT(*) FROM pg_trigger WHERE tgname='DomainEvent_append_only';" \
@@ -528,7 +611,7 @@ assert "the eight procurement tables exist" \
   "SELECT ((to_regclass('\"Vendor\"') IS NOT NULL) AND (to_regclass('\"ProjectVendor\"') IS NOT NULL) AND (to_regclass('\"Requisition\"') IS NOT NULL) AND (to_regclass('\"RequisitionLine\"') IS NOT NULL) AND (to_regclass('\"Rfq\"') IS NOT NULL) AND (to_regclass('\"VendorQuote\"') IS NOT NULL) AND (to_regclass('\"VendorQuoteLine\"') IS NOT NULL) AND (to_regclass('\"QuoteComparison\"') IS NOT NULL))::text;" \
   "true"
 assert "the procurement migration wrote NO rows over the legacy DB (pure capability add)" \
-  "SELECT (SELECT COUNT(*) FROM \"Vendor\") + (SELECT COUNT(*) FROM \"ProjectVendor\") + (SELECT COUNT(*) FROM \"Requisition\");" \
+  "SELECT (SELECT COUNT(*) FROM \"Vendor\" WHERE \"id\" NOT LIKE 'UPT4-%') + (SELECT COUNT(*) FROM \"ProjectVendor\" WHERE \"projectId\" <> 'p3') + (SELECT COUNT(*) FROM \"Requisition\" WHERE \"projectId\" <> 'p3');" \
   "0"
 assert "requisition lines FK the ActivityRequirement revision row (the §F bound-1 anchor)" \
   "SELECT COUNT(*) FROM pg_constraint WHERE conname='RequisitionLine_projectId_requirementId_revision_fkey' AND contype='f';" \
@@ -548,7 +631,7 @@ assert "the five purchase-order/delivery tables exist" \
   "SELECT ((to_regclass('\"PurchaseOrder\"') IS NOT NULL) AND (to_regclass('\"PurchaseOrderVersion\"') IS NOT NULL) AND (to_regclass('\"PurchaseOrderLine\"') IS NOT NULL) AND (to_regclass('\"DeliveryCommitment\"') IS NOT NULL) AND (to_regclass('\"DeliveryPromise\"') IS NOT NULL))::text;" \
   "true"
 assert "the purchase-order migration wrote NO rows over the legacy DB (pure capability add)" \
-  "SELECT (SELECT COUNT(*) FROM \"PurchaseOrder\") + (SELECT COUNT(*) FROM \"PurchaseOrderVersion\") + (SELECT COUNT(*) FROM \"DeliveryCommitment\");" \
+  "SELECT (SELECT COUNT(*) FROM \"PurchaseOrder\" WHERE \"projectId\" <> 'p3') + (SELECT COUNT(*) FROM \"PurchaseOrderVersion\" WHERE \"projectId\" <> 'p3') + (SELECT COUNT(*) FROM \"DeliveryCommitment\" WHERE \"projectId\" <> 'p3');" \
   "0"
 assert "'ordered' joined the requisition-line status vocabulary (widened CHECK)" \
   "SELECT pg_get_constraintdef(oid) LIKE '%ordered%' FROM pg_constraint WHERE conname='RequisitionLine_status_check';" \
@@ -678,8 +761,10 @@ INSERT INTO "PurchaseOrder"("id","projectId","vendorId","requisitionId","compari
   VALUES('UP45-PO','p1','UP45-VEN','UP45-REQ','UP45-CMP','approved','USER-1');
 INSERT INTO "PurchaseOrderVersion"("id","projectId","poId","version","requisitionId","status","issuedById","issuedAt","createdById")
   VALUES('UP45-POV','p1','UP45-PO',1,'UP45-REQ','issued','USER-1',now(),'USER-1');
-INSERT INTO "PurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","specFingerprint","uom","purchaseUom","purchaseQty","conversionToBase","qty","rate","taxAmount","freightAmount","landedAmount","committedAmountBase")
-  VALUES('UP45-POL','p1','UP45-POV','UP45-RL','UP45-REQ','UP45-ROOT',1,'FP-UP45','bag','bag',100,1,100,100,50,25,999.99,100);
+-- Phase 5 Task 4 (§F) — post-migration inserts now supply the pinning columns; the two composite
+-- FKs make them provable rather than merely present (they must equal this line's own version→root).
+INSERT INTO "PurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","specFingerprint","uom","purchaseUom","purchaseQty","conversionToBase","qty","rate","taxAmount","freightAmount","landedAmount","committedAmountBase","purchaseOrderId","vendorId")
+  VALUES('UP45-POL','p1','UP45-POV','UP45-RL','UP45-REQ','UP45-ROOT',1,'FP-UP45','bag','bag',100,1,100,100,50,25,999.99,100,'UP45-PO','UP45-VEN');
 INSERT INTO "DeliveryCommitment"("id","projectId","poLineId","status","createdById") VALUES('UP45-DC','p1','UP45-POL','committed','USER-1');
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','succeeded');
@@ -689,6 +774,14 @@ INSERT INTO "StockLot"("id","projectId","poLineId","commitmentId","requirementId
   VALUES('UP45-LOT','p1','UP45-POL','UP45-DC','UP45-ROOT',1,'Cement','UltraTech','OPC 53','grey','bag','FP-UP45','USER-1');
 INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","poLineId","commitmentId","recordedById","sourceCommandId")
   VALUES('UP45-RCPT','p1','UP45-LOT','main','receipt',100,NULL,'quarantine','UP45-POL','UP45-DC','USER-1','UP45-CMD');
+-- Codex round-5 — a SMALL acceptance. Without any accepted evidence at all, every §G claim path in
+-- this proof could only ever end in refusal, and a seal that is never shown to ACCEPT is not shown
+-- to be precise. Five units lets a 3-unit claim go legitimately live while the 10-unit claim below
+-- still breaches, so both directions are proven against the same line.
+INSERT INTO "Media"("id","projectId","kind","mime","sizeBytes","uploadedBy")
+  VALUES('UP45-MED','p1','photo','image/jpeg',1024,'USER-1');
+INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","recordedById","sourceCommandId","qualityResult","evidenceMediaId")
+  VALUES('UP45-ACC','p1','UP45-LOT','main','acceptance',5,'quarantine','acceptedOnHand','USER-1','UP45-CMD','pass','UP45-MED');
 INSERT INTO "MaterialIssue"("id","projectId","lotId","storeLocation","activityId","qty","issuedById")
   VALUES('UP45-MI','p1','UP45-LOT','main','ACT-1',20,'USER-1');
 INSERT INTO "StockTransaction"("id","projectId","lotId","storeLocation","type","qty","fromBucket","toBucket","activityId","issueId","recordedById","sourceCommandId")
@@ -736,7 +829,7 @@ assert_rejects "F4: a resolved observation cannot revert to matched=true" \
 # composite FKs, applicable uniqueness) holds against hostile inserts.
 # =====================================================================================
 assert "the eight labour tables exist (incl. the normalized WorkerSkill) and the migration wrote NO rows over the legacy DB" \
-  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('LabourTrade','LabourSkill','Worker','WorkerSkill','Crew','CrewMembership','LabourRequirementSpec','LabourDemandSlice'))::text || '|' || (SELECT COUNT(*) FROM \"Worker\")::text || '|' || (SELECT COUNT(*) FROM \"WorkerSkill\")::text || '|' || (SELECT COUNT(*) FROM \"LabourRequirementSpec\")::text || '|' || (SELECT COUNT(*) FROM \"CrewMembership\")::text;" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('LabourTrade','LabourSkill','Worker','WorkerSkill','Crew','CrewMembership','LabourRequirementSpec','LabourDemandSlice'))::text || '|' || (SELECT COUNT(*) FROM \"Worker\" WHERE \"projectId\" <> 'p3')::text || '|' || (SELECT COUNT(*) FROM \"WorkerSkill\" WHERE \"projectId\" <> 'p3')::text || '|' || (SELECT COUNT(*) FROM \"LabourRequirementSpec\" WHERE \"projectId\" <> 'p3')::text || '|' || (SELECT COUNT(*) FROM \"CrewMembership\" WHERE \"projectId\" <> 'p3')::text;" \
   "8|0|0|0|0"
 assert "the WorkerDevice->Worker binding column exists (nullable — anonymous onboarding still works)" \
   "SELECT is_nullable FROM information_schema.columns WHERE table_name='WorkerDevice' AND column_name='workerId';" \
@@ -1000,7 +1093,7 @@ $PSQL_ADMIN -c "DROP DATABASE IF EXISTS $DB3;" >/dev/null 2>&1
 #    race), NOT triggers; here we prove the physical-integrity seals only. Anchored on the coherent
 #    labour requirement UPL-F2OK (rev 1, slice 2026-08-12, qty 3, canonical fingerprint) from Task 1. ─
 assert "the 12 Phase-4 Task-2 labour commercial tables exist and are ROW-FREE over the legacy DB" \
-  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('VendorLabourProfile','LabourRequisition','LabourRequisitionLine','LabourRfq','SupplierLabourQuote','SupplierLabourQuoteLine','LabourQuoteComparison','LabourPurchaseOrder','LabourPurchaseOrderVersion','LabourPurchaseOrderLine','CapacityCommitment','CapacityPromise'))::text || '|' || (SELECT COUNT(*) FROM \"LabourRequisition\")::text || '|' || (SELECT COUNT(*) FROM \"LabourPurchaseOrder\")::text || '|' || (SELECT COUNT(*) FROM \"CapacityCommitment\")::text;" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('VendorLabourProfile','LabourRequisition','LabourRequisitionLine','LabourRfq','SupplierLabourQuote','SupplierLabourQuoteLine','LabourQuoteComparison','LabourPurchaseOrder','LabourPurchaseOrderVersion','LabourPurchaseOrderLine','CapacityCommitment','CapacityPromise'))::text || '|' || (SELECT COUNT(*) FROM \"LabourRequisition\" WHERE \"projectId\" <> 'p3')::text || '|' || (SELECT COUNT(*) FROM \"LabourPurchaseOrder\" WHERE \"projectId\" <> 'p3')::text || '|' || (SELECT COUNT(*) FROM \"CapacityCommitment\" WHERE \"projectId\" <> 'p3')::text;" \
   "12|0|0|0"
 assert "the labour PO status-pinned provenance FK + frozen/append-only triggers are installed" \
   "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname='LabourPurchaseOrder_comparison_provenance_fkey')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('LabourPurchaseOrderLine_frozen','LabourPurchaseOrder_append_only','CapacityPromise_append_only','SupplierLabourQuoteLine_append_only') AND NOT tgisinternal)::text;" \
@@ -1023,9 +1116,9 @@ INSERT INTO "SupplierLabourQuoteLine"("id","projectId","quoteId","requisitionLin
 INSERT INTO "LabourQuoteComparison"("id","projectId","rfqId","requisitionId","status","selectedQuoteId","selectedVendorId","reason","createdById","approvedById","approvedAt") VALUES('UPL-T2CMP','p1','UPL-T2RFQ','UPL-T2REQ','approved','UPL-T2Q','UPL-T2V','ok','USER-1','USER-1',NOW());
 INSERT INTO "LabourPurchaseOrder"("id","projectId","vendorId","requisitionId","comparisonId","comparisonStatus","createdById") VALUES('UPL-T2PO','p1','UPL-T2V','UPL-T2REQ','UPL-T2CMP','approved','USER-1');
 INSERT INTO "LabourPurchaseOrderVersion"("id","projectId","poId","version","requisitionId","comparisonId","status","issuedById","issuedAt","createdById") VALUES('UPL-T2POV','p1','UPL-T2PO',1,'UPL-T2REQ','UPL-T2CMP','issued','USER-1',NOW(),'USER-1');
-INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase","comparisonId","selectedQuoteId","selectedQuoteLineId") VALUES('UPL-T2POL','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,3300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL');
+INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase","comparisonId","selectedQuoteId","selectedQuoteLineId","purchaseOrderId","vendorId") VALUES('UPL-T2POL','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,3300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL','UPL-T2PO','UPL-T2V');
 -- a VALID second PO line (correct quote-line provenance) left UNCOMMITTED — the clean subject for the F3 identity probe
-INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase","comparisonId","selectedQuoteId","selectedQuoteLineId") VALUES('UPL-T2POL2','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,3300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL');
+INSERT INTO "LabourPurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","ratePerPersonShift","shiftPremium","committedAmountBase","comparisonId","selectedQuoteId","selectedQuoteLineId","purchaseOrderId","vendorId") VALUES('UPL-T2POL2','p1','UPL-T2POV','UPL-T2RL','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,1000,100,3300,'UPL-T2CMP','UPL-T2Q','UPL-T2QL','UPL-T2PO','UPL-T2V');
 INSERT INTO "CapacityCommitment"("id","projectId","poLineId","labourSpecFingerprint","civilDate","shift","personShiftQty","createdById") VALUES('UPL-T2CC','p1','UPL-T2POL',$FPD,'2026-08-12','day',3,'USER-1');
 INSERT INTO "CapacityPromise"("id","projectId","commitmentId","seq","promisedDate","recordedById") VALUES('UPL-T2CP','p1','UPL-T2CC',1,'2026-08-11','USER-1');
 COMMIT;
@@ -1537,6 +1630,257 @@ assert_rejects "commercial T3 §D: a measurement whose cited OUTPUT belongs to a
 # to that other line while `netOf` counted it against the one it names.
 assert_rejects "commercial T3 §D: a correction naming a target but describing ANOTHER line's work (identity FK)" \
   "INSERT INTO \"Measurement\"(\"id\",\"projectId\",\"labourPoLineId\",\"activityId\",\"quantity\",\"correctsId\",\"reason\",\"measuredOn\",\"citedOutputId\",\"takenById\",\"sourceCommandId\") VALUES('UPL-P5M8','p1','UPL-T2POL2','ACT-1',-1,'UPL-P5M0','forged','2026-08-12','UPL-T5O','USER-1','UPL-CMD1')"
+# ── Phase 5 Task 4 — the §F VENDOR BILL and the §G bounds. Three additive tables upgrade ROW-FREE
+#    over the legacy DB, and the vendor-pinning half MIGRATES EXISTING DATA — the only migration in
+#    this phase that does. The two pre-Task-4 chains planted at the ledger stop above are its
+#    subjects (probe 5ax). ──────────────────────────────────────────────────────────────────────
+assert "the three Phase-5 Task-4 vendor-bill tables exist and are ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('VendorBill','VendorBillVersion','VendorBillLine'))::text || '|' || (SELECT COUNT(*) FROM \"VendorBill\")::text || '|' || (SELECT COUNT(*) FROM \"VendorBillVersion\")::text || '|' || (SELECT COUNT(*) FROM \"VendorBillLine\")::text;" \
+  "3|0|0|0"
+# 5ax — the BACKFILL resolved every pre-existing line from its OWN version→root chain, and invented
+# nothing: each line's pinned order is its version's order and its pinned vendor is that order's.
+assert "§F the vendor-pinning backfill resolved EVERY pre-existing purchase-order line from its own chain" \
+  "SELECT (SELECT COUNT(*) FROM \"PurchaseOrderLine\" l JOIN \"PurchaseOrderVersion\" v ON v.\"projectId\"=l.\"projectId\" AND v.\"id\"=l.\"poVersionId\" JOIN \"PurchaseOrder\" p ON p.\"projectId\"=v.\"projectId\" AND p.\"id\"=v.\"poId\" WHERE l.\"purchaseOrderId\" <> v.\"poId\" OR l.\"vendorId\" <> p.\"vendorId\")::text || '|' || (SELECT COUNT(*) FROM \"LabourPurchaseOrderLine\" l JOIN \"LabourPurchaseOrderVersion\" v ON v.\"projectId\"=l.\"projectId\" AND v.\"id\"=l.\"poVersionId\" JOIN \"LabourPurchaseOrder\" p ON p.\"projectId\"=v.\"projectId\" AND p.\"id\"=v.\"poId\" WHERE l.\"purchaseOrderId\" <> v.\"poId\" OR l.\"vendorId\" <> p.\"vendorId\")::text;" \
+  "0|0"
+assert "§F the two BACKFILLED lines carry exactly the vendor their order names" \
+  "SELECT (SELECT \"vendorId\" FROM \"PurchaseOrderLine\" WHERE \"id\"='UPT4-POL') || '|' || (SELECT \"purchaseOrderId\" FROM \"PurchaseOrderLine\" WHERE \"id\"='UPT4-POL') || '|' || (SELECT \"vendorId\" FROM \"LabourPurchaseOrderLine\" WHERE \"id\"='UPT4-LPOL') || '|' || (SELECT \"purchaseOrderId\" FROM \"LabourPurchaseOrderLine\" WHERE \"id\"='UPT4-LPOL');" \
+  "UPT4-VEN|UPT4-PO|UPT4-LVEN|UPT4-LPO"
+assert "§F the pinning columns are NOT NULL and both chain-sealing FK pairs are installed" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.columns WHERE table_name IN ('PurchaseOrderLine','LabourPurchaseOrderLine') AND column_name IN ('vendorId','purchaseOrderId') AND is_nullable='NO')::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('PurchaseOrderLine_version_order_fkey','PurchaseOrderLine_order_vendor_fkey','LabourPurchaseOrderLine_version_order_fkey','LabourPurchaseOrderLine_order_vendor_fkey'))::text;" \
+  "4|4"
+assert "§F/§G the bill seals + the DEFERRED bound triggers are installed on all five firing sites" \
+  "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('VendorBill_lifecycle','VendorBillVersion_append_only','VendorBillLine_append_only') AND NOT tgisinternal)::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('VendorBillLine_bound_sealed','VendorBillVersion_lines_sealed','VendorBill_bound_sealed','StockTransaction_billed_bound_sealed','Measurement_billed_bound_sealed','PurchaseOrderVersion_billed_bound_sealed','LabourPurchaseOrderVersion_billed_bound_sealed') AND tgdeferrable AND tginitdeferred)::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('VendorBill_live_document_key','VendorBillVersion_one_current_key'))::text;" \
+  "3|7|2"
+
+# A COHERENT claim FIRST — a draft bill, its v1 and one material line against the legacy `UP45-POL`
+# order, whose vendor `UP45-VEN` it names. This is what makes every rejection below attributable:
+# each hostile row differs from this ACCEPTED one in exactly the one respect its label names. A
+# rejection is only evidence when an otherwise-identical case is accepted.
+$PSQL >/dev/null <<SQL && printf 'ok      %s\n' "commercial T4 §F: a coherent vendor claim (bill + version + line) is accepted (seals are precise)" || { printf 'FAILED  %s\n' "commercial T4 §F coherent claim rejected"; FAIL=1; }
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-B1','p1','UP45-VEN','INV-001','2026-08-20','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV1','p1','UPT4-B1','UP45-VEN',1,10.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL1','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',10,1,0,0,10.00);
+COMMIT;
+SQL
+# §F vendor pinning (probes 5f/5ao) — WITHIN one project, Vendor A's claim cannot name Vendor B's
+# order line. A same-project FK alone would only stop a cross-PROJECT line.
+assert_rejects "commercial T4 §F: a claim line naming ANOTHER vendor's purchase-order line in the SAME project (composite FK)" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X1','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UPT4-POL',1,1,0,0,1)"
+# §F/probe 5bf — EXACTLY ONE target, and the discriminator must agree with it
+assert_rejects "commercial T4 §F: a claim line with NEITHER PO-line reference (no §G bound could run)" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X2','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material',1,1,0,0,1)"
+assert_rejects "commercial T4 §F: a claim line with BOTH references (the fold owner would be ambiguous)" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"labourPoLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X3','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL','UPL-T2POL',1,1,0,0,1)"
+assert_rejects "commercial T4 §F: a claim line whose type disagrees with the reference present" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X4','p1','UPT4-BV1','UPT4-B1','UP45-VEN','labour','UP45-POL',1,1,0,0,1)"
+# §0b sign discipline, PER COLUMN — a credit is a separate document, not a negative claim line
+assert_rejects "commercial T4 §0b: a ZERO-quantity claim line (it claims nothing)" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X5','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',0,1,0,0,0)"
+assert_rejects "commercial T4 §0b: a NEGATIVE-quantity claim line (Phase 5 has no credit note)" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X6','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',-1,1,0,0,-1)"
+assert_rejects "commercial T4 §0b: a NEGATIVE tax amount on a claim line" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X7','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',1,1,-1,0,0)"
+# §A — the money a fold reads is always the money the line's own components make
+assert_rejects "commercial T4 §A: a hand-written claim amount that its own components do not make" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X8','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',1,1,0,0,999)"
+# probe 5au — a LABOUR claim line carries no tax or freight: the labour PO snapshot freezes none
+$PSQL >/dev/null -c "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-B2','p1','UPL-T2V','LAB-001','2026-08-20','draft','USER-1','UP45-CMD')" 2>/dev/null
+$PSQL >/dev/null -c "INSERT INTO \"VendorBillVersion\"(\"id\",\"projectId\",\"billId\",\"vendorIdPin\",\"version\",\"claimedAmount\",\"lineCount\",\"createdById\") VALUES('UPT4-BV2','p1','UPT4-B2','UPL-T2V',1,1000.00,1,'USER-1')" 2>/dev/null
+assert_rejects "commercial T4 §E: a LABOUR claim line carrying tax (the ordered snapshot freezes none to verify it against)" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"labourPoLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X9','p1','UPT4-BV2','UPT4-B2','UPL-T2V','labour','UPL-T2POL',1,1000,5,0,1005)"
+# §0b/probe 5bg — the duplicate-claim KEY: non-blank, frozen, and unique among LIVE claims
+assert_rejects "commercial T4 §0b: a whitespace-only vendor bill number (the duplicate-claim key)" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XB1','p1','UP45-VEN',E' \t\n','2026-08-20','draft','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 §F: EDITING a vendor bill number after write (the key that groups claims is FROZEN)" \
+  "UPDATE \"VendorBill\" SET \"vendorBillNumber\"='INV-999' WHERE \"id\"='UPT4-B1'"
+assert_rejects "commercial T4 §F: a SECOND live claim under the same (project, vendor, document number)" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XB2','p1','UP45-VEN','INV-001','2026-08-21','draft','USER-1','UP45-CMD')"
+# §F — a disputed claim is corrected by a NEW version, never revived; a terminal one stays terminal
+assert_rejects "commercial T4 §F: reviving a claim from a state the lifecycle does not leave (draft -> certified)" \
+  "UPDATE \"VendorBill\" SET \"status\"='certified' WHERE \"id\"='UPT4-B1'"
+assert_rejects "commercial T4 §F: DISPUTING a claim with no reason (leaving the live set is never unexplained)" \
+  "UPDATE \"VendorBill\" SET \"status\"='disputed' WHERE \"id\"='UPT4-B1'"
+# §F — the claim itself is evidence: immutable rows, never deleted
+assert_rejects "commercial T4 §F: EDITING a recorded claim line (the vendor's claim is corrected by a new version)" \
+  "UPDATE \"VendorBillLine\" SET \"quantity\"=99 WHERE \"id\"='UPT4-BL1'"
+assert_rejects "commercial T4 §F: DELETING a recorded claim line" \
+  "DELETE FROM \"VendorBillLine\" WHERE \"id\"='UPT4-BL1'"
+assert_rejects "commercial T4 §F: DELETING a claim version (an amendment RETAINS the prior verbatim)" \
+  "DELETE FROM \"VendorBillVersion\" WHERE \"id\"='UPT4-BV1'"
+assert_rejects "commercial T4 §F: DELETING a vendor bill (a claim that was made is history)" \
+  "DELETE FROM \"VendorBill\" WHERE \"id\"='UPT4-B1'"
+assert_rejects "commercial T4 §F: a claim naming ANOTHER project's purchase-order line (tenancy composite FK)" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-X10','p2','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',1,1,0,0,1)"
+# §G — the DEFERRED bound seal. `UP45-POL` orders 100 and has NOTHING accepted, so making this
+# claim LIVE breaches bound 2 at COMMIT. This is the seal in the direction a BEFORE trigger cannot
+# reach: the line was inserted while the bill was `draft`, and only the transition makes it live.
+assert_rejects "commercial T4 §G: making a claim LIVE beyond the accepted evidence behind it (deferred bound seal)" \
+  "UPDATE \"VendorBill\" SET \"status\"='submitted' WHERE \"id\"='UPT4-B1'"
+# §F — a live version must state the money ITS OWN lines make, and must HAVE lines
+assert_rejects "commercial T4 §F: a claim version with no line at all (a claim for nothing no bound can check)" \
+  "INSERT INTO \"VendorBillVersion\"(\"id\",\"projectId\",\"billId\",\"vendorIdPin\",\"version\",\"claimedAmount\",\"lineCount\",\"createdById\") VALUES('UPT4-XV1','p1','UPT4-B2','UPL-T2V',2,50.00,1,'USER-1')"
+# ── Codex round-1 findings, sealed at PostgreSQL ─────────────────────────────────────────────
+# F2 — the reason a claim LEFT the live fold is evidence, so it is frozen once it explains the exit
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='rejected', \"statusReason\"='wrong purchase order' WHERE \"id\"='UPT4-B1'" 2>/dev/null
+assert_rejects "commercial T4 F2: REWRITING a claim's exit reason after the transition that set it" \
+  "UPDATE \"VendorBill\" SET \"statusReason\"='a different story' WHERE \"id\"='UPT4-B1'"
+# F4 — a recorded version's LINE SET is closed. The exploit is a ZERO-money line: `claimedAmount`
+# still equals the line total, so the money check passes while QUANTITY enters `BILLED_QTY`.
+assert_rejects "commercial T4 F4: APPENDING a zero-money claim line to an already-recorded version" \
+  "INSERT INTO \"VendorBillLine\"(\"id\",\"projectId\",\"versionId\",\"billId\",\"vendorId\",\"type\",\"poLineId\",\"quantity\",\"rate\",\"taxAmount\",\"freightAmount\",\"amount\") VALUES('UPT4-F4','p1','UPT4-BV1','UPT4-B1','UP45-VEN','material','UP45-POL',50,0,0,0,0)"
+# F3 — the supersession stamp is the evidence for the ONE permitted amendment transition
+assert_rejects "commercial T4 F3: PRE-FILLING a supersession reason on a still-current version" \
+  "UPDATE \"VendorBillVersion\" SET \"supersedeReason\"='pre-filled' WHERE \"id\"='UPT4-BV1'"
+assert_rejects "commercial T4 F3: stamping the ONLY version superseded with no replacement (a bill with no current version)" \
+  "UPDATE \"VendorBillVersion\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='no replacement' WHERE \"id\"='UPT4-BV1'"
+# ── Codex round-2 findings, sealed at PostgreSQL ─────────────────────────────────────────────
+# R2-F1 — the line-set seal is only a seal if its OWN evidence is frozen
+assert_rejects "commercial T4 R2-F1: EDITING lineCount, the evidence that closes a version's line set" \
+  "UPDATE \"VendorBillVersion\" SET \"lineCount\"=2 WHERE \"id\"='UPT4-BV1'"
+# R2-F3 — Task 4 owns the arrows up to `under-verification`; the rest wait for their evidence
+# Codex round-3 F3 — a claim is CREATED at draft and walks its arrows; this fixture used to insert
+# straight at `under-verification`, and the new creation guard correctly refuses that. Walking the
+# arrows is also a better fixture: it exercises the transitions this task owns on the way in.
+# Codex round-5 F1 — a LIVE bill must STATE something, so this fixture now carries the version and
+# line it always implied. It claims 3 of the 5 accepted units, which is what lets it walk the arrows
+# below at all: the deferred seal checks the bound on every transition into a live state.
+$PSQL >/dev/null <<SQL
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-B3','p1','UP45-VEN','INV-003','2026-08-22','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV3','p1','UPT4-B3','UP45-VEN',1,3.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL3','p1','UPT4-BV3','UPT4-B3','UP45-VEN','material','UP45-POL',3,1,0,0,3.00);
+COMMIT;
+SQL
+# R5-F1 — a bill with NO current version cannot enter a live state at all: the seal used to iterate
+# an empty set and pass, leaving a live claim that said nothing while holding the document number.
+assert_rejects "commercial T4 R5-F1/R6-F2: CREATING a bill with no claim version at all (a claim that states nothing is not a claim in ANY state)" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-BE','p1','UP45-VEN','INV-EMPTY','2026-08-26','draft','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 R6-F3: PRE-LOADING an exit reason at creation (a justification written before anything was decided)" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"statusReason\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-BP','p1','UP45-VEN','INV-PRE','2026-08-26','draft','pre-loaded','USER-1','UP45-CMD')"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" 2>/dev/null
+assert_rejects "commercial T4 R2-F3: the arrow into VERIFIED, whose safety is the §E verdict Task 5 ships" \
+  "UPDATE \"VendorBill\" SET \"status\"='verified' WHERE \"id\"='UPT4-B3'"
+assert_rejects "commercial T4 R2-F3: the arrow into CERTIFIED, with no certificate table in this tree" \
+  "UPDATE \"VendorBill\" SET \"status\"='certified' WHERE \"id\"='UPT4-B3'"
+# …while the arrows this task DOES own still work — the seal is precise, not merely strict
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
+  && printf 'ok      %s\n' "commercial T4 R2-F3: under-verification -> disputed is ACCEPTED (the arrows this task owns still work)" \
+  || { printf 'FAILED  %s\n' "commercial T4 R2-F3: a legal Task-4 transition was rejected"; FAIL=1; }
+# ── Codex round-4: a RESOLUTION must carry the correction it claims to be ────────────────────
+# `resolved` is terminal and RELEASES the duplicate-document key, so a bill marked resolved with no
+# amendment behind it frees the vendor's number while the disputed claim is still the only version
+# that ever existed. `UPT4-B4` therefore carries real version LINEAGE — the R2-F2 reason assertions
+# move onto it, because they are assertions about a legitimate resolution.
+$PSQL >/dev/null <<SQL
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-B4','p1','UP45-VEN','INV-004','2026-08-24','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV4A','p1','UPT4-B4','UP45-VEN',1,12.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL4A','p1','UPT4-BV4A','UPT4-B4','UP45-VEN','material','UP45-POL',12,1,0,0,12.00);
+COMMIT;
+SQL
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B4'" 2>/dev/null
+assert "commercial T4 R4-F5: the DATABASE captured which version was disputed (no writer supplies it)" \
+  "SELECT \"disputedAtVersion\"::text FROM \"VendorBill\" WHERE \"id\"='UPT4-B4';" \
+  "1"
+assert_rejects "commercial T4 R4-F5: RESOLVING a dispute with no amendment behind it (it would release the document number for a claim nobody fixed)" \
+  "UPDATE \"VendorBill\" SET \"status\"='resolved' WHERE \"id\"='UPT4-B4'"
+# the real correction: supersede the disputed version and enter the corrected claim
+$PSQL >/dev/null <<SQL
+BEGIN;
+UPDATE "VendorBillVersion" SET "supersededAt"=now(), "supersededById"='USER-1', "supersedeReason"='vendor corrected the claim' WHERE "id"='UPT4-BV4A';
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","supersedesVersion","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV4B','p1','UPT4-B4','UP45-VEN',2,1,2.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL4B','p1','UPT4-BV4B','UPT4-B4','UP45-VEN','material','UP45-POL',2,1,0,0,2.00);
+COMMIT;
+SQL
+# R2-F2 — resolving a dispute must not overwrite WHY it was disputed
+assert_rejects "commercial T4 R2-F2: overwriting a dispute reason on the way to RESOLVED" \
+  "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusReason\"='vendor corrected the claim' WHERE \"id\"='UPT4-B4'"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='resolved', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B4'" \
+  && printf 'ok      %s\n' "commercial T4 R2-F2/R4-F5: a resolution WITH its amendment behind it is ACCEPTED (the seal is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T4 R2-F2/R4-F5: a legitimate resolution was rejected"; FAIL=1; }
+assert "commercial T4 R2-F2: the resolved bill still records WHY it left the live fold" \
+  "SELECT \"statusReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B4';" \
+  "evidence withdrawn"
+# R5-F2 — the dispute EVIDENCE outlives a later rejection. `statusReason` explains the CURRENT
+# status, so `disputed -> rejected` legitimately writes its judgement over it; the breach that first
+# took the claim out of the live fold is captured by the trigger and is unwritable.
+$PSQL >/dev/null <<SQL
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-B5','p1','UP45-VEN','INV-005','2026-08-27','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-BV5','p1','UPT4-B5','UP45-VEN',1,2.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-BL5','p1','UPT4-BV5','UPT4-B5','UP45-VEN','material','UP45-POL',2,1,0,0,2.00);
+COMMIT;
+SQL
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='disputed', \"statusReason\"='qty-over-accepted: evidence withdrawn', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B5'" 2>/dev/null
+assert "commercial T4 R5-F2: the DATABASE captured the dispute reason (no writer supplies it)" \
+  "SELECT \"disputeReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B5';" \
+  "qty-over-accepted: evidence withdrawn"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='rejected', \"statusReason\"='duplicate invoice', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B5'" \
+  && printf 'ok      %s\n' "commercial T4 R5-F2: rejecting a DISPUTED claim is ACCEPTED (the judgement is a real transition)" \
+  || { printf 'FAILED  %s\n' "commercial T4 R5-F2: a legal disputed->rejected transition was refused"; FAIL=1; }
+assert "commercial T4 R5-F2: the rejection JUDGEMENT is recorded" \
+  "SELECT \"statusReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B5';" \
+  "duplicate invoice"
+assert "commercial T4 R5-F2: and the dispute EVIDENCE survived it" \
+  "SELECT \"disputeReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B5';" \
+  "qty-over-accepted: evidence withdrawn"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"disputeReason\"='a different story' WHERE \"id\"='UPT4-B5'" >/dev/null 2>&1
+assert "commercial T4 R5-F2: a direct write to the captured dispute reason is DISCARDED by the trigger" \
+  "SELECT \"disputeReason\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B5';" \
+  "qty-over-accepted: evidence withdrawn"
+# ── Codex round-4: the duplicate-document key is the NORMALIZED number ───────────────────────
+# `UPT4-B3` still holds `INV-003` and is `disputed`, which §F counts as live for this key.
+assert_rejects "commercial T4 R4-F2: a second live claim whose number differs only in LETTER CASE" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XN1','p1','UP45-VEN','inv-003','2026-08-25','draft','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 R4-F2: a second live claim whose number differs only in INTERNAL whitespace" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XN2','p1','UP45-VEN','INV -003','2026-08-25','draft','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 R4-F2: STORING a padded document number (the read surface and the key would disagree)" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XN3','p1','UP45-VEN','  INV-005  ','2026-08-25','draft','USER-1','UP45-CMD')"
+# …and the RESOLVED bill released its number, case-normalized, exactly as a terminal state should
+if $PSQL >/dev/null <<SQL
+BEGIN;
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES('UPT4-N4','p1','UP45-VEN','inv-004','2026-08-25','draft','USER-1','UP45-CMD');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES('UPT4-NV4','p1','UPT4-N4','UP45-VEN',1,1.00,1,'USER-1');
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES('UPT4-NL4','p1','UPT4-NV4','UPT4-N4','UP45-VEN','material','UP45-POL',1,1,0,0,1.00);
+COMMIT;
+SQL
+then printf 'ok      %s\n' "commercial T4 R4-F2: re-filing a RESOLVED claim's number is ACCEPTED (the normalized key releases with the lifecycle)"
+else printf 'FAILED  %s\n' "commercial T4 R4-F2: the normalized key did not release on a terminal state"; FAIL=1
+fi
+# ── Codex round-3 findings, sealed at PostgreSQL ─────────────────────────────────────────────
+# R3-F2 — WHEN a claim left the live fold is evidence too
+assert_rejects "commercial T4 R3-F2: rewriting statusChangedAt outside the transition that set it" \
+  "UPDATE \"VendorBill\" SET \"statusChangedAt\"='2020-01-01T00:00:00Z' WHERE \"id\"='UPT4-B3'"
+# R3-F3 — round 2 sealed the ARROWS; creation needed its own guard
+assert_rejects "commercial T4 R3-F3: CREATING a claim already at 'certified', skipping every arrow" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XC','p1','UP45-VEN','INV-CERT','2026-08-23','certified','USER-1','UP45-CMD')"
+assert_rejects "commercial T4 R3-F3: CREATING a claim already at 'submitted'" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UPT4-XS','p1','UP45-VEN','INV-SUB','2026-08-23','submitted','USER-1','UP45-CMD')"
+# R3-F1 — a live CLAIM is a headroom mover, so the register's vocabulary admits it
+$PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"costHeadCode\",\"headroom\",\"budget\",\"exposure\",\"raisedBy\",\"raisedById\") VALUES('UPT4-BXCL','p1','MEP',-25.00,100.00,125.00,'claim','USER-1')" \
+  && printf 'ok      %s\n' "commercial T4 R3-F1: an exception raised by a live CLAIM is accepted (the seventh mover)" \
+  || { printf 'FAILED  %s\n' "commercial T4 R3-F1: the claim-raised exception was rejected"; FAIL=1; }
+$PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPT4-BXCL'" >/dev/null
+
 echo ""
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."
