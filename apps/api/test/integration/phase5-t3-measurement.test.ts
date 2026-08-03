@@ -204,11 +204,16 @@ describe('Phase 5 Task 3 — §D measurement (live PG)', () => {
    */
   const freshCommand = async (projectId: string): Promise<string> => {
     const project = await t.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { orgId: true } });
+    // Reserved-then-completed, because the receipt protocol is DB-sealed (20270425000000) and a
+    // directly minted `succeeded` row is exactly the forgery it refuses.
     const row = await t.prisma.commandExecution.create({
       data: {
         scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id,
-        commandType: 'test.hostile', idempotencyKey: `hostile-${(seq += 1)}`, requestHash: 'x', status: 'succeeded',
+        commandType: 'test.hostile', idempotencyKey: `hostile-${(seq += 1)}`, requestHash: 'x', status: 'reserved',
       },
+    });
+    await t.prisma.commandExecution.update({
+      where: { id: row.id }, data: { status: 'succeeded', completedAt: new Date() },
     });
     return row.id;
   };

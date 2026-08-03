@@ -118,10 +118,15 @@ describe('Phase 3 Task 5 — reservations, issues, site flows, mismatch resoluti
   // The DB-seal probes insert raw rows to reach the §C CHECKs/triggers, so they carry a real one.
   const freshCommand = async (projectId: string): Promise<string> => {
     const { orgId } = await t.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { orgId: true } });
+    // reserved-then-completed: the receipt protocol is DB-sealed (20270425000000), and a
+    // directly minted `succeeded` row is exactly the forgery it refuses.
     const c = await t.prisma.commandExecution.create({
       data: { scopeKind: 'project', organizationId: orgId, projectId, actorId: f.memberUser.id,
-        commandType: 'test.seal', idempotencyKey: `seal-${Date.now() % 1e6}-${seq++}`, requestHash: 'x', status: 'succeeded' },
+        commandType: 'test.seal', idempotencyKey: `seal-${Date.now() % 1e6}-${seq++}`, requestHash: 'x', status: 'reserved' },
       select: { id: true },
+    });
+    await t.prisma.commandExecution.update({
+      where: { id: c.id }, data: { status: 'succeeded', completedAt: new Date() },
     });
     return c.id;
   };

@@ -272,8 +272,13 @@ describe('Phase 4 Task 3 correction — the four review findings (live PG)', () 
     const [w1, w2] = [await onboardWorker(projectId), await onboardWorker(projectId)];
     const spec = await t.prisma.labourRequirementSpec.findFirstOrThrow({ where: { projectId, requirementId: req.requirementId } });
     const project = await t.prisma.project.findFirstOrThrow({ where: { id: projectId }, select: { orgId: true } });
+    // reserved-then-completed: the receipt protocol is DB-sealed (20270425000000), and a
+    // directly minted `succeeded` row is exactly the forgery it refuses.
     const cmd = await t.prisma.commandExecution.create({
-      data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType: 'labour.allocation.allocate', idempotencyKey: `f3-${seq++}`, requestHash: 'f3', status: 'succeeded' },
+      data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType: 'labour.allocation.allocate', idempotencyKey: `f3-${seq++}`, requestHash: 'f3', status: 'reserved' },
+    });
+    await t.prisma.commandExecution.update({
+      where: { id: cmd.id }, data: { status: 'succeeded', completedAt: new Date() },
     });
 
     // Two SEPARATE PrismaClients = two genuinely independent PostgreSQL sessions. Each opens a

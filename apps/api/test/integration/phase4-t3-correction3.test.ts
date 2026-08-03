@@ -147,8 +147,13 @@ describe('Phase 4 Task 3 correction 3 — the three post-merge review findings (
   /** a CommandExecution row so a RAW (service-bypassing) insert satisfies its provenance FK */
   const rawCommand = async (projectId: string, commandType: string): Promise<string> => {
     const project = await t.prisma.project.findFirstOrThrow({ where: { id: projectId }, select: { orgId: true } });
+    // reserved-then-completed: the receipt protocol is DB-sealed (20270425000000), and a
+    // directly minted `succeeded` row is exactly the forgery it refuses.
     const c = await t.prisma.commandExecution.create({
-      data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType, idempotencyKey: `c3-${Date.now()}-${seq++}`, requestHash: 'c3', status: 'succeeded' },
+      data: { scopeKind: 'project', organizationId: project.orgId, projectId, actorId: f.memberUser.id, commandType, idempotencyKey: `c3-${Date.now()}-${seq++}`, requestHash: 'c3', status: 'reserved' },
+    });
+    await t.prisma.commandExecution.update({
+      where: { id: c.id }, data: { status: 'succeeded', completedAt: new Date() },
     });
     return c.id;
   };
