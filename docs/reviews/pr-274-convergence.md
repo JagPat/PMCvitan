@@ -131,3 +131,23 @@ once already — *a rejection is only evidence when an otherwise-identical case 
 this PR adds its sibling, which the `billedQty` helper is the case for: **a fold helper takes its
 scope explicitly rather than defaulting to one**, because a default that silently matches nothing
 returns the number the probe was hoping for.
+
+---
+
+## Gate results at the convergence head
+
+| Gate | Result |
+|---|---|
+| Focused probe suite `phase5-t4-vendor-bill.test.ts` | **23/23** — 8 of them the round-1 and round-2 findings, each RED before its fix |
+| Full integration suite, pristine migrated DB | **76 files / 787 tests**, zero failures |
+| `pnpm check` | EXIT 0 — web 543/543, API 718/718 |
+| `upgrade-proof.sh` | PASSED — 40 Task-4 assertions, acceptance cases beside the rejections |
+| `test:e2e:api:allmodules` / `:outbox` | 35/35 · 29/29 |
+
+One `api-e2e` failure landed on the superseded head `84f5e1b` and is recorded here rather than
+omitted: its Postgres logs showed only `Drawing_projectId_activityId_fkey` on `test-empty-site` and
+a duplicate `DrawingRevision (drawingId, rev=B)` — the `project-scope` and `drawings-module-query`
+specs, both named flake families in the maintenance queue. This PR touches no drawings,
+project-scope or revision code; its only changes outside the commercial module are the two PO-line
+pinning columns and the `stock.reverse` hook. The identical job passed on the next head with no e2e
+or drawings file changed between them, which is the evidence — not the inference.
