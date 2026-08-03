@@ -1,6 +1,6 @@
 # PR #277 — architectural convergence audit (platform command-receipt seal)
 
-Two finding-bearing heads, five Codex findings, on a PR whose whole diff is one trigger. Per
+Three finding-bearing heads, eight Codex findings, on a PR whose whole diff is one trigger. Per
 `CLAUDE.md` this stops being another isolated patch: it names the ROOT the findings share and leaves
 a mechanical closure behind.
 
@@ -8,6 +8,7 @@ a mechanical closure behind.
 |---|---|---|
 | `f69a5fe` | 3 | 2×P1, 1×P2 |
 | `a21d4b4` | 2 | 2×P2 — one of them the same set I had just fixed once |
+| `b9e8e53` | 3 | 3×P2 — the diagnostic and the trigger disagreeing for the THIRD time, plus a guard that was itself a no-op |
 
 | # | Head | Sev | What was wrong | The SET it belonged to |
 |---|---|---|---|---|
@@ -16,6 +17,9 @@ a mechanical closure behind.
 | 3 | `f69a5fe` | P2 | The new suite left its fixture in the shared serial database | suites that create rows in the shared DB |
 | 4 | `a21d4b4` | P2 | The trigger rejected a result on `failed` and said nothing about its absence on `succeeded` | the two halves of one rule |
 | 5 | `a21d4b4` | P2 | Three MORE proof scripts plant `succeeded` receipts directly; the T45 repair proof would fail | scripts that plant command receipts |
+| 6 | `b9e8e53` | P2 | The new `succeeded`-needs-a-result rule went into the trigger and not into the pre-trigger diagnostic | the diagnostic and the trigger |
+| 7 | `b9e8e53` | P2 | `btrim(x)` trims SPACES ONLY, so `E'\t'` counted as a result | non-blank checks in this schema |
+| 8 | `b9e8e53` | P2 | `command_not_found_handle` sets `FAIL=1` in a SUBSHELL, so the guard against silent no-ops was itself a silent no-op | — (see below) |
 
 ---
 
@@ -43,6 +47,60 @@ rather than as a silent divergence.
 The general rule, and the one I keep paying for: **a truncated search is a wrong answer, not a
 partial one.** `head` on an exploratory grep is fine; `head` on a grep whose output becomes a claim
 is a fabrication with a plausible number attached.
+
+## Root A, twice more — and the closure that should have come first (findings 6, 7)
+
+Finding 6 is the **third** time in this one PR that the diagnostic and the trigger have disagreed
+about what a coherent receipt is. Round 1: the diagnostic warned where it should have aborted.
+Round 2: a new rule went into the trigger and not the diagnostic. Round 3: the whitespace set
+differed. Three rounds, one cause — they were two hand-kept copies of one predicate, asked at two
+different times.
+
+Finding 7 is root A pointing outward instead of inward: `btrim(x)` with no second argument trims
+SPACES ONLY, while the twenty-odd other non-blank checks in this schema all use
+`btrim(x, E' \t\n\x0B\f\r')`. I wrote a twenty-first that differed, in a PR whose own audit had
+already named "fix the SET, not the member" twice.
+
+**Closure: ONE function.** `platform_command_receipt_incoherence(status, resultRef, completedAt)`
+returns NULL for a coherent row and the REASON otherwise. The trigger asks it about the row it is
+about to write; the diagnostic asks it about every row already there; `RUNBOOK §CMDR`'s listing
+query asks it too, so an operator's list can never disagree with what aborted. A rule added
+tomorrow lands in all three at once, which is the only version of this that survives contact with
+the next round.
+
+That closure was available from the first head and I did not reach for it, because at one rule the
+duplication looks free. It is not: the cost is not writing the rule twice, it is that the SECOND
+site is invisible from the first when the rule changes.
+
+## The guard that was itself a no-op (finding 8)
+
+The round-1 head added `command_not_found_handle` so a misspelled assertion could not vanish into a
+green run. Bash invokes that handler **in a separate execution environment**, so its `FAIL=1` never
+reached the parent shell and the guard did nothing whatsoever.
+
+Verified rather than argued — a five-line script reproduces it — and the fix crosses the boundary
+with a file rather than a variable. More importantly the mechanism is now PROVEN at the top of every
+run: a subshell invokes a deliberately missing command against a throwaway sentinel, and the proof
+exits immediately if the guard fails to fire. A guard that is not itself tested is a claim.
+
+Three instances in one PR of *a proof that passes while proving nothing* — the `assert_rejects`
+placement, the shape-C fixture, and the guard written to catch the first one. The discipline that
+catches all three is the same: **pair every refusal with an acceptance, and test the test.**
+
+**And the moment the guard actually worked, it found a fourth thing — one nobody was looking for.**
+The upgrade proof went red with no failed assertion, because a missing command's message goes to its
+caller's stdout and plenty of callers here are redirected to `/dev/null`. So the sentinel now
+records the NAME, and it named `p3`: `upgrade-proof.sh` plants its pre-Task-4 fixture through an
+UNQUOTED heredoc (`<<SQL`), and a SQL comment inside it referred to the project as `` `p3` ``. In an
+unquoted heredoc a backticked word is COMMAND SUBSTITUTION, not prose — so the shell had been
+running `p3`, silently, on every run since that fixture was written, and the word had been quietly
+deleted from the comment. Harmless here, and it would not have been if the backticks had contained
+something with side effects.
+
+Four scripts carried backticked heredoc comments, including three I had just added myself. All are
+now plain text. The lasting closure is not that list, though — it is that **the guard is the
+detector**: any backtick-in-unquoted-heredoc naming a command that does not exist now fails the run
+by name, wherever it is added.
 
 ## Root F — a seal that does not close what it claims (finding 1)
 
@@ -131,11 +189,11 @@ would be exactly the scope creep the review-efficiency protocol exists to stop.
 
 | Gate | Result |
 |---|---|
-| Focused `platform-command-receipt.test.ts` | **10/10** — refusals proven RED against `main`, acceptances green in both states |
-| `command-receipt-abort-proof.sh` | PASSED — both abort shapes, the documented repair, the `resolve`-then-`deploy` sequence, and the FK refusal |
+| Focused `platform-command-receipt.test.ts` | **10/10** — refusals proven RED against `main`, acceptances green in both states; the result-blankness probe covers space, tab, newline, CR, vertical tab and form feed |
+| `command-receipt-abort-proof.sh` | PASSED — all THREE abort shapes (incl. succeeded-without-result), the documented repair, the `resolve`-then-`deploy` sequence, and the FK refusal |
 | `pnpm check` | EXIT 0 |
 | Full integration suite, pristine migrated DB | 77 files |
-| `upgrade-proof.sh` | PASSED, with every platform assertion actually executing |
+| `upgrade-proof.sh` | PASSED, with every platform assertion actually executing and the missing-command guard self-proven at start-up |
 | `t45-production-runner-proof.sh` | PASSED |
 | `phase4-t3-correction3-production-runner-proof.sh` | PASSED (needs `PGUSER=postgres`; it defaults to the `vitan` role) |
 | `t45-repair-proof.sh` | **FAILS — and fails identically WITHOUT this PR's migration.** See below |

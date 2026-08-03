@@ -96,8 +96,10 @@ INSERT INTO "PurchaseOrderLine"("id","projectId","poVersionId","requisitionLineI
   VALUES('UP45-POL','p1','UP45-POV','UP45-RL','UP45-REQ','UP45-ROOT',1,'FP-UP45','bag','bag',100,1,100,100,50,25,999.99,100);
 INSERT INTO "DeliveryCommitment"("id","projectId","poLineId","status","createdById") VALUES('UP45-DC','p1','UP45-POL','committed','USER-1');
 -- reserved-then-completed IN ONE TRANSACTION: the receipt protocol is DB-sealed
--- (20270425000000_platform_command_receipt_seal), and a directly minted `succeeded` row — or one
+-- (20270425000000_platform_command_receipt_seal), and a directly minted succeeded row — or one
 -- completed by a later transaction — is exactly the forgery that seal refuses.
+-- NB: no backticks in a heredoc comment. Several of this repo's heredocs are UNQUOTED, where a
+-- backticked word is COMMAND SUBSTITUTION, not prose.
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','reserved'),
         ('UP45-CMD2','project','org-legacy','p2','USER-1','test.up45','up45b','x','reserved');
@@ -194,8 +196,10 @@ note "DB1 step 4 — the operator records a reconciliation command, then the FUL
 psql -X -v ON_ERROR_STOP=1 -d "$DB" >/dev/null <<'SQL' || { echo "FAILED: reconciliation command insert"; exit 1; }
 BEGIN;
 -- reserved-then-completed IN ONE TRANSACTION: the receipt protocol is DB-sealed
--- (20270425000000_platform_command_receipt_seal), and a directly minted `succeeded` row — or one
+-- (20270425000000_platform_command_receipt_seal), and a directly minted succeeded row — or one
 -- completed by a later transaction — is exactly the forgery that seal refuses.
+-- NB: no backticks in a heredoc comment. Several of this repo's heredocs are UNQUOTED, where a
+-- backticked word is COMMAND SUBSTITUTION, not prose.
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   VALUES('UP45-RECON','project','org-legacy','p1','USER-1','ops.t45_reconciliation','t45-recon-1','x','reserved');
 UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP45-RECON-PLAN', "completedAt"=now()

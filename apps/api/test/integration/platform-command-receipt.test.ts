@@ -184,11 +184,17 @@ describe('Platform — the command receipt protocol is database-enforced (live P
     })).rejects.toThrow(/SUCCEEDED command recorded no result/u);
 
     // …and blank is not a result either, under the same §0b whitespace rule as every other
-    // identity column in this system
-    const id = await reserved();
-    await expect(raw(
-      `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='   ', "completedAt"=now() WHERE "id"=$1`, id,
-    )).rejects.toThrow(/SUCCEEDED command recorded no result/u);
+    // identity column in this system. The TAB case is the one that matters: PostgreSQL's default
+    // `btrim(x)` trims SPACES ONLY, so an earlier head of this seal accepted `E'\t'` as a result
+    // (Codex round-3). The full set `E' \t\n\x0B\f\r'` is what the twenty-odd other non-blank
+    // checks in this schema use, and now what this one uses.
+    for (const blank of ["'   '", "E'\\t'", "E'\\n'", "E'\\r'", "E'\\x0B'", "E'\\f'"]) {
+      const id = await reserved();
+      await expect(
+        raw(`UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"=${blank}, "completedAt"=now() WHERE "id"=$1`, id),
+        `${blank} must not count as a result`,
+      ).rejects.toThrow(/SUCCEEDED command recorded no result/u);
+    }
   });
 
   it('a FAILED receipt carries no result, and an honest failure is accepted', async () => {

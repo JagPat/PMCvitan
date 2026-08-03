@@ -35,12 +35,36 @@ set -u
 # A misspelled or not-yet-defined helper used to vanish onto stderr while the run still reported
 # PASSED — which is the exact failure this whole script exists to prevent, turned on itself. It
 # was found the honest way: five assertions added above `assert_rejects`'s definition proved
-# nothing and the proof passed anyway. A missing command is now a FAILURE, named.
+# nothing and the proof passed anyway.
+#
+# The FIRST version of this guard set `FAIL=1` in the handler and did nothing at all, because bash
+# invokes `command_not_found_handle` "in a separate execution environment" — a subshell — so the
+# assignment never reached the parent. A guard against silent no-ops that was itself a silent
+# no-op. It is a FILE now, which crosses that boundary, and the mechanism is PROVEN below rather
+# than trusted.
+CNF_SENTINEL="${TMPDIR:-/tmp}/upgrade-proof-missing-command.$$"
+CNF_SELFTEST="${TMPDIR:-/tmp}/upgrade-proof-selftest.$$"
+rm -f "$CNF_SENTINEL" "$CNF_SELFTEST"
+trap 'rm -f "$CNF_SENTINEL" "$CNF_SELFTEST"' EXIT
 command_not_found_handle() {
   printf 'FAILED  upgrade-proof: `%s` is not a command here — an assertion silently did nothing\n' "$1"
-  FAIL=1
+  # RECORD the name, not just the fact. The printf above goes to the caller's stdout, and plenty of
+  # this script's callers are redirected to /dev/null — so a missing command inside one of those is
+  # invisible unless the sentinel carries its own message.
+  printf '%s\n' "$1" >> "$CNF_SENTINEL"
   return 127
 }
+
+# Prove the guard, in a subshell pointed at a throwaway sentinel, so the proof cannot pass while
+# its own guard is broken — which is precisely how the first version shipped.
+( CNF_SENTINEL="$CNF_SELFTEST"; a_command_that_does_not_exist ) >/dev/null 2>&1
+if [ -e "$CNF_SELFTEST" ]; then
+  printf 'ok      %s\n' "upgrade-proof: a missing command is caught and FAILS the run (the guard is proven, not assumed)"
+  rm -f "$CNF_SELFTEST"
+else
+  printf 'FAILED  %s\n' "upgrade-proof: the missing-command guard did not fire — every assertion below could be a silent no-op"
+  exit 1
+fi
 
 export PGHOST="${PGHOST:-localhost}"
 export PGPORT="${PGPORT:-5432}"
@@ -298,8 +322,8 @@ plant_pre_t4_chains() {
 BEGIN;
 -- a project of its OWN. Several assertions further down prove that a given migration WROTE NO
 -- ROWS by counting a table, and rows this script plants deliberately would silently confound
--- them — a fixture that breaks an existing proof is not a fixture, it is a regression. `p3`
--- keeps the two claims separable: those assertions exclude it by name and still mean exactly
+-- them — a fixture that breaks an existing proof is not a fixture, it is a regression. Project
+-- p3 keeps the two claims separable: those assertions exclude it by name and still mean exactly
 -- what they meant before.
 INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
   VALUES('p3','org-legacy','Pre-T4 Backfill Subject','LC','','Finishing','LC-01','01 Jan 2026','31 Dec 2026',50,30,60);
@@ -778,12 +802,12 @@ INSERT INTO "PurchaseOrderVersion"("id","projectId","poId","version","requisitio
 INSERT INTO "PurchaseOrderLine"("id","projectId","poVersionId","requisitionLineId","requisitionId","requirementId","revision","specFingerprint","uom","purchaseUom","purchaseQty","conversionToBase","qty","rate","taxAmount","freightAmount","landedAmount","committedAmountBase","purchaseOrderId","vendorId")
   VALUES('UP45-POL','p1','UP45-POV','UP45-RL','UP45-REQ','UP45-ROOT',1,'FP-UP45','bag','bag',100,1,100,100,50,25,999.99,100,'UP45-PO','UP45-VEN');
 INSERT INTO "DeliveryCommitment"("id","projectId","poLineId","status","createdById") VALUES('UP45-DC','p1','UP45-POL','committed','USER-1');
--- reserved-then-completed: the receipt protocol is DB-sealed, and a directly minted `succeeded`
+-- reserved-then-completed: the receipt protocol is DB-sealed, and a directly minted succeeded
 -- row is the forgery that seal refuses (20270425000000_platform_command_receipt_seal).
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   VALUES('UP45-CMD','project','org-legacy','p1','USER-1','test.up45','up45','x','reserved');
 UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='UP45-LOT', "completedAt"=now() WHERE "id"='UP45-CMD';
--- reserved-then-completed: the receipt protocol is DB-sealed, and a directly minted `succeeded`
+-- reserved-then-completed: the receipt protocol is DB-sealed, and a directly minted succeeded
 -- row is the forgery that seal refuses (20270425000000_platform_command_receipt_seal).
 INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
   VALUES('UP45-CMD2','project','org-legacy','p2','USER-1','test.up45','up45b','x','reserved');
@@ -1934,6 +1958,13 @@ $PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"cost
 $PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPT4-BXCL'" >/dev/null
 
 echo ""
+# a missing command anywhere above is a failed run, however far from here it happened — and it
+# names itself, because the handler's own output may have been redirected away by its caller
+if [ -e "$CNF_SENTINEL" ]; then
+  FAIL=1
+  echo "FAILED  upgrade-proof: these commands do not exist here, so whatever they were asserting did nothing:"
+  sort -u "$CNF_SENTINEL" | sed 's/^/          /'
+fi
 if [ "$FAIL" = "0" ]; then
   echo "UPGRADE PROOF PASSED: all Phase 1 migrations applied over the legacy fixture and every legacy meaning survived."
 else

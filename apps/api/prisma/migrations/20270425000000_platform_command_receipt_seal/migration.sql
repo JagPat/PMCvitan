@@ -44,38 +44,82 @@
 -- anywhere in the API. A probe drives a real command end to end to prove that, rather than
 -- asserting it in a comment.
 
+-- ── ONE predicate, used by BOTH the diagnostic and the trigger ────────────────────────────────
+--
+-- The diagnostic (over rows that already exist) and the trigger (over rows being written) are the
+-- same question asked at two times, and this migration has now had them DIVERGE three times: the
+-- first head warned where it should have aborted, the second added a `succeeded`-needs-a-result
+-- rule to the trigger and not to the diagnostic, and the third used a narrower whitespace set than
+-- the twenty-odd other non-blank checks in this schema. Each was found by review rather than by the
+-- code, because two hand-kept copies of one rule is exactly the drift §0 exists to name.
+--
+-- So the rule is written ONCE. `NULL` means coherent; anything else is the reason it is not, in
+-- words an operator can act on. The trigger asks it about the row it is about to write; the
+-- diagnostic asks it about every row already there.
+CREATE OR REPLACE FUNCTION platform_command_receipt_incoherence(
+  p_status text, p_result_ref text, p_completed_at timestamp(3)
+) RETURNS text AS $$
+BEGIN
+  IF p_status = 'reserved' THEN
+    IF p_result_ref IS NOT NULL OR p_completed_at IS NOT NULL THEN
+      RETURN 'a reserved receipt carries no result and no completion time — it has not run yet';
+    END IF;
+    RETURN NULL;
+  END IF;
+  IF p_completed_at IS NULL THEN
+    RETURN 'a terminal receipt records WHEN it completed';
+  END IF;
+  IF p_status = 'failed' AND p_result_ref IS NOT NULL THEN
+    RETURN 'a FAILED command produced no result — a result reference on it would be provenance for something that did not happen';
+  END IF;
+  -- The full ASCII whitespace set every other non-blank check in this schema uses (§0b). The
+  -- default `btrim(x)` trims SPACES ONLY, so a tab or a newline would satisfy a bare
+  -- `btrim(x) = ''` test and leave a `succeeded` receipt with no usable entity id.
+  IF p_status = 'succeeded' AND (p_result_ref IS NULL OR btrim(p_result_ref, E' \t\n\x0B\f\r') = '') THEN
+    RETURN 'a SUCCEEDED command recorded no result — a replay would report success, hand back nothing, and SUPPRESS the retry that would have produced the entity';
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 -- ── legacy rows: DIAGNOSTIC FIRST, and this one ABORTS ─────────────────────────────────────────
 --
 -- Run BEFORE the trigger exists, so an operator's repair is not itself blocked by the seal.
 --
--- The first head of this migration only raised a NOTICE here, on the reasoning that neither
--- incoherent shape could satisfy a provenance seal falsely. That reasoning was WRONG and the
--- review caught it: §E's join reads `status = 'succeeded'`, `commandType` and `resultRef` — it
--- does NOT read `completedAt`. So a pre-existing hand-written `succeeded` receipt with a chosen
--- `resultRef` and no completion time validates a hand-written verdict the moment this seal is
--- installed, and installing a seal that trusts rows it never checked is worse than installing
--- none: everything downstream then reads as verified provenance.
+-- The first head only raised a NOTICE here, on the reasoning that no incoherent shape could satisfy
+-- a provenance seal falsely. That reasoning was WRONG and the review caught it: §E's join reads
+-- `status = 'succeeded'`, `commandType` and `resultRef` — it does NOT read `completedAt`. So a
+-- pre-existing hand-written `succeeded` receipt with a chosen `resultRef` validates a hand-written
+-- verdict the moment this seal is installed, and installing a seal over rows it never checked is
+-- worse than installing none: everything downstream then reads as verified provenance.
 --
--- So it aborts. Neither shape can be repaired by inventing data — nobody knows when a receipt with
--- no completion time completed — so the repair is to make the row NON-AUTHORITATIVE by deleting
--- it. That is safe and self-diagnosing: DELETE is permitted on this table, and every citing row
--- holds an ON DELETE NO ACTION composite FK, so PostgreSQL removes a receipt nothing rests on and
--- REFUSES one a fact depends on — which tells the operator they have found a fact resting on a
--- receipt no command produced. `docs/RUNBOOK.md §CMDR` walks both outcomes.
+-- So it aborts, over EVERY shape the trigger refuses, because it asks the same function.
+--
+-- No shape here can be repaired by inventing data — nobody knows when a receipt with no completion
+-- time completed, or which entity a resultless success produced — so the repair is to make the row
+-- NON-AUTHORITATIVE by deleting it. That is safe and self-diagnosing: DELETE is permitted on this
+-- table, and every citing row holds an ON DELETE NO ACTION composite FK, so PostgreSQL removes a
+-- receipt nothing rests on and REFUSES one a fact depends on — which tells the operator they have
+-- found a fact resting on a receipt no command produced. `docs/RUNBOOK.md §CMDR` walks both.
 DO $$
-DECLARE v_no_completed bigint; v_failed_with_result bigint;
+DECLARE v_bad bigint; v_sample text;
 BEGIN
-  SELECT COUNT(*) INTO v_no_completed
-    FROM "CommandExecution" WHERE "status" <> 'reserved' AND "completedAt" IS NULL;
-  SELECT COUNT(*) INTO v_failed_with_result
-    FROM "CommandExecution" WHERE "status" = 'failed' AND "resultRef" IS NOT NULL;
-  IF v_no_completed <> 0 OR v_failed_with_result <> 0 THEN
-    RAISE EXCEPTION 'platform_command_receipt_seal: % terminal receipt(s) carry no completion time and % failed receipt(s) carry a result. `executeCommand` cannot produce either shape, so those rows were written by something else — and a `succeeded` row with a chosen `resultRef` satisfies every provenance join downstream. Resolve them before this seal is installed: see docs/RUNBOOK.md §CMDR.', v_no_completed, v_failed_with_result;
+  SELECT COUNT(*) INTO v_bad FROM "CommandExecution"
+   WHERE platform_command_receipt_incoherence("status", "resultRef", "completedAt") IS NOT NULL;
+  IF v_bad <> 0 THEN
+    SELECT string_agg(format('%s (%s): %s', "id", "status",
+             platform_command_receipt_incoherence("status", "resultRef", "completedAt")), E'\n  ')
+      INTO v_sample
+      FROM (SELECT * FROM "CommandExecution"
+             WHERE platform_command_receipt_incoherence("status", "resultRef", "completedAt") IS NOT NULL
+             ORDER BY "createdAt" LIMIT 10) sample;
+    RAISE EXCEPTION 'platform_command_receipt_seal: % command receipt(s) are in a shape `executeCommand` cannot produce, so something else wrote them — and a `succeeded` row satisfies every provenance join downstream. Resolve them before this seal is installed (docs/RUNBOOK.md §CMDR). First %s:%s  %s',
+      v_bad, least(v_bad, 10), E'\n', v_sample;
   END IF;
 END $$;
 
 CREATE OR REPLACE FUNCTION platform_command_receipt_protocol() RETURNS trigger AS $$
-DECLARE v_reserved_here boolean;
+DECLARE v_reserved_here boolean; v_bad text;
 BEGIN
   IF TG_OP = 'INSERT' THEN
     -- A receipt is a record that a command RAN. Minting one already terminal records a command
@@ -84,9 +128,8 @@ BEGIN
     IF NEW."status" <> 'reserved' THEN
       RAISE EXCEPTION 'A command receipt is INSERTED as `reserved` and becomes terminal only by COMPLETING — inserting a `%` receipt records a command that never ran, and every fact citing it would inherit that lie (%)', NEW."status", NEW."id";
     END IF;
-    IF NEW."resultRef" IS NOT NULL OR NEW."completedAt" IS NOT NULL THEN
-      RAISE EXCEPTION 'A command receipt carries no result and no completion time before it has run (%)', NEW."id";
-    END IF;
+    v_bad := platform_command_receipt_incoherence(NEW."status", NEW."resultRef", NEW."completedAt");
+    IF v_bad IS NOT NULL THEN RAISE EXCEPTION '%  (%)', v_bad, NEW."id"; END IF;
     RETURN NEW;
   END IF;
 
@@ -123,23 +166,10 @@ BEGIN
   IF NEW."status" NOT IN ('succeeded', 'failed') THEN
     RAISE EXCEPTION 'A reserved command receipt completes as `succeeded` or `failed` — it never returns to `%` (%)', NEW."status", OLD."id";
   END IF;
-  IF NEW."completedAt" IS NULL THEN
-    RAISE EXCEPTION 'A completing command receipt records WHEN it completed (%)', OLD."id";
-  END IF;
-  IF NEW."status" = 'failed' AND NEW."resultRef" IS NOT NULL THEN
-    RAISE EXCEPTION 'A FAILED command produced no result — a result reference on it would be provenance for something that did not happen (%)', OLD."id";
-  END IF;
-  -- …and the converse, which the first head left open (Codex round-2): a SUCCEEDED command
-  -- produced something, and `resultRef` is what says what. `ExecuteResult.resultRef` is a required
-  -- `string` in TypeScript and every one of the hundred-odd command sites returns an entity id, so
-  -- this is the type system's rule restated where the database can enforce it. Left open, a
-  -- succeeded receipt with no result SUPPRESSES the retry that would have produced the entity —
-  -- the replay path returns `prior.resultRef ?? ''` — so the caller is told the command succeeded
-  -- and handed nothing. Non-blank as well as non-null, under the same §0b whitespace rule every
-  -- other identity column in this system uses.
-  IF NEW."status" = 'succeeded' AND (NEW."resultRef" IS NULL OR btrim(NEW."resultRef") = '') THEN
-    RAISE EXCEPTION 'A SUCCEEDED command recorded no result — a replay would report success and hand back nothing, and every provenance join reading `resultRef` would find no entity (%)', OLD."id";
-  END IF;
+  -- every ROW-SHAPE rule comes from the one predicate the diagnostic also asks, so the two can
+  -- never disagree about what a coherent receipt is
+  v_bad := platform_command_receipt_incoherence(NEW."status", NEW."resultRef", NEW."completedAt");
+  IF v_bad IS NOT NULL THEN RAISE EXCEPTION '%  (%)', v_bad, OLD."id"; END IF;
 
   -- RESERVE AND COMPLETE ARE ONE TRANSACTION. Phase 2 states it as the protocol —
   -- "reserves→executes→commits its succeeded receipt in ONE transaction, so the effect happens

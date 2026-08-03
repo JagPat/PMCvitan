@@ -64,33 +64,40 @@ This matters because receipts are PROVENANCE: fifteen `sourceCommandId` columns 
 and 5 cite `CommandExecution` to answer *which command produced this fact*, and those joins read
 `status`, `commandType` and `resultRef`.
 
-### §CMDR.0 The two abort states
+### §CMDR.0 The abort states
 
 The migration runs its diagnostic BEFORE installing the trigger — so a repair is not blocked by the
 seal — and ABORTS rather than warning, because a seal installed over rows it never checked makes
 those rows read as verified provenance. It names both counts:
 
 ```
-platform_command_receipt_seal: N terminal receipt(s) carry no completion time and
-M failed receipt(s) carry a result. …see docs/RUNBOOK.md §CMDR.
+platform_command_receipt_seal: N command receipt(s) are in a shape `executeCommand` cannot
+produce … Resolve them before this seal is installed (docs/RUNBOOK.md §CMDR). First 10:
+  <id> (<status>): <the reason, in words>
 ```
 
-List them:
+The message already names up to ten rows and WHY each is incoherent. List them all — and note
+the query does not restate the rule, it asks the same function the seal does, so this listing can
+never disagree with what aborted:
 
 ```sql
-SELECT "id", "projectId", "commandType", "status", "resultRef", "createdAt"
+SELECT "id", "projectId", "commandType", "status", "resultRef", "completedAt",
+       platform_command_receipt_incoherence("status", "resultRef", "completedAt") AS reason
   FROM "CommandExecution"
- WHERE ("status" <> 'reserved' AND "completedAt" IS NULL)
-    OR ("status" = 'failed' AND "resultRef" IS NOT NULL)
+ WHERE platform_command_receipt_incoherence("status", "resultRef", "completedAt") IS NOT NULL
  ORDER BY "createdAt";
 ```
+
+The shapes it reports are a terminal receipt with no completion time, a `failed` receipt carrying
+a result, and a `succeeded` receipt whose result is missing or blank.
 
 `executeCommand` cannot produce either shape, so every row listed was written by something else.
 
 ### §CMDR.1 Repair — DELETE, never invent
 
-Neither shape can be repaired by supplying data: nobody knows when a receipt with no completion
-time completed, and a result on a failed command refers to something that did not happen. So the
+No shape can be repaired by supplying data: nobody knows when a receipt with no completion time
+completed, which entity a resultless success produced, or what a result on a failed command could
+refer to. So the
 repair makes the row NON-AUTHORITATIVE by removing it. Take a backup first, then, one row at a
 time:
 

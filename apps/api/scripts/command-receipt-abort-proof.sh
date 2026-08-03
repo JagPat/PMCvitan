@@ -11,7 +11,9 @@
 # so this drives both, once per shape, on an independent database:
 #
 #   base : every migration EXCEPT the seal, applied via `prisma migrate deploy`.
-#   per shape (A = terminal-without-completion, B = failed-with-result):
+#   per shape (A = terminal-without-completion, B = failed-with-result,
+#              D = succeeded-without-result, the shape round 2 added to the trigger and round 3
+#                  found missing from this diagnostic):
 #     0. clone `base` (TEMPLATE) and plant EXACTLY ONE row of that shape;
 #     1. `prisma migrate deploy` → ABORTS naming BOTH counts and pointing at §CMDR; the seal's
 #        trigger is NOT installed and the migration is NOT recorded;
@@ -122,6 +124,18 @@ plant_and_run "shape B (failed, carrying a result)" \
      VALUES('cmdr-B','project','cmdr-org','cmdr-p','cmdr-user','commercial.bill.verify','cmdr-b','x','failed','FORGED-VERDICT',now())" \
   'cmdr-B'
 
+# ── D: a SUCCEEDED receipt with no result — the shape the diagnostic was missing (Codex round-3) ─
+#
+# Round 2 taught the trigger that a succeeded command must record what it produced, and left the
+# pre-trigger diagnostic checking only the two older shapes. So an upgraded database could carry a
+# `succeeded` receipt with a NULL `resultRef`, the seal would install over it, and a retry would
+# read `prior.resultRef ?? ''` — reporting success and suppressing the command that would have
+# produced the entity. Both sites now ask ONE predicate, and this proves it over the diagnostic.
+plant_and_run "shape D (succeeded, no result)" \
+  "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\",\"completedAt\")
+     VALUES('cmdr-D','project','cmdr-org','cmdr-p','cmdr-user','commercial.bill.verify','cmdr-d','x','succeeded',now())" \
+  'cmdr-D'
+
 # ── C: the repair's SECOND outcome — a receipt a recorded FACT depends on ───────────────────────
 #
 # §CMDR says the DELETE is self-diagnosing: it removes a receipt nothing rests on and is REFUSED
@@ -146,7 +160,7 @@ fi
 $PSQL_ADMIN -c "DROP DATABASE IF EXISTS \"$CLONE\"" -c "DROP DATABASE IF EXISTS \"$BASE\"" >/dev/null
 
 if [ "$FAIL" = "0" ]; then
-  echo "COMMAND-RECEIPT ABORT PROOF PASSED: both shapes abort before the seal is installed, the §CMDR repair clears them, and a receipt a fact depends on cannot be deleted."
+  echo "COMMAND-RECEIPT ABORT PROOF PASSED: every incoherent shape aborts before the seal is installed, the §CMDR repair clears each one, and a receipt a fact depends on cannot be deleted."
 else
   echo "COMMAND-RECEIPT ABORT PROOF FAILED"
   exit 1
