@@ -1009,4 +1009,101 @@ describe('Phase 5 Task 5A — §E three-way verification (live PG)', () => {
     const inSql = [...row!.def.matchAll(/'([^']+)'/gu)].map((m) => m[1]!).sort();
     expect(inSql).toEqual([...VERIFICATION_EXCEPTION_KINDS].sort());
   });
+
+  // ── Codex round-5 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R5-F2 — the round-4 provenance seal hung on `VendorBill` alone, so it asked its question only
+   * when the STATUS moved. But the predicate names the LIVE VERSION, and the live version moves
+   * from the other side: supersede the matched v1 and insert a v2 at twice the rate, leave the bill
+   * untouched at `verified`, and nothing re-asked. The claim stayed verified against a verdict about
+   * a version that no longer existed.
+   *
+   * Two triggers now fire ONE predicate. The three statements run in a SINGLE transaction, because
+   * that is the shape the attack has and because the seal is deferred to COMMIT — a statement at a
+   * time would trip the Task-4 "a bill always has a live version" seal first and prove nothing.
+   */
+  it('R5-F2 (§E/§F): superseding a VERIFIED claim\'s version cannot leave it verified', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '60', { number: 'R5-F2' });
+    await underVerification(projectId, bill.id);
+    expect((await verification.verify(projectId, { billId: bill.id }, pmc(projectId))).verdict).toBe('matched');
+    const v1 = await t.prisma.vendorBillVersion.findFirstOrThrow({
+      where: { projectId, billId: bill.id, supersededAt: null },
+    });
+
+    // the amendment done at the VERSION layer, bypassing the service that would move the status
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        // a Task-4 CHECK requires the reason, so the forgery supplies one — otherwise this probe
+        // would be rejected by a DIFFERENT seal and prove nothing about the one under test
+        `UPDATE "VendorBillVersion" SET "supersededAt"=now(), "supersededById"=$1, "supersedeReason"='hand amendment' WHERE "id"=$2`,
+        f.memberUser.id, v1.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","supersedesVersion","claimedAmount","lineCount","createdById")
+         VALUES ('r5f2-v2',$1,$2,$3,2,1,120.00,1,$4)`,
+        projectId, bill.id, line.vendorId, f.memberUser.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+         VALUES ('r5f2-l2',$1,'r5f2-v2',$2,$3,'material',$4,60,2,0,0,120.00)`,
+        projectId, bill.id, line.vendorId, line.poLineId,
+      ),
+    ])).rejects.toThrow(/live AT COMMIT|PRODUCED/u);
+
+    // nothing moved: v1 is still the live claim and the bill is still verified BECAUSE of its verdict
+    expect(await statusOf(projectId, bill.id)).toBe('verified');
+    const live = await t.prisma.vendorBillVersion.findFirstOrThrow({
+      where: { projectId, billId: bill.id, supersededAt: null },
+    });
+    expect(live.id).toBe(v1.id);
+
+    // …and the honest amendment through the service — which moves the bill to `submitted` in the
+    // SAME transaction — is unaffected, so the seal is precise rather than merely strict
+    const amended = await bills.amend(projectId, {
+      billId: bill.id, reason: 'vendor corrected the delivered quantity',
+      lines: [{ poLineId: line.poLineId, quantity: '50', rate: '1' }],
+    }, pmc(projectId));
+    expect(amended.status).toBe('submitted');
+  });
+
+  /**
+   * R5-F3 — the read preferred the RECORDED verdict for every non-contradicted status, so a
+   * recorded exception could never be neutralised by later live evidence even though §E is an
+   * AGGREGATE fold. That branch existed only to work around the broken recomputation round 3
+   * found and round 4 repaired, so it is removed rather than made two-sided: the read derives, per
+   * §E's own opening sentence, and the record stays what the replay returns and what history holds.
+   */
+  it('R5-F3 (§E): a recorded exception does not outlive the fold that produced it', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1', taxAmount: '1800' });
+    await acceptOnLine(projectId, line, '100', '100');
+
+    // 50 units claiming the WHOLE Rs.1,800 against a Rs.900 pro-rata cap — disputed at verification
+    const over = await claim(projectId, line.vendorId, line.poLineId, '50', { number: 'R5-F3-A', tax: '1800' });
+    await underVerification(projectId, over.id);
+    const verdict = await verification.verify(projectId, { billId: over.id }, pmc(projectId));
+    expect(verdict.exceptions).toContain('tax-mismatch');
+    expect(await statusOf(projectId, over.id)).toBe('disputed');
+
+    // a SECOND live claim for the other 50 units, claiming no tax: the aggregate is now 1800 of a
+    // 1800 cap, so §E's fold no longer has the exception it had
+    await claim(projectId, line.vendorId, line.poLineId, '50', { number: 'R5-F3-B', tax: '0' });
+
+    const read = await verification.readVerification(projectId, over.id, pmc(projectId));
+    expect(read.verdict).toBe('matched');
+    expect(read.exceptions).toEqual([]);
+    // …and the claim is still DISPUTED, which is the point of carrying both: §E is explicit that an
+    // exception "does not auto-reject", so it takes an attributable amendment to move the claim —
+    // a recomputation that now agrees does not undo the dispute
+    expect(read.billStatus).toBe('disputed');
+
+    // the recorded verdict is untouched history, and still what a REPLAY of that call returns
+    const stored = await t.prisma.billVerification.findFirstOrThrow({ where: { projectId, billId: over.id } });
+    expect(stored.verdict).toBe('exception');
+    expect(stored.exceptions).toContain('tax-mismatch');
+  });
 });

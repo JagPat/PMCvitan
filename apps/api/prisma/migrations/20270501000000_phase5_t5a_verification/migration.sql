@@ -273,25 +273,53 @@ $$ LANGUAGE plpgsql;
 -- every ordering that ends with a `verified` bill lacking a complete, exclusively-bound verdict
 -- fails the transaction. Paired with the UNIQUE on `(projectId, sourceCommandId)` above, one
 -- command yields one verdict and one verdict names the command that made it.
-CREATE OR REPLACE FUNCTION phase5_t5a_verified_provenance_check() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION phase5_t5a_verified_provenance(p_project text, p_bill text) RETURNS void AS $$
 BEGIN
-  IF NEW."status" <> 'verified' THEN RETURN NULL; END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM "VendorBill" b
+     WHERE b."projectId" = p_project AND b."id" = p_bill AND b."status" = 'verified'
+  ) THEN RETURN; END IF;
   IF NOT EXISTS (
     SELECT 1 FROM "BillVerification" bv
      JOIN "CommandExecution" ce
        ON ce."projectId" = bv."projectId" AND ce."id" = bv."sourceCommandId"
-     WHERE bv."projectId" = NEW."projectId" AND bv."billId" = NEW."id"
+     WHERE bv."projectId" = p_project AND bv."billId" = p_bill
        AND bv."verdict" = 'matched'
        AND ce."commandType" = 'commercial.bill.verify'
        AND ce."status" = 'succeeded'
        AND ce."resultRef" = bv."id"
        AND bv."versionId" = (
          SELECT v."id" FROM "VendorBillVersion" v
-          WHERE v."projectId" = NEW."projectId" AND v."billId" = NEW."id" AND v."supersededAt" IS NULL
+          WHERE v."projectId" = p_project AND v."billId" = p_bill AND v."supersededAt" IS NULL
        )
   ) THEN
-    RAISE EXCEPTION 'A `verified` bill must rest on the verdict its own `commercial.bill.verify` command PRODUCED — the succeeded ledger row must name this verification as its result, so a verdict copied onto a spent command id is not provenance (%)', NEW."id";
+    RAISE EXCEPTION 'A `verified` bill must rest on the verdict its own `commercial.bill.verify` command PRODUCED, over the claim version that is live AT COMMIT — the succeeded ledger row must name this verification as its result (%)', p_bill;
   END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Codex round-5 — the predicate above is fired from BOTH tables that can falsify it.
+--
+-- The round-4 seal hung on `VendorBill` alone, which asks the question only when the STATUS moves.
+-- But the predicate names the LIVE VERSION, and the live version moves from the other side: a
+-- direct amendment at the version layer supersedes the matched v1 and inserts a v2 at twice the
+-- rate while the bill sits untouched at `verified`. Nothing re-asked, and the claim stayed
+-- verified against a verdict about a version that no longer exists.
+--
+-- Two triggers, ONE predicate. Writing the check twice is what §0 calls the drift that produces
+-- findings — the copies disagree the first time either changes — so the wrappers do nothing but
+-- name the bill their row belongs to. The honest amendment is unaffected: `amend` moves the bill
+-- to `submitted` in the same transaction, so at COMMIT the predicate returns early.
+CREATE OR REPLACE FUNCTION phase5_t5a_verified_provenance_from_bill() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t5a_verified_provenance(NEW."projectId", NEW."id");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t5a_verified_provenance_from_version() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t5a_verified_provenance(NEW."projectId", NEW."billId");
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -299,4 +327,9 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS "VendorBill_verified_provenance" ON "VendorBill";
 CREATE CONSTRAINT TRIGGER "VendorBill_verified_provenance"
   AFTER INSERT OR UPDATE ON "VendorBill" DEFERRABLE INITIALLY DEFERRED
-  FOR EACH ROW EXECUTE FUNCTION phase5_t5a_verified_provenance_check();
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5a_verified_provenance_from_bill();
+
+DROP TRIGGER IF EXISTS "VendorBillVersion_verified_provenance" ON "VendorBillVersion";
+CREATE CONSTRAINT TRIGGER "VendorBillVersion_verified_provenance"
+  AFTER INSERT OR UPDATE ON "VendorBillVersion" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5a_verified_provenance_from_version();

@@ -38,28 +38,6 @@ function totalsFor(
   };
 }
 
-/**
- * Has the claim moved to a state that CONTRADICTS this recorded verdict? (Codex round-4)
- *
- * A verdict is a judgement made at a moment, and the claim can move afterwards for reasons §E
- * never saw — a §G bound at submission, or a withdrawal guard disputing it because the evidence
- * underneath was reversed. Neither appends a verdict, so the last one recorded goes on standing.
- *
- * Exactly one of those movements makes the record a lie rather than merely older: a project that
- * has DISPUTED a claim has said it does not match, whoever said it, so a stored `matched` no
- * longer describes it. Everything else is compatible — a matched claim REJECTED for commercial
- * reasons was still matched, and §F's later states are reached THROUGH a match. Stating it as the
- * one contradiction rather than as a whitelist of agreeing statuses is deliberate: Task 6 adds
- * states past `verified`, and a whitelist would silently start recomputing under each new one.
- *
- * When it is contradicted the answer is recomputed rather than patched, and the recomputation is
- * honest because `computeTriple` counts the subject claim that §0 has excluded — so the bill
- * disputed for `qty-over-accepted` re-derives exactly that.
- */
-function contradicted(verdict: string, status: VendorBillStatus): boolean {
-  return verdict === 'matched' && status === 'disputed';
-}
-
 /** One claim line resolved against its ordered snapshot — the row §E's triple is computed over. */
 type LineTriple = {
   billLineId: string;
@@ -432,34 +410,29 @@ export class CommercialVerificationService {
   // ── reads ────────────────────────────────────────────────────────────────────────────────────
 
   /**
-   * The §E triple for a claim — a PREVIEW before a verdict exists, and the RECORDED verdict after.
+   * The §E triple for a claim, DERIVED — which is §E's own opening sentence, and after five
+   * rounds it is once again the whole implementation.
    *
-   * Codex round-3 — this is the third member of the set "places that report a verdict", and it took
-   * the same refold-after-dispute failure the verify and replay paths were already fixed for. A
-   * 50-unit claim disputed for claiming the full ₹1,800 tax is, by §0's LIVE rule, no longer in the
-   * billed folds — so recomputing reads its own tax as ₹0 against a ₹0 cap and answers `matched`,
-   * contradicting both the status and the stored verdict.
+   * The history is worth keeping because it is the argument for the code that is now here. Round 3
+   * found the read refolding without the claim it was reporting on — §0 excludes a disputed bill
+   * from every billed fold, so recomputing read its own tax as ₹0 against a ₹0 cap and answered
+   * `matched` over a dispute. The fix was to prefer the RECORDED verdict, which was right about the
+   * symptom and wrong about the cause: the defect was that recomputation was broken, not that
+   * recomputation was the wrong idea.
    *
-   * A recomputation is only meaningful while the claim is IN the fold it is measured against. Once
-   * a verdict exists for the current version it is the answer, because it is what was actually
-   * decided; the preview is for the window before one does.
+   * Round 4 fixed the cause — `computeTriple` now counts the subject claim whenever §0's live rule
+   * excludes it — and round 5 found what that left behind: a stored verdict answering for a fold it
+   * no longer describes, in the opposite direction. A claim disputed for claiming the whole ₹1,800
+   * tax on 50 of 100 units still read `tax-mismatch` after a second live 50-unit claim brought the
+   * aggregate inside the pro-rata cap, because the record could only ever be neutralised by a
+   * status change.
    *
-   * Codex round-4 found the same set a FOURTH and FIFTH time, from the two directions round 3 left
-   * open, and they close as one rule rather than two patches:
-   *
-   *  - with NO verdict recorded, the fallback recomputed over folds §0 excludes the claim from, so
-   *    a claim disputed at submission for exceeding its evidence read `matched` — the fold no
-   *    longer contained the lines being judged. `computeTriple` now counts the subject claim
-   *    whenever §0 does not, which is the rule `evaluateBounds` already carries;
-   *  - with a verdict recorded, a `matched` row was returned unconditionally, so a withdrawal
-   *    guard that disputed the bill without appending a verdict left the read reporting a match
-   *    over a dispute. A record is returned only while the claim has not moved to a state that
-   *    contradicts it (see `contradicted`), and otherwise the answer is recomputed — honestly,
-   *    because of the fix above.
-   *
-   * The replay path is deliberately NOT reconciled this way and that is not an oversight: a replay
-   * owes the caller what THAT CALL concluded, not what the world would conclude now. It reports
-   * the current status beside the recorded verdict instead.
+   * So the branch is REMOVED rather than made two-sided. It existed only to work around the broken
+   * recomputation that round 4 repaired, and the alternative — a predicate listing every way a
+   * record can go stale — is a set to maintain, which is the root this PR's convergence audit
+   * names. Nothing is lost: the recorded verdict is still what the REPLAY returns (a replay owes
+   * the caller what THAT call concluded, which is a different question), it is still history in
+   * `BillVerification`, and the reason it produced is still on the bill as `disputeReason`.
    */
   async readVerification(projectId: string, billId: string, user: AuthUser): Promise<VerificationDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
@@ -469,26 +442,7 @@ export class CommercialVerificationService {
         where: { projectId, id: billId }, select: { vendorId: true, status: true },
       });
       if (!bill) throw new NotFoundException('Vendor bill not found in this project');
-      const status = bill.status as VendorBillStatus;
-      const version = await tx.vendorBillVersion.findFirst({
-        where: { projectId, billId, supersededAt: null }, select: { id: true },
-      });
-      if (version) {
-        const recorded = await tx.billVerification.findFirst({
-          where: { projectId, billId, versionId: version.id },
-          orderBy: [{ verifiedAt: 'desc' }, { id: 'desc' }],
-        });
-        if (recorded && !contradicted(recorded.verdict, status)) {
-          return {
-            billId, versionId: recorded.versionId,
-            verdict: recorded.verdict as VerificationDto['verdict'],
-            lines: [],
-            exceptions: recorded.exceptions as VerificationExceptionKind[],
-            billStatus: status,
-          };
-        }
-      }
-      return this.computeTriple(tx, projectId, billId, bill.vendorId, status);
+      return this.computeTriple(tx, projectId, billId, bill.vendorId, bill.status as VendorBillStatus);
     });
   }
 

@@ -1,6 +1,6 @@
 # PR #276 — architectural convergence audit (Phase 5 Task 5A)
 
-Four finding-bearing heads, sixteen Codex findings, and three CI failures that were the same defect
+Five finding-bearing heads, nineteen Codex findings, and three CI failures that were the same defect
 class arriving through a different door. Per `CLAUDE.md`, this stops being another isolated patch:
 it names the ROOT they share and leaves a mechanical closure behind.
 
@@ -10,13 +10,14 @@ it names the ROOT they share and leaves a mechanical closure behind.
 | `26af605` | 3 | 1×P1, 2×P2 — two of them the round-1 fixes, one level short |
 | `d4d9773` | 3 | 1×P1, 2×P2 — one of them root A a THIRD time on the same set |
 | `7e33e97` | 5 | 1×P1, 4×P2 — the same set a FOURTH and FIFTH time, plus two more round-N fixes one level short |
+| `f9777f9` | 3 | 2×P1, 1×P2 — the provenance seal a THIRD time, one level DOWN; the firing set; and a workaround that outlived its cause |
 
 Plus, on the way: `upgrade-proof` and the `api` suite failed on `bd351e9`, and `api-e2e` failed on
 `3e2e8d4`. Neither was a flake. Both belong in this audit because they are the same root.
 
 ---
 
-## The nineteen
+## The twenty-two
 
 | # | Head | Sev | What was wrong | The SET it belonged to |
 |---|---|---|---|---|
@@ -39,14 +40,23 @@ Plus, on the way: `upgrade-proof` and the `api` suite failed on `bd351e9`, and `
 | 14 | `7e33e97` | P1 | The provenance seal checked the command's TYPE, not that the command PRODUCED this verdict | — (see root D) |
 | 15 | `7e33e97` | P2 | `verified → submitted` was opened for `amend` without requiring the amendment | arrows opened with the evidence that makes them safe |
 | 16 | `7e33e97` | P2 | `exceptions` accepted any text, so `['looks wrong']` was a recordable verdict | the §E exception vocabulary |
+| 17 | `f9777f9` | P1 | The `resultRef` provenance rested on `CommandExecution`, which has no triggers at all — a receipt can simply be minted `succeeded` | — (see root D) |
+| 18 | `f9777f9` | P1 | The deferred seal fired only from `VendorBill`, so superseding the live version under a `verified` bill escaped it | sites a seal must fire from |
+| 19 | `f9777f9` | P2 | A recorded exception could never be neutralised by later live evidence — `contradicted()` was one-sided | — (see root E) |
 
 ---
 
-## Root A — the member, not the set (fifteen of the nineteen)
+## Root A — the member, not the set (sixteen of the twenty-two)
 
-Every one of findings 1, 2, 3, 4, 6, 8, 10, 11, 12, 13, 15, 16 and all three CI failures is the same
-sentence: **I changed a member and not the set it belongs to.** FIFTEEN instances, twelve distinct
-sets, one increment.
+Every one of findings 1, 2, 3, 4, 6, 8, 10, 11, 12, 13, 15, 16, 18 and all three CI failures is the
+same sentence: **I changed a member and not the set it belongs to.** SIXTEEN instances, thirteen
+distinct sets, one increment.
+
+Finding 18 is the shape at its most compact. The seal's predicate names two things — *the bill's
+status* and *its live version* — and I hung the trigger on the first table only. The set was not
+hidden in another file or another phase; it was inside the sentence I had just written. The fix is
+one predicate in one function with two thin wrappers, because writing the check twice is the drift
+§0 exists to prevent.
 
 Findings 10, 12 and 13 are the sharpest, because they are the same set FIVE TIMES. "Places that
 report a verdict" has three members — the verify transition, the idempotency replay, and the read
@@ -134,7 +144,7 @@ The general form, and the reason this is a root rather than a bug: any command w
 JUDGEMENT rather than a mutation must persist the judgement and replay it by command identity.
 Tasks 5B and 6 both have one — certification and payment approval — and each has the same trap.
 
-## Root D — presence is not provenance (findings 9, 14)
+## Root D — presence is not provenance (findings 9, 14, 17)
 
 The trigger required a `matched` verdict to exist and did not ask where it came from, so a
 maintenance path could insert one and flip the status in two statements — bypassing the §E check the
@@ -164,6 +174,37 @@ writes the receipt inside the same transaction — so the seal is now two halves
 WHEN each is knowable: the BEFORE trigger checks the type, and a DEFERRABLE INITIALLY DEFERRED
 constraint trigger checks `resultRef = verification.id` and `status = 'succeeded'` at commit, with a
 UNIQUE on `(projectId, sourceCommandId)` so one command can only ever produce one verdict.
+
+**And finding 17 is the same root a third time, one level DOWN — which is where it stops.** Round 4
+bound the verdict to the command's receipt. Round 5 asked what secures the receipt, and the answer
+was nothing: `CommandExecution` carries no triggers at all, so the receipt this seal trusts can be
+minted `succeeded` with any `resultRef` its author likes. Each round I secured the thing the last
+finding named and did not ask what secured THAT.
+
+The floor is the platform kernel, and it is not this PR's to move. Fifteen `sourceCommandId`
+columns across Phases 3, 4 and 5 cite the same table, so sealing it inside a commercial PR would be
+the same mistake one level up — a change every merged phase depends on, buried where its reviewer
+is looking at §E. It ships as its own PR, and this one rests on it. That is the general lesson worth
+more than the fix: **a provenance chain is exactly as strong as its floor, and the floor is usually
+in someone else's module.**
+
+## Root E — a workaround outlived its cause (finding 19)
+
+Round 3 found the read refolding without the claim it was reporting on, and I fixed it by preferring
+the RECORDED verdict. Round 4 found the actual cause — the fold excluded the subject claim — and
+fixed that. Nobody went back and asked whether the round-3 workaround was still needed.
+
+It was not, and worse, it had become a defect of its own in the opposite direction: a recorded
+exception could never be neutralised by later live evidence, because only a status change could
+displace it. So finding 19's fix DELETES code. The read returns to §E's own opening sentence —
+derived, never stored — and the record stays what it always should have been: the replay's answer
+and history.
+
+The rule this leaves behind: **when a finding turns out to have a deeper cause, revisit the shallow
+fix.** A workaround is justified by the thing it works around; once that is gone the workaround is
+just unexamined behaviour, and unexamined behaviour is where the next finding lives. Worth carrying
+into 5B and 5C explicitly, because this increment has now produced several fixes-to-fixes and every
+one of them is a candidate.
 
 ## Root C — a packet that contradicts the diff (finding 6)
 
@@ -199,7 +240,7 @@ It would also have deleted rows nobody declared and hidden every future instance
 
 | Gate | Result |
 |---|---|
-| Focused probe suite `phase5-t5a-verification.test.ts` | **27/27** — 16 of them the round-1..4 findings, each RED before its fix |
+| Focused probe suite `phase5-t5a-verification.test.ts` | **29/29** — 18 of them the round-1..5 findings, each RED before its fix |
 | `pnpm check` | EXIT 0 — web 543/543, API 722/722 |
 | Full integration suite, pristine migrated DB | **77 files / 813 tests**, confirmed independently by CI |
 | `upgrade-proof.sh` | PASSED — the verified arrow refused without a verdict and accepted with one, the verdict unrewritable, a self-contradicting verdict rejected, `certified` and beyond still closed |
