@@ -1,12 +1,13 @@
 # PR #279 — architectural convergence audit (Phase 5 Task 5B, certification)
 
-Two finding-bearing heads, ten findings. Per `CLAUDE.md` this stops being another isolated patch:
+Three finding-bearing heads, sixteen findings. Per `CLAUDE.md` this stops being another isolated patch:
 it names the ROOT the findings share and leaves a mechanical closure behind.
 
 | Head | Findings | |
 |---|---|---|
 | `32b1ca2` | 6 | 2×P1, 4×P2 |
-| `bf50d27` | 4 | 4×P2 — **all four the same shape**, and that shape is the subject of this audit |
+| `bf50d27` | 4 | 4×P2 — all four the same shape: a row seal cannot see an absence |
+| `9a482b7` | 6 | 1×P1, 5×P2 — **every one of them the FIX FROM AN EARLIER ROUND, not generalized** |
 
 | # | Head | Sev | What was wrong |
 |---|---|---|---|
@@ -20,6 +21,12 @@ it names the ROOT the findings share and leaves a mechanical closure behind.
 | 8 | `bf50d27` | P2 | A certificate by the evidence recorder could commit with NO `SodException` |
 | 9 | `bf50d27` | P2 | `consumedQty` was never compared with the evidence that exists — freeze 100 against a 1-unit row |
 | 10 | `bf50d27` | P2 | `versionId` could name a SUPERSEDED version of its own bill |
+| 11 | `9a482b7` | P1 | The round-1 lock-order fix was applied to MATERIAL lots and not to LABOUR measurements — the same deadlock, one evidence family along |
+| 12 | `9a482b7` | P2 | The SoD seal accepted an exception for ANY rule |
+| 13 | `9a482b7` | P2 | …and from an approver with NO standing |
+| 14 | `9a482b7` | P2 | Completeness was `>=`, so the frozen set stayed append-OPEN after the certificate committed |
+| 15 | `9a482b7` | P2 | The quantity bound ran on consumption INSERT only — never when the evidence beneath it was withdrawn |
+| 16 | `9a482b7` | P2 | The SoD actor set took the ORIGINAL measurement's taker and not the author of a positive CORRECTION |
 
 ---
 
@@ -53,6 +60,41 @@ carrying forward, is the DIAGNOSTIC: **when a finding says "this check does not 
 whether the check is even in a position to prove X.** If the check runs per row and X is a property
 of the aggregate, strengthening it is wasted work. Findings 3/4 and 7/8/9/10 are the same finding
 asked at two altitudes, and I answered the low one twice.
+
+## Round 3: the same root, now visible as a HABIT
+
+Round 3's six findings are not new subject matter. Every one of them is a fix I had already made,
+left un-generalized:
+
+| Round 3 finding | The earlier fix it failed to generalize |
+|---|---|
+| labour evidence locked after the bill (11) | round 1's material lock-order fix |
+| exception ignores its `rule` (12) and its approver's standing (13) | round 2's SoD seal, which checked only that an exception EXISTS |
+| frozen set append-open (14) | round 2's completeness seal, written as `>=` rather than `=` |
+| no recheck when evidence is withdrawn (15) | round 2's quantity bound, fired from one writer of two |
+| correction authors absent from SoD (16) | round 1's draw-based SoD, which took the frozen row's `takenById` |
+
+Three rounds, and the pattern is the same each time: **I fix the instance the finding names, at the
+altitude the finding names it, and the sibling instance survives.** Round 1 named lots, so I fixed
+lots. Round 2 named "an exception exists", so I checked existence. Round 2 named "covers", so I
+wrote `>=`.
+
+A resolution to be more careful will not fix this — it has now failed three times. What is needed is
+a MECHANICAL question asked before every correction is pushed, and it has three parts:
+
+1. **What is the SET this finding's subject belongs to?** Lots belong to EVIDENCE, and evidence has
+   two families. An exception has a rule, an actor and an approver; checking one of three is
+   checking a third of the rule.
+2. **Which WRITERS can break this invariant?** A bound checked at one writer is unchecked at the
+   others — the shape §G's bounds already have, and the shape I keep failing to copy. Round 3's
+   findings 14 and 15 are both this question unasked.
+3. **Is the predicate an EQUALITY or a BOUND?** "The certificate rests on the evidence it claimed"
+   is an equality. Writing it as `>=` leaves the other direction open, and the other direction is
+   where the append attack lives.
+
+Those three questions, asked of every finding, would have produced round 3's six fixes during
+round 1. They are the closure this audit leaves — not a list of the sites, which goes stale, but
+the question that finds the sites.
 
 ## Root A pointing outward: a lock order belongs to the system
 
@@ -122,8 +164,9 @@ been written at the altitude of the certificate rather than the row.
 | Gate | Result |
 |---|---|
 | `pnpm check` | EXIT 0 — web 543/543, API 724/724 |
-| `phase5-t5b-certification.test.ts` | **25/25** on live PostgreSQL |
+| `phase5-t5b-certification.test.ts` | **30/30** on live PostgreSQL |
 | Reproduce-first, round 1 | lock order → PG `40P01`; the three DB seals reverted → F2/F3/F4 red; SoD + orgs reverted → F5/F6 red |
 | Reproduce-first, round 2 | completeness seal removed and the quantity bound neutered → **all four** R2 probes red, the other 21 green |
+| Reproduce-first, round 3 | the four DB fixes and both service fixes reverted → **all five** R3 probes red (F2/F3 share one), the other 25 green |
 | Full integration, pristine migrated DB | see the PR body |
 | `upgrade-proof.sh` | PASSED — the coherent case is now the COMPLETE act (certificate + evidence + status, one transaction, a non-recorder certifier), which is itself the round-2 seal being precise |

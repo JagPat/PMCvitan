@@ -117,22 +117,45 @@ export class CommercialCertificationService {
         // re-derived and compared once the bill is held.
         const planned = await this.verification.claimLines(tx, projectId, input.billId);
 
-        // 2 — the accepted evidence, LOTS locked ascending, BEFORE the bill.
+        // 2 — ALL the contributing EVIDENCE, locked BEFORE the bill.
         //
-        // Codex round-1 P1. §0b says "the BILL is taken FIRST, before any foreign row", and that
-        // rule is right for every OTHER commercial write — but it collides here with an order
-        // inventory established first and cannot be asked to change. `stock.reverse` locks the LOT,
-        // then disputes the affected `VendorBill` through `CommercialParticipant`. Taking the bill
-        // first therefore deadlocks exactly: certification holds bill B and waits for lot L, while
-        // a concurrent reversal holds L and waits to dispute B. Neither proceeds.
+        // Codex round-1 P1 and round-3 P1, which are the same finding about two different evidence
+        // families. §0b says "the BILL is taken FIRST, before any foreign row", and that rule is
+        // right for every OTHER commercial write — but it collides with orders that inventory and
+        // §D established first and cannot be asked to change:
         //
-        // So certification adopts the reversal's order — lots, then the bill — and pays for it by
-        // re-deriving the claim under the bill lock (below) rather than trusting the unlocked read.
-        // The general rule this leaves: a total lock order is a property of the SYSTEM, not of one
-        // module, and the module that arrives later adopts it.
+        //   * `stock.reverse` locks the LOT, then disputes the bill through `CommercialParticipant`;
+        //   * `commercial.measurement.correct` locks the ACTIVITY and inserts the correction (taking
+        //     an FK row lock on the original `Measurement`), then disputes the bill the same way.
+        //
+        // A bill-first certifier deadlocks against BOTH: it holds bill B and waits for the lot or
+        // the measurement, while the withdrawing transaction holds that row and waits to dispute B.
+        //
+        // Round 1 fixed the material half and left the labour half exactly as it was — the same
+        // defect, one evidence family along. So the rule is now stated over EVIDENCE rather than
+        // over lots: every contributing row of every family is taken before the bill, in the order
+        // its own owner established. A total lock order is a property of the SYSTEM, not of one
+        // module, and the module that arrives later adopts it for ALL of the orders it meets.
         const evidenceByLine = new Map<string, AcceptedEvidenceRow[]>();
         for (const poLineId of [...new Set(planned.lines.filter((l) => l.kind === 'material').map((l) => l.poLineId))].sort()) {
           evidenceByLine.set(poLineId, await this.inventoryParticipant.lockAcceptedEvidence(tx, projectId, poLineId));
+        }
+        // the labour half: the measurements, then the ACTIVITY each rests on — the order
+        // `revertSignOff` and the correction path both take. Locking here and DECIDING the draw
+        // after the bill keeps the lock order total without moving the decision earlier than the
+        // claim it is about.
+        const measuredByLine = new Map<string, Array<{ id: string; activityId: string; quantity: Prisma.Decimal }>>();
+        for (const poLineId of [...new Set(planned.lines.filter((l) => l.kind === 'labour').map((l) => l.poLineId))].sort()) {
+          const rows = await this.measured.lockMeasurementsFor(tx, projectId, poLineId);
+          measuredByLine.set(poLineId, rows);
+          for (const activityId of [...new Set(rows.map((r) => r.activityId))].sort()) {
+            const target = await this.activities.measurableTarget(tx, { projectId, activityId });
+            if (!target || target.status !== 'done') {
+              throw new ConflictException(
+                `Activity ${activityId} is ${target?.status ?? 'missing'} — a certificate cannot rest on work whose sign-off no longer stands`,
+              );
+            }
+          }
         }
 
         // 3 — the BILL, and every side re-read under it
@@ -166,8 +189,8 @@ export class CommercialCertificationService {
           );
         }
 
-        // 5 and 6 — labour
-        const measurementDraws = await this.drawMeasurements(tx, projectId, lines);
+        // 5 and 6 — the labour DRAW, decided over rows already locked in step 2
+        const measurementDraws = await this.drawMeasurements(tx, projectId, lines, measuredByLine);
 
         // The MATERIAL draw, decided ONCE. Codex round-1 P2: §I must ask about the rows this
         // certificate actually rests on, and the previous spelling asked about every positive
@@ -263,23 +286,14 @@ export class CommercialCertificationService {
     tx: Prisma.TransactionClient,
     projectId: string,
     lines: ReadonlyArray<{ kind: 'material' | 'labour'; poLineId: string; claimedQty: Prisma.Decimal }>,
+    measuredByLine: ReadonlyMap<string, Array<{ id: string; activityId: string; quantity: Prisma.Decimal }>>,
   ): Promise<MeasurementDraw[]> {
     const draws: MeasurementDraw[] = [];
     for (const poLineId of [...new Set(lines.filter((l) => l.kind === 'labour').map((l) => l.poLineId))].sort()) {
-      const rows = await this.measured.lockMeasurementsFor(tx, projectId, poLineId);
-
-      // 5 — the ACTIVITY each contributing measurement rests on, through `ActivityParticipant` in
-      // the same order `revertSignOff` takes it. `measurableTarget` is REUSED rather than given a
-      // certification-shaped twin: it already locks-then-reads, and a parallel method would be the
-      // same rule at two sites, which is the drift §0b exists to prevent.
-      for (const activityId of [...new Set(rows.map((r) => r.activityId))].sort()) {
-        const target = await this.activities.measurableTarget(tx, { projectId, activityId });
-        if (!target || target.status !== 'done') {
-          throw new ConflictException(
-            `Activity ${activityId} is ${target?.status ?? 'missing'} — a certificate cannot rest on work whose sign-off no longer stands`,
-          );
-        }
-      }
+      // Codex round-3 P1 — the rows were LOCKED in step 2, before the bill, together with the
+      // activity each rests on. This method now only DECIDES; moving the lock earlier is what makes
+      // the order total against the measurement-correction path.
+      const rows = measuredByLine.get(poLineId) ?? [];
 
       let remaining = lines
         .filter((l) => l.kind === 'labour' && l.poLineId === poLineId)
@@ -461,11 +475,27 @@ export class CommercialCertificationService {
     // participant that locked it, so commercial never reads the owned ledger for a second time.
     for (const draw of acceptanceDraws) evidenceActors.add(draw.recordedById);
     if (measurementDraws.length > 0) {
+      // Codex round-3 P2 — the ORIGINAL row's taker AND every author who ADDED to it. §D models a
+      // correction as its own signed row against the original, and the draw freezes the ORIGINAL's
+      // id, so asking only about `takenById` misses the person whose correction created the
+      // quantity being certified: record a +50 against someone else's 50-shift measurement and
+      // certify the resulting 100-shift claim with no override, because the actor who supplied half
+      // the evidence is not in the set.
+      //
+      // POSITIVE deltas only. A reducing correction takes evidence AWAY, and §I is about who
+      // created the money being certified — refusing someone for having walked a claim back would
+      // punish the correction the section exists to encourage.
+      const ids = measurementDraws.map((m) => m.measurementId);
       const rows = await tx.measurement.findMany({
-        where: { projectId, id: { in: measurementDraws.map((m) => m.measurementId) } },
-        select: { takenById: true },
+        where: {
+          projectId,
+          OR: [{ id: { in: ids } }, { correctsId: { in: ids } }],
+        },
+        select: { takenById: true, quantity: true, correctsId: true },
       });
-      for (const r of rows) evidenceActors.add(r.takenById);
+      for (const r of rows) {
+        if (r.correctsId === null || r.quantity.greaterThan(0)) evidenceActors.add(r.takenById);
+      }
     }
     if (!evidenceActors.has(actorId)) return null;
 

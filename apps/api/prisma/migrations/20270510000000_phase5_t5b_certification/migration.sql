@@ -420,9 +420,13 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Each consumption insert validates ITS OWN row AND re-seals the WHOLE certificate. The second
+-- half is Codex round 3: a row-level validator cannot see that the certificate now rests on MORE
+-- than it claimed, so an append after the certificate committed would pass every per-row rule.
 CREATE OR REPLACE FUNCTION phase5_t5_acceptance_consumption_sealed() RETURNS trigger AS $$
 BEGIN
   PERFORM phase5_t5_consumption_evidence_check(NEW."projectId", NEW."certificateId", 'acceptance', NEW."stockTransactionId");
+  PERFORM phase5_t5_certificate_complete_check(NEW."projectId", NEW."certificateId");
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -430,6 +434,7 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION phase5_t5_measurement_consumption_sealed() RETURNS trigger AS $$
 BEGIN
   PERFORM phase5_t5_consumption_evidence_check(NEW."projectId", NEW."certificateId", 'measurement', NEW."measurementId");
+  PERFORM phase5_t5_certificate_complete_check(NEW."projectId", NEW."certificateId");
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -444,6 +449,65 @@ DROP TRIGGER IF EXISTS "CertifiedMeasurementConsumption_evidence_sealed" ON "Cer
 CREATE CONSTRAINT TRIGGER "CertifiedMeasurementConsumption_evidence_sealed"
   AFTER INSERT ON "CertifiedMeasurementConsumption" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t5_measurement_consumption_sealed();
+
+-- ── §E — the EVIDENCE side re-checks the freeze when it is withdrawn ──────────────────────────
+--
+-- Codex round 3. The quantity bound above runs when a CONSUMPTION row is inserted, and nothing
+-- re-runs it when the evidence beneath an existing freeze is lowered. A reversal of a frozen
+-- acceptance, or a reducing correction of a frozen measurement, can leave `(rowId, consumedQty)`
+-- above what that row still carries — while the AGGREGATE bound stays satisfied through other
+-- rows, so no other seal notices. `readCertificate` then reports evidence that no longer exists.
+--
+-- The service already refuses both withdrawals (`assertNoCertifiedAcceptance`,
+-- `assertNoCertifiedMeasurement`). This is the database twin, which is the point: the service
+-- refuses what it can see, PostgreSQL refuses whatever route bypassed the service.
+--
+-- ONE predicate, asked from the evidence writers as well as the freeze writers — the shape §G's
+-- bounds already have, and the closure this PR's convergence audit names.
+CREATE OR REPLACE FUNCTION phase5_t5_acceptance_freeze_recheck() RETURNS trigger AS $$
+DECLARE r record;
+BEGIN
+  -- a reversal names the row it reverses; anything else that lands on the lot can only change
+  -- OTHER rows' arithmetic, and each of those is re-checked by its own insert
+  IF NEW."reversedTxId" IS NULL THEN RETURN NULL; END IF;
+  FOR r IN
+    SELECT DISTINCT cc."certificateId"
+      FROM "CertifiedAcceptanceConsumption" cc
+      JOIN "BillCertificate" c ON c."projectId" = cc."projectId" AND c."id" = cc."certificateId"
+     WHERE cc."projectId" = NEW."projectId" AND cc."stockTransactionId" = NEW."reversedTxId"
+       AND c."supersededAt" IS NULL
+  LOOP
+    PERFORM phase5_t5_consumption_evidence_check(NEW."projectId", r."certificateId", 'acceptance', NEW."reversedTxId");
+  END LOOP;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t5_measurement_freeze_recheck() RETURNS trigger AS $$
+DECLARE r record;
+BEGIN
+  IF NEW."correctsId" IS NULL THEN RETURN NULL; END IF;
+  FOR r IN
+    SELECT DISTINCT mc."certificateId"
+      FROM "CertifiedMeasurementConsumption" mc
+      JOIN "BillCertificate" c ON c."projectId" = mc."projectId" AND c."id" = mc."certificateId"
+     WHERE mc."projectId" = NEW."projectId" AND mc."measurementId" = NEW."correctsId"
+       AND c."supersededAt" IS NULL
+  LOOP
+    PERFORM phase5_t5_consumption_evidence_check(NEW."projectId", r."certificateId", 'measurement', NEW."correctsId");
+  END LOOP;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "StockTransaction_freeze_recheck" ON "StockTransaction";
+CREATE CONSTRAINT TRIGGER "StockTransaction_freeze_recheck"
+  AFTER INSERT ON "StockTransaction" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_acceptance_freeze_recheck();
+DROP TRIGGER IF EXISTS "Measurement_freeze_recheck" ON "Measurement";
+CREATE CONSTRAINT TRIGGER "Measurement_freeze_recheck"
+  AFTER INSERT ON "Measurement" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_measurement_freeze_recheck();
 
 -- ── §E/§I — the CERTIFICATE AS A WHOLE, asked once at COMMIT ──────────────────────────────────
 --
@@ -507,8 +571,13 @@ BEGIN
         JOIN "StockLot" lot ON lot."projectId" = t."projectId" AND lot."id" = t."lotId"
        WHERE cc."projectId" = p_project AND cc."certificateId" = p_certificate
          AND lot."poLineId" = r.po_line;
-      IF v_frozen < r.claimed THEN
-        RAISE EXCEPTION 'Certificate % claims % base units on purchase-order line % but freezes only % of accepted evidence — a certificate must name the evidence it rests on', p_certificate, r.claimed, r.po_line, v_frozen;
+      -- EXACT, not "at least" (Codex round 3). A `<` test leaves the frozen set append-OPEN after
+      -- the certificate commits: certify one unit against acceptance A, then insert a row for
+      -- acceptance B on the same claimed line, and `readCertificate` plus the reversal guard treat
+      -- B as evidence this certificate never consumed. What a certificate rests on is exactly what
+      -- it claimed — no less, and equally no more.
+      IF v_frozen <> r.claimed THEN
+        RAISE EXCEPTION 'Certificate % claims % base units on purchase-order line % but freezes % of accepted evidence — a certificate rests on EXACTLY the evidence it claimed', p_certificate, r.claimed, r.po_line, v_frozen;
       END IF;
     ELSE
       SELECT COALESCE(SUM(mc."consumedQty"), 0) INTO v_frozen
@@ -516,8 +585,8 @@ BEGIN
         JOIN "Measurement" m ON m."projectId" = mc."projectId" AND m."id" = mc."measurementId"
        WHERE mc."projectId" = p_project AND mc."certificateId" = p_certificate
          AND m."labourPoLineId" = r.labour_line;
-      IF v_frozen < r.claimed THEN
-        RAISE EXCEPTION 'Certificate % claims % person-shifts on labour purchase-order line % but freezes only % of measured evidence — a certificate must name the evidence it rests on', p_certificate, r.claimed, r.labour_line, v_frozen;
+      IF v_frozen <> r.claimed THEN
+        RAISE EXCEPTION 'Certificate % claims % person-shifts on labour purchase-order line % but freezes % of measured evidence — a certificate rests on EXACTLY the evidence it claimed', p_certificate, r.claimed, r.labour_line, v_frozen;
       END IF;
     END IF;
   END LOOP;
@@ -539,13 +608,38 @@ BEGIN
        AND m."takenById" = v_certifier
   ) INTO v_recorder;
   IF v_recorder THEN
+    -- Codex round 3, two findings — an exception is only an override of the rule it NAMES, granted
+    -- by an authority that actually HAS standing. Without the first, an unrelated exception row
+    -- satisfies this seal and the audit trail carries no override for
+    -- `evidence-recorder-may-not-certify`. Without the second, the "stronger authority" §I requires
+    -- can be a contractor, which is not stronger than anything.
+    --
+    -- The standing predicate mirrors `OrgsParticipant.hasProjectRoleStanding`: an ACTIVE project
+    -- membership with the role, OR org owner/admin standing on the project's org. Two languages,
+    -- one rule — the same shape §G's bounds already have, and the reason the SQL names the orgs
+    -- tables explicitly rather than approximating them with a membership row alone.
     SELECT EXISTS (
       SELECT 1 FROM "SodException" s
        WHERE s."projectId" = p_project AND s."certificateId" = p_certificate
          AND s."actorId" = v_certifier
+         AND s."rule" = 'evidence-recorder-may-not-certify'
+         AND s."approverId" <> s."actorId"
+         AND (
+           EXISTS (
+             SELECT 1 FROM "Membership" m
+              WHERE m."projectId" = p_project AND m."userId" = s."approverId"
+                AND m."status" = 'active' AND m."role" = 'pmc'
+           )
+           OR EXISTS (
+             SELECT 1
+               FROM "Project" pr
+               JOIN "OrgMembership" om ON om."orgId" = pr."orgId" AND om."userId" = s."approverId"
+              WHERE pr."id" = p_project AND om."role" IN ('owner', 'admin')
+           )
+         )
     ) INTO v_excepted;
     IF NOT v_excepted THEN
-      RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no segregation-of-duties exception — §I permits the act only with an attributable override', p_certificate, v_certifier;
+      RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no attributable `evidence-recorder-may-not-certify` exception granted by a pmc with standing — §I permits the act only with such an override', p_certificate, v_certifier;
     END IF;
   END IF;
 END;
