@@ -12,12 +12,12 @@ narrative and may lag behind reality.
 ```yaml
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
-task: 4
-task_state: merged
-work_item: phase-5-task-4
+task: 5
+task_state: not_started
+work_item: phase-5-task-5
 reviewed_merge: fa372e2
 open_pr: none
-next_task: phase-5-task-5
+next_task: phase-5-task-6
 blocking_directive: none
 updated: 2026-08-03
 ```
