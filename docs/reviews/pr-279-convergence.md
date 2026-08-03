@@ -96,6 +96,33 @@ Those three questions, asked of every finding, would have produced round 3's six
 round 1. They are the closure this audit leaves — not a list of the sites, which goes stale, but
 the question that finds the sites.
 
+## The same root in the EVIDENCE: a packet drifts from the code it describes
+
+Found while waiting on a review rather than by a finding, and it belongs here because it is the
+identical shape. Round 3 moved the labour evidence above the bill, and
+`docs/reviews/phase-5-t5b-certification-packet.md` went on describing the pre-round-3 order —
+measurements at steps 5–6, after the bill at step 3, when the code takes them at step 2 beside the
+lots. A reviewer checking the implementation against the packet would have been reading a document
+about an order the service no longer used, on the very subject of two P1 findings.
+
+**A description of a rule is a COPY of that rule**, and it drifts exactly like a duplicated
+predicate does — for exactly the same reason: the second site is invisible from the first when the
+first changes. The three questions above apply unchanged, and the first of them answers this one:
+the SET a lock-order fix belongs to includes the document that states the lock order.
+
+## What the convergence gate itself taught
+
+The head that carried this packet correction was refused by `review-scope` with "missing trailer and
+packet", and the refusal is correct. `assessConvergence` reads the CURRENT head's commit message and
+the CURRENT head's changed files — so past the cap, convergence evidence is not something a branch
+acquires once and keeps. Every head must carry it, because every head is the one a reviewer would
+land on.
+
+That is the exact-head discipline the `codex-current-head` status already enforces for review,
+applied to the audit. A branch is not a state; a head is. Recorded because the instinct that
+produced the refused head — "the audit is already on the branch" — is the same instinct that
+produces a stale packet: reasoning about history rather than about what is true now.
+
 ## Root A pointing outward: a lock order belongs to the system
 
 Finding 1 is the same shape in a different medium. §0b says "the BILL is taken FIRST, before any
