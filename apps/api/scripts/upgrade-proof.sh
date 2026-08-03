@@ -1769,9 +1769,18 @@ $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', 
 # Task 5A — the §E verdict now EXISTS, so the arrow whose safety is that verdict opens. This
 # assertion is inverted deliberately, and its Task-4 label said so in advance: "whose safety is the
 # §E verdict Task 5 ships". A seal is only correct while the evidence behind it is absent.
+# …but ONLY behind the verdict that makes it safe. `verified` is the SHADOW of a matched §E verdict
+# over the CURRENT claim version, so the bare status update is refused first.
+assert_rejects "commercial T5A §E: marking a claim VERIFIED with no §E verdict recorded (a status is not a verdict)" \
+  "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
+$PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-V1','p1','UPT4-B3','UPT4-BV3','matched','USER-1','UP45-CMD')" 2>/dev/null
+assert_rejects "commercial T5A §E: EDITING a recorded verdict (a rewritable verdict is no verdict)" \
+  "UPDATE \"BillVerification\" SET \"verdict\"='exception' WHERE \"id\"='UPT5A-V1'"
+assert_rejects "commercial T5A §E: a MATCHED verdict carrying exceptions (a verdict that says both is not a verdict)" \
+  "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"exceptions\",\"verifiedById\",\"sourceCommandId\") VALUES('UPT5A-X1','p1','UPT4-B3','UPT4-BV3','matched',ARRAY['rate-mismatch'],'USER-1','UP45-CMD')"
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
-  && printf 'ok      %s\n' "commercial T5A §E: under-verification -> VERIFIED is ACCEPTED (the arrow the verdict makes safe)" \
-  || { printf 'FAILED  %s\n' "commercial T5A §E: the verified arrow was rejected"; FAIL=1; }
+  && printf 'ok      %s\n' "commercial T5A §E: under-verification -> VERIFIED is ACCEPTED once a MATCHED verdict stands (the seal is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T5A §E: the verified arrow was rejected behind a matched verdict"; FAIL=1; }
 # …and NOT one step further. `certified` is 5B's, with the certificate that is its evidence; the
 # arrows past it are Task 6's. A status whose evidence does not exist is a status nobody can justify.
 assert_rejects "commercial T5A §F: the arrow into CERTIFIED, with no certificate table in this tree" \

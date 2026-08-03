@@ -15,6 +15,7 @@ import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBillQuery } from './commercial-bill.query';
+import { CommercialBillService } from './commercial-bill.service';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import type { VendorBillStepInput } from '../contracts';
 
@@ -53,6 +54,10 @@ export class CommercialVerificationService {
     private readonly labour: LabourRequirementParticipant,
     private readonly inventory: InventoryQuery,
     private readonly bills: CommercialBillQuery,
+    // §B — the bill service owns the fold's closure rule; this service moves the claim between the
+    // live and non-live sets, so it discharges that obligation through the owner rather than
+    // growing its own copy. No cycle: the bill service does not know this one exists.
+    private readonly billService: CommercialBillService,
     private readonly measured: CommercialMeasurementQuery,
   ) {}
 
@@ -185,9 +190,21 @@ export class CommercialVerificationService {
       if (claimed.freight.greaterThan(freightCap)) exceptions.push('freight-mismatch');
 
       // §E — the SERVICE-side half of `duplicate-claim`: the cases the live-document index cannot
-      // see. The index makes a second claim under ONE vendor document unrepresentable; what it
-      // permits is the same units claimed twice under DIFFERENT document numbers, which the
-      // accepted-quantity bound only catches once the second claim exceeds what arrived.
+      // see. §E names TWO of them, and the first head implemented only one.
+      //
+      //  (a) the same units claimed twice under DIFFERENT vendor document numbers, which the index
+      //      permits and the accepted-quantity bound only catches once the second claim exceeds
+      //      what actually arrived; and
+      //  (b) **a resubmission after REJECTION that is genuinely the same claim rather than a
+      //      correction** (Codex round-1 F4). A rejected bill is out of the live-document index,
+      //      out of every live billed fold, and — as first written — out of this scan too, so a
+      //      vendor could bypass a rejection by replaying the identical quantity and rate instead
+      //      of correcting it, and the replay would verify as `matched`.
+      //
+      // So the scan spans REJECTED predecessors as well as live ones. `disputed` and `resolved` are
+      // deliberately still excluded: a dispute is the system asking for a correction, and the
+      // corrected claim SHOULD look different — flagging its predecessor as a duplicate of it would
+      // punish the vendor for doing exactly what the dispute asked.
       const twin = await tx.vendorBillLine.count({
         where: {
           projectId,
@@ -199,7 +216,7 @@ export class CommercialVerificationService {
             is: {
               supersededAt: null,
               billId: { not: billId },
-              bill: { is: { vendorId, status: { notIn: ['draft', 'rejected', 'disputed', 'resolved'] } } },
+              bill: { is: { vendorId, status: { notIn: ['draft', 'disputed', 'resolved'] } } },
             },
           },
         },
@@ -252,7 +269,7 @@ export class CommercialVerificationService {
     await executeCommand(this.prisma, {
       scope, actor, commandType: 'commercial.bill.verify', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
-      run: async (tx) => {
+      run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const bill = await this.lockBill(tx, projectId, input.billId);
         if (bill.status !== 'under-verification') {
@@ -261,6 +278,19 @@ export class CommercialVerificationService {
           );
         }
         verdict = await this.computeTriple(tx, projectId, input.billId, bill.vendorId);
+
+        // Codex round-1 F2/F5 — RECORD the verdict before the transition it justifies. It is what
+        // the database checks before accepting `verified`, and what a replay returns instead of
+        // recomputing: refolding after the first call disputed the bill excludes it from the live
+        // set, so the retry would answer `matched` and contradict the dispute that happened.
+        await tx.billVerification.create({
+          data: {
+            projectId, billId: input.billId, versionId: verdict.versionId,
+            verdict: verdict.verdict, exceptions: verdict.exceptions,
+            verifiedById: actor.actorId, sourceCommandId: ctx.commandId!,
+          },
+        });
+
         if (verdict.verdict === 'matched') {
           await this.cas(tx, projectId, input.billId, 'under-verification', 'verified', null);
         } else {
@@ -269,14 +299,47 @@ export class CommercialVerificationService {
             `verification-exception: ${verdict.exceptions.join(', ')}`,
           );
         }
+        // §B (Codex round-1 F1) — a verdict MOVES the claim between the live and non-live billed
+        // sets, so it is a headroom mover like every other bill transition. `disputed` leaves the
+        // live fold, and leaving the register unevaluated lets the budget READ drop the exposure
+        // while the exception stays open — two surfaces built from the same fold disagreeing.
+        await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.verify', entity: 'VendorBill', entityId: input.billId,
         });
         return { resultRef: input.billId, events: [] };
       },
     });
-    if (!verdict) verdict = await this.readVerification(projectId, input.billId, user);
+    // Codex round-1 F5 — a REPLAY skips the closure, so `verdict` is null. Return what the original
+    // call CONCLUDED, from the durable record, rather than recomputing: the first call has already
+    // moved the bill, and §0's live rule means the refold no longer sees the claim it judged.
+    if (!verdict) verdict = await this.replayVerdict(projectId, input.billId);
     return verdict;
+  }
+
+  /**
+   * The stored verdict for a bill's CURRENT claim version, shaped as the caller expects.
+   *
+   * The line-level triple is NOT reconstructed: §E derives it, and a derivation taken now would be
+   * about a different world than the one the verdict was reached in. What a replay owes the caller
+   * is what the original call concluded — the verdict and its exceptions — which is exactly what
+   * was recorded.
+   */
+  private async replayVerdict(projectId: string, billId: string): Promise<VerificationDto> {
+    const version = await this.prisma.vendorBillVersion.findFirst({
+      where: { projectId, billId, supersededAt: null }, select: { id: true },
+    });
+    const recorded = await this.prisma.billVerification.findFirst({
+      where: { projectId, billId, ...(version ? { versionId: version.id } : {}) },
+      orderBy: [{ verifiedAt: 'desc' }, { id: 'desc' }],
+    });
+    if (!recorded) throw new NotFoundException(`Vendor bill ${billId} has no recorded verification`);
+    return {
+      billId, versionId: recorded.versionId,
+      verdict: recorded.verdict as VerificationDto['verdict'],
+      lines: [],
+      exceptions: recorded.exceptions as VerificationExceptionKind[],
+    };
   }
 
   // ── reads ────────────────────────────────────────────────────────────────────────────────────

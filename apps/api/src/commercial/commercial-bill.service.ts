@@ -547,6 +547,11 @@ export class CommercialBillService {
    *     UNION of the retired and replacement targets, the retired set captured before the swap
    *   - `tx.vendorBill.updateMany` in `disputeClaimsBeyondEvidence` — evaluates inside the
    *     disposition itself, over every head of every bill it disputed
+   *   - the §E VERIFY transition (Task 5A) — a verdict moves the claim to `verified` or `disputed`,
+   *     and `disputed` leaves the live fold, so it is a mover like any other. It calls
+   *     `evaluateHeadsForBill` below. This row was added by Codex round-1 F1: the enumeration was
+   *     written to make a missing writer visible, and the writer that went missing was the next one
+   *     added — a list only works if the person adding a writer reads it.
    *
    * A new writer added without a row here is a budget read that disagrees with the exception
    * register, which is the defect §B's same-transaction rule exists to prevent.
@@ -579,6 +584,20 @@ export class CommercialBillService {
     if (heads.size > 0) {
       await this.budget.evaluate(tx, projectId, actor.actorId, [...heads], 'claim');
     }
+  }
+
+  /**
+   * §B — evaluate the cost heads a bill's CURRENT claim touches. PUBLIC so a sibling service that
+   * moves the bill between the live and non-live sets discharges the same obligation through the
+   * same code, rather than growing its own copy of the fold's closure rule.
+   */
+  async evaluateHeadsForBill(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    actor: { actorId: string; role: string },
+    billId: string,
+  ): Promise<void> {
+    await this.evaluateClaimHeads(tx, projectId, actor, await this.claimTargets(tx, projectId, billId));
   }
 
   /** The PO lines a bill's CURRENT version claims against — the heads a transition may move. */

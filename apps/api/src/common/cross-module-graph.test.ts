@@ -91,6 +91,8 @@ const MODEL_OWNER: Record<string, string> = {
   vendorBill: 'commercial',
   vendorBillVersion: 'commercial',
   vendorBillLine: 'commercial',
+  // Phase 5 Task 5A (§E) — the recorded verdict: `verified` is the shadow of this fact
+  billVerification: 'commercial',
   activityWorkOutput: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',

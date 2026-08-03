@@ -531,4 +531,131 @@ describe('Phase 5 Task 5A — §E three-way verification (live PG)', () => {
     await t.prisma.membership.create({ data: { projectId: offPilot, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
     await expect(verification.readVerification(offPilot, bill.id, pmc(offPilot))).rejects.toThrow();
   });
+
+  // ── Codex round-1 findings, reproduce-first ───────────────────────────────────────────────────
+
+  /**
+   * R1-F1 — a §E verdict MOVES the claim between the live and non-live billed sets, so it is a
+   * headroom mover like every other bill transition. Disputing removed the exposure and left the
+   * exception register open: the budget READ and the register, built from the same fold, disagreeing.
+   *
+   * The `evaluateClaimHeads` docblock enumerates every writer of `BILLED_AMOUNT` precisely so a new
+   * one is visible where it is written. The writer that went missing was the very next one added.
+   */
+  it('R1-F1 (§B): a verdict that disputes a claim CLEARS the exception its exposure raised', async () => {
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100.00', reason: 'plan' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+
+    // twice the ordered rate: passes the quantity bounds, carries ₹200 against a ₹100 budget
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '100', { rate: '2' });
+    await bills.beginVerification(projectId, { billId: bill.id }, pmc(projectId));
+    expect((await openExceptions(projectId))).toHaveLength(1);
+
+    // the §E verdict finds `rate-mismatch` and disputes — the exposure leaves the live fold…
+    const verdict = await verification.verify(projectId, { billId: bill.id }, pmc(projectId));
+    expect(verdict.verdict).toBe('exception');
+    expect(verdict.exceptions).toContain('rate-mismatch');
+    expect(await statusOf(projectId, bill.id)).toBe('disputed');
+    // …so the register must not still be flagging it
+    expect((await positionOf(projectId, 'CIVIL')).headroom!.toString()).toBe('0');
+    expect(await openExceptions(projectId)).toHaveLength(0);
+  });
+
+  /**
+   * R1-F2 — `verified` was reachable by direct SQL with nothing re-derived, so a 2× over-rate claim
+   * could be walked straight past the §E check. A status is the SHADOW OF A FACT.
+   */
+  it('R1-F2 (§E): `verified` requires a MATCHED verdict over the CURRENT claim version', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bad = await claim(projectId, line.vendorId, line.poLineId, '100', { rate: '2' });
+    await bills.beginVerification(projectId, { billId: bad.id }, pmc(projectId));
+
+    // no verdict recorded at all
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='verified', "statusChangedAt"=now() WHERE "id"=$1`, bad.id,
+    )).rejects.toThrow(/MATCHED §E verdict/u);
+
+    // an EXCEPTION verdict is not a licence either
+    await verification.verify(projectId, { billId: bad.id }, pmc(projectId));
+    expect(await statusOf(projectId, bad.id)).toBe('disputed');
+    const recorded = await t.prisma.billVerification.findFirstOrThrow({ where: { projectId, billId: bad.id } });
+    expect(recorded.verdict).toBe('exception');
+
+    // …and the honest claim verifies, so the seal is precise rather than merely strict
+    const good = await claim(projectId, line.vendorId, line.poLineId, '100', { rate: '1', number: 'R1-F2-OK' });
+    await bills.beginVerification(projectId, { billId: good.id }, pmc(projectId));
+    const ok = await verification.verify(projectId, { billId: good.id }, pmc(projectId));
+    expect(ok.verdict).toBe('matched');
+    expect(await statusOf(projectId, good.id)).toBe('verified');
+  });
+
+  /**
+   * R1-F3 — `CommercialBillService.amend` has ALWAYS admitted `verified` and CASes
+   * `verified → submitted` so the replacement is re-checked. That path was unreachable while
+   * `verified` was; opening the state without opening the arrow the existing service already takes
+   * from it would fail every amendment of a verified claim at the trigger.
+   */
+  it('R1-F3 (§F): a VERIFIED claim can still be amended, and the replacement is re-checked', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '60', { number: 'R1-F3' });
+    await bills.beginVerification(projectId, { billId: bill.id }, pmc(projectId));
+    expect((await verification.verify(projectId, { billId: bill.id }, pmc(projectId))).verdict).toBe('matched');
+    expect(await statusOf(projectId, bill.id)).toBe('verified');
+
+    const amended = await bills.amend(projectId, {
+      billId: bill.id, reason: 'vendor corrected the delivered quantity',
+      lines: [{ poLineId: line.poLineId, quantity: '50', rate: '1' }],
+    }, pmc(projectId));
+    // back to `submitted`: a new claim has not been verified, and must be again before it advances
+    expect(amended.status).toBe('submitted');
+  });
+
+  /**
+   * R1-F4 — a rejected bill is out of the live-document index, out of every live billed fold and —
+   * as first written — out of the duplicate scan too, so a vendor could bypass a rejection by
+   * replaying the identical claim instead of correcting it, and the replay verified as `matched`.
+   */
+  it('R1-F4 (§E): an unchanged resubmission after REJECTION is a duplicate-claim', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const first = await claim(projectId, line.vendorId, line.poLineId, '40', { number: 'R1-F4-A' });
+    await bills.reject(projectId, { billId: first.id, reason: 'billed against the wrong order' }, pmc(projectId));
+
+    // the SAME quantity and rate, re-filed under a new document number
+    const replay = await claim(projectId, line.vendorId, line.poLineId, '40', { number: 'R1-F4-B' });
+    await bills.beginVerification(projectId, { billId: replay.id }, pmc(projectId));
+    const verdict = await verification.verify(projectId, { billId: replay.id }, pmc(projectId));
+    expect(verdict.exceptions).toContain('duplicate-claim');
+    expect(await statusOf(projectId, replay.id)).toBe('disputed');
+  });
+
+  /**
+   * R1-F5 — on an idempotency replay `executeCommand` skips the closure, and recomputing afterwards
+   * folds WITHOUT the bill (§0 excludes a disputed claim), so the retry answered `matched` and
+   * contradicted the dispute that actually happened. A replay returns what the call CONCLUDED.
+   */
+  it('R1-F5 (§C): a keyed replay returns the ORIGINAL verdict, not a fresh fold', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100', baseRate: '1' });
+    await acceptOnLine(projectId, line, '100', '100');
+    const bill = await claim(projectId, line.vendorId, line.poLineId, '100', { rate: '2', number: 'R1-F5' });
+    await bills.beginVerification(projectId, { billId: bill.id }, pmc(projectId));
+
+    const first = await verification.verify(projectId, { billId: bill.id }, pmc(projectId), 'verify-key-1');
+    expect(first.verdict).toBe('exception');
+    expect(first.exceptions).toContain('rate-mismatch');
+
+    const replayed = await verification.verify(projectId, { billId: bill.id }, pmc(projectId), 'verify-key-1');
+    expect(replayed.verdict).toBe('exception');
+    expect(replayed.exceptions).toEqual(first.exceptions);
+    // and it appended nothing: one verdict, one command
+    expect(await t.prisma.billVerification.count({ where: { projectId, billId: bill.id } })).toBe(1);
+  });
 });
