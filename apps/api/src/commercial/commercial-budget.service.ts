@@ -49,6 +49,14 @@ export type HeadroomMover =
   // more exposure than the received value it draws on, so §B's "every write that can move headroom
   // raises or clears the exception in the SAME transaction" now covers the bill lifecycle too.
   | 'claim'
+  // Phase 5 Task 5C (§H) — a WITHHOLDING lowers §J `certified-payable` and a RELEASE raises it
+  // again, so both move headroom. They are named separately rather than folded into `claim`
+  // because `raisedBy` is the durable explanation a human reads months later and must describe
+  // what ACTUALLY moved: a release-raised exception labelled `claim` sends a PMC hunting for a
+  // vendor claim that never changed. Codex found exactly that, and it is the third time this
+  // phase has found a mover wearing another act's label.
+  | 'deduction'
+  | 'deduction_release'
   | 'commitment'
   | 'budget_revision'
   | 'reattribution'

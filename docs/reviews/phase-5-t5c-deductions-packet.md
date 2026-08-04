@@ -91,6 +91,39 @@ The refusal sits on the write that would break the invariant, and it names the
 remaining balance, because a message that only says "too much" leaves the
 practice guessing.
 
+## Codex round 1 — six findings, all correct, all fixed forward
+
+The head `0e9de59` drew six findings. Every one was right, and two of them were
+the same root this phase has now named several times: **a rule reaching the
+artifact it creates but not the sibling already there.**
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| F1 (P1) | supersession unreachable after a full withholding — the DB arrow `paid → verified` was opened, the service guard still read `status === 'certified'` | the guard names the SET (`isPastCertification`, stated once in shared and mirrored by `phase5_t5c_past_certification()` in SQL) and the CAS transitions from whatever the row says |
+| F2 (P1) | retained balances vanished on supersession — the plan REQUIRES re-statement onto the replacement | `certify` carries the superseded certificate's live ledger forward, deductions AND their releases together, with a UNIQUE `restatedFromId` audit chain; the superseded rows survive as history |
+| F3 (P2) | `certified → paid` accepted any live certificate, so bypass SQL could settle an ordinary ₹100 payable | a `paid` shadow rule asking the FOLD (`phase5_t5c_net_payable`), beside the existing `verified`/`certified` shadow rules |
+| F4 (P2) | the withholding trigger COUNTED without serializing — two bypass writers each saw only their own row | `FOR UPDATE` on the certificate before the fold |
+| F5 (P2) | the migration was not safe to re-run after a partial apply | `IF NOT EXISTS` throughout and guarded `ADD CONSTRAINT` blocks, the repo's established pattern |
+| F6 (P2) | a release-raised exception was labelled `raisedBy = 'claim'` | `deduction` and `deduction_release` movers threaded through `evaluateHeadsForBill`, with the DB CHECK widened to match |
+
+**F2 is the one I should have caught, and its lesson is specific.** The plan says
+in as many words that supersession re-states the deductions and their releases,
+and that dropping them makes a retained balance vanish with no release. PROBE 8
+asserted the dropping as correct. The deferral ledger's rule is that a task PR
+carries its section forward rather than re-deriving it — I re-derived, and got
+the opposite answer.
+
+Fixing F2 opened two edges the finding did not name, and both are sealed rather
+than left implicit:
+
+- a replacement certified BELOW its outstanding withholdings is REFUSED, naming
+  the conflict (PROBE 8b) — the alternative is a certificate quietly giving money
+  back with nobody's signature on it;
+- a release against an ALREADY-RESTATED deduction is REFUSED (PROBE 8c) — it
+  would strand the release on a superseded certificate as evidence of money
+  given back that the live payable denies, which is F2's own defect arriving from
+  the other side.
+
 ## Invariant matrix
 
 | Invariant | Risk in this change | Reproduce-first / verification evidence |
@@ -104,7 +137,7 @@ practice guessing.
 
 ## Evidence
 
-`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **11/11 GREEN**.
+`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **16/16 GREEN** (11 original + PROBE 8b/8c/9b/12/13 from the correction round).
 
 Every probe is RED at `0b87d85` for the trivial reason that the ledger does not
 exist there, so the packet does not lean on that. The load-bearing RED proofs
@@ -121,8 +154,9 @@ were run against the risk that is real:
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 735/735 |
-| full integration, pristine migrated DB | **81 files / 906 tests** (was 80/895) |
+| full integration, pristine migrated DB | **81 files / 911 tests** (was 80/895) |
 | `upgrade-proof.sh` | PASSED — ledger row-free over the legacy fixture; five hostile inserts rejected; the widened biconditional still refuses both directions |
+| migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |
 | `test:e2e:api:allmodules` | 35/35 (one run flaked on `cross-cutting-surfaces`, a surface this change does not touch; clean on re-run) |
 | `test:e2e:api:outbox` | 29/29 |
 

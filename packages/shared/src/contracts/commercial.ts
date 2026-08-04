@@ -167,7 +167,7 @@ export interface BudgetExceptionDto {
    *  case (§G authorises more than the ordered quantity and no commitment releases against the
    *  extra units); `receipt_progress` is a receipt recorded, rejected or reversed, which re-prices
    *  a CLOSED-SHORT line's released remainder with nothing accepted at all. */
-  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim';
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim' | 'deduction' | 'deduction_release';
   raisedAt: string;
   raisedById: string;
   clearedAt: string | null;
@@ -287,6 +287,21 @@ export type VendorBillStatus = (typeof VENDOR_BILL_STATUSES)[number];
  * second claim for the same quantity would pass.
  */
 export const BILL_STATUSES_NOT_LIVE = ['draft', 'rejected', 'disputed', 'resolved'] as const;
+
+/**
+ * The statuses that mean a claim is PAST CERTIFICATION — a live certificate stands behind it.
+ *
+ * §F derives the payment status from three folds, so `certified` is one of four post-certification
+ * statuses rather than a terminal one. Stated ONCE here because three places ask the question and
+ * a fourth asks it in SQL: the certificate↔status biconditional, the `supersede` guard, the read
+ * surface, and `phase5_t5c_past_certification()`. Codex found the first spelling of this where the
+ * database arrow was widened and the service guard was not, so a fully-withheld claim could not be
+ * corrected — the rule reached the artifact it created and not the sibling already there.
+ */
+export const BILL_STATUSES_PAST_CERTIFICATION = ['certified', 'approved-for-payment', 'part-paid', 'paid'] as const;
+export function isPastCertification(status: string): boolean {
+  return (BILL_STATUSES_PAST_CERTIFICATION as readonly string[]).includes(status);
+}
 export function isLiveBillStatus(status: string): boolean {
   return !(BILL_STATUSES_NOT_LIVE as readonly string[]).includes(status);
 }

@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ROLE_POLICY, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
+import { ROLE_POLICY, isPastCertification, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
@@ -269,6 +269,13 @@ export class CommercialCertificationService {
           });
         }
 
+        // §H (Codex P1) — RE-STATE the superseded certificate's withholdings onto this one, in
+        // this transaction. The plan is explicit and the first spelling of this task re-derived it
+        // instead of carrying it: "supersession RE-STATES the deductions on the new certificate…
+        // and `NET_PAYABLE` reads only the live certificate's rows". Dropping them makes a retained
+        // balance vanish with no attributable release, which is exactly what §H forbids.
+        await this.restateDeductions(tx, projectId, input.billId, certificate.id, certifiedAmount);
+
         // §I — asked AFTER the freeze, and that ordering is the point rather than an accident.
         // The question "did the certifier record any of this evidence?" is a question about the
         // FROZEN ROWS, so asking it once they exist lets both layers ask it of the same rows
@@ -458,7 +465,12 @@ export class CommercialCertificationService {
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
         const bill = await this.lockBill(tx, projectId, input.billId);
-        if (bill.status !== 'certified') {
+        // Codex P1 — the guard names the SET, not one member of it. Task 5C's §F derivation can
+        // move a fully-withheld claim to `paid`, and the migration opens `paid -> verified` for
+        // exactly this correction; checking `=== 'certified'` left the database arrow reachable and
+        // the service path closed, so a claim whose whole certificate was withheld could never be
+        // corrected. The rule reached the artifact it created and not the sibling already there.
+        if (!isPastCertification(bill.status)) {
           throw new ConflictException(`A ${bill.status} claim has no live certification to supersede`);
         }
         const live = await tx.billCertificate.findFirst({
@@ -473,7 +485,7 @@ export class CommercialCertificationService {
           },
         });
         if (count === 0) throw new ConflictException('This certificate was superseded concurrently — reload and retry');
-        await this.cas(tx, projectId, input.billId, 'certified', 'verified');
+        await this.cas(tx, projectId, input.billId, bill.status, 'verified');
         // §B — the twin of `certify`'s evaluation: superseding puts the money back into
         // `awaiting-certification`, so the same mover obligation applies in the same transaction.
         await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);
@@ -734,6 +746,78 @@ export class CommercialCertificationService {
   }
 
   // ── shared machinery ─────────────────────────────────────────────────────────────────────────
+
+
+  /**
+   * §H — carry the SUPERSEDED certificate's live ledger onto the replacement.
+   *
+   * Both halves move together and that is the whole rule: a retained balance is a fold over
+   * deductions MINUS releases, so re-stating the deduction alone would read ₹10 retained and ₹0
+   * released — clawing back money the vendor was already told it could have, with the release row
+   * stranded on a superseded certificate as evidence the live truth denies. §H: "whatever
+   * certificate `NET_PAYABLE` reads, it reads BOTH row kinds from."
+   *
+   * The superseded rows are NOT edited or deleted — they are append-only history on the certificate
+   * they were taken against. This writes NEW rows carrying `restatedFromId`, which is both the audit
+   * chain and (being UNIQUE) the reason one source row can never be restated twice.
+   */
+  private async restateDeductions(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    billId: string,
+    certificateId: string,
+    certifiedAmount: Prisma.Decimal,
+  ): Promise<void> {
+    // the certificate this one REPLACES: the most recently superseded one on this bill
+    const prior = await tx.billCertificate.findFirst({
+      where: { projectId, billId, supersededAt: { not: null } },
+      orderBy: { supersededAt: 'desc' },
+      select: { id: true },
+    });
+    if (!prior) return;
+
+    const rows = await tx.billDeduction.findMany({
+      where: { projectId, certificateId: prior.id },
+      orderBy: { recordedAt: 'asc' },
+      include: { releases: { orderBy: { releasedAt: 'asc' } } },
+    });
+    if (rows.length === 0) return;
+
+    // §H's floor applies to the CARRIED set too, and it is checked before anything is written: a
+    // replacement certified BELOW its outstanding withholdings cannot exist, and refusing here
+    // names the conflict instead of letting the deferred bound reject the whole certification with
+    // an aggregate nobody can act on. Correcting downward that far means releasing first.
+    const carried = rows.reduce(
+      (a, d) => a.add(d.releases.reduce((r, x) => r.sub(x.amount), d.amount)),
+      new Prisma.Decimal(0),
+    );
+    if (carried.greaterThan(certifiedAmount)) {
+      throw new ConflictException(
+        `This claim carries ${carried.toFixed(2)} of unreleased withholding, which a ${certifiedAmount.toFixed(2)} certificate cannot hold — release the difference before certifying a lower amount, so the money is given back attributably rather than by a certificate quietly dropping it`,
+      );
+    }
+
+    for (const d of rows) {
+      const restated = await tx.billDeduction.create({
+        data: {
+          projectId, certificateId, billId,
+          type: d.type, amount: d.amount, reason: d.reason,
+          recordedById: d.recordedById, sourceCommandId: d.sourceCommandId,
+          restatedFromId: d.id,
+        },
+      });
+      for (const r of d.releases) {
+        await tx.billDeductionRelease.create({
+          data: {
+            projectId, deductionId: restated.id,
+            amount: r.amount, reason: r.reason,
+            releasedById: r.releasedById, sourceCommandId: r.sourceCommandId,
+            restatedFromId: r.id,
+          },
+        });
+      }
+    }
+  }
 
   private async cas(
     tx: Prisma.TransactionClient, projectId: string, billId: string, from: string, to: string,

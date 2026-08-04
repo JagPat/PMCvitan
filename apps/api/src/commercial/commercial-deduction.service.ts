@@ -131,7 +131,7 @@ export class CommercialDeductionService {
           },
         });
 
-        await this.rederive(tx, projectId, input.billId, actor.actorId, user.role);
+        await this.rederive(tx, projectId, input.billId, actor.actorId, user.role, 'deduction');
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.record', entity: 'BillDeduction', entityId: deduction.id,
         });
@@ -173,9 +173,19 @@ export class CommercialDeductionService {
         // and it is what makes the release bound safe against two concurrent releases
         const deduction = await tx.billDeduction.findFirst({
           where: { projectId, id: input.deductionId },
-          select: { id: true, billId: true, amount: true, certificateId: true },
+          select: { id: true, billId: true, amount: true, certificateId: true, restatedAs: { select: { id: true } } },
         });
         if (!deduction) throw new NotFoundException('Deduction not found in this project');
+        // A row that has already been RE-STATED onto a replacement certificate is closed history:
+        // the live withholding is its restatement, and a release recorded here would be stranded on
+        // a superseded certificate as evidence of money given back that the live truth denies —
+        // the same defect §H describes for a deduction re-stated without its releases, arriving
+        // from the other side. Release the live row instead.
+        if (deduction.restatedAs.length > 0) {
+          throw new ConflictException(
+            `This withholding has been re-stated onto a later certificate — release ${deduction.restatedAs[0]!.id}, the row the live payable is folded from, or the money would be given back against a certificate nobody is paying`,
+          );
+        }
         await this.lockBill(tx, projectId, deduction.billId);
 
         // re-read INSIDE the lock: the row above was found before it, and a concurrent release
@@ -195,7 +205,7 @@ export class CommercialDeductionService {
           },
         });
 
-        await this.rederive(tx, projectId, deduction.billId, actor.actorId, user.role);
+        await this.rederive(tx, projectId, deduction.billId, actor.actorId, user.role, 'deduction_release');
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.release', entity: 'BillDeductionRelease', entityId: row.id,
         });
@@ -219,6 +229,7 @@ export class CommercialDeductionService {
    */
   private async rederive(
     tx: Prisma.TransactionClient, projectId: string, billId: string, actorId: string, role: string,
+    raisedBy: 'deduction' | 'deduction_release',
   ): Promise<void> {
     const position = await this.deductions.positionFor(tx, projectId, billId);
     if (!position) return;
@@ -242,7 +253,7 @@ export class CommercialDeductionService {
     // §B — the withholding changed §J's `certified-payable`, so the heads this claim touches are
     // re-evaluated in THIS transaction. Unlike certification, which is exposure-neutral, a
     // deduction genuinely LOWERS exposure and can CLEAR an open over-budget exception.
-    await this.billService.evaluateHeadsForBill(tx, projectId, { actorId, role }, billId);
+    await this.billService.evaluateHeadsForBill(tx, projectId, { actorId, role }, billId, raisedBy);
   }
 
   // ── the read ─────────────────────────────────────────────────────────────────────────────────
