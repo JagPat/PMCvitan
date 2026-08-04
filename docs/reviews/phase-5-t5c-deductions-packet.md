@@ -198,8 +198,8 @@ mine did not, and checking turned up five more of the same shape.
 | full integration, pristine migrated DB | **81 files / 917 tests** (was 80/895) |
 | `upgrade-proof.sh` | PASSED — the T5C assertions, each paired with an accept, and the re-statement chain walking its OWN bill through the lifecycle rather than assuming a live certificate |
 | migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |
-| `test:e2e:api:allmodules` | 35/35 (one run flaked on `cross-cutting-surfaces`, a surface this change does not touch; clean on re-run) |
-| `test:e2e:api:outbox` | 29/29 |
+| `test:e2e:api:allmodules` | 35/35 |
+| `test:e2e:api:outbox` | 29/29 (6 skipped by design) |
 
 Tripwires advanced in the same change: `MODEL_OWNER` +2, the deduction service's
 graph entry, controller route signatures 14→16, mutating routes 161→163, the
