@@ -249,8 +249,74 @@ BEGIN
   IF v_released > v_amount THEN
     RAISE EXCEPTION 'Releases of % exceed the % this deduction withheld — a release gives back money that was held, and it cannot give back more than that (%)', v_released, v_amount, p_deduction;
   END IF;
+
+  -- Codex round 3 — and a RE-STATED deduction is closed history. The service refuses this; the
+  -- database did not, so a direct insert could release the source row after its restatement: the
+  -- amount bound passes (the source's own releases stay within its amount) while the LIVE restated
+  -- row carries no matching release, so `NET_PAYABLE` stays withheld beside append-only evidence
+  -- that the money was returned. The service rule and the DB rule are now one rule.
+  IF EXISTS (
+    SELECT 1 FROM "BillDeduction" d
+     WHERE d."projectId" = p_project AND d."restatedFromId" = p_deduction
+  ) THEN
+    RAISE EXCEPTION 'Deduction % has been re-stated onto a later certificate — release the live row instead, or the money is given back against a certificate nobody is paying', p_deduction;
+  END IF;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Codex round 3 — COMMAND PROVENANCE, the §E shape. The FK proves the command EXISTS; it does not
+-- prove this row came from it. A direct writer could cite an unrelated succeeded receipt — a
+-- `commercial.bill.verify`, or one deduction command reused across many rows — and the durable
+-- ledger would attribute a withholding that moves `NET_PAYABLE` to an act that did not produce it.
+--
+-- Split by WHEN each half is knowable, exactly as §E's verified-provenance seal is: the command
+-- TYPE is checked at BEFORE INSERT (it is already written), and its OUTCOME at COMMIT (the receipt
+-- is still `reserved` while its own transaction runs). A RESTATED row carries its SOURCE row's
+-- command verbatim, which is the same type — the provenance travels with the withholding rather
+-- than being reassigned to whoever re-certified it.
+CREATE OR REPLACE FUNCTION phase5_t5c_ledger_command_type() RETURNS trigger AS $$
+DECLARE
+  v_type     text;
+  v_expected text := CASE TG_TABLE_NAME
+                       WHEN 'BillDeduction' THEN 'commercial.deduction.record'
+                       ELSE 'commercial.deduction.release'
+                     END;
+BEGIN
+  SELECT ce."commandType" INTO v_type FROM "CommandExecution" ce
+   WHERE ce."projectId" = NEW."projectId" AND ce."id" = NEW."sourceCommandId";
+  IF v_type IS DISTINCT FROM v_expected THEN
+    RAISE EXCEPTION '% row % cites command % of type % — a ledger row records the command that PRODUCED it, and this one did not', TG_TABLE_NAME, NEW."id", NEW."sourceCommandId", COALESCE(v_type, '(missing)');
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t5c_ledger_command_succeeded() RETURNS trigger AS $$
+DECLARE v_status text;
+BEGIN
+  SELECT ce."status" INTO v_status FROM "CommandExecution" ce
+   WHERE ce."projectId" = NEW."projectId" AND ce."id" = NEW."sourceCommandId";
+  IF v_status IS DISTINCT FROM 'succeeded' THEN
+    RAISE EXCEPTION '% row % rests on command %, which is `%` — a ledger row that outlives a failed act is a withholding nobody made', TG_TABLE_NAME, NEW."id", NEW."sourceCommandId", COALESCE(v_status, '(missing)');
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "BillDeduction_command_type" ON "BillDeduction";
+CREATE TRIGGER "BillDeduction_command_type" BEFORE INSERT ON "BillDeduction"
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5c_ledger_command_type();
+DROP TRIGGER IF EXISTS "BillDeductionRelease_command_type" ON "BillDeductionRelease";
+CREATE TRIGGER "BillDeductionRelease_command_type" BEFORE INSERT ON "BillDeductionRelease"
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5c_ledger_command_type();
+DROP TRIGGER IF EXISTS "BillDeduction_command_succeeded" ON "BillDeduction";
+CREATE CONSTRAINT TRIGGER "BillDeduction_command_succeeded"
+  AFTER INSERT ON "BillDeduction" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5c_ledger_command_succeeded();
+DROP TRIGGER IF EXISTS "BillDeductionRelease_command_succeeded" ON "BillDeductionRelease";
+CREATE CONSTRAINT TRIGGER "BillDeductionRelease_command_succeeded"
+  AFTER INSERT ON "BillDeductionRelease" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5c_ledger_command_succeeded();
 
 -- Codex round 2 — a NEW deduction may only target a LIVE certificate. The bound function returns
 -- early for a superseded one (correctly: its rows have left every fold), but "no bound to check" is
@@ -261,8 +327,14 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION phase5_t5c_deduction_targets_live() RETURNS trigger AS $$
 DECLARE v_superseded timestamp;
 BEGIN
+  -- Codex round 3 — LOCK before reading liveness. A plain SELECT does not serialize with a
+  -- concurrent supersede: this trigger reads `supersededAt = NULL`, supersede commits, and the
+  -- deferred bound then returns early for a superseded certificate, leaving a withholding committed
+  -- against a payable that no longer stands. Round 2 added `FOR UPDATE` to the bound function and
+  -- this trigger — written in the SAME round — was left reading without one.
   SELECT c."supersededAt" INTO v_superseded FROM "BillCertificate" c
-   WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."certificateId";
+   WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."certificateId"
+     FOR UPDATE;
   IF v_superseded IS NOT NULL THEN
     RAISE EXCEPTION 'Certificate % was superseded — a withholding is taken FROM a live payable, and this one no longer stands (%)', NEW."certificateId", NEW."id";
   END IF;
@@ -298,6 +370,145 @@ DROP TRIGGER IF EXISTS "BillDeductionRelease_bound_sealed" ON "BillDeductionRele
 CREATE CONSTRAINT TRIGGER "BillDeductionRelease_bound_sealed"
   AFTER INSERT ON "BillDeductionRelease" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t5c_release_bound_sealed();
+
+-- ══ Codex round 4 — the same rules, at the moment that actually decides ════════════════════════
+--
+-- All three round-4 findings are one shape, and it is root A in a dimension the earlier rounds did
+-- not have: a rule enforced at INSERT but not at COMMIT, or in the SERVICE but not in the DATABASE.
+-- A BEFORE INSERT trigger sees the world as it was mid-transaction; a bypass writer can insert
+-- against a live certificate and then supersede it before committing, and every insert-time check
+-- has already passed. What a transaction leaves BEHIND is what a seal has to be about.
+
+-- R4-F1/F3 — a deduction is coherent AT COMMIT: it targets a live certificate, and if it claims to
+-- be a re-statement, it is one. The FK proves only that `restatedFromId` names some deduction.
+-- Without the rest, a forged row on the live certificate naming an unrelated STILL-LIVE ₹10
+-- withholding as its source locks that withholding out of release forever — `release()` refuses any
+-- deduction that has been re-stated. A denial of service against a legitimate retention.
+CREATE OR REPLACE FUNCTION phase5_t5c_deduction_coherent() RETURNS trigger AS $$
+DECLARE
+  v_superseded timestamp;
+  v_src        record;
+BEGIN
+  SELECT c."supersededAt" INTO v_superseded FROM "BillCertificate" c
+   WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."certificateId"
+     FOR UPDATE;
+  IF v_superseded IS NOT NULL THEN
+    RAISE EXCEPTION 'Certificate % was superseded in this transaction — a withholding is taken FROM a live payable, and what this commit leaves behind is a deduction against nothing (%)', NEW."certificateId", NEW."id";
+  END IF;
+
+  IF NEW."restatedFromId" IS NULL THEN RETURN NULL; END IF;
+
+  SELECT d."billId", d."certificateId", d."type", d."amount", c."supersededAt" AS "sourceSuperseded"
+    INTO v_src
+    FROM "BillDeduction" d
+    JOIN "BillCertificate" c ON c."projectId" = d."projectId" AND c."id" = d."certificateId"
+   WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."restatedFromId"
+     FOR UPDATE OF d;
+  IF v_src."billId" IS DISTINCT FROM NEW."billId" THEN
+    RAISE EXCEPTION 'Deduction % claims to re-state %, which belongs to a different bill — a re-statement carries a withholding forward on ONE payable', NEW."id", NEW."restatedFromId";
+  END IF;
+  -- source liveness is checked BEFORE the same-certificate rule, because it names the actual harm.
+  -- Every other seal in this task stops money LEAVING; this one stops money being TRAPPED: a
+  -- re-stated deduction can never be released, so naming a live withholding as your source freezes
+  -- it permanently. Checking "same certificate" first would report the wrong thing about the case
+  -- that matters, and would leave this branch unreachable while only one certificate is ever live.
+  IF v_src."sourceSuperseded" IS NULL THEN
+    RAISE EXCEPTION 'Deduction % claims to re-state %, but that withholding still stands on a LIVE certificate — re-stating it would close it as history and freeze money nobody released', NEW."id", NEW."restatedFromId";
+  END IF;
+  IF v_src."certificateId" = NEW."certificateId" THEN
+    RAISE EXCEPTION 'Deduction % claims to re-state % on the SAME certificate — a re-statement moves a withholding onto its replacement, not beside itself', NEW."id", NEW."restatedFromId";
+  END IF;
+  IF v_src."type" IS DISTINCT FROM NEW."type" OR v_src."amount" IS DISTINCT FROM NEW."amount" THEN
+    RAISE EXCEPTION 'Deduction % re-states % with different terms (% % vs % %) — a re-statement carries the SAME withholding forward; changing it is a new judgement and needs its own row', NEW."id", NEW."restatedFromId", NEW."type", NEW."amount", v_src."type", v_src."amount";
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "BillDeduction_coherent" ON "BillDeduction";
+CREATE CONSTRAINT TRIGGER "BillDeduction_coherent"
+  AFTER INSERT ON "BillDeduction" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5c_deduction_coherent();
+
+-- the release side of the same rule: a re-stated release belongs to the re-stated deduction of the
+-- release's own source, and carries the same amount
+CREATE OR REPLACE FUNCTION phase5_t5c_release_coherent() RETURNS trigger AS $$
+DECLARE v_src record;
+BEGIN
+  IF NEW."restatedFromId" IS NULL THEN RETURN NULL; END IF;
+  SELECT r."deductionId", r."amount", d."restatedFromId" AS "targetSource"
+    INTO v_src
+    FROM "BillDeductionRelease" r
+    JOIN "BillDeduction" d ON d."projectId" = NEW."projectId" AND d."id" = NEW."deductionId"
+   WHERE r."projectId" = NEW."projectId" AND r."id" = NEW."restatedFromId"
+     FOR UPDATE OF r;
+  IF v_src."targetSource" IS DISTINCT FROM v_src."deductionId" THEN
+    RAISE EXCEPTION 'Release % re-states %, but its deduction is not the re-statement of that release''s deduction — a carried release must follow the withholding it belongs to', NEW."id", NEW."restatedFromId";
+  END IF;
+  IF v_src."amount" IS DISTINCT FROM NEW."amount" THEN
+    RAISE EXCEPTION 'Release % re-states % with a different amount — a carried release gives back exactly what was given back', NEW."id", NEW."restatedFromId";
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "BillDeductionRelease_coherent" ON "BillDeductionRelease";
+CREATE CONSTRAINT TRIGGER "BillDeductionRelease_coherent"
+  AFTER INSERT ON "BillDeductionRelease" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5c_release_coherent();
+
+-- R4-F2 — the re-statement is REQUIRED, not merely well-formed. `restateDeductions` is service
+-- code; a bypass replacement certification can supersede a certificate carrying a ₹10 retention and
+-- create the new live certificate with no carried rows at all. The old deduction stays as history,
+-- `positionFor` reads only the live certificate, and the retained balance vanishes with nobody's
+-- release behind it — which is round 1's F2, arriving from the database side.
+--
+-- Scoped to withholdings with an OUTSTANDING balance, because that is the actual invariant: a
+-- retained balance never vanishes. A fully released one has nothing left to carry, and the service
+-- carries it anyway (stronger than the seal, so it never collides).
+CREATE OR REPLACE FUNCTION phase5_t5c_replacement_restates() RETURNS trigger AS $$
+DECLARE
+  v_orphan record;
+  v_bill   text;
+BEGIN
+  -- the BILL is the row that scopes this fold, and you cannot lock a fold. `certify` already holds
+  -- this lock (`lockBill`), so the seal adds no new lock order — it only closes the gap for a
+  -- writer that never took it.
+  SELECT b."id" INTO v_bill FROM "VendorBill" b
+   WHERE b."projectId" = NEW."projectId" AND b."id" = NEW."billId"
+     FOR UPDATE;
+
+  IF EXISTS (SELECT 1 FROM "BillCertificate" c
+              WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."id"
+                AND c."supersededAt" IS NOT NULL) THEN
+    RETURN NULL;  -- this certificate did not survive its own transaction; it replaces nothing
+  END IF;
+
+  SELECT d."id", d."amount" INTO v_orphan
+    FROM "BillDeduction" d
+    JOIN "BillCertificate" pc ON pc."projectId" = d."projectId" AND pc."id" = d."certificateId"
+   WHERE d."projectId" = NEW."projectId"
+     AND d."billId" = NEW."billId"
+     AND d."certificateId" <> NEW."id"
+     AND pc."supersededAt" IS NOT NULL
+     AND d."amount" > COALESCE((SELECT SUM(r."amount") FROM "BillDeductionRelease" r
+                                 WHERE r."projectId" = d."projectId" AND r."deductionId" = d."id"), 0)
+     AND NOT EXISTS (SELECT 1 FROM "BillDeduction" n
+                      WHERE n."projectId" = d."projectId" AND n."restatedFromId" = d."id")
+   ORDER BY d."id" ASC
+   LIMIT 1;
+
+  IF v_orphan."id" IS NOT NULL THEN
+    RAISE EXCEPTION 'Certificate % replaces one carrying an unreleased withholding (% of %) that it does not re-state — the retained balance would vanish with no release behind it; carry it forward or release it attributably first', NEW."id", v_orphan."amount", v_orphan."id";
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "BillCertificate_replacement_restates" ON "BillCertificate";
+CREATE CONSTRAINT TRIGGER "BillCertificate_replacement_restates"
+  AFTER INSERT ON "BillCertificate" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5c_replacement_restates();
 
 -- §B (Codex round 1 F6) — the mover VOCABULARY gains the two acts §H introduces. `raisedBy` is the
 -- durable explanation a human reads months later, so it must name what actually moved: a

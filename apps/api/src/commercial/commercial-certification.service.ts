@@ -774,6 +774,21 @@ export class CommercialCertificationService {
     });
     if (!prior) return;
 
+    // Codex round 3 — LOCK the source rows before copying them. Without it a bypass release can
+    // commit in the gap: this read sees a ₹10 source deduction with no releases, a direct
+    // transaction inserts a ₹10 release against it and passes its bound because the restatement is
+    // still uncommitted, and certification then commits a live restated deduction with no release —
+    // `NET_PAYABLE` withheld while the source ledger says the money was returned. Taking the lock
+    // here makes the release trigger wait and re-check against the restated row.
+    //
+    // Ascending id, the repo's standard order, so two certifications of sibling bills cannot
+    // deadlock against each other.
+    await tx.$queryRaw`
+      SELECT "id" FROM "BillDeduction"
+       WHERE "projectId" = ${projectId} AND "certificateId" = ${prior.id}
+       ORDER BY "id" ASC
+       FOR UPDATE`;
+
     const rows = await tx.billDeduction.findMany({
       where: { projectId, certificateId: prior.id },
       orderBy: { recordedAt: 'asc' },

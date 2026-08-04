@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -96,6 +97,215 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     // and the manifest agrees with the shared contract, so there is ONE declaration, not two
     expect([...commercialManifest.commands].sort()).toEqual([...COMMERCIAL_COMMANDS].sort());
     expect([...commercialManifest.queries].sort()).toEqual([...COMMERCIAL_QUERIES].sort());
+  });
+
+  /**
+   * CLOSURE 3 — A GUARD THAT READS A PARENT ROW TO DECIDE ABOUT A CHILD WRITE MUST LOCK IT
+   * (PR #284 convergence audit, root A).
+   *
+   * Root A — "a rule reaching the artifact it creates but not the sibling already there" — produced
+   * findings in all three review rounds of Task 5C, and every one was the same physical shape: a
+   * plpgsql guard that SELECTs a parent row, decides on what it read, and did not take `FOR UPDATE`.
+   * Round 1 fixed the withholding bound. Round 2 found its twin, the release bound. Round 3 found
+   * the liveness trigger — written in round 2, one function away from the lock round 2 had added.
+   *
+   * Three rounds of finding twins by hand is the signal that the closure should not be prose. Every
+   * other root in this module got a mechanical one (`FOLD_INPUTS`, the accept-first upgrade-proof
+   * pairs); this is root A's.
+   *
+   * THE RULE HAS TWO HALVES, and the first draft of this pin had only one — it flagged the
+   * withholding bound's FOLD, which is not a defect and could not be fixed as stated, because
+   * PostgreSQL forbids `FOR UPDATE` with an aggregate. You cannot lock a fold. You lock the row that
+   * SCOPES it, and the fold is then serialized by that lock. So:
+   *
+   *   1. a ROW read that decides (`SELECT … INTO`, no aggregate) must itself carry `FOR UPDATE`;
+   *   2. a SET read that decides (an aggregate fold, or an `EXISTS` probe) must be PRECEDED, in the
+   *      same function, by a `FOR UPDATE` — the scoping row must already be held.
+   *
+   * Writing the halves down is the same discipline root A is about: the first draft named one side
+   * of the distinction and left the other implicit, which is how this root produces findings.
+   */
+  it('every deciding guard in the 5C migration is serialized against a concurrent writer', () => {
+    const raw = readFileSync(
+      join(SRC, '../prisma/migrations/20270520000000_phase5_t5c_deductions/migration.sql'),
+      'utf8',
+    );
+
+    // COMMENTS MUST GO BEFORE ANALYSIS, and this is not tidiness — it is the pin's own root-B
+    // moment. The comment above the liveness read explains the fix in prose and contains the words
+    // "SELECT" and "FOR UPDATE". Analysed raw, the statement match STARTED inside that comment and
+    // then found `FOR UPDATE` in it, so the guard passed on its own explanation. Removing the lock
+    // from the migration left this pin GREEN until the comments were stripped.
+    // ONE left-to-right pass, comments consumed before quotes are considered — a per-line quote
+    // scan gets this backwards, because the prose is full of apostrophes (`§H's`, `Task 6's`) that
+    // are not string literals at all.
+    let sql = '';
+    let inString = false;
+    let inComment = false;
+    for (let i = 0; i < raw.length; i += 1) {
+      const c = raw[i]!;
+      if (inComment) {
+        if (c === '\n') { inComment = false; sql += c; }
+        continue;
+      }
+      if (inString) {
+        sql += c;
+        if (c === "'") inString = false;
+        continue;
+      }
+      if (c === '-' && raw[i + 1] === '-') { inComment = true; i += 1; continue; }
+      if (c === "'") inString = true;
+      sql += c;
+    }
+    // the stripper is evidence too: if a future string literal carries `--`, this says so rather
+    // than silently truncating the statement the pin is about to analyse
+    expect(sql, 'a `--` survived comment stripping — the scanner mis-parsed a string literal').not.toMatch(/--/u);
+
+    const functions = [...sql.matchAll(/CREATE OR REPLACE FUNCTION (\w+)[\s\S]*?\$\$ LANGUAGE plpgsql;/gu)];
+    expect(functions.length, 'no plpgsql functions parsed — the pin is not reading the migration').toBeGreaterThan(3);
+
+    // Tables another transaction can change UNDER a deciding read. `CommandExecution` is deliberately
+    // NOT here and the exemption is mechanical, not prose: a command row is created AND finalized
+    // inside the single transaction that also writes the ledger row citing it (`executeCommand`
+    // reserves, runs, and stamps `succeeded` in one `$transaction`), so there is no second writer to
+    // race. The pin below re-derives that from the source rather than trusting this comment.
+    const SHARED = ['BillCertificate', 'BillDeduction', 'BillDeductionRelease', 'VendorBill'];
+    const AGGREGATE = /\b(?:SUM|COUNT|MIN|MAX|AVG|BOOL_OR|BOOL_AND)\s*\(/iu;
+
+    const offenders: string[] = [];
+    for (const fn of functions) {
+      const body = fn[0];
+      const name = fn[1]!;
+      // only guards DECIDE; a function that raises nothing cannot be raced into a bad state
+      if (!body.includes('RAISE EXCEPTION')) continue;
+
+      // (1) row reads must lock themselves
+      for (const shared of SHARED) {
+        const pattern = new RegExp('SELECT[^;]*?INTO[^;]*?FROM "' + shared + '"[^;]*;', 'gsu');
+        for (const stmt of body.matchAll(pattern)) {
+          if (AGGREGATE.test(stmt[0])) continue; // a fold — half (2) covers it
+          if (!/FOR UPDATE/u.test(stmt[0])) {
+            offenders.push(`${name} reads a "${shared}" row without FOR UPDATE`);
+          }
+        }
+      }
+
+      // (2) set reads must be preceded by a lock — you cannot lock a fold, so the scoping row must
+      // already be held when it runs
+      const setReads = [
+        ...body.matchAll(/SELECT[^;]*?INTO[^;]*?FROM "(\w+)"[^;]*;/gsu),
+        ...body.matchAll(/IF\s+EXISTS\s*\(\s*SELECT[\s\S]*?FROM "(\w+)"/gu),
+      ];
+      for (const stmt of setReads) {
+        const isFold = AGGREGATE.test(stmt[0]);
+        const isExists = stmt[0].startsWith('IF');
+        if (!isFold && !isExists) continue;
+        if (!SHARED.includes(stmt[1]!)) continue;
+        const before = body.slice(0, stmt.index!);
+        if (!/FOR UPDATE/u.test(before)) {
+          offenders.push(`${name} folds "${stmt[1]}" with no FOR UPDATE taken before it`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      'a guard decides on state it did not serialize — two concurrent writers can each pass it (PR #284 root A)',
+    ).toEqual([]);
+  });
+
+  /**
+   * CLOSURE 4 — AN INSERT-TIME GUARD OVER MUTABLE STATE NEEDS A COMMIT-TIME TWIN (root A, round 4).
+   *
+   * Round 4's three findings were one shape: a rule enforced at BEFORE INSERT but not at COMMIT, or
+   * in the service but not in the database. A BEFORE INSERT trigger sees the world MID-transaction,
+   * so a bypass writer can insert against a live certificate and then supersede it before
+   * committing — every insert-time check having already passed. What a transaction leaves behind is
+   * what a seal has to be about.
+   *
+   * CLOSURE 3 covers the LOCKING dimension of root A. This covers the TIMING one: if a table has a
+   * BEFORE INSERT guard that decides on another table's rows, it must also carry a deferred
+   * commit-time constraint trigger.
+   */
+  it('every insert-time guard over another table is backed by a commit-time seal', () => {
+    const sql = readFileSync(
+      join(SRC, '../prisma/migrations/20270520000000_phase5_t5c_deductions/migration.sql'),
+      'utf8',
+    );
+    const bodies = new Map(
+      [...sql.matchAll(/CREATE OR REPLACE FUNCTION (\w+)[\s\S]*?\$\$ LANGUAGE plpgsql;/gu)]
+        .map((m) => [m[1]!, m[0]]),
+    );
+    // The twin is DECLARED, not inferred, and that is the point: "the table has some deferred
+    // trigger" is not a closure, because `BillDeduction` already had two and the hole was still
+    // open. Naming the twin means a new insert-time guard cannot be added without deciding what
+    // re-checks it at commit — the check below fails on an undeclared one.
+    const COMMIT_TIME_TWIN: Record<string, string> = {
+      phase5_t5c_deduction_targets_live: 'phase5_t5c_deduction_coherent',
+      // the command's TYPE is immutable once minted, so the insert-time read cannot go stale; its
+      // STATUS can, which is exactly what the deferred twin re-reads
+      phase5_t5c_ledger_command_type: 'phase5_t5c_ledger_command_succeeded',
+    };
+    const deferredOn = new Map<string, string[]>();
+    for (const m of sql.matchAll(/CREATE CONSTRAINT TRIGGER "[^"]+"\s+AFTER \w+ ON "(\w+)" DEFERRABLE INITIALLY DEFERRED\s+FOR EACH ROW EXECUTE FUNCTION (\w+)\(\)/gu)) {
+      deferredOn.set(m[1]!, [...(deferredOn.get(m[1]!) ?? []), m[2]!]);
+    }
+    const beforeInsert = [...sql.matchAll(/CREATE TRIGGER "[^"]+" BEFORE INSERT ON "(\w+)"\s+FOR EACH ROW EXECUTE FUNCTION (\w+)\(\)/gu)];
+    expect(beforeInsert.length, 'no BEFORE INSERT triggers parsed — the pin is not reading the migration').toBeGreaterThan(0);
+    expect(deferredOn.size, 'no deferred constraint triggers parsed — the pin is not reading the migration').toBeGreaterThan(0);
+
+    const foreignReads = (fn: string, table: string): string[] =>
+      [...new Set([...(bodies.get(fn) ?? '').matchAll(/FROM "(\w+)"/gu)].map((r) => r[1]!))]
+        .filter((t) => t !== table);
+
+    const gaps: string[] = [];
+    for (const [, table, fn] of beforeInsert) {
+      const body = bodies.get(fn!) ?? '';
+      if (!body.includes('RAISE EXCEPTION')) continue;
+      // its own row is fully known at insert; another table's rows can still change before commit
+      const reads = foreignReads(fn!, table!);
+      if (reads.length === 0) continue;
+
+      const twin = COMMIT_TIME_TWIN[fn!];
+      if (!twin) { gaps.push(`${fn} guards "${table}" on ${reads.join(', ')} at insert and declares no commit-time twin`); continue; }
+      if (!(deferredOn.get(table!) ?? []).includes(twin)) {
+        gaps.push(`${fn}'s declared twin ${twin} is not a deferred constraint trigger on "${table}"`);
+        continue;
+      }
+      const covered = foreignReads(twin, table!);
+      const missing = reads.filter((r) => !covered.includes(r));
+      if (missing.length > 0) gaps.push(`${twin} does not re-read ${missing.join(', ')} at commit, which ${fn} decided on at insert`);
+    }
+
+    expect(
+      gaps,
+      'an insert-time guard decides on state that can still change before COMMIT, and nothing re-checks it there (PR #284 root A, round 4)',
+    ).toEqual([]);
+  });
+
+  /**
+   * The `CommandExecution` exemption above, re-derived from the source instead of asserted. If a
+   * second write site ever appears — one that could flip `status` under another transaction's
+   * deferred check — the exemption stops holding and this fails, which is the point.
+   */
+  it('a CommandExecution row has exactly one writer: the transaction that mints it', () => {
+    const commands = readFileSync(join(SRC, 'platform/commands.ts'), 'utf8');
+    const writes = [...commands.matchAll(/commandExecution\.(create|update|updateMany|upsert|delete)\b/gu)];
+    expect(
+      writes.map((w) => w[1]),
+      'CommandExecution write sites changed — re-check the exemption in the guard-serialization pin',
+    ).toEqual(['create', 'update']);
+
+    const otherModules = execFileSync(
+      'grep',
+      ['-rlE', 'commandExecution\\.(create|update|updateMany|upsert|delete)\\b', '--include=*.ts', SRC],
+      { encoding: 'utf8' },
+    )
+      .split('\n')
+      .filter((f) => f && !f.endsWith('.test.ts') && !f.endsWith('platform/commands.ts'));
+    expect(
+      otherModules,
+      'a module outside the command ledger writes CommandExecution — the single-writer exemption no longer holds',
+    ).toEqual([]);
   });
 
   /**

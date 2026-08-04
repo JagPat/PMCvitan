@@ -114,6 +114,34 @@ than left implicit:
   given back that the live payable denies, which is F2's own defect arriving from
   the other side.
 
+## Codex rounds 3 and 4 — the same root, in two dimensions the closures did not reach
+
+Round 3 returned four findings, round 4 three, none above P2. Every one of the
+seven was root A, and each round found it somewhere the previous closure could
+not see.
+
+| Round | Finding | Fix |
+| --- | --- | --- |
+| 3 | the liveness trigger read the certificate without `FOR UPDATE` | the lock, plus **CLOSURE 3** — a mechanical pin that every deciding guard is serialized, RED-proved against all three historical shapes |
+| 3 | a release could land on a re-stated deduction at PostgreSQL | the seal appended to the release bound, with an accept-first pair |
+| 3 | a ledger row could cite any command | provenance split by when it is knowable — TYPE at insert, STATUS at commit |
+| 3 | `restateDeductions` read the source ledger without locking it | `FOR UPDATE` in ascending id order, with a barrier probe |
+| 4 | liveness was insert-time only | a deferred commit-time seal: insert-then-supersede in ONE transaction is refused |
+| 4 | the re-statement was required only by the service | `BillCertificate_replacement_restates` — a replacement carrying an unreleased withholding it does not re-state is refused at commit |
+| 4 | `restatedFromId` was FK-checked only for existence | same bill, different certificate, superseded source, identical terms — and the release side of the same rule |
+
+**The forged-restatement finding is worth naming separately**, because its damage
+runs the opposite way from every other seal in this task. `release()` refuses any
+deduction that has been re-stated, so a forged row naming an unrelated
+**still-live** withholding as its source freezes that withholding permanently.
+Everything else here stops money leaving; this one stops money being trapped.
+
+Round 4's shape — a rule enforced at INSERT but not at COMMIT, or in the SERVICE
+but not in the DATABASE — now has **CLOSURE 4**: an insert-time guard that
+decides on another table's rows must declare a commit-time twin, wired as a
+deferred constraint trigger on the same table and re-reading the same state. Both
+closures are RED-proved by breaking them, not by observing them pass.
+
 ## Invariant matrix
 
 | Invariant | Risk in this change | Reproduce-first / verification evidence |
@@ -127,7 +155,7 @@ than left implicit:
 
 ## Evidence
 
-`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **17/17 GREEN**.
+`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **22/22 GREEN**.
 
 Every probe is RED at `0b87d85` for the trivial reason that the ledger does not
 exist there, so this packet does not lean on that. What it leans on instead is
@@ -149,12 +177,26 @@ mine did not, and checking turned up five more of the same shape.
   fold the budget query reads, not just `this.bills.*` — the closure's own root
   applied to itself, exactly as naming `CERTIFIED` and leaving `BILLED_AMOUNT`
   unclaimed did in unit C.
+- **the round-4 seals** are RED-proved by DROPPING them from a live database:
+  without `BillDeduction_coherent` and `BillCertificate_replacement_restates`,
+  PROBES 18, 19 and 20 fail; restored, 22/22.
+- **CLOSURE 3 and CLOSURE 4** are RED-proved by breaking them, not by watching
+  them pass. Remove the lock from the withholding bound, the release bound, or
+  the liveness trigger and CLOSURE 3 names the function; unwire the commit-time
+  twin, or stop it re-reading the certificate, and CLOSURE 4 names it.
+- **two more vacuous upgrade-proof assertions were caught while writing this
+  head**, both by the accept-first guard that round 2 produced. The re-statement
+  block assumed a live certificate stood where none did, so two "rejections" came
+  from a foreign key on an empty id; and the different-amount forgery named a
+  deduction on ANOTHER BILL, so it was refused by the scope rule rather than the
+  terms rule it claimed to test. The block now walks its own bill through the
+  lifecycle and asserts the state it depends on before using it.
 
 | Gate | Result |
 | --- | --- |
-| `pnpm check` | EXIT 0 — web 543/543, API 735/735 |
-| full integration, pristine migrated DB | **81 files / 912 tests** (was 80/895) |
-| `upgrade-proof.sh` | PASSED — 18 T5C assertions, each anchored on a live certificate and paired with an accept |
+| `pnpm check` | EXIT 0 — web 543/543, API 738/738 (+3: CLOSURE 3, CLOSURE 4, the single-writer pin) |
+| full integration, pristine migrated DB | **81 files / 917 tests** (was 80/895) |
+| `upgrade-proof.sh` | PASSED — the T5C assertions, each paired with an accept, and the re-statement chain walking its OWN bill through the lifecycle rather than assuming a live certificate |
 | migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |
 | `test:e2e:api:allmodules` | 35/35 (one run flaked on `cross-cutting-surfaces`, a surface this change does not touch; clean on re-run) |
 | `test:e2e:api:outbox` | 29/29 |

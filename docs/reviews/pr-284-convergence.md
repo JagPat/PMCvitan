@@ -1,8 +1,21 @@
 # PR #284 convergence audit — Phase 5 Task 5C
 
-Two finding-bearing heads: `0e9de59` (six findings) and `7c16afd` (eight). This
-audit is due because the second head crossed the threshold, and it is written
-before the third head rather than after it.
+Four finding-bearing heads: `0e9de59` (six), `7c16afd` (eight), then rounds 3
+(four) and 4 (three) on the split design. This audit is due because the second
+head crossed the threshold; it was written before the third head rather than
+after it, and has been carried forward since.
+
+| Round | Findings | P1 | Root |
+| --- | --- | --- | --- |
+| 1 | 6 | 2 | A ×2, plus four one-offs |
+| 2 | 8 | 1 | A ×2, B ×2, four retired by the split |
+| 3 | 4 | 0 | A ×4 — all "locked one side, not the other" |
+| 4 | 3 | 0 | A ×3 — all "enforced at insert, not at commit" |
+
+The count and the severity are both falling, and no round has produced a root
+that was not already named. What has kept root A alive is that each round found
+it in a **dimension the previous closure did not cover**, which is what rounds 3
+and 4 below are about.
 
 ## The signal, stated plainly
 
@@ -31,6 +44,68 @@ had a **twin one step away** — the other side of an arrow, the other end of a
 lock, the other half of the same question — and I fixed the side the finding
 pointed at. The closure is not another checklist: when a fix names a direction, a
 side, or a half, the next thing to write down is what the opposite one is.
+
+### Round 3 — the same root, in the LOCKING dimension
+
+All four of round 3's findings were one physical shape: a plpgsql guard that
+SELECTs a row, decides on what it read, and did not take `FOR UPDATE`. Round 1
+fixed the withholding bound. Round 2 found its twin, the release bound. Round 3
+found the liveness trigger — written in round 2, one function away from the lock
+round 2 had just added.
+
+Three rounds of finding twins by hand is the signal that the prose closure above
+is not enough. Every other root in this module got a mechanical one, so root A
+now has **CLOSURE 3** in `commercial.contract.test.ts`: every deciding guard in
+the migration must be serialized. Writing it exposed two things worth recording.
+
+**The rule has two halves, and my first draft had one.** It flagged the
+withholding bound's FOLD — which is not a defect and could not be fixed as
+stated, because PostgreSQL forbids `FOR UPDATE` with an aggregate. You cannot
+lock a fold; you lock the row that SCOPES it. So a ROW read must carry the lock
+itself, and a SET read must be PRECEDED by one. Naming one side of a distinction
+and leaving the other implicit is root A operating on the closure to root A.
+
+**The first version passed against the very defect it was written for.** With the
+lock removed from the liveness trigger, CLOSURE 3 stayed green — because the
+comment above that read explains the fix in prose and contains the words `SELECT`
+and `FOR UPDATE`, so the statement match started inside the comment and found the
+lock in its own explanation. Stripping comments before analysis is now part of
+the pin, and the stripper checks its own assumption. That is root B, caught by
+running the RED proof rather than trusting the green.
+
+All three historical shapes are RED-proved against the pin: remove the lock from
+the withholding bound, the release bound, or the liveness trigger, and it names
+the offending function.
+
+### Round 4 — the same root again, in the TIMING dimension
+
+Round 4's three findings are one shape too, and it is a dimension CLOSURE 3 does
+not reach: **a rule enforced at BEFORE INSERT but not at COMMIT, or in the
+service but not in the database.**
+
+| Finding | Shape |
+| --- | --- |
+| re-check deduction liveness at commit | insert-then-supersede in ONE transaction passes every insert-time check |
+| seal restatement on replacement certificates | `restateDeductions` is service code; a bypass replacement drops the balance |
+| constrain forged deduction restatements | the FK proves the source EXISTS; nothing proves it is a real re-statement |
+
+A BEFORE INSERT trigger sees the world mid-transaction. What a transaction leaves
+BEHIND is what a seal has to be about — and the third finding is the same
+observation about place rather than time.
+
+The forged-restatement finding is the sharpest of the three, because the damage
+runs the opposite way from everything else in this task: a forged row naming an
+unrelated still-live withholding as its source **freezes that withholding**,
+since a re-stated deduction can never be released. Every other seal here stops
+money leaving; this one stops money being trapped.
+
+**CLOSURE 4** covers the timing dimension: every insert-time guard that decides
+on another table's rows must DECLARE a commit-time twin, the twin must be wired
+as a deferred constraint trigger on the same table, and it must re-read the same
+foreign state. The twin is declared rather than inferred deliberately — "the
+table has some deferred trigger" is not a closure, because `BillDeduction`
+already had two and the hole was still open. It is RED-proved both ways: unwire
+the twin, or stop it re-reading the certificate, and the pin names it.
 
 ## Root B — evidence asserted without checking that it discriminates
 
@@ -106,6 +181,30 @@ The generalisation worth keeping: **when a change removes something, the removal
 is not finished until the documents that claimed it are corrected too.** Code and
 tests fail loudly when they go stale; prose does not.
 
+## Root B, twice more — and the closure caught both
+
+Writing the round-4 evidence turned up two further vacuous assertions, and both
+were caught by the accept-first guard round 2 produced rather than by a reviewer.
+
+- the re-statement block assumed a live certificate stood where none did. Two
+  "rejections" above the guard had already printed `ok` — rejected by a foreign
+  key on an empty id, not by the rules they named. The block now walks its own
+  bill through the lifecycle and asserts the state it depends on.
+- the different-amount forgery named a deduction on ANOTHER BILL, so the scope
+  rule refused it before the terms rule was ever reached. It now has a source
+  that reaches the rule it is about.
+
+Worth stating plainly: **the closure works, and it works by making the fixture
+fail loudly rather than by making me more careful.** Both of these would have
+read as green.
+
+A third instance was in the closure itself. CLOSURE 3's first version stayed green
+with the lock removed, because the comment above that read explains the fix in
+prose and contains the words `SELECT` and `FOR UPDATE`. The pin found the lock in
+its own explanation. Running the RED proof is what surfaced it — which is the
+whole of root B in one sentence: **a probe you have only seen pass is not
+evidence.**
+
 ## Findings carried into this head
 
 | Round 2 finding | Disposition |
@@ -118,3 +217,30 @@ tests fail loudly when they go stale; prose does not.
 | seal status derivation on ledger commits | RETIRED by the split |
 | point the upgrade proof at a certified bill | FIXED — the block is anchored where a live certificate stands, and four more vacuous assertions beside it were found and fixed |
 | add a barrier to the concurrency probe | FIXED — real barrier, RED-proved both ways |
+
+## Findings carried into the round-4 head
+
+| Round 3 finding | Disposition |
+| --- | --- |
+| lock the certificate in the liveness trigger | FIXED, and closed mechanically by CLOSURE 3 |
+| seal the restated-release rule at PostgreSQL | FIXED, with an accept-first pair |
+| bind a ledger row to the command that produced it | FIXED — type at insert, status at commit |
+| lock the source ledger during re-statement | FIXED — and PROBE 17 now proves the re-statement WAITS on an open release, which is stronger than the probe first claimed |
+
+| Round 4 finding | Disposition |
+| --- | --- |
+| re-check deduction liveness at commit | FIXED — `BillDeduction_coherent`, deferred; PROBE 18 |
+| seal restatement on replacement certificates | FIXED — `BillCertificate_replacement_restates`, deferred; PROBE 20 |
+| constrain forged deduction restatements | FIXED — scope, source liveness and terms; PROBE 19 |
+
+Two of round 3's fixes changed what a valid probe looks like, and both were
+caught by the suite rather than assumed:
+
+- the insert-time certificate lock means two `BillDeduction` inserts now
+  serialize AT INSERT, so the old hold-both-open barrier deadlocks against the
+  lock the fix installed. PROBE 13 now proves the second writer **blocks** —
+  verified through `pg_blocking_pids`, never a sleep — and is then refused.
+- the release's foreign key holds a KEY SHARE lock on the deduction, which
+  conflicts with the re-statement's `FOR UPDATE`. So the re-statement genuinely
+  waits for an open release and carries the reduced balance, rather than racing
+  it. PROBE 17 asserts the wait and the conserved arithmetic.
