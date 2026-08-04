@@ -1,0 +1,130 @@
+--- unit-A/20270510000000
++++ unit-B/20270515000000
+@@ -9,4 +9,6 @@
+   v_frozen       numeric;
+   v_recorder     boolean;
++  v_excepted     boolean;
++  v_exceptions   bigint;
+   r              record;
+ BEGIN
+@@ -59,23 +61,106 @@
+   END LOOP;
+ 
+-  -- (c) §I — the actor who recorded the evidence a certificate rests on may NOT certify it.
++  -- (c) §I — the exception and the conflict are a BICONDITIONAL, and both directions are load-
++  -- bearing. If the certifier recorded frozen evidence there must be an attributable override; if
++  -- they did not, there must be NO override, because a certificate carrying an exception it never
++  -- needed reports an authorisation that authorised nothing.
+   --
+-  -- This unit states the RULE. The attributable override that lets a two-person practice operate
+-  -- anyway is the next unit's (§I's `SodException`, its approver-standing predicate and the
+-  -- biconditional that admits exactly one exception per rule). The refusal ships FIRST on purpose:
+-  -- until the override exists this seal is strictly more restrictive than the finished rule, so no
+-  -- intermediate state of the system permits an act the finished rule would refuse. Shipping the
+-  -- override first, or shipping neither, would both open a window; shipping the refusal first
+-  -- cannot.
+-  --
+-  -- The actor set comes from `phase5_t5_evidence_actors` — the SAME function
+-  -- `CommercialCertificationService` calls, over the same frozen rows, so the two layers cannot
+-  -- answer this differently. That single authority is the closure this PR's convergence audit
+-  -- names: the question had been implemented twice and only the copy a finding named ever moved.
++  -- The actor set still comes from `phase5_t5_evidence_actors` — unchanged, the SAME function the
++  -- service calls. What this unit adds is the second half of §I: the named exception that lets a
++  -- two-person practice proceed. Unit A shipped the refusal alone and was therefore STRICTER than
++  -- the finished rule, which is what made splitting the authority check safe.
+   SELECT EXISTS (
+     SELECT 1 FROM phase5_t5_evidence_actors(p_project, p_certificate) a WHERE a.actor = v_certifier
+   ) INTO v_recorder;
++  SELECT COUNT(*) INTO v_exceptions
++    FROM "SodException" s
++   WHERE s."projectId" = p_project AND s."certificateId" = p_certificate;
+   IF v_recorder THEN
+-    RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on — §I refuses the act', p_certificate, v_certifier;
++    -- An exception is an override of the rule it NAMES, granted by an authority that actually HAS
++    -- standing, PRODUCED BY THE SAME COMMAND as the certificate it authorises. Without the first,
++    -- an unrelated row satisfies this seal and the trail carries no override for
++    -- `evidence-recorder-may-not-certify`. Without the second, the "stronger authority" §I requires
++    -- can be a contractor. Without the third (Codex round-6 P2), a forged certificate can cite a
++    -- stale `sourceCommandId` on its override row and leave the durable provenance saying the
++    -- exception came from a different act than the one it excused — an audit trail that answers
++    -- "which command authorised this?" with someone else's command is not an audit trail.
++    SELECT EXISTS (
++      SELECT 1 FROM "SodException" s
++       JOIN "BillCertificate" c ON c."projectId" = s."projectId" AND c."id" = s."certificateId"
++       JOIN "CommandExecution" ce ON ce."projectId" = s."projectId" AND ce."id" = s."sourceCommandId"
++       WHERE s."projectId" = p_project AND s."certificateId" = p_certificate
++         AND s."actorId" = v_certifier
++         AND s."rule" = 'evidence-recorder-may-not-certify'
++         AND s."approverId" <> s."actorId"
++         AND s."sourceCommandId" = c."sourceCommandId"
++         -- Codex round-7 P1 — matching ids are not provenance. Two rows can copy the SAME STALE
++         -- command and satisfy an equality between themselves while that command produced some
++         -- other certificate entirely, so the durable trail still answers "which command authorised
++         -- this?" with an unrelated act. The RECEIPT is the authority: `executeCommand` writes
++         -- `status`/`resultRef` inside the same transaction as the act, so at COMMIT the receipt
++         -- either says it produced THIS certificate or the override is not this act's.
++         AND ce."commandType" = 'commercial.bill.certify'
++         AND ce."status" = 'succeeded'
++         AND ce."resultRef" = p_certificate
++         -- Codex round-11 P2 — and the receipt must be THIS CERTIFIER'S. Type, status and result
++         -- prove the command produced this certificate; none of them prove WHO ran it, so a
++         -- conflicted certificate attributed to A could rest on a receipt B actually ran, and the
++         -- durable trail would name two different people for one act. The grant receipt three
++         -- clauses below has bound its actor since round 8; this one did not. That is round 8's own
++         -- correction failing to travel BACKWARDS to the sibling sitting above it.
++         AND ce."actorId" = v_certifier
++         -- Codex round-7 P1 — the APPROVER must have ACTED. Everything above proves the override is
++         -- well-formed; none of it proves anybody authorised it, because `approverId` arrived in the
++         -- certifier's own request. The exception now rests on a GRANT: a row only the approver's
++         -- own authenticated command could have created, scoped to this bill, this claim VERSION,
++         -- this rule and this actor, and consumed by THIS certificate. A claim becomes a signature.
++         AND EXISTS (
++           SELECT 1 FROM "SodGrant" g
++            WHERE g."projectId" = s."projectId" AND g."id" = s."grantId"
++              AND g."approverId" = s."approverId"
++              AND g."actorId" = s."actorId"
++              AND g."rule" = s."rule"
++              AND g."billId" = c."billId"
++              AND g."versionId" = c."versionId"
++              AND g."consumedByCertificateId" = p_certificate
++              -- Codex round-11 P2 — and the REASON is the approver's, not the certifier's. The
++              -- match bound approver, actor, rule, bill and version and left `reason` free, so a
++              -- direct writer could consume a real grant reading "only the store user today" and
++              -- record an override reading anything at all. `certificateById` reports the
++              -- EXCEPTION's reason as the authorisation, which makes the one sentence a reader
++              -- trusts the one field the person being excused could still write.
++              AND g."reason" = s."reason"
++              -- Codex round-8 P1 — and the GRANT itself must be the approver's act. Round 7 made the
++              -- exception rest on a grant and then treated the grant AS the signature without ever
++              -- proving who wrote it: `sourceCommandId` was a bare FK, so a direct writer could mint
++              -- a grant naming any approver and the whole two-step design would certify a forgery.
++              --
++              -- This is the same correction as the one two lines up, applied to the artifact that
++              -- correction introduced. That is the root this PR's audit keeps naming: the fix lands
++              -- on the instance a finding named, and the sibling — here, one created in the SAME
++              -- round — survives. The receipt is the authority for BOTH rows or for neither.
++              AND EXISTS (
++                SELECT 1 FROM "CommandExecution" gce
++                 WHERE gce."projectId" = g."projectId" AND gce."id" = g."sourceCommandId"
++                   AND gce."commandType" = 'commercial.sod.grant'
++                   AND gce."status" = 'succeeded'
++                   AND gce."actorId" = g."approverId"
++                   AND gce."resultRef" = g."id"
++              )
++         )
++    ) INTO v_excepted;
++    IF NOT v_excepted THEN
++      RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no attributable `evidence-recorder-may-not-certify` exception resting on a grant this act consumed — §I permits the act only with such an override', p_certificate, v_certifier;
++    END IF;
++    -- ONE override, and only the one this task's §I defines. The partial unique index already
++    -- forbids two rows for the same rule, so a count above one means a row naming some OTHER rule
++    -- has been attached to this certificate — authority for a question §I has not asked here.
++    -- Task 6 adds `certifier-may-not-approve`, and when it does this arm is where the second rule
++    -- is admitted: ONE edit, in the place that already states the whole rule.
++    IF v_exceptions <> 1 THEN
++      RAISE EXCEPTION 'Certificate % carries % segregation-of-duties exceptions — §I authorises this act with exactly one, naming `evidence-recorder-may-not-certify`', p_certificate, v_exceptions;
++    END IF;
++  ELSIF v_exceptions <> 0 THEN
++    RAISE EXCEPTION 'Certificate % carries % segregation-of-duties exception(s) but its certifier recorded none of the evidence it rests on — an override records authority for a conflict, and there is none to override', p_certificate, v_exceptions;
+   END IF;
+ END;

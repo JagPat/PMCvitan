@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ROLE_POLICY, type CertificateDto, type VendorBillStatus } from '@vitan/shared';
+import { ROLE_POLICY, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
@@ -14,9 +14,12 @@ import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialBillQuery } from './commercial-bill.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialVerificationService } from './commercial-verification.service';
-import type { CertifyBillInput, SupersedeCertificateInput } from '../contracts';
+import type { CertifyBillInput, GrantSodExceptionInput, SupersedeCertificateInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
+
+/** The ONE rule this task's §I defines. Task 6 adds `certifier-may-not-approve` beside it. */
+const SOD_RULE = 'evidence-recorder-may-not-certify';
 
 /** One measurement row a certificate is about to freeze, with how much of it it draws. */
 interface MeasurementDraw {
@@ -61,6 +64,12 @@ export class CommercialCertificationService {
   private assertCertify(user: AuthUser): void {
     if (!(ROLE_POLICY['commercial.certify'] as readonly string[]).includes(user.role)) {
       throw new ForbiddenException('Certifying a vendor claim is a pmc surface — it creates money someone may approve');
+    }
+  }
+
+  private assertGrant(user: AuthUser): void {
+    if (!(ROLE_POLICY['commercial.sod.grant'] as readonly string[]).includes(user.role)) {
+      throw new ForbiddenException('Authorising a segregation-of-duties override is a pmc surface');
     }
   }
 
@@ -260,7 +269,22 @@ export class CommercialCertificationService {
         // FROZEN ROWS, so asking it once they exist lets both layers ask it of the same rows
         // through the same function. A refusal costs nothing: it throws inside the transaction,
         // so the certificate and its freeze are never committed.
-        await this.assertSegregation(tx, projectId, actor.actorId, certificate.id);
+        const sod = await this.assertSegregation(tx, projectId, input.billId, versionId, actor.actorId, certificate.id);
+
+        // §I — written in the SAME transaction as the override it authorises, bound to THAT
+        // certificate by composite FK, and carrying the SAME `sourceCommandId`. An exception is
+        // authority for ONE certificate produced by ONE act, never a standing waiver a later
+        // override can point at (Codex round-6 P2: the database now requires that command identity
+        // to match, so a forged row citing a stale command cannot pose as this act's authority).
+        if (sod) {
+          await tx.sodException.create({
+            data: {
+              projectId, certificateId: certificate.id,
+              rule: sod.rule, actorId: sod.actorId, approverId: sod.approverId, reason: sod.reason,
+              grantId: sod.grantId, sourceCommandId: ctx.commandId!,
+            },
+          });
+        }
 
         await this.cas(tx, projectId, input.billId, 'verified', 'certified');
         await recordAudit(tx, {
@@ -455,13 +479,11 @@ export class CommercialCertificationService {
    * acceptance. Without this the rule would bind labour bills and silently exempt material ones,
    * which is the larger spend.
    *
-   * **This unit ships the RULE; the attributable override ships next.** §I is explicit that
-   * silently banning the act is not acceptable either — a two-person practice must still be able to
-   * operate — so a named exception, requiring a stronger authority and recorded with its reason
-   * against the certificate, follows in its own review unit. Shipping the refusal first is what
-   * makes that split safe: until the override exists this check is strictly more restrictive than
-   * the finished rule, so no intermediate state of the system permits an act the finished rule
-   * would refuse.
+   * The exception path is NAMED, not silent: it requires a stronger authority and writes an
+   * attributable `SodException` in the SAME transaction, and by the same command, as the
+   * certification it authorises. Silently allowing it is not an option; silently banning it is not
+   * either, because a two-person practice must still be able to operate. Unit A shipped the refusal
+   * alone — strictly stricter than this — which is what made splitting the authority check safe.
    *
    * The rows consulted are exactly the ones this certificate FROZE — not every acceptance or
    * measurement on the line. A store user whose acceptance is fully consumed by an earlier live
@@ -472,29 +494,150 @@ export class CommercialCertificationService {
   private async assertSegregation(
     tx: Prisma.TransactionClient,
     projectId: string,
+    billId: string,
+    versionId: string,
     actorId: string,
     certificateId: string,
-  ): Promise<void> {
+  ): Promise<{ grantId: string; rule: string; actorId: string; approverId: string; reason: string } | null> {
     // Codex rounds 3 and 5, twice about the same rule: the service counted the authors of positive
     // measurement corrections as evidence actors and the database seal did not, because they were
-    // two implementations of one question and only the one a finding named ever got fixed.
-    //
-    // So this is no longer an implementation. `phase5_t5_evidence_actors` is the single site, and
-    // the commit-time seal calls exactly this function over exactly these rows: the two layers
-    // cannot disagree, and a future change to who counts as an evidence actor is ONE edit that
-    // cannot half-land.
-    //
-    // It is asked of the FROZEN rows rather than of the draw, which is the same set — the freeze
-    // above writes the draw — but stated as the certificate's own evidence, which is what §I is
-    // about and what a reviewer can check without tracing how the draw was built.
+    // two implementations of one question and only the one a finding named ever got fixed. So this
+    // is no longer an implementation — `phase5_t5_evidence_actors` is the single site, and the
+    // commit-time seal calls exactly this function over exactly these rows.
     const actors = await tx.$queryRaw<Array<{ actor: string }>>(
       Prisma.sql`SELECT actor FROM phase5_t5_evidence_actors(${projectId}, ${certificateId})`,
     );
-    if (actors.some((a) => a.actor === actorId)) {
+    if (!actors.some((a) => a.actor === actorId)) return null;
+
+    // Codex round-7 P1 — the override is CONSUMED, never supplied. An earlier spelling took
+    // `approverId` from this caller's own request and checked only that the named person held
+    // standing, so a self-certifying pmc could type a colleague's id and the system would write an
+    // immutable record asserting that colleague authorised it. The authority was never asked.
+    //
+    // A grant is the approver's OWN authenticated act. It is claimed here with a CAS on the unused
+    // row, so two concurrent certifications cannot both spend one authority — an override is
+    // exercised once, and `updateMany` returning 0 is that race losing rather than a lost update.
+    // The grant is selected BY VERSION, not "any live grant, then check its version". A claim that
+    // was authorised, amended, and authorised again legitimately has two live grants — one stale,
+    // one current — and `findFirst` over the version-blind scope picks between them arbitrarily.
+    // The probe for round-8's index fix caught this: it refused a perfectly good certification
+    // because it had reached for the stale row. Selecting on the version is the fix; the stale-grant
+    // branch below now exists only to give an ACCURATE message.
+    // Codex round 10, and it is round 8's finding in a second costume. Round 8: this read selected
+    // over the version-BLIND scope and compared versions afterwards, so a legitimate stale+current
+    // pair resolved arbitrarily. I fixed the version and left the SHAPE — select one row, then
+    // validate it — and round 9's `approverId` in the live-grant scope made the same trap reachable
+    // through standing: approver A grants, A is downgraded, B grants a valid replacement, and a
+    // `findFirst` that happens to return A's row refuses the whole certification.
+    //
+    // The shape is the defect. "Select an arbitrary candidate, then check it" answers a different
+    // question from "select a candidate that is valid" whenever more than one can exist, and the
+    // live-grant scope is now deliberately wide enough for more than one. So the standing filter
+    // moves INTO the selection, and the stale rows are simply not candidates.
+    const live = await tx.sodGrant.findMany({
+      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
+      select: { id: true, approverId: true, reason: true },
+      orderBy: { grantedAt: 'asc' },
+    });
+    let grant: { id: string; approverId: string; reason: string } | null = null;
+    for (const candidate of live) {
+      // standing is the ORGS module's question, asked under a lock because this IS an authority
+      // decision — a concurrent downgrade must not commit behind an approval it granted
+      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate: true })) {
+        grant = candidate;
+        break;
+      }
+    }
+    if (!grant) {
+      if (live.length > 0) {
+        throw new ForbiddenException(
+          'The authorisation on this claim was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again',
+        );
+      }
+      // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
+      // approver looked at should not silently carry over to one they never saw
+      const stale = await tx.sodGrant.count({
+        where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
+      });
+      if (stale > 0) {
+        throw new ConflictException(
+          'The authorisation on this claim was granted against an earlier version — the claim has been amended since, so it needs authorising again',
+        );
+      }
       throw new ForbiddenException(
-        'Segregation of duties: the actor who recorded the evidence under this claim may not certify it.',
+        'Segregation of duties: the actor who recorded the evidence under this claim may not certify it. '
+        + 'A pmc with standing on this project may authorise it with `commercial.sod.grant`, which records '
+        + 'their own reason against this claim.',
       );
     }
+    const { count } = await tx.sodGrant.updateMany({
+      where: { id: grant.id, projectId, consumedAt: null },
+      data: { consumedAt: new Date(), consumedByCertificateId: certificateId },
+    });
+    if (count === 0) {
+      throw new ConflictException('That authorisation was consumed concurrently — reload and retry');
+    }
+    return {
+      grantId: grant.id, rule: SOD_RULE, actorId, approverId: grant.approverId, reason: grant.reason,
+    };
+  }
+
+  /**
+   * §I — GRANT permission for one otherwise-forbidden certification. The AUTHENTICATED actor is the
+   * authority: there is no `approverId` field, because a field is exactly what a certifier can fill
+   * in with somebody else's name.
+   */
+  async grantSodException(
+    projectId: string, input: GrantSodExceptionInput, user: AuthUser, idempotencyKey?: string,
+  ): Promise<SodGrantDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertGrant(user);
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'commercial.sod.grant', idempotencyKey, requestHash: hashRequest(input),
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+        if (input.actorId === actor.actorId) {
+          throw new ForbiddenException('A segregation-of-duties exception cannot be authorised by the actor it excuses');
+        }
+        // the grant names the claim's LIVE version, so it is pinned to what the approver looked at
+        const version = await tx.vendorBillVersion.findFirst({
+          where: { projectId, billId: input.billId, supersededAt: null },
+          select: { id: true },
+        });
+        if (!version) throw new NotFoundException(`Vendor bill ${input.billId} has no live claim version`);
+        // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
+        // certification will use — the participant, because standing is the orgs module's rule
+        const entitled = await this.orgs.hasProjectRoleStanding(
+          tx, projectId, actor.actorId, ['pmc'], { forUpdate: true },
+        );
+        if (!entitled) {
+          throw new ForbiddenException('A segregation-of-duties exception must be authorised by a pmc with standing on this project');
+        }
+        const row = await tx.sodGrant.create({
+          data: {
+            projectId, billId: input.billId, versionId: version.id, rule: SOD_RULE,
+            actorId: input.actorId, approverId: actor.actorId, reason: input.reason,
+            sourceCommandId: ctx.commandId!,
+          },
+        });
+        await recordAudit(tx, {
+          projectId, actor, action: 'commercial.sod.grant', entity: 'SodGrant', entityId: row.id,
+        });
+        return { resultRef: row.id, events: [] };
+      },
+    });
+    const row = await this.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: outcome.resultRef! } });
+    return {
+      id: row.id, billId: row.billId, versionId: row.versionId, rule: row.rule,
+      actorId: row.actorId, approverId: row.approverId, reason: row.reason,
+      grantedAt: row.grantedAt.toISOString(),
+      consumedAt: row.consumedAt?.toISOString() ?? null,
+      consumedByCertificateId: row.consumedByCertificateId,
+    };
   }
 
   // ── reads ────────────────────────────────────────────────────────────────────────────────────
@@ -527,6 +670,7 @@ export class CommercialCertificationService {
     const cert = await this.prisma.billCertificate.findFirst({
       where: typeof target === 'string' ? { projectId, id: target } : target,
       include: {
+        sodExceptions: true,
         acceptanceConsumption: { orderBy: { stockTransactionId: 'asc' } },
         measurementConsumption: { orderBy: { measurementId: 'asc' } },
       },
@@ -535,6 +679,7 @@ export class CommercialCertificationService {
       if (certificateId === null) return null;
       throw new NotFoundException(`Certificate ${certificateId} not found in this project`);
     }
+    const sod = cert.sodExceptions[0];
     return {
       id: cert.id,
       billId: cert.billId,
@@ -550,6 +695,12 @@ export class CommercialCertificationService {
       supersededAt: cert.supersededAt?.toISOString() ?? null,
       supersededById: cert.supersededById,
       supersedeReason: cert.supersedeReason,
+      sodException: sod
+        ? {
+          rule: sod.rule, actorId: sod.actorId, approverId: sod.approverId, reason: sod.reason,
+          recordedAt: sod.recordedAt.toISOString(), grantId: sod.grantId,
+        }
+        : null,
       // §E — the frozen evidence, reported. A certificate whose consumption set is invisible is a
       // certificate nobody can audit, and this pair is exactly what the withdrawal guards refuse
       // against: a reviewer asking "why can this acceptance not be reversed" reads the answer here.

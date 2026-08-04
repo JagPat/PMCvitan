@@ -95,6 +95,8 @@ const MODEL_OWNER: Record<string, string> = {
   billVerification: 'commercial',
   // Phase 5 Task 5B (§E/§I) — the certificate and the evidence it froze
   billCertificate: 'commercial',
+  sodException: 'commercial',
+  sodGrant: 'commercial',
   certifiedAcceptanceConsumption: 'commercial',
   certifiedMeasurementConsumption: 'commercial',
   activityWorkOutput: 'activities',
@@ -441,6 +443,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('commercial/bills/verify')",
     // Phase 5 Task 5B (§E/§F/§I) — certification, and the ONE correction path past it
     "Post('commercial/bills/certify')",
+    "Post('commercial/bills/sod-grant')",
     "Post('commercial/certificates/supersede')",
     "Post('commercial/bills/amend')",
     "Post('commercial/bills/reject')",
@@ -567,12 +570,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('160 mutating routes total (§4 command inventory; +2 Phase-5 Task-5B §F certify/supersede)', () => {
+    it('161 mutating routes total (§4 command inventory; +1 Phase-5 Task-5B §I sod-grant)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(160);
+      expect(total).toBe(161);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(160);
+      expect(live).toBe(161);
     });
   });
 

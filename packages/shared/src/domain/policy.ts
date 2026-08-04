@@ -126,6 +126,11 @@ export const ROLE_POLICY = {
   // certificate consumes, evaluated server-side under the bill lock, with a named and attributable
   // exception path — a role list cannot express "not the person who recorded THIS evidence".
   'commercial.certify': ['pmc'],
+  // §I — issuing the GRANT that excuses a conflicted certification. Same role list as `certify`
+  // today, and deliberately its OWN permission: the two are different acts by different people,
+  // and collapsing them would mean any later widening of who may certify silently widened who may
+  // authorise a certifier to override the rule that stops them.
+  'commercial.sod.grant': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

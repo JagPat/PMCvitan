@@ -46,6 +46,8 @@ enum InspectionResult {
 model Project {
   billVerifications BillVerification[]
   billCertificates BillCertificate[]
+  sodExceptions SodException[]
+  sodGrants SodGrant[]
   certifiedAcceptanceConsumption CertifiedAcceptanceConsumption[]
   certifiedMeasurementConsumption CertifiedMeasurementConsumption[]
   id           String   @id
@@ -843,6 +845,10 @@ model DrawingAck {
 model User {
   billVerificationsVerified BillVerification[] @relation("billVerificationsVerified")
   billCertificatesCertified BillCertificate[]  @relation("billCertificatesCertified")
+  sodExceptionsActor        SodException[]     @relation("sodExceptionsActor")
+  sodExceptionsApprover     SodException[]     @relation("sodExceptionsApprover")
+  sodGrantsActor            SodGrant[]         @relation("sodGrantsActor")
+  sodGrantsApprover         SodGrant[]         @relation("sodGrantsApprover")
   id                String    @id @default(cuid())
   project           Project   @relation(fields: [projectId], references: [id])
   projectId         String
@@ -3240,10 +3246,14 @@ model VendorBillVersion {
   supersededById  String?
   supersedeReason String?
 
-  lines VendorBillLine[]
+  lines     VendorBillLine[]
+  sodGrants SodGrant[]
 
   @@unique([projectId, id])
   @@unique([projectId, billId, version]) // versions are monotonic and never reused
+  /// the FK target proving a certificate — and a §I grant — names a version OF THE BILL IT IS
+  /// ABOUT. Created in unit A's migration; declared here so Prisma can express the relation.
+  @@unique([projectId, id, billId])
   /// the FK target sealing every LINE to its version's own bill and vendor
   @@unique([projectId, id, billId, vendorIdPin])
   @@index([projectId, billId])
@@ -3396,6 +3406,8 @@ model BillCertificate {
 
   acceptanceConsumption  CertifiedAcceptanceConsumption[]
   measurementConsumption CertifiedMeasurementConsumption[]
+  sodExceptions          SodException[]
+  sodGrantsConsumed      SodGrant[]
   // The one-LIVE-certificate-per-bill partial unique and the append-only trigger live in the
   // migration (Prisma cannot express a partial unique).
 
@@ -3447,3 +3459,81 @@ model CertifiedMeasurementConsumption {
   @@index([projectId, measurementId])
 }
 
+/// §I — the attributable record that makes an otherwise-forbidden act valid.
+///
+/// It IS the authority, so it carries the trusted-evidence seals: append-only at PG, every column
+/// immutable after write, a non-blank reason, written in the SAME transaction as the override it
+/// authorizes, and bound BY COMPOSITE FK to the exact fact it authorizes — an exception is
+/// authority for ONE certificate, never a standing waiver a later override can point at.
+model SodException {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  /// the certificate this exception authorizes. Task 6 adds the approval-side rule and its own
+  /// nullable reference; a row names exactly one fact (CHECK).
+  certificate   BillCertificate? @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String?
+
+  /// the GRANT this override rests on — the approver's own authenticated act (Codex round-7 P1).
+  /// Without it `approverId` is only a name the certifier typed into their own request.
+  grant   SodGrant? @relation(fields: [projectId, grantId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  grantId String?
+
+  /// which rule was overridden, e.g. `measurer-may-not-certify`
+  rule       String
+  /// the actor the rule would have refused
+  actor      User   @relation("sodExceptionsActor", fields: [actorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  actorId    String
+  /// the STRONGER authority that authorized it (org admin)
+  approver   User   @relation("sodExceptionsApprover", fields: [approverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approverId String
+  reason     String
+
+  recordedAt      DateTime @default(now())
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, certificateId])
+}
+
+/// §I — a stronger authority's OWN act, authorising ONE otherwise-forbidden certification.
+///
+/// The exception records that an override happened; this records that somebody with standing
+/// actually granted it. Splitting them is the point: `SodException` is written by the certifier's
+/// command, so on its own it can only ever be the certifier's claim about a third party. A grant is
+/// written by the APPROVER's authenticated command, scoped to one bill, one claim version, one rule
+/// and one actor, and consumed exactly once.
+model SodGrant {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  /// the claim this authority is about, pinned to the VERSION — an amendment is a different claim,
+  /// and permission to certify this one should not survive it
+  version   VendorBillVersion @relation(fields: [projectId, versionId, billId], references: [projectId, id, billId], onDelete: NoAction, onUpdate: NoAction)
+  versionId String
+  billId    String
+
+  rule       String
+  /// the actor the rule would refuse — who this grant excuses
+  actor      User   @relation("sodGrantsActor", fields: [actorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  actorId    String
+  /// the stronger authority, and the AUTHENTICATED author of this row
+  approver   User   @relation("sodGrantsApprover", fields: [approverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approverId String
+  reason     String
+
+  grantedAt       DateTime @default(now())
+  sourceCommandId String
+
+  /// SINGLE-USE. Both halves move together (CHECK) and the transition is one-way (trigger).
+  consumedAt              DateTime?
+  consumedBy              BillCertificate? @relation(fields: [projectId, consumedByCertificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  consumedByCertificateId String?
+
+  exceptions SodException[]
+
+  @@unique([projectId, id])
+  @@index([projectId, billId])
+}
