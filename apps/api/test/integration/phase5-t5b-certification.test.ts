@@ -1905,6 +1905,104 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).consumedAt).toBeNull();
   });
 
+  it('R8-F1 (§I): a GRANT is only an authority if the approver\'s own command wrote it', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, type: 'acceptance' }, select: { id: true },
+    });
+    const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+    // The forged CERTIFICATE gets a genuine receipt of its own, reserved and completed in ONE
+    // transaction because the receipt protocol is itself DB-sealed. Without it the exception's own
+    // receipt check (round 7) refuses this act and the probe proves that clause instead of the one
+    // under test — a refusal from the wrong seal, which this suite has now produced six times.
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status")
+         SELECT 'forged-cert-cmd','project',"organizationId",$1,$2,'commercial.bill.certify','forged-cert-key','x','reserved'
+           FROM "CommandExecution" WHERE "id"=$3`, projectId, f.memberUser.id, cmd.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "CommandExecution" SET "status"='succeeded', "resultRef"='forged-cert', "completedAt"=now() WHERE "id"='forged-cert-cmd'`,
+      ),
+    ]);
+
+    // Round 7 made the exception rest on a grant and then treated the grant AS the signature,
+    // without ever proving who wrote it: `sourceCommandId` was a bare FK. A direct writer could
+    // mint a grant naming any approver, and the entire two-step design would certify a forgery —
+    // the same defect the receipt check had already closed for the exception, surviving in the
+    // artifact that closure introduced.
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "SodGrant" ("id","projectId","billId","versionId","rule","actorId","approverId","reason","sourceCommandId")
+       VALUES ('forged-grant',$1,$2,$3,'evidence-recorder-may-not-certify',$4,$5,'nobody granted this',$6)`,
+      projectId, billId, version.id, f.memberUser.id, approver, cmd.id,
+    );
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         VALUES ('forged-cert',$1,$2,$3,100,$4,'forged-cert-cmd')`, projectId, billId, version.id, f.memberUser.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ('forged-ev',$1,'forged-cert',$2,100)`, projectId, acceptance.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "SodGrant" SET "consumedAt"=now(), "consumedByCertificateId"='forged-cert' WHERE "projectId"=$1 AND "id"='forged-grant'`, projectId,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "SodException" ("id","projectId","certificateId","grantId","rule","actorId","approverId","reason","sourceCommandId")
+         VALUES ('forged-sod',$1,'forged-cert','forged-grant','evidence-recorder-may-not-certify',$2,$3,'nobody granted this','forged-cert-cmd')`,
+        projectId, f.memberUser.id, approver,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
+
+    // precision: the SERVICE path is accepted, because there the grant carries a real
+    // `commercial.sod.grant` receipt whose actor IS the approver and whose resultRef is the grant.
+    // A SECOND bill, because the forged grant above is still live on the first and the live-scope
+    // partial unique would refuse a real one beside it — a refusal from the wrong rule.
+    const line2 = await issuedMaterialLine(projectId, { qty: '50' });
+    await acceptOnLine(projectId, line2, '50', pmc(projectId));
+    const bill2 = await verifiedClaim(projectId, line2.vendorId, line2.poLineId, '50');
+    const real = await grantOverride(projectId, bill2, approver, f.memberUser.id);
+    const receipt = await t.prisma.commandExecution.findFirstOrThrow({
+      where: { projectId, commandType: 'commercial.sod.grant' }, select: { actorId: true, resultRef: true },
+    });
+    expect({ actorId: receipt.actorId, resultRef: receipt.resultRef }).toEqual({ actorId: approver, resultRef: real.id });
+    await expect(certification.certify(projectId, { billId: bill2 }, pmc(projectId))).resolves.toBeDefined();
+  });
+
+  it('R8-F2 (§I): an amended claim can be authorised again — the stale grant does not block it', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    await grantOverride(projectId, billId, approver, f.memberUser.id);
+
+    // the claim is amended, so the v1 grant is refused as stale AND stays unconsumed. Without the
+    // VERSION in the live-grant partial unique, no replacement could be issued and a legitimate
+    // two-person certification was permanently blocked — an operational deadlock, not a theory.
+    await bills.amend(projectId, {
+      billId, lines: [{ poLineId: line.poLineId, quantity: '90', rate: '1' }], reason: 'vendor corrected the quantity',
+    }, pmc(projectId));
+    await bills.beginVerification(projectId, { billId }, pmc(projectId));
+    await verification.verify(projectId, { billId }, pmc(projectId));
+
+    const fresh = await grantOverride(projectId, billId, approver, f.memberUser.id, 'authorising the corrected claim');
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.sodException?.grantId).toBe(fresh.id);
+    // …and the stale one is still unspent: it authorised a claim that no longer stands
+    expect((await t.prisma.sodGrant.count({ where: { projectId, consumedAt: null } }))).toBe(1);
+  });
+
   it('PROBE 15 (§0): the four new tables are closed under the shared-database reset', async () => {
     // The reset lists are hand-mirrored across ~40 suites, and a table with an inbound FK that is
     // missing from one of them fails in whichever suite tears down LAST rather than in the one

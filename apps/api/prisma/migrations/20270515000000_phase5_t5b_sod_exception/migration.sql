@@ -256,6 +256,23 @@ BEGIN
               AND g."billId" = c."billId"
               AND g."versionId" = c."versionId"
               AND g."consumedByCertificateId" = p_certificate
+              -- Codex round-8 P1 — and the GRANT itself must be the approver's act. Round 7 made the
+              -- exception rest on a grant and then treated the grant AS the signature without ever
+              -- proving who wrote it: `sourceCommandId` was a bare FK, so a direct writer could mint
+              -- a grant naming any approver and the whole two-step design would certify a forgery.
+              --
+              -- This is the same correction as the one two lines up, applied to the artifact that
+              -- correction introduced. That is the root this PR's audit keeps naming: the fix lands
+              -- on the instance a finding named, and the sibling — here, one created in the SAME
+              -- round — survives. The receipt is the authority for BOTH rows or for neither.
+              AND EXISTS (
+                SELECT 1 FROM "CommandExecution" gce
+                 WHERE gce."projectId" = g."projectId" AND gce."id" = g."sourceCommandId"
+                   AND gce."commandType" = 'commercial.sod.grant'
+                   AND gce."status" = 'succeeded'
+                   AND gce."actorId" = g."approverId"
+                   AND gce."resultRef" = g."id"
+              )
          )
          AND phase5_t5_pmc_standing(p_project, s."approverId")
     ) INTO v_excepted;
@@ -352,8 +369,15 @@ CREATE TABLE IF NOT EXISTS "SodGrant" (
 CREATE UNIQUE INDEX IF NOT EXISTS "SodGrant_projectId_id_key" ON "SodGrant"("projectId", "id");
 -- ONE live grant per scope: a second would make "the grant that authorised this" ambiguous, and
 -- hoarding unconsumed grants is exactly the standing waiver §I refuses.
+--
+-- Codex round-8 P2 — the scope MUST include the version, and leaving it out was an operational
+-- deadlock rather than a theoretical one. A grant is version-pinned, so after an amendment the v1
+-- grant is refused as stale AND stays unconsumed; without `versionId` here the partial unique then
+-- blocked any replacement grant for v2, and a legitimate two-person certification could never
+-- proceed without someone editing rows out of band. Two live grants for two different versions is
+-- not ambiguity: only the LIVE version's grant is usable, and the seal checks that.
 CREATE UNIQUE INDEX IF NOT EXISTS "SodGrant_live_scope_key"
-  ON "SodGrant"("projectId", "billId", "rule", "actorId") WHERE "consumedAt" IS NULL;
+  ON "SodGrant"("projectId", "billId", "versionId", "rule", "actorId") WHERE "consumedAt" IS NULL;
 CREATE INDEX IF NOT EXISTS "SodGrant_projectId_billId_idx" ON "SodGrant"("projectId", "billId");
 
 DO $$ BEGIN

@@ -7,7 +7,7 @@
 +  v_exceptions   bigint;
    r              record;
  BEGIN
-@@ -59,23 +61,76 @@
+@@ -59,23 +61,93 @@
    END LOOP;
  
 -  -- (c) §I — the actor who recorded the evidence a certificate rests on may NOT certify it.
@@ -80,6 +80,23 @@
 +              AND g."billId" = c."billId"
 +              AND g."versionId" = c."versionId"
 +              AND g."consumedByCertificateId" = p_certificate
++              -- Codex round-8 P1 — and the GRANT itself must be the approver's act. Round 7 made the
++              -- exception rest on a grant and then treated the grant AS the signature without ever
++              -- proving who wrote it: `sourceCommandId` was a bare FK, so a direct writer could mint
++              -- a grant naming any approver and the whole two-step design would certify a forgery.
++              --
++              -- This is the same correction as the one two lines up, applied to the artifact that
++              -- correction introduced. That is the root this PR's audit keeps naming: the fix lands
++              -- on the instance a finding named, and the sibling — here, one created in the SAME
++              -- round — survives. The receipt is the authority for BOTH rows or for neither.
++              AND EXISTS (
++                SELECT 1 FROM "CommandExecution" gce
++                 WHERE gce."projectId" = g."projectId" AND gce."id" = g."sourceCommandId"
++                   AND gce."commandType" = 'commercial.sod.grant'
++                   AND gce."status" = 'succeeded'
++                   AND gce."actorId" = g."approverId"
++                   AND gce."resultRef" = g."id"
++              )
 +         )
 +         AND phase5_t5_pmc_standing(p_project, s."approverId")
 +    ) INTO v_excepted;

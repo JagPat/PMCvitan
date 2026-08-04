@@ -517,24 +517,33 @@ export class CommercialCertificationService {
     // A grant is the approver's OWN authenticated act. It is claimed here with a CAS on the unused
     // row, so two concurrent certifications cannot both spend one authority — an override is
     // exercised once, and `updateMany` returning 0 is that race losing rather than a lost update.
+    // The grant is selected BY VERSION, not "any live grant, then check its version". A claim that
+    // was authorised, amended, and authorised again legitimately has two live grants — one stale,
+    // one current — and `findFirst` over the version-blind scope picks between them arbitrarily.
+    // The probe for round-8's index fix caught this: it refused a perfectly good certification
+    // because it had reached for the stale row. Selecting on the version is the fix; the stale-grant
+    // branch below now exists only to give an ACCURATE message.
     const grant = await tx.sodGrant.findFirst({
       where: {
-        projectId, billId, rule: SOD_RULE, actorId, consumedAt: null,
+        projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null,
       },
-      select: { id: true, approverId: true, reason: true, versionId: true },
+      select: { id: true, approverId: true, reason: true },
     });
     if (!grant) {
+      // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
+      // approver looked at should not silently carry over to one they never saw
+      const stale = await tx.sodGrant.count({
+        where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
+      });
+      if (stale > 0) {
+        throw new ConflictException(
+          'The authorisation on this claim was granted against an earlier version — the claim has been amended since, so it needs authorising again',
+        );
+      }
       throw new ForbiddenException(
         'Segregation of duties: the actor who recorded the evidence under this claim may not certify it. '
         + 'A pmc with standing on this project may authorise it with `commercial.sod.grant`, which records '
         + 'their own reason against this claim.',
-      );
-    }
-    // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
-    // approver looked at should not silently carry over to one they never saw
-    if (grant.versionId !== versionId) {
-      throw new ConflictException(
-        'The authorisation on this claim was granted against an earlier version — the claim has been amended since, so it needs authorising again',
       );
     }
     const entitled = await this.orgs.hasProjectRoleStanding(
