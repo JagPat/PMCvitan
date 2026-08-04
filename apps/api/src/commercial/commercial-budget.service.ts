@@ -145,6 +145,7 @@ export class CommercialBudgetService {
       committed: p.committed.toFixed(2),
       receivedNotBilled: p.receivedNotBilled.toFixed(2),
       awaitingCertification: p.awaitingCertification.toFixed(2),
+      certifiedPayable: p.certifiedPayable.toFixed(2),
       headroom: p.headroom?.toFixed(2) ?? null,
       exception: exceptionOf.get(p.costHeadCode) ?? null,
     }));

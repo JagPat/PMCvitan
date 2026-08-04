@@ -40,6 +40,14 @@ export interface CostHeadPosition {
    *  the surface saying billed work is unbilled. The two buckets PARTITION the received money.
  */
   awaitingCertification: Prisma.Decimal;
+  /** §J `certified-payable` — money a certifier has turned into an obligation anyone may approve.
+   *
+   *  §J defines it as `NET_PAYABLE − APPROVED`. Both refinements are the identity at this tree and
+   *  neither is stubbed out: `NET_PAYABLE` is the certificate less UNRELEASED deductions and the §H
+   *  ledger is 5C's, `APPROVED` is Task 6's. The subtraction each performs lands with the fact that
+   *  supplies it — the same way `MEASURED` and `BILLED_AMOUNT` arrived here — so this term is the
+   *  full definition evaluated against the facts that exist, not a placeholder for it. */
+  certifiedPayable: Prisma.Decimal;
   /** `Σ exposure` — the buckets that measure against the budget, rounded to the money scale.
    *  Carried explicitly so the exception row's `headroom = budget - exposure` CHECK holds by
    *  construction rather than by a caller re-deriving the same subtraction. */
@@ -116,7 +124,10 @@ export class CommercialBudgetQuery {
 
     const materialIds = attributions.map((a) => a.poLineId).filter((v): v is string => v !== null);
     const labourIds = attributions.map((a) => a.labourPoLineId).filter((v): v is string => v !== null);
-    const [materialLines, labourLines, accepted, measured, billedMaterial, billedLabour] = await Promise.all([
+    const [
+      materialLines, labourLines, accepted, measured,
+      billedMaterial, billedLabour, certifiedMaterial, certifiedLabour,
+    ] = await Promise.all([
       this.procurement.committedLinesFor(tx, projectId, materialIds),
       this.labour.committedLinesFor(tx, projectId, labourIds),
       this.inventory.acceptedFor(tx, projectId, materialIds),
@@ -128,12 +139,17 @@ export class CommercialBudgetQuery {
       // promised ("Tasks 4–6 subtract `BILLED_AMOUNT` from it").
       this.bills.billedAmountFor(tx, projectId, 'material', materialIds),
       this.bills.billedAmountFor(tx, projectId, 'labour', labourIds),
+      // Phase 5 Task 5B unit C (§J) — `CERTIFIED`, the term that turns `awaiting-certification`
+      // into a residual instead of a raw set.
+      this.bills.certifiedAmountFor(tx, projectId, 'material', materialIds),
+      this.bills.certifiedAmountFor(tx, projectId, 'labour', labourIds),
     ]);
 
     for (const code of heads) {
       let committed = ZERO;
       let receivedNotBilled = ZERO;
       let awaitingCertification = ZERO;
+      let certifiedPayable = ZERO;
       for (const a of attributions) {
         if (a.costHeadCode !== code) continue;
         if (a.poLineId) {
@@ -178,9 +194,17 @@ export class CommercialBudgetQuery {
           // awaiting-certification is the honest reading — an unverified over-rate claim IS extra
           // exposure until §E disputes it — and it is conservative for the budget rather than
           // flattering.
+          //
+          // §J unit C — and CERTIFICATION moves it on again, by the same residual rule: every
+          // bucket in §J's table subtracts the one downstream of it, so `awaiting-certification`
+          // is `BILLED − CERTIFIED`, exactly as `received-not-billed` is received − billed and
+          // `approved` is `APPROVED − PAID`. Certifying therefore settles WHO OWES WHAT and not
+          // HOW MUCH: the total exposure is unchanged and only the bucket holding it changes.
           const billed = billedMaterial.get(a.poLineId) ?? ZERO;
+          const certified = certifiedMaterial.get(a.poLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(receivedValue.sub(billed), ZERO));
-          awaitingCertification = awaitingCertification.add(billed);
+          awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
+          certifiedPayable = certifiedPayable.add(certified);
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
@@ -201,30 +225,35 @@ export class CommercialBudgetQuery {
           // the measured value moves to received-not-billed, less whatever has been CLAIMED
           // against it — the labour twin of the material split above
           const billed = billedLabour.get(a.labourPoLineId) ?? ZERO;
+          const certified = certifiedLabour.get(a.labourPoLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(consumed.sub(billed), ZERO));
-          awaitingCertification = awaitingCertification.add(billed);
+          awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
+          certifiedPayable = certifiedPayable.add(certified);
         }
       }
       const budget = budgetOf.get(code) ?? null;
       // §J — budget is the CEILING the exposure buckets are measured against, never a bucket
-      // itself. Headroom subtracts every exposure bucket that EXISTS at this task; Tasks 5–6 add
-      // the certified/approved/paid residuals as their facts arrive.
+      // itself. Headroom subtracts every exposure bucket that EXISTS at this task; 5C and Task 6
+      // add the approved/paid residuals as their facts arrive.
       //
       // Note that adding `awaitingCertification` does NOT move headroom on its own: the money it
       // holds came OUT of received-not-billed. That is the point — §J's buckets partition, so a
-      // claim arriving changes WHERE the exposure sits, not how much there is.
+      // claim arriving changes WHERE the exposure sits, not how much there is. `certifiedPayable`
+      // is the same story one step along: certification moves money out of awaiting-certification
+      // and into it, and the sum is untouched.
       //
       // Exposure is rounded ONCE, from the full-precision sum, and headroom is derived from that
       // rounded figure — not from separately rounded buckets, whose two half-paisa errors could
       // add to a phantom cent of breach. The displayed buckets are rounded for reporting; the
       // DECISION is made on `exposure`.
-      const exposure = money(committed.add(receivedNotBilled).add(awaitingCertification));
+      const exposure = money(committed.add(receivedNotBilled).add(awaitingCertification).add(certifiedPayable));
       out.set(code, {
         costHeadCode: code,
         budget,
         committed: money(committed),
         receivedNotBilled: money(receivedNotBilled),
         awaitingCertification: money(awaitingCertification),
+        certifiedPayable: money(certifiedPayable),
         exposure,
         headroom: budget === null ? null : budget.sub(exposure),
       });
