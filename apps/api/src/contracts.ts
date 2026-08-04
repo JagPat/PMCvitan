@@ -1443,12 +1443,27 @@ export type VendorBillStepInput = z.infer<typeof vendorBillStepSchema>;
 /**
  * §E/§I — CERTIFY a verified claim.
  *
- * The input is the bill and nothing else. §I's attributable OVERRIDE — an approver and a reason
- * that let a two-person practice certify its own recorded evidence — ships in its own review unit;
- * until it does, the rule is a plain refusal, so there is no field here that could quietly default
- * into taking an exception path that does not yet exist.
+ * `sodOverride` is ABSENT on the ordinary path and that is the design: an exception must be a
+ * deliberate act naming an approver and a reason, never a flag that quietly defaults. The service
+ * refuses the certification outright when the rule bites and no override is supplied, so omitting
+ * it cannot silently take the exception path.
+ *
+ * The reason carries the repository's non-blank discipline — `trim().min(1)` here and the full
+ * `btrim(reason, E' \t\n\x0B\f\r')` CHECK at PostgreSQL. An override justified by `'\t'` would
+ * otherwise satisfy every stated check and leave append-only evidence with no usable reason.
  */
-export const certifyBillSchema = z.object({ billId: z.string().min(1) }).strict();
+export const certifyBillSchema = z
+  .object({
+    billId: z.string().min(1),
+    sodOverride: z
+      .object({
+        approverId: z.string().min(1),
+        reason: z.string().trim().min(1).max(1000),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
 
 /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */

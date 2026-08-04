@@ -260,7 +260,22 @@ export class CommercialCertificationService {
         // FROZEN ROWS, so asking it once they exist lets both layers ask it of the same rows
         // through the same function. A refusal costs nothing: it throws inside the transaction,
         // so the certificate and its freeze are never committed.
-        await this.assertSegregation(tx, projectId, actor.actorId, certificate.id);
+        const sod = await this.assertSegregation(tx, projectId, input, actor.actorId, certificate.id);
+
+        // §I — written in the SAME transaction as the override it authorises, bound to THAT
+        // certificate by composite FK, and carrying the SAME `sourceCommandId`. An exception is
+        // authority for ONE certificate produced by ONE act, never a standing waiver a later
+        // override can point at (Codex round-6 P2: the database now requires that command identity
+        // to match, so a forged row citing a stale command cannot pose as this act's authority).
+        if (sod) {
+          await tx.sodException.create({
+            data: {
+              projectId, certificateId: certificate.id,
+              rule: sod.rule, actorId: sod.actorId, approverId: sod.approverId, reason: sod.reason,
+              sourceCommandId: ctx.commandId!,
+            },
+          });
+        }
 
         await this.cas(tx, projectId, input.billId, 'verified', 'certified');
         await recordAudit(tx, {
@@ -455,13 +470,11 @@ export class CommercialCertificationService {
    * acceptance. Without this the rule would bind labour bills and silently exempt material ones,
    * which is the larger spend.
    *
-   * **This unit ships the RULE; the attributable override ships next.** §I is explicit that
-   * silently banning the act is not acceptable either — a two-person practice must still be able to
-   * operate — so a named exception, requiring a stronger authority and recorded with its reason
-   * against the certificate, follows in its own review unit. Shipping the refusal first is what
-   * makes that split safe: until the override exists this check is strictly more restrictive than
-   * the finished rule, so no intermediate state of the system permits an act the finished rule
-   * would refuse.
+   * The exception path is NAMED, not silent: it requires a stronger authority and writes an
+   * attributable `SodException` in the SAME transaction, and by the same command, as the
+   * certification it authorises. Silently allowing it is not an option; silently banning it is not
+   * either, because a two-person practice must still be able to operate. Unit A shipped the refusal
+   * alone — strictly stricter than this — which is what made splitting the authority check safe.
    *
    * The rows consulted are exactly the ones this certificate FROZE — not every acceptance or
    * measurement on the line. A store user whose acceptance is fully consumed by an earlier live
@@ -472,9 +485,10 @@ export class CommercialCertificationService {
   private async assertSegregation(
     tx: Prisma.TransactionClient,
     projectId: string,
+    input: CertifyBillInput,
     actorId: string,
     certificateId: string,
-  ): Promise<void> {
+  ): Promise<{ rule: string; actorId: string; approverId: string; reason: string } | null> {
     // Codex rounds 3 and 5, twice about the same rule: the service counted the authors of positive
     // measurement corrections as evidence actors and the database seal did not, because they were
     // two implementations of one question and only the one a finding named ever got fixed.
@@ -490,11 +504,39 @@ export class CommercialCertificationService {
     const actors = await tx.$queryRaw<Array<{ actor: string }>>(
       Prisma.sql`SELECT actor FROM phase5_t5_evidence_actors(${projectId}, ${certificateId})`,
     );
-    if (actors.some((a) => a.actor === actorId)) {
+    if (!actors.some((a) => a.actor === actorId)) return null;
+
+    if (!input.sodOverride) {
       throw new ForbiddenException(
-        'Segregation of duties: the actor who recorded the evidence under this claim may not certify it.',
+        'Segregation of duties: the actor who recorded the evidence under this claim may not certify it. '
+        + 'A pmc with standing on this project may authorise an exception, which is recorded with its reason against this certificate.',
       );
     }
+    // The override needs an authority at least as strong as the act it excuses, and the approver
+    // must be a DIFFERENT person — a row where the actor approves their own override is a signature
+    // on a mirror, which the DB CHECK also refuses.
+    //
+    // Codex round-1 P2 — the standing question goes to `OrgsParticipant`, not to a direct read of
+    // `Membership`. That table is orgs-owned, and this file's own §I comment says the owner states
+    // the rule: the participant folds in the org owner/admin PMC fallback a direct row read misses,
+    // so an approver entitled through org-admin standing was being refused. `forUpdate` because
+    // this IS an authority decision — `MembersService.updateRole` writes without the readiness
+    // lock, so an unlocked read lets a concurrent downgrade commit behind an approval it granted.
+    if (input.sodOverride.approverId === actorId) {
+      throw new ForbiddenException('A segregation-of-duties exception cannot be authorised by the actor it excuses');
+    }
+    const entitled = await this.orgs.hasProjectRoleStanding(
+      tx, projectId, input.sodOverride.approverId, ['pmc'], { forUpdate: true },
+    );
+    if (!entitled) {
+      throw new ForbiddenException('A segregation-of-duties exception must be authorised by a pmc with standing on this project');
+    }
+    return {
+      rule: 'evidence-recorder-may-not-certify',
+      actorId,
+      approverId: input.sodOverride.approverId,
+      reason: input.sodOverride.reason,
+    };
   }
 
   // ── reads ────────────────────────────────────────────────────────────────────────────────────
@@ -527,6 +569,7 @@ export class CommercialCertificationService {
     const cert = await this.prisma.billCertificate.findFirst({
       where: typeof target === 'string' ? { projectId, id: target } : target,
       include: {
+        sodExceptions: true,
         acceptanceConsumption: { orderBy: { stockTransactionId: 'asc' } },
         measurementConsumption: { orderBy: { measurementId: 'asc' } },
       },
@@ -535,6 +578,7 @@ export class CommercialCertificationService {
       if (certificateId === null) return null;
       throw new NotFoundException(`Certificate ${certificateId} not found in this project`);
     }
+    const sod = cert.sodExceptions[0];
     return {
       id: cert.id,
       billId: cert.billId,
@@ -550,6 +594,9 @@ export class CommercialCertificationService {
       supersededAt: cert.supersededAt?.toISOString() ?? null,
       supersededById: cert.supersededById,
       supersedeReason: cert.supersedeReason,
+      sodException: sod
+        ? { rule: sod.rule, actorId: sod.actorId, approverId: sod.approverId, reason: sod.reason, recordedAt: sod.recordedAt.toISOString() }
+        : null,
       // §E — the frozen evidence, reported. A certificate whose consumption set is invisible is a
       // certificate nobody can audit, and this pair is exactly what the withdrawal guards refuse
       // against: a reviewer asking "why can this acceptance not be reversed" reads the answer here.

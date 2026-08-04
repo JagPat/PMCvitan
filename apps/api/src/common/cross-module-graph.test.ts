@@ -95,6 +95,7 @@ const MODEL_OWNER: Record<string, string> = {
   billVerification: 'commercial',
   // Phase 5 Task 5B (§E/§I) — the certificate and the evidence it froze
   billCertificate: 'commercial',
+  sodException: 'commercial',
   certifiedAcceptanceConsumption: 'commercial',
   certifiedMeasurementConsumption: 'commercial',
   activityWorkOutput: 'activities',

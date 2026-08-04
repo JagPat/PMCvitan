@@ -490,7 +490,7 @@ assert "legacy user starts at credential version zero without fabricated verific
   "SELECT \"credentialVersion\"::text || '|' || COALESCE(\"emailVerifiedAt\"::text,'<null>') FROM \"User\" WHERE id='USER-1';" \
   "0|<null>"
 assert "durable password challenge and security audit tables exist" \
-  "SELECT ((to_regclass('\"PasswordCredentialChallenge\"') IS NOT NULL) AND (to_regclass('\"SecurityAuditEvent\"') IS NOT NULL))::text;" \
+  "SELECT ((to_regclass('\"PasswordCredentialChallenge\"') IS NOT NULL) AND (to_regclass('\"SecurityAuditEvent\"') IS NOT NULL) AND (to_regclass('\"SodException\"') IS NOT NULL))::text;" \
   "true"
 
 # Phase 2 Task 4 — the domain-event envelope is additive over a tenant-backfilled legacy DB
@@ -1899,11 +1899,11 @@ assert_rejects "commercial T5A §F: the arrow into APPROVED-FOR-PAYMENT, whose e
 # them EMPTY. That is asserted rather than assumed, and then every seal is exercised — each refusal
 # paired with the coherent case it must still accept, because a refusal alone shows only that
 # something is strict.
-assert "Phase 5 T5B: the three certification tables EXIST after migration" \
+assert "Phase 5 T5B: the four certification tables EXIST after migration" \
   "SELECT ((to_regclass('\"BillCertificate\"') IS NOT NULL) AND (to_regclass('\"CertifiedAcceptanceConsumption\"') IS NOT NULL) AND (to_regclass('\"CertifiedMeasurementConsumption\"') IS NOT NULL))::text;" \
   "true"
 assert "Phase 5 T5B: they upgrade ROW-FREE over the legacy fixture (a certificate is never invented)" \
-  "SELECT ((SELECT COUNT(*) FROM \"BillCertificate\") + (SELECT COUNT(*) FROM \"CertifiedAcceptanceConsumption\") + (SELECT COUNT(*) FROM \"CertifiedMeasurementConsumption\"))::text;" \
+  "SELECT ((SELECT COUNT(*) FROM \"BillCertificate\") + (SELECT COUNT(*) FROM \"CertifiedAcceptanceConsumption\") + (SELECT COUNT(*) FROM \"CertifiedMeasurementConsumption\") + (SELECT COUNT(*) FROM \"SodException\"))::text;" \
   "0"
 # `certified` is the SHADOW of a live certificate. With none, the arrow is refused — the same
 # assertion Task 5A carried, now proving the shadow rule rather than an absent table.
@@ -1979,14 +1979,44 @@ assert_rejects "commercial T5B §F: REWRITING a supersession stamp (a superseded
 # a concurrent supersession rather than race it.
 assert_rejects "commercial T5B R5-F1: EVIDENCE appended to a superseded certificate (history does not gain rows)" \
   "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A5','p1','UPT5B-C1','UP45-ACC',1)"
-# §I — this unit ships the RULE; the attributable OVERRIDE and its register are the NEXT review
-# unit's. What must hold here is that a certificate by the evidence RECORDER cannot exist at all:
-# `USER-1` recorded `UP45-ACC`, so the COMPLETE act by them — certificate, its evidence and the
-# status projection in one transaction, everything else coherent — is still refused, with no
-# exception path to take. Written as the whole act deliberately, so the refusal comes from §I
-# rather than from the completeness or projection seal.
-assert_rejects "commercial T5B §I: the complete act by the actor who RECORDED its evidence" \
+# ── §I's OVERRIDE (unit B) ─────────────────────────────────────────────────────────────────────
+#
+# `USER-1` recorded `UP45-ACC`, so §I refuses a certificate of theirs over it. Unit A shipped that
+# refusal alone; this unit adds the NAMED exception that lets a two-person practice proceed. Both
+# directions are asserted, because a seal that only refuses proves nothing about being right.
+#
+# The accepted case needs an approver WITH STANDING, and standing is the orgs module's rule. This
+# legacy fixture has two users and no `Membership` rows, so the row below is added for the same
+# reason `USER-2` was: a seal about two people cannot be exercised against a fixture that cannot
+# express the second one, and its absence would look like the rule firing.
+$PSQL >/dev/null -c "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES('UPT5B-MEM','p1','USER-2','pmc','active') ON CONFLICT DO NOTHING"
+assert_rejects "commercial T5B §I: the complete act by the actor who RECORDED its evidence, with NO override" \
   "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CR','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-CRE','p1','UPT5B-CR','UP45-ACC',3); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+
+# …and the SAME act WITH its attributable override is ACCEPTED — the seal is precise, not merely
+# strict. One transaction, because §I requires the override to be written with the act it excuses,
+# and (Codex round-6 P2) carrying the SAME `sourceCommandId` as the certificate.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C4','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A4','p1','UPT5B-C4','UP45-ACC',3); INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S4','p1','UPT5B-C4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UP45-CMD'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T5B §I: the RECORDER may certify WITH an attributable override, in one transaction" \
+  || { printf 'FAILED  %s\n' "commercial T5B §I: the coherent recorder-certified act was rejected"; FAIL=1; }
+# the override carries the trusted-evidence seals
+assert_rejects "commercial T5B §I: REWRITING the reason an override was granted for" \
+  "UPDATE \"SodException\" SET \"reason\"='a different story' WHERE \"id\"='UPT5B-S4'"
+assert_rejects "commercial T5B §I: a SECOND exception on one certificate (which one authorised the act?)" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S5','p1','UPT5B-C4','some-other-rule','USER-1','USER-2','a second story','UP45-CMD')"
+assert_rejects "commercial T5B §I: an exception naming NO fact (a standing waiver)" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S0','p1','r','USER-1','USER-2','reason','UP45-CMD')"
+assert_rejects "commercial T5B §I: an actor approving their OWN override (a signature on a mirror)" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S1','p1','UPT5B-C4','r','USER-1','USER-1','reason','UP45-CMD')"
+# the repository's non-blank discipline, over the COMPLETE ASCII whitespace set
+assert_rejects "commercial T5B §I: an override justified by a TAB (presence is not justification)" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S2','p1','UPT5B-C4','r','USER-1','USER-2',chr(9),'UP45-CMD')"
+# §F's correction path, now past the recorder-certified certificate
+$PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-2', \"supersedeReason\"='restated again' WHERE \"id\"='UPT5B-C4'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T5B §F: the recorder's certificate supersedes by the same one-transaction path" \
+  || { printf 'FAILED  %s\n' "commercial T5B §F: superseding the recorder-certified certificate was rejected"; FAIL=1; }
+assert_rejects "commercial T5B R5-F2: an OVERRIDE appended to a superseded certificate (history does not gain rows)" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S6','p1','UPT5B-C4','evidence-recorder-may-not-certify','USER-1','USER-2','late audit','UP45-CMD')"
 
 assert_rejects "commercial T5A R4-F4: VERIFIED -> submitted with no replacement version (the amendment arrow without the amendment)" \
   "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"

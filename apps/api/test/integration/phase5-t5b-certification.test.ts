@@ -17,6 +17,7 @@ import { CommercialBillService } from '../../src/commercial/commercial-bill.serv
 import { CommercialVerificationService } from '../../src/commercial/commercial-verification.service';
 import { CommercialCertificationService } from '../../src/commercial/commercial-certification.service';
 import { CommercialMeasurementService } from '../../src/commercial/commercial-measurement.service';
+import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
@@ -48,11 +49,12 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
   let verification: CommercialVerificationService;
   let certification: CommercialCertificationService;
   let measurement: CommercialMeasurementService;
+  let orgs: OrgsParticipant;
   let capabilities: CapabilitiesService;
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "SodException", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -76,6 +78,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     verification = t.app.get(CommercialVerificationService);
     certification = t.app.get(CommercialCertificationService);
     measurement = t.app.get(CommercialMeasurementService);
+    orgs = t.app.get(OrgsParticipant);
     capabilities = t.app.get(CapabilitiesService);
   });
   afterAll(async () => {
@@ -428,21 +431,41 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
   // ── §I — segregation of duties ───────────────────────────────────────────────────────────────
 
-  it('PROBE 8 (§I): the actor who recorded the evidence may not certify it', async () => {
+  it('PROBE 8 (§I): the actor who recorded the evidence may not certify it, and the exception is NAMED', async () => {
     const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
     const line = await issuedMaterialLine(projectId, { qty: '100' });
     // the acceptance is recorded by the member — the same actor who will attempt certification.
     // §I binds MATERIAL bills too: with no `Measurement` row, the acceptance actor IS the measurer.
     await acceptOnLine(projectId, line, '100', pmc(projectId));
     const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
 
-    // This unit ships the RULE; the attributable override that lets a two-person practice certify
-    // its own recorded evidence is the next unit's. Until it exists the refusal is unconditional,
-    // which is strictly more restrictive than the finished rule — so no state reachable here
-    // permits an act the finished rule would refuse.
     await expect(certification.certify(projectId, { billId }, pmc(projectId)))
       .rejects.toThrow(/Segregation of duties/u);
-    expect(await t.prisma.billCertificate.count({ where: { projectId } })).toBe(0);
+
+    // the approver must not be the actor being excused — a signature on a mirror
+    await expect(certification.certify(projectId, {
+      billId, sodOverride: { approverId: f.memberUser.id, reason: 'two-person practice' },
+    }, pmc(projectId))).rejects.toThrow(/cannot be authorised by the actor it excuses/u);
+
+    // and must be an ACTIVE pmc on this project
+    await expect(certification.certify(projectId, {
+      billId, sodOverride: { approverId: f.strangerUser.id, reason: 'two-person practice' },
+    }, pmc(projectId))).rejects.toThrow(/pmc with standing on this project/u);
+
+    const cert = await certification.certify(projectId, {
+      billId, sodOverride: { approverId: approver, reason: 'two-person practice; site engineer is the only store user' },
+    }, pmc(projectId));
+    expect(cert.sodException).toEqual({
+      rule: 'evidence-recorder-may-not-certify',
+      actorId: f.memberUser.id,
+      approverId: approver,
+      reason: 'two-person practice; site engineer is the only store user',
+      recordedAt: expect.any(String),
+    });
+    // §I — the exception is bound to THAT certificate, never a standing waiver
+    const rows = await t.prisma.sodException.findMany({ where: { projectId } });
+    expect(rows.map((r) => r.certificateId)).toEqual([cert.id]);
   });
 
   it('PROBE 9 (§I): a certification by someone who recorded NO evidence needs no exception', async () => {
@@ -452,7 +475,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await acceptOnLine(projectId, line, '100');
     const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
     const cert = await certification.certify(projectId, { billId }, pmc(projectId));
-    expect(cert.certifiedAmount).toBe('100');
+    expect(cert.sodException).toBeNull();
+    expect(await t.prisma.sodException.count({ where: { projectId } })).toBe(0);
   });
 
   // ── §F — supersession, replay, and the append-only seals ─────────────────────────────────────
@@ -497,12 +521,15 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     )).rejects.toThrow(/Key \("projectId", "billId"\)=.* already exists/u);
   });
 
-  it('PROBE 12 (§E): every new table is APPEND-ONLY at PostgreSQL', async () => {
+  it('PROBE 12 (§E/§I): every new table is APPEND-ONLY at PostgreSQL', async () => {
     const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
     const line = await issuedMaterialLine(projectId, { qty: '100' });
-    await acceptOnLine(projectId, line, '100');
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
     const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
-    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    const cert = await certification.certify(projectId, {
+      billId, sodOverride: { approverId: approver, reason: 'two-person practice' },
+    }, pmc(projectId));
 
     // the certificate: amount and attribution frozen, deletion refused, supersession one-way
     await expect(t.prisma.$executeRawUnsafe(
@@ -515,8 +542,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       `UPDATE "BillCertificate" SET "supersedeReason" = 'rewritten' WHERE "id" = $1`, cert.id,
     )).rejects.toThrow(/not rewritable/u);
 
-    // the consumption set: fully immutable, both arms
-    for (const table of ['CertifiedAcceptanceConsumption']) {
+    // the consumption sets and the exception: fully immutable, both arms
+    for (const table of ['CertifiedAcceptanceConsumption', 'SodException']) {
       await expect(t.prisma.$executeRawUnsafe(
         `UPDATE "${table}" SET "projectId" = "projectId" WHERE "projectId" = $1`, projectId,
       )).rejects.toThrow(/IMMUTABLE/u);
@@ -817,7 +844,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
         `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
         projectId, billId,
       ),
-    ])).rejects.toThrow(/who recorded evidence it rests on — §I refuses the act/u);
+    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception from the same command/u);
 
     // precision: the SAME act by a certifier who recorded none of it is ACCEPTED, so the seal is
     // reading the evidence-actor set rather than refusing every direct certificate
@@ -1282,7 +1309,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
         `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
         projectId, billId,
       ),
-    ])).rejects.toThrow(/who recorded evidence it rests on — §I refuses the act/u);
+    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception from the same command/u);
 
     // precision: the SAME forgery by a certifier who is in neither the taker nor the corrector set
     // is accepted, so the seal is counting the actor set and not simply refusing labour evidence
@@ -1403,7 +1430,375 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     }
   });
 
-  it('PROBE 15 (§0): the three new tables are closed under the shared-database reset', async () => {
+  // ── §I's OVERRIDE — the probes that travel with it ──────────────────────────────────────────
+
+  it('R1-F6 (§I): approver standing is the ORGS question, so org-admin standing authorises an exception', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    // the member records the acceptance AND certifies, so §I bites
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    // `f.ownerUser` is an ORG OWNER with NO project membership row. A direct `Membership` read
+    // finds nothing and refuses; `OrgsParticipant.hasProjectRoleStanding` folds in the owner/admin
+    // PMC standing the orgs module actually grants, which is why the question belongs to the owner.
+    expect(await t.prisma.membership.count({ where: { projectId, userId: f.ownerUser.id } })).toBe(0);
+    const cert = await certification.certify(projectId, {
+      billId, sodOverride: { approverId: f.ownerUser.id, reason: 'two-person practice; org admin authorises' },
+    }, pmc(projectId));
+    expect(cert.sodException?.approverId).toBe(f.ownerUser.id);
+
+    // a user with NO standing anywhere is still refused, so the routing did not widen the rule
+    const other = await freshProject();
+    await acceptOnLine(other, await issuedMaterialLine(other, { qty: '10' }), '10', pmc(other));
+  });
+
+  // ── Codex round-2 findings: the CERTIFICATE as a whole, not the row as it lands ──────────────
+
+  it('R3-F2/F3 (§I): the exception must name the RULE and come from an approver with standing', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const cert = await certification.certify(projectId, {
+      billId, sodOverride: { approverId: approver, reason: 'two-person practice' },
+    }, pmc(projectId));
+    const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, type: 'acceptance' }, select: { id: true },
+    });
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+
+    const forge = (id: string, rule: string, approverId: string) => t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         SELECT $5, $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        projectId, billId, version.id, cert.id, id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ($3,$1,$2,$4,100)`, projectId, id, `${id}-ev`, acceptance.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "SodException" ("id","projectId","certificateId","rule","actorId","approverId","reason","sourceCommandId")
+         SELECT $6, $1, $2, $3, "certifiedById", $4, 'forged', "sourceCommandId" FROM "BillCertificate" WHERE "id" = $5`,
+        projectId, id, rule, approverId, cert.id, `${id}-sod`,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ]);
+
+    // an exception for a DIFFERENT rule is not an override of THIS one
+    await expect(forge('wrong-rule', 'some-other-rule', approver))
+      .rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
+    // …and an approver with no standing is not the stronger authority §I requires
+    await expect(forge('no-standing', 'evidence-recorder-may-not-certify', f.strangerUser.id))
+      .rejects.toThrow(/granted by a pmc with standing/u);
+    // …while the correctly-ruled, properly-approved override is ACCEPTED
+    await expect(forge('proper', 'evidence-recorder-may-not-certify', approver)).resolves.toBeDefined();
+  });
+
+  it('R4-F3 (§I): the SoD seal honours MEMBERSHIP PRECEDENCE exactly as the orgs module does', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    // the org OWNER is also an ACTIVE CONTRACTOR on this project. `hasProjectRoleStanding` returns
+    // on the active membership and never reaches the org arm, so they operate AS contractor and the
+    // service refuses them — an `OR` in the SQL seal would have accepted them.
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: f.ownerUser.id } },
+      create: { projectId, userId: f.ownerUser.id, role: 'contractor', status: 'active' },
+      update: { role: 'contractor', status: 'active' },
+    });
+    await expect(certification.certify(projectId, {
+      billId, sodOverride: { approverId: f.ownerUser.id, reason: 'org admin, but a contractor here' },
+    }, pmc(projectId))).rejects.toThrow(/pmc with standing on this project/u);
+
+    // the DB seal agrees with the service: a forged certificate naming that approver is refused
+    const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, type: 'acceptance' }, select: { id: true },
+    });
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         VALUES ('precedence',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ('precedence-ev',$1,'precedence',$2,100)`, projectId, acceptance.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "SodException" ("id","projectId","certificateId","rule","actorId","approverId","reason","sourceCommandId")
+         VALUES ('precedence-sod',$1,'precedence','evidence-recorder-may-not-certify',$2,$3,'forged',$4)`,
+        projectId, f.memberUser.id, f.ownerUser.id, cmd.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ])).rejects.toThrow(/granted by a pmc with standing/u);
+
+    // …and with the contractor membership REMOVED, the same org owner IS a valid approver — the
+    // precedence rule, proven in both directions rather than only as a refusal
+    await t.prisma.membership.deleteMany({ where: { projectId, userId: f.ownerUser.id } });
+    await expect(certification.certify(projectId, {
+      billId, sodOverride: { approverId: f.ownerUser.id, reason: 'org admin with no project membership' },
+    }, pmc(projectId))).resolves.toBeDefined();
+  });
+
+  it('R5-RESTRUCTURE (§I): the SQL standing predicate and the ORGS participant agree on every shape', async () => {
+    // Rounds 3, 4 and 5 each produced a finding of the SAME kind: one §I rule with two
+    // implementations, and only the copy a finding named ever got fixed. The evidence-actor set is
+    // now a single SQL authority both layers CALL, so it cannot drift at all. Standing cannot be
+    // collapsed that way — orgs owns the rule, and a trigger cannot call TypeScript — so the two
+    // implementations are PINNED here instead: whichever one changes, this probe fails.
+    //
+    // The matrix is the shapes the rule actually distinguishes, including the two that produced
+    // round-4's finding (an org admin who is an active contractor, and the same person once that
+    // membership is gone).
+    const projectId = await freshProject();
+    const user = f.ownerUser.id;
+    const shapes: Array<{ name: string; arrange: () => Promise<void> }> = [
+      { name: 'no membership, org admin', arrange: async () => {
+        await t.prisma.membership.deleteMany({ where: { projectId, userId: user } });
+      } },
+      { name: 'active pmc membership', arrange: async () => {
+        await t.prisma.membership.upsert({
+          where: { projectId_userId: { projectId, userId: user } },
+          create: { projectId, userId: user, role: 'pmc', status: 'active' },
+          update: { role: 'pmc', status: 'active' },
+        });
+      } },
+      { name: 'active contractor membership (org admin too)', arrange: async () => {
+        await t.prisma.membership.update({
+          where: { projectId_userId: { projectId, userId: user } },
+          data: { role: 'contractor', status: 'active' },
+        });
+      } },
+      { name: 'INACTIVE pmc membership (org admin too)', arrange: async () => {
+        await t.prisma.membership.update({
+          where: { projectId_userId: { projectId, userId: user } },
+          data: { role: 'pmc', status: 'removed' },
+        });
+      } },
+      { name: 'active pmc, no org standing', arrange: async () => {
+        await t.prisma.membership.upsert({
+          where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
+          create: { projectId, userId: f.strangerUser.id, role: 'pmc', status: 'active' },
+          update: { role: 'pmc', status: 'active' },
+        });
+      } },
+    ];
+
+    const verdicts: Array<{ shape: string; sql: boolean; participant: boolean }> = [];
+    for (const shape of shapes) {
+      await shape.arrange();
+      const subject = shape.name.includes('no org standing') ? f.strangerUser.id : user;
+      const [{ sql }] = await t.prisma.$queryRaw<Array<{ sql: boolean }>>(
+        Prisma.sql`SELECT phase5_t5_pmc_standing(${projectId}, ${subject}) AS sql`,
+      );
+      const participant = await orgs.hasProjectRoleStanding(t.prisma, projectId, subject, ['pmc']);
+      verdicts.push({ shape: shape.name, sql, participant });
+    }
+    // cell by cell, so a disagreement names the shape rather than reporting "false !== true"
+    for (const v of verdicts) expect({ shape: v.shape, verdict: v.sql }).toEqual({ shape: v.shape, verdict: v.participant });
+    // precision: a matrix on which both are constantly true (or false) would agree while proving
+    // nothing, so the shapes must actually separate
+    expect(new Set(verdicts.map((v) => v.sql)).size).toBe(2);
+  });
+
+  it('R5-F2 (§I): an exception cannot be appended to a certificate that never needed one', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const storeUser = await store(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', storeUser);
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    // certified by someone who recorded NOTHING, so §I raised no conflict and no override exists
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.sodException).toBeNull();
+    const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+
+    const appendException = (id: string, certificateId: string, rule: string) => t.prisma.$executeRawUnsafe(
+      `INSERT INTO "SodException" ("id","projectId","certificateId","rule","actorId","approverId","reason","sourceCommandId")
+       VALUES ($1,$2,$3,$4,$5,$6,'appended later',$7)`,
+      id, projectId, certificateId, rule, f.memberUser.id, approver, cmd.id,
+    );
+
+    // `certificateById` reports the exception as the AUTHORITY for the act, so a late append makes
+    // the trail assert that a pmc excused a conflict which never existed
+    await expect(appendException('late-sod', cert.id, 'evidence-recorder-may-not-certify'))
+      .rejects.toThrow(/there is none to override/u);
+
+    // …and on a SUPERSEDED certificate it is refused earlier still, by the append-closure
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    await expect(appendException('historic-sod', cert.id, 'evidence-recorder-may-not-certify'))
+      .rejects.toThrow(/history does not gain new rows/u);
+
+    // precision: on a certificate that DOES carry a conflict the single required override is
+    // accepted, and a SECOND one — of any rule — is not, so "the exception on this certificate" is
+    // a definite description rather than whichever row the planner returns first
+    const l2 = await issuedMaterialLine(projectId, { qty: '50' });
+    await acceptOnLine(projectId, l2, '50', pmc(projectId));
+    const bill2 = await verifiedClaim(projectId, l2.vendorId, l2.poLineId, '50');
+    const conflicted = await certification.certify(projectId, {
+      billId: bill2, sodOverride: { approverId: approver, reason: 'two-person practice' },
+    }, pmc(projectId));
+    expect(conflicted.sodException?.rule).toBe('evidence-recorder-may-not-certify');
+    await expect(appendException('second-sod', conflicted.id, 'some-other-rule'))
+      .rejects.toThrow(/segregation-of-duties exceptions/u);
+    // (`SodException_certificate_rule_key` — PostgreSQL reports the KEY rather than the index name)
+    await expect(appendException('duplicate-sod', conflicted.id, 'evidence-recorder-may-not-certify'))
+      .rejects.toThrow(/"certificateId", rule\)=.* already exists/u);
+  });
+
+  it('R6-F4 (§I): the override must come from the SAME COMMAND as the certificate it excuses', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const cert = await certification.certify(projectId, {
+      billId, sodOverride: { approverId: approver, reason: 'two-person practice' },
+    }, pmc(projectId));
+    const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, type: 'acceptance' }, select: { id: true },
+    });
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    // a DIFFERENT real command in this project — the stale id a forgery would reach for
+    const other = await t.prisma.commandExecution.findFirstOrThrow({
+      where: { projectId, commandType: { not: 'commercial.bill.certify' } }, select: { id: true },
+    });
+    const own = await t.prisma.commandExecution.findFirstOrThrow({
+      where: { projectId, commandType: 'commercial.bill.certify' }, select: { id: true },
+    });
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+
+    const forge = (id: string, certCmd: string, sodCmd: string) => t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         VALUES ($5,$1,$2,$3,100,$4,$6)`, projectId, billId, version.id, f.memberUser.id, id, certCmd,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ($3,$1,$2,$4,100)`, projectId, id, `${id}-ev`, acceptance.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "SodException" ("id","projectId","certificateId","rule","actorId","approverId","reason","sourceCommandId")
+         VALUES ($5,$1,$2,'evidence-recorder-may-not-certify',$3,$4,'forged',$6)`,
+        projectId, id, f.memberUser.id, approver, `${id}-sod`, sodCmd,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ]);
+
+    // Codex round-6 P2 — an override whose provenance points at a DIFFERENT act. Every other seal
+    // passes: the rule matches, the approver has standing, the actor is the certifier, the evidence
+    // is real. What is wrong is that the durable trail would answer "which command authorised this
+    // certificate?" with someone else's command, which is not an audit trail.
+    await expect(forge('stale-cmd', own.id, other.id))
+      .rejects.toThrow(/exception from the same command/u);
+    // precision: the SAME act with matching provenance is ACCEPTED, so the seal is reading command
+    // identity rather than refusing every direct certificate
+    await expect(forge('same-cmd', own.id, own.id)).resolves.toBeDefined();
+  });
+
+  it('R6-F1 (§I): approver standing is decided under a LOCK in the SEAL, not only in the service', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, type: 'acceptance' }, select: { id: true },
+    });
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+
+    // The probe drives the DATABASE SEAL, not the service, and that distinction is the finding.
+    // `assertSegregation` already asks `OrgsParticipant.hasProjectRoleStanding` with
+    // `forUpdate: true`, so a service-driven certification blocks on the participant's lock and
+    // this probe would pass against the defect — proving the fix that was already there since
+    // round 1 rather than the one round 6 asked for. The seal is the path that enforces §I for a
+    // direct-SQL or future writer, where nothing has pre-locked the standing rows.
+    const downgrader = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
+    const forger = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
+    try {
+      let release!: () => void;
+      const mayCommit = new Promise<void>((r) => { release = r; });
+      let held!: () => void;
+      const isHeld = new Promise<void>((r) => { held = r; });
+
+      // the approver is downgraded to contractor, UNCOMMITTED — the window the finding names
+      const downgrade = downgrader.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `UPDATE "Membership" SET "role"='contractor' WHERE "projectId"=$1 AND "userId"=$2`,
+          projectId, approver,
+        );
+        held();
+        await mayCommit;
+      }, { timeout: 30_000 });
+      await isHeld;
+
+      // a complete, otherwise-coherent recorder-certified act with its override, whose deferred
+      // seals are fired WHILE the downgrade is still open
+      const forge = forger.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+           VALUES ('standing-race',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+           VALUES ('standing-race-ev',$1,'standing-race',$2,100)`, projectId, acceptance.id,
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "SodException" ("id","projectId","certificateId","rule","actorId","approverId","reason","sourceCommandId")
+           VALUES ('standing-race-sod',$1,'standing-race','evidence-recorder-may-not-certify',$2,$3,'two-person practice',$4)`,
+          projectId, f.memberUser.id, approver, cmd.id,
+        );
+        await tx.$executeRawUnsafe(
+          `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+          projectId, billId,
+        );
+        await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      }, { timeout: 30_000 });
+      const settled = forge.then(() => 'committed' as const, () => 'refused' as const);
+
+      const blocked = await (async () => {
+        for (let i = 0; i < 60; i++) {
+          const rows = await t.prisma.$queryRaw<Array<{ n: bigint }>>(Prisma.sql`
+            SELECT COUNT(*) AS n FROM pg_stat_activity
+             WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE '%SET CONSTRAINTS%'`);
+          if (Number(rows[0]!.n) > 0) return true;
+          if ((await Promise.race([settled, Promise.resolve('pending' as const)])) !== 'pending') return false;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        return false;
+      })();
+
+      release();
+      await downgrade;
+      // the downgrade committed, so the approver is a CONTRACTOR. A certificate must not stand on
+      // authority that was withdrawn while it was being decided.
+      expect(await settled, 'a certificate was authorised by an approver whose standing had been withdrawn').toBe('refused');
+      expect(await t.prisma.billCertificate.count({ where: { projectId } })).toBe(0);
+      expect(blocked, 'the seal never waited on the membership row — it read standing unlocked').toBe(true);
+    } finally {
+      await downgrader.$disconnect();
+      await forger.$disconnect();
+    }
+  });
+
+  it('PROBE 15 (§0): the four new tables are closed under the shared-database reset', async () => {
     // The reset lists are hand-mirrored across ~40 suites, and a table with an inbound FK that is
     // missing from one of them fails in whichever suite tears down LAST rather than in the one
     // that leaked. `truncate-closure.test.ts` derives the rule from the DMMF — but two of these
@@ -1415,7 +1810,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
        WHERE c.contype = 'f'
          AND c.confrelid::regclass::text IN (
            '"BillCertificate"', '"CertifiedAcceptanceConsumption"',
-           '"CertifiedMeasurementConsumption"')`);
+           '"CertifiedMeasurementConsumption"', '"SodException"')`);
     const listed = new Set([...TRUNCATE.matchAll(/"([A-Za-z0-9_]+)"/gu)].map((m) => m[1]!));
     const missing = rows
       .map((r) => r.referrer.replace(/"/gu, ''))

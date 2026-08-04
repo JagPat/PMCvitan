@@ -407,6 +407,18 @@ export interface VerificationDto {
   billStatus: VendorBillStatus;
 }
 
+/** §I — the attributable record that made an otherwise-forbidden act valid. */
+export interface SodExceptionDto {
+  /** which rule was overridden, e.g. `evidence-recorder-may-not-certify` */
+  rule: string;
+  /** the actor the rule would have refused */
+  actorId: string;
+  /** the stronger authority that authorized it */
+  approverId: string;
+  reason: string;
+  recordedAt: string;
+}
+
 /** §E — one row of a certificate's FROZEN evidence: WHICH row, and HOW MUCH of it. */
 export interface CertifiedConsumptionDto {
   /** the `acceptance` StockTransaction id, or the `Measurement` id */
@@ -439,6 +451,9 @@ export interface CertificateDto {
   supersededAt: string | null;
   supersededById: string | null;
   supersedeReason: string | null;
+  /** §I — the override that authorised this act, when the certifier recorded evidence it rests on.
+   *  Null on the ordinary path, and the database enforces the biconditional both ways. */
+  sodException: SodExceptionDto | null;
   /** the frozen material evidence — what the acceptance-reversal guard refuses against */
   acceptanceConsumption: CertifiedConsumptionDto[];
   /** the frozen labour evidence — what the measurement-correction floor refuses against */
