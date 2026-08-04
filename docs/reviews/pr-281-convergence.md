@@ -1,6 +1,6 @@
 # PR #281 — architectural convergence audit (Phase 5 Task 5B unit B, §I's override)
 
-Three finding-bearing heads, eight findings. Per `CLAUDE.md` this stops being another isolated patch:
+Four finding-bearing heads, nine findings. Per `CLAUDE.md` this stops being another isolated patch:
 it names the ROOT the findings share and leaves a mechanical closure behind.
 
 | Head | Findings | |
@@ -8,6 +8,7 @@ it names the ROOT the findings share and leaves a mechanical closure behind.
 | `b64d027` | 3 | 2×P1, 1×P2 — the approver never acted; matching ids are not provenance; a probe that described an assertion it never made |
 | `d360445` | 2 | 1×P1, 1×P2 — **the grant needed the receipt rule the same correction had just introduced**; the live-grant unique excluded the version |
 | `8153d4c` | 3 | 3×P2 — **all three on `SodGrant` again**: no insert-side seal, no replacement path when an approver loses standing, an unsealed consume transition |
+| `3f5ead4` | 1 | 1×P2 — **`SodGrant` a sixth time**, and round 8's own defect in a second costume: select an arbitrary live grant, then validate it |
 
 ## The root: a correction creates a new artifact, and the rule it was correcting does not travel
 
@@ -63,6 +64,27 @@ that applies to what it accompanies applies to it too* — was right, and statin
 What makes it operational is doing the enumeration ONCE, against the accompanying row, rather than
 waiting for a reviewer to name the seals one per round.
 
+## Round 10: the third root — "select then validate" is not "select what is valid"
+
+Round 10's single finding is round 8's, one cause along, and it is worth separating from the
+seal-completeness root because the fix is different in kind.
+
+Round 8: `assertSegregation` read one live grant over the version-BLIND scope and compared versions
+afterwards, so a legitimate stale+current pair resolved arbitrarily. I added `versionId` to the
+`where` — fixing the PREDICATE and leaving the SHAPE. Round 9 then widened the live-grant scope with
+`approverId` so a replacement could exist at all, which made the identical trap reachable through
+standing: approver A grants, A is downgraded, B grants a valid replacement, and a `findFirst` that
+happens to return A's row refuses the whole certification.
+
+**Selecting an arbitrary candidate and then checking it answers a different question from selecting
+a candidate that is valid — whenever more than one candidate can exist.** Twice in this PR I widened
+the set of possible candidates (version in round 8's index, approver in round 9's) and left a
+consumer that assumes there is only one.
+
+The closure: when a uniqueness scope is deliberately widened, every reader of that scope becomes a
+SELECTION rather than a lookup, and the validity condition belongs in the selection. Round 10 moves
+the standing check into the candidate loop, so stale grants are simply not candidates.
+
 ## The second root: proving a thing is WELL-FORMED is not proving it is REAL
 
 Round 7's headline P1 deserves its own naming, because every seal in unit A and unit B was working
@@ -112,7 +134,7 @@ reason too.
 | Gate | Result |
 |---|---|
 | `pnpm check` | EXIT 0 — web 543/543, API 724/724 |
-| `phase5-t5b-certification.test.ts` | **46/46** on live PostgreSQL |
+| `phase5-t5b-certification.test.ts` | **47/47** on live PostgreSQL |
 | Reproduce-first, round 7 | the grant path reverted → the forged-approver certification commits |
 | Reproduce-first, round 8 | the grant-receipt clause removed → the forged grant is accepted and the certificate commits; the version dropped from the unique → the amended claim can never be authorised again |
 | `upgrade-proof.sh` | PASSED — the grant carries its own approver receipt, reserved and completed in one transaction |

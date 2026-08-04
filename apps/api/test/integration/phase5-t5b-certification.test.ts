@@ -2021,6 +2021,43 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       .resolves.toBeDefined();
   });
 
+  it('R10 (§I): certification consumes a grant that IS valid, not an arbitrary live one', async () => {
+    const projectId = await freshProject();
+    const first = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    // approver A grants, then loses standing. Round 9 made a replacement POSSIBLE by widening the
+    // live-grant scope; this is the other half — the consumer must not pick the dead row and refuse.
+    const stale = await grantOverride(projectId, billId, first, f.memberUser.id, 'A authorises');
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: first } }, data: { role: 'contractor' },
+    });
+    // with ONLY the stale grant standing, the refusal is honest and names the reason
+    await expect(certification.certify(projectId, { billId }, pmc(projectId)))
+      .rejects.toThrow(/no longer holds pmc standing/u);
+
+    // approver B — a DIFFERENT pmc — grants a valid replacement. A `findFirst` that returns A's row
+    // and then validates it refuses the whole certification; selecting a grant that IS valid does
+    // not. `grantedAt: 'asc'` means the stale row is the one an arbitrary read would reach first,
+    // so this probe fails against the old shape rather than passing by luck of ordering.
+    // a genuinely DIFFERENT person: `secondPmc` is idempotent and returns the same user, so
+    // reusing it would have made A and B one approver and proved nothing
+    const second = f.strangerUser.id;
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: second } },
+      create: { projectId, userId: second, role: 'pmc', status: 'active' },
+      update: { role: 'pmc', status: 'active' },
+    });
+    const valid = await grantOverride(projectId, billId, second, f.memberUser.id, 'B authorises');
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.sodException?.grantId).toBe(valid.id);
+    expect(cert.sodException?.approverId).toBe(second);
+    // …and A's dead grant is untouched: it was never consumable, so it was never consumed
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: stale.id } })).consumedAt).toBeNull();
+  });
+
   it('PROBE 15 (§0): the four new tables are closed under the shared-database reset', async () => {
     // The reset lists are hand-mirrored across ~40 suites, and a table with an inbound FK that is
     // missing from one of them fails in whichever suite tears down LAST rather than in the one

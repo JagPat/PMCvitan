@@ -523,13 +523,37 @@ export class CommercialCertificationService {
     // The probe for round-8's index fix caught this: it refused a perfectly good certification
     // because it had reached for the stale row. Selecting on the version is the fix; the stale-grant
     // branch below now exists only to give an ACCURATE message.
-    const grant = await tx.sodGrant.findFirst({
-      where: {
-        projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null,
-      },
+    // Codex round 10, and it is round 8's finding in a second costume. Round 8: this read selected
+    // over the version-BLIND scope and compared versions afterwards, so a legitimate stale+current
+    // pair resolved arbitrarily. I fixed the version and left the SHAPE — select one row, then
+    // validate it — and round 9's `approverId` in the live-grant scope made the same trap reachable
+    // through standing: approver A grants, A is downgraded, B grants a valid replacement, and a
+    // `findFirst` that happens to return A's row refuses the whole certification.
+    //
+    // The shape is the defect. "Select an arbitrary candidate, then check it" answers a different
+    // question from "select a candidate that is valid" whenever more than one can exist, and the
+    // live-grant scope is now deliberately wide enough for more than one. So the standing filter
+    // moves INTO the selection, and the stale rows are simply not candidates.
+    const live = await tx.sodGrant.findMany({
+      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
       select: { id: true, approverId: true, reason: true },
+      orderBy: { grantedAt: 'asc' },
     });
+    let grant: { id: string; approverId: string; reason: string } | null = null;
+    for (const candidate of live) {
+      // standing is the ORGS module's question, asked under a lock because this IS an authority
+      // decision — a concurrent downgrade must not commit behind an approval it granted
+      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate: true })) {
+        grant = candidate;
+        break;
+      }
+    }
     if (!grant) {
+      if (live.length > 0) {
+        throw new ForbiddenException(
+          'The authorisation on this claim was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again',
+        );
+      }
       // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
       // approver looked at should not silently carry over to one they never saw
       const stale = await tx.sodGrant.count({
@@ -545,12 +569,6 @@ export class CommercialCertificationService {
         + 'A pmc with standing on this project may authorise it with `commercial.sod.grant`, which records '
         + 'their own reason against this claim.',
       );
-    }
-    const entitled = await this.orgs.hasProjectRoleStanding(
-      tx, projectId, grant.approverId, ['pmc'], { forUpdate: true },
-    );
-    if (!entitled) {
-      throw new ForbiddenException('A segregation-of-duties exception must be authorised by a pmc with standing on this project');
     }
     const { count } = await tx.sodGrant.updateMany({
       where: { id: grant.id, projectId, consumedAt: null },
