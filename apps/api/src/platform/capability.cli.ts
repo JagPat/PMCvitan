@@ -91,6 +91,9 @@ async function main(): Promise<void> {
             new LabourRequirementParticipant(), new InventoryQuery(prisma),
             new CommercialBillQuery(), new CommercialMeasurementQuery(), budgetService,
           ),
+          // Phase 5 Task 5B — the §D/§E row-level certificate floor folds `netOf` through the
+          // measurement QUERY, so the hand-built graph gains it for the same reason as above.
+          new CommercialMeasurementQuery(),
         ),
         new ProcurementQuery(prisma),
         new LabourRequirementQuery(prisma),

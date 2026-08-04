@@ -49,6 +49,13 @@ export const COMMERCIAL_COMMANDS = [
   // consequence: a matched claim moves to `verified`, an exception moves it to `disputed` naming
   // itself. Certification is 5B's, with the evidence that makes it safe.
   'commercial.bill.verify',
+  // Phase 5 Task 5B (§E/§F/§I) — CERTIFY a verified claim, and SUPERSEDE a certificate. Two
+  // commands rather than one reversible act: past certification §F's correction path IS a
+  // superseding certificate, because a status flip would leave the certificate — and everything
+  // that will hang off it in Task 6 — orphaned. They also carry different authority questions:
+  // certifying asks §I's segregation rule, superseding asks only whether one stands.
+  'commercial.bill.certify',
+  'commercial.certificate.supersede',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -66,6 +73,10 @@ export const COMMERCIAL_QUERIES = [
   // Phase 5 Task 5A — the §E triple as a READ, so a reviewer can see the verdict without moving
   // the claim. Derived on every call: a stored verdict is stale the moment a receipt is reversed.
   'commercial.verification',
+  // Phase 5 Task 5B — the LIVE certificate on a claim, with its frozen evidence. Unlike the
+  // verification triple this is NOT derived: a certificate is a FACT that was written, and
+  // recomputing it would be recomputing a decision.
+  'commercial.certificate',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -394,4 +405,42 @@ export interface VerificationDto {
    * takes an attributable amendment to move the claim, not a recomputation that now agrees.
    */
   billStatus: VendorBillStatus;
+}
+
+/** §E — one row of a certificate's FROZEN evidence: WHICH row, and HOW MUCH of it. */
+export interface CertifiedConsumptionDto {
+  /** the `acceptance` StockTransaction id, or the `Measurement` id */
+  rowId: string;
+  consumedQty: string;
+}
+
+/**
+ * Phase 5 Task 5B (§E/§F/§G/§I) — a CERTIFICATE: the act that turns a verified claim into money
+ * anyone may approve.
+ *
+ * Every amount is a decimal STRING (§A `Decimal(18,2)`, half-up), never a JS number.
+ *
+ * **There is no `netPayable` field here, and its absence is deliberate.** §G bound 4 defines it as
+ * `CERTIFIED − unreleased deductions`, and the §H deduction ledger is Task 5C's. Reporting the
+ * gross amount under that name would be an answer rather than a question: every consumer would
+ * read a computed net that is silently wrong the moment the first deduction row exists. It lands
+ * with the ledger that makes it true.
+ */
+export interface CertificateDto {
+  id: string;
+  billId: string;
+  /** the claim VERSION this certificate was computed against — a later amendment supersedes it */
+  versionId: string;
+  certifiedAmount: string;
+  certifiedAt: string;
+  certifiedById: string;
+  /** the ONE permitted transition. A superseded certificate is retained history, and §G bounds
+   *  read the LIVE one only. */
+  supersededAt: string | null;
+  supersededById: string | null;
+  supersedeReason: string | null;
+  /** the frozen material evidence — what the acceptance-reversal guard refuses against */
+  acceptanceConsumption: CertifiedConsumptionDto[];
+  /** the frozen labour evidence — what the measurement-correction floor refuses against */
+  measurementConsumption: CertifiedConsumptionDto[];
 }

@@ -53,6 +53,7 @@ import { CommercialMeasurementService } from './commercial/commercial-measuremen
 import { CommercialMeasurementQuery } from './commercial/commercial-measurement.query';
 import { CommercialBillService } from './commercial/commercial-bill.service';
 import { CommercialVerificationService } from './commercial/commercial-verification.service';
+import { CommercialCertificationService } from './commercial/commercial-certification.service';
 import { CommercialBillQuery } from './commercial/commercial-bill.query';
 import { CommercialActivationService } from './commercial/commercial-activation.service';
 import { ProcurementQuery } from './procurement/procurement.query';
@@ -158,6 +159,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     CommercialMeasurementQuery,
     CommercialBillService,
     CommercialVerificationService,
+    CommercialCertificationService,
     CommercialBillQuery,
     CommercialActivationService,
     ProcurementQuery,

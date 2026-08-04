@@ -23,14 +23,25 @@ import { Prisma } from '@prisma/client';
  * derived from the DMMF, so a table added tomorrow is covered without anyone editing anything.
  */
 describe('Phase 5 Task 5A — the seed reset is closed under inbound foreign keys', () => {
-  /** Every table named in `seed.ts`'s TRUNCATE, in DMMF (model) terms. */
-  const truncated = (): Set<string> => {
+  /**
+   * Every table named in EACH of `seed.ts`'s TRUNCATE statements, in DMMF (model) terms.
+   *
+   * Phase 5 Task 5B — one set per STATEMENT, not one set for the file. `seed.ts` resets in two
+   * statements (the projection/event side and the Phase-3-onward append-only side), and the first
+   * version of this check matched only the first one with a non-global regex, so a table whose FK
+   * pointed into the SECOND list was reported closed while PostgreSQL would refuse it. That is the
+   * same shape as the defect the file exists to catch, one layer up: a check that examines a subset
+   * of its subject and reports on all of it. Reading the file as a whole would be equally wrong in
+   * the other direction — PostgreSQL evaluates each TRUNCATE alone, so a name in statement 1 does
+   * not satisfy a reference in statement 2.
+   */
+  const truncated = (): Set<string>[] => {
     const seed = readFileSync(join(__dirname, '../../../prisma/seed.ts'), 'utf8');
-    const statement = seed.match(/TRUNCATE TABLE ([^']+)/u);
-    expect(statement, 'seed.ts must contain a TRUNCATE TABLE reset').toBeTruthy();
-    return new Set(
-      [...statement![1]!.matchAll(/"([A-Za-z0-9_]+)"/gu)].map((m) => m[1]!),
-    );
+    const statements = [...seed.matchAll(/TRUNCATE TABLE ([^']+)/gu)];
+    expect(statements.length, 'seed.ts must contain a TRUNCATE TABLE reset').toBeGreaterThan(0);
+    return statements.map((statement) => new Set(
+      [...statement[1]!.matchAll(/"([A-Za-z0-9_]+)"/gu)].map((m) => m[1]!),
+    ));
   };
 
   /**
@@ -53,12 +64,13 @@ describe('Phase 5 Task 5A — the seed reset is closed under inbound foreign key
   };
 
   it('every table with a foreign key INTO the reset set is itself in the reset set', () => {
-    const listed = truncated();
     const inbound = inboundReferences();
     const missing: string[] = [];
-    for (const table of listed) {
-      for (const referrer of inbound.get(table) ?? []) {
-        if (!listed.has(referrer)) missing.push(`${referrer} → ${table}`);
+    for (const listed of truncated()) {
+      for (const table of listed) {
+        for (const referrer of inbound.get(table) ?? []) {
+          if (!listed.has(referrer)) missing.push(`${referrer} → ${table}`);
+        }
       }
     }
     expect(
@@ -74,9 +86,12 @@ describe('Phase 5 Task 5A — the seed reset is closed under inbound foreign key
     // is not shown to be checking. If the parse breaks, `truncated()` returns an empty set and the
     // assertion above is vacuously true — so the set is asserted to be substantial and to contain a
     // model the DMMF actually knows.
-    const listed = truncated();
-    expect(listed.size).toBeGreaterThan(5);
+    const statements = truncated();
+    expect(statements.length).toBeGreaterThan(1);
     const known = new Set(Prisma.dmmf.datamodel.models.map((m) => m.name));
-    for (const table of listed) expect(known.has(table), `${table} is not a Prisma model`).toBe(true);
+    for (const listed of statements) {
+      expect(listed.size).toBeGreaterThan(5);
+      for (const table of listed) expect(known.has(table), `${table} is not a Prisma model`).toBe(true);
+    }
   });
 });

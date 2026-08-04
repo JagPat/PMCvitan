@@ -93,15 +93,16 @@ export class CommercialMeasurementService {
   /**
    * The NET contribution one measurement row still makes to the fold: its own quantity plus every
    * correction addressed to it. A row corrected back to zero has nothing left to withdraw.
+   *
+   * Phase 5 Task 5B — the fold MOVED to `CommercialMeasurementQuery` and this delegates. §E's
+   * row-level consumption freeze needs the same quantity this correction floor does, and two
+   * implementations of "what this row still contributes" would disagree the first time either
+   * changed.
    */
   private async netOf(
     tx: Prisma.TransactionClient, projectId: string, measurementId: string,
   ): Promise<Prisma.Decimal> {
-    const rows = await tx.measurement.findMany({
-      where: { projectId, OR: [{ id: measurementId }, { correctsId: measurementId }] },
-      select: { quantity: true },
-    });
-    return rows.reduce((acc, r) => acc.add(r.quantity), ZERO);
+    return this.measured.netOf(tx, projectId, measurementId);
   }
 
   /**
@@ -361,9 +362,13 @@ export class CommercialMeasurementService {
         // participant is asked with the POST-correction fold: the guard is about the state this
         // transaction is committing, not the one it started from. The deferred DB bound seal then
         // aborts the whole transaction if the disposition left the bound broken.
+        // Phase 5 Task 5B — the ORIGINAL row is passed too, so the participant can apply §E's
+        // ROW-LEVEL certificate floor. The aggregate cannot express it: a second measurement can
+        // keep the fold whole while the certificate's own frozen row is walked back underneath it.
         if (row.quantity.isNegative()) {
           await this.participant.assertMeasurementWithdrawable(
             tx, projectId, row.labourPoLineId, after, { actorId: actor.actorId, role: user.role },
+            row.correctsId ?? undefined,
           );
         }
         // §B — MEASURED is a `COMMITTED` fold input, so this write is a headroom mover and

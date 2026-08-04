@@ -117,6 +117,31 @@ export class CommercialBillQuery {
   }
 
   /**
+   * `BILLED_AMOUNT(bill)` (§0) — the BILL-scoped set: the live version's lines of a LIVE bill.
+   *
+   * This is the ceiling §G bound 3 caps a certificate at, so it is stated here beside the
+   * line-scoped folds rather than inlined at the one caller. The DB seal
+   * (`phase5_t5_certified_bound_check`) computes the identical set in SQL — two languages, one
+   * definition, which is the same shape as every §G bound in this phase: the service refuses with
+   * a sentence, PostgreSQL refuses whatever route bypassed the service.
+   *
+   * Bill-scoped and NOT a sum of `billedAmountFor` over the bill's PO lines: those sets are
+   * PO-LINE scoped and count OTHER bills' claims on the same line, so summing them would cap this
+   * certificate at the whole line's claimed value including a rival vendor claim.
+   */
+  async billedAmountOfBill(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    billId: string,
+  ): Promise<Prisma.Decimal> {
+    const rows = await tx.vendorBillLine.findMany({
+      where: { projectId, version: { is: { billId, ...LIVE_VERSION } } },
+      select: { amount: true },
+    });
+    return rows.reduce((a, r) => a.add(r.amount), ZERO);
+  }
+
+  /**
    * The LIVE claims drawing on ONE purchase-order line, NEWEST FIRST.
    *
    * Newest-first is the order the withdrawal disposition disputes in (§E, probe 5an), and it is
