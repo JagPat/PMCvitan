@@ -1931,6 +1931,52 @@ assert_rejects "commercial T5B §F: a HALF-STAMPED supersession (unattributable 
 $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C1','p1','UPT4-B3','UPT4-BV3',3.00,'USER-2','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A2','p1','UPT5B-C1','UP45-ACC',3); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5B §G/§F/§E: a certificate AT the claimed amount, with its frozen evidence and its status projection, is ACCEPTED (every seal precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T5B §G: a coherent certificate was rejected"; FAIL=1; }
+
+# ── Phase 5 Task 5C (§H) — the deduction ledger, asserted against the LIVE certificate above ──
+#
+# It is anchored HERE, and that placement is the point. The first spelling of this block sat at the
+# end of the script and named a certificate id nothing ever created, so every "rejected" line was
+# rejected by the FOREIGN KEY before reaching the CHECK it claimed to test — the assertions would
+# have passed with every constraint dropped. A rejection is evidence only when it comes from the
+# rule it names, which is why each group below ACCEPTS a coherent row first, and why the certificate
+# these rest on is asserted live rather than assumed.
+assert "commercial T5C: both ledger tables exist" \
+  "SELECT ((to_regclass('\"BillDeduction\"') IS NOT NULL) AND (to_regclass('\"BillDeductionRelease\"') IS NOT NULL))::text;" \
+  "true"
+assert "commercial T5C: a legacy database upgrades with an EMPTY ledger — no withholding is invented" \
+  "SELECT (SELECT COUNT(*) FROM \"BillDeduction\")::text || '/' || (SELECT COUNT(*) FROM \"BillDeductionRelease\")::text;" \
+  "0/0"
+assert "commercial T5C: the certificate these assertions rest on is LIVE and its claim is certified" \
+  "SELECT (SELECT COUNT(*) FROM \"BillCertificate\" WHERE \"id\"='UPT5B-C1' AND \"supersededAt\" IS NULL)::text || '|' || (SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B3');" \
+  "1|certified"
+$PSQL >/dev/null -c "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-DED','p1','UPT5B-C1','UPT4-B3','retention',1.00,'USER-1','UP45-CMD')" \
+  && printf 'ok      %s\n' "commercial T5C: a coherent retention against a live certificate is ACCEPTED (so every rejection below is its own rule)" \
+  || { printf 'FAILED  %s\n' "commercial T5C: a coherent retention was rejected — the seals are over-strict and the rejections below prove nothing"; FAIL=1; }
+assert_rejects "commercial T5C: a NEGATIVE deduction (the row TYPE carries direction; a negative RAISES the payable)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NEG','p1','UPT5B-C1','UPT4-B3','retention',-1.00,'USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: a deduction of an UNKNOWN type (advance-recovery ships in Task 6 with the row that caps it)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-TYP','p1','UPT5B-C1','UPT4-B3','advance-recovery',1.00,'USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: a PENALTY with no reason (a judgement nobody can read is not one)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NR','p1','UPT5B-C1','UPT4-B3','penalty',1.00,'USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: a reason of pure WHITESPACE (presence is not justification)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-WS','p1','UPT5B-C1','UPT4-B3','other',1.00,E' \t\n ','USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: withholding MORE than the certificate carries (the NET_PAYABLE floor)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-OVER','p1','UPT5B-C1','UPT4-B3','retention',2.50,'USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: EDITING a withholding (append-only; a correction is a release row)" \
+  "UPDATE \"BillDeduction\" SET \"amount\"=0.5 WHERE \"id\"='UP5C-DED'"
+assert_rejects "commercial T5C: DELETING a withholding (it would raise the payable with no release behind it)" \
+  "DELETE FROM \"BillDeduction\" WHERE \"id\"='UP5C-DED'"
+$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-REL','p1','UP5C-DED',0.40,'partial','USER-1','UP45-CMD')" \
+  && printf 'ok      %s\n' "commercial T5C: a coherent release within its own deduction is ACCEPTED" \
+  || { printf 'FAILED  %s\n' "commercial T5C: a coherent release was rejected"; FAIL=1; }
+assert_rejects "commercial T5C: a NEGATIVE release" \
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RNEG','p1','UP5C-DED',-0.10,'why','USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: releasing MORE than its own deduction withheld" \
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-ROVER','p1','UP5C-DED',0.70,'too much','USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: a release with a WHITESPACE reason" \
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RWS','p1','UP5C-DED',0.10,E' \t ','USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: EDITING a release (append-only — it is the correction path, so it has none of its own)" \
+  "UPDATE \"BillDeductionRelease\" SET \"amount\"=0.01 WHERE \"id\"='UP5C-REL'"
 # Codex round-2 P2 — a certificate that rests on NOTHING. Every row-level seal passes; only the
 # certificate-side completeness check sees the absence.
 assert_rejects "commercial T5B R2-F1: a certificate freezing NO evidence at all (a row seal cannot see an absence)" \
@@ -2169,27 +2215,14 @@ $PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"cost
   || { printf 'FAILED  %s\n' "commercial T4 R3-F1: the claim-raised exception was rejected"; FAIL=1; }
 $PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPT4-BXCL'" >/dev/null
 
-# ── Phase 5 Task 5C (§H) — the deduction ledger is a purely additive, ROW-FREE capability ────
-assert "commercial T5C: both ledger tables exist" \
-  "SELECT ((to_regclass('\"BillDeduction\"') IS NOT NULL) AND (to_regclass('\"BillDeductionRelease\"') IS NOT NULL))::text;" \
-  "true"
-assert "commercial T5C: a legacy database upgrades with an EMPTY ledger — no withholding is invented" \
-  "SELECT (SELECT COUNT(*) FROM \"BillDeduction\")::text || '/' || (SELECT COUNT(*) FROM \"BillDeductionRelease\")::text;" \
-  "0/0"
-# the seals, over a hostile writer. Each is the DATABASE half of a rule the service also holds.
-assert_rejects "commercial T5C: a NEGATIVE deduction (the row TYPE carries direction; a negative RAISES the payable)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NEG','p1','UP5C-CERT','UPT4-B3','retention',-10.00,'USER-1','UP45-CMD')"
-assert_rejects "commercial T5C: a deduction of an UNKNOWN type (advance-recovery ships in Task 6 with the row that caps it)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-TYP','p1','UP5C-CERT','UPT4-B3','advance-recovery',10.00,'USER-1','UP45-CMD')"
-assert_rejects "commercial T5C: a PENALTY with no reason (a judgement nobody can read is not one)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NR','p1','UP5C-CERT','UPT4-B3','penalty',10.00,'USER-1','UP45-CMD')"
-assert_rejects "commercial T5C: a reason of pure WHITESPACE (presence is not justification)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-WS','p1','UP5C-CERT','UPT4-B3','other',10.00,E' \t\n ','USER-1','UP45-CMD')"
-assert_rejects "commercial T5C: a NEGATIVE release" \
-  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RNEG','p1','UP5C-DED',-1.00,'why','USER-1','UP45-CMD')"
-# and the WIDENED biconditional still refuses BOTH directions it was written for
-assert_rejects "commercial T5C: a bill moved OFF the post-certification set while a live certificate stands" \
-  "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"projectId\"='p1' AND \"id\"='UPT4-B3'"
+# ── Phase 5 Task 5C (§H) — the SUPERSEDED-certificate rule, asserted where one actually is ──
+# `UPT5B-C1` was superseded above, so this is the real state the rule is about — and the deduction
+# rows taken against it while it was live survive as history, which is what §H requires.
+assert "commercial T5C: the withholdings taken while it was live SURVIVE its supersession as history" \
+  "SELECT COUNT(*)::text FROM \"BillDeduction\" WHERE \"certificateId\"='UPT5B-C1';" \
+  "1"
+assert_rejects "commercial T5C: a NEW withholding against a SUPERSEDED certificate (taken from nothing)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-LATE','p1','UPT5B-C1','UPT4-B3','retention',1.00,'USER-1','UP45-CMD')"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

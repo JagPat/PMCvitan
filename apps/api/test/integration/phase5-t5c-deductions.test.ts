@@ -300,29 +300,27 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
 
   // ── §F — the status is DERIVED from the folds, and withholding everything settles the bill ────
 
-  it('PROBE 4 (§F/§H): withholding the WHOLE certificate settles the claim, and releasing part re-opens it', async () => {
-    // This is the probe the two seal widenings exist for. §F evaluates `NET_PAYABLE = PAID` FIRST,
-    // so a fully-withheld certificate has nothing left to pay. Unit A sealed "a live certificate
-    // stands iff the bill is `certified`" while `certified` was terminal; without widening that to
-    // the post-certification SET, this transition is refused by the database and no legal row
-    // exists that could ever advance the claim — approval and payment rows are strictly positive.
+  it('PROBE 4 (§H): withholding the WHOLE certificate leaves nothing payable, and the STATUS deliberately does not move', async () => {
+    // §H says the insertion re-derives the §F payment status. It does not do that here, and the
+    // packet says so: §F reads three folds and two of them are Task 6's, so the derivation lands
+    // beside the rows that supply them. What 5C guarantees is the MONEY — and this probe pins the
+    // deliberate half-step so Task 6 changes it knowingly rather than discovering it.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     expect(await statusOf(projectId, billId)).toBe('certified');
 
     const deduction = await deductions.record(projectId, { billId, type: 'retention', amount: '100.00' }, pmc(projectId));
-    expect(await statusOf(projectId, billId)).toBe('paid');
     expect((await deductions.readLedger(projectId, billId, pmc(projectId))).netPayable).toBe('0.00');
+    expect(await statusOf(projectId, billId), 'Task 5C moves the money, not the status').toBe('certified');
+    expect((await positionOf(projectId)).certifiedPayable).toBe('0.00');
 
-    // …and a release makes money payable again, so the derivation returns it to `certified` —
-    // `APPROVED = 0`, the second arm. It never derives `approved-for-payment` here: that would
-    // claim an approval nobody recorded, and a status that overstates authority invites a payment.
+    // …and a release makes money payable again, in the ledger and in §J
     await deductions.release(projectId, { deductionId: deduction.id, amount: '40.00', reason: 'first milestone released' }, pmc(projectId));
-    expect(await statusOf(projectId, billId)).toBe('certified');
     const ledger = await deductions.readLedger(projectId, billId, pmc(projectId));
     expect(ledger.withheld).toBe('60.00');
     expect(ledger.netPayable).toBe('40.00');
-    expect(ledger.derivedStatus).toBe('certified');
+    expect(ledger.billStatus).toBe('certified');
+    expect((await positionOf(projectId)).certifiedPayable).toBe('40.00');
   });
 
   // ── §H bound 2 — a release is bounded by its OWN deduction ───────────────────────────────────
@@ -420,6 +418,7 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     expect(after.deductions).toHaveLength(1);
     expect(after.deductions[0]!.unreleased).toBe('5.00');
     expect(after.deductions[0]!.releases).toHaveLength(1);
+    expect(after.billStatus).toBe('certified');
 
     // the superseded rows survive as HISTORY on the certificate they were taken against — they are
     // append-only, so re-statement is a copy with an audit chain, never a move
@@ -510,50 +509,90 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
 
   // ── the DATABASE seals, against a hostile writer ─────────────────────────────────────────────
 
-  it('PROBE 12 (§F): `paid` is the projection of the FOLD, not of "a certificate exists"', async () => {
-    // Codex P2 — opening the arrow without checking the derivation lets bypass SQL settle an
-    // ordinary ₹100 payable: the lifecycle accepts the arm and the projection check accepts the
-    // live certificate while NET_PAYABLE still reads ₹100.
-    const projectId = await freshProject();
-    const billId = await certifiedClaim(projectId);
+  /**
+   * A REAL two-transaction barrier: both writers insert, then both are released to commit.
+   *
+   * Codex round 2 was right that `Promise.allSettled` over two independent transactions proves
+   * nothing here — whichever commits first makes its row visible, and the second rejects
+   * SEQUENTIALLY, which the lock-free trigger also does. The probe passed against the very defect
+   * it claimed to guard. So the writers are held open until both have inserted, and only then
+   * allowed to commit: that is the interleaving the certificate lock exists for.
+   */
+  const bothInsertThenCommit = async (
+    insert: (client: PrismaClient) => Promise<unknown>,
+  ): Promise<Array<PromiseSettledResult<unknown>>> => {
+    const a = new PrismaClient();
+    const b = new PrismaClient();
+    try {
+      let readyA!: () => void; let readyB!: () => void;
+      const insertedA = new Promise<void>((r) => { readyA = r; });
+      const insertedB = new Promise<void>((r) => { readyB = r; });
+      const run = (client: PrismaClient, signal: () => void, other: Promise<void>) =>
+        client.$transaction(async (tx) => {
+          await insert(tx as unknown as PrismaClient);
+          signal();
+          // hold the transaction OPEN until the other side has also inserted, so neither deferred
+          // commit check can see the other's committed row
+          await other;
+        }, { timeout: 20_000 });
+      return await Promise.allSettled([run(a, readyA, insertedB), run(b, readyB, insertedA)]);
+    } finally {
+      await a.$disconnect();
+      await b.$disconnect();
+    }
+  };
 
-    await expect(t.prisma.$executeRawUnsafe(
-      `UPDATE "VendorBill" SET "status"='paid', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
-      projectId, billId,
-    )).rejects.toThrow(/NOTHING REMAINS PAYABLE/u);
-
-    // …and once the payable really is zero the same statement is ACCEPTED, so the seal is precise
-    await deductions.record(projectId, { billId, type: 'retention', amount: '100.00' }, pmc(projectId));
-    expect(await statusOf(projectId, billId)).toBe('paid');
-  });
-
-  it('PROBE 13 (§H): the withholding bound SERIALIZES — two direct transactions cannot each find room', async () => {
-    // Codex P2 — the deferred trigger COUNTED without locking, so under READ COMMITTED two bypass
-    // writers each saw only their own uncommitted ₹60 against a ₹100 certificate and both
-    // committed. The service was safe because it takes the bill lock; a backstop that only works
-    // when the thing it backstops is present is not a backstop.
+  it('PROBE 13 (§H): the withholding bound SERIALIZES — two writers that BOTH insert before either commits', async () => {
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
     const command = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
 
-    const other = new PrismaClient();
-    try {
-      const insert = (client: PrismaClient, id: string) => client.$executeRawUnsafe(
-        `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
-         VALUES ($1,$2,$3,$4,'retention',60.00,$5,$6)`,
-        id, projectId, cert.id, billId, f.memberUser.id, command.id,
-      );
-      const results = await Promise.allSettled([
-        t.prisma.$transaction(async (tx) => { await insert(tx as unknown as PrismaClient, `${cert.id}-a`); }),
-        other.$transaction(async (tx) => { await insert(tx as unknown as PrismaClient, `${cert.id}-b`); }),
-      ]);
-      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
-      const total = await t.prisma.billDeduction.aggregate({ where: { projectId, billId }, _sum: { amount: true } });
-      expect(total._sum.amount!.toFixed(2)).toBe('60.00');
-    } finally {
-      await other.$disconnect();
-    }
+    let n = 0;
+    const results = await bothInsertThenCommit((client) => client.$executeRawUnsafe(
+      `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,'retention',60.00,$5,$6)`,
+      `${cert.id}-${n++}`, projectId, cert.id, billId, f.memberUser.id, command.id,
+    ));
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const total = await t.prisma.billDeduction.aggregate({ where: { projectId, billId }, _sum: { amount: true } });
+    expect(total._sum.amount!.toFixed(2)).toBe('60.00');
+  });
+
+  it('PROBE 14 (§H): the RELEASE bound serializes too — the sibling round 1 fixed on one side only', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const d = await deductions.record(projectId, { billId, type: 'retention', amount: '100.00' }, pmc(projectId));
+    const command = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+
+    let n = 0;
+    const results = await bothInsertThenCommit((client) => client.$executeRawUnsafe(
+      `INSERT INTO "BillDeductionRelease" ("id","projectId","deductionId","amount","reason","releasedById","sourceCommandId")
+       VALUES ($1,$2,$3,60.00,'concurrent',$4,$5)`,
+      `${d.id}-r${n++}`, projectId, d.id, f.memberUser.id, command.id,
+    ));
+
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const total = await t.prisma.billDeductionRelease.aggregate({ where: { projectId, deductionId: d.id }, _sum: { amount: true } });
+    expect(total._sum.amount!.toFixed(2)).toBe('60.00');
+  });
+
+  it('PROBE 15 (§H): a SUPERSEDED certificate accepts no new withholding', async () => {
+    // the bound function returns early for a superseded certificate — correctly, since its rows
+    // have left every fold — but "no bound to check" is not "anything goes": such a row would then
+    // be CARRIED onto the replacement by re-statement, a withholding taken from nothing.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const command = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,'retention',10.00,$5,$6)`,
+      `${cert.id}-late`, projectId, cert.id, billId, f.memberUser.id, command.id,
+    )).rejects.toThrow(/was superseded/u);
   });
 
   // ── §C rule ii — a keyed replay appends NOTHING ──────────────────────────────────────────────

@@ -252,7 +252,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         const next = src.indexOf('\n  async ', start + 1);
         const body = src.slice(start, next === -1 ? undefined : next);
         expect(
-          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.rederive\(/u.test(body),
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.evaluateHeadroom\(/u.test(body),
           `${writer.file}#${writer.method} writes ${input.field} (${input.why}) but never re-evaluates — §B requires raise-or-clear in the SAME transaction`,
         ).toBe(true);
       });

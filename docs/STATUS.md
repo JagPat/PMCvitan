@@ -164,7 +164,17 @@ gate as feature work. Work them top-down, one focused PR per item:
    on the default branch (5 as of 2026-07-29: 3 high, 1 moderate, 1 low).
    Raise the affected dependencies with the full gate battery; one PR per
    coherent dependency group.
-3. `e2e-flake-burndown` — the documented flake families the review packets
+3. `upgrade-proof-evidence-audit` — PR #284 found that five of its own
+   upgrade-proof "hostile insert rejected" assertions referenced a certificate
+   the script never creates, so each was rejected by a FOREIGN KEY before
+   reaching the CHECK it named: they would have passed with every constraint
+   dropped. The owner asked for the same audit across ALL phases. The mechanical
+   rule is that every hostile-insert group must ACCEPT a coherent row first, in
+   the same fixture state — a rejection is evidence only when an
+   otherwise-identical case is accepted. Sweep `apps/api/scripts/upgrade-proof.sh`
+   back through Phases 1–4 for assertions whose fixture rows do not exist, or
+   whose target is in a state that makes a different rule fire. One PR.
+4. `e2e-flake-burndown` — the documented flake families the review packets
    record honestly (`daily-log-lost-response` visibility, the
    timing-sensitive `pillar-chain` inspection steps,
    `inspections-module-query`, `project-scope` browser history). Convert

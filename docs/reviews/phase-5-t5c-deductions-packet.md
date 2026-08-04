@@ -38,43 +38,30 @@ review stop applies with payment authority fully in place.
 Task 6 with the row that caps it. §0b's "every declared member is in the fold"
 then holds at both stages rather than being briefly false.
 
-## The two seal widenings
+## What this task deliberately does NOT do
 
-Unit A sealed a biconditional: *a live certificate exists for a bill if and only
-if that bill is `certified`*. It also gated the lifecycle arrows and required a
-certificate behind any bill entering `certified`.
+§H says a deduction insertion RE-DERIVES the §F payment status. **That derivation
+is not here, and its absence is a scope decision the owner took after round 2.**
 
-Those were right when `certified` was a claim's terminal status, which it was at
-that tree. §F's derivation table — cleared with the plan — evaluates
-`NET_PAYABLE = PAID` **first**, so withholding the whole of a certificate settles
-the bill. The unwidened seals refuse the first deduction that does so.
+§F derives the status from THREE folds — `NET_PAYABLE`, `APPROVED`, `PAID` — and
+two of them are Task 6's. Deriving from one fold while the others were
+structurally zero made `paid` reachable at this tree, which required widening
+three seals Task 5B unit A wrote when `certified` was a claim's terminal status.
+Each widening then needed its own fold-backed guard, and the guards needed
+guards. Round 2 returned eight findings, four of them on code round 1 had just
+added.
 
-The invariant is unchanged and still enforced in both directions. What changed is
-which statuses mean "past certification":
+So the derivation lands in Task 6, beside the approval and payment rows that
+supply its other two folds. **5C now touches none of unit A's seals.**
 
-| Seal | Before | After |
-| --- | --- | --- |
-| certificate↔status biconditional | `= 'certified'` | the post-certification SET |
-| lifecycle arrows | `certified → verified` | `+ certified → paid`, `paid → {certified, verified}` |
-| certificate shadow rule | entering `certified` | entering the reachable post-certification set |
+Until Task 6, a deduction moves `NET_PAYABLE` and §J's `certified-payable`, and
+the stored bill status does not move at all. That intermediate state is strictly
+stricter than the finished rule — there is no transition to be wrong about — and
+a bill cannot be stranded in a state no legal row can leave, because the rows
+that would leave it are Task 6's as well. PROBE 4 pins the half-step explicitly,
+so Task 6 changes it knowingly rather than discovering it.
 
-The lifecycle table opens only the two arrows §H's facts produce.
-`approved-for-payment` and `part-paid` stay closed until Task 6 ships the approval
-that makes them safe — the discipline this table has followed since Task 4. The
-biconditional names all four, because it answers "is a live certificate
-legitimate?" rather than "does this arrow exist", and naming fewer would make it
-wrong the moment Task 6 lands.
-
-**PROBE 4 is the evidence, and the RED proof was run directly.** Restoring unit
-A's narrow definitions on a live database and re-running it fails with unit A's
-own message — which anticipated this task by name:
-
-> A vendor bill cannot move from certified to paid — … the arrows past
-> `certified` belong to the task that produces their evidence
-
-Restoring the widened definitions returns the suite to 11/11. The certification
-suite is 49/49 against the widened seals, and its R1-F2 probe still asserts both
-refusals the original was written for; only the sentence it reports them in moved.
+The convergence audit is `docs/reviews/pr-284-convergence.md`.
 
 ## Why the floor is on the deduction
 

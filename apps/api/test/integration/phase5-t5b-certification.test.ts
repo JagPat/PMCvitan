@@ -708,11 +708,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='forged' WHERE "id"=$1`,
       cert.id, f.memberUser.id,
-      // Task 5C widened this seal from the single status `certified` to the POST-CERTIFICATION set,
-      // because §F's derivation can move a fully-withheld certificate to `paid`. The REFUSAL this
-      // probe asserts is unchanged — a live certificate may not vanish from under a bill that
-      // claims to be past certification — so only the sentence it is reported in moved.
-    )).rejects.toThrow(/live certificate\(s\) — a bill past certification/u);
+    )).rejects.toThrow(/live certificate\(s\) — the status is the certificate/u);
 
     // …and the other direction: moving the bill off `certified` while its certificate still stands
     await expect(t.prisma.$executeRawUnsafe(

@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ROLE_POLICY, isPastCertification, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
+import { ROLE_POLICY, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
@@ -465,12 +465,10 @@ export class CommercialCertificationService {
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
         const bill = await this.lockBill(tx, projectId, input.billId);
-        // Codex P1 — the guard names the SET, not one member of it. Task 5C's §F derivation can
-        // move a fully-withheld claim to `paid`, and the migration opens `paid -> verified` for
-        // exactly this correction; checking `=== 'certified'` left the database arrow reachable and
-        // the service path closed, so a claim whose whole certificate was withheld could never be
-        // corrected. The rule reached the artifact it created and not the sibling already there.
-        if (!isPastCertification(bill.status)) {
+        // `certified` is the only post-certification status at this tree: §F's derivation, and the
+        // `paid` it can reach, land in Task 6. When they do, this guard names the SET rather than
+        // the member — `BILL_STATUSES_PAST_CERTIFICATION` is already stated in shared for it.
+        if (bill.status !== 'certified') {
           throw new ConflictException(`A ${bill.status} claim has no live certification to supersede`);
         }
         const live = await tx.billCertificate.findFirst({
@@ -485,7 +483,7 @@ export class CommercialCertificationService {
           },
         });
         if (count === 0) throw new ConflictException('This certificate was superseded concurrently — reload and retry');
-        await this.cas(tx, projectId, input.billId, bill.status, 'verified');
+        await this.cas(tx, projectId, input.billId, 'certified', 'verified');
         // §B — the twin of `certify`'s evaluation: superseding puts the money back into
         // `awaiting-certification`, so the same mover obligation applies in the same transaction.
         await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);

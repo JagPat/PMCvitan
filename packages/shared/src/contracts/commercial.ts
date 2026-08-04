@@ -298,6 +298,7 @@ export const BILL_STATUSES_NOT_LIVE = ['draft', 'rejected', 'disputed', 'resolve
  * database arrow was widened and the service guard was not, so a fully-withheld claim could not be
  * corrected — the rule reached the artifact it created and not the sibling already there.
  */
+// (Task 6 will need this set when §F's derivation lands.)
 export const BILL_STATUSES_PAST_CERTIFICATION = ['certified', 'approved-for-payment', 'part-paid', 'paid'] as const;
 export function isPastCertification(status: string): boolean {
   return (BILL_STATUSES_PAST_CERTIFICATION as readonly string[]).includes(status);
@@ -568,49 +569,14 @@ export interface BillDeductionLedgerDto {
   /** §G bound 4 — `CERTIFIED` less unreleased deductions. Never negative: the floor is enforced on
    *  the deduction write, so no fold ever has to clamp it. */
   netPayable: string | null;
-  /** the status §F derives from the three folds, which is also what is STORED on the bill */
-  derivedStatus: VendorBillStatus;
+  /** the STORED bill status. §F's derivation reads three folds and two of them (`APPROVED`,
+   *  `PAID`) are Task 6's, so it lands there with the rows that supply them; until then a
+   *  withholding moves the money and not the status, and this surface reports what IS rather than
+   *  what a partial derivation would guess. */
+  billStatus: VendorBillStatus;
 }
 
-/**
- * An exact decimal, structurally. §A forbids money through float64 end to end, and that includes
- * the COMPARISONS a status is derived from — `netPayable === paid` on two JS numbers is the same
- * round trip the money columns exist to avoid, one layer up. `Prisma.Decimal` satisfies this, and
- * the shared package cannot import it, so the contract is the shape rather than the class.
- */
-export interface ExactAmount<T = unknown> {
-  equals(other: T): boolean;
-  isZero(): boolean;
-}
-
-/**
- * §F — the payment status DERIVED from the three folds. One function, so the writers that move any
- * fold (a deduction, a release, and Task 6's approvals, payments and reversals) cannot disagree
- * about what the state means.
- *
- * **`netPayable === paid` is evaluated FIRST, and that ordering is load-bearing.** An earlier plan
- * revision put `approved === 0` first and made `paid === approved === netPayable` terminal, which
- * strands a fully-offset certificate forever: withhold ₹100 against a ₹100 certificate and
- * `netPayable = approved = paid = 0`, so the `approved === 0` arm wins and the bill sits at
- * `certified` — while approval and payment rows are STRICTLY POSITIVE (§H), so no legal row exists
- * that anyone could write to advance it. A bill with nothing left to pay is settled.
- *
- * **And it never invents an approval.** Deriving `approved-for-payment` from `netPayable > approved`
- * would put a bill into the POST-approval lifecycle with `approved = 0` — a status that overstates
- * authority, which is worse than one that understates cash, because the first invites a payment and
- * the second only delays one.
- *
- * At the Task-5C tree `approved` and `paid` are always zero, so only the first two arms are
- * reachable. The whole table is written anyway: Task 6 supplies the two folds and must not have to
- * re-derive the rule, which is exactly the second-site drift §0 exists to prevent.
- */
-export function deriveBillStatus<T extends ExactAmount<T>>(folds: {
-  netPayable: T; approved: T; paid: T;
-}): Extract<VendorBillStatus, 'certified' | 'approved-for-payment' | 'part-paid' | 'paid'> {
-  const { netPayable, approved, paid } = folds;
-  if (netPayable.equals(paid)) return 'paid';
-  if (approved.isZero()) return 'certified';
-  if (paid.equals(approved)) return 'certified';
-  if (paid.isZero()) return 'approved-for-payment';
-  return 'part-paid';
-}
+// §F's `deriveBillStatus` is NOT here. It reads three folds and two of them — `APPROVED` and
+// `PAID` — arrive with Task 6's approval and payment rows, so the function lands beside them
+// rather than being written against two structural zeroes. Task 5C moves the money a deduction
+// withholds; Task 6 moves the status that money implies.

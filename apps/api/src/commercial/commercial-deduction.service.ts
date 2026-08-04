@@ -3,7 +3,6 @@ import { Prisma } from '@prisma/client';
 import {
   DEDUCTION_TYPES_REQUIRING_REASON,
   ROLE_POLICY,
-  deriveBillStatus,
   type BillDeductionDto,
   type BillDeductionLedgerDto,
   type DeductionType,
@@ -131,7 +130,7 @@ export class CommercialDeductionService {
           },
         });
 
-        await this.rederive(tx, projectId, input.billId, actor.actorId, user.role, 'deduction');
+        await this.evaluateHeadroom(tx, projectId, input.billId, actor.actorId, user.role, 'deduction');
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.record', entity: 'BillDeduction', entityId: deduction.id,
         });
@@ -171,11 +170,25 @@ export class CommercialDeductionService {
         await lockProjectReadiness(tx, projectId);
         // the DEDUCTION is reached through its bill, so the bill is locked FIRST — §0b's order,
         // and it is what makes the release bound safe against two concurrent releases
-        const deduction = await tx.billDeduction.findFirst({
+        // located WITHOUT the lock — this only tells us which bill to lock. Every fact decided on
+        // is re-read below, inside it.
+        const located = await tx.billDeduction.findFirst({
+          where: { projectId, id: input.deductionId },
+          select: { billId: true },
+        });
+        if (!located) throw new NotFoundException('Deduction not found in this project');
+        await this.lockBill(tx, projectId, located.billId);
+
+        // Codex round 2 — re-read the deduction AND its restatement state INSIDE the lock. The
+        // first spelling read `restatedAs` before taking it, so a replacement certification
+        // committing in between left this call inserting a release against a row that had just
+        // become history: the money is reported released while the live payable still withholds it.
+        // Locking then re-reading the released total but not the restatement was checking one half
+        // of the same question under the lock and the other half outside it.
+        const deduction = await tx.billDeduction.findFirstOrThrow({
           where: { projectId, id: input.deductionId },
           select: { id: true, billId: true, amount: true, certificateId: true, restatedAs: { select: { id: true } } },
         });
-        if (!deduction) throw new NotFoundException('Deduction not found in this project');
         // A row that has already been RE-STATED onto a replacement certificate is closed history:
         // the live withholding is its restatement, and a release recorded here would be stranded on
         // a superseded certificate as evidence of money given back that the live truth denies —
@@ -186,10 +199,8 @@ export class CommercialDeductionService {
             `This withholding has been re-stated onto a later certificate — release ${deduction.restatedAs[0]!.id}, the row the live payable is folded from, or the money would be given back against a certificate nobody is paying`,
           );
         }
-        await this.lockBill(tx, projectId, deduction.billId);
 
-        // re-read INSIDE the lock: the row above was found before it, and a concurrent release
-        // committing in between is exactly what this bound exists to catch
+        // the released total, folded under the same lock
         const released = await this.deductions.releasedFor(tx, projectId, deduction.id);
         const remaining = deduction.amount.sub(released);
         if (amount.greaterThan(remaining)) {
@@ -205,7 +216,7 @@ export class CommercialDeductionService {
           },
         });
 
-        await this.rederive(tx, projectId, deduction.billId, actor.actorId, user.role, 'deduction_release');
+        await this.evaluateHeadroom(tx, projectId, deduction.billId, actor.actorId, user.role, 'deduction_release');
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.release', entity: 'BillDeductionRelease', entityId: row.id,
         });
@@ -218,41 +229,24 @@ export class CommercialDeductionService {
   // ── §F — the status is DERIVED, never left stale ─────────────────────────────────────────────
 
   /**
-   * Re-derive the bill's status from the three folds and CAS it, in the SAME transaction as the
-   * write that moved one — §F's rule for every writer, applied here because a deduction moves
-   * `NET_PAYABLE`.
+   * §B — the heads this claim touches are re-evaluated in THIS transaction, because a withholding
+   * lowers §J's `certified-payable` and a release raises it again.
    *
-   * The transition is a CAS from whatever the row currently says, so a status that moved
-   * concurrently is a deterministic 409 rather than a silent overwrite. A no-op derivation writes
-   * nothing at all: `certified → certified` is not a transition and stamping `statusChangedAt` for
-   * it would claim the claim moved when it did not.
+   * **It does NOT derive the §F payment status, and that is a scope decision.** §H says the
+   * insertion re-derives it; §F derives it from THREE folds and two of them — `APPROVED` and
+   * `PAID` — are Task 6's. Deriving from one fold while the others are structurally zero made
+   * `paid` reachable at this tree, which required widening three seals unit A wrote when
+   * `certified` was terminal, and each widening then needed its own fold-backed guard. The
+   * derivation lands in Task 6 beside the rows that supply its other two folds.
+   *
+   * Until then a deduction moves the money and not the status. That is strictly stricter than the
+   * finished rule: no transition exists to be wrong about, and a bill cannot be stranded in a state
+   * no legal row can leave, because the rows that would leave it are Task 6's as well.
    */
-  private async rederive(
+  private async evaluateHeadroom(
     tx: Prisma.TransactionClient, projectId: string, billId: string, actorId: string, role: string,
     raisedBy: 'deduction' | 'deduction_release',
   ): Promise<void> {
-    const position = await this.deductions.positionFor(tx, projectId, billId);
-    if (!position) return;
-    const [approved, paid] = await Promise.all([
-      this.deductions.approvedFor(tx, projectId, billId),
-      this.deductions.paidFor(tx, projectId, billId),
-    ]);
-    const next = deriveBillStatus({ netPayable: position.netPayable, approved, paid });
-
-    const current = await tx.vendorBill.findFirstOrThrow({
-      where: { projectId, id: billId }, select: { status: true },
-    });
-    if (current.status !== next) {
-      const { count } = await tx.vendorBill.updateMany({
-        where: { id: billId, projectId, status: current.status },
-        data: { status: next, statusChangedAt: new Date() },
-      });
-      if (count === 0) throw new ConflictException('This claim moved concurrently — reload and retry');
-    }
-
-    // §B — the withholding changed §J's `certified-payable`, so the heads this claim touches are
-    // re-evaluated in THIS transaction. Unlike certification, which is exposure-neutral, a
-    // deduction genuinely LOWERS exposure and can CLEAR an open over-budget exception.
     await this.billService.evaluateHeadsForBill(tx, projectId, { actorId, role }, billId, raisedBy);
   }
 
@@ -268,10 +262,6 @@ export class CommercialDeductionService {
       if (!bill) throw new NotFoundException('Vendor bill not found in this project');
       const position = await this.deductions.positionFor(tx, projectId, billId);
       const rows = position ? await this.ledgerRows(tx, projectId, position.certificateId) : [];
-      const [approved, paid] = await Promise.all([
-        this.deductions.approvedFor(tx, projectId, billId),
-        this.deductions.paidFor(tx, projectId, billId),
-      ]);
       return {
         billId,
         certificateId: position?.certificateId ?? null,
@@ -279,11 +269,10 @@ export class CommercialDeductionService {
         deductions: rows,
         withheld: (position?.withheld ?? ZERO).toFixed(2),
         netPayable: position?.netPayable.toFixed(2) ?? null,
-        // the STORED status when no certificate stands — there is no derivation without one, and
-        // reporting a derived value here would invent a payment lifecycle for an uncertified claim
-        derivedStatus: (position
-          ? deriveBillStatus({ netPayable: position.netPayable, approved, paid })
-          : bill.status) as VendorBillStatus,
+        // the STORED status. §F's derivation is Task 6's (see `evaluateHeadroom`), so reporting a
+        // derived value here would be this surface claiming a payment lifecycle the system does
+        // not yet run — and a read that is ahead of the writes is how a stale truth gets believed.
+        billStatus: bill.status as VendorBillStatus,
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
