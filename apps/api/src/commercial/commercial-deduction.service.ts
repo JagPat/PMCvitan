@@ -39,12 +39,13 @@ const ZERO = new Prisma.Decimal(0);
  *    from, and recovering more is a matter for the NEXT certificate.
  * 2. **A release may not exceed the unreleased balance of its own deduction.**
  *
- * And both writes RE-DERIVE the payment status under the same lock. §F names the writers that move
- * any of the three folds, and an insertion moves `NET_PAYABLE` just as surely as a release does:
- * withhold the whole of a ₹100 certificate and nothing remains payable, which §F's table calls
- * `paid`. An implementation that only refused the over-withholding would leave the status at
- * `certified` with no legal row anyone could ever write to advance it, because approval and payment
- * rows are strictly positive.
+ * Both writes re-evaluate §B's budget exception under the same lock, because a withholding lowers
+ * §J's `certified-payable` and a release raises it again.
+ *
+ * **Neither derives the §F payment status, and that is deliberate** — see `evaluateHeadroom`. §F
+ * reads three folds and two of them arrive with Task 6's approval and payment rows, so the
+ * derivation lands there rather than being written against two structural zeroes. Until then a
+ * deduction moves the money and not the status.
  */
 @Injectable()
 export class CommercialDeductionService {
@@ -81,9 +82,9 @@ export class CommercialDeductionService {
    * WITHHOLD money from a certified payable.
    *
    * The lock order is §0b's, unchanged: readiness, then the BILL, then anything the bill leads to.
-   * Every fact this decides on is read INSIDE that order — the live certificate, its existing
-   * ledger, and the status the result derives — because the whole point of the floor is that two
-   * concurrent withholdings cannot each see room for themselves.
+   * Every fact this decides on is read INSIDE that order — the live certificate and its existing
+   * ledger — because the whole point of the floor is that two concurrent withholdings cannot each
+   * see room for themselves.
    */
   async record(
     projectId: string, input: RecordDeductionInput, user: AuthUser, idempotencyKey?: string,

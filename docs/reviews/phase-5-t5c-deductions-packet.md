@@ -27,11 +27,14 @@ review stop applies with payment authority fully in place.
    positive, the row TYPE carrying direction.
 2. **§H's two bounds**, re-derived under the bill lock and sealed at commit: the
    `NET_PAYABLE` floor of zero, and a release bounded by its own deduction.
-3. **The §F derivation**, as one shared function over all three folds.
-4. **The first real subtraction into §J's `certified-payable`** — the term unit C
+3. **The first real subtraction into §J's `certified-payable`** — the term unit C
    shipped with both of its subtractions as the identity.
-5. **Two seal widenings**, which are the part of this change most worth a
-   reviewer's attention. They have their own section below.
+4. **Re-statement of the ledger onto a replacement certificate**, deductions and
+   their releases together, so a retained balance never vanishes without an
+   attributable release.
+
+It ships NO §F status derivation and touches NONE of unit A's seals — see the
+next section, which is the part of this change most worth a reviewer's attention.
 
 `advance-recovery` is deliberately NOT in the type set. It folds against an
 `advance` row created when the advance is PAID, so the enum member arrives in
@@ -116,7 +119,7 @@ than left implicit:
 | Invariant | Risk in this change | Reproduce-first / verification evidence |
 | --- | --- | --- |
 | authorization-tenancy | two new commands and one read; a deduction reaches money, so its authority must not be inherited from certification | `commercial.deduct` / `commercial.deduct.release` declared separately (same list today, so a later widening of one cannot widen the other); every fold and route is project-scoped; contract test pins each command to its `executeCommand` site and each query to its route |
-| civil-time-lifecycle | **the seal widenings.** A bill moving past `certified` must still be provably certified | PROBE 4 with its direct RED proof; upgrade-proof asserts the widened biconditional still refuses a bill moved OFF the post-certification set while a certificate stands; certification suite 49/49 |
+| civil-time-lifecycle | a withholding must not move the claim through a lifecycle this task does not own | the §F derivation is DEFERRED to Task 6 and 5C touches none of unit A's seals; PROBE 4 pins that the status deliberately stays `certified`; the certification suite is 49/49 with its R1-F2 probe restored to unit A's original message |
 | concurrency-idempotency | two concurrent withholdings must not each see room for themselves | both bounds re-derived INSIDE the bill lock, after `lockProjectReadiness` and `lockBill` (§0b's order); the release re-reads its deduction inside the lock; PROBE 10 proves a keyed replay of either write appends nothing |
 | data-integrity-conservation | a withholding that could be edited never withheld anything; a negative one RAISES the payable | append-only triggers on both tables (PROBE 6); `amount > 0` at PG and in the service (PROBE 2); both bounds sealed at COMMIT and proven by hostile insert; PROBE 8 proves supersession takes deductions out of every fold while keeping them as history |
 | offline-reconciliation | not applicable — no client surface (§M frontend is Task 7) | — |
@@ -124,25 +127,34 @@ than left implicit:
 
 ## Evidence
 
-`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **16/16 GREEN** (11 original + PROBE 8b/8c/9b/12/13 from the correction round).
+`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **17/17 GREEN**.
 
 Every probe is RED at `0b87d85` for the trivial reason that the ledger does not
-exist there, so the packet does not lean on that. The load-bearing RED proofs
-were run against the risk that is real:
+exist there, so this packet does not lean on that. What it leans on instead is
+that each probe was shown to DISCRIMINATE — because round 2 found that two of
+mine did not, and checking turned up five more of the same shape.
 
-- **the seal widenings** — narrow definitions restored on a live database, PROBE
-  4 fails with unit A's message, widened definitions restored, 11/11 (above);
-- **the `FOLD_INPUTS` closure** — the pin now derives the mover set from every
-  COMMERCIAL-OWNED fold the budget query reads, not just `this.bills.*`. The
-  closure's own root applies to itself: naming one owner would leave the next
-  blind, exactly as naming `CERTIFIED` and leaving `BILLED_AMOUNT` unclaimed did
-  in unit C.
+- **the two concurrency probes** (PROBE 13, 14) hold both writers open until both
+  have inserted, then release them. RED-proved directly: with `FOR UPDATE`
+  stripped from the two bound functions on a live database, both fail; restored,
+  17/17. The round-1 version used `Promise.allSettled` over independent
+  transactions and passed against the very defect it named.
+- **every upgrade-proof hostile insert** is preceded by an ACCEPT of a coherent
+  row in the same fixture state, and the block is anchored where a live
+  certificate actually stands. The round-1 version named a certificate the script
+  never creates, so each "rejection" came from a foreign key rather than the CHECK
+  it claimed to test — they would have passed with every constraint dropped. The
+  accept-first line is what surfaced this the moment it was added.
+- **the `FOLD_INPUTS` closure** derives the mover set from every COMMERCIAL-OWNED
+  fold the budget query reads, not just `this.bills.*` — the closure's own root
+  applied to itself, exactly as naming `CERTIFIED` and leaving `BILLED_AMOUNT`
+  unclaimed did in unit C.
 
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 735/735 |
-| full integration, pristine migrated DB | **81 files / 911 tests** (was 80/895) |
-| `upgrade-proof.sh` | PASSED — ledger row-free over the legacy fixture; five hostile inserts rejected; the widened biconditional still refuses both directions |
+| full integration, pristine migrated DB | **81 files / 912 tests** (was 80/895) |
+| `upgrade-proof.sh` | PASSED — 18 T5C assertions, each anchored on a live certificate and paired with an accept |
 | migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |
 | `test:e2e:api:allmodules` | 35/35 (one run flaked on `cross-cutting-surfaces`, a surface this change does not touch; clean on re-run) |
 | `test:e2e:api:outbox` | 29/29 |

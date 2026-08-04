@@ -89,6 +89,23 @@ which forced the seal widenings, which needed fold-backed guards, which needed
 guards of their own. The plan's task boundary was right and the section boundary
 cut across it.
 
+## A postscript, and it belongs to root B
+
+The head that carried the split — `1faa7e8` — left the review packet describing
+the design the split had just removed. It still listed the §F derivation and the
+two seal widenings among the things this change ships, and its invariant matrix
+cited a RED proof for widenings that no longer exist.
+
+That is root B again, one level up. The packet is evidence: it is what a reviewer
+reads to know what was checked and how. A packet that overstates what a change
+does reads as verified where nothing was verified, in exactly the way an
+assertion rejected by the wrong rule does. I corrected it in the following head
+rather than leaving it to be found.
+
+The generalisation worth keeping: **when a change removes something, the removal
+is not finished until the documents that claimed it are corrected too.** Code and
+tests fail loudly when they go stale; prose does not.
+
 ## Findings carried into this head
 
 | Round 2 finding | Disposition |
