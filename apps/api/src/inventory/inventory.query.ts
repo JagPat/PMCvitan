@@ -77,11 +77,11 @@ export class InventoryQuery {
     tx: Prisma.TransactionClient,
     projectId: string,
     poLineId: string,
-  ): Promise<Array<{ id: string; available: Prisma.Decimal; recordedById: string }>> {
+  ): Promise<Array<{ id: string; available: Prisma.Decimal }>> {
     const rows = await tx.$queryRaw<Array<{
-      id: string; available: Prisma.Decimal | string; recordedById: string;
+      id: string; available: Prisma.Decimal | string;
     }>>(Prisma.sql`
-      SELECT a."id" AS "id", a."recordedById" AS "recordedById",
+      SELECT a."id" AS "id",
              a."qty" - COALESCE((
                SELECT SUM(r."qty") FROM "StockTransaction" r
                 WHERE r."projectId" = a."projectId"
@@ -94,8 +94,6 @@ export class InventoryQuery {
          AND lot."poLineId" = ${poLineId}
          AND a."type" = 'acceptance'
        ORDER BY a."id" ASC`);
-    return rows.map((r) => ({
-      id: r.id, available: new Prisma.Decimal(r.available), recordedById: r.recordedById,
-    }));
+    return rows.map((r) => ({ id: r.id, available: new Prisma.Decimal(r.available) }));
   }
 }

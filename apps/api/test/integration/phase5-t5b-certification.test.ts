@@ -17,6 +17,8 @@ import { CommercialBillService } from '../../src/commercial/commercial-bill.serv
 import { CommercialVerificationService } from '../../src/commercial/commercial-verification.service';
 import { CommercialCertificationService } from '../../src/commercial/commercial-certification.service';
 import { CommercialMeasurementService } from '../../src/commercial/commercial-measurement.service';
+import { CommercialBudgetService } from '../../src/commercial/commercial-budget.service';
+import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
@@ -48,6 +50,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
   let verification: CommercialVerificationService;
   let certification: CommercialCertificationService;
   let measurement: CommercialMeasurementService;
+  let budget: CommercialBudgetService;
+  let orgs: OrgsParticipant;
   let capabilities: CapabilitiesService;
   let seq = 0;
 
@@ -76,6 +80,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     verification = t.app.get(CommercialVerificationService);
     certification = t.app.get(CommercialCertificationService);
     measurement = t.app.get(CommercialMeasurementService);
+    budget = t.app.get(CommercialBudgetService);
+    orgs = t.app.get(OrgsParticipant);
     capabilities = t.app.get(CapabilitiesService);
   });
   afterAll(async () => {
@@ -742,15 +748,24 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       labourPoLineId: l.poLineId, activityId: l.activityId, quantity: '2',
       measuredOn: '2026-08-10', citedOutputId: l.outputId,
     }, await store(projectId));
+    // a SECOND original on the same line, which the claim below does not reach. The probe needs a
+    // measurement the certificate does NOT rest on, because a correction to a frozen row is refused
+    // by the withdrawal guard long before this seal is asked — and it needs the certificate to be
+    // LIVE, because Codex round 5 added an append-closure that refuses ANY row on history and would
+    // otherwise answer this probe in place of the seal under test.
+    const spare = await measurement.take(projectId, {
+      labourPoLineId: l.poLineId, activityId: l.activityId, quantity: '2',
+      measuredOn: '2026-08-11', citedOutputId: l.outputId,
+    }, await store(projectId));
     const billId = await verifiedClaim(projectId, l.vendorId, l.poLineId, '2', 'labour');
     const cert = await certification.certify(projectId, { billId }, pmc(projectId));
-    expect(cert.measurementConsumption).toEqual([{ rowId: original.id, consumedQty: '2' }]);
+    expect(cert.measurementConsumption).toHaveLength(1);
+    const untouched = cert.measurementConsumption[0]!.rowId === original.id ? spare.id : original.id;
 
     // a correction against the same line — real, in-project, on the right PO line, and still not
     // evidence: it is the row that WALKS BACK evidence
-    await certification.supersede(projectId, { billId, reason: 'restating' }, pmc(projectId));
     const correction = await measurement.correct(projectId, {
-      measurementId: original.id, quantity: '-1', reason: 'over-measured',
+      measurementId: untouched, quantity: '-1', reason: 'over-measured',
     }, await store(projectId));
     await expect(t.prisma.$executeRawUnsafe(
       `INSERT INTO "CertifiedMeasurementConsumption"("id","projectId","certificateId","measurementId","consumedQty")
@@ -1113,6 +1128,471 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // binds them as well — the rule is about the evidence, not about who touched it last
     await expect(certification.certify(projectId, { billId }, storeUser))
       .rejects.toThrow(/Segregation of duties/u);
+  });
+
+  // ── Codex round-4 findings ───────────────────────────────────────────────────────────────────
+
+  it('R4-F1 (§D/§E/§0b): the ACTIVITY is locked before the MEASUREMENT, matching the correction path', async () => {
+    const projectId = await freshProject();
+    const l = await labourMeasurableLine(projectId, 4);
+    const original = await measurement.take(projectId, {
+      labourPoLineId: l.poLineId, activityId: l.activityId, quantity: '2',
+      measuredOn: '2026-08-10', citedOutputId: l.outputId,
+    }, await store(projectId));
+    const billId = await verifiedClaim(projectId, l.vendorId, l.poLineId, '2', 'labour');
+
+    // Round 3 moved the labour evidence above the bill and got the INTERNAL order backwards:
+    // `CommercialMeasurementService.append` locks the ACTIVITY and then inserts the correction
+    // (whose FK key-share-locks the original measurement), so a certifier holding M and waiting for
+    // A deadlocks against a correction holding A and waiting for M.
+    const other = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
+    const watcher = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
+    try {
+      const waitUntilBlocked = async (): Promise<void> => {
+        for (let i = 0; i < 400; i += 1) {
+          const rows = await watcher.$queryRaw<Array<{ c: number }>>`
+            SELECT COUNT(*)::int AS c FROM pg_stat_activity
+             WHERE wait_event_type = 'Lock' AND state = 'active'`;
+          if ((rows[0]?.c ?? 0) >= 1) return;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        throw new Error('barrier timeout: certification never blocked on a lock');
+      };
+
+      let release!: () => void;
+      let acquired!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const holdingActivity = new Promise<void>((r) => { acquired = r; });
+      // session A takes the CORRECTION path's order: activity, then the measurement
+      const sessionA = other.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe(`SELECT "id" FROM "Activity" WHERE "projectId" = $1 AND "id" = $2 FOR UPDATE`, projectId, l.activityId);
+        acquired();
+        await held;
+        await tx.$queryRawUnsafe(`SELECT "id" FROM "Measurement" WHERE "projectId" = $1 AND "id" = $2 FOR UPDATE`, projectId, original.id);
+      }, { timeout: 30_000 });
+
+      await holdingActivity;
+      const sessionB = certification.certify(projectId, { billId }, pmc(projectId));
+      await waitUntilBlocked();
+      release();
+      await sessionA;
+      const cert = await sessionB;
+      expect(cert.measurementConsumption).toEqual([{ rowId: original.id, consumedQty: '2' }]);
+    } finally {
+      await other.$disconnect();
+      await watcher.$disconnect();
+    }
+  });
+
+  it('R4-F2 (§E): two concurrent freezes against ONE acceptance row cannot both commit', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '200' });
+    // TWO acceptance rows so two bills can each verify honestly, and two BILLS because the
+    // one-live-certificate-per-bill index would otherwise refuse the second forgery — a refusal
+    // from the wrong seal proves nothing about the missing row lock.
+    const a = await acceptOnLine(projectId, line, '100');
+    await acceptOnLine(projectId, line, '100');
+    const bill1 = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const bill2 = await verifiedClaim(projectId, line.vendorId, line.poLineId, '60');
+    const v1 = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId: bill1, supersededAt: null } });
+    const v2 = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId: bill2, supersededAt: null } });
+    const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+
+    // `SET CONSTRAINTS ALL IMMEDIATE` fires the deferred checks at a moment the TEST chooses,
+    // while BOTH transactions are still open. That is what makes this deterministic: simply
+    // committing two transactions lets PostgreSQL serialize the commits, so the second one's check
+    // sees the first's rows and refuses for the right answer by accident. Here each check runs
+    // with the other transaction still uncommitted — the exact READ COMMITTED window the finding
+    // names. Without `FOR UPDATE` on the acceptance row, both see only their own consumption and
+    // both pass; with it, the second blocks until the first commits and is then refused.
+    const forge = async (client: PrismaClient, id: string, billId: string, versionId: string, qty: number,
+                         checked: () => void, commitWhen: Promise<void>) =>
+      client.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+           VALUES ($5,$1,$2,$3,$6,$4,$7)`,
+          projectId, billId, versionId, f.memberUser.id, id, qty, cmd.id,
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+           VALUES ($2,$1,$3,$4,$5)`, projectId, `${id}-ev`, id, a.acceptanceTxId, qty,
+        );
+        await tx.$executeRawUnsafe(
+          `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+          projectId, billId,
+        );
+        // fire the deferred checks NOW, with the sibling transaction still open …
+        await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+        checked();
+        // … and hold OPEN afterwards, so neither transaction's rows become visible to the other's
+        // check. Committing right after the check lets whichever runs second see the first's rows
+        // and refuse for the right answer by accident — which is what the first two versions of
+        // this probe did, passing against the unlocked predicate.
+        await commitWhen;
+      }, { timeout: 30_000 });
+
+    const c1 = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
+    const c2 = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
+    try {
+      let commit!: () => void;
+      const mayCommit = new Promise<void>((r) => { commit = r; });
+      let aChecked!: () => void;
+      const firstChecked = new Promise<void>((r) => { aChecked = r; });
+      const t1 = forge(c1, 'race-a', bill1, v1.id, 100, aChecked, mayCommit);
+      await firstChecked;
+      // T1 has PASSED its check and is holding open. Under the fix it also holds `FOR UPDATE` on
+      // the acceptance row, so T2's check BLOCKS here; without it, T2's check sees only its own
+      // consumption and passes too.
+      const t2 = forge(c2, 'race-b', bill2, v2.id, 60, () => {}, mayCommit);
+      await new Promise((r) => setTimeout(r, 500));
+      commit();
+      await Promise.allSettled([t1, t2]);
+
+      // whatever survives, the frozen total on that row can never exceed what the row carries
+      const frozen = await t.prisma.certifiedAcceptanceConsumption.findMany({
+        where: { projectId, stockTransactionId: a.acceptanceTxId, certificate: { is: { supersededAt: null } } },
+        select: { consumedQty: true },
+      });
+      const total = frozen.reduce((acc, r) => acc.add(r.consumedQty), new Prisma.Decimal(0));
+      expect(total.toNumber(), 'live certificates freeze more of this acceptance than it carries').toBeLessThanOrEqual(100);
+    } finally {
+      await c1.$disconnect();
+      await c2.$disconnect();
+    }
+  });
+
+  it('R4-F3 (§I): the SoD seal honours MEMBERSHIP PRECEDENCE exactly as the orgs module does', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    // the org OWNER is also an ACTIVE CONTRACTOR on this project. `hasProjectRoleStanding` returns
+    // on the active membership and never reaches the org arm, so they operate AS contractor and the
+    // service refuses them — an `OR` in the SQL seal would have accepted them.
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: f.ownerUser.id } },
+      create: { projectId, userId: f.ownerUser.id, role: 'contractor', status: 'active' },
+      update: { role: 'contractor', status: 'active' },
+    });
+    await expect(certification.certify(projectId, {
+      billId, sodOverride: { approverId: f.ownerUser.id, reason: 'org admin, but a contractor here' },
+    }, pmc(projectId))).rejects.toThrow(/pmc with standing on this project/u);
+
+    // the DB seal agrees with the service: a forged certificate naming that approver is refused
+    const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
+      where: { projectId, type: 'acceptance' }, select: { id: true },
+    });
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         VALUES ('precedence',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+         VALUES ('precedence-ev',$1,'precedence',$2,100)`, projectId, acceptance.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "SodException" ("id","projectId","certificateId","rule","actorId","approverId","reason","sourceCommandId")
+         VALUES ('precedence-sod',$1,'precedence','evidence-recorder-may-not-certify',$2,$3,'forged',$4)`,
+        projectId, f.memberUser.id, f.ownerUser.id, cmd.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ])).rejects.toThrow(/granted by a pmc with standing/u);
+
+    // …and with the contractor membership REMOVED, the same org owner IS a valid approver — the
+    // precedence rule, proven in both directions rather than only as a refusal
+    await t.prisma.membership.deleteMany({ where: { projectId, userId: f.ownerUser.id } });
+    await expect(certification.certify(projectId, {
+      billId, sodOverride: { approverId: f.ownerUser.id, reason: 'org admin with no project membership' },
+    }, pmc(projectId))).resolves.toBeDefined();
+  });
+
+  it('R4-F4 (§F): the LIVE certificate read never reports a superseded one', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    await certification.certify(projectId, { billId }, pmc(projectId));
+
+    // The window is BETWEEN resolving the live certificate and reading it back. Asserting only that
+    // a fully-committed supersession 404s would pass against the defective code too, so the probe
+    // makes the supersession land INSIDE the read: the client is proxied so the first
+    // `billCertificate.findFirst` triggers a supersede before returning.
+    //
+    // With the liveness predicate carried into the single query, the read either returns a
+    // certificate that WAS live or nothing. Without it, the second query reloads by id and hands
+    // back a row stamped `supersededAt` from a route documented to return the live one.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = certification as any;
+    const realPrisma = svc.prisma;
+    let fired = false;
+    svc.prisma = new Proxy(realPrisma, {
+      get(target: never, prop: string) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const value = (target as any)[prop];
+        if (prop !== 'billCertificate') return typeof value === 'function' ? value.bind(target) : value;
+        return new Proxy(value, {
+          get(delegate: never, method: string) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const fn = (delegate as any)[method];
+            if (method !== 'findFirst') return typeof fn === 'function' ? fn.bind(delegate) : fn;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            return async (args: any) => {
+              const result = await fn.call(delegate, args);
+              if (!fired) {
+                fired = true;
+                await certification.supersede(projectId, { billId, reason: 'raced' }, pmc(projectId));
+              }
+              return result;
+            };
+          },
+        });
+      },
+    });
+    try {
+      const read = await certification.readCertificate(projectId, billId, pmc(projectId)).catch((e) => e);
+      if (read instanceof Error) {
+        expect(read).toMatchObject({ status: 404 });
+      } else {
+        expect(read.supersededAt, 'the LIVE route reported a superseded certificate').toBeNull();
+      }
+    } finally {
+      svc.prisma = realPrisma;
+    }
+
+    // and once the supersession is settled, the live route is a plain 404
+    await expect(certification.readCertificate(projectId, billId, pmc(projectId)))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  // ── Codex round-5 findings, and the restructure they forced ─────────────────────────────────
+
+  it('R5-RESTRUCTURE (§I): the SQL standing predicate and the ORGS participant agree on every shape', async () => {
+    // Rounds 3, 4 and 5 each produced a finding of the SAME kind: one §I rule with two
+    // implementations, and only the copy a finding named ever got fixed. The evidence-actor set is
+    // now a single SQL authority both layers CALL, so it cannot drift at all. Standing cannot be
+    // collapsed that way — orgs owns the rule, and a trigger cannot call TypeScript — so the two
+    // implementations are PINNED here instead: whichever one changes, this probe fails.
+    //
+    // The matrix is the shapes the rule actually distinguishes, including the two that produced
+    // round-4's finding (an org admin who is an active contractor, and the same person once that
+    // membership is gone).
+    const projectId = await freshProject();
+    const user = f.ownerUser.id;
+    const shapes: Array<{ name: string; arrange: () => Promise<void> }> = [
+      { name: 'no membership, org admin', arrange: async () => {
+        await t.prisma.membership.deleteMany({ where: { projectId, userId: user } });
+      } },
+      { name: 'active pmc membership', arrange: async () => {
+        await t.prisma.membership.upsert({
+          where: { projectId_userId: { projectId, userId: user } },
+          create: { projectId, userId: user, role: 'pmc', status: 'active' },
+          update: { role: 'pmc', status: 'active' },
+        });
+      } },
+      { name: 'active contractor membership (org admin too)', arrange: async () => {
+        await t.prisma.membership.update({
+          where: { projectId_userId: { projectId, userId: user } },
+          data: { role: 'contractor', status: 'active' },
+        });
+      } },
+      { name: 'INACTIVE pmc membership (org admin too)', arrange: async () => {
+        await t.prisma.membership.update({
+          where: { projectId_userId: { projectId, userId: user } },
+          data: { role: 'pmc', status: 'removed' },
+        });
+      } },
+      { name: 'active pmc, no org standing', arrange: async () => {
+        await t.prisma.membership.upsert({
+          where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
+          create: { projectId, userId: f.strangerUser.id, role: 'pmc', status: 'active' },
+          update: { role: 'pmc', status: 'active' },
+        });
+      } },
+    ];
+
+    const verdicts: Array<{ shape: string; sql: boolean; participant: boolean }> = [];
+    for (const shape of shapes) {
+      await shape.arrange();
+      const subject = shape.name.includes('no org standing') ? f.strangerUser.id : user;
+      const [{ sql }] = await t.prisma.$queryRaw<Array<{ sql: boolean }>>(
+        Prisma.sql`SELECT phase5_t5_pmc_standing(${projectId}, ${subject}) AS sql`,
+      );
+      const participant = await orgs.hasProjectRoleStanding(t.prisma, projectId, subject, ['pmc']);
+      verdicts.push({ shape: shape.name, sql, participant });
+    }
+    // cell by cell, so a disagreement names the shape rather than reporting "false !== true"
+    for (const v of verdicts) expect({ shape: v.shape, verdict: v.sql }).toEqual({ shape: v.shape, verdict: v.participant });
+    // precision: a matrix on which both are constantly true (or false) would agree while proving
+    // nothing, so the shapes must actually separate
+    expect(new Set(verdicts.map((v) => v.sql)).size).toBe(2);
+  });
+
+  it('R5-F1 (§E): a SUPERSEDED certificate never gains new evidence', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '200' });
+    const a = await acceptOnLine(projectId, line, '100');
+    const b = await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.acceptanceConsumption).toEqual([{ rowId: a.acceptanceTxId, consumedQty: '100' }]);
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+
+    // Acceptance B is real, unconsumed, and on a line the bill's LIVE version still claims, so the
+    // per-row seal passes it — and the whole-certificate seal deliberately returns early for
+    // history. Appending it would make the certificate's own replay report evidence the original
+    // act never consumed. What a certification RESTED ON is not editable afterwards.
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+       VALUES ('late-evidence',$1,$2,$3,1)`, projectId, cert.id, b.acceptanceTxId,
+    )).rejects.toThrow(/history does not gain new rows/u);
+
+    // precision: the same append on a LIVE certificate is refused by the COMPLETENESS seal, not by
+    // the append-closure — the two rules are distinct and each still reaches its own case
+    const relived = await certification.certify(projectId, { billId }, pmc(projectId));
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
+       VALUES ('live-append',$1,$2,$3,1)`, projectId, relived.id, b.acceptanceTxId,
+    )).rejects.toThrow(/rests on EXACTLY the evidence it claimed/u);
+  });
+
+  it('R5-F2 (§I): an exception cannot be appended to a certificate that never needed one', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const storeUser = await store(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', storeUser);
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    // certified by someone who recorded NOTHING, so §I raised no conflict and no override exists
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.sodException).toBeNull();
+    const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+
+    const appendException = (id: string, certificateId: string, rule: string) => t.prisma.$executeRawUnsafe(
+      `INSERT INTO "SodException" ("id","projectId","certificateId","rule","actorId","approverId","reason","sourceCommandId")
+       VALUES ($1,$2,$3,$4,$5,$6,'appended later',$7)`,
+      id, projectId, certificateId, rule, f.memberUser.id, approver, cmd.id,
+    );
+
+    // `certificateById` reports the exception as the AUTHORITY for the act, so a late append makes
+    // the trail assert that a pmc excused a conflict which never existed
+    await expect(appendException('late-sod', cert.id, 'evidence-recorder-may-not-certify'))
+      .rejects.toThrow(/there is none to override/u);
+
+    // …and on a SUPERSEDED certificate it is refused earlier still, by the append-closure
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    await expect(appendException('historic-sod', cert.id, 'evidence-recorder-may-not-certify'))
+      .rejects.toThrow(/history does not gain new rows/u);
+
+    // precision: on a certificate that DOES carry a conflict the single required override is
+    // accepted, and a SECOND one — of any rule — is not, so "the exception on this certificate" is
+    // a definite description rather than whichever row the planner returns first
+    const l2 = await issuedMaterialLine(projectId, { qty: '50' });
+    await acceptOnLine(projectId, l2, '50', pmc(projectId));
+    const bill2 = await verifiedClaim(projectId, l2.vendorId, l2.poLineId, '50');
+    const conflicted = await certification.certify(projectId, {
+      billId: bill2, sodOverride: { approverId: approver, reason: 'two-person practice' },
+    }, pmc(projectId));
+    expect(conflicted.sodException?.rule).toBe('evidence-recorder-may-not-certify');
+    await expect(appendException('second-sod', conflicted.id, 'some-other-rule'))
+      .rejects.toThrow(/segregation-of-duties exceptions/u);
+    // (`SodException_certificate_rule_key` — PostgreSQL reports the KEY rather than the index name)
+    await expect(appendException('duplicate-sod', conflicted.id, 'evidence-recorder-may-not-certify'))
+      .rejects.toThrow(/"certificateId", rule\)=.* already exists/u);
+  });
+
+  it('R5-F3 (§I): the DATABASE seal counts correction authors too — the service is not its own witness', async () => {
+    const projectId = await freshProject();
+    const storeUser = await store(projectId);
+    const l = await labourMeasurableLine(projectId, 4);
+    const original = await measurement.take(projectId, {
+      labourPoLineId: l.poLineId, activityId: l.activityId, quantity: '2',
+      measuredOn: '2026-08-10', citedOutputId: l.outputId,
+    }, storeUser);
+    // the CERTIFIER supplies the other half by correction — round 3 taught the service this and
+    // left the SQL seal reading `takenById` alone, so a direct path could certify with no override
+    await measurement.correct(projectId, {
+      measurementId: original.id, quantity: '2', reason: 'under-measured',
+    }, pmc(projectId));
+    const billId = await verifiedClaim(projectId, l.vendorId, l.poLineId, '4', 'labour');
+    const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
+
+    // the forged certificate freezes the ORIGINAL row's id — taken by the store user — so the old
+    // seal saw a certifier who had recorded none of it
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         VALUES ('corrector',$1,$2,$3,4,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedMeasurementConsumption" ("id","projectId","certificateId","measurementId","consumedQty")
+         VALUES ('corrector-ev',$1,'corrector',$2,4)`, projectId, original.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
+
+    // precision: the SAME forgery by a certifier who is in neither the taker nor the corrector set
+    // is accepted, so the seal is counting the actor set and not simply refusing labour evidence
+    await expect(t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         VALUES ('outsider',$1,$2,$3,4,$4,$5)`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "CertifiedMeasurementConsumption" ("id","projectId","certificateId","measurementId","consumedQty")
+         VALUES ('outsider-ev',$1,'outsider',$2,4)`, projectId, original.id,
+      ),
+      t.prisma.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      ),
+    ])).resolves.toBeDefined();
+  });
+
+  it('R5-F4 (§J): certifying MOVES money between buckets — it does not leave it awaiting certification', async () => {
+    const projectId = await freshProject();
+    const storeUser = await store(projectId);
+    // a real BUDGET, so `headroom` is a number rather than the null an unbudgeted head reports —
+    // the partition claim below is about a total, and comparing null to null would assert nothing
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '500.00', reason: 'civil plan' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', storeUser);
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    const civil = async () => {
+      const { positions } = await budget.readBudget(projectId, pmc(projectId));
+      return positions.find((p) => p.costHeadCode === 'CIVIL')!;
+    };
+
+    const claimed = await civil();
+    expect(claimed.awaitingCertification).toBe('100.00');
+    expect(claimed.certifiedPayable).toBe('0.00');
+    expect(claimed.headroom).toBe('400.00');
+
+    await certification.certify(projectId, { billId }, pmc(projectId));
+
+    // §J's buckets PARTITION: the claim has been certified, so it is payable rather than pending,
+    // and the total exposure is unchanged because certification settles WHO OWES WHAT and not HOW
+    // MUCH. A surface still reporting ₹1,000 awaiting certification says the act has not happened
+    // after it has.
+    const certified = await civil();
+    expect(certified.awaitingCertification).toBe('0.00');
+    expect(certified.certifiedPayable).toBe('100.00');
+    expect(certified.headroom).toBe(claimed.headroom);
+
+    // …and superseding it puts the money back where it was, because the bill is `verified` again
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    expect(await civil()).toMatchObject({ awaitingCertification: '100.00', certifiedPayable: '0.00' });
   });
 
   it('PROBE 15 (§0): the four new tables are closed under the shared-database reset', async () => {

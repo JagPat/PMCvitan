@@ -123,10 +123,14 @@ export interface CostHeadPositionDto {
   committed: string;
   /** received-but-unbilled value — the received side LESS whatever has been claimed against it */
   receivedNotBilled: string;
-  /** §J `awaiting-certification` — live `BILLED_AMOUNT`: claimed, not yet certified. Together with
+  /** §J `awaiting-certification` — live `BILLED_AMOUNT` that is NOT yet certified. Together with
    *  `receivedNotBilled` this PARTITIONS the received money, so a claim arriving changes WHERE the
    *  exposure sits and not how much there is (Phase 5 Task 4). */
   awaitingCertification: string;
+  /** §J `certified-payable` — claimed money a PMC has CERTIFIED. It partitions with
+   *  `awaitingCertification` for the same reason: certifying moves exposure between buckets and
+   *  never changes the total (Phase 5 Task 5B). */
+  certifiedPayable: string;
   /** `BUDGET − Σ exposure`, NEGATIVE when over-committed; null when unbudgeted */
   headroom: string | null;
   /** the OPEN over-budget exception on this head, if one stands right now */

@@ -1,13 +1,15 @@
 # PR #279 — architectural convergence audit (Phase 5 Task 5B, certification)
 
-Three finding-bearing heads, sixteen findings. Per `CLAUDE.md` this stops being another isolated patch:
-it names the ROOT the findings share and leaves a mechanical closure behind.
+Five finding-bearing heads, twenty-four findings. Per `CLAUDE.md` this stops being another isolated
+patch: it names the ROOT the findings share and leaves a mechanical closure behind.
 
 | Head | Findings | |
 |---|---|---|
 | `32b1ca2` | 6 | 2×P1, 4×P2 |
 | `bf50d27` | 4 | 4×P2 — all four the same shape: a row seal cannot see an absence |
 | `9a482b7` | 6 | 1×P1, 5×P2 — **every one of them the FIX FROM AN EARLIER ROUND, not generalized** |
+| `04c110e` | 4 | 1×P1, 3×P2 — the lock order one pair along; two seals unserialized; a read without its predicate |
+| `42f1b2b` | 4 | 4×P2 — **the append paths of a rule I had only sealed on the coherence path, and the SQL half of a rule round 3 fixed in TypeScript** |
 
 | # | Head | Sev | What was wrong |
 |---|---|---|---|
@@ -27,6 +29,14 @@ it names the ROOT the findings share and leaves a mechanical closure behind.
 | 14 | `9a482b7` | P2 | Completeness was `>=`, so the frozen set stayed append-OPEN after the certificate committed |
 | 15 | `9a482b7` | P2 | The quantity bound ran on consumption INSERT only — never when the evidence beneath it was withdrawn |
 | 16 | `9a482b7` | P2 | The SoD actor set took the ORIGINAL measurement's taker and not the author of a positive CORRECTION |
+| 17 | `04c110e` | P1 | The activity/measurement lock PAIR was taken in the opposite order to the correction path |
+| 18 | `04c110e` | P2 | The quantity bound counted without locking the evidence row, so two freezes could both commit |
+| 19 | `04c110e` | P2 | The LIVE certificate read resolved liveness, then re-read by id without it |
+| 20 | `04c110e` | P2 | The SQL standing predicate used `OR` where the orgs rule uses membership PRECEDENCE |
+| 21 | `42f1b2b` | P2 | The whole-certificate seal returns early for history, and the append paths read that as "history is unguarded" |
+| 22 | `42f1b2b` | P2 | `SodException` had an immutability trigger and NO insert-side seal — a late override, forever |
+| 23 | `42f1b2b` | P2 | The DB SoD seal still read `Measurement.takenById` alone — round 3's finding 16, in the other language |
+| 24 | `42f1b2b` | P2 | `certified` became reachable and the §J bucket still counted certified claims as awaiting certification |
 
 ---
 
@@ -186,14 +196,78 @@ two finding-bearing heads produce this audit — and the reason that rule exists
 second round's four findings would all have been closed by the first round's correction if it had
 been written at the altitude of the certificate rather than the row.
 
+## Round 5: the root RESTATED as a structural fix, not another correction
+
+Findings 16 and 23 are the SAME finding. Round 3 said "the SoD actor set misses the author of a
+positive correction"; I fixed it in `assertSegregation` and left the SQL seal reading `takenById`
+alone, and round 5 said it again about the copy I had not touched. Findings 12/13 and 20 are the
+same pair one layer along: the standing rule, corrected twice, in the language a finding named.
+
+The three questions above would have caught these — question 1, *what SET does the subject belong
+to*, answers all three — and by round 5 that is no longer the interesting observation. **The
+questions were written down and the defect recurred anyway.** A checklist is a thing I have to
+remember to run, and the evidence of four rounds is that under enough context I do not.
+
+So the closure this round leaves is not another question. It is a structure in which the defect
+cannot be expressed:
+
+| Rule | Before | After |
+|---|---|---|
+| who is an evidence ACTOR | a TypeScript fold in `assertSegregation` **and** an inline `EXISTS` in the seal | `phase5_t5_evidence_actors(project, certificate)` — ONE function; the service `$queryRaw`s the same one the seal calls, over the same frozen rows |
+| does the approver have pmc STANDING | `OrgsParticipant.hasProjectRoleStanding` **and** an inline `EXISTS` in the seal | `phase5_t5_pmc_standing` — still two implementations, but NAMED and PINNED by a correspondence probe that drives both over a matrix of standing shapes |
+| is this certificate OPEN to new rows | nothing — the coherence seal returned early for history | `phase5_t5_assert_certificate_open`, called by every append path |
+
+The first row is the real fix: there is now no second site to forget, so findings 16 and 23 are not
+"fixed", they are **unrepeatable**. A future change to who counts as an evidence actor is one edit
+that cannot half-land.
+
+The second row is the honest limit, and it is worth stating precisely rather than papering over.
+Standing is ORGS-owned and a PostgreSQL trigger cannot call TypeScript, so a single authority is
+not available at any price I am willing to pay — moving the rule into SQL would put an orgs rule in
+a commercial migration, which is finding 6 again in a different medium. What IS available is to
+make the drift MECHANICAL to detect: name the predicate so it can be called in isolation, then
+assert cell-by-cell that it agrees with the owner's method on every shape that separates them,
+including the two that produced finding 20. Whichever copy changes next, a test fails.
+
+**The general form: when a rule has two implementations, either collapse them to one CALLED site,
+or pin them with a test that fails on divergence. "Be careful to update both" is not a third
+option — it has now failed four times.**
+
+## Round 5's other half: a seal that answers one question is not answering the other one
+
+Findings 21 and 22 are the append-closure, and they have the same shape as findings 7–10 — a
+question that was structurally unaskable where I had put the check — but with a twist worth
+recording, because the early return they exploit is CORRECT.
+
+`phase5_t5_certificate_complete_check` returns early for a superseded certificate deliberately: a
+superseded certificate is history, the claim beneath it has legitimately moved on, and re-validating
+it against today's world would refuse the very correction §F requires. That reasoning is sound. What
+was wrong is that "we do not re-validate history" was silently doing duty as "history needs no
+guard", and the append paths inherited the second sentence from the first.
+
+They are two different questions at two different altitudes:
+
+- **coherence** — does this certificate agree with the world as it is now? Only a LIVE certificate
+  must, and history is exempt.
+- **append** — may this row join this certificate at all? EVERY certificate, forever, because what
+  an act rested on is not editable afterwards.
+
+Question 2 of the three (*which WRITERS can break this invariant*) finds finding 22 immediately:
+`SodException` had an immutability trigger and no insert-side seal, so it was a writer of the §I
+invariant that nothing was asking. Finding 21 needs the altitude distinction as well as the writer
+question — which is why the closure is a NAMED function (`phase5_t5_assert_certificate_open`) rather
+than a line copied into two triggers.
+
 ## Gate results at the convergence head
 
 | Gate | Result |
 |---|---|
 | `pnpm check` | EXIT 0 — web 543/543, API 724/724 |
-| `phase5-t5b-certification.test.ts` | **30/30** on live PostgreSQL |
+| `phase5-t5b-certification.test.ts` | **39/39** on live PostgreSQL |
 | Reproduce-first, round 1 | lock order → PG `40P01`; the three DB seals reverted → F2/F3/F4 red; SoD + orgs reverted → F5/F6 red |
 | Reproduce-first, round 2 | completeness seal removed and the quantity bound neutered → **all four** R2 probes red, the other 21 green |
 | Reproduce-first, round 3 | the four DB fixes and both service fixes reverted → **all five** R3 probes red (F2/F3 share one), the other 25 green |
+| Reproduce-first, round 4 | the lock order, both `FOR UPDATE`s, the read predicate and the precedence guard reverted → **all four** R4 probes red |
+| Reproduce-first, round 5 | the append-closure neutered, the `SodException` seal made a no-op, its unique index dropped, `phase5_t5_evidence_actors` reverted to `takenById` alone and `phase5_t5_pmc_standing` to an `OR` → **all four** DB-side R5 probes red, each for its own reason; the §J split reverted separately → R5-F4 red |
 | Full integration, pristine migrated DB | see the PR body |
 | `upgrade-proof.sh` | PASSED — the coherent case is now the COMPLETE act (certificate + evidence + status, one transaction, a non-recorder certifier), which is itself the round-2 seal being precise |

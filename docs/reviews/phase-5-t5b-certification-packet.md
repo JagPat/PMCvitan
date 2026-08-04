@@ -63,18 +63,26 @@ absent field forces the caller to wait for the ledger that makes it true.
 | 23 | Frozen `consumedQty` never exceeds the evidence that exists | `phase5_t5_consumption_evidence_check`, both arms | R2-F3 |
 | 24 | A live certificate names the bill's LIVE claim version | `phase5_t5_certificate_complete_check` | R2-F4 |
 | 25 | Certification cannot deadlock against a concurrent measurement CORRECTION either | the labour half of the evidence lock, below | R3-F1 (RED = PG `40P01`) |
-| 26 | An SoD exception overrides the rule it NAMES, granted by an approver with standing | `phase5_t5_certificate_complete_check`, mirroring the orgs standing predicate in SQL | R3-F2/F3 |
+| 26 | An SoD exception overrides the rule it NAMES, granted by an approver with standing | `phase5_t5_certificate_complete_check` + the named `phase5_t5_pmc_standing` | R3-F2/F3, R4-F3 |
 | 27 | The frozen set is CLOSED — a certificate rests on EXACTLY what it claimed | the completeness check is an equality, re-run on every consumption insert | R3-F4 |
 | 28 | Withdrawing evidence re-checks every live freeze on that row | `StockTransaction`/`Measurement` fire the same quantity predicate | R3-F5 |
-| 29 | The author of a POSITIVE correction is an evidence actor for §I | `assertSegregation` folds corrections addressed to the frozen rows | R3-F6 |
+| 29 | The author of a POSITIVE correction is an evidence actor for §I | `phase5_t5_evidence_actors` — ONE function, called by the seal AND by `assertSegregation` | R3-F6, R5-F3 |
+| 30 | The activity/measurement lock PAIR is taken in the correction path's order | `activityIdsFor` plans it unlocked; the activity is locked first | R4-F1 (RED = PG `40P01`) |
+| 31 | Two concurrent freezes against ONE evidence row cannot both commit | `FOR UPDATE` on the acceptance / original measurement inside the seal, before summing | R4-F2 |
+| 32 | The LIVE certificate read never reports a superseded one | the liveness predicate travels INTO the reload (`certificateById` overload) | R4-F4 |
+| 33 | A SUPERSEDED certificate gains no evidence and no override, ever | `phase5_t5_assert_certificate_open`, called by every append path | R5-F1, R5-F2; upgrade proof (both arms) |
+| 34 | An override exists IF AND ONLY IF the certifier recorded frozen evidence, and there is exactly one | the §I biconditional in `phase5_t5_certificate_complete_check`, fired from `SodException` too, + `SodException_certificate_rule_key` | R5-F2; upgrade proof (the recorder's certificate ACCEPTED with its override) |
+| 35 | §J's `awaiting-certification` and `certified-payable` PARTITION the claim | `CommercialBillQuery.certifiedAmountFor` subtracted from the same fold | R5-F4 (exposure unchanged across the act) |
+| 36 | The SQL standing predicate and the ORGS participant agree on every shape | two implementations, PINNED — the owner cannot be called from a trigger | R5-RESTRUCTURE (cell-by-cell over a matrix that separates them) |
 
 ## §E's lock order, implemented literally
 
 1. `lockProjectReadiness(projectId)`
 2. ALL the contributing EVIDENCE, before the bill:
    - every contributing stock LOT, ascending by id — `InventoryParticipant.lockAcceptedEvidence`
-   - the contributing measurements — `CommercialMeasurementQuery.lockMeasurementsFor`
-   - the ACTIVITY each measurement rests on — `ActivityParticipant.measurableTarget`
+   - the ACTIVITY each measurement rests on — `ActivityParticipant.measurableTarget`, over the
+     set `CommercialMeasurementQuery.activityIdsFor` planned from an UNLOCKED read
+   - and only THEN the measurements — `CommercialMeasurementQuery.lockMeasurementsFor`
 3. the BILL, and every side re-read under it
 4. EVERY PO line the bill touches, material and labour together, in ONE ascending
    order taken BEFORE any per-line work — inside `computeTriple`
@@ -105,6 +113,15 @@ and then disputes the bill, so a bill-first certifier deadlocks against it exact
 did against `stock.reverse`. The rule is now stated over EVIDENCE rather than over lots,
 which is why step 2 above is one step covering both families rather than two steps at
 different altitudes.
+
+**Round 4 found that the PAIR inside step 2 was itself inverted.** `append` takes the
+activity lock through `measurableTarget` and only then inserts the correction row whose
+FK takes a key-share lock on the original `Measurement`, so a certifier holding M and
+waiting for A deadlocks against a correction holding A and waiting for M. The activity
+set therefore has to be known before anything is locked — `activityIdsFor` is that plan —
+and a measurement whose activity was not in it is a 409 rather than a late lock, exactly
+as on the material side. Three rounds, one rule: **a total lock order is a property of the
+SYSTEM, and the module that arrives later adopts it for every order it meets.**
 
 Step 5 is not covered by step 4, and the reason is in §E: a measurement can be old
 and entirely valid while the sign-off underneath it is withdrawn concurrently.
@@ -163,15 +180,48 @@ from `VendorBillVersion`, plus the quantity bound added to both arms of the per-
 reasoning, and the diagnostic that would have caught it in round 1, is in
 `docs/reviews/pr-279-convergence.md`.
 
+## Codex rounds 3–5 — and the restructure round 5 forced
+
+Rounds 3, 4 and 5 produced fourteen further findings, and the convergence audit
+(`docs/reviews/pr-279-convergence.md`) names what they share: **I fixed the instance a finding named,
+at the altitude it named it, and the sibling survived.** Round 3's finding 16 and round 5's finding
+23 are literally one defect — the SoD actor set missing correction authors — fixed in TypeScript and
+left standing in SQL.
+
+Round 5's correction therefore does not add a fifteenth patch to that pattern. It removes the place
+the pattern lives:
+
+- **`phase5_t5_evidence_actors(project, certificate)`** is now the ONE definition of §I's actor set.
+  `assertSegregation` `$queryRaw`s the same function the commit-time seal calls, over the same frozen
+  rows. There is no second site to forget, so the class of finding is unrepeatable rather than fixed.
+  This moved the §I check to AFTER the freeze — deliberately, because the question is about the
+  frozen rows; a refusal still costs nothing, since it throws inside the transaction.
+- **`phase5_t5_pmc_standing(project, user)`** is named rather than inline. It is the honest limit:
+  standing is orgs-owned and a trigger cannot call TypeScript, so a single authority is unavailable
+  — moving the rule into a commercial migration would be round 1's finding 6 in another medium. The
+  two implementations are instead PINNED by a correspondence probe that drives both over a matrix of
+  standing shapes and fails on any disagreeing cell.
+- **`phase5_t5_assert_certificate_open(project, certificate)`** separates two questions that had been
+  conflated: COHERENCE (does this agree with the world now — live certificates only, history exempt)
+  and APPEND (may this row join at all — every certificate, forever). The early return for history
+  was correct; what was missing is that it was silently doing duty as "history needs no guard".
+
+Round 5's fourth finding is not a seal at all: `certified` became a reachable status in this task and
+the §J budget bucket still counted certified claims as awaiting certification. The claim now SPLITS —
+`awaitingCertification` and the new `certifiedPayable` partition it, so certifying moves exposure
+between buckets and never changes the total. §J defines `certified-payable` as `NET_PAYABLE −
+APPROVED`; deductions (§H, Task 5C) and approvals (§F, Task 6) do not exist yet, so at this task both
+subtractions are zero and the bucket is exactly the certified claim.
+
 ## Gate results
 
 | Gate | Result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 543/543, API 724/724, both builds clean |
-| `phase5-t5b-certification.test.ts` | **15/15** on live PostgreSQL |
-| Reproduce-first | with the three Task-5B refusal arms disabled: **probes 4, 5, 6, 7 RED**, the other 11 green |
+| `phase5-t5b-certification.test.ts` | **39/39** on live PostgreSQL |
+| Reproduce-first | every round's fixes reverted in turn; each round's probes RED and only those — round 5: the append-closure neutered, the `SodException` seal made a no-op, its unique dropped, the actor set reverted to `takenById` and standing to an `OR` → all four DB-side R5 probes RED; the §J split reverted separately → R5-F4 RED |
 | Full integration suite, pristine migrated DB | see below |
-| `upgrade-proof.sh` | **PASSED** — 22 new assertions, every refusal paired with its acceptance |
+| `upgrade-proof.sh` | **PASSED** — 29 new assertions, every refusal paired with its acceptance, including the RECORDER's certificate accepted WITH its override. The append-closure is asserted on both arms (evidence and override) against a superseded certificate; its precise MESSAGE is asserted in the integration probes, since `assert_rejects` checks rejection and not reason |
 | Tripwires | route count 158 → 160, `MODEL_OWNER` +4, contract-closure table +3, service inventory +1, `readEncapsulated`/`ownsModels` +4, 37 TRUNCATE lists |
 
 ## Scope
@@ -179,9 +229,17 @@ reasoning, and the diagnostic that would have caught it in round 1, is in
 | | |
 |---|---|
 | Files | 54 |
-| Changed lines | ~1,500 |
+| Changed lines | ~2,500 across five correction rounds |
 
 37 of those files are the one-line TRUNCATE-list sweep, which is mechanical and
 derived rather than authored. The reviewable surface is the migration, the schema
 models, the certification service, the three participant arms, the two moved
 folds, the contracts, and the probe suite.
+
+The correction rounds are additive to that surface and touch no new modules, with
+two exceptions worth naming rather than leaving to a diff: round 5 removes
+`recordedById` from `InventoryParticipant.lockAcceptedEvidence` — it existed
+solely to answer §I in TypeScript, and the single SQL authority now answers it, so
+leaving the field would be plumbing whose docblock claims a purpose it no longer
+has — and it adds `certifiedPayable` to the §J position contract. No web surface
+consumes that bucket yet; §M is Task 7.

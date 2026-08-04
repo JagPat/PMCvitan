@@ -61,6 +61,29 @@ export class CommercialMeasurementQuery {
   }
 
   /**
+   * The ACTIVITIES a labour purchase-order line's measurements rest on — read WITHOUT any lock.
+   *
+   * Codex round-4 P1. `CommercialMeasurementService.append` takes the ACTIVITY lock first and only
+   * then inserts the measurement row (whose FK takes a key-share lock on the original). A certifier
+   * that locked measurements first and activities second would deadlock against it exactly:
+   * certification holds M waiting for A while the correction holds A waiting for M.
+   *
+   * So the activity set has to be known BEFORE anything is locked, which is what this is for. It is
+   * a plan, not a fact: the rows it names are re-read under the locks the caller then takes.
+   */
+  async activityIdsFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    labourPoLineId: string,
+  ): Promise<string[]> {
+    const rows = await tx.measurement.findMany({
+      where: { projectId, labourPoLineId },
+      select: { activityId: true },
+    });
+    return [...new Set(rows.map((r) => r.activityId))].sort();
+  }
+
+  /**
    * Phase 5 Task 5B (§E step 4) — LOCK the measurements behind one labour purchase-order line
    * and return each ORIGINAL row with what it still contributes, ascending by id.
    *

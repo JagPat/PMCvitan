@@ -8,12 +8,6 @@ export interface AcceptedEvidenceRow {
   id: string;
   /** the accepted quantity STILL standing on this row: its own qty less any reversals of it */
   available: Prisma.Decimal;
-  /**
-   * WHO recorded this acceptance. §I's segregation rule asks exactly this about exactly these
-   * rows — the ones the certificate is about to freeze — so it travels with the evidence rather
-   * than sending commercial back into the inventory ledger for a second, unencapsulated read.
-   */
-  recordedById: string;
 }
 
 /**

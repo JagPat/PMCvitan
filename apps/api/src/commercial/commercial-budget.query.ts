@@ -37,8 +37,19 @@ export interface CostHeadPosition {
   /** §J `awaiting-certification` — live `BILLED_AMOUNT`, the money a vendor has CLAIMED against
    *  this head and nobody has certified. Phase 5 Task 4 (Codex round-2): the fold existed and had
    *  no caller, so a ₹40 claim against a ₹100 receipt still reported the whole ₹100 as unbilled —
-   *  the surface saying billed work is unbilled. The two buckets PARTITION the received money. */
+   *  the surface saying billed work is unbilled. The two buckets PARTITION the received money.
+   *
+   *  Task 5B narrows it to billed-and-NOT-CERTIFIED. `certified` became a reachable status in that
+   *  task, and a bucket meaning "live billed" would then have reported certified money as still
+   *  awaiting the act that had already happened. */
   awaitingCertification: Prisma.Decimal;
+  /** §J `certified-payable` — claimed money a PMC has CERTIFIED and nobody has yet approved.
+   *  §J defines it as `NET_PAYABLE − APPROVED`; deductions (§H) arrive in Task 5C and approvals
+   *  (§F) in Task 6, so at this task both subtractions are zero and the bucket is the certified
+   *  claim itself. It PARTITIONS with `awaitingCertification` rather than adding to it: certifying
+   *  moves money between the two and never changes `exposure`, because certification settles who
+   *  owes what, not how much is owed. */
+  certifiedPayable: Prisma.Decimal;
   /** `Σ exposure` — the buckets that measure against the budget, rounded to the money scale.
    *  Carried explicitly so the exception row's `headroom = budget - exposure` CHECK holds by
    *  construction rather than by a caller re-deriving the same subtraction. */
@@ -115,7 +126,10 @@ export class CommercialBudgetQuery {
 
     const materialIds = attributions.map((a) => a.poLineId).filter((v): v is string => v !== null);
     const labourIds = attributions.map((a) => a.labourPoLineId).filter((v): v is string => v !== null);
-    const [materialLines, labourLines, accepted, measured, billedMaterial, billedLabour] = await Promise.all([
+    const [
+      materialLines, labourLines, accepted, measured,
+      billedMaterial, billedLabour, certifiedMaterial, certifiedLabour,
+    ] = await Promise.all([
       this.procurement.committedLinesFor(tx, projectId, materialIds),
       this.labour.committedLinesFor(tx, projectId, labourIds),
       this.inventory.acceptedFor(tx, projectId, materialIds),
@@ -127,12 +141,19 @@ export class CommercialBudgetQuery {
       // promised ("Tasks 4–6 subtract `BILLED_AMOUNT` from it").
       this.bills.billedAmountFor(tx, projectId, 'material', materialIds),
       this.bills.billedAmountFor(tx, projectId, 'labour', labourIds),
+      // Phase 5 Task 5B (§J) — the CERTIFIED part of that same claim. It is a SUBSET of the fold
+      // above, taken from the one place that decides which bills are certified, so the two buckets
+      // below are a partition by construction and neither can be derived from a local filter that
+      // drifts.
+      this.bills.certifiedAmountFor(tx, projectId, 'material', materialIds),
+      this.bills.certifiedAmountFor(tx, projectId, 'labour', labourIds),
     ]);
 
     for (const code of heads) {
       let committed = ZERO;
       let receivedNotBilled = ZERO;
       let awaitingCertification = ZERO;
+      let certifiedPayable = ZERO;
       for (const a of attributions) {
         if (a.costHeadCode !== code) continue;
         if (a.poLineId) {
@@ -179,7 +200,12 @@ export class CommercialBudgetQuery {
           // flattering.
           const billed = billedMaterial.get(a.poLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(receivedValue.sub(billed), ZERO));
-          awaitingCertification = awaitingCertification.add(billed);
+          // the claim SPLIT at certification, never double-counted: `certified` is a subset of
+          // `billed` over the same rows, so the two terms sum back to the whole claim and
+          // `exposure` is unchanged by the act of certifying
+          const certified = certifiedMaterial.get(a.poLineId) ?? ZERO;
+          awaitingCertification = awaitingCertification.add(billed.sub(certified));
+          certifiedPayable = certifiedPayable.add(certified);
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
@@ -201,7 +227,9 @@ export class CommercialBudgetQuery {
           // against it — the labour twin of the material split above
           const billed = billedLabour.get(a.labourPoLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(consumed.sub(billed), ZERO));
-          awaitingCertification = awaitingCertification.add(billed);
+          const certified = certifiedLabour.get(a.labourPoLineId) ?? ZERO;
+          awaitingCertification = awaitingCertification.add(billed.sub(certified));
+          certifiedPayable = certifiedPayable.add(certified);
         }
       }
       const budget = budgetOf.get(code) ?? null;
@@ -217,13 +245,16 @@ export class CommercialBudgetQuery {
       // rounded figure — not from separately rounded buckets, whose two half-paisa errors could
       // add to a phantom cent of breach. The displayed buckets are rounded for reporting; the
       // DECISION is made on `exposure`.
-      const exposure = money(committed.add(receivedNotBilled).add(awaitingCertification));
+      const exposure = money(
+        committed.add(receivedNotBilled).add(awaitingCertification).add(certifiedPayable),
+      );
       out.set(code, {
         costHeadCode: code,
         budget,
         committed: money(committed),
         receivedNotBilled: money(receivedNotBilled),
         awaitingCertification: money(awaitingCertification),
+        certifiedPayable: money(certifiedPayable),
         exposure,
         headroom: budget === null ? null : budget.sub(exposure),
       });

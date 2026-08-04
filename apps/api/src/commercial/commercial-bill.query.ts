@@ -88,6 +88,51 @@ export class CommercialBillQuery {
   }
 
   /**
+   * §J `certified-payable`, per purchase-order line — the part of `billedAmountFor` that has been
+   * CERTIFIED.
+   *
+   * Codex round-5 P2. Until this task `certified` was an unreachable status, so every live claim
+   * was correctly awaiting certification; the moment `commercial.bill.certify` can move a bill
+   * there, a bucket defined as "live billed" starts reporting certified money as still-pending and
+   * the §J surface says the certification has not happened after it has.
+   *
+   * §J defines the bucket as `NET_PAYABLE − APPROVED`. Both subtractions are FACTS THAT DO NOT YET
+   * EXIST — deductions arrive with §H in Task 5C and approvals with §F in Task 6 — so at this task
+   * `NET_PAYABLE` is `CERTIFIED(bill)` and `APPROVED` is zero. And `CERTIFIED(bill)` is the live
+   * `BILLED_AMOUNT` of that bill, because `certify` freezes `certifiedAmount` from exactly that
+   * fold and §F refuses an amendment while the bill stands certified. So the per-line split of the
+   * live claim IS the per-line attribution of the certified payable, exactly — not an approximation
+   * standing in for the real definition until the later terms land.
+   *
+   * Status is the filter rather than a join to `BillCertificate`, and that is not a shortcut:
+   * `phase5_t5_certificate_projection_check` seals `status = 'certified'` and "a live certificate
+   * exists" as a BICONDITIONAL, so the two predicates name the same set by construction.
+   */
+  async certifiedAmountFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: 'material' | 'labour',
+    poLineIds: readonly string[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const out = new Map<string, Prisma.Decimal>();
+    for (const id of poLineIds) out.set(id, ZERO);
+    if (poLineIds.length === 0) return out;
+    const rows = await tx.vendorBillLine.findMany({
+      where: {
+        projectId,
+        ...(kind === 'material' ? { poLineId: { in: [...poLineIds] } } : { labourPoLineId: { in: [...poLineIds] } }),
+        version: { is: { ...LIVE_VERSION, bill: { is: { status: 'certified' } } } },
+      },
+      select: { poLineId: true, labourPoLineId: true, amount: true },
+    });
+    for (const r of rows) {
+      const key = kind === 'material' ? r.poLineId! : r.labourPoLineId!;
+      out.set(key, (out.get(key) ?? ZERO).add(r.amount));
+    }
+    return out;
+  }
+
+  /**
    * `BILLED_TAX(poLine)` and `BILLED_FREIGHT(poLine)` (§0) — the same LIVE rule, in the two money
    * components §E caps PRO-RATA rather than comparing whole.
    *

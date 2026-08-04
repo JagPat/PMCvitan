@@ -1973,11 +1973,12 @@ assert_rejects "commercial T5B §I: an actor approving their OWN override (a sig
 # trims spaces only, which is the exact defect PR #277 found in a twenty-first check
 assert_rejects "commercial T5B §I: an override justified by a TAB (presence is not justification)" \
   "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S2','p1','UPT5B-C1','r','USER-1','USER-2',chr(9),'UP45-CMD')"
-$PSQL >/dev/null -c "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S3','p1','UPT5B-C1','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UP45-CMD')" \
-  && printf 'ok      %s\n' "commercial T5B §I: an attributable exception with a real reason is ACCEPTED" \
-  || { printf 'FAILED  %s\n' "commercial T5B §I: a coherent exception was rejected"; FAIL=1; }
-assert_rejects "commercial T5B §I: REWRITING the reason an override was granted for" \
-  "UPDATE \"SodException\" SET \"reason\"='a different story' WHERE \"id\"='UPT5B-S3'"
+# Codex round-5 P2 — the OTHER direction of §I. `UPT5B-C1` was certified by `USER-2`, who recorded
+# none of its evidence, so it needed no override at all. An exception appended to it would be
+# reported by `certificateById` as the authority for the act — a trail asserting that a pmc excused
+# a conflict which never existed. The exception and the conflict are a BICONDITIONAL.
+assert_rejects "commercial T5B R5-F2: an exception appended to a certificate that NEEDED none" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S3','p1','UPT5B-C1','evidence-recorder-may-not-certify','USER-2','USER-1','unneeded','UP45-CMD')"
 # §F's ONE correction path past certification: the supersession stamp and the return to `verified`
 # in ONE transaction. The `verified -> certified` arrow was already proven ACCEPTED above, by the
 # transaction that created the certificate — the projection seal makes those the same act, so
@@ -1987,6 +1988,37 @@ $PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(
   || { printf 'FAILED  %s\n' "commercial T5B §F: the supersession return arrow was rejected"; FAIL=1; }
 assert_rejects "commercial T5B §F: REWRITING a supersession stamp (a superseded certificate is history)" \
   "UPDATE \"BillCertificate\" SET \"supersedeReason\"='rewritten' WHERE \"id\"='UPT5B-C1'"
+
+# ── Codex round 5 — the RECORDER'S certificate, and what history may not gain ──────────────────
+#
+# §I's accepted case needs an approver WITH STANDING, and standing is the orgs module's rule: an
+# active project membership with the role, or org owner/admin standing where there is no membership
+# at all. This legacy fixture has two users and no `Membership` rows, so the row below is added for
+# the same reason `USER-2` was — a seal about two people cannot be exercised against a fixture that
+# cannot express the second one, and its absence would look like the rule firing.
+$PSQL >/dev/null -c "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES('UPT5B-MEM','p1','USER-2','pmc','active') ON CONFLICT DO NOTHING"
+# The COMPLETE act by the person §I refuses by default: `USER-1` recorded `UP45-ACC` and certifies
+# the claim resting on it, WITH the attributable override in the same transaction. This is the
+# biconditional's other half, and it is what makes every refusal around it about its own rule.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C4','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A4','p1','UPT5B-C4','UP45-ACC',3); INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S4','p1','UPT5B-C4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UP45-CMD'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T5B §I: the RECORDER may certify WITH an attributable override, in one transaction (the seal is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T5B §I: the coherent recorder-certified act was rejected"; FAIL=1; }
+# ONE override per certificate. The partial unique refuses a second row for the same rule, so a
+# count above one means a row naming some OTHER rule — authority for a question §I has not asked.
+assert_rejects "commercial T5B R5-F2: a SECOND exception on one certificate (which one authorised the act?)" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S5','p1','UPT5B-C4','some-other-rule','USER-1','USER-2','a second story','UP45-CMD')"
+assert_rejects "commercial T5B §I: REWRITING the reason an override was granted for" \
+  "UPDATE \"SodException\" SET \"reason\"='a different story' WHERE \"id\"='UPT5B-S4'"
+$PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-2', \"supersedeReason\"='restated again' WHERE \"id\"='UPT5B-C4'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T5B §F: the recorder's certificate supersedes by the same one-transaction path" \
+  || { printf 'FAILED  %s\n' "commercial T5B §F: superseding the recorder-certified certificate was rejected"; FAIL=1; }
+# Codex round-5 P2 — the whole-certificate seal deliberately does not re-validate HISTORY against
+# today's world, and the append paths read that as "history is unguarded". What an act RESTED ON is
+# not editable afterwards: both arms are refused by the one append-closure.
+assert_rejects "commercial T5B R5-F1: EVIDENCE appended to a superseded certificate (history does not gain rows)" \
+  "INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A5','p1','UPT5B-C4','UP45-ACC',1)"
+assert_rejects "commercial T5B R5-F2: an OVERRIDE appended to a superseded certificate" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S6','p1','UPT5B-C4','evidence-recorder-may-not-certify','USER-1','USER-2','late audit','UP45-CMD')"
 # Codex round-4 — `verified -> submitted` is the AMENDMENT arrow. Opened without requiring the
 # amendment, one UPDATE re-opens a verified claim for re-verification with no new claim behind it.
 assert_rejects "commercial T5A R4-F4: VERIFIED -> submitted with no replacement version (the amendment arrow without the amendment)" \

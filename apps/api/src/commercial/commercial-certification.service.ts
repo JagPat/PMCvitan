@@ -24,12 +24,10 @@ interface MeasurementDraw {
   consumedQty: Prisma.Decimal;
 }
 
-/** One acceptance row a certificate is about to freeze — the SAME decision §I asks about. */
+/** One acceptance row a certificate is about to freeze. */
 interface AcceptanceDraw {
   stockTransactionId: string;
   consumedQty: Prisma.Decimal;
-  /** who recorded it. §I's question, answered from the evidence rather than a second read. */
-  recordedById: string;
 }
 
 /**
@@ -140,20 +138,40 @@ export class CommercialCertificationService {
         for (const poLineId of [...new Set(planned.lines.filter((l) => l.kind === 'material').map((l) => l.poLineId))].sort()) {
           evidenceByLine.set(poLineId, await this.inventoryParticipant.lockAcceptedEvidence(tx, projectId, poLineId));
         }
-        // the labour half: the measurements, then the ACTIVITY each rests on — the order
-        // `revertSignOff` and the correction path both take. Locking here and DECIDING the draw
-        // after the bill keeps the lock order total without moving the decision earlier than the
-        // claim it is about.
+        // the labour half: the ACTIVITY each measurement rests on, THEN the measurements.
+        //
+        // Codex round-4 P1 — that order is not interchangeable, and round 3 had it backwards.
+        // `CommercialMeasurementService.append` takes the activity lock through `measurableTarget`
+        // and only then inserts the correction row, whose FK takes a key-share lock on the original
+        // `Measurement`. A certifier holding M and waiting for A deadlocks against a correction
+        // holding A and waiting for M. `revertSignOff` takes the activity first as well, so
+        // activity-before-measurement is the order every writer of this pair already uses.
+        //
+        // The activity set therefore has to be known BEFORE anything here is locked, which is what
+        // `activityIdsFor` is for — a plan, re-read under the locks it leads to.
+        const labourLines = [...new Set(planned.lines.filter((l) => l.kind === 'labour').map((l) => l.poLineId))].sort();
+        const plannedActivities = new Set<string>();
+        for (const poLineId of labourLines) {
+          for (const id of await this.measured.activityIdsFor(tx, projectId, poLineId)) plannedActivities.add(id);
+        }
+        for (const activityId of [...plannedActivities].sort()) {
+          const target = await this.activities.measurableTarget(tx, { projectId, activityId });
+          if (!target || target.status !== 'done') {
+            throw new ConflictException(
+              `Activity ${activityId} is ${target?.status ?? 'missing'} — a certificate cannot rest on work whose sign-off no longer stands`,
+            );
+          }
+        }
         const measuredByLine = new Map<string, Array<{ id: string; activityId: string; quantity: Prisma.Decimal }>>();
-        for (const poLineId of [...new Set(planned.lines.filter((l) => l.kind === 'labour').map((l) => l.poLineId))].sort()) {
+        for (const poLineId of labourLines) {
           const rows = await this.measured.lockMeasurementsFor(tx, projectId, poLineId);
           measuredByLine.set(poLineId, rows);
-          for (const activityId of [...new Set(rows.map((r) => r.activityId))].sort()) {
-            const target = await this.activities.measurableTarget(tx, { projectId, activityId });
-            if (!target || target.status !== 'done') {
-              throw new ConflictException(
-                `Activity ${activityId} is ${target?.status ?? 'missing'} — a certificate cannot rest on work whose sign-off no longer stands`,
-              );
+          // a measurement whose activity was NOT in the unlocked plan appeared between the two
+          // steps, so its sign-off was never checked under a lock. Refuse rather than lock late —
+          // locking late is how the deadlock returns, exactly as on the material side.
+          for (const r of rows) {
+            if (!plannedActivities.has(r.activityId)) {
+              throw new ConflictException('New measured work landed on this claim while certification was preparing — reload and retry');
             }
           }
         }
@@ -212,13 +230,6 @@ export class CommercialCertificationService {
         // refuses everything, including whatever route bypassed the service.
         const certifiedAmount = await this.bills.billedAmountOfBill(tx, projectId, input.billId);
 
-        // §I — evaluated BEFORE the certificate exists, so a refusal costs nothing, and RETURNED
-        // rather than stashed: a Nest provider is a singleton, and an instance field holding
-        // per-request state would let two concurrent certifications read each other's override.
-        const sod = await this.assertSegregation(
-          tx, projectId, input, actor.actorId, acceptanceDraws, measurementDraws,
-        );
-
         const certificate = await tx.billCertificate.create({
           data: {
             projectId, billId: input.billId, versionId,
@@ -226,19 +237,6 @@ export class CommercialCertificationService {
             certifiedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
-
-        // §I — written in the SAME transaction as the override it authorises, and bound to THAT
-        // certificate by composite FK. An exception is authority for ONE certificate, never a
-        // standing waiver a later override can point at.
-        if (sod) {
-          await tx.sodException.create({
-            data: {
-              projectId, certificateId: certificate.id,
-              rule: sod.rule, actorId: sod.actorId, approverId: sod.approverId, reason: sod.reason,
-              sourceCommandId: ctx.commandId!,
-            },
-          });
-        }
 
         for (const a of acceptanceDraws) {
           await tx.certifiedAcceptanceConsumption.create({
@@ -253,6 +251,30 @@ export class CommercialCertificationService {
             data: {
               projectId, certificateId: certificate.id,
               measurementId: m.measurementId, consumedQty: m.consumedQty,
+            },
+          });
+        }
+
+        // §I — asked AFTER the freeze, and that ordering is the point rather than an accident.
+        // The question "did the certifier record any of this evidence?" is a question about the
+        // FROZEN ROWS, so asking it once they exist lets both layers ask it of the same rows
+        // through the same function. A refusal here still costs nothing: it throws inside the
+        // transaction, so the certificate and its freeze are never committed.
+        //
+        // RETURNED rather than stashed: a Nest provider is a singleton, and an instance field
+        // holding per-request state would let two concurrent certifications read each other's
+        // override.
+        const sod = await this.assertSegregation(tx, projectId, input, actor.actorId, certificate.id);
+
+        // §I — written in the SAME transaction as the override it authorises, and bound to THAT
+        // certificate by composite FK. An exception is authority for ONE certificate, never a
+        // standing waiver a later override can point at.
+        if (sod) {
+          await tx.sodException.create({
+            data: {
+              projectId, certificateId: certificate.id,
+              rule: sod.rule, actorId: sod.actorId, approverId: sod.approverId, reason: sod.reason,
+              sourceCommandId: ctx.commandId!,
             },
           });
         }
@@ -355,7 +377,7 @@ export class CommercialCertificationService {
         const free = row.available.sub(already);
         if (free.lessThanOrEqualTo(0)) continue;
         const take = Prisma.Decimal.min(remaining, free);
-        draws.push({ stockTransactionId: row.id, consumedQty: take, recordedById: row.recordedById });
+        draws.push({ stockTransactionId: row.id, consumedQty: take });
         remaining = remaining.sub(take);
       }
       if (remaining.greaterThan(0)) {
@@ -455,49 +477,35 @@ export class CommercialCertificationService {
    * Silently allowing it is not an option; silently banning it is not either, because a two-person
    * practice must still be able to operate.
    *
-   * The rows consulted are exactly the ones this certificate is about to freeze — not every
-   * acceptance or measurement on the line. A store user whose acceptance is fully consumed by an
-   * earlier live certificate is not in this certificate's evidence, and refusing them would be
-   * refusing on the strength of a row this act does not rest on.
+   * The rows consulted are exactly the ones this certificate FROZE — not every acceptance or
+   * measurement on the line. A store user whose acceptance is fully consumed by an earlier live
+   * certificate is not in this certificate's evidence, and refusing them would be refusing on the
+   * strength of a row this act does not rest on. That set is not described here and derived
+   * elsewhere: it is `phase5_t5_evidence_actors`, and this method reads it.
    */
   private async assertSegregation(
     tx: Prisma.TransactionClient,
     projectId: string,
     input: CertifyBillInput,
     actorId: string,
-    acceptanceDraws: readonly AcceptanceDraw[],
-    measurementDraws: readonly MeasurementDraw[],
+    certificateId: string,
   ): Promise<{ rule: string; actorId: string; approverId: string; reason: string } | null> {
-    const evidenceActors = new Set<string>();
-    // the DRAW, not the pool. Codex round-1 P2: reading every positive accepted row on the line
-    // refused a store user whose acceptance an earlier live certificate had already consumed —
-    // evidence this act does not rest on. The recorder travels WITH the draw, from the inventory
-    // participant that locked it, so commercial never reads the owned ledger for a second time.
-    for (const draw of acceptanceDraws) evidenceActors.add(draw.recordedById);
-    if (measurementDraws.length > 0) {
-      // Codex round-3 P2 — the ORIGINAL row's taker AND every author who ADDED to it. §D models a
-      // correction as its own signed row against the original, and the draw freezes the ORIGINAL's
-      // id, so asking only about `takenById` misses the person whose correction created the
-      // quantity being certified: record a +50 against someone else's 50-shift measurement and
-      // certify the resulting 100-shift claim with no override, because the actor who supplied half
-      // the evidence is not in the set.
-      //
-      // POSITIVE deltas only. A reducing correction takes evidence AWAY, and §I is about who
-      // created the money being certified — refusing someone for having walked a claim back would
-      // punish the correction the section exists to encourage.
-      const ids = measurementDraws.map((m) => m.measurementId);
-      const rows = await tx.measurement.findMany({
-        where: {
-          projectId,
-          OR: [{ id: { in: ids } }, { correctsId: { in: ids } }],
-        },
-        select: { takenById: true, quantity: true, correctsId: true },
-      });
-      for (const r of rows) {
-        if (r.correctsId === null || r.quantity.greaterThan(0)) evidenceActors.add(r.takenById);
-      }
-    }
-    if (!evidenceActors.has(actorId)) return null;
+    // Codex rounds 3 and 5, twice about the same rule: the service counted the authors of positive
+    // measurement corrections as evidence actors and the database seal did not, because they were
+    // two implementations of one question and only the one a finding named ever got fixed.
+    //
+    // So this is no longer an implementation. `phase5_t5_evidence_actors` is the single site, and
+    // the commit-time seal calls exactly this function over exactly these rows: the two layers
+    // cannot disagree, and a future change to who counts as an evidence actor is ONE edit that
+    // cannot half-land.
+    //
+    // It is asked of the FROZEN rows rather than of the draw, which is the same set — the freeze
+    // above writes the draw — but stated as the certificate's own evidence, which is what §I is
+    // about and what a reviewer can check without tracing how the draw was built.
+    const actors = await tx.$queryRaw<Array<{ actor: string }>>(
+      Prisma.sql`SELECT actor FROM phase5_t5_evidence_actors(${projectId}, ${certificateId})`,
+    );
+    if (!actors.some((a) => a.actor === actorId)) return null;
 
     if (!input.sodOverride) {
       throw new ForbiddenException(
@@ -538,25 +546,39 @@ export class CommercialCertificationService {
   async readCertificate(projectId: string, billId: string, user: AuthUser): Promise<CertificateDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
-    const cert = await this.prisma.billCertificate.findFirst({
-      where: { projectId, billId, supersededAt: null },
-      select: { id: true },
-    });
+    // Codex round-4 P2 — the liveness predicate travels INTO the reload. Resolving the live
+    // certificate and then re-reading it by id leaves a window: a supersession committing between
+    // the two reads makes this endpoint report history as current, which is the one thing a LIVE
+    // read must never do. `certificateById` is right for `certify`/`supersede`, which owe the
+    // caller the certificate THAT CALL made whatever its state — but this route asks a different
+    // question, so it carries a different predicate.
+    const cert = await this.certificateById(projectId, { projectId, billId, supersededAt: null });
     if (!cert) throw new NotFoundException(`Vendor bill ${billId} has no live certificate`);
-    return this.certificateById(projectId, cert.id);
+    return cert;
   }
 
   /** One certificate by identity, live or superseded — the shape both commands and the read return. */
-  private async certificateById(projectId: string, certificateId: string): Promise<CertificateDto> {
+  private async certificateById(projectId: string, certificateId: string): Promise<CertificateDto>;
+  private async certificateById(
+    projectId: string, where: { projectId: string; billId: string; supersededAt: null },
+  ): Promise<CertificateDto | null>;
+  private async certificateById(
+    projectId: string,
+    target: string | { projectId: string; billId: string; supersededAt: null },
+  ): Promise<CertificateDto | null> {
+    const certificateId = typeof target === 'string' ? target : null;
     const cert = await this.prisma.billCertificate.findFirst({
-      where: { projectId, id: certificateId },
+      where: typeof target === 'string' ? { projectId, id: target } : target,
       include: {
         sodExceptions: true,
         acceptanceConsumption: { orderBy: { stockTransactionId: 'asc' } },
         measurementConsumption: { orderBy: { measurementId: 'asc' } },
       },
     });
-    if (!cert) throw new NotFoundException(`Certificate ${certificateId} not found in this project`);
+    if (!cert) {
+      if (certificateId === null) return null;
+      throw new NotFoundException(`Certificate ${certificateId} not found in this project`);
+    }
     const sod = cert.sodExceptions[0];
     return {
       id: cert.id,

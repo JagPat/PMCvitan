@@ -77,6 +77,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS "CertifiedMeasurementConsumption_cert_row_key"
 CREATE INDEX IF NOT EXISTS "CertifiedMeasurementConsumption_projectId_measurementId_idx" ON "CertifiedMeasurementConsumption"("projectId", "measurementId");
 CREATE UNIQUE INDEX IF NOT EXISTS "SodException_projectId_id_key" ON "SodException"("projectId", "id");
 CREATE INDEX IF NOT EXISTS "SodException_projectId_certificateId_idx" ON "SodException"("projectId", "certificateId");
+-- Codex round-5 P2 — ONE exception per rule per certificate. Without it a certificate can carry
+-- several rows overriding the same rule, and `certificateById` reports whichever the planner
+-- happens to return: an audit trail that answers "who authorised this?" differently on two reads
+-- is not an audit trail. The uniqueness is what makes "the exception on this certificate" a
+-- definite description rather than a choice.
+CREATE UNIQUE INDEX IF NOT EXISTS "SodException_certificate_rule_key"
+  ON "SodException"("projectId", "certificateId", "rule") WHERE "certificateId" IS NOT NULL;
 
 -- §F/§G — EXACTLY ONE LIVE CERTIFICATE PER BILL. Bounds 3–5 read the live certificate only:
 -- summing a superseded one reads a corrected ₹100 certification as ₹200, which either blocks the
@@ -316,6 +323,108 @@ CREATE CONSTRAINT TRIGGER "VendorBillLine_certified_sealed"
   AFTER INSERT ON "VendorBillLine" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t5_bill_certified_recheck();
 
+-- ── The three SHARED authorities the seals and the service BOTH consult ───────────────────────
+--
+-- Codex rounds 3 and 5 produced the same finding twice — "the service counts positive correction
+-- authors as evidence actors, the SQL seal still reads only `Measurement.takenById`" — and that is
+-- not a mistake about corrections. It is what happens when ONE rule has TWO implementations: the
+-- next change lands in whichever copy the finding named, and the other keeps the old behaviour
+-- until a reviewer finds it. §0 exists to name exactly this, and the answer §0 gives everywhere
+-- else is the answer here: the rule gets ONE site, and every layer that needs it CALLS that site.
+--
+-- So the derivations below are functions rather than inline predicates, and
+-- `CommercialCertificationService` invokes the same `phase5_t5_evidence_actors` this file's
+-- completeness seal invokes, over the same frozen rows, in the same transaction. The service is no
+-- longer a second implementation that must be kept in step; it is a caller. A future §I change is
+-- one edit, and it cannot half-land.
+
+-- HISTORY IS CLOSED (Codex round-5 P2, twice over). The whole-certificate seal deliberately
+-- returns early for a superseded certificate — a superseded certificate is history, the claim
+-- beneath it has legitimately moved on, and re-validating it against today's world would refuse
+-- the very correction §F requires. But "we do not re-validate history" was read by the append
+-- paths as "history is unguarded": a consumption row or an exception could be appended to a
+-- certificate superseded months ago, and `certificateById` would then report frozen evidence, or
+-- an attributable override, that the original act never had.
+--
+-- Both readings are right at their own altitude, and this is the distinction between them. The
+-- COHERENCE question ("does this certificate agree with the world as it is now?") applies only to
+-- a live certificate. The APPEND question ("may this row join this certificate at all?") applies
+-- to every certificate forever, because what an act rested on is not editable afterwards.
+CREATE OR REPLACE FUNCTION phase5_t5_assert_certificate_open(p_project text, p_certificate text)
+RETURNS void AS $$
+DECLARE v_superseded timestamp(3); v_found boolean;
+BEGIN
+  SELECT TRUE, c."supersededAt" INTO v_found, v_superseded
+    FROM "BillCertificate" c
+   WHERE c."projectId" = p_project AND c."id" = p_certificate;
+  IF NOT COALESCE(v_found, FALSE) THEN
+    RAISE EXCEPTION 'Row cites certificate % which does not exist in project %', p_certificate, p_project;
+  END IF;
+  IF v_superseded IS NOT NULL THEN
+    RAISE EXCEPTION 'Certificate % was superseded at % — what a certification rested on is history, and history does not gain new rows', p_certificate, v_superseded;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- §I — WHO produced the evidence a certificate freezes. The ONE definition, called by the
+-- completeness seal below and by `CommercialCertificationService.assertSegregation`.
+--
+-- Material: the recorder of each frozen acceptance row. Labour: the taker of each frozen ORIGINAL
+-- measurement AND the author of every POSITIVE correction addressed to it — §D models a correction
+-- as its own signed row, so the person who recorded a +50 against someone else's 50 supplied half
+-- the quantity being certified even though the freeze names the original's id.
+--
+-- POSITIVE deltas only, and the material arm has no correction term for the same reason: §I asks
+-- who CREATED the money being certified. A reversal or a reducing correction takes evidence away,
+-- and refusing someone for having walked a claim back would punish the correction §D exists to
+-- encourage.
+CREATE OR REPLACE FUNCTION phase5_t5_evidence_actors(p_project text, p_certificate text)
+RETURNS TABLE(actor text) AS $$
+  SELECT DISTINCT t."recordedById"
+    FROM "CertifiedAcceptanceConsumption" cc
+    JOIN "StockTransaction" t ON t."projectId" = cc."projectId" AND t."id" = cc."stockTransactionId"
+   WHERE cc."projectId" = p_project AND cc."certificateId" = p_certificate
+  UNION
+  SELECT DISTINCT m."takenById"
+    FROM "CertifiedMeasurementConsumption" mc
+    JOIN "Measurement" m ON m."projectId" = mc."projectId"
+                        AND (m."id" = mc."measurementId" OR m."correctsId" = mc."measurementId")
+   WHERE mc."projectId" = p_project AND mc."certificateId" = p_certificate
+     AND (m."correctsId" IS NULL OR m."quantity" > 0);
+$$ LANGUAGE sql STABLE;
+
+-- §I — does this user hold pmc standing on this project? The orgs module OWNS this rule, and the
+-- service asks it through `OrgsParticipant.hasProjectRoleStanding`. A trigger cannot call
+-- TypeScript, so unlike the actor set above this one CANNOT have a single authority: the honest
+-- statement is that there are two implementations, and the closure is that they are PINNED against
+-- each other by a correspondence probe (`phase5-t5b-certification.test.ts`, R5-RESTRUCTURE) that
+-- drives both over the same matrix of standing shapes and fails on any cell where they disagree.
+-- Naming the predicate here is what makes that probe possible — an inline `EXISTS` inside the seal
+-- could only have been tested through the seal, one shape at a time.
+--
+-- PRECEDENCE, not alternation: `hasProjectRoleStanding` returns on an ACTIVE project membership and
+-- never reaches the org arm, so an org admin who is also an active contractor on this site operates
+-- AS contractor.
+CREATE OR REPLACE FUNCTION phase5_t5_pmc_standing(p_project text, p_user text)
+RETURNS boolean AS $$
+  SELECT CASE
+    WHEN EXISTS (
+      SELECT 1 FROM "Membership" m
+       WHERE m."projectId" = p_project AND m."userId" = p_user AND m."status" = 'active'
+    ) THEN EXISTS (
+      SELECT 1 FROM "Membership" m
+       WHERE m."projectId" = p_project AND m."userId" = p_user
+         AND m."status" = 'active' AND m."role" = 'pmc'
+    )
+    ELSE EXISTS (
+      SELECT 1
+        FROM "Project" pr
+        JOIN "OrgMembership" om ON om."orgId" = pr."orgId" AND om."userId" = p_user
+       WHERE pr."id" = p_project AND om."role" IN ('owner', 'admin')
+    )
+  END;
+$$ LANGUAGE sql STABLE;
+
 -- ── §E — the CONSUMED ROW must be evidence THIS claim actually rests on ────────────────────────
 --
 -- Codex round-1 P2, both sides. The composite FKs prove a consumption row names a real
@@ -339,11 +448,10 @@ DECLARE
   v_available numeric;
   v_frozen    numeric;
 BEGIN
+  -- existence AND the append-closure, in the one place both consumption families pass through
+  PERFORM phase5_t5_assert_certificate_open(p_project, p_certificate);
   SELECT c."billId" INTO v_bill FROM "BillCertificate" c
    WHERE c."projectId" = p_project AND c."id" = p_certificate;
-  IF v_bill IS NULL THEN
-    RAISE EXCEPTION 'Consumption row cites certificate % which does not exist in project %', p_certificate, p_project;
-  END IF;
 
   IF p_kind = 'acceptance' THEN
     -- the row is an ACCEPTANCE, and its lot hangs off a purchase-order line the bill's LIVE claim
@@ -370,13 +478,19 @@ BEGIN
     -- strength of it. The bound is the §0 `ACCEPTED` arithmetic per row — the acceptance quantity
     -- less the reversals OF THAT ROW — and it is a SUM over every LIVE certificate, because two
     -- certificates may each rest on part of one acceptance but never on more of it than exists.
+    -- Codex round-4 P2 — LOCK the evidence row before summing. This predicate runs at READ
+    -- COMMITTED, so without it two transactions each freezing 100 against the same 100-unit
+    -- acceptance can both read a sum that does not yet include the other and both commit, leaving
+    -- 200 frozen against a row that carries 100. `FOR UPDATE` on the acceptance row serializes them
+    -- by row id: the second blocks, re-reads with the first's consumption visible, and is refused.
     SELECT a."qty" - COALESCE((
              SELECT SUM(r."qty") FROM "StockTransaction" r
               WHERE r."projectId" = a."projectId" AND r."reversedTxId" = a."id" AND r."type" = 'reversal'
            ), 0)
       INTO v_available
       FROM "StockTransaction" a
-     WHERE a."projectId" = p_project AND a."id" = p_row;
+     WHERE a."projectId" = p_project AND a."id" = p_row
+       FOR UPDATE OF a;
     SELECT COALESCE(SUM(cc."consumedQty"), 0) INTO v_frozen
       FROM "CertifiedAcceptanceConsumption" cc
       JOIN "BillCertificate" c ON c."projectId" = cc."projectId" AND c."id" = cc."certificateId"
@@ -405,6 +519,10 @@ BEGIN
     -- the labour twin of the same bound. The available quantity here is the row's NET — its own
     -- quantity plus every correction addressed to it — which is what `CommercialMeasurementQuery.netOf`
     -- folds in TypeScript. Same rule, two languages, stated once in each.
+    -- the same serialization on the labour side, and for the same reason. The lock is taken on the
+    -- ORIGINAL row, which is the identity every freeze names, so two freezes against it queue.
+    PERFORM 1 FROM "Measurement" m0
+      WHERE m0."projectId" = p_project AND m0."id" = p_row FOR UPDATE;
     SELECT COALESCE(SUM(m2."quantity"), 0) INTO v_available
       FROM "Measurement" m2
      WHERE m2."projectId" = p_project AND (m2."id" = p_row OR m2."correctsId" = p_row);
@@ -541,6 +659,7 @@ DECLARE
   v_frozen       numeric;
   v_recorder     boolean;
   v_excepted     boolean;
+  v_exceptions   bigint;
   r              record;
 BEGIN
   SELECT c."billId", c."versionId", c."certifiedById", c."supersededAt"
@@ -591,22 +710,18 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- (c) §I — if the certifier RECORDED any of the frozen evidence, an attributable exception for
-  -- THIS certificate naming THAT actor must exist. The rule is evaluated against the frozen set,
-  -- exactly as the service evaluates it against the draw: same question, same rows, two layers.
+  -- (c) §I — the exception and the conflict are a BICONDITIONAL, and both directions are load-
+  -- bearing. If the certifier recorded frozen evidence there must be an attributable override; if
+  -- they did not, there must be NO override, because a certificate carrying an exception it never
+  -- needed reports an authorisation that authorised nothing (Codex round-5 P2). The actor set comes
+  -- from `phase5_t5_evidence_actors` — the SAME function the service calls, so the two layers
+  -- cannot answer this differently.
   SELECT EXISTS (
-    SELECT 1
-      FROM "CertifiedAcceptanceConsumption" cc
-      JOIN "StockTransaction" t ON t."projectId" = cc."projectId" AND t."id" = cc."stockTransactionId"
-     WHERE cc."projectId" = p_project AND cc."certificateId" = p_certificate
-       AND t."recordedById" = v_certifier
-    UNION ALL
-    SELECT 1
-      FROM "CertifiedMeasurementConsumption" mc
-      JOIN "Measurement" m ON m."projectId" = mc."projectId" AND m."id" = mc."measurementId"
-     WHERE mc."projectId" = p_project AND mc."certificateId" = p_certificate
-       AND m."takenById" = v_certifier
+    SELECT 1 FROM phase5_t5_evidence_actors(p_project, p_certificate) a WHERE a.actor = v_certifier
   ) INTO v_recorder;
+  SELECT COUNT(*) INTO v_exceptions
+    FROM "SodException" s
+   WHERE s."projectId" = p_project AND s."certificateId" = p_certificate;
   IF v_recorder THEN
     -- Codex round 3, two findings — an exception is only an override of the rule it NAMES, granted
     -- by an authority that actually HAS standing. Without the first, an unrelated exception row
@@ -614,33 +729,33 @@ BEGIN
     -- `evidence-recorder-may-not-certify`. Without the second, the "stronger authority" §I requires
     -- can be a contractor, which is not stronger than anything.
     --
-    -- The standing predicate mirrors `OrgsParticipant.hasProjectRoleStanding`: an ACTIVE project
-    -- membership with the role, OR org owner/admin standing on the project's org. Two languages,
-    -- one rule — the same shape §G's bounds already have, and the reason the SQL names the orgs
-    -- tables explicitly rather than approximating them with a membership row alone.
+    -- Approver standing goes to `phase5_t5_pmc_standing`, the named twin of the orgs participant
+    -- the service asks. See that function for why this one rule has two implementations and what
+    -- pins them together.
     SELECT EXISTS (
       SELECT 1 FROM "SodException" s
        WHERE s."projectId" = p_project AND s."certificateId" = p_certificate
          AND s."actorId" = v_certifier
          AND s."rule" = 'evidence-recorder-may-not-certify'
          AND s."approverId" <> s."actorId"
-         AND (
-           EXISTS (
-             SELECT 1 FROM "Membership" m
-              WHERE m."projectId" = p_project AND m."userId" = s."approverId"
-                AND m."status" = 'active' AND m."role" = 'pmc'
-           )
-           OR EXISTS (
-             SELECT 1
-               FROM "Project" pr
-               JOIN "OrgMembership" om ON om."orgId" = pr."orgId" AND om."userId" = s."approverId"
-              WHERE pr."id" = p_project AND om."role" IN ('owner', 'admin')
-           )
-         )
+         AND phase5_t5_pmc_standing(p_project, s."approverId")
     ) INTO v_excepted;
     IF NOT v_excepted THEN
       RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no attributable `evidence-recorder-may-not-certify` exception granted by a pmc with standing — §I permits the act only with such an override', p_certificate, v_certifier;
     END IF;
+    -- ONE override, and only the one this task's §I defines. The partial unique index already
+    -- forbids two rows for the same rule, so a count above one means a row naming some OTHER rule
+    -- has been attached to this certificate — authority for a question §I has not asked here.
+    -- Task 6 adds `certifier-may-not-approve`, and when it does this arm is where the second rule
+    -- is admitted: ONE edit, in the place that already states the whole rule.
+    IF v_exceptions <> 1 THEN
+      RAISE EXCEPTION 'Certificate % carries % segregation-of-duties exceptions — §I authorises this act with exactly one, naming `evidence-recorder-may-not-certify`', p_certificate, v_exceptions;
+    END IF;
+  ELSIF v_exceptions <> 0 THEN
+    -- the reverse direction (Codex round-5 P2). An exception appended to a certificate that needed
+    -- none is not harmless audit noise: `certificateById` reports it as the authority for the act,
+    -- so the trail asserts that a pmc excused a conflict which never existed.
+    RAISE EXCEPTION 'Certificate % carries % segregation-of-duties exception(s) but its certifier recorded none of the evidence it rests on — an override records authority for a conflict, and there is none to override', p_certificate, v_exceptions;
   END IF;
 END;
 $$ LANGUAGE plpgsql;
@@ -673,6 +788,26 @@ DROP TRIGGER IF EXISTS "VendorBillVersion_certificate_sealed" ON "VendorBillVers
 CREATE CONSTRAINT TRIGGER "VendorBillVersion_certificate_sealed"
   AFTER INSERT OR UPDATE ON "VendorBillVersion" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t5_version_certificate_recheck();
+
+-- The EXCEPTION side fires it too (Codex round-5 P2). `SodException` had an immutability trigger
+-- and no insert-side seal at all, so an override could be appended to a committed certificate
+-- forever — which is the second question of §0b asked and answered: a predicate checked at one
+-- writer is unchecked at every other, and this table was a writer of the §I invariant that nothing
+-- was asking. The append-closure runs first, because a superseded certificate does not gain rows
+-- of any kind; the completeness seal then re-asks the whole §I biconditional over the new state.
+CREATE OR REPLACE FUNCTION phase5_t5_sod_exception_sealed() RETURNS trigger AS $$
+BEGIN
+  IF NEW."certificateId" IS NULL THEN RETURN NULL; END IF;
+  PERFORM phase5_t5_assert_certificate_open(NEW."projectId", NEW."certificateId");
+  PERFORM phase5_t5_certificate_complete_check(NEW."projectId", NEW."certificateId");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "SodException_certificate_sealed" ON "SodException";
+CREATE CONSTRAINT TRIGGER "SodException_certificate_sealed"
+  AFTER INSERT ON "SodException" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_sod_exception_sealed();
 
 -- ── §F — the STATUS and the CERTIFICATE move together, or neither commits ──────────────────────
 --
