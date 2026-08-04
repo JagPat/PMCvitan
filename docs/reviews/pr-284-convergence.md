@@ -218,6 +218,31 @@ evidence.**
 | point the upgrade proof at a certified bill | FIXED — the block is anchored where a live certificate stands, and four more vacuous assertions beside it were found and fixed |
 | add a barrier to the concurrency probe | FIXED — real barrier, RED-proved both ways |
 
+## An operational error of mine, recorded because it cost a head
+
+The round-4 head's PR body still described the pre-split design. That is the
+postscript's own defect — prose that went stale when the code changed — so I
+rewrote it, and in rewriting it I dropped the `<!-- review-size: justified-large -->`
+marker. `review-scope` failed, `quality-gate` cascaded, and the head was blocked.
+
+I then re-ran that run's failed jobs, which could never have worked:
+`review-scope` reads `GITHUB_EVENT_PATH`, the event payload frozen when the run
+was created, so a re-run replays the same marker-less body. The body edit had
+already spawned a correct run two minutes earlier.
+
+Worse, the failure is not recoverable on that SHA at all. `attemptOf` groups
+check runs by `check_suite.id`, and GitHub puts every run of a workflow on one
+commit into a single suite, so all three runs are ONE attempt — and
+`attemptsWithPassingGates` excludes an attempt whose gate failed *at any point*,
+deliberately, so a later success cannot retroactively legitimise what the earlier
+failure caused. Two subsequent runs went fully green and the aggregate stayed
+red. The gate is behaving exactly as designed.
+
+**Two things worth keeping.** A PR body is not commentary — it is a gate input,
+and editing it is a build step with the same care as a commit. And when a check
+reads frozen event state, re-running it re-reads the frozen state: the fix for a
+bad payload is a new event, never a retry.
+
 ## Findings carried into the round-4 head
 
 | Round 3 finding | Disposition |
