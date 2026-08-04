@@ -104,9 +104,16 @@ observed RED and restored.
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 731/731 (+7: the new bill-side pin and six writer tests) |
-| full integration, pristine migrated DB | see PR body |
+| full integration, pristine migrated DB | 80 files / 895 tests passed (was 79/890) |
 | `upgrade-proof.sh` | not applicable — no migration, no schema change |
-| `test:e2e:api:allmodules` / `:outbox` | see PR body |
+| `test:e2e:api:allmodules` | 35/35 |
+| `test:e2e:api:outbox` | 29/29 |
+
+The browser gates needed `PW_CHROMIUM=/opt/pw-browsers/chromium` in this
+container: Playwright resolves a `chromium_headless_shell-1228` build that is not
+installed here, while the config's existing `PW_CHROMIUM` escape hatch points it
+at the Chromium that is. That is an environment detail, not a change to the
+suites — CI installs its own browsers.
 
 ## What this unit does NOT do
 
