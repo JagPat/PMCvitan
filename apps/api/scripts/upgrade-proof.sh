@@ -1985,11 +1985,13 @@ assert_rejects "commercial T5B R5-F1: EVIDENCE appended to a superseded certific
 # refusal alone; this unit adds the NAMED exception that lets a two-person practice proceed. Both
 # directions are asserted, because a seal that only refuses proves nothing about being right.
 #
-# The accepted case needs an approver WITH STANDING, and standing is the orgs module's rule. This
-# legacy fixture has two users and no `Membership` rows, so the row below is added for the same
-# reason `USER-2` was: a seal about two people cannot be exercised against a fixture that cannot
-# express the second one, and its absence would look like the rule firing.
-$PSQL >/dev/null -c "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES('UPT5B-MEM','p1','USER-2','pmc','active') ON CONFLICT DO NOTHING"
+# Codex round-11 P2 — NO `Membership` row is created for the approver here, and that absence is the
+# point. An earlier head inserted one, because the seal itself re-derived pmc standing by reading
+# `Membership`/`OrgMembership` — a commercial trigger taking a synchronous read of orgs-owned
+# tables. That predicate is gone: standing is decided once, by the `commercial.sod.grant` command,
+# through the module that owns it. The coherent act below is ACCEPTED with the approver holding no
+# membership row at all, which is the strongest evidence available that the seal no longer consults
+# orgs at all — a proof by what the fixture does NOT need.
 assert_rejects "commercial T5B §I: the complete act by the actor who RECORDED its evidence, with NO override" \
   "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CR','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-CRE','p1','UPT5B-CR','UP45-ACC',3); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
 
@@ -2013,6 +2015,21 @@ $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\
 $PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-G4','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDG')"
 assert_rejects "commercial T5B R7-F1: a certificate consuming a grant it did not spend (the override must be the approver's act, exercised HERE)" \
   "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CU','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMDU'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AU','p1','UPT5B-CU','UP45-ACC',3); INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SU','p1','UPT5B-CU','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDU'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+# Codex round-11 P2 — the certify RECEIPT must be the CERTIFIER'S own. Round 8 bound the grant
+# receipt to its approver and left the certify receipt bound only by type, status and result, so a
+# certificate attributed to `USER-1` could rest on a command `USER-2` actually ran and the durable
+# trail would name two different people for one act.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5B-CMDX','project','org-legacy','p1','USER-2','commercial.bill.certify','upt5b-x','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5B-CX', \"completedAt\"=now() WHERE \"id\"='UPT5B-CMDX'; COMMIT;"
+assert_rejects "commercial T5B R11-F2: a certificate whose certify RECEIPT was run by someone else" \
+  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CX','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMDX'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AX','p1','UPT5B-CX','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-CX' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SX','p1','UPT5B-CX','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDX'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+
+# Codex round-11 P2 — the override carries the APPROVER'S reason. The grant/exception match bound
+# approver, actor, rule, bill and version and left `reason` free, so the one sentence a reader
+# trusts was the one field the person being excused could still write.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5B-CMDY','project','org-legacy','p1','USER-1','commercial.bill.certify','upt5b-y','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5B-CY', \"completedAt\"=now() WHERE \"id\"='UPT5B-CMDY'; COMMIT;"
+assert_rejects "commercial T5B R11-F3: an override rewriting the approver's stated reason" \
+  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CY','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMDY'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AY','p1','UPT5B-CY','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-CY' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SY','p1','UPT5B-CY','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','blanket authority for this vendor','UPT5B-CMDY'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+
 $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C4','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMD4'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A4','p1','UPT5B-C4','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-C4' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S4','p1','UPT5B-C4','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMD4'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5B §I: the RECORDER may certify WITH an attributable override, in one transaction" \
   || { printf 'FAILED  %s\n' "commercial T5B §I: the coherent recorder-certified act was rejected"; FAIL=1; }

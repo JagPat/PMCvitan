@@ -82,61 +82,41 @@ DO $$ BEGIN
 
 END $$;
 
--- §I — does this user hold pmc standing on this project? The orgs module OWNS this rule, and the
--- service asks it through `OrgsParticipant.hasProjectRoleStanding`. A trigger cannot call
--- TypeScript, so this one rule CANNOT have a single authority the way the evidence-actor set does:
--- the honest statement is that there are two implementations, and the closure is that they are
--- PINNED against each other by a correspondence probe that drives both over the same matrix of
--- standing shapes and fails on any cell where they disagree. Naming the predicate here is what
--- makes that probe possible — an inline `EXISTS` inside the seal could only be tested through the
--- seal, one shape at a time.
+-- §I — standing is the ORGS module's rule, and it is decided BEHIND THE ORGS BOUNDARY.
 --
--- PRECEDENCE, not alternation: `hasProjectRoleStanding` returns on an ACTIVE project membership and
--- never reaches the org arm, so an org admin who is also an active contractor on this site operates
--- AS contractor.
+-- Codex round-11 P2. An earlier spelling of this migration defined `phase5_t5_pmc_standing`, which
+-- read `Membership` and `OrgMembership` directly and re-implemented the module's precedence
+-- semantics — an active project membership wins outright, the org arm is reached only in its
+-- absence — inside COMMERCIAL's SQL. `AGENTS.md` is explicit that no module may take a synchronous
+-- read of another module's tables, and this was one: not an FK to `Membership` (the cleared
+-- phase-3 precedent, which is declarative and carries no policy), but a copy of the DECISION.
+-- The next change to orgs' standing rules would have moved one implementation and not the other,
+-- and the two paths would then disagree about who may certify.
 --
--- Codex round-6 P2 — the standing rows are LOCKED before the decision, for the same reason the
--- participant passes `forUpdate: true`: `MembersService.updateRole` writes without the readiness
--- lock, so an unlocked read lets a concurrent downgrade commit behind an approval it granted. This
--- seal is the path that enforces §I for a direct-SQL or future writer, where no participant has
--- pre-locked anything.
+-- The honest closure is not a better-named duplicate. It is that the DATABASE never needed to
+-- decide standing at all, because the grant already carries the answer: a `commercial.sod.grant`
+-- receipt exists only if `CommercialCertificationService.grantSodException` produced it, and that
+-- command asks `OrgsParticipant.hasProjectRoleStanding` — the owner — with `forUpdate: true`
+-- before it succeeds. So the seal checks PROVENANCE and the service checks AUTHORITY, which is the
+-- division every other cleared seal in Phases 3–5 already uses.
 --
--- The limit is stated rather than papered over: `FOR UPDATE` locks rows that EXIST, so it
--- serializes a downgrade or removal of standing, not the INSERT of a new membership that did not
--- exist when the decision was made. That is exactly the guarantee `hasProjectRoleStanding` gives,
--- and matching the owner's semantics is the bar — a seal that were stricter than the owner's rule
--- would refuse acts the owner permits, which is the disagreement this predicate exists to avoid.
-CREATE OR REPLACE FUNCTION phase5_t5_pmc_standing(p_project text, p_user text)
-RETURNS boolean AS $$
-DECLARE v_has_membership boolean;
-BEGIN
-  PERFORM 1 FROM "Membership" m
-   WHERE m."projectId" = p_project AND m."userId" = p_user
-     FOR UPDATE;
-  SELECT EXISTS (
-    SELECT 1 FROM "Membership" m
-     WHERE m."projectId" = p_project AND m."userId" = p_user AND m."status" = 'active'
-  ) INTO v_has_membership;
-  IF v_has_membership THEN
-    RETURN EXISTS (
-      SELECT 1 FROM "Membership" m
-       WHERE m."projectId" = p_project AND m."userId" = p_user
-         AND m."status" = 'active' AND m."role" = 'pmc'
-    );
-  END IF;
-  PERFORM 1
-    FROM "Project" pr
-    JOIN "OrgMembership" om ON om."orgId" = pr."orgId" AND om."userId" = p_user
-   WHERE pr."id" = p_project
-     FOR UPDATE OF om;
-  RETURN EXISTS (
-    SELECT 1
-      FROM "Project" pr
-      JOIN "OrgMembership" om ON om."orgId" = pr."orgId" AND om."userId" = p_user
-     WHERE pr."id" = p_project AND om."role" IN ('owner', 'admin')
-  );
-END;
-$$ LANGUAGE plpgsql;
+-- What this gives up, stated plainly: a writer with direct SQL access can no longer be caught by
+-- this seal naming a non-pmc as approver. That writer could equally `INSERT INTO "Membership"` an
+-- active pmc row for the same person and satisfy the old predicate too — so the check was never
+-- load-bearing against the threat it was written for, and its real cost, a second implementation
+-- of somebody else's rule, was being paid every round.
+--
+-- Removing it also removes round 6's `FOR UPDATE` on the standing rows and the correspondence probe
+-- that pinned the two implementations together. Neither is a regression being smuggled through:
+-- round 6 asked that IF this predicate reads standing it must lock it, and round 5's probe existed
+-- to pin a duplicate. With no duplicate there is nothing to pin, and the lock that matters is the
+-- one the grant COMMAND takes through the participant, at the moment the authority is exercised.
+--
+-- Dropped explicitly rather than merely un-referenced: a developer database that applied an earlier
+-- head of this branch already HAS the function, and a seal that is gone from the file but present
+-- in the database is the difference between a test proving the new rule and a test proving the old
+-- one still works.
+DROP FUNCTION IF EXISTS phase5_t5_pmc_standing(text, text);
 
 CREATE OR REPLACE FUNCTION phase5_t5_certificate_complete_check(p_project text, p_certificate text)
 RETURNS void AS $$
@@ -242,6 +222,13 @@ BEGIN
          AND ce."commandType" = 'commercial.bill.certify'
          AND ce."status" = 'succeeded'
          AND ce."resultRef" = p_certificate
+         -- Codex round-11 P2 — and the receipt must be THIS CERTIFIER'S. Type, status and result
+         -- prove the command produced this certificate; none of them prove WHO ran it, so a
+         -- conflicted certificate attributed to A could rest on a receipt B actually ran, and the
+         -- durable trail would name two different people for one act. The grant receipt three
+         -- clauses below has bound its actor since round 8; this one did not. That is round 8's own
+         -- correction failing to travel BACKWARDS to the sibling sitting above it.
+         AND ce."actorId" = v_certifier
          -- Codex round-7 P1 — the APPROVER must have ACTED. Everything above proves the override is
          -- well-formed; none of it proves anybody authorised it, because `approverId` arrived in the
          -- certifier's own request. The exception now rests on a GRANT: a row only the approver's
@@ -256,6 +243,13 @@ BEGIN
               AND g."billId" = c."billId"
               AND g."versionId" = c."versionId"
               AND g."consumedByCertificateId" = p_certificate
+              -- Codex round-11 P2 — and the REASON is the approver's, not the certifier's. The
+              -- match bound approver, actor, rule, bill and version and left `reason` free, so a
+              -- direct writer could consume a real grant reading "only the store user today" and
+              -- record an override reading anything at all. `certificateById` reports the
+              -- EXCEPTION's reason as the authorisation, which makes the one sentence a reader
+              -- trusts the one field the person being excused could still write.
+              AND g."reason" = s."reason"
               -- Codex round-8 P1 — and the GRANT itself must be the approver's act. Round 7 made the
               -- exception rest on a grant and then treated the grant AS the signature without ever
               -- proving who wrote it: `sourceCommandId` was a bare FK, so a direct writer could mint
@@ -274,10 +268,9 @@ BEGIN
                    AND gce."resultRef" = g."id"
               )
          )
-         AND phase5_t5_pmc_standing(p_project, s."approverId")
     ) INTO v_excepted;
     IF NOT v_excepted THEN
-      RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no attributable `evidence-recorder-may-not-certify` exception resting on a grant this act consumed, from a pmc with standing — §I permits the act only with such an override', p_certificate, v_certifier;
+      RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no attributable `evidence-recorder-may-not-certify` exception resting on a grant this act consumed — §I permits the act only with such an override', p_certificate, v_certifier;
     END IF;
     -- ONE override, and only the one this task's §I defines. The partial unique index already
     -- forbids two rows for the same rule, so a count above one means a row naming some OTHER rule
@@ -479,12 +472,17 @@ BEGIN
     RAISE EXCEPTION 'Grant % is not the act of the approver it names — §I authority is a command someone ran, not a row someone wrote (%)', NEW."id", NEW."approverId";
   END IF;
 
-  -- (b) the approver held standing WHEN THE GRANT WAS MADE. The service checks this too; this is
-  -- the database twin, and it is what stops a live grant being parked by someone with no authority
-  -- against the day they acquire some.
-  IF NOT phase5_t5_pmc_standing(NEW."projectId", NEW."approverId") THEN
-    RAISE EXCEPTION 'Grant % names % as its authority, who does not hold pmc standing on this project', NEW."id", NEW."approverId";
-  END IF;
+  -- (b) the approver held standing when the grant was made — and that is settled by (a), not by a
+  -- second predicate here. Round 9 added a database twin of `hasProjectRoleStanding`; round 11 P2
+  -- removed it, because a commercial trigger reading `Membership`/`OrgMembership` is exactly the
+  -- cross-module synchronous read `AGENTS.md` forbids. The receipt above is the evidence: it exists
+  -- only because `grantSodException` ran, and that command asks the ORGS module — under
+  -- `forUpdate: true`, so a concurrent downgrade cannot commit behind the authority it granted.
+  --
+  -- The specific worry round 9 raised was a live grant PARKED by someone with no authority against
+  -- the day they acquire some. (a) still refuses it: parking one requires a succeeded
+  -- `commercial.sod.grant` receipt in that person's name, and the only thing that writes one is the
+  -- command that already asked the owner.
 
   -- (c) a CONSUMED grant names a certificate that actually rests on it. Without this the consume
   -- transition is unguarded: a stray UPDATE burns the authority against an unrelated certificate.

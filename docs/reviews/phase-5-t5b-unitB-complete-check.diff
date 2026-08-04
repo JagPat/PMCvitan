@@ -7,7 +7,7 @@
 +  v_exceptions   bigint;
    r              record;
  BEGIN
-@@ -59,23 +61,93 @@
+@@ -59,23 +61,106 @@
    END LOOP;
  
 -  -- (c) §I — the actor who recorded the evidence a certificate rests on may NOT certify it.
@@ -66,6 +66,13 @@
 +         AND ce."commandType" = 'commercial.bill.certify'
 +         AND ce."status" = 'succeeded'
 +         AND ce."resultRef" = p_certificate
++         -- Codex round-11 P2 — and the receipt must be THIS CERTIFIER'S. Type, status and result
++         -- prove the command produced this certificate; none of them prove WHO ran it, so a
++         -- conflicted certificate attributed to A could rest on a receipt B actually ran, and the
++         -- durable trail would name two different people for one act. The grant receipt three
++         -- clauses below has bound its actor since round 8; this one did not. That is round 8's own
++         -- correction failing to travel BACKWARDS to the sibling sitting above it.
++         AND ce."actorId" = v_certifier
 +         -- Codex round-7 P1 — the APPROVER must have ACTED. Everything above proves the override is
 +         -- well-formed; none of it proves anybody authorised it, because `approverId` arrived in the
 +         -- certifier's own request. The exception now rests on a GRANT: a row only the approver's
@@ -80,6 +87,13 @@
 +              AND g."billId" = c."billId"
 +              AND g."versionId" = c."versionId"
 +              AND g."consumedByCertificateId" = p_certificate
++              -- Codex round-11 P2 — and the REASON is the approver's, not the certifier's. The
++              -- match bound approver, actor, rule, bill and version and left `reason` free, so a
++              -- direct writer could consume a real grant reading "only the store user today" and
++              -- record an override reading anything at all. `certificateById` reports the
++              -- EXCEPTION's reason as the authorisation, which makes the one sentence a reader
++              -- trusts the one field the person being excused could still write.
++              AND g."reason" = s."reason"
 +              -- Codex round-8 P1 — and the GRANT itself must be the approver's act. Round 7 made the
 +              -- exception rest on a grant and then treated the grant AS the signature without ever
 +              -- proving who wrote it: `sourceCommandId` was a bare FK, so a direct writer could mint
@@ -98,10 +112,9 @@
 +                   AND gce."resultRef" = g."id"
 +              )
 +         )
-+         AND phase5_t5_pmc_standing(p_project, s."approverId")
 +    ) INTO v_excepted;
 +    IF NOT v_excepted THEN
-+      RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no attributable `evidence-recorder-may-not-certify` exception resting on a grant this act consumed, from a pmc with standing — §I permits the act only with such an override', p_certificate, v_certifier;
++      RAISE EXCEPTION 'Certificate % was certified by %, who recorded evidence it rests on, with no attributable `evidence-recorder-may-not-certify` exception resting on a grant this act consumed — §I permits the act only with such an override', p_certificate, v_certifier;
 +    END IF;
 +    -- ONE override, and only the one this task's §I defines. The partial unique index already
 +    -- forbids two rows for the same rule, so a count above one means a row naming some OTHER rule

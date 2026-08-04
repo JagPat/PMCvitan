@@ -1,6 +1,6 @@
 # PR #281 — architectural convergence audit (Phase 5 Task 5B unit B, §I's override)
 
-Four finding-bearing heads, nine findings. Per `CLAUDE.md` this stops being another isolated patch:
+Five finding-bearing heads, twelve findings. Per `CLAUDE.md` this stops being another isolated patch:
 it names the ROOT the findings share and leaves a mechanical closure behind.
 
 | Head | Findings | |
@@ -9,6 +9,7 @@ it names the ROOT the findings share and leaves a mechanical closure behind.
 | `d360445` | 2 | 1×P1, 1×P2 — **the grant needed the receipt rule the same correction had just introduced**; the live-grant unique excluded the version |
 | `8153d4c` | 3 | 3×P2 — **all three on `SodGrant` again**: no insert-side seal, no replacement path when an approver loses standing, an unsealed consume transition |
 | `3f5ead4` | 1 | 1×P2 — **`SodGrant` a sixth time**, and round 8's own defect in a second costume: select an arbitrary live grant, then validate it |
+| `d1c65e2` | 3 | 3×P2 — a commercial seal reading orgs-owned tables; the certify receipt not bound to the certifier; the override's reason not bound to the grant's |
 
 ## The root: a correction creates a new artifact, and the rule it was correcting does not travel
 
@@ -85,6 +86,55 @@ The closure: when a uniqueness scope is deliberately widened, every reader of th
 SELECTION rather than a lookup, and the validity condition belongs in the selection. Round 10 moves
 the standing check into the candidate loop, so stale grants are simply not candidates.
 
+## Round 11, root four: I answered "one rule, two implementations" by PINNING the duplicate
+
+Rounds 3, 4 and 5 each produced the same finding — one §I rule implemented twice, and only the copy
+a finding named ever got fixed. For the evidence-actor set I fixed it properly: `phase5_t5_evidence_actors`
+became a single SQL authority that both layers CALL, so it cannot drift at all.
+
+For standing I did something else. I accepted the constraint "a trigger cannot call TypeScript",
+concluded the duplicate was unavoidable, and built a correspondence probe to PIN the two
+implementations against each other. Round 6 then hardened the duplicate with `FOR UPDATE`. Round 11
+says the duplicate should not exist: a commercial trigger reading `Membership`/`OrgMembership` is
+precisely the cross-module synchronous read `AGENTS.md` forbids.
+
+**The question I never asked was whether the trigger needed to DECIDE at all.** It did not. A grant
+already carries the answer: the `commercial.sod.grant` receipt exists only because the command ran,
+and the command asks the owner. The seal checks PROVENANCE; the service checks AUTHORITY — the
+division every other cleared seal in Phases 3–5 already uses. §I was the outlier and I had built
+scaffolding to hold the outlier in place.
+
+Two things made that easy to miss, and both are worth carrying forward:
+
+1. **The boundary analyzer only scans TypeScript.** A whole class of violation is invisible in SQL,
+   which is how this survived ten review rounds inside a repo that has an automated boundary check.
+   `R11-F1` now asserts it against `pg_proc` — what is INSTALLED, not what a file says.
+2. **A pin looks like diligence.** The correspondence probe was thorough, cell-by-cell, and passed
+   every round. It made a duplicate feel managed. The closure: *when a finding says "one rule, two
+   implementations", removing one is the fix and pinning both is a workaround — and the workaround
+   should be argued for explicitly, not chosen by default because the removal looks hard.*
+
+Stated plainly, what the change gives up: a direct-SQL writer can no longer be caught by this seal
+naming a non-pmc as approver. That writer could equally insert an active pmc `Membership` row and
+satisfy the old predicate — so the check was never load-bearing against the threat it was written
+for, while its real cost, a second implementation of somebody else's rule, was paid every round.
+
+## Round 11, root five: a binding proves only what it binds
+
+The other two findings are one sentence. Arm (c) binds the certificate to its command receipt on
+type, status and result — and not on WHO RAN IT. It binds the exception to its grant on approver,
+actor, rule, bill and version — and not on the REASON. Both unbound fields are ones a reader trusts:
+`certificateById` reports the exception's reason as the authorisation, and the certificate's
+attribution is the whole subject of §I.
+
+> **When row X is bound to row Y to prove Y authorises X, every field of X that a reader will TRUST
+> must be part of the binding. A subset binding is an invitation to vary the rest.**
+
+And the certify-receipt half is root one running BACKWARDS. Round 8 bound the GRANT receipt to its
+approver; the certify receipt sits three clauses above it in the same function and never got the same
+clause. Root one said a correction must travel to the artifact it CREATES. Round 11 adds: it must
+also travel to the sibling that was already there.
+
 ## The second root: proving a thing is WELL-FORMED is not proving it is REAL
 
 Round 7's headline P1 deserves its own naming, because every seal in unit A and unit B was working
@@ -115,7 +165,13 @@ written at the SQL layer would have passed and left the deadlock in place one le
 
 ## Probes that passed while proving nothing — the running count
 
-Six now, in this task:
+Seven now, in this task. The seventh was caught BEFORE it was written: with the standing predicate
+removed, round 6's seal probe would still have passed — its forged act is refused by the grant clause
+instead — and round 4's precedence forgery and round 3's no-standing arm would each have gone green
+on a message they no longer cause. All three were retargeted to what they now prove rather than left
+to pass, and round 6's moved to the grant COMMAND, where the standing guarantee now lives.
+
+The first six:
 
 1. the round-1 deadlock probe with a 300 ms sleep;
 2. PROBE 13's bound-3 case, refused by the projection seal;
@@ -134,7 +190,9 @@ reason too.
 | Gate | Result |
 |---|---|
 | `pnpm check` | EXIT 0 — web 543/543, API 724/724 |
-| `phase5-t5b-certification.test.ts` | **47/47** on live PostgreSQL |
+| `phase5-t5b-certification.test.ts` | **49/49** on live PostgreSQL |
+| Reproduce-first, round 11 | both binding clauses stripped from the INSTALLED seal → R11-F2 and R11-F3 both commit the forgery ("promise resolved instead of rejecting") |
+| Round 11's boundary proof | the upgrade proof's approver now holds NO `Membership` row at all, and the coherent act is still accepted — the seal cannot be consulting orgs |
 | Reproduce-first, round 7 | the grant path reverted → the forged-approver certification commits |
 | Reproduce-first, round 8 | the grant-receipt clause removed → the forged grant is accepted and the certificate commits; the version dropped from the unique → the amended claim can never be authorised again |
 | `upgrade-proof.sh` | PASSED — the grant carries its own approver receipt, reserved and completed in one transaction |

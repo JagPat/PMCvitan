@@ -36,9 +36,10 @@ evidence rather than asserted in prose: `docs/reviews/phase-5-t5b-unitB-complete
 hunks, both inside arm (c):
 
 1. §I's unconditional refusal becomes the BICONDITIONAL — an override exists **if and only if** the
-   certifier recorded frozen evidence; exactly one; naming the rule; from an approver with standing;
-   produced by the certificate's own COMMAND RECEIPT; and resting on a GRANT the approver themselves
-   issued and this act consumed.
+   certifier recorded frozen evidence; exactly one; naming the rule; produced by the certificate's
+   own COMMAND RECEIPT **run by that certifier** (round 11); and resting on a GRANT the approver
+   themselves issued, this act consumed, and whose **reason it carries verbatim** (round 11).
+   Standing is deliberately NOT decided here — see round 11 below.
 2. the two declarations arm (c) needs.
 
 The live-version check (a), the exact-evidence check (b) and the early return for superseded history
@@ -51,10 +52,11 @@ are byte-for-byte unit A's.
 | 1 | The evidence recorder may not certify — unless a named override says otherwise | `assertSegregation` + arm (c), both reading `phase5_t5_evidence_actors` | PROBE 8, PROBE 9, R2-F2 |
 | 2 | An override exists IF AND ONLY IF the certifier recorded frozen evidence | the biconditional, fired from `BillCertificate`, `VendorBillVersion`, both consumption tables AND `SodException` | R5-F2 (both directions); upgrade proof |
 | 3 | Exactly ONE override per certificate, naming the rule it overrides | `SodException_certificate_rule_key` + the count arm | R3-F2/F3, R5-F2; upgrade proof |
-| 4 | The approver has pmc standing, by the ORGS module's rule | `OrgsParticipant.hasProjectRoleStanding` (service) and `phase5_t5_pmc_standing` (seal) | R1-F6, R4-F3 (membership precedence, both directions), R5-RESTRUCTURE |
-| 5 | Those two implementations agree on every shape | two implementations, PINNED — a trigger cannot call the owner | R5-RESTRUCTURE (cell-by-cell over a matrix that separates them) |
-| 6 | Standing is decided under a LOCK, in the seal as well as the service | `FOR UPDATE` inside `phase5_t5_pmc_standing` | **R6-F1** (RED: the forged certificate commits with a downgraded approver) |
-| 7 | The override comes from the certificate's own COMMAND RECEIPT | `ce."resultRef" = p_certificate` in arm (c) — matching ids are not provenance | **R6-F4**, **R7-P1** (RED: a stale-command override is accepted) |
+| 4 | The approver has pmc standing, by the ORGS module's rule | `OrgsParticipant.hasProjectRoleStanding` — ONE implementation, behind the owner's boundary, invoked by `commercial.sod.grant` | R1-F6, R4-F3 (membership precedence, both directions) |
+| 5 | No commercial seal reads an orgs-owned table | the standing predicate is REMOVED; the seal requires the grant, and only a standing-checked command can produce one | **R11-F1** (asserted over `pg_proc`, so it covers what is INSTALLED); upgrade proof (the approver holds no `Membership` row and the act is still accepted) |
+| 6 | Standing is decided under a LOCK, where it is decided | `forUpdate: true` in `grantSodException`, at the moment the authority is issued | **R6-F1/R11-F1** (RED: the grant is issued behind a downgrade that was in flight) |
+| 7 | The override comes from the certificate's own COMMAND RECEIPT, run by the CERTIFIER | `ce."resultRef" = p_certificate` **and** `ce."actorId" = v_certifier` in arm (c) | **R6-F4**, **R7-P1** (RED: a stale-command override is accepted); **R11-F2** (RED: a receipt run by someone else is accepted) |
+| 7c | The override carries the APPROVER'S reason, not one the certifier wrote | `g."reason" = s."reason"` in the grant clause | **R11-F3** (RED: a real grant is consumed while the recorded justification is rewritten) |
 | 7b | The APPROVER actually acted — the override rests on a grant they issued and this act consumed | `SodGrant` + the grant clause in arm (c) | **R7-F1** ×2 (no forgeable field; no grant → refused; self-grant refused; single-use; version-pinned) |
 | 8 | An override cannot be appended to a certificate that needed none, or to history | the reverse arm + `phase5_t5_assert_certificate_open`, fired from `SodException` | R5-F2; upgrade proof (both) |
 | 9 | The override is append-only, with a non-blank reason and a different approver | `SodException_append_only`, the two non-blank CHECKs, `SodException_actor_is_not_approver` | PROBE 8, PROBE 12; upgrade proof |
@@ -100,6 +102,46 @@ receipt check, a forged certificate can no longer borrow a real command's proven
 `forge('proper', …)` and `forge('same-cmd', …)` are now refused too. Their acceptance is asserted on
 the service-made certificate whose receipt genuinely produced it.
 
+## Codex round 11 — the duplicate I had been protecting
+
+Three findings, and the first one undoes a structure five earlier rounds had been maintaining.
+
+**P2 — a commercial seal read orgs-owned tables.** `phase5_t5_pmc_standing` read `Membership` and
+`OrgMembership` and re-implemented the module's precedence semantics inside COMMERCIAL's SQL. That
+is the cross-module synchronous read `AGENTS.md` forbids. The cleared phase-3 precedent (an FK from
+`ActivityRequirement` to `Membership`) is a different thing: declarative, carrying no policy.
+
+Rounds 3–5 had repeatedly found "one rule, two implementations" — and for standing I answered by
+PINNING the duplicate with a correspondence probe rather than removing it, because "a trigger cannot
+call TypeScript". **The question I never asked was whether the trigger needed to decide at all.** It
+did not: a `commercial.sod.grant` receipt exists only because the command ran, and that command asks
+the owner under `forUpdate: true`. The seal checks provenance, the service checks authority — which
+is what every other cleared seal in Phases 3–5 already does.
+
+So the predicate is gone, and with it round 6's `FOR UPDATE` on the standing rows and round 5's
+correspondence probe. Neither is a regression smuggled through: round 6 asked that IF this predicate
+reads standing it must lock it, and round 5's probe existed to pin a duplicate. The concurrency
+guarantee did not disappear — it has one home now, and `R6-F1/R11-F1` moves to it, proving the GRANT
+command blocks on the membership row and refuses an authority issued behind a downgrade in flight.
+
+What it gives up, plainly: a direct-SQL writer can no longer be caught by this seal naming a non-pmc
+approver. That writer could equally insert an active pmc `Membership` row and satisfy the old
+predicate, so the check was never load-bearing against its own threat model.
+
+**P2 ×2 — a binding proves only what it binds.** Arm (c) bound the certificate to its receipt on
+type, status and result but not on WHO RAN IT, and bound the exception to its grant on approver,
+actor, rule, bill and version but not on the REASON. Both unbound fields are ones a reader trusts:
+§I is a rule about which person acted, and `certificateById` reports the exception's reason as the
+authorisation — so the justification was the one field the person being excused could still write.
+The certify-receipt half is round 8's own correction failing to travel BACKWARDS to the sibling three
+clauses above it.
+
+**Three probes had to be retargeted rather than left green.** With the standing clause gone, round
+6's seal forgery, round 4's precedence forgery and round 3's no-standing arm are all still refused —
+by the GRANT clause, for a reason none of them names. Each now asserts what it actually causes. That
+is the seventh entry in this task's "passed while proving nothing" list, and the first one caught
+before it was written rather than after.
+
 ## The two round-6 findings, and what their probes actually prove
 
 **F1 — standing read without `FOR UPDATE`.** The first version of this probe **passed against the
@@ -134,14 +176,14 @@ Two probes assert that message and were updated with the change rather than arou
 | Gate | Result |
 |---|---|
 | `pnpm check` | **EXIT 0** — web 543/543, API 724/724, both builds clean |
-| `phase5-t5b-certification.test.ts` | **43/43** on live PostgreSQL |
-| Reproduce-first | `phase5_t5_pmc_standing` reverted to an unlocked read and the command-provenance clause dropped → **both R6 probes RED**, F1 on the outcome |
+| `phase5-t5b-certification.test.ts` | **49/49** on live PostgreSQL |
+| Reproduce-first, round 11 | the two binding clauses stripped from the INSTALLED seal → **R11-F2 and R11-F3 both commit the forgery** |
 | Full integration, pristine migrated DB | see the PR thread |
-| `upgrade-proof.sh` | **PASSED** — the recorder-certified act refused WITHOUT an override and ACCEPTED with one, plus the register's own seals |
+| `upgrade-proof.sh` | **PASSED** — the recorder-certified act refused WITHOUT an override and ACCEPTED with one (by an approver holding NO membership row, which is the boundary proof), plus both round-11 forgeries rejected |
 
 ## Scope
 
 One migration (`20270515000000`), two schema models (`SodException`, `SodGrant`), one new command
 with its route and permission, the override branch of one service method, the contract pair, six
-tripwire updates, the 38-file TRUNCATE sweep, nine probes and the upgrade-proof §I block. One
+tripwire updates, the 38-file TRUNCATE sweep, eleven probes and the upgrade-proof §I block. One
 concern throughout: **who may certify, and on whose authority.**
