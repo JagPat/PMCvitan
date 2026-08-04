@@ -37,13 +37,13 @@ export const commercialManifest: ModuleManifest = {
     // exception. All four are read-encapsulated with the rest: a certificate is what the §G
     // bounds and the withdrawal guards read, and every one of those readers is commercial.
     'billCertificate', 'certifiedAcceptanceConsumption', 'certifiedMeasurementConsumption',
-    'sodException',
+    'sodException', 'sodGrant',
   ],
   readEncapsulated: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
     'vendorBill', 'vendorBillVersion', 'vendorBillLine', 'billVerification',
     'billCertificate', 'certifiedAcceptanceConsumption', 'certifiedMeasurementConsumption',
-    'sodException',
+    'sodException', 'sodGrant',
   ],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the
@@ -75,6 +75,7 @@ export const commercialManifest: ModuleManifest = {
     'POST /projects/:projectId/commercial/bills/verify',
     // Phase 5 Task 5B (§E/§F/§I) — certification, and the ONE correction path past it
     'POST /projects/:projectId/commercial/bills/certify',
+    'POST /projects/:projectId/commercial/bills/sod-grant',
     'POST /projects/:projectId/commercial/certificates/supersede',
     'POST /projects/:projectId/commercial/bills/amend',
     'POST /projects/:projectId/commercial/bills/reject',

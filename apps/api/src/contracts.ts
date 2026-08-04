@@ -1443,28 +1443,34 @@ export type VendorBillStepInput = z.infer<typeof vendorBillStepSchema>;
 /**
  * §E/§I — CERTIFY a verified claim.
  *
- * `sodOverride` is ABSENT on the ordinary path and that is the design: an exception must be a
- * deliberate act naming an approver and a reason, never a flag that quietly defaults. The service
- * refuses the certification outright when the rule bites and no override is supplied, so omitting
- * it cannot silently take the exception path.
+ * The input is the bill and NOTHING else, and that is the whole of Codex round-7's P1. An earlier
+ * spelling took `sodOverride: { approverId, reason }` from the certifier's own request, so a
+ * self-certifying pmc could type a colleague's id and the system would write an immutable record
+ * asserting that colleague authorised it. §I's control is "a stronger authority said yes"; the
+ * authority was never asked.
  *
- * The reason carries the repository's non-blank discipline — `trim().min(1)` here and the full
- * `btrim(reason, E' \t\n\x0B\f\r')` CHECK at PostgreSQL. An override justified by `'\t'` would
- * otherwise satisfy every stated check and leave append-only evidence with no usable reason.
+ * So the override is no longer something a certifier supplies. The approver issues a GRANT with
+ * their own authenticated command (`commercial.sod.grant`), and certification CONSUMES it. There is
+ * no field here to forge.
  */
-export const certifyBillSchema = z
+export const certifyBillSchema = z.object({ billId: z.string().min(1) }).strict();
+export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
+
+/**
+ * §I — GRANT permission for ONE otherwise-forbidden certification. Issued BY the approver, so the
+ * authenticated actor IS the authority; `actorId` names the person being excused.
+ *
+ * The reason belongs to the grant rather than to the certification, because the justification is
+ * the APPROVER'S ("Ravi is our only store user this week"), not the certifier's.
+ */
+export const grantSodExceptionSchema = z
   .object({
     billId: z.string().min(1),
-    sodOverride: z
-      .object({
-        approverId: z.string().min(1),
-        reason: z.string().trim().min(1).max(1000),
-      })
-      .strict()
-      .optional(),
+    actorId: z.string().min(1),
+    reason: z.string().trim().min(1).max(1000),
   })
   .strict();
-export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
+export type GrantSodExceptionInput = z.infer<typeof grantSodExceptionSchema>;
 
 /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */
 export const supersedeCertificateSchema = z

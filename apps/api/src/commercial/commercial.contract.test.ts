@@ -52,6 +52,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     // lifecycle would make one file own both "what the vendor says" and "whether it is true".
     'commercial.bill.verify': { file: 'commercial/commercial-verification.service.ts', needle: "'commercial.bill.verify'" },
     'commercial.bill.certify': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.bill.certify'" },
+    'commercial.sod.grant': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.sod.grant'" },
     'commercial.certificate.supersede': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.certificate.supersede'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {

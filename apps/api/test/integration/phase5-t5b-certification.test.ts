@@ -54,7 +54,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "SodException", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -133,6 +133,15 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     });
     return f.ownerUser.id;
   };
+
+  /**
+   * §I — the APPROVER's own act, issued as themselves. There is no `approverId` field anywhere in
+   * the certification input any more (Codex round-7 P1): the authority authenticates and grants,
+   * and certification consumes what they granted.
+   */
+  const grantOverride = async (
+    projectId: string, billId: string, approverId: string, actorId: string, reason = 'two-person practice',
+  ) => certification.grantSodException(projectId, { billId, actorId, reason }, asUser(projectId, approverId));
 
   /** The store user: records evidence, never certifies. The ordinary separation §I assumes. */
   const store = async (projectId: string): Promise<AuthUser> => asUser(projectId, await secondPmc(projectId));
@@ -443,26 +452,31 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await expect(certification.certify(projectId, { billId }, pmc(projectId)))
       .rejects.toThrow(/Segregation of duties/u);
 
-    // the approver must not be the actor being excused — a signature on a mirror
-    await expect(certification.certify(projectId, {
-      billId, sodOverride: { approverId: f.memberUser.id, reason: 'two-person practice' },
-    }, pmc(projectId))).rejects.toThrow(/cannot be authorised by the actor it excuses/u);
+    // the approver may not excuse THEMSELVES — a signature on a mirror
+    await expect(grantOverride(projectId, billId, f.memberUser.id, f.memberUser.id))
+      .rejects.toThrow(/cannot be authorised by the actor it excuses/u);
 
-    // and must be an ACTIVE pmc on this project
-    await expect(certification.certify(projectId, {
-      billId, sodOverride: { approverId: f.strangerUser.id, reason: 'two-person practice' },
-    }, pmc(projectId))).rejects.toThrow(/pmc with standing on this project/u);
+    // …and a grant is only an authority if its author HAS one
+    await expect(grantOverride(projectId, billId, f.strangerUser.id, f.memberUser.id))
+      .rejects.toThrow(/pmc with standing on this project/u);
 
-    const cert = await certification.certify(projectId, {
-      billId, sodOverride: { approverId: approver, reason: 'two-person practice; site engineer is the only store user' },
-    }, pmc(projectId));
+    // the APPROVER acts, authenticated as themselves; the certifier then consumes what they granted
+    const grant = await grantOverride(
+      projectId, billId, approver, f.memberUser.id, 'two-person practice; site engineer is the only store user',
+    );
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
     expect(cert.sodException).toEqual({
       rule: 'evidence-recorder-may-not-certify',
       actorId: f.memberUser.id,
       approverId: approver,
       reason: 'two-person practice; site engineer is the only store user',
       recordedAt: expect.any(String),
+      grantId: grant.id,
     });
+    // the grant is SINGLE-USE and knows what it paid for
+    const spent = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } });
+    expect(spent.consumedByCertificateId).toBe(cert.id);
+    expect(spent.consumedAt).not.toBeNull();
     // §I — the exception is bound to THAT certificate, never a standing waiver
     const rows = await t.prisma.sodException.findMany({ where: { projectId } });
     expect(rows.map((r) => r.certificateId)).toEqual([cert.id]);
@@ -527,9 +541,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     const line = await issuedMaterialLine(projectId, { qty: '100' });
     await acceptOnLine(projectId, line, '100', pmc(projectId));
     const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
-    const cert = await certification.certify(projectId, {
-      billId, sodOverride: { approverId: approver, reason: 'two-person practice' },
-    }, pmc(projectId));
+    await grantOverride(projectId, billId, approver, f.memberUser.id);
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
 
     // the certificate: amount and attribution frozen, deletion refused, supersession one-way
     await expect(t.prisma.$executeRawUnsafe(
@@ -844,7 +857,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
         `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
         projectId, billId,
       ),
-    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception from the same command/u);
+    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
 
     // precision: the SAME act by a certifier who recorded none of it is ACCEPTED, so the seal is
     // reading the evidence-actor set rather than refusing every direct certificate
@@ -1309,7 +1322,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
         `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
         projectId, billId,
       ),
-    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception from the same command/u);
+    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
 
     // precision: the SAME forgery by a certifier who is in neither the taker nor the corrector set
     // is accepted, so the seal is counting the actor set and not simply refusing labour evidence
@@ -1443,14 +1456,21 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // finds nothing and refuses; `OrgsParticipant.hasProjectRoleStanding` folds in the owner/admin
     // PMC standing the orgs module actually grants, which is why the question belongs to the owner.
     expect(await t.prisma.membership.count({ where: { projectId, userId: f.ownerUser.id } })).toBe(0);
-    const cert = await certification.certify(projectId, {
-      billId, sodOverride: { approverId: f.ownerUser.id, reason: 'two-person practice; org admin authorises' },
-    }, pmc(projectId));
+    await grantOverride(projectId, billId, f.ownerUser.id, f.memberUser.id, 'two-person practice; org admin authorises');
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
     expect(cert.sodException?.approverId).toBe(f.ownerUser.id);
 
-    // a user with NO standing anywhere is still refused, so the routing did not widen the rule
+    // a user with NO standing anywhere is still refused, so the routing did not widen the rule.
+    // Codex round-7 P2: this assertion was DESCRIBED and never made — the probe built the fixture
+    // and stopped, so it would have passed against a predicate that accepted anybody. It travelled
+    // through six review rounds in that state. A comment claiming a guarantee is not the guarantee.
     const other = await freshProject();
-    await acceptOnLine(other, await issuedMaterialLine(other, { qty: '10' }), '10', pmc(other));
+    const otherLine = await issuedMaterialLine(other, { qty: '10' });
+    await acceptOnLine(other, otherLine, '10', pmc(other));
+    const otherBill = await verifiedClaim(other, otherLine.vendorId, otherLine.poLineId, '10');
+    await expect(grantOverride(other, otherBill, f.strangerUser.id, f.memberUser.id, 'nobody in particular'))
+      .rejects.toThrow(/pmc with standing on this project/u);
+    expect(await t.prisma.billCertificate.count({ where: { projectId: other } })).toBe(0);
   });
 
   // ── Codex round-2 findings: the CERTIFICATE as a whole, not the row as it lands ──────────────
@@ -1461,9 +1481,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     const line = await issuedMaterialLine(projectId, { qty: '100' });
     await acceptOnLine(projectId, line, '100', pmc(projectId));
     const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
-    const cert = await certification.certify(projectId, {
-      billId, sodOverride: { approverId: approver, reason: 'two-person practice' },
-    }, pmc(projectId));
+    await grantOverride(projectId, billId, approver, f.memberUser.id);
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
     const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
       where: { projectId, type: 'acceptance' }, select: { id: true },
     });
@@ -1496,9 +1515,23 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       .rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
     // …and an approver with no standing is not the stronger authority §I requires
     await expect(forge('no-standing', 'evidence-recorder-may-not-certify', f.strangerUser.id))
-      .rejects.toThrow(/granted by a pmc with standing/u);
-    // …while the correctly-ruled, properly-approved override is ACCEPTED
-    await expect(forge('proper', 'evidence-recorder-may-not-certify', approver)).resolves.toBeDefined();
+      .rejects.toThrow(/from a pmc with standing/u);
+    // …while the correctly-ruled, properly-approved override IS accepted — proven by the
+    // service-made certificate at the top of this probe rather than by a fourth forgery.
+    //
+    // Codex round-7 P1 tightened arm (c) to require the override's command RECEIPT to name this
+    // certificate, so a forged certificate can no longer borrow a real command's provenance: the
+    // old `forge('proper', …)` arm passed only because the check compared two copied ids to each
+    // other. Losing that arm is the fix working, not coverage removed — the acceptance it stood
+    // for is asserted here on a certificate whose receipt genuinely produced it.
+    expect(cert.sodException).toEqual({
+      rule: 'evidence-recorder-may-not-certify',
+      actorId: f.memberUser.id,
+      approverId: approver,
+      reason: 'two-person practice',
+      recordedAt: expect.any(String),
+      grantId: expect.any(String),
+    });
   });
 
   it('R4-F3 (§I): the SoD seal honours MEMBERSHIP PRECEDENCE exactly as the orgs module does', async () => {
@@ -1515,9 +1548,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       create: { projectId, userId: f.ownerUser.id, role: 'contractor', status: 'active' },
       update: { role: 'contractor', status: 'active' },
     });
-    await expect(certification.certify(projectId, {
-      billId, sodOverride: { approverId: f.ownerUser.id, reason: 'org admin, but a contractor here' },
-    }, pmc(projectId))).rejects.toThrow(/pmc with standing on this project/u);
+    await expect(grantOverride(projectId, billId, f.ownerUser.id, f.memberUser.id, 'org admin, but a contractor here'))
+      .rejects.toThrow(/pmc with standing on this project/u);
 
     // the DB seal agrees with the service: a forged certificate naming that approver is refused
     const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
@@ -1543,14 +1575,13 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
         `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
         projectId, billId,
       ),
-    ])).rejects.toThrow(/granted by a pmc with standing/u);
+    ])).rejects.toThrow(/from a pmc with standing/u);
 
     // …and with the contractor membership REMOVED, the same org owner IS a valid approver — the
     // precedence rule, proven in both directions rather than only as a refusal
     await t.prisma.membership.deleteMany({ where: { projectId, userId: f.ownerUser.id } });
-    await expect(certification.certify(projectId, {
-      billId, sodOverride: { approverId: f.ownerUser.id, reason: 'org admin with no project membership' },
-    }, pmc(projectId))).resolves.toBeDefined();
+    await grantOverride(projectId, billId, f.ownerUser.id, f.memberUser.id, 'org admin with no project membership');
+    await expect(certification.certify(projectId, { billId }, pmc(projectId))).resolves.toBeDefined();
   });
 
   it('R5-RESTRUCTURE (§I): the SQL standing predicate and the ORGS participant agree on every shape', async () => {
@@ -1648,9 +1679,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     const l2 = await issuedMaterialLine(projectId, { qty: '50' });
     await acceptOnLine(projectId, l2, '50', pmc(projectId));
     const bill2 = await verifiedClaim(projectId, l2.vendorId, l2.poLineId, '50');
-    const conflicted = await certification.certify(projectId, {
-      billId: bill2, sodOverride: { approverId: approver, reason: 'two-person practice' },
-    }, pmc(projectId));
+    await grantOverride(projectId, bill2, approver, f.memberUser.id);
+    const conflicted = await certification.certify(projectId, { billId: bill2 }, pmc(projectId));
     expect(conflicted.sodException?.rule).toBe('evidence-recorder-may-not-certify');
     await expect(appendException('second-sod', conflicted.id, 'some-other-rule'))
       .rejects.toThrow(/segregation-of-duties exceptions/u);
@@ -1665,9 +1695,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     const line = await issuedMaterialLine(projectId, { qty: '100' });
     await acceptOnLine(projectId, line, '100', pmc(projectId));
     const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
-    const cert = await certification.certify(projectId, {
-      billId, sodOverride: { approverId: approver, reason: 'two-person practice' },
-    }, pmc(projectId));
+    await grantOverride(projectId, billId, approver, f.memberUser.id);
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
     const acceptance = await t.prisma.stockTransaction.findFirstOrThrow({
       where: { projectId, type: 'acceptance' }, select: { id: true },
     });
@@ -1706,10 +1735,19 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // is real. What is wrong is that the durable trail would answer "which command authorised this
     // certificate?" with someone else's command, which is not an audit trail.
     await expect(forge('stale-cmd', own.id, other.id))
-      .rejects.toThrow(/exception from the same command/u);
-    // precision: the SAME act with matching provenance is ACCEPTED, so the seal is reading command
-    // identity rather than refusing every direct certificate
-    await expect(forge('same-cmd', own.id, own.id)).resolves.toBeDefined();
+      .rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
+    // precision: the seal is reading PROVENANCE, not refusing everything. The accepted case is the
+    // service-made certificate at the top — whose receipt actually produced it — because after this
+    // fix a forgery CANNOT be accepted by copying a real command id into both rows. That is the
+    // point of the finding: matching ids are not provenance, so `forge('same-cmd', own, own)` is
+    // now refused too, and the only thing that satisfies the seal is a receipt that names this
+    // certificate.
+    await expect(forge('same-cmd', own.id, own.id)).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
+    expect(cert.sodException?.approverId).toBe(approver);
+    const receipt = await t.prisma.commandExecution.findFirstOrThrow({
+      where: { projectId, commandType: 'commercial.bill.certify' }, select: { resultRef: true },
+    });
+    expect(receipt.resultRef, 'the receipt names the certificate it produced').toBe(cert.id);
   });
 
   it('R6-F1 (§I): approver standing is decided under a LOCK in the SEAL, not only in the service', async () => {
@@ -1796,6 +1834,75 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       await downgrader.$disconnect();
       await forger.$disconnect();
     }
+  });
+
+  it('R7-F1 (§I): the certifier cannot AUTHORISE THEMSELVES — the override is the approver\'s own act', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    // The finding: `certify` used to take `sodOverride: { approverId, reason }` from the CERTIFIER'S
+    // OWN request and check only that the named person held standing. A self-certifying pmc could
+    // type a colleague's id and the system would write an immutable record asserting that colleague
+    // authorised it. §I's whole control is "a stronger authority said yes"; the authority was never
+    // asked, and the audit trail carried their name anyway.
+    //
+    // There is no longer a field to forge — the contract is `.strict()`, so the old shape is not
+    // even expressible. This is the first assertion because a rule enforced by the ABSENCE of an
+    // input cannot regress quietly: the shape would have to be added back.
+    await expect(certification.certify(projectId, {
+      billId, sodOverride: { approverId: approver, reason: 'I say they said yes' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any, pmc(projectId))).rejects.toThrow();
+
+    // …and with no grant standing, the conflicted certification is simply refused
+    await expect(certification.certify(projectId, { billId }, pmc(projectId)))
+      .rejects.toThrow(/may authorise it with `commercial.sod.grant`/u);
+    expect(await t.prisma.billCertificate.count({ where: { projectId } })).toBe(0);
+
+    // the certifier cannot grant it to themselves either — the authority and the excused are two
+    // people, checked in the service and by a CHECK at PostgreSQL
+    await expect(grantOverride(projectId, billId, f.memberUser.id, f.memberUser.id))
+      .rejects.toThrow(/cannot be authorised by the actor it excuses/u);
+
+    // only the APPROVER, acting as themselves, can create it
+    const grant = await grantOverride(projectId, billId, approver, f.memberUser.id);
+    expect(grant.approverId).toBe(approver);
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.sodException?.grantId).toBe(grant.id);
+
+    // SINGLE-USE: the grant is spent, so a second conflicted certification on this bill cannot
+    // reuse the same authority. An override is exercised once.
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    await expect(certification.certify(projectId, { billId }, pmc(projectId)))
+      .rejects.toThrow(/may authorise it with `commercial.sod.grant`/u);
+  });
+
+  it('R7-F1 (§I): a grant does not survive the claim it was given for being AMENDED', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const grant = await grantOverride(projectId, billId, approver, f.memberUser.id);
+
+    // the approver authorised certifying THIS claim. Amending it produces a different claim — a
+    // different amount, possibly different lines — and permission to certify the one they looked at
+    // must not silently carry over to one they never saw.
+    await bills.amend(projectId, {
+      billId, lines: [{ poLineId: line.poLineId, quantity: '90', rate: '1' }], reason: 'vendor corrected the quantity',
+    }, pmc(projectId));
+    // `amend` leaves the claim at `submitted` — it IS the resubmission
+    await bills.beginVerification(projectId, { billId }, pmc(projectId));
+    await verification.verify(projectId, { billId }, pmc(projectId));
+
+    await expect(certification.certify(projectId, { billId }, pmc(projectId)))
+      .rejects.toThrow(/granted against an earlier version/u);
+    // …and the grant is still UNSPENT, so the approver's act was not silently consumed by a claim
+    // it did not authorise
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).consumedAt).toBeNull();
   });
 
   it('PROBE 15 (§0): the four new tables are closed under the shared-database reset', async () => {

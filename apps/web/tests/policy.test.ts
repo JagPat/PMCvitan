@@ -70,6 +70,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // `commercial.verify` even though both are pmc today: certification creates money someone may
   // approve, and collapsing them would let a later widening of verification widen payment too.
   'commercial.certify': ['pmc'],
+  'commercial.sod.grant': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],

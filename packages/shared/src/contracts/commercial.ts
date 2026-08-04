@@ -56,6 +56,11 @@ export const COMMERCIAL_COMMANDS = [
   // certifying asks §I's segregation rule, superseding asks only whether one stands.
   'commercial.bill.certify',
   'commercial.certificate.supersede',
+  // Phase 5 Task 5B (§I) — the APPROVER's own act. Separate from `certify` because it is a
+  // different person doing a different thing: certification is the certifier's, the grant that
+  // excuses it is the authority's. One command taking an `approverId` cannot tell them apart, and
+  // that is exactly how an override becomes a name the certifier typed.
+  'commercial.sod.grant',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -407,6 +412,22 @@ export interface VerificationDto {
   billStatus: VendorBillStatus;
 }
 
+/** §I — the approver's OWN act: permission for one otherwise-forbidden certification. */
+export interface SodGrantDto {
+  id: string;
+  billId: string;
+  versionId: string;
+  rule: string;
+  /** the person being excused */
+  actorId: string;
+  /** the authority — and the authenticated author of the grant */
+  approverId: string;
+  reason: string;
+  grantedAt: string;
+  consumedAt: string | null;
+  consumedByCertificateId: string | null;
+}
+
 /** §I — the attributable record that made an otherwise-forbidden act valid. */
 export interface SodExceptionDto {
   /** which rule was overridden, e.g. `evidence-recorder-may-not-certify` */
@@ -417,6 +438,8 @@ export interface SodExceptionDto {
   approverId: string;
   reason: string;
   recordedAt: string;
+  /** the grant this override rests on — the approver's own authenticated act */
+  grantId: string | null;
 }
 
 /** §E — one row of a certificate's FROZEN evidence: WHICH row, and HOW MUCH of it. */

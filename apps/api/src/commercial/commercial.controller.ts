@@ -2,6 +2,7 @@ import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/
 import {
   amendVendorBillSchema,
   certifyBillSchema,
+  grantSodExceptionSchema,
   correctMeasurementSchema,
   defineCostHeadSchema,
   reattributeSchema,
@@ -13,6 +14,7 @@ import {
   vendorBillStepSchema,
   type AmendVendorBillInput,
   type CertifyBillInput,
+  type GrantSodExceptionInput,
   type CorrectMeasurementInput,
   type DefineCostHeadInput,
   type ReattributeInput,
@@ -238,6 +240,22 @@ export class CommercialController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.certification.certify(projectId, body, user, idempotencyKey);
+  }
+
+  /**
+   * §I — the APPROVER authorises one otherwise-forbidden certification. Its own route and its own
+   * permission because it is a different person doing a different thing; the authenticated actor
+   * IS the authority, so there is no `approverId` field to fill in with somebody else's name.
+   */
+  @Post('commercial/bills/sod-grant')
+  @RolesFor('commercial.sod.grant')
+  grantSodException(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(grantSodExceptionSchema)) body: GrantSodExceptionInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.certification.grantSodException(projectId, body, user, idempotencyKey);
   }
 
   /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */

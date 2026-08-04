@@ -490,7 +490,7 @@ assert "legacy user starts at credential version zero without fabricated verific
   "SELECT \"credentialVersion\"::text || '|' || COALESCE(\"emailVerifiedAt\"::text,'<null>') FROM \"User\" WHERE id='USER-1';" \
   "0|<null>"
 assert "durable password challenge and security audit tables exist" \
-  "SELECT ((to_regclass('\"PasswordCredentialChallenge\"') IS NOT NULL) AND (to_regclass('\"SecurityAuditEvent\"') IS NOT NULL) AND (to_regclass('\"SodException\"') IS NOT NULL))::text;" \
+  "SELECT ((to_regclass('\"PasswordCredentialChallenge\"') IS NOT NULL) AND (to_regclass('\"SecurityAuditEvent\"') IS NOT NULL) AND (to_regclass('\"SodException\"') IS NOT NULL) AND (to_regclass('\"SodGrant\"') IS NOT NULL))::text;" \
   "true"
 
 # Phase 2 Task 4 — the domain-event envelope is additive over a tenant-backfilled legacy DB
@@ -1899,11 +1899,11 @@ assert_rejects "commercial T5A §F: the arrow into APPROVED-FOR-PAYMENT, whose e
 # them EMPTY. That is asserted rather than assumed, and then every seal is exercised — each refusal
 # paired with the coherent case it must still accept, because a refusal alone shows only that
 # something is strict.
-assert "Phase 5 T5B: the four certification tables EXIST after migration" \
+assert "Phase 5 T5B: the five certification tables EXIST after migration" \
   "SELECT ((to_regclass('\"BillCertificate\"') IS NOT NULL) AND (to_regclass('\"CertifiedAcceptanceConsumption\"') IS NOT NULL) AND (to_regclass('\"CertifiedMeasurementConsumption\"') IS NOT NULL))::text;" \
   "true"
 assert "Phase 5 T5B: they upgrade ROW-FREE over the legacy fixture (a certificate is never invented)" \
-  "SELECT ((SELECT COUNT(*) FROM \"BillCertificate\") + (SELECT COUNT(*) FROM \"CertifiedAcceptanceConsumption\") + (SELECT COUNT(*) FROM \"CertifiedMeasurementConsumption\") + (SELECT COUNT(*) FROM \"SodException\"))::text;" \
+  "SELECT ((SELECT COUNT(*) FROM \"BillCertificate\") + (SELECT COUNT(*) FROM \"CertifiedAcceptanceConsumption\") + (SELECT COUNT(*) FROM \"CertifiedMeasurementConsumption\") + (SELECT COUNT(*) FROM \"SodException\") + (SELECT COUNT(*) FROM \"SodGrant\"))::text;" \
   "0"
 # `certified` is the SHADOW of a live certificate. With none, the arrow is refused — the same
 # assertion Task 5A carried, now proving the shadow rule rather than an absent table.
@@ -1996,14 +1996,31 @@ assert_rejects "commercial T5B §I: the complete act by the actor who RECORDED i
 # …and the SAME act WITH its attributable override is ACCEPTED — the seal is precise, not merely
 # strict. One transaction, because §I requires the override to be written with the act it excuses,
 # and (Codex round-6 P2) carrying the SAME `sourceCommandId` as the certificate.
-$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C4','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A4','p1','UPT5B-C4','UP45-ACC',3); INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S4','p1','UPT5B-C4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UP45-CMD'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+# The seal requires the override's COMMAND RECEIPT to name the certificate it produced (round-6
+# F4 / round-7 P1), so each act below gets its OWN receipt — otherwise every assertion here would be
+# refused by the provenance clause and nothing would be testing the grant.
+# reserved-then-completed in ONE transaction, because the receipt protocol is itself DB-sealed:
+# a completion arriving in a later transaction did not come from a command run.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5B-CMDU','project','org-legacy','p1','USER-1','commercial.bill.certify','upt5b-u','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5B-CU', \"completedAt\"=now() WHERE \"id\"='UPT5B-CMDU'; COMMIT;"
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5B-CMD4','project','org-legacy','p1','USER-1','commercial.bill.certify','upt5b-4','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5B-C4', \"completedAt\"=now() WHERE \"id\"='UPT5B-CMD4'; COMMIT;"
+# Codex round-7 P1 — the override now rests on the APPROVER'S OWN act. The grant is written first
+# (it is `USER-2` authorising `USER-1`), then consumed by the certificate that spends it, and the
+# seal requires the two to agree on approver, actor, rule, bill and claim VERSION.
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-G4','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UP45-CMD')"
+assert_rejects "commercial T5B R7-F1: a certificate consuming a grant it did not spend (the override must be the approver's act, exercised HERE)" \
+  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CU','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMDU'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AU','p1','UPT5B-CU','UP45-ACC',3); INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SU','p1','UPT5B-CU','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDU'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C4','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMD4'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A4','p1','UPT5B-C4','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-C4' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S4','p1','UPT5B-C4','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMD4'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5B §I: the RECORDER may certify WITH an attributable override, in one transaction" \
   || { printf 'FAILED  %s\n' "commercial T5B §I: the coherent recorder-certified act was rejected"; FAIL=1; }
 # the override carries the trusted-evidence seals
 assert_rejects "commercial T5B §I: REWRITING the reason an override was granted for" \
   "UPDATE \"SodException\" SET \"reason\"='a different story' WHERE \"id\"='UPT5B-S4'"
 assert_rejects "commercial T5B §I: a SECOND exception on one certificate (which one authorised the act?)" \
-  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S5','p1','UPT5B-C4','some-other-rule','USER-1','USER-2','a second story','UP45-CMD')"
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S5','p1','UPT5B-C4','UPT5B-G4','some-other-rule','USER-1','USER-2','a second story','UPT5B-CMD4')"
+assert_rejects "commercial T5B R7-F1: RE-SPENDING a consumed grant (an authority is exercised once)" \
+  "UPDATE \"SodGrant\" SET \"consumedByCertificateId\"='UPT5B-C1' WHERE \"id\"='UPT5B-G4'"
+assert_rejects "commercial T5B R7-F1: a grant that excuses its OWN author (a signature on a mirror)" \
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-GM','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-2','USER-2','self','UP45-CMD')"
 assert_rejects "commercial T5B §I: an exception naming NO fact (a standing waiver)" \
   "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S0','p1','r','USER-1','USER-2','reason','UP45-CMD')"
 assert_rejects "commercial T5B §I: an actor approving their OWN override (a signature on a mirror)" \
