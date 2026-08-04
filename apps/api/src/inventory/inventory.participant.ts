@@ -1,5 +1,14 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { InventoryQuery } from './inventory.query';
+
+/** One `acceptance` ledger row, with how much of it a reversal has already taken back. */
+export interface AcceptedEvidenceRow {
+  /** the `acceptance` `StockTransaction` id — the row a certificate freezes by IDENTITY */
+  id: string;
+  /** the accepted quantity STILL standing on this row: its own qty less any reversals of it */
+  available: Prisma.Decimal;
+}
 
 /**
  * Phase 3 Task 4 — the inventory WORKFLOW PARTICIPANT.
@@ -13,6 +22,8 @@ import type { Prisma } from '@prisma/client';
  */
 @Injectable()
 export class InventoryParticipant {
+  constructor(private readonly query: InventoryQuery) {}
+
   async assertMediaDisposable(tx: Prisma.TransactionClient, projectId: string, mediaId: string): Promise<void> {
     const cited = await tx.stockTransaction.count({ where: { projectId, evidenceMediaId: mediaId } });
     if (cited > 0) {
@@ -20,5 +31,44 @@ export class InventoryParticipant {
         `This photo is quality evidence on ${cited} stock ledger row(s) — the ledger is immutable, so its evidence cannot be deleted (plan §C)`,
       );
     }
+  }
+
+  /**
+   * Phase 5 Task 5B (§E) — LOCK the accepted evidence behind one purchase-order line and return
+   * the rows with how much of each still stands.
+   *
+   * §E step 2: certification reads the ACCEPTED side, and `stock.reverse` locks the stock LOT —
+   * it never takes the PO-line lock. Locking only the PO line therefore admits certification
+   * reading 100 accepted, a concurrent reversal committing it to 0, and certification committing
+   * on the stale 100: a payable bill with no accepted material behind it. The LOTS are what both
+   * sides contend on, so the lots are what this takes.
+   *
+   * **Ascending by lot id, and BEFORE any PO line** — the order every inventory write already
+   * uses (`lockProjectReadiness → lockLot → applyReceiptProgress`, and `applyReceiptProgress` is
+   * what takes the PO line). Inverting it would let certification hold a PO line waiting for a
+   * lot while a concurrent rejection holds that lot waiting for the PO line. Commercial adopts
+   * the established order rather than asking four cleared modules to migrate to a new one.
+   *
+   * It is an inventory-owned read of inventory tables, invoked inside the CALLER's transaction —
+   * the participant pattern, declared on `inventory.workflowParticipants` and cycle-exempt. The
+   * `available` figure restates nothing: it is `InventoryQuery.acceptedPerRow`, which is
+   * `ACCEPTED`'s own arithmetic resolved per row. This method adds the LOCK and nothing else.
+   */
+  async lockAcceptedEvidence(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    poLineId: string,
+  ): Promise<AcceptedEvidenceRow[]> {
+    // the LOTS first, ascending, so two certifications on overlapping lines cannot deadlock
+    await tx.$queryRaw(Prisma.sql`
+      SELECT lot."id" FROM "StockLot" lot
+       WHERE lot."projectId" = ${projectId} AND lot."poLineId" = ${poLineId}
+       ORDER BY lot."id" ASC
+         FOR UPDATE`);
+    // a fully reversed row is not evidence to DRAW on — it is excluded here rather than returned
+    // as zero so a consumption row can never be written against it (`consumedQty > 0` CHECK). The
+    // GUARD path keeps those rows, which is why the filter lives at the caller and not in the fold.
+    const rows = await this.query.acceptedPerRow(tx, projectId, poLineId);
+    return rows.filter((r) => r.available.greaterThan(0));
   }
 }

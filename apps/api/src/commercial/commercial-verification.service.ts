@@ -95,10 +95,15 @@ export class CommercialVerificationService {
 
   /**
    * Read the LIVE version's lines of a bill, resolved to the shape the triple is computed over.
+   *
+   * PUBLIC because §E names THREE sites that recompute the triple — "submission, verification and
+   * certification" — and Task 5B's certification is the third. One function at three sites rather
+   * than a copy per site: a second implementation is the drift §0 exists to name, and it would
+   * disagree the first time either changed.
    * Throws when the bill has no live version, which the Task-4 seal already makes unrepresentable —
    * this is the service saying so in a sentence rather than letting a `findFirstOrThrow` surface.
    */
-  private async claimLines(
+  async claimLines(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
   ): Promise<{ versionId: string; lines: LineTriple[] }> {
     const version = await tx.vendorBillVersion.findFirst({
@@ -135,7 +140,7 @@ export class CommercialVerificationService {
    * certification A hold line X and wait for Y while B holds Y and waits for X. This is the
    * Phase-4 Task-3 crew-allocation guardrail — stable ascending lock order — applied to money.
    */
-  private async computeTriple(
+  async computeTriple(
     tx: Prisma.TransactionClient,
     projectId: string,
     billId: string,

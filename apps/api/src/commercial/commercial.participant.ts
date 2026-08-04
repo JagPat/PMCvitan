@@ -5,6 +5,7 @@ import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabili
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
 import { CommercialBillService } from './commercial-bill.service';
+import { CommercialMeasurementQuery } from './commercial-measurement.query';
 
 /** The acting identity a lifecycle site passes in; the participant never re-derives it. */
 export interface AttributionActor {
@@ -56,6 +57,10 @@ export class CommercialParticipant {
     private readonly budget: CommercialBudgetService,
     private readonly inventory: InventoryQuery,
     private readonly bills: CommercialBillService,
+    // Phase 5 Task 5B — the §D/§E row-level floor needs `netOf`, the ONE fold that says what a
+    // measurement row still contributes. Injecting the QUERY rather than the write service keeps
+    // this participant off the measurement service's participant graph, which would be a cycle.
+    private readonly measured: CommercialMeasurementQuery,
   ) {}
 
   /**
@@ -219,6 +224,32 @@ export class CommercialParticipant {
     activityId: string,
   ): Promise<void> {
     if (!(await this.isActive(tx, projectId))) return;
+    // Phase 5 Task 5B (§E) — the CERTIFICATE arm, ahead of the measurement arm. The two refuse for
+    // different reasons and the certificate's is stronger: a live certificate is money someone may
+    // approve, and §E's operator path is to supersede it FIRST. Reporting "correct the measurements
+    // to zero" while a certificate rests on them would send an operator down a route the
+    // measurement floor below then refuses — a true message that is the wrong instruction.
+    const onActivity = await tx.measurement.findMany({
+      where: { projectId, activityId }, select: { id: true },
+    });
+    if (onActivity.length > 0) {
+      const certified = await tx.certifiedMeasurementConsumption.findMany({
+        where: {
+          projectId,
+          measurementId: { in: onActivity.map((m) => m.id) },
+          certificate: { is: { supersededAt: null } },
+        },
+        select: { certificateId: true },
+      });
+      if (certified.length > 0) {
+        const names = [...new Set(certified.map((c) => c.certificateId))].sort().join(', ');
+        throw new ConflictException(
+          `This activity's sign-off carries measured work frozen under live certificate(s) ${names} — `
+          + 'supersede the certification first, then withdraw the sign-off: a certificate cannot be left '
+          + 'payable against work whose sign-off no longer stands',
+        );
+      }
+    }
     // MEASURED per line, folded from the signed rows — a line corrected back to zero no longer
     // rests on this sign-off and must not block the revert.
     const rows = await tx.measurement.findMany({
@@ -313,6 +344,14 @@ export class CommercialParticipant {
     actor: AttributionActor,
   ): Promise<void> {
     if (!(await this.isActive(tx, projectId))) return;
+    // Phase 5 Task 5B (§E) — the REFUSAL arm, AHEAD of the dispute. Task 4 shipped only the
+    // dispute because `certified` was unreachable; the certificate now exists, so the two-sided
+    // rule §E states is complete: REFUSE when money is committed, DISPUTE when only a claim is.
+    //
+    // It fires FIRST and the order is load-bearing. Running the dispute first would move live
+    // uncertified claims out of the fold — attributable, append-only transitions — and only then
+    // discover the reversal is refused, leaving vendors disputed by a call that did not happen.
+    await this.assertNoCertifiedAcceptance(tx, projectId, poLineId);
     // read the evidence AFTER the reversal row is appended — the guard is about the state the
     // transaction is about to commit, not the one it started from
     const accepted = (await this.inventory.acceptedFor(tx, projectId, [poLineId])).get(poLineId) ?? new Prisma.Decimal(0);
@@ -321,6 +360,63 @@ export class CommercialParticipant {
       `qty-over-accepted: an acceptance on purchase-order line ${poLineId} was reversed, leaving ${accepted.toString()} base units of accepted evidence`,
       actor,
     );
+  }
+
+  /**
+   * Phase 5 Task 5B (§E) — the REFUSAL half of the acceptance guard: an acceptance row may not be
+   * taken below what a LIVE certificate has frozen as its consumed quantity.
+   *
+   * Row-level, not aggregate, and §E is explicit about why both halves of the pair are needed.
+   * Aggregate-only lets the evidence be SWAPPED: certify 100 against acceptance A recorded by
+   * store user X, accept another 100 as row B by user Y, then reverse A — the total is still 100
+   * so an aggregate check passes, and the payable certificate now rests on different rows, by a
+   * different actor, than the §E triple and the §I SoD rule ever evaluated. Identity-only is the
+   * opposite failure: it would refuse a legitimate reversal of the unused 20 on a 100-unit row an
+   * 80-unit certificate rests on, even though `ACCEPTED` would stay at 80 and the certificate
+   * would be intact.
+   *
+   * The operator path is in the refusal: supersede the certificate first (and, from Task 6,
+   * reverse the payment where money moved), then reverse the acceptance. This is
+   * `assertMediaDisposable` applied to money — evidence a payable fact rests on cannot be
+   * withdrawn while that fact stands.
+   */
+  private async assertNoCertifiedAcceptance(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    poLineId: string,
+  ): Promise<void> {
+    // the state the transaction is ABOUT TO COMMIT: the reversal row is already appended, so a
+    // row that still covers its consumed quantity here is one this reversal did not break
+    const available = new Map(
+      (await this.inventory.acceptedPerRow(tx, projectId, poLineId)).map((r) => [r.id, r.available]),
+    );
+    if (available.size === 0) return;
+    const consumed = await tx.certifiedAcceptanceConsumption.findMany({
+      where: {
+        projectId,
+        stockTransactionId: { in: [...available.keys()] },
+        certificate: { is: { supersededAt: null } },
+      },
+      select: { stockTransactionId: true, consumedQty: true, certificateId: true },
+    });
+    if (consumed.length === 0) return;
+    const byRow = new Map<string, { total: Prisma.Decimal; certificateId: string }>();
+    for (const c of consumed) {
+      const seen = byRow.get(c.stockTransactionId);
+      byRow.set(c.stockTransactionId, {
+        total: (seen?.total ?? new Prisma.Decimal(0)).add(c.consumedQty),
+        certificateId: seen?.certificateId ?? c.certificateId,
+      });
+    }
+    for (const [rowId, { total, certificateId }] of [...byRow.entries()].sort()) {
+      const left = available.get(rowId) ?? new Prisma.Decimal(0);
+      if (left.greaterThanOrEqualTo(total)) continue;
+      throw new ConflictException(
+        `Acceptance ${rowId} carries ${total.toString()} base units frozen under live certificate ${certificateId}, `
+        + `and this reversal would leave ${left.toString()}. Supersede that certificate first, then reverse the acceptance: `
+        + 'evidence a payable fact rests on cannot be withdrawn while that fact stands',
+      );
+    }
   }
 
   /**
@@ -339,12 +435,51 @@ export class CommercialParticipant {
     labourPoLineId: string,
     measured: Prisma.Decimal,
     actor: AttributionActor,
+    /** Phase 5 Task 5B — the ORIGINAL row this correction walks back, for the row-level floor. */
+    correctsId?: string,
   ): Promise<void> {
     if (!(await this.isActive(tx, projectId))) return;
+    // Phase 5 Task 5B (§D/§E) — the ROW-LEVEL certificate floor, which `certifiedBilledQtyFor`'s
+    // own docblock named as Task 5's remaining half and which the aggregate cannot express.
+    //
+    // §E: "measure 100 by actor A, certify, add a second 100 by actor B, then correct −100, and
+    // the fold still covers the bill while the certificate now rests on different rows, by a
+    // different actor, than the §E triple and the §I SoD rule ever evaluated." The aggregate is
+    // 100 either way; only the frozen `(measurementId, consumedQty)` pair sees the swap.
+    if (correctsId) await this.assertNoCertifiedMeasurement(tx, projectId, correctsId);
     await this.bills.disputeClaimsBeyondEvidence(
       tx, projectId, 'labour', labourPoLineId, measured,
       `qty-over-accepted: measured work on labour purchase-order line ${labourPoLineId} was corrected down to ${measured.toString()} person-shifts`,
       actor,
+    );
+  }
+
+  /**
+   * Phase 5 Task 5B (§D/§E) — the labour twin of `assertNoCertifiedAcceptance`: an original
+   * measurement row may not be taken below what a LIVE certificate has frozen against it.
+   *
+   * Asked with the correction already appended, so `netOf` is the post-correction quantity — the
+   * state this transaction is committing, exactly as the acceptance arm reads the post-reversal
+   * available. The correction is refused; the certificate is what has to move first.
+   */
+  private async assertNoCertifiedMeasurement(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    measurementId: string,
+  ): Promise<void> {
+    const frozen = await tx.certifiedMeasurementConsumption.findMany({
+      where: { projectId, measurementId, certificate: { is: { supersededAt: null } } },
+      select: { consumedQty: true, certificateId: true },
+      orderBy: { certificateId: 'asc' },
+    });
+    if (frozen.length === 0) return;
+    const consumed = frozen.reduce((a, r) => a.add(r.consumedQty), new Prisma.Decimal(0));
+    const net = await this.measured.netOf(tx, projectId, measurementId);
+    if (net.greaterThanOrEqualTo(consumed)) return;
+    throw new ConflictException(
+      `Measurement ${measurementId} carries ${consumed.toString()} person-shifts frozen under live certificate `
+      + `${frozen[0].certificateId}, and this correction would leave ${net.toString()}. Supersede that certificate `
+      + 'first, then correct the measurement: evidence a payable fact rests on cannot be withdrawn while that fact stands',
     );
   }
 

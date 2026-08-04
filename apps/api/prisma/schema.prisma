@@ -45,6 +45,9 @@ enum InspectionResult {
 
 model Project {
   billVerifications BillVerification[]
+  billCertificates BillCertificate[]
+  certifiedAcceptanceConsumption CertifiedAcceptanceConsumption[]
+  certifiedMeasurementConsumption CertifiedMeasurementConsumption[]
   id           String   @id
   name         String
   short        String
@@ -839,6 +842,7 @@ model DrawingAck {
 // ALLOW_DEV_AUTH. Phase 7c-auth.
 model User {
   billVerificationsVerified BillVerification[] @relation("billVerificationsVerified")
+  billCertificatesCertified BillCertificate[]  @relation("billCertificatesCertified")
   id                String    @id @default(cuid())
   project           Project   @relation(fields: [projectId], references: [id])
   projectId         String
@@ -3139,6 +3143,7 @@ model BudgetException {
 // predicate on the lifecycle's own terminal release states (§F, probe 5bj), and a partial unique
 // can only read columns of the row it indexes.
 model VendorBill {
+  certificates BillCertificate[]
   id        String  @id @default(cuid())
   projectId String
   project   Project @relation(fields: [projectId], references: [id])
@@ -3352,3 +3357,93 @@ model BillVerification {
   @@index([projectId, billId])
   @@index([projectId, versionId])
 }
+
+/// Phase 5 Task 5 (§E/§F) — the CERTIFICATE: the act that turns a verified claim into money
+/// anyone may approve. It is a FACT, not a status: append-only, attributable, and superseded by a
+/// new certificate rather than edited (§F — "past certification the correction path is a
+/// superseding certificate").
+///
+/// `certifiedAmount` is FROZEN. §G bound 3 caps it at `BILLED_AMOUNT(bill)`, and bound 4 caps the
+/// approvals that hang off it at `NET_PAYABLE` = this amount less unreleased deductions.
+model BillCertificate {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  bill      VendorBill @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  billId    String
+  /// the claim version this certificate was computed against. A later amendment supersedes the
+  /// version, and §0's LIVE rule then drops it from every billed fold — so a certificate that did
+  /// not name its version could outlive the claim it certified.
+  versionId String
+
+  /// FROZEN money (§A `Decimal(18,2)`, half-up, never float64)
+  certifiedAmount Decimal @db.Decimal(18, 2)
+
+  /// the ONE permitted transition: a superseding certificate retains this one verbatim as history.
+  /// §G bounds 3–5 read the LIVE certificate only — summing a superseded one reads a corrected
+  /// ₹100 certification as ₹200.
+  supersededAt    DateTime?
+  supersededById  String?
+  supersedeReason String?
+
+  certifiedAt   DateTime @default(now())
+  certifiedBy   User     @relation("billCertificatesCertified", fields: [certifiedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  certifiedById String
+
+  /// §C rule ii — every fact records the command that produced it
+  sourceCommandId String
+
+  acceptanceConsumption  CertifiedAcceptanceConsumption[]
+  measurementConsumption CertifiedMeasurementConsumption[]
+  // The one-LIVE-certificate-per-bill partial unique and the append-only trigger live in the
+  // migration (Prisma cannot express a partial unique).
+
+  @@unique([projectId, id])
+  /// the FK target proving a consumption row, a deduction and an SoD exception belong to a
+  /// certificate OF THIS BILL
+  @@unique([projectId, id, billId])
+  @@index([projectId, billId])
+}
+
+/// §E — WHICH acceptance rows this certificate consumed AND HOW MUCH OF EACH.
+///
+/// Row identity alone is too coarse and the aggregate is too weak: one 100-unit acceptance with an
+/// 80-unit certificate needs `(rowId, consumedQty)` so the unused 20 stays reversible while the
+/// consumed 80 does not. Append-only — the evidence a payable fact rests on cannot be restated.
+model CertifiedAcceptanceConsumption {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  certificate   BillCertificate @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String
+
+  /// the `acceptance` StockTransaction row this certificate drew on
+  stockTransactionId String
+  consumedQty        Decimal @db.Decimal(18, 6)
+
+  @@unique([projectId, id])
+  /// one consumption row per (certificate, acceptance row) — a second would double-count
+  @@unique([projectId, certificateId, stockTransactionId])
+  @@index([projectId, stockTransactionId])
+}
+
+/// §E/§D — the LABOUR twin: which `Measurement` rows this certificate consumed, and how much of
+/// each. Same rule, both sides (§0b).
+model CertifiedMeasurementConsumption {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  certificate   BillCertificate @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String
+
+  measurementId String
+  consumedQty   Decimal @db.Decimal(18, 6)
+
+  @@unique([projectId, id])
+  @@unique([projectId, certificateId, measurementId])
+  @@index([projectId, measurementId])
+}
+

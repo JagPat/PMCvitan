@@ -52,4 +52,48 @@ export class InventoryQuery {
     for (const r of rows) out.set(r.poLineId, new Prisma.Decimal(r.accepted));
     return out;
   }
+
+  /**
+   * Phase 5 Task 5B (§E) — `ACCEPTED` resolved PER ACCEPTANCE ROW for one purchase-order line,
+   * ascending by row id.
+   *
+   * §E freezes `(rowId, consumedQty)` because row identity alone is too coarse and the aggregate
+   * is too weak: one 100-unit acceptance with an 80-unit certificate needs the pair, so the unused
+   * 20 stays reversible while the consumed 80 does not — and an aggregate check would let the
+   * evidence be SWAPPED, certifying against row A, accepting another 100 as row B, then reversing
+   * A with the total unchanged.
+   *
+   * Rows whose available quantity has fallen to zero (or below, which the ledger's own bounds
+   * make unreachable) are RETAINED here rather than filtered. A caller choosing evidence wants
+   * only rows with something left, but a caller GUARDING evidence needs exactly the exhausted
+   * ones: an acceptance reversed to zero while a live certificate rests on it is the violation,
+   * and a fold that drops it reports no violation at all. The two callers differ, so the filter
+   * belongs to them and not to this set.
+   *
+   * The arithmetic is `ACCEPTED`'s, unchanged: an acceptance row's own quantity less the
+   * reversals whose TARGET is that row.
+   */
+  async acceptedPerRow(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    poLineId: string,
+  ): Promise<Array<{ id: string; available: Prisma.Decimal }>> {
+    const rows = await tx.$queryRaw<Array<{
+      id: string; available: Prisma.Decimal | string;
+    }>>(Prisma.sql`
+      SELECT a."id" AS "id",
+             a."qty" - COALESCE((
+               SELECT SUM(r."qty") FROM "StockTransaction" r
+                WHERE r."projectId" = a."projectId"
+                  AND r."reversedTxId" = a."id"
+                  AND r."type" = 'reversal'
+             ), 0) AS "available"
+        FROM "StockTransaction" a
+        JOIN "StockLot" lot ON lot."projectId" = a."projectId" AND lot."id" = a."lotId"
+       WHERE a."projectId" = ${projectId}
+         AND lot."poLineId" = ${poLineId}
+         AND a."type" = 'acceptance'
+       ORDER BY a."id" ASC`);
+    return rows.map((r) => ({ id: r.id, available: new Prisma.Decimal(r.available) }));
+  }
 }

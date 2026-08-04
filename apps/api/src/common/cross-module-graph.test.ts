@@ -93,6 +93,10 @@ const MODEL_OWNER: Record<string, string> = {
   vendorBillLine: 'commercial',
   // Phase 5 Task 5A (§E) — the recorded verdict: `verified` is the shadow of this fact
   billVerification: 'commercial',
+  // Phase 5 Task 5B (§E/§I) — the certificate and the evidence it froze
+  billCertificate: 'commercial',
+  certifiedAcceptanceConsumption: 'commercial',
+  certifiedMeasurementConsumption: 'commercial',
   activityWorkOutput: 'activities',
   // Phase 3 Tasks 2–3 — the procurement pillar (§§F/H)
   vendor: 'procurement', projectVendor: 'procurement', requisition: 'procurement', requisitionLine: 'procurement',
@@ -227,6 +231,9 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // billed) under one lock order, every one of them through its owning module's contract, and
   // dispatches nothing: a verdict is derived, so it produces no external effect.
   'commercial/commercial-verification.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
+  // Phase 5 Task 5B — certification writes only commercial-owned facts and dispatches nothing: a
+  // certificate has no external effect until Task 6 gives it an approval to hang off.
+  'commercial/commercial-certification.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
   // Phase 4 Task 2 — the labour COMMERCIAL chain (§F). Writes ONLY labour-owned commercial tables;
   // the reused procurement Vendor/ProjectVendor party is read/validated THROUGH ProcurementParticipant
   // (never a direct foreign write/read — Labour stays a LEAF). requisition submit/approve +
@@ -432,6 +439,9 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('commercial/bills/begin-verification')",
     // Phase 5 Task 5A (§E) — the three-way verdict, and the ONE arrow it makes safe
     "Post('commercial/bills/verify')",
+    // Phase 5 Task 5B (§E/§F/§I) — certification, and the ONE correction path past it
+    "Post('commercial/bills/certify')",
+    "Post('commercial/certificates/supersede')",
     "Post('commercial/bills/amend')",
     "Post('commercial/bills/reject')",
   ],
@@ -557,12 +567,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('158 mutating routes total (§4 command inventory; +1 Phase-5 Task-5A §E verification verdict)', () => {
+    it('160 mutating routes total (§4 command inventory; +2 Phase-5 Task-5B §F certify/supersede)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(158);
+      expect(total).toBe(160);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(158);
+      expect(live).toBe(160);
     });
   });
 

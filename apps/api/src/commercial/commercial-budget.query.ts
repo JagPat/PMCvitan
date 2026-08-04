@@ -37,7 +37,8 @@ export interface CostHeadPosition {
   /** §J `awaiting-certification` — live `BILLED_AMOUNT`, the money a vendor has CLAIMED against
    *  this head and nobody has certified. Phase 5 Task 4 (Codex round-2): the fold existed and had
    *  no caller, so a ₹40 claim against a ₹100 receipt still reported the whole ₹100 as unbilled —
-   *  the surface saying billed work is unbilled. The two buckets PARTITION the received money. */
+   *  the surface saying billed work is unbilled. The two buckets PARTITION the received money.
+ */
   awaitingCertification: Prisma.Decimal;
   /** `Σ exposure` — the buckets that measure against the budget, rounded to the money scale.
    *  Carried explicitly so the exception row's `headroom = budget - exposure` CHECK holds by

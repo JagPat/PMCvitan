@@ -66,6 +66,10 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // data-entry surface; opening the §E verification on one is pmc.
   'commercial.bill': ['pmc', 'engineer'],
   'commercial.verify': ['pmc'],
+  // Phase 5 Task 5B (§E/§F/§I) — certifying a claim and superseding a certificate. Separate from
+  // `commercial.verify` even though both are pmc today: certification creates money someone may
+  // approve, and collapsing them would let a later widening of verification widen payment too.
+  'commercial.certify': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],
