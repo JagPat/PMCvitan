@@ -111,6 +111,14 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    */
   const FOLD_INPUTS: Array<{
     field: string; owner: string; why: string;
+    /** the `CommercialBillQuery` method the fold reads this field through, when it reads one.
+     *  Unit C's addition to the closure: the second pin below extracts every `this.bills.*` call
+     *  in the fold and requires a row to CLAIM it, so a new bill-side term cannot be read without
+     *  naming its writers — the same derivation the `MaterialCommittedLine` pin performs for the
+     *  procurement contract. Root 1 of the 5A audit is why both halves exist: fixing the member a
+     *  finding names leaves its siblings, and `BILLED_AMOUNT` was exactly such a sibling — read by
+     *  this fold since Task 4 with no row here, because nothing derived the bill-side set. */
+    readVia?: string;
     writers: Array<{ file: string; method: string }>;
   }> = [
     {
@@ -155,6 +163,24 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ],
     },
     {
+      field: 'BILLED_AMOUNT', owner: 'commercial', readVia: 'billedAmountFor',
+      why: 'a claim moves money out of received-not-billed and into awaiting-certification, and it can RAISE exposure outright when it exceeds the received value — §E has not yet disputed the rate, so the excess is real exposure until it does',
+      writers: [
+        { file: 'commercial/commercial-bill.service.ts', method: 'transition' },
+        { file: 'commercial/commercial-bill.service.ts', method: 'amend' },
+        { file: 'commercial/commercial-bill.service.ts', method: 'disputeClaimsBeyondEvidence' },
+        { file: 'commercial/commercial-verification.service.ts', method: 'verify' },
+      ],
+    },
+    {
+      field: 'CERTIFIED', owner: 'commercial', readVia: 'certifiedAmountFor',
+      why: '§J `certified-payable` — certification moves money out of awaiting-certification, and 5C deductions and Task 6 approvals will subtract into the same term',
+      writers: [
+        { file: 'commercial/commercial-certification.service.ts', method: 'certify' },
+        { file: 'commercial/commercial-certification.service.ts', method: 'supersede' },
+      ],
+    },
+    {
       field: 'BUDGET', owner: 'commercial',
       why: 'authority down is a breach with no commitment write anywhere — §B calls it the most ordinary case',
       writers: [{ file: 'commercial/commercial-budget.service.ts', method: 'setBudget' }],
@@ -180,6 +206,27 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
   });
 
+  it('FOLD_INPUTS covers every bill-side fold the budget query reads', () => {
+    // The same derivation as the pin above, for the OTHER contract the fold consumes. The
+    // procurement pin reads an interface; this one reads the CALLS, because `CommercialBillQuery`
+    // hands back one map per fold rather than one row with fields.
+    const fold = readFileSync(join(SRC, 'commercial/commercial-budget.query.ts'), 'utf8');
+    const read = [...fold.matchAll(/this\.bills\.(\w+)\(/gu)].map((m) => m[1]!);
+    expect(read.length, 'no `this.bills.*` calls found — the pin is not actually reading the fold').toBeGreaterThan(0);
+    const claimed = new Set(FOLD_INPUTS.map((i) => i.readVia).filter(Boolean));
+    for (const method of new Set(read)) {
+      expect(
+        claimed.has(method),
+        `the fold reads CommercialBillQuery.${method} but no FOLD_INPUTS row claims it — add the field with its writers, so §B's raise-or-clear covers the money it moves`,
+      ).toBe(true);
+    }
+    // …and no row may claim a fold that is no longer read, which would leave a writer test
+    // passing for a term the fold dropped
+    for (const via of claimed) {
+      expect(read.includes(via!), `FOLD_INPUTS claims ${via} but the fold no longer reads it`).toBe(true);
+    }
+  });
+
   for (const input of FOLD_INPUTS) {
     for (const writer of input.writers) {
       it(`${writer.file.split('/').pop()}#${writer.method} evaluates — it writes ${input.owner}.${input.field}`, () => {
@@ -189,7 +236,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         const next = src.indexOf('\n  async ', start + 1);
         const body = src.slice(start, next === -1 ? undefined : next);
         expect(
-          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(/u.test(body),
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(/u.test(body),
           `${writer.file}#${writer.method} writes ${input.field} (${input.why}) but never re-evaluates — §B requires raise-or-clear in the SAME transaction`,
         ).toBe(true);
       });

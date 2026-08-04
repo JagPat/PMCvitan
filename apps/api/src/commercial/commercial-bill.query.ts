@@ -88,6 +88,75 @@ export class CommercialBillQuery {
   }
 
   /**
+   * `CERTIFIED(poLine)` (§J) — the certified money attributable to each purchase-order line.
+   *
+   * **It is derived from the CERTIFICATE, not from the claim lines of a certified bill.** Those two
+   * are equal today, because `certify` sets `certifiedAmount = BILLED_AMOUNT(bill)`. Reading the
+   * lines and calling the total "certified" would nevertheless be presence mistaken for provenance
+   * (§E's own root): §G bound 3 states `CERTIFIED <= BILLED_AMOUNT`, a BOUND and not an equality,
+   * so the day a partial certification is written the line-sum reports money nobody certified. The
+   * certificate is the authority for how much was certified; this fold asks it.
+   *
+   * The certificate is bill-scoped and the buckets are cost-head scoped, so the amount is
+   * attributed to each line by its share of the version it certified. With today's full
+   * certification that ratio is exactly 1 and the share IS the line amount — the division is
+   * written rather than the identity assumed, so a partial certificate lands correctly instead of
+   * over-reporting every line.
+   *
+   * A certificate counts only while it is LIVE *and* still names the live claim version. The
+   * schema warns why: "a certificate that did not name its version could outlive the claim it
+   * certified" — so the version filter is the same `LIVE_VERSION` rule every other fold here uses,
+   * and the certificate is matched to it rather than merely to its bill.
+   */
+  async certifiedAmountFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: 'material' | 'labour',
+    poLineIds: readonly string[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const out = new Map<string, Prisma.Decimal>();
+    for (const id of poLineIds) out.set(id, ZERO);
+    if (poLineIds.length === 0) return out;
+    const rows = await tx.vendorBillLine.findMany({
+      where: {
+        projectId,
+        ...(kind === 'material' ? { poLineId: { in: [...poLineIds] } } : { labourPoLineId: { in: [...poLineIds] } }),
+        version: { is: LIVE_VERSION },
+      },
+      select: { poLineId: true, labourPoLineId: true, amount: true, versionId: true },
+    });
+    if (rows.length === 0) return out;
+
+    const certificates = await tx.billCertificate.findMany({
+      where: { projectId, supersededAt: null, versionId: { in: [...new Set(rows.map((r) => r.versionId))] } },
+      select: { versionId: true, certifiedAmount: true },
+    });
+    if (certificates.length === 0) return out;
+    const certifiedOf = new Map(certificates.map((c) => [c.versionId, c.certifiedAmount]));
+
+    // the DENOMINATOR is the whole certified version, not just its lines on the cost head being
+    // folded: the certificate was issued against the complete claim, so a line's share of it must
+    // be measured against the same complete claim or two heads would each take the full amount.
+    const versionTotals = new Map<string, Prisma.Decimal>();
+    for (const line of await tx.vendorBillLine.findMany({
+      where: { projectId, versionId: { in: [...certifiedOf.keys()] } },
+      select: { versionId: true, amount: true },
+    })) {
+      versionTotals.set(line.versionId, (versionTotals.get(line.versionId) ?? ZERO).add(line.amount));
+    }
+
+    for (const r of rows) {
+      const certified = certifiedOf.get(r.versionId);
+      if (!certified) continue;
+      const total = versionTotals.get(r.versionId) ?? ZERO;
+      if (total.isZero()) continue;
+      const key = kind === 'material' ? r.poLineId! : r.labourPoLineId!;
+      out.set(key, (out.get(key) ?? ZERO).add(certified.mul(r.amount).div(total)));
+    }
+    return out;
+  }
+
+  /**
    * `BILLED_TAX(poLine)` and `BILLED_FREIGHT(poLine)` (§0) — the same LIVE rule, in the two money
    * components §E caps PRO-RATA rather than comparing whole.
    *

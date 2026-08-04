@@ -132,6 +132,12 @@ export interface CostHeadPositionDto {
    *  `receivedNotBilled` this PARTITIONS the received money, so a claim arriving changes WHERE the
    *  exposure sits and not how much there is (Phase 5 Task 4). */
   awaitingCertification: string;
+  /** §J `certified-payable` — money a certifier has turned into an obligation anyone may approve.
+   *  §J defines it as `NET_PAYABLE − APPROVED`; deductions (5C) and approvals (Task 6) each
+   *  subtract into it when their facts arrive. Certification MOVES money here out of
+   *  `awaitingCertification` rather than adding to the total, so a surface still reporting a
+   *  certified claim as awaiting certification is saying the act has not happened after it has. */
+  certifiedPayable: string;
   /** `BUDGET − Σ exposure`, NEGATIVE when over-committed; null when unbudgeted */
   headroom: string | null;
   /** the OPEN over-budget exception on this head, if one stands right now */

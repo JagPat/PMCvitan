@@ -14,6 +14,7 @@ import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialBillQuery } from './commercial-bill.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialVerificationService } from './commercial-verification.service';
+import { CommercialBillService } from './commercial-bill.service';
 import type { CertifyBillInput, GrantSodExceptionInput, SupersedeCertificateInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -56,6 +57,10 @@ export class CommercialCertificationService {
     private readonly bills: CommercialBillQuery,
     private readonly measured: CommercialMeasurementQuery,
     private readonly verification: CommercialVerificationService,
+    // §B's mover rule — certification moves money between §J buckets, so it discharges the
+    // raise-or-clear obligation through the SAME public helper verification uses, rather than
+    // growing a second copy of the fold's closure rule.
+    private readonly billService: CommercialBillService,
     // §I's approver standing is an ORGS question — `Membership`/`OrgMembership` are orgs-owned and
     // the owner states the rule. `commercial.workflowParticipants` already declares this edge.
     private readonly orgs: OrgsParticipant,
@@ -287,6 +292,18 @@ export class CommercialCertificationService {
         }
 
         await this.cas(tx, projectId, input.billId, 'verified', 'certified');
+        // §B — the §J fold now READS this certificate, so certifying is a headroom MOVER and owes
+        // the same raise-or-clear the fold's other inputs owe. It is evaluated ONCE, at the end,
+        // after every write this act makes: an intermediate evaluation would read a state that
+        // never existed at commit, and the register is append-only.
+        //
+        // With a FULL certification the exposure total is unchanged — the money moves from
+        // `awaiting-certification` into `certified-payable` — so this ordinarily writes nothing.
+        // That is the correct outcome, not a reason to skip the call: the mover set is derived
+        // from what the fold reads (`FOLD_INPUTS`), and a term that can move exposure the day a
+        // partial certificate or a §H deduction lands must discharge the obligation now, while
+        // the person adding that term is not the one who has to remember.
+        await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.certify', entity: 'BillCertificate', entityId: certificate.id,
         });
@@ -457,6 +474,9 @@ export class CommercialCertificationService {
         });
         if (count === 0) throw new ConflictException('This certificate was superseded concurrently — reload and retry');
         await this.cas(tx, projectId, input.billId, 'certified', 'verified');
+        // §B — the twin of `certify`'s evaluation: superseding puts the money back into
+        // `awaiting-certification`, so the same mover obligation applies in the same transaction.
+        await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.certificate.supersede', entity: 'BillCertificate', entityId: live.id,
         });
