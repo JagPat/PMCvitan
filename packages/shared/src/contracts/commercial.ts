@@ -61,6 +61,14 @@ export const COMMERCIAL_COMMANDS = [
   // excuses it is the authority's. One command taking an `approverId` cannot tell them apart, and
   // that is exactly how an override becomes a name the certifier typed.
   'commercial.sod.grant',
+  // Phase 5 Task 5C (§H) — WITHHOLD money from a certified payable, and GIVE PART OF IT BACK.
+  // Two commands, and a release is not an "undo": the deduction stays as history and the release
+  // is its own attributable row, because a withholding that could be retracted in place is a
+  // withholding nobody can audit. Their authorities are declared separately for the same reason
+  // `certify` and `sod.grant` are — withholding a vendor's money and returning it are different
+  // acts, and a later widening of one must not silently widen the other.
+  'commercial.deduction.record',
+  'commercial.deduction.release',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -82,6 +90,10 @@ export const COMMERCIAL_QUERIES = [
   // verification triple this is NOT derived: a certificate is a FACT that was written, and
   // recomputing it would be recomputing a decision.
   'commercial.certificate',
+  // Phase 5 Task 5C — the §H ledger for one claim, with the `NET_PAYABLE` it produces. The
+  // withheld and net figures are FOLDS computed on every call: §H forbids a stored balance column,
+  // so there is nothing else they could be.
+  'commercial.deductions',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -487,4 +499,103 @@ export interface CertificateDto {
   acceptanceConsumption: CertifiedConsumptionDto[];
   /** the frozen labour evidence — what the measurement-correction floor refuses against */
   measurementConsumption: CertifiedConsumptionDto[];
+}
+
+// ── Phase 5 Task 5C (§H) — the DEDUCTION ledger ─────────────────────────────────────────────
+
+/**
+ * The deduction types this task ships. `advance-recovery` is deliberately absent: it folds against
+ * an `advance` row created when the advance is PAID, so the enum member arrives in Task 6 with the
+ * row that caps it. §0b's "every declared member is in the fold" rule then holds at BOTH stages,
+ * rather than being briefly false while a declared type had nothing to fold against.
+ */
+export const DEDUCTION_TYPES = ['retention', 'penalty', 'other'] as const;
+export type DeductionType = (typeof DEDUCTION_TYPES)[number];
+
+/** The types that must carry a reason. A `retention` is a contract term; these are judgements. */
+export const DEDUCTION_TYPES_REQUIRING_REASON: readonly DeductionType[] = ['penalty', 'other'];
+
+/** One withholding against a certified payable. Append-only: corrected by a release, never edited. */
+export interface BillDeductionDto {
+  id: string;
+  certificateId: string;
+  billId: string;
+  type: DeductionType;
+  /** decimal STRING — §A forbids a float64 round trip */
+  amount: string;
+  reason: string | null;
+  recordedAt: string;
+  recordedById: string;
+  /** `amount` less everything released against it — a FOLD, never a stored column */
+  unreleased: string;
+  releases: BillDeductionReleaseDto[];
+}
+
+/** Giving back part of a withholding. Its own row, its own authority, its own attribution. */
+export interface BillDeductionReleaseDto {
+  id: string;
+  deductionId: string;
+  amount: string;
+  reason: string;
+  releasedAt: string;
+  releasedById: string;
+}
+
+/** The `commercial.deductions` read: one bill's ledger and the payable it produces. */
+export interface BillDeductionLedgerDto {
+  billId: string;
+  /** null when no certificate stands — there is nothing to withhold from */
+  certificateId: string | null;
+  certifiedAmount: string | null;
+  deductions: BillDeductionDto[];
+  /** Σ unreleased withholdings against the live certificate */
+  withheld: string;
+  /** §G bound 4 — `CERTIFIED` less unreleased deductions. Never negative: the floor is enforced on
+   *  the deduction write, so no fold ever has to clamp it. */
+  netPayable: string | null;
+  /** the status §F derives from the three folds, which is also what is STORED on the bill */
+  derivedStatus: VendorBillStatus;
+}
+
+/**
+ * An exact decimal, structurally. §A forbids money through float64 end to end, and that includes
+ * the COMPARISONS a status is derived from — `netPayable === paid` on two JS numbers is the same
+ * round trip the money columns exist to avoid, one layer up. `Prisma.Decimal` satisfies this, and
+ * the shared package cannot import it, so the contract is the shape rather than the class.
+ */
+export interface ExactAmount<T = unknown> {
+  equals(other: T): boolean;
+  isZero(): boolean;
+}
+
+/**
+ * §F — the payment status DERIVED from the three folds. One function, so the writers that move any
+ * fold (a deduction, a release, and Task 6's approvals, payments and reversals) cannot disagree
+ * about what the state means.
+ *
+ * **`netPayable === paid` is evaluated FIRST, and that ordering is load-bearing.** An earlier plan
+ * revision put `approved === 0` first and made `paid === approved === netPayable` terminal, which
+ * strands a fully-offset certificate forever: withhold ₹100 against a ₹100 certificate and
+ * `netPayable = approved = paid = 0`, so the `approved === 0` arm wins and the bill sits at
+ * `certified` — while approval and payment rows are STRICTLY POSITIVE (§H), so no legal row exists
+ * that anyone could write to advance it. A bill with nothing left to pay is settled.
+ *
+ * **And it never invents an approval.** Deriving `approved-for-payment` from `netPayable > approved`
+ * would put a bill into the POST-approval lifecycle with `approved = 0` — a status that overstates
+ * authority, which is worse than one that understates cash, because the first invites a payment and
+ * the second only delays one.
+ *
+ * At the Task-5C tree `approved` and `paid` are always zero, so only the first two arms are
+ * reachable. The whole table is written anyway: Task 6 supplies the two folds and must not have to
+ * re-derive the rule, which is exactly the second-site drift §0 exists to prevent.
+ */
+export function deriveBillStatus<T extends ExactAmount<T>>(folds: {
+  netPayable: T; approved: T; paid: T;
+}): Extract<VendorBillStatus, 'certified' | 'approved-for-payment' | 'part-paid' | 'paid'> {
+  const { netPayable, approved, paid } = folds;
+  if (netPayable.equals(paid)) return 'paid';
+  if (approved.isZero()) return 'certified';
+  if (paid.equals(approved)) return 'certified';
+  if (paid.isZero()) return 'approved-for-payment';
+  return 'part-paid';
 }

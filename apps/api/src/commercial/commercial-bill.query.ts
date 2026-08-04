@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { BILL_STATUSES_NOT_LIVE } from '@vitan/shared';
+import { attributeByLineShare, type ClaimLineShare } from './certificate-share';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -134,26 +135,59 @@ export class CommercialBillQuery {
     if (certificates.length === 0) return out;
     const certifiedOf = new Map(certificates.map((c) => [c.versionId, c.certifiedAmount]));
 
-    // the DENOMINATOR is the whole certified version, not just its lines on the cost head being
-    // folded: the certificate was issued against the complete claim, so a line's share of it must
-    // be measured against the same complete claim or two heads would each take the full amount.
-    const versionTotals = new Map<string, Prisma.Decimal>();
+    // Task 5C extracted the attribution itself into `attributeByLineShare`: `WITHHELD` is
+    // attributed by the SAME rule, and a second copy of it would disagree the first time either
+    // changed. The denominator rule and its reasoning now live at that one site.
+    return attributeByLineShare(
+      rows.map((r) => ({
+        key: kind === 'material' ? r.poLineId! : r.labourPoLineId!,
+        amount: r.amount,
+        versionId: r.versionId,
+      })),
+      certifiedOf,
+      await this.versionTotals(tx, projectId, [...certifiedOf.keys()]),
+      out,
+    );
+  }
+
+  /** Σ of every line of the named versions — the denominator a bill-scoped share is measured by. */
+  async versionTotals(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    versionIds: readonly string[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const totals = new Map<string, Prisma.Decimal>();
+    if (versionIds.length === 0) return totals;
     for (const line of await tx.vendorBillLine.findMany({
-      where: { projectId, versionId: { in: [...certifiedOf.keys()] } },
+      where: { projectId, versionId: { in: [...versionIds] } },
       select: { versionId: true, amount: true },
     })) {
-      versionTotals.set(line.versionId, (versionTotals.get(line.versionId) ?? ZERO).add(line.amount));
+      totals.set(line.versionId, (totals.get(line.versionId) ?? ZERO).add(line.amount));
     }
+    return totals;
+  }
 
-    for (const r of rows) {
-      const certified = certifiedOf.get(r.versionId);
-      if (!certified) continue;
-      const total = versionTotals.get(r.versionId) ?? ZERO;
-      if (total.isZero()) continue;
-      const key = kind === 'material' ? r.poLineId! : r.labourPoLineId!;
-      out.set(key, (out.get(key) ?? ZERO).add(certified.mul(r.amount).div(total)));
-    }
-    return out;
+  /** The LIVE claim lines drawing on a set of PO lines — the rows both bill-scoped folds share. */
+  async liveLineSharesFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: 'material' | 'labour',
+    poLineIds: readonly string[],
+  ): Promise<ClaimLineShare[]> {
+    if (poLineIds.length === 0) return [];
+    const rows = await tx.vendorBillLine.findMany({
+      where: {
+        projectId,
+        ...(kind === 'material' ? { poLineId: { in: [...poLineIds] } } : { labourPoLineId: { in: [...poLineIds] } }),
+        version: { is: LIVE_VERSION },
+      },
+      select: { poLineId: true, labourPoLineId: true, amount: true, versionId: true },
+    });
+    return rows.map((r) => ({
+      key: kind === 'material' ? r.poLineId! : r.labourPoLineId!,
+      amount: r.amount,
+      versionId: r.versionId,
+    }));
   }
 
   /**

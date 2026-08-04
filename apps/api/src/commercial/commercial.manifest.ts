@@ -38,12 +38,20 @@ export const commercialManifest: ModuleManifest = {
     // bounds and the withdrawal guards read, and every one of those readers is commercial.
     'billCertificate', 'certifiedAcceptanceConsumption', 'certifiedMeasurementConsumption',
     'sodException', 'sodGrant',
+    // Phase 5 Task 5C (§H) — the deduction ledger. Owned AND read-encapsulated together: a model
+    // that is owned but not read-encapsulated produces no `cross-module-read` finding when a
+    // foreign module reads it, which is the gap the Phase-4 correction-4 pin was added for.
+    'billDeduction', 'billDeductionRelease',
   ],
   readEncapsulated: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
     'vendorBill', 'vendorBillVersion', 'vendorBillLine', 'billVerification',
     'billCertificate', 'certifiedAcceptanceConsumption', 'certifiedMeasurementConsumption',
     'sodException', 'sodGrant',
+    // Phase 5 Task 5C (§H) — the deduction ledger. Owned AND read-encapsulated together: a model
+    // that is owned but not read-encapsulated produces no `cross-module-read` finding when a
+    // foreign module reads it, which is the gap the Phase-4 correction-4 pin was added for.
+    'billDeduction', 'billDeductionRelease',
   ],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the
@@ -77,6 +85,9 @@ export const commercialManifest: ModuleManifest = {
     'POST /projects/:projectId/commercial/bills/certify',
     'POST /projects/:projectId/commercial/bills/sod-grant',
     'POST /projects/:projectId/commercial/certificates/supersede',
+    // Phase 5 Task 5C (§H) — the deduction ledger's two writes
+    'POST /projects/:projectId/commercial/deductions/record',
+    'POST /projects/:projectId/commercial/deductions/release',
     'POST /projects/:projectId/commercial/bills/amend',
     'POST /projects/:projectId/commercial/bills/reject',
   ],

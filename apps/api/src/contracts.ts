@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { parseCivilDate } from './common/civil-date';
+import { DEDUCTION_TYPES } from '@vitan/shared';
 
 export const sessionSchema = z.object({
   role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']),
@@ -1477,3 +1478,40 @@ export const supersedeCertificateSchema = z
   .object({ billId: z.string().min(1), reason: z.string().trim().min(1).max(1000) })
   .strict();
 export type SupersedeCertificateInput = z.infer<typeof supersedeCertificateSchema>;
+
+/**
+ * §H — WITHHOLD money from a certified payable.
+ *
+ * The amount is a decimal STRING and is refused at zero or below HERE as well as at PostgreSQL:
+ * the row TYPE carries direction, so a negative encodes it twice and the two encodings disagree —
+ * a `-10` retention would RAISE a ₹100 certificate to ₹110, a deduction that pays out more, sealed
+ * append-only so the inflated payable could not be corrected in place. §0b's sign constraint.
+ *
+ * `reason` is optional in the SHAPE and mandatory for `penalty` and `other` in the service and at
+ * PostgreSQL. A retention is a contract term and needs no argument; the other two are judgements,
+ * and the discriminating rule lives where the type is known rather than in a union that would have
+ * to be restated on every future member.
+ */
+export const recordDeductionSchema = z
+  .object({
+    billId: z.string().min(1),
+    type: z.enum(DEDUCTION_TYPES),
+    amount: z.string().trim().min(1).max(32),
+    reason: z.string().trim().min(1).max(1000).nullish(),
+  })
+  .strict();
+export type RecordDeductionInput = z.infer<typeof recordDeductionSchema>;
+
+/**
+ * §H — give back part of a withholding. A release is its OWN append-only row, never an edit of the
+ * deduction, so the reason is required: it returns money somebody withheld, and an unexplained
+ * release is indistinguishable from a mistake.
+ */
+export const releaseDeductionSchema = z
+  .object({
+    deductionId: z.string().min(1),
+    amount: z.string().trim().min(1).max(32),
+    reason: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export type ReleaseDeductionInput = z.infer<typeof releaseDeductionSchema>;

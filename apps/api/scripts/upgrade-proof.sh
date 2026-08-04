@@ -2169,6 +2169,28 @@ $PSQL >/dev/null -c "INSERT INTO \"BudgetException\"(\"id\",\"projectId\",\"cost
   || { printf 'FAILED  %s\n' "commercial T4 R3-F1: the claim-raised exception was rejected"; FAIL=1; }
 $PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"id\"='UPT4-BXCL'" >/dev/null
 
+# ── Phase 5 Task 5C (§H) — the deduction ledger is a purely additive, ROW-FREE capability ────
+assert "commercial T5C: both ledger tables exist" \
+  "SELECT ((to_regclass('\"BillDeduction\"') IS NOT NULL) AND (to_regclass('\"BillDeductionRelease\"') IS NOT NULL))::text;" \
+  "true"
+assert "commercial T5C: a legacy database upgrades with an EMPTY ledger — no withholding is invented" \
+  "SELECT (SELECT COUNT(*) FROM \"BillDeduction\")::text || '/' || (SELECT COUNT(*) FROM \"BillDeductionRelease\")::text;" \
+  "0/0"
+# the seals, over a hostile writer. Each is the DATABASE half of a rule the service also holds.
+assert_rejects "commercial T5C: a NEGATIVE deduction (the row TYPE carries direction; a negative RAISES the payable)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NEG','p1','UP5C-CERT','UPT4-B3','retention',-10.00,'USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: a deduction of an UNKNOWN type (advance-recovery ships in Task 6 with the row that caps it)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-TYP','p1','UP5C-CERT','UPT4-B3','advance-recovery',10.00,'USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: a PENALTY with no reason (a judgement nobody can read is not one)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NR','p1','UP5C-CERT','UPT4-B3','penalty',10.00,'USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: a reason of pure WHITESPACE (presence is not justification)" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-WS','p1','UP5C-CERT','UPT4-B3','other',10.00,E' \t\n ','USER-1','UP45-CMD')"
+assert_rejects "commercial T5C: a NEGATIVE release" \
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RNEG','p1','UP5C-DED',-1.00,'why','USER-1','UP45-CMD')"
+# and the WIDENED biconditional still refuses BOTH directions it was written for
+assert_rejects "commercial T5C: a bill moved OFF the post-certification set while a live certificate stands" \
+  "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"projectId\"='p1' AND \"id\"='UPT4-B3'"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller

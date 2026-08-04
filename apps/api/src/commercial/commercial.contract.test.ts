@@ -53,6 +53,8 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.bill.verify': { file: 'commercial/commercial-verification.service.ts', needle: "'commercial.bill.verify'" },
     'commercial.bill.certify': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.bill.certify'" },
     'commercial.sod.grant': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.sod.grant'" },
+    'commercial.deduction.record': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.record'" },
+    'commercial.deduction.release': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.release'" },
     'commercial.certificate.supersede': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.certificate.supersede'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
@@ -64,6 +66,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.bill': "Get('commercial/bills/:billId')",
     'commercial.verification': "Get('commercial/bills/:billId/verification')",
     'commercial.certificate': "Get('commercial/bills/:billId/certificate')",
+    'commercial.deductions': "Get('commercial/bills/:billId/deductions')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -181,6 +184,14 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ],
     },
     {
+      field: 'WITHHELD', owner: 'commercial', readVia: 'withheldAmountFor',
+      why: '§H — withheld money is not payable, so a deduction LOWERS §J `certified-payable` and can CLEAR an open over-budget exception; a release raises it again',
+      writers: [
+        { file: 'commercial/commercial-deduction.service.ts', method: 'record' },
+        { file: 'commercial/commercial-deduction.service.ts', method: 'release' },
+      ],
+    },
+    {
       field: 'BUDGET', owner: 'commercial',
       why: 'authority down is a breach with no commitment write anywhere — §B calls it the most ordinary case',
       writers: [{ file: 'commercial/commercial-budget.service.ts', method: 'setBudget' }],
@@ -206,18 +217,23 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
   });
 
-  it('FOLD_INPUTS covers every bill-side fold the budget query reads', () => {
+  it('FOLD_INPUTS covers every commercial-owned fold the budget query reads', () => {
     // The same derivation as the pin above, for the OTHER contract the fold consumes. The
     // procurement pin reads an interface; this one reads the CALLS, because `CommercialBillQuery`
     // hands back one map per fold rather than one row with fields.
     const fold = readFileSync(join(SRC, 'commercial/commercial-budget.query.ts'), 'utf8');
-    const read = [...fold.matchAll(/this\.bills\.(\w+)\(/gu)].map((m) => m[1]!);
-    expect(read.length, 'no `this.bills.*` calls found — the pin is not actually reading the fold').toBeGreaterThan(0);
+    // Task 5C widened this from `this.bills.*` to every COMMERCIAL-OWNED query the fold reads.
+    // The closure's own root applies to itself: naming one owner would leave the next one blind,
+    // exactly as naming `CERTIFIED` and leaving `BILLED_AMOUNT` unclaimed did. The other four
+    // owners the fold reads (procurement, labour, inventory, measurement) are covered by the
+    // interface pin above, which derives their fields from the read contract itself.
+    const read = [...fold.matchAll(/this\.(?:bills|deductions)\.(\w+)\(/gu)].map((m) => m[1]!);
+    expect(read.length, 'no commercial-owned fold calls found — the pin is not actually reading the fold').toBeGreaterThan(0);
     const claimed = new Set(FOLD_INPUTS.map((i) => i.readVia).filter(Boolean));
     for (const method of new Set(read)) {
       expect(
         claimed.has(method),
-        `the fold reads CommercialBillQuery.${method} but no FOLD_INPUTS row claims it — add the field with its writers, so §B's raise-or-clear covers the money it moves`,
+        `the fold reads a commercial-owned ${method} but no FOLD_INPUTS row claims it — add the field with its writers, so §B's raise-or-clear covers the money it moves`,
       ).toBe(true);
     }
     // …and no row may claim a fold that is no longer read, which would leave a writer test
@@ -236,7 +252,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         const next = src.indexOf('\n  async ', start + 1);
         const body = src.slice(start, next === -1 ? undefined : next);
         expect(
-          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(/u.test(body),
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.rederive\(/u.test(body),
           `${writer.file}#${writer.method} writes ${input.field} (${input.why}) but never re-evaluates — §B requires raise-or-clear in the SAME transaction`,
         ).toBe(true);
       });
