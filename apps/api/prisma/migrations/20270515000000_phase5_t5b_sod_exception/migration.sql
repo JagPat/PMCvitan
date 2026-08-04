@@ -376,8 +376,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS "SodGrant_projectId_id_key" ON "SodGrant"("pro
 -- blocked any replacement grant for v2, and a legitimate two-person certification could never
 -- proceed without someone editing rows out of band. Two live grants for two different versions is
 -- not ambiguity: only the LIVE version's grant is usable, and the seal checks that.
+-- Codex round-9 P2 — and the APPROVER belongs in the scope too, for the same reason the version
+-- does. If an unconsumed grant's approver is later downgraded, the seal correctly refuses to spend
+-- it and the row stays live forever; without `approverId` here no OTHER pmc could issue a
+-- replacement, and a legitimate certification was stuck short of editing rows out of band. The
+-- stale row is inert rather than dangerous: standing is checked WHEN THE GRANT IS SPENT, so a grant
+-- from someone who has lost it can never be consumed. What the index must not do is let that inert
+-- row block a valid one.
 CREATE UNIQUE INDEX IF NOT EXISTS "SodGrant_live_scope_key"
-  ON "SodGrant"("projectId", "billId", "versionId", "rule", "actorId") WHERE "consumedAt" IS NULL;
+  ON "SodGrant"("projectId", "billId", "versionId", "rule", "actorId", "approverId") WHERE "consumedAt" IS NULL;
 CREATE INDEX IF NOT EXISTS "SodGrant_projectId_billId_idx" ON "SodGrant"("projectId", "billId");
 
 DO $$ BEGIN
@@ -440,6 +447,65 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ── The grant carries the SAME seals its exception does ───────────────────────────────────────
+--
+-- Codex rounds 8 and 9, five findings, EVERY ONE of them on this table. That is the signal: round 7
+-- introduced `SodGrant` to close a finding and gave it CHECKs and an append-only trigger, while the
+-- row it accompanies — `SodException` — had an insert-side seal, receipt provenance and standing
+-- validation. Each round then re-derived one of those for the grant, one at a time.
+--
+-- So this is the whole set at once, stated as one rule: **a grant is a trusted authority row, and
+-- every seal that applies to the exception applies to it.** Validated at INSERT (round-9 P2: the
+-- only trigger was BEFORE UPDATE, so a direct writer could park a live grant with no standing and
+-- no receipt, and simply wait for that user to gain standing later) and again on the CONSUME
+-- transition (round-9 P2: a stray UPDATE could burn an approver's single-use authority against an
+-- unrelated certificate, leaving the ledger saying it was exercised when no override consumed it).
+--
+-- DEFERRED, because a grant and its command receipt are written in ONE transaction and the receipt
+-- is completed after the row exists.
+CREATE OR REPLACE FUNCTION phase5_t5_grant_sealed() RETURNS trigger AS $$
+BEGIN
+  -- (a) the grant is the APPROVER'S OWN act: a `commercial.sod.grant` receipt, succeeded, whose
+  -- actor IS the approver and whose result names this grant
+  IF NOT EXISTS (
+    SELECT 1 FROM "CommandExecution" ce
+     WHERE ce."projectId" = NEW."projectId" AND ce."id" = NEW."sourceCommandId"
+       AND ce."commandType" = 'commercial.sod.grant'
+       AND ce."status" = 'succeeded'
+       AND ce."actorId" = NEW."approverId"
+       AND ce."resultRef" = NEW."id"
+  ) THEN
+    RAISE EXCEPTION 'Grant % is not the act of the approver it names — §I authority is a command someone ran, not a row someone wrote (%)', NEW."id", NEW."approverId";
+  END IF;
+
+  -- (b) the approver held standing WHEN THE GRANT WAS MADE. The service checks this too; this is
+  -- the database twin, and it is what stops a live grant being parked by someone with no authority
+  -- against the day they acquire some.
+  IF NOT phase5_t5_pmc_standing(NEW."projectId", NEW."approverId") THEN
+    RAISE EXCEPTION 'Grant % names % as its authority, who does not hold pmc standing on this project', NEW."id", NEW."approverId";
+  END IF;
+
+  -- (c) a CONSUMED grant names a certificate that actually rests on it. Without this the consume
+  -- transition is unguarded: a stray UPDATE burns the authority against an unrelated certificate.
+  IF NEW."consumedByCertificateId" IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM "SodException" s
+      JOIN "BillCertificate" c ON c."projectId" = s."projectId" AND c."id" = s."certificateId"
+     WHERE s."projectId" = NEW."projectId" AND s."grantId" = NEW."id"
+       AND s."certificateId" = NEW."consumedByCertificateId"
+       AND s."rule" = NEW."rule" AND s."actorId" = NEW."actorId" AND s."approverId" = NEW."approverId"
+       AND c."billId" = NEW."billId" AND c."versionId" = NEW."versionId"
+  ) THEN
+    RAISE EXCEPTION 'Grant % was stamped consumed by certificate %, which carries no matching override — an authority is spent BY the act it excuses', NEW."id", NEW."consumedByCertificateId";
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "SodGrant_sealed" ON "SodGrant";
+CREATE CONSTRAINT TRIGGER "SodGrant_sealed"
+  AFTER INSERT OR UPDATE ON "SodGrant" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t5_grant_sealed();
 
 DROP TRIGGER IF EXISTS "SodGrant_append_only" ON "SodGrant";
 CREATE TRIGGER "SodGrant_append_only" BEFORE UPDATE OR DELETE ON "SodGrant"

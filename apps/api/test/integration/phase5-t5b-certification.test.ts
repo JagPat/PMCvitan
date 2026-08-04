@@ -1936,33 +1936,17 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // mint a grant naming any approver, and the entire two-step design would certify a forgery —
     // the same defect the receipt check had already closed for the exception, surviving in the
     // artifact that closure introduced.
-    await t.prisma.$executeRawUnsafe(
+    // Round 9 moved this refusal EARLIER, and that is the fix rather than a weakened probe. The
+    // grant now carries the same seals its exception does — validated at INSERT, not only when a
+    // certificate tries to spend it — so a forged authority row cannot be parked in the table at
+    // all, waiting for its named approver to acquire standing later. Arm (c)'s grant clause remains
+    // as the second line of defence; this is the first.
+    await expect(t.prisma.$executeRawUnsafe(
       `INSERT INTO "SodGrant" ("id","projectId","billId","versionId","rule","actorId","approverId","reason","sourceCommandId")
        VALUES ('forged-grant',$1,$2,$3,'evidence-recorder-may-not-certify',$4,$5,'nobody granted this',$6)`,
       projectId, billId, version.id, f.memberUser.id, approver, cmd.id,
-    );
-    await expect(t.prisma.$transaction([
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('forged-cert',$1,$2,$3,100,$4,'forged-cert-cmd')`, projectId, billId, version.id, f.memberUser.id,
-      ),
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
-         VALUES ('forged-ev',$1,'forged-cert',$2,100)`, projectId, acceptance.id,
-      ),
-      t.prisma.$executeRawUnsafe(
-        `UPDATE "SodGrant" SET "consumedAt"=now(), "consumedByCertificateId"='forged-cert' WHERE "projectId"=$1 AND "id"='forged-grant'`, projectId,
-      ),
-      t.prisma.$executeRawUnsafe(
-        `INSERT INTO "SodException" ("id","projectId","certificateId","grantId","rule","actorId","approverId","reason","sourceCommandId")
-         VALUES ('forged-sod',$1,'forged-cert','forged-grant','evidence-recorder-may-not-certify',$2,$3,'nobody granted this','forged-cert-cmd')`,
-        projectId, f.memberUser.id, approver,
-      ),
-      t.prisma.$executeRawUnsafe(
-        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
-        projectId, billId,
-      ),
-    ])).rejects.toThrow(/no attributable `evidence-recorder-may-not-certify` exception/u);
+    )).rejects.toThrow(/not the act of the approver it names/u);
+    expect(await t.prisma.sodGrant.count({ where: { projectId } })).toBe(0);
 
     // precision: the SERVICE path is accepted, because there the grant carries a real
     // `commercial.sod.grant` receipt whose actor IS the approver and whose resultRef is the grant.
@@ -2001,6 +1985,40 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     expect(cert.sodException?.grantId).toBe(fresh.id);
     // …and the stale one is still unspent: it authorised a claim that no longer stands
     expect((await t.prisma.sodGrant.count({ where: { projectId, consumedAt: null } }))).toBe(1);
+  });
+
+  it('R9 (§I): the grant carries the SAME seals its exception does — insert, standing, and consume', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100', pmc(projectId));
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const grant = await grantOverride(projectId, billId, approver, f.memberUser.id);
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.sodException?.grantId).toBe(grant.id);
+
+    // (c) the CONSUME transition is sealed. Round 9's third finding: a stray UPDATE could burn an
+    // approver's single-use authority against an unrelated certificate, leaving the ledger saying
+    // the authority was exercised when no override consumed it.
+    const second = await grantOverride(projectId, billId, approver, f.strangerUser.id, 'a different actor');
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "SodGrant" SET "consumedAt"=now(), "consumedByCertificateId"=$2 WHERE "projectId"=$1 AND "id"=$3`,
+      projectId, cert.id, second.id,
+    )).rejects.toThrow(/carries no matching override/u);
+
+    // (b) an approver who LOSES standing cannot block the claim: another pmc may issue a
+    // replacement, because the live-grant scope includes the approver. Round 9's second finding —
+    // the stale row is inert (standing is checked when a grant is SPENT) but it must not be a lock.
+    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: approver } }, data: { role: 'contractor' },
+    });
+    const third = await secondPmc(projectId);
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: third } }, data: { role: 'pmc' },
+    });
+    await expect(grantOverride(projectId, billId, third, f.memberUser.id, 'the other pmc authorises'))
+      .resolves.toBeDefined();
   });
 
   it('PROBE 15 (§0): the four new tables are closed under the shared-database reset', async () => {

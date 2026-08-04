@@ -1,12 +1,13 @@
 # PR #281 — architectural convergence audit (Phase 5 Task 5B unit B, §I's override)
 
-Two finding-bearing heads, five findings. Per `CLAUDE.md` this stops being another isolated patch:
+Three finding-bearing heads, eight findings. Per `CLAUDE.md` this stops being another isolated patch:
 it names the ROOT the findings share and leaves a mechanical closure behind.
 
 | Head | Findings | |
 |---|---|---|
 | `b64d027` | 3 | 2×P1, 1×P2 — the approver never acted; matching ids are not provenance; a probe that described an assertion it never made |
 | `d360445` | 2 | 1×P1, 1×P2 — **the grant needed the receipt rule the same correction had just introduced**; the live-grant unique excluded the version |
+| `8153d4c` | 3 | 3×P2 — **all three on `SodGrant` again**: no insert-side seal, no replacement path when an approver loses standing, an unsealed consume transition |
 
 ## The root: a correction creates a new artifact, and the rule it was correcting does not travel
 
@@ -35,6 +36,32 @@ The mechanical closure, stated as a question to ask of every correction:
 
 Round 8's `AND EXISTS (... gce ...)` clause carries exactly that sentence in its comment, so the
 next reader sees the rule rather than re-deriving it from two other clauses.
+
+## Round 9 made the root measurable: FIVE of the last FIVE findings were on one table
+
+Rounds 8 and 9 produced five findings and every one of them is about `SodGrant` — the table round 7
+introduced to close a finding. Round 7 gave it CHECKs and an append-only trigger. The row it
+accompanies, `SodException`, already had an insert-side seal, receipt provenance and standing
+validation. Each subsequent round then re-derived ONE of those for the grant, one at a time:
+
+| Round | What the grant was missing |
+|---|---|
+| 8 | receipt provenance (`sourceCommandId` was a bare FK) |
+| 8 | the version in its live-scope unique |
+| 9 | an INSERT-side seal at all (only `BEFORE UPDATE OR DELETE`) |
+| 9 | a replacement path when its approver loses standing |
+| 9 | a sealed CONSUME transition |
+
+That is the root of this PR stated as a measurement rather than a diagnosis. The correction is not a
+sixth patch: **a grant is a trusted authority row, and every seal that applies to the exception
+applies to it.** One `phase5_t5_grant_sealed` now validates the whole row at insert AND on the
+consume transition, and the live-scope unique includes the approver so an inert stale grant cannot
+lock out a valid one.
+
+The closure the earlier rounds reached for — *does this fix introduce a new row? then every seal
+that applies to what it accompanies applies to it too* — was right, and stating it was not enough.
+What makes it operational is doing the enumeration ONCE, against the accompanying row, rather than
+waiting for a reviewer to name the seals one per round.
 
 ## The second root: proving a thing is WELL-FORMED is not proving it is REAL
 
@@ -85,7 +112,7 @@ reason too.
 | Gate | Result |
 |---|---|
 | `pnpm check` | EXIT 0 — web 543/543, API 724/724 |
-| `phase5-t5b-certification.test.ts` | **45/45** on live PostgreSQL |
+| `phase5-t5b-certification.test.ts` | **46/46** on live PostgreSQL |
 | Reproduce-first, round 7 | the grant path reverted → the forged-approver certification commits |
 | Reproduce-first, round 8 | the grant-receipt clause removed → the forged grant is accepted and the certificate commits; the version dropped from the unique → the amended claim can never be authorised again |
 | `upgrade-proof.sh` | PASSED — the grant carries its own approver receipt, reserved and completed in one transaction |
