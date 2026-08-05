@@ -263,12 +263,14 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
-    const command = { id: await mintCommand(projectId, 'commercial.deduction.record') };
-
-    const insert = (id: string, amount: string) => t.prisma.$executeRawUnsafe(
+    // R5-F3 — each row gets its OWN command, bound to it, because a succeeded receipt now backs
+    // exactly one ledger row. Sharing one command across these inserts would make them fail on
+    // provenance rather than on the floor this probe is about.
+    const insert = async (id: string, amount: string) => t.prisma.$executeRawUnsafe(
       `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","reason","recordedById","sourceCommandId")
        VALUES ($1,$2,$3,$4,'retention',${amount},NULL,$5,$6)`,
-      id, projectId, cert.id, billId, f.memberUser.id, command.id,
+      id, projectId, cert.id, billId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.deduction.record', id),
     );
 
     // a coherent withholding is ACCEPTED — the seal is precise, not merely strict
@@ -390,90 +392,61 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     expect(released.headroom).toBe('400.00');
   });
 
-  it('PROBE 8 (§H/§F): supersession RE-STATES the withholdings onto the replacement — a retained balance never vanishes', async () => {
-    // Codex P1, and the plan is explicit: "supersession RE-STATES the deductions on the new
-    // certificate in the same transaction … and NET_PAYABLE reads only the live certificate's
-    // rows". The first spelling of this task DROPPED them and asserted that as correct, which
-    // makes a retained balance vanish with no attributable release — exactly what §H forbids.
+  it('PROBE 8 (§H): a certificate carrying an unreleased withholding is NOT correctable in place — and releasing makes it so', async () => {
+    // §H's rule is that a retained balance never vanishes without an attributable release. There
+    // are two ways to honour it — CARRY the ledger onto the replacement, or REFUSE the correction
+    // until the money is given back — and this task takes the second. The refusal is the STRICTER
+    // of the two: every state it permits, re-statement permits too.
     //
-    // Both halves move together: re-stating the ₹10 deduction without its ₹5 release would read
-    // ₹10 retained and ₹0 released, clawing back money the vendor was already told it could have.
+    // Both halves are asserted here, because a refusal proved alone is indistinguishable from a
+    // rule that simply bans the workflow. The practice's path stays open: release, then correct.
     const projectId = await freshProject();
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '500.00', reason: 'civil plan' }, pmc(projectId));
     const billId = await certifiedClaim(projectId);
     const d = await deductions.record(projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId));
-    await deductions.release(projectId, { deductionId: d.id, amount: '5.00', reason: 'first milestone' }, pmc(projectId));
+    await deductions.release(projectId, { deductionId: d.id, amount: '4.00', reason: 'first milestone' }, pmc(projectId));
 
-    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
-    // with NO certificate standing there is nothing to withhold from, and that is not zero
+    // ₹6 still held → the correction is refused, and the refusal NAMES the row and the balance so
+    // a PMC is not left hunting for which withholding is in the way
+    await expect(certification.supersede(projectId, { billId, reason: 'corrected' }, pmc(projectId)))
+      .rejects.toThrow(/still carries 6\.00 of unreleased withholding/u);
+    expect((await deductions.readLedger(projectId, billId, pmc(projectId))).netPayable).toBe('94.00');
+
+    // release the remainder attributably — the act §H wanted either way — and the same correction
+    // now succeeds, so the refusal is PRECISE rather than merely strict
+    await deductions.release(projectId, { deductionId: d.id, amount: '6.00', reason: 'defects period closed' }, pmc(projectId));
+    await certification.supersede(projectId, { billId, reason: 'corrected' }, pmc(projectId));
+
     const between = await deductions.readLedger(projectId, billId, pmc(projectId));
     expect(between.certificateId).toBeNull();
     expect(between.netPayable).toBeNull();
 
-    // re-certify the SAME claim: the ledger comes with it
+    // the ledger survives as HISTORY on the certificate it was taken against — append-only, so
+    // nothing was deleted to make the correction legal
+    expect(await t.prisma.billDeduction.count({ where: { projectId, billId } })).toBe(1);
+    expect(await t.prisma.billDeductionRelease.count({ where: { projectId, deductionId: d.id } })).toBe(2);
+
+    // re-certifying starts the payable clean: the money was returned, not carried
     await certification.certify(projectId, { billId }, pmc(projectId));
     const after = await deductions.readLedger(projectId, billId, pmc(projectId));
-    expect(after.withheld).toBe('5.00');
-    expect(after.netPayable).toBe('95.00');
-    expect(after.deductions).toHaveLength(1);
-    expect(after.deductions[0]!.unreleased).toBe('5.00');
-    expect(after.deductions[0]!.releases).toHaveLength(1);
+    expect(after.withheld).toBe('0.00');
+    expect(after.netPayable).toBe('100.00');
+    expect(after.deductions).toHaveLength(0);
     expect(after.billStatus).toBe('certified');
-
-    // the superseded rows survive as HISTORY on the certificate they were taken against — they are
-    // append-only, so re-statement is a copy with an audit chain, never a move
-    expect(await t.prisma.billDeduction.count({ where: { projectId, billId } })).toBe(2);
-    const restated = await t.prisma.billDeduction.findFirstOrThrow({ where: { projectId, restatedFromId: d.id } });
-    expect(restated.id).toBe(after.deductions[0]!.id);
-
-    // …and §J agrees: ₹100 certified less ₹5 still withheld
-    expect((await positionOf(projectId)).certifiedPayable).toBe('95.00');
+    expect((await positionOf(projectId)).certifiedPayable).toBe('100.00');
   });
 
-  it('PROBE 8b (§H): a replacement certified BELOW its outstanding withholdings is REFUSED, not silently dropped', async () => {
-    // the edge the carry-forward creates. Certifying ₹100 with ₹60 retained and then correcting to
-    // ₹50 cannot hold the ₹60 — and the honest answer is to refuse and name it, because the
-    // alternative is a certificate quietly giving ₹10 back with nobody's signature on it.
+  it('PROBE 8b (§H): a FULLY RELEASED withholding does not block the correction — the rule is about money still held', async () => {
+    // the boundary of the refusal, stated on its own so it cannot silently widen into "any
+    // withholding ever recorded blocks a correction". What §H protects is a retained BALANCE; a
+    // deduction that has already been given back in full retains nothing.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
-    const d = await deductions.record(projectId, { billId, type: 'retention', amount: '60.00' }, pmc(projectId));
-    await certification.supersede(projectId, { billId, reason: 'restated lower' }, pmc(projectId));
+    const d = await deductions.record(projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId));
+    await deductions.release(projectId, { deductionId: d.id, amount: '10.00', reason: 'fully returned' }, pmc(projectId));
 
-    // amend the claim down to ₹50 so re-certification produces a smaller certificate
-    await bills.amend(projectId, {
-      billId, reason: 'corrected quantity',
-      lines: [{ poLineId: (await t.prisma.vendorBillLine.findFirstOrThrow({ where: { projectId }, orderBy: { id: 'asc' } })).poLineId!, quantity: '50', rate: '1' }],
-    }, pmc(projectId));
-    await bills.beginVerification(projectId, { billId }, pmc(projectId));
-    await verification.verify(projectId, { billId }, pmc(projectId));
-
-    await expect(certification.certify(projectId, { billId }, pmc(projectId)))
-      .rejects.toThrow(/carries 60\.00 of unreleased withholding/u);
-
-    // …and releasing first makes the same correction legal, so the refusal is precise, not merely
-    // strict — the money is given back attributably instead of by a certificate dropping a row
-    await deductions.release(projectId, { deductionId: d.id, amount: '20.00', reason: 'released before restating' }, pmc(projectId));
-    await certification.certify(projectId, { billId }, pmc(projectId));
-    expect((await deductions.readLedger(projectId, billId, pmc(projectId))).netPayable).toBe('10.00');
-  });
-
-  it('PROBE 8c (§H): a RE-STATED withholding is closed history — releasing it would strand the money', async () => {
-    // the other side of the re-statement rule. Once a deduction is carried forward, the live
-    // withholding is the copy; a release against the source would sit on a superseded certificate
-    // as evidence of money given back that the live payable does not reflect.
-    const projectId = await freshProject();
-    const billId = await certifiedClaim(projectId);
-    const source = await deductions.record(projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId));
-    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
-    await certification.certify(projectId, { billId }, pmc(projectId));
-
-    await expect(deductions.release(projectId, { deductionId: source.id, amount: '4.00', reason: 'wrong row' }, pmc(projectId)))
-      .rejects.toThrow(/re-stated onto a later certificate/u);
-
-    // …and the LIVE row releases normally, so the refusal points somewhere real
-    const live = (await deductions.readLedger(projectId, billId, pmc(projectId))).deductions[0]!;
-    await deductions.release(projectId, { deductionId: live.id, amount: '4.00', reason: 'correct row' }, pmc(projectId));
-    expect((await deductions.readLedger(projectId, billId, pmc(projectId))).netPayable).toBe('94.00');
+    await certification.supersede(projectId, { billId, reason: 'corrected' }, pmc(projectId));
+    expect(await t.prisma.billCertificate.count({ where: { projectId, billId, supersededAt: { not: null } } })).toBe(1);
   });
 
   // ── §B — the mover obligation ────────────────────────────────────────────────────────────────
@@ -525,7 +498,7 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
    * be rejected by the provenance trigger instead of the bound it names, and the probe would go on
    * "passing" while proving nothing. That is exactly the shape round 2 found in the upgrade proof.
    */
-  const mintCommand = async (projectId: string, commandType: string): Promise<string> =>
+  const mintCommand = async (projectId: string, commandType: string, resultRef?: string): Promise<string> =>
     t.prisma.$transaction(async (tx) => {
       const c = await tx.commandExecution.create({
         data: {
@@ -537,8 +510,14 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
       await tx.commandExecution.update({
         where: { id: c.id },
         // `resultRef` is not optional: the receipt protocol refuses a succeeded command that
-        // recorded no result, because a replay would report success and hand back nothing
-        data: { status: 'succeeded', resultRef: c.id, completedAt: new Date() },
+        // recorded no result, because a replay would report success and hand back nothing.
+        //
+        // R5-F3 — and it now names the ROW the command produced, so a probe minting a command must
+        // say which row it is about to insert. Defaulting to the command's own id would make every
+        // hostile insert below fail on PROVENANCE rather than on the rule it is aimed at, and the
+        // probe would go on "passing" while proving nothing — the exact shape round 2 found in the
+        // upgrade proof, arriving from the other direction.
+        data: { status: 'succeeded', resultRef: resultRef ?? c.id, completedAt: new Date() },
       });
       return c.id;
     });
@@ -594,7 +573,12 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
-    const command = await mintCommand(projectId, 'commercial.deduction.record');
+    // R5-F3 — one command per row, each bound to the row it backs, so the loser below is refused by
+    // the BOUND this probe is about rather than by provenance
+    const commands: Record<string, string> = {
+      [`${cert.id}-0`]: await mintCommand(projectId, 'commercial.deduction.record', `${cert.id}-0`),
+      [`${cert.id}-1`]: await mintCommand(projectId, 'commercial.deduction.record', `${cert.id}-1`),
+    };
 
     const a = new PrismaClient();
     const b = new PrismaClient();
@@ -605,7 +589,7 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     const insert = (client: PrismaClient, id: string) => client.$executeRawUnsafe(
       `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
        VALUES ($1,$2,$3,$4,'retention',60.00,$5,$6)`,
-      id, projectId, cert.id, billId, f.memberUser.id, command,
+      id, projectId, cert.id, billId, f.memberUser.id, commands[id]!,
     );
     try {
       const first = a.$transaction(async (tx) => {
@@ -635,14 +619,22 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     const d = await deductions.record(projectId, { billId, type: 'retention', amount: '100.00' }, pmc(projectId));
-    const command = { id: await mintCommand(projectId, 'commercial.deduction.release') };
+    // R5-F3 — one command per row, each bound to the row it backs, so both racers pass provenance
+    // and the BOUND is what decides between them, which is what this probe is about
+    const commands = [
+      await mintCommand(projectId, 'commercial.deduction.release', `${d.id}-r0`),
+      await mintCommand(projectId, 'commercial.deduction.release', `${d.id}-r1`),
+    ];
 
     let n = 0;
-    const results = await bothInsertThenCommit((client) => client.$executeRawUnsafe(
-      `INSERT INTO "BillDeductionRelease" ("id","projectId","deductionId","amount","reason","releasedById","sourceCommandId")
-       VALUES ($1,$2,$3,60.00,'concurrent',$4,$5)`,
-      `${d.id}-r${n++}`, projectId, d.id, f.memberUser.id, command.id,
-    ));
+    const results = await bothInsertThenCommit((client) => {
+      const i = n++;
+      return client.$executeRawUnsafe(
+        `INSERT INTO "BillDeductionRelease" ("id","projectId","deductionId","amount","reason","releasedById","sourceCommandId")
+         VALUES ($1,$2,$3,60.00,'concurrent',$4,$5)`,
+        `${d.id}-r${i}`, projectId, d.id, f.memberUser.id, commands[i]!,
+      );
+    });
 
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     const total = await t.prisma.billDeductionRelease.aggregate({ where: { projectId, deductionId: d.id }, _sum: { amount: true } });
@@ -651,13 +643,13 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
 
   it('PROBE 15 (§H): a SUPERSEDED certificate accepts no new withholding', async () => {
     // the bound function returns early for a superseded certificate — correctly, since its rows
-    // have left every fold — but "no bound to check" is not "anything goes": such a row would then
-    // be CARRIED onto the replacement by re-statement, a withholding taken from nothing.
+    // have left every fold — but "no bound to check" is not "anything goes": such a row is a
+    // withholding taken from a payable that no longer exists, and so withheld from nobody.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
-    const command = { id: await mintCommand(projectId, 'commercial.deduction.record') };
-    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
+    const command = { id: await mintCommand(projectId, 'commercial.deduction.record', `${cert.id}-late`) };
+    await certification.supersede(projectId, { billId, reason: 'corrected' }, pmc(projectId));
 
     await expect(t.prisma.$executeRawUnsafe(
       `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
@@ -680,11 +672,32 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     );
 
     // the correct command is ACCEPTED, so the refusals below are the provenance rule and not the bound
-    await insert(`${cert.id}-prov-ok`, await mintCommand(projectId, 'commercial.deduction.record'));
-    await expect(insert(`${cert.id}-prov-type`, await mintCommand(projectId, 'commercial.bill.certify')))
+    const okCommand = await mintCommand(projectId, 'commercial.deduction.record', `${cert.id}-prov-ok`);
+    await insert(`${cert.id}-prov-ok`, okCommand);
+    await expect(insert(`${cert.id}-prov-type`, await mintCommand(projectId, 'commercial.bill.certify', `${cert.id}-prov-type`)))
       .rejects.toThrow(/records the command that PRODUCED it/u);
-    await expect(insert(`${cert.id}-prov-rel`, await mintCommand(projectId, 'commercial.deduction.release')))
+    await expect(insert(`${cert.id}-prov-rel`, await mintCommand(projectId, 'commercial.deduction.release', `${cert.id}-prov-rel`)))
       .rejects.toThrow(/records the command that PRODUCED it/u);
+
+    // R5-F3 — the type check alone is satisfied by EVERY prior command of that type, so a direct
+    // writer could reuse the succeeded receipt above to append a second, third, fourth withholding
+    // and the append-only ledger would permanently attribute money movement to an act that produced
+    // none of it. The command must have PRODUCED this row.
+    await expect(insert(`${cert.id}-prov-reuse`, okCommand))
+      .rejects.toThrow(/reusing a succeeded receipt attributes money to an act that did not move it/u);
+
+    // …and the release side obeys the SAME sentence — `resultRef` IS the row — so a second release
+    // citing the receipt that produced the first is refused too
+    const d = await deductions.record(projectId, { billId, type: 'retention', amount: '20.00' }, pmc(projectId));
+    const insertRelease = (id: string, commandId: string) => t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeductionRelease" ("id","projectId","deductionId","amount","reason","releasedById","sourceCommandId")
+       VALUES ($1,$2,$3,1.00,'provenance probe',$4,$5)`,
+      id, projectId, d.id, f.memberUser.id, commandId,
+    );
+    const relCommand = await mintCommand(projectId, 'commercial.deduction.release', `${d.id}-rel-ok`);
+    await insertRelease(`${d.id}-rel-ok`, relCommand);
+    await expect(insertRelease(`${d.id}-rel-reuse`, relCommand))
+      .rejects.toThrow(/reusing a succeeded receipt attributes money to an act that did not move it/u);
 
     // …and a command that never succeeded is caught at COMMIT rather than at insert
     const reserved = await t.prisma.commandExecution.create({
@@ -699,60 +712,57 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
       .rejects.toThrow(/a withholding nobody made/u);
   });
 
-  it('PROBE 17 (§H): a release racing a RE-STATEMENT cannot give the same money back twice', async () => {
-    // Codex round 3. `restateDeductions` reads the superseded certificate's live ledger and copies
-    // it forward. Without a lock on the rows it reads, a release committing in that window is
-    // invisible to the copy — the restated row carries the FULL amount while the release says part
-    // of it was given back, so the same money is both withheld and released.
+  it('PROBE 17 (§H): a withholding racing a SUPERSESSION blocks, then is refused — money is never taken from a dead payable', async () => {
+    // The race that can actually lose money, and the reason the deduction path locks the CERTIFICATE
+    // rather than merely reading it. Without that lock a withholding is recorded against a payable
+    // another transaction is in the middle of retiring: the deduction commits against a certificate
+    // that no longer stands, `positionFor` reads only the live one, and the money is withheld from
+    // nobody while the ledger says a vendor was charged.
     //
-    // A genuine barrier, not two independent transactions: the release inserts and HOLDS, the
-    // re-statement runs to completion, and only then is the release allowed to commit.
+    // A genuine barrier: the supersession holds its row lock, the withholding is CONFIRMED blocked
+    // on it (via `pg_blocking_pids`, never a sleep), and only then is the supersession allowed to
+    // commit.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
-    const source = await deductions.record(projectId, { billId, type: 'retention', amount: '40.00' }, pmc(projectId));
-    const releaseCommand = await mintCommand(projectId, 'commercial.deduction.release');
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
 
-    const racer = new PrismaClient();
+    const holder = new PrismaClient();
     let letCommit!: () => void;
-    let inserted!: () => void;
+    let superseded!: () => void;
     const mayCommit = new Promise<void>((r) => { letCommit = r; });
-    const hasInserted = new Promise<void>((r) => { inserted = r; });
-    const release = racer.$transaction(async (tx) => {
+    const hasSuperseded = new Promise<void>((r) => { superseded = r; });
+    const supersession = holder.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillDeductionRelease" ("id","projectId","deductionId","amount","reason","releasedById","sourceCommandId")
-         VALUES ($1,$2,$3,15.00,'racing the restatement',$4,$5)`,
-        `${source.id}-race`, projectId, source.id, f.memberUser.id, releaseCommand,
+        `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='racing' WHERE "id"=$1`,
+        cert.id, f.memberUser.id,
       );
-      inserted();
+      await tx.$executeRawUnsafe(`UPDATE "VendorBill" SET "status"='verified', "statusChangedAt"=now() WHERE "id"=$1`, billId);
+      superseded();
       await mayCommit;
     }, { timeout: 20_000 });
 
+    let outcome!: PromiseSettledResult<unknown>;
     try {
-      await hasInserted;
-      await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
-
-      // the re-statement must WAIT for the open release rather than copy a stale ledger: the
-      // release's foreign key holds a KEY SHARE lock on the deduction, and round 3's `FOR UPDATE`
-      // conflicts with it. Without that lock this read would sail past and carry ₹40 with no
-      // release behind it, while the source ledger says ₹15 was given back.
-      const certified = certification.certify(projectId, { billId }, pmc(projectId));
-      const settled = Promise.allSettled([certified]);
-      await waitUntilBlocked('BillDeduction');   // throws if the re-statement never waits
+      await hasSuperseded;
+      const settled = Promise.allSettled([
+        deductions.record(projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId)),
+      ]);
+      // §0b's lock order takes the BILL first, so that is where the wait shows — the certificate
+      // lock inside the liveness trigger is never even reached while the bill is held
+      await waitUntilBlocked('VendorBill');   // throws if the withholding never waits
       letCommit();
-      await release;
-      expect((await settled)[0]!.status, 'the re-statement must succeed once the release commits').toBe('fulfilled');
+      await supersession;
+      outcome = (await settled)[0]!;
     } finally {
       letCommit();
-      await release.catch(() => undefined);
-      await racer.$disconnect();
+      await supersession.catch(() => undefined);
+      await holder.$disconnect();
     }
 
-    // conservation: the carried ledger reflects the release that committed in the window — ₹40
-    // withheld, ₹15 given back, ₹25 retained. The money was not given back twice, and not lost.
-    const ledger = await deductions.readLedger(projectId, billId, pmc(projectId));
-    expect(ledger.deductions).toHaveLength(1);
-    expect(ledger.deductions[0]!.amount).toBe('40.00');
-    expect(ledger.netPayable).toBe('75.00');
+    // the supersession won, so the withholding is refused rather than recorded against nothing
+    expect(outcome.status, 'a withholding against a certificate retired underneath it must be refused').toBe('rejected');
+    expect(await t.prisma.billDeduction.count({ where: { projectId, billId } })).toBe(0);
+    expect(await t.prisma.billCertificate.count({ where: { projectId, billId, supersededAt: null } })).toBe(0);
   });
 
   it('PROBE 18 (§H): insert-then-supersede in ONE transaction is refused at COMMIT', async () => {
@@ -763,115 +773,71 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
-    const command = await mintCommand(projectId, 'commercial.deduction.record');
 
-    const attempt = (supersedeToo: boolean) => t.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(
-        `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
-         VALUES ($1,$2,$3,$4,'retention',10.00,$5,$6)`,
-        `${cert.id}-${supersedeToo ? 'gone' : 'stays'}`, projectId, cert.id, billId, f.memberUser.id, command,
-      );
-      if (supersedeToo) {
+    const attempt = async (supersedeToo: boolean) => {
+      const rowId = `${cert.id}-${supersedeToo ? 'gone' : 'stays'}`;
+      // R5-F3 — one command per row, bound to it
+      const command = await mintCommand(projectId, 'commercial.deduction.record', rowId);
+      return t.prisma.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(
-          `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='bypass' WHERE "id"=$1`,
-          cert.id, f.memberUser.id,
+          `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+           VALUES ($1,$2,$3,$4,'retention',10.00,$5,$6)`,
+          rowId, projectId, cert.id, billId, f.memberUser.id, command,
         );
-        await tx.$executeRawUnsafe(`UPDATE "VendorBill" SET "status"='verified', "statusChangedAt"=now() WHERE "id"=$1`, billId);
-      }
-    });
+        if (supersedeToo) {
+          await tx.$executeRawUnsafe(
+            `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='bypass' WHERE "id"=$1`,
+            cert.id, f.memberUser.id,
+          );
+          await tx.$executeRawUnsafe(`UPDATE "VendorBill" SET "status"='verified', "statusChangedAt"=now() WHERE "id"=$1`, billId);
+        }
+      });
+    };
 
     // the same insert WITHOUT the supersession is accepted, so the refusal is the timing rule
     await attempt(false);
-    await expect(attempt(true)).rejects.toThrow(/superseded in this transaction/u);
+    // TWO deferred seals now describe this state — `BillDeduction_coherent` (the certificate this
+    // row targets did not survive the transaction) and `BillCertificate_supersede_needs_release`
+    // (the certificate being corrected still holds money). PostgreSQL does not order deferred
+    // constraint triggers across tables, so the probe accepts either voice rather than pinning an
+    // ordering the database does not promise — what matters is that the commit does not happen.
+    await expect(attempt(true))
+      .rejects.toThrow(/superseded in this transaction|still carries an unreleased withholding/u);
+
+    // …and nothing is left behind: the accepted row from the first attempt stands, the refused
+    // one does not, and the certificate is still live
+    expect(await t.prisma.billDeduction.count({ where: { projectId, billId } })).toBe(1);
+    expect(await t.prisma.billCertificate.count({ where: { projectId, billId, supersededAt: null } })).toBe(1);
   });
 
-  it('PROBE 19 (§H): a forged re-statement cannot lock a live withholding out of release', async () => {
-    // Codex round 4 F3. The FK proves only that `restatedFromId` names SOME deduction. Since
-    // `release()` refuses any deduction that has been re-stated, a forged row naming an unrelated
-    // still-live withholding as its source freezes that withholding forever — a denial of service
-    // against money somebody is owed.
+  it('PROBE 19 (§H): the DATABASE refuses the correction too — the service is not the only way in', async () => {
+    // The split rests on ONE property: a retained balance cannot vanish. The service refusal in
+    // `supersede` is the friendly half; this is the half that holds when something writes directly.
+    // Without it the whole argument for splitting re-statement out collapses, because a bypass
+    // supersession would drop the money exactly as round 1's F2 described.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
-    const victim = await deductions.record(projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId));
+    const d = await deductions.record(projectId, { billId, type: 'retention', amount: '40.00' }, pmc(projectId));
     const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
-    const command = await mintCommand(projectId, 'commercial.deduction.record');
 
-    const forge = (id: string, source: string, amount: string, type = 'retention') => t.prisma.$executeRawUnsafe(
-      `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId","restatedFromId")
-       VALUES ($1,$2,$3,$4,$7,${amount},$5,$6,$8)`,
-      id, projectId, cert.id, billId, f.memberUser.id, command, type, source,
-    );
-
-    await expect(forge(`${cert.id}-f1`, victim.id, '10.00')).rejects.toThrow(/still stands on a LIVE certificate/u);
-
-    // …and once the source IS superseded, the terms must still match: a re-statement carries the
-    // same withholding forward, it does not quietly restate it as a different judgement
-    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
-    await certification.certify(projectId, { billId }, pmc(projectId));
-    const live = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
-    const carried = await t.prisma.billDeduction.findFirstOrThrow({ where: { projectId, restatedFromId: victim.id } });
-    expect(carried.amount.toFixed(2), 'the legitimate re-statement must have carried the terms verbatim').toBe('10.00');
-
-    const forgeOn = (id: string, source: string, amount: string, type = 'retention') => t.prisma.$executeRawUnsafe(
-      `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId","restatedFromId")
-       VALUES ($1,$2,$3,$4,$7,${amount},$5,$6,$8)`,
-      id, projectId, live.id, billId, f.memberUser.id, command, type, source,
-    );
-    // the source is already carried, so a second claim on it collides on the unique index
-    await expect(forgeOn(`${live.id}-f2`, victim.id, '10.00')).rejects.toThrow();
-    // …and the carried row is itself live, so naming IT as a source is the freeze all over again
-    await expect(forgeOn(`${live.id}-f3`, carried.id, '10.00')).rejects.toThrow(/still stands on a LIVE certificate/u);
-    // the terms must match too: re-stating is carrying the same withholding forward, not revising it
-    await certification.supersede(projectId, { billId, reason: 'again' }, pmc(projectId));
-    const next = await t.prisma.$queryRawUnsafe<Array<{ id: string }>>(
-      `SELECT "id" FROM "BillCertificate" WHERE "projectId"=$1 AND "billId"=$2 AND "supersededAt" IS NULL`,
-      projectId, billId,
-    );
-    expect(next, 'supersession must leave no live certificate, or the next assertion means nothing').toHaveLength(0);
-  });
-
-  it('PROBE 20 (§H): a replacement certificate MUST carry the retained balance forward', async () => {
-    // Codex round 4 F2. `restateDeductions` is service code. A bypass replacement certification can
-    // supersede a certificate carrying a ₹40 retention and create the new live certificate with no
-    // carried rows — the old deduction stays as history, `positionFor` reads only the live
-    // certificate, and the retained balance vanishes with nobody's release behind it. That is round
-    // 1's F2 arriving from the database side, and only a commit-time seal sees it.
-    const projectId = await freshProject();
-    const billId = await certifiedClaim(projectId);
-    const source = await deductions.record(projectId, { billId, type: 'retention', amount: '40.00' }, pmc(projectId));
-    const prior = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
-    await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
-
-    const certCommand = await mintCommand(projectId, 'commercial.bill.certify');
-    const dedCommand = await mintCommand(projectId, 'commercial.deduction.record');
-    const replace = (certId: string, restate: boolean) => t.prisma.$transaction(async (tx) => {
+    const bypassSupersede = () => t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        certId, projectId, billId, prior.versionId, prior.certifiedAmount, f.memberUser.id, certCommand,
+        `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='bypass' WHERE "id"=$1`,
+        cert.id, f.memberUser.id,
       );
-      await tx.$executeRawUnsafe(
-        `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
-         SELECT $1 || '-' || "id", $2, $3, "stockTransactionId", "consumedQty"
-           FROM "CertifiedAcceptanceConsumption" WHERE "projectId"=$2 AND "certificateId"=$4`,
-        certId, projectId, certId, prior.id,
-      );
-      if (restate) {
-        await tx.$executeRawUnsafe(
-          `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId","restatedFromId")
-           VALUES ($1,$2,$3,$4,'retention',40.00,$5,$6,$7)`,
-          `${certId}-d`, projectId, certId, billId, f.memberUser.id, dedCommand, source.id,
-        );
-      }
-      await tx.$executeRawUnsafe(`UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "id"=$1`, billId);
+      await tx.$executeRawUnsafe(`UPDATE "VendorBill" SET "status"='verified', "statusChangedAt"=now() WHERE "id"=$1`, billId);
     });
 
-    await expect(replace('bypass-1', false)).rejects.toThrow(/does not re-state/u);
-    // …and the SAME transaction with the carried row is accepted, so the seal is precise
-    await replace('bypass-2', true);
-    const ledger = await deductions.readLedger(projectId, billId, pmc(projectId));
-    expect(ledger.deductions).toHaveLength(1);
-    expect(ledger.netPayable).toBe('60.00');
+    await expect(bypassSupersede()).rejects.toThrow(/still carries an unreleased withholding/u);
+    expect(await t.prisma.billCertificate.count({ where: { projectId, billId, supersededAt: null } }))
+      .toBe(1);
+
+    // …and once the money is given back the SAME bypass is accepted, so the seal is precise rather
+    // than merely strict — it is about a retained balance, not about supersession
+    await deductions.release(projectId, { deductionId: d.id, amount: '40.00', reason: 'returned' }, pmc(projectId));
+    await bypassSupersede();
+    expect(await t.prisma.billCertificate.count({ where: { projectId, billId, supersededAt: null } }))
+      .toBe(0);
   });
 
   // ── §C rule ii — a keyed replay appends NOTHING ──────────────────────────────────────────────

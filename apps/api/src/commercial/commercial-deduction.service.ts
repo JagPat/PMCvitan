@@ -180,26 +180,12 @@ export class CommercialDeductionService {
         if (!located) throw new NotFoundException('Deduction not found in this project');
         await this.lockBill(tx, projectId, located.billId);
 
-        // Codex round 2 — re-read the deduction AND its restatement state INSIDE the lock. The
-        // first spelling read `restatedAs` before taking it, so a replacement certification
-        // committing in between left this call inserting a release against a row that had just
-        // become history: the money is reported released while the live payable still withholds it.
-        // Locking then re-reading the released total but not the restatement was checking one half
-        // of the same question under the lock and the other half outside it.
+        // Codex round 2 — re-read the deduction INSIDE the lock: every fact this act decides on is
+        // read under the lock that protects it, never located outside and trusted within.
         const deduction = await tx.billDeduction.findFirstOrThrow({
           where: { projectId, id: input.deductionId },
-          select: { id: true, billId: true, amount: true, certificateId: true, restatedAs: { select: { id: true } } },
+          select: { id: true, billId: true, amount: true, certificateId: true },
         });
-        // A row that has already been RE-STATED onto a replacement certificate is closed history:
-        // the live withholding is its restatement, and a release recorded here would be stranded on
-        // a superseded certificate as evidence of money given back that the live truth denies —
-        // the same defect §H describes for a deduction re-stated without its releases, arriving
-        // from the other side. Release the live row instead.
-        if (deduction.restatedAs.length > 0) {
-          throw new ConflictException(
-            `This withholding has been re-stated onto a later certificate — release ${deduction.restatedAs[0]!.id}, the row the live payable is folded from, or the money would be given back against a certificate nobody is paying`,
-          );
-        }
 
         // the released total, folded under the same lock
         const released = await this.deductions.releasedFor(tx, projectId, deduction.id);
@@ -221,10 +207,16 @@ export class CommercialDeductionService {
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.release', entity: 'BillDeductionRelease', entityId: row.id,
         });
-        return { resultRef: deduction.id, events: [] };
+        // R5-F3 — the RELEASE row, not its deduction. A command's `resultRef` is what
+        // `phase5_t5c_ledger_command_succeeded` binds a ledger row to, so it has to name the row
+        // this act actually produced: answering with the deduction would let one succeeded release
+        // receipt stand behind a second release row against that same withholding, and the seal
+        // would have nothing to catch it with. The DTO is still the deduction — that is the useful
+        // answer, a withholding and its whole release history — resolved through the row below.
+        return { resultRef: row.id, events: [] };
       },
     });
-    return this.deductionById(projectId, outcome.resultRef!);
+    return this.deductionByReleaseId(projectId, outcome.resultRef!);
   }
 
   // ── §F — the status is DERIVED, never left stale ─────────────────────────────────────────────
@@ -305,6 +297,22 @@ export class CommercialDeductionService {
         releasedById: r.releasedById,
       })),
     }));
+  }
+
+  /**
+   * The withholding a RELEASE belongs to, by that release's id.
+   *
+   * `release()` answers with the release row (the seal binds the command to the row it produced),
+   * and the caller wants the deduction with its full history — so the id is resolved here rather
+   * than by giving the command a `resultRef` that names something it did not create. A keyed replay
+   * takes the same path from the stored receipt and lands on the same DTO.
+   */
+  private async deductionByReleaseId(projectId: string, releaseId: string): Promise<BillDeductionDto> {
+    const row = await this.prisma.billDeductionRelease.findFirst({
+      where: { projectId, id: releaseId }, select: { deductionId: true },
+    });
+    if (!row) throw new NotFoundException('Release not found in this project');
+    return this.deductionById(projectId, row.deductionId);
   }
 
   private async deductionById(projectId: string, deductionId: string): Promise<BillDeductionDto> {

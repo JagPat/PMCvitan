@@ -13,6 +13,7 @@ import { OrgsParticipant } from '../orgs/orgs.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialBillQuery } from './commercial-bill.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
+import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
 import type { CertifyBillInput, GrantSodExceptionInput, SupersedeCertificateInput } from '../contracts';
@@ -64,6 +65,9 @@ export class CommercialCertificationService {
     // §I's approver standing is an ORGS question — `Membership`/`OrgMembership` are orgs-owned and
     // the owner states the rule. `commercial.workflowParticipants` already declares this edge.
     private readonly orgs: OrgsParticipant,
+    // §H — the withholding fold that decides whether this certificate is correctable in place. Own
+    // module, one owner: `supersede` asks the same question the DB seal asks.
+    private readonly deductions: CommercialDeductionQuery,
   ) {}
 
   private assertCertify(user: AuthUser): void {
@@ -269,13 +273,6 @@ export class CommercialCertificationService {
           });
         }
 
-        // §H (Codex P1) — RE-STATE the superseded certificate's withholdings onto this one, in
-        // this transaction. The plan is explicit and the first spelling of this task re-derived it
-        // instead of carrying it: "supersession RE-STATES the deductions on the new certificate…
-        // and `NET_PAYABLE` reads only the live certificate's rows". Dropping them makes a retained
-        // balance vanish with no attributable release, which is exactly what §H forbids.
-        await this.restateDeductions(tx, projectId, input.billId, certificate.id, certifiedAmount);
-
         // §I — asked AFTER the freeze, and that ordering is the point rather than an accident.
         // The question "did the certifier record any of this evidence?" is a question about the
         // FROZEN ROWS, so asking it once they exist lets both layers ask it of the same rows
@@ -476,6 +473,32 @@ export class CommercialCertificationService {
           select: { id: true },
         });
         if (!live) throw new NotFoundException(`Vendor bill ${input.billId} has no live certificate`);
+
+        // §H — a certificate carrying an UNRELEASED withholding is not correctable in place.
+        //
+        // §H's rule is that a retained balance never vanishes without an attributable release, and
+        // there are two ways to honour it: CARRY the ledger onto the replacement, or REFUSE the
+        // correction until the money is given back. This task takes the second. Re-statement is a
+        // larger mechanism than it looks — both row kinds moving together, a faithful copy sealed in
+        // every evidence-bearing field, a source row releasable exactly once — and it earns its own
+        // review unit rather than riding along with the ledger it copies.
+        //
+        // The refusal is STRICTER: every state it permits, re-statement permits too, and it permits
+        // no act re-statement would refuse. That is the criterion that made splitting Task 5B safe.
+        // The practice's path is unchanged in substance — release the withholding attributably, then
+        // correct the certification — and the release is the act §H wanted either way.
+        //
+        // The balance is NAMED, because a refusal that only says "release first" leaves a PMC
+        // hunting for which withholding and how much. `phase5_t5c_supersede_needs_release` refuses
+        // the same thing at COMMIT for anything that never came through here.
+        const outstanding = await this.deductions.outstandingFor(tx, projectId, live.id);
+        if (outstanding.length > 0) {
+          const total = outstanding.reduce((a, d) => a.add(d.outstanding), new Prisma.Decimal(0));
+          throw new ConflictException(
+            `This certificate still carries ${total.toFixed(2)} of unreleased withholding (${outstanding.map((d) => `${d.id}: ${d.outstanding.toFixed(2)}`).join(', ')}) — superseding it would drop a retained balance with no release behind it. Release the money attributably first, then correct the certification`,
+          );
+        }
+
         const { count } = await tx.billCertificate.updateMany({
           where: { id: live.id, projectId, supersededAt: null },
           data: {
@@ -744,93 +767,6 @@ export class CommercialCertificationService {
   }
 
   // ── shared machinery ─────────────────────────────────────────────────────────────────────────
-
-
-  /**
-   * §H — carry the SUPERSEDED certificate's live ledger onto the replacement.
-   *
-   * Both halves move together and that is the whole rule: a retained balance is a fold over
-   * deductions MINUS releases, so re-stating the deduction alone would read ₹10 retained and ₹0
-   * released — clawing back money the vendor was already told it could have, with the release row
-   * stranded on a superseded certificate as evidence the live truth denies. §H: "whatever
-   * certificate `NET_PAYABLE` reads, it reads BOTH row kinds from."
-   *
-   * The superseded rows are NOT edited or deleted — they are append-only history on the certificate
-   * they were taken against. This writes NEW rows carrying `restatedFromId`, which is both the audit
-   * chain and (being UNIQUE) the reason one source row can never be restated twice.
-   */
-  private async restateDeductions(
-    tx: Prisma.TransactionClient,
-    projectId: string,
-    billId: string,
-    certificateId: string,
-    certifiedAmount: Prisma.Decimal,
-  ): Promise<void> {
-    // the certificate this one REPLACES: the most recently superseded one on this bill
-    const prior = await tx.billCertificate.findFirst({
-      where: { projectId, billId, supersededAt: { not: null } },
-      orderBy: { supersededAt: 'desc' },
-      select: { id: true },
-    });
-    if (!prior) return;
-
-    // Codex round 3 — LOCK the source rows before copying them. Without it a bypass release can
-    // commit in the gap: this read sees a ₹10 source deduction with no releases, a direct
-    // transaction inserts a ₹10 release against it and passes its bound because the restatement is
-    // still uncommitted, and certification then commits a live restated deduction with no release —
-    // `NET_PAYABLE` withheld while the source ledger says the money was returned. Taking the lock
-    // here makes the release trigger wait and re-check against the restated row.
-    //
-    // Ascending id, the repo's standard order, so two certifications of sibling bills cannot
-    // deadlock against each other.
-    await tx.$queryRaw`
-      SELECT "id" FROM "BillDeduction"
-       WHERE "projectId" = ${projectId} AND "certificateId" = ${prior.id}
-       ORDER BY "id" ASC
-       FOR UPDATE`;
-
-    const rows = await tx.billDeduction.findMany({
-      where: { projectId, certificateId: prior.id },
-      orderBy: { recordedAt: 'asc' },
-      include: { releases: { orderBy: { releasedAt: 'asc' } } },
-    });
-    if (rows.length === 0) return;
-
-    // §H's floor applies to the CARRIED set too, and it is checked before anything is written: a
-    // replacement certified BELOW its outstanding withholdings cannot exist, and refusing here
-    // names the conflict instead of letting the deferred bound reject the whole certification with
-    // an aggregate nobody can act on. Correcting downward that far means releasing first.
-    const carried = rows.reduce(
-      (a, d) => a.add(d.releases.reduce((r, x) => r.sub(x.amount), d.amount)),
-      new Prisma.Decimal(0),
-    );
-    if (carried.greaterThan(certifiedAmount)) {
-      throw new ConflictException(
-        `This claim carries ${carried.toFixed(2)} of unreleased withholding, which a ${certifiedAmount.toFixed(2)} certificate cannot hold — release the difference before certifying a lower amount, so the money is given back attributably rather than by a certificate quietly dropping it`,
-      );
-    }
-
-    for (const d of rows) {
-      const restated = await tx.billDeduction.create({
-        data: {
-          projectId, certificateId, billId,
-          type: d.type, amount: d.amount, reason: d.reason,
-          recordedById: d.recordedById, sourceCommandId: d.sourceCommandId,
-          restatedFromId: d.id,
-        },
-      });
-      for (const r of d.releases) {
-        await tx.billDeductionRelease.create({
-          data: {
-            projectId, deductionId: restated.id,
-            amount: r.amount, reason: r.reason,
-            releasedById: r.releasedById, sourceCommandId: r.sourceCommandId,
-            restatedFromId: r.id,
-          },
-        });
-      }
-    }
-  }
 
   private async cas(
     tx: Prisma.TransactionClient, projectId: string, billId: string, from: string, to: string,

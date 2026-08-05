@@ -29,9 +29,11 @@ review stop applies with payment authority fully in place.
    `NET_PAYABLE` floor of zero, and a release bounded by its own deduction.
 3. **The first real subtraction into §J's `certified-payable`** — the term unit C
    shipped with both of its subtractions as the identity.
-4. **Re-statement of the ledger onto a replacement certificate**, deductions and
-   their releases together, so a retained balance never vanishes without an
-   attributable release.
+4. **A certificate that still holds money is not correctable in place** — the
+   §H rule that a retained balance never vanishes without an attributable
+   release, honoured by REFUSING the supersession rather than carrying the ledger
+   forward. Re-statement is a follow-up review unit; see §"Round 5" for why, and
+   for what that costs.
 
 It ships NO §F status derivation and touches NONE of unit A's seals — see the
 next section, which is the part of this change most worth a reviewer's attention.
@@ -103,16 +105,81 @@ asserted the dropping as correct. The deferral ledger's rule is that a task PR
 carries its section forward rather than re-deriving it — I re-derived, and got
 the opposite answer.
 
-Fixing F2 opened two edges the finding did not name, and both are sealed rather
-than left implicit:
+> **Superseded by the round-5 split — read §"Round 5" below before this row.**
+> F2's *defect* (a retained balance vanishing with no attributable release) is
+> still fixed and still sealed at PostgreSQL. What changed is the MECHANISM: the
+> re-statement machinery described here has been split into its own review unit,
+> and this PR now honours the same rule by REFUSING the correction until the
+> money is given back. The rows below that describe re-statement seals
+> (`BillCertificate_replacement_restates`, the `restatedFromId` rules, PROBES
+> 8b/8c/17/19/20) are history, not current behaviour.
 
-- a replacement certified BELOW its outstanding withholdings is REFUSED, naming
-  the conflict (PROBE 8b) — the alternative is a certificate quietly giving money
-  back with nobody's signature on it;
-- a release against an ALREADY-RESTATED deduction is REFUSED (PROBE 8c) — it
-  would strand the release on a superseded certificate as evidence of money
-  given back that the live payable denies, which is F2's own defect arriving from
-  the other side.
+## Round 5 — the split, and what it costs
+
+Round 5 returned four findings on `1b6ba60`, all P2, all correct. Three of them
+landed on seals rounds 3 and 4 had just added — the third consecutive round where
+findings arrived on the previous round's new code — and the orchestrator reported
+the unit at five finding-bearing heads, its stated limit, recommending a split.
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| 1 | supersession-raised exceptions labelled `claim` | DISSOLVED — with a live withholding refused, the withheld fold is zero at supersession, so `claim` is the accurate label and no deduction-shaped mover can apply |
+| 2 | the replacement seal required a carried deduction but not its carried releases | LEAVES with re-statement |
+| 3 | the provenance seal checked the command's status but never bound it to the row | FIXED HERE |
+| 4 | the restatement terms check compared two fields of a copy, not all of them | LEAVES with re-statement |
+
+Findings 2 and 4 are the same shape, and it is the shape the convergence document
+had named one head earlier: *when a fix names a direction, a side, or a half,
+write down what the opposite one is.* One sealed the deduction half without the
+release half; the other checked two fields of a copy out of five. Both were
+written by the author who had just recorded that lesson as prose, which is the
+evidence that prose was not enough — and both live in the re-statement machinery,
+as did one of round 4's three.
+
+That is the signal the split acts on: not four independent slips, but one
+mechanism whose faithful-copy rule needs its own review unit.
+
+### What §H requires, and the two ways to honour it
+
+A retained balance never vanishes without an attributable release. Either:
+
+1. CARRY the ledger onto the replacement certificate (re-statement), or
+2. REFUSE the correction until the money is given back attributably.
+
+This PR does (2). `supersede` refuses while any withholding still holds money,
+naming the row and the balance, and `phase5_t5c_supersede_needs_release` refuses
+the same thing at COMMIT for anything that never came through the service.
+
+**The refusal is strictly stricter than re-statement**: every state it permits,
+re-statement permits too, and it permits no act re-statement would refuse. That
+is the criterion that made splitting Task 5B safe, and it is what makes this a
+split rather than a gap.
+
+**The cost, stated plainly:** until the follow-up unit lands, a practice
+correcting a certificate that still holds money must release the withholding
+first. That release is the attributable act §H wanted either way — the money is
+never silently dropped — but it is one extra step the finished design will not
+require.
+
+### Finding 3, fixed here
+
+The provenance seal checked `CommandExecution.status` and never bound the command
+to the row. A type check is satisfied by EVERY prior command of that type, so a
+direct writer could reuse one succeeded `commercial.deduction.record` receipt to
+append a second, third, fourth withholding, and the append-only ledger would
+permanently attribute money movement to an act that produced none of it.
+
+The seal now compares `resultRef` to the row. The rule is ONE sentence for both
+tables — `resultRef` IS the row — which is why `release()` now answers with the
+release row rather than the deduction it belongs to; the DTO is still the
+deduction, resolved through that row. Row ids are unique, so a reused receipt is
+unrepresentable with no extra constraint holding it up.
+
+This also corrected the probes: `mintCommand` now requires the caller to say
+which row the command produced. The default it had before would have made every
+hostile insert in the file fail on provenance instead of the rule it names —
+the vacuous-assertion shape round 2 found in the upgrade proof, arriving from the
+other direction.
 
 ## Codex rounds 3 and 4 — the same root, in two dimensions the closures did not reach
 
@@ -155,7 +222,9 @@ closures are RED-proved by breaking them, not by observing them pass.
 
 ## Evidence
 
-`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **22/22 GREEN**.
+`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **20/20 GREEN**
+(22 before the split: the three re-statement probes left with the mechanism, and
+two probes were added for the refusal and its DB seal).
 
 Every probe is RED at `0b87d85` for the trivial reason that the ledger does not
 exist there, so this packet does not lean on that. What it leans on instead is
@@ -177,9 +246,16 @@ mine did not, and checking turned up five more of the same shape.
   fold the budget query reads, not just `this.bills.*` — the closure's own root
   applied to itself, exactly as naming `CERTIFIED` and leaving `BILLED_AMOUNT`
   unclaimed did in unit C.
-- **the round-4 seals** are RED-proved by DROPPING them from a live database:
-  without `BillDeduction_coherent` and `BillCertificate_replacement_restates`,
-  PROBES 18, 19 and 20 fail; restored, 22/22.
+- **the round-4 liveness seal and the round-5 refusal seal** are RED-proved by
+  DROPPING them from a live database: without `BillDeduction_coherent` PROBE 18
+  fails, and without `phase5_t5c_supersede_needs_release` PROBE 19 fails;
+  restored, 20/20.
+- **the round-5 provenance binding** is RED-proved the same way: with the
+  `resultRef` comparison removed, PROBE 16's two reuse assertions pass a reused
+  receipt. Its probe-side twin matters as much — `mintCommand` now REQUIRES the
+  caller to name the row the command produced, because the old default would have
+  made every hostile insert in the file fail on provenance rather than on the rule
+  it names.
 - **CLOSURE 3 and CLOSURE 4** are RED-proved by breaking them, not by watching
   them pass. Remove the lock from the withholding bound, the release bound, or
   the liveness trigger and CLOSURE 3 names the function; unwire the commit-time
@@ -195,8 +271,9 @@ mine did not, and checking turned up five more of the same shape.
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 738/738 (+3: CLOSURE 3, CLOSURE 4, the single-writer pin) |
-| full integration, pristine migrated DB | **81 files / 917 tests** (was 80/895) |
-| `upgrade-proof.sh` | PASSED — the T5C assertions, each paired with an accept, and the re-statement chain walking its OWN bill through the lifecycle rather than assuming a live certificate |
+| `phase5-t5c-deductions.test.ts` | **20/20** |
+| full integration, pristine migrated DB | **81 files / 915 tests** |
+| `upgrade-proof.sh` | PASSED — 424 assertions, 0 failures; the T5C block each paired with an accept, walking its OWN bill through the lifecycle, and the round-5 seals asserted on the COHERENT §F correction shape (partial release still blocks; full release then allows the same correction) |
 | migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |
 | `test:e2e:api:allmodules` | 35/35 |
 | `test:e2e:api:outbox` | 29/29 (6 skipped by design) |

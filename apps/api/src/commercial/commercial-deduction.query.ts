@@ -142,6 +142,32 @@ export class CommercialDeductionQuery {
     );
   }
 
+  /**
+   * The withholdings on one certificate that still have money held against them (§H).
+   *
+   * This is what makes a certificate uncorrectable in place: superseding it would drop a retained
+   * balance with no release behind it. Stated here, beside the folds it is derived from, so the
+   * service refusal and `phase5_t5c_supersede_needs_release` are two enforcements of ONE rule
+   * rather than two implementations of it.
+   *
+   * The rows are ordered by id so the refusal names them in a stable order — a message that
+   * reshuffles between reads is a message a practice cannot act on.
+   */
+  async outstandingFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    certificateId: string,
+  ): Promise<Array<{ id: string; outstanding: Prisma.Decimal }>> {
+    const rows = await tx.billDeduction.findMany({
+      where: { projectId, certificateId },
+      orderBy: { id: 'asc' },
+      select: { id: true, amount: true, releases: { select: { amount: true } } },
+    });
+    return rows
+      .map((d) => ({ id: d.id, outstanding: d.releases.reduce((a, r) => a.sub(r.amount), d.amount) }))
+      .filter((d) => d.outstanding.greaterThan(ZERO));
+  }
+
   /** `RELEASED(deduction)` — what a release is bounded by, over its OWN deduction (§H bound 2). */
   async releasedFor(
     tx: Prisma.TransactionClient,

@@ -1953,10 +1953,23 @@ assert "commercial T5C: the certificate these assertions rest on is LIVE and its
 # commands of the RIGHT type. `UP45-CMD` is `test.up45`; citing it would make every rejection below
 # come from the provenance seal rather than the rule it names. Reserved-then-completed, because the
 # receipt protocol refuses a directly minted `succeeded` row.
-$PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UP5C-CMD','project','org-legacy','p1','USER-1','commercial.deduction.record','up5c-d','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UP5C-DED', \"completedAt\"=now() WHERE \"id\"='UP5C-CMD'"
-$PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UP5C-RCMD','project','org-legacy','p1','USER-1','commercial.deduction.release','up5c-r','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UP5C-REL', \"completedAt\"=now() WHERE \"id\"='UP5C-RCMD'"
+#
+# R5-F3 — and the command must have PRODUCED the row, so ONE command no longer backs a whole block
+# of hostile inserts: each gets its own, bound to the row it is about to attempt. Without this every
+# rejection below would come from the provenance seal instead of the rule it names — the exact
+# vacuous-assertion shape round 2 found in this file, arriving from the other direction.
+#
+# The rule is one sentence for both tables — `resultRef` IS the row — so every fixture below binds
+# to the id of the row it is about to attempt.
+mint5c() {   # <commandId> <commandType> <resultRef>
+  $PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('$1','project','org-legacy','p1','USER-1','$2','key-$1','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='$3', \"completedAt\"=now() WHERE \"id\"='$1'"
+}
+mint5c UP5C-CMD   commercial.deduction.record  UP5C-DED
+mint5c UP5C-RCMD  commercial.deduction.release UP5C-REL
+mint5c UP5C-RCMD2 commercial.deduction.release UP5C-REL2
+for row in NEG TYP NR WS OVER WT; do mint5c "UP5C-C-$row" commercial.deduction.record "UP5C-$row"; done
+for row in RNEG ROVER RWS RWT; do mint5c "UP5C-C-$row" commercial.deduction.release "UP5C-$row"; done
 $PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UP5C-PEND','project','org-legacy','p1','USER-1','commercial.deduction.record','up5c-p','x','reserved')"
-$PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UP5C-CMD3','project','org-legacy','p1','USER-1','commercial.bill.certify','up5c-c3','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UP5C-C3', \"completedAt\"=now() WHERE \"id\"='UP5C-CMD3'"
 assert "commercial T5C: the three provenance fixtures are in the state these assertions assume" \
   "SELECT string_agg(\"status\", '/' ORDER BY \"id\") FROM \"CommandExecution\" WHERE \"id\" IN ('UP5C-CMD','UP5C-PEND','UP5C-RCMD');" \
   "succeeded/reserved/succeeded"
@@ -1964,15 +1977,15 @@ $PSQL >/dev/null -c "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certif
   && printf 'ok      %s\n' "commercial T5C: a coherent retention against a live certificate is ACCEPTED (so every rejection below is its own rule)" \
   || { printf 'FAILED  %s\n' "commercial T5C: a coherent retention was rejected — the seals are over-strict and the rejections below prove nothing"; FAIL=1; }
 assert_rejects "commercial T5C: a NEGATIVE deduction (the row TYPE carries direction; a negative RAISES the payable)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NEG','p1','UPT5B-C1','UPT4-B3','retention',-1.00,'USER-1','UP5C-CMD')"
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NEG','p1','UPT5B-C1','UPT4-B3','retention',-1.00,'USER-1','UP5C-C-NEG')"
 assert_rejects "commercial T5C: a deduction of an UNKNOWN type (advance-recovery ships in Task 6 with the row that caps it)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-TYP','p1','UPT5B-C1','UPT4-B3','advance-recovery',1.00,'USER-1','UP5C-CMD')"
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-TYP','p1','UPT5B-C1','UPT4-B3','advance-recovery',1.00,'USER-1','UP5C-C-TYP')"
 assert_rejects "commercial T5C: a PENALTY with no reason (a judgement nobody can read is not one)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NR','p1','UPT5B-C1','UPT4-B3','penalty',1.00,'USER-1','UP5C-CMD')"
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-NR','p1','UPT5B-C1','UPT4-B3','penalty',1.00,'USER-1','UP5C-C-NR')"
 assert_rejects "commercial T5C: a reason of pure WHITESPACE (presence is not justification)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-WS','p1','UPT5B-C1','UPT4-B3','other',1.00,E' \t\n ','USER-1','UP5C-CMD')"
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-WS','p1','UPT5B-C1','UPT4-B3','other',1.00,E' \t\n ','USER-1','UP5C-C-WS')"
 assert_rejects "commercial T5C: withholding MORE than the certificate carries (the NET_PAYABLE floor)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-OVER','p1','UPT5B-C1','UPT4-B3','retention',2.50,'USER-1','UP5C-CMD')"
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-OVER','p1','UPT5B-C1','UPT4-B3','retention',2.50,'USER-1','UP5C-C-OVER')"
 assert_rejects "commercial T5C: EDITING a withholding (append-only; a correction is a release row)" \
   "UPDATE \"BillDeduction\" SET \"amount\"=0.5 WHERE \"id\"='UP5C-DED'"
 assert_rejects "commercial T5C: DELETING a withholding (it would raise the payable with no release behind it)" \
@@ -1981,11 +1994,11 @@ $PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\
   && printf 'ok      %s\n' "commercial T5C: a coherent release within its own deduction is ACCEPTED" \
   || { printf 'FAILED  %s\n' "commercial T5C: a coherent release was rejected"; FAIL=1; }
 assert_rejects "commercial T5C: a NEGATIVE release" \
-  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RNEG','p1','UP5C-DED',-0.10,'why','USER-1','UP5C-RCMD')"
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RNEG','p1','UP5C-DED',-0.10,'why','USER-1','UP5C-C-RNEG')"
 assert_rejects "commercial T5C: releasing MORE than its own deduction withheld" \
-  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-ROVER','p1','UP5C-DED',0.70,'too much','USER-1','UP5C-RCMD')"
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-ROVER','p1','UP5C-DED',0.70,'too much','USER-1','UP5C-C-ROVER')"
 assert_rejects "commercial T5C: a release with a WHITESPACE reason" \
-  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RWS','p1','UP5C-DED',0.10,E' \t ','USER-1','UP5C-RCMD')"
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RWS','p1','UP5C-DED',0.10,E' \t ','USER-1','UP5C-C-RWS')"
 assert_rejects "commercial T5C: EDITING a release (append-only — it is the correction path, so it has none of its own)" \
   "UPDATE \"BillDeductionRelease\" SET \"amount\"=0.01 WHERE \"id\"='UP5C-REL'"
 # ── Codex round 3, sealed at PostgreSQL ──────────────────────────────────────────────────────
@@ -1998,12 +2011,34 @@ assert_rejects "commercial T5C R3-3: a withholding citing a command that never S
   "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-PS','p1','UPT5B-C1','UPT4-B3','retention',0.10,'USER-1','UP5C-PEND')"
 assert_rejects "commercial T5C R3-3: a RELEASE citing the record command rather than its own" \
   "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RWT','p1','UP5C-DED',0.10,'wrong command','USER-1','UP5C-CMD')"
-# Codex round 4 F2 — from here on, a replacement certificate must CARRY any unreleased withholding.
-# The certificates the T5B assertions create below by direct SQL are legitimately free of that
-# obligation only because this one is now fully released (1.00 withheld, 0.40 + 0.60 given back), so
-# there is no retained balance for them to drop. Releasing it is also the honest fixture: the
-# alternative is a script that quietly depends on a seal not yet being reached.
-$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-REL2','p1','UP5C-DED',0.60,'balance returned','USER-1','UP5C-RCMD')" \
+# R5-F3 — the command must have PRODUCED the row. The type check alone is satisfied by every prior
+# command of that type, so a direct writer could reuse the succeeded receipt behind `UP5C-DED` to
+# append a second withholding and the append-only ledger would attribute it to an act that moved no
+# money. Both tables obey the same sentence.
+assert_rejects "commercial T5C R5-F3: a SECOND withholding reusing the receipt that produced the first" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-REUSE','p1','UPT5B-C1','UPT4-B3','retention',0.10,'USER-1','UP5C-CMD')"
+assert_rejects "commercial T5C R5-F3: a SECOND release reusing the receipt that produced the first" \
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RREUSE','p1','UP5C-DED',0.10,'reused receipt','USER-1','UP5C-RCMD')"
+# ── the split's load-bearing seal: a retained balance is what makes a certificate uncorrectable ──
+#
+# §H's rule is that a retained balance never vanishes without an attributable release. Task 5C
+# honours it by REFUSING the correction rather than carrying the ledger forward (re-statement is its
+# own review unit), and the whole argument for that split rests on this seal holding at PostgreSQL —
+# otherwise a bypass supersession drops the money exactly as round 1's F2 described.
+#
+# The supersession here is the COHERENT §F shape — stamp plus the return to `verified`, in one
+# transaction — so the only thing left to object to is the ₹0.60 still held. Asserted with 0.40 of
+# 1.00 released, i.e. a PARTIALLY released withholding, which is the case a naive "any release at
+# all" rule would wave through.
+assert_rejects "commercial T5C R5: superseding a certificate that still holds money (the retained balance would vanish)" \
+  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='drops the balance' WHERE \"id\"='UPT5B-C1'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+assert "commercial T5C R5: …and the certificate is still LIVE, so the refusal actually held" \
+  "SELECT (SELECT COUNT(*) FROM \"BillCertificate\" WHERE \"id\"='UPT5B-C1' AND \"supersededAt\" IS NULL)::text || '|' || (SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B3');" \
+  "1|certified"
+# From here on the withholding is fully released, so the T5B assertions below inherit no retained
+# balance — and the SAME correction they perform is then accepted, which is what makes the seal
+# above precise rather than merely strict.
+$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-REL2','p1','UP5C-DED',0.60,'balance returned','USER-1','UP5C-RCMD2')" \
   && printf 'ok      %s\n' "commercial T5C: releasing the remaining balance EXACTLY is ACCEPTED (the bound is <=, not <)" \
   || { printf 'FAILED  %s\n' "commercial T5C: releasing the exact remaining balance was rejected"; FAIL=1; }
 assert "commercial T5C: the withholding is now fully released, so nothing below inherits a retained balance" \
@@ -2284,40 +2319,39 @@ assert "commercial T5C R3/R4: exactly the certificate this block created is LIVE
   "SELECT COALESCE(string_agg(\"id\", ','), '(none)') FROM \"BillCertificate\" WHERE \"projectId\"='p1' AND \"billId\"='$UP5C_BILL' AND \"supersededAt\" IS NULL;" \
   "UP5C-C0"
 UP5C_LIVE=UP5C-C0
-$PSQL >/dev/null -c "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-D2','p1','$UP5C_LIVE','$UP5C_BILL','retention',0.50,'USER-1','UP5C-CMD')" \
+mint5c UP5C-CMD-D2  commercial.deduction.record  UP5C-D2
+mint5c UP5C-CMD-R2A commercial.deduction.release UP5C-R2A
+mint5c UP5C-CMD-R2B commercial.deduction.release UP5C-R2B
+$PSQL >/dev/null -c "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-D2','p1','$UP5C_LIVE','$UP5C_BILL','retention',0.50,'USER-1','UP5C-CMD-D2')" \
   && printf 'ok      %s\n' "commercial T5C R4: a fresh unreleased withholding on the live certificate is ACCEPTED" \
   || { printf 'FAILED  %s\n' "commercial T5C R4: the fresh withholding was rejected"; FAIL=1; }
-# R4-F3 — the FK proves only that the source EXISTS; a forged row naming a still-live withholding
-# would freeze it, because a re-stated deduction can never be released
-assert_rejects "commercial T5C R4-F3: re-stating a withholding that still stands on a LIVE certificate (it would freeze money somebody is owed)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\",\"restatedFromId\") VALUES('UP5C-FRZ','p1','$UP5C_LIVE','$UP5C_BILL','retention',0.50,'USER-1','UP5C-CMD','UP5C-D2')"
-# a SECOND withholding, FULLY released, so it is not one the replacement must carry — it exists to
-# give the terms rule below a source that reaches it. Without it the "different amount" assertion
-# named a deduction on another bill and was rejected by the SCOPE rule instead.
-$PSQL >/dev/null -c "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-D3','p1','$UP5C_LIVE','$UP5C_BILL','retention',0.40,'USER-1','UP5C-CMD')"
-$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-R3','p1','UP5C-D3',0.40,'given back in full','USER-1','UP5C-RCMD')"
-assert "commercial T5C R4: the second withholding is fully released, so the replacement owes it nothing" \
-  "SELECT (d.\"amount\" - COALESCE(SUM(r.\"amount\"),0))::text FROM \"BillDeduction\" d LEFT JOIN \"BillDeductionRelease\" r ON r.\"deductionId\"=d.\"id\" WHERE d.\"id\"='UP5C-D3' GROUP BY d.\"amount\";" \
+# ── the split's load-bearing seal, at the point where a bypass writer actually lands ─────────────
+#
+# Task 5C refuses the CORRECTION rather than carrying the ledger forward; re-statement is its own
+# review unit. The seal below is what makes that a split rather than a gap, so it is asserted on the
+# shape a bypass writer would use: the coherent §F correction — supersession stamp plus the return
+# to `verified`, in ONE transaction — with ₹0.50 still held.
+assert_rejects "commercial T5C R5: correcting a certificate that still holds money (the retained balance would vanish with no release)" \
+  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='drops the balance' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+assert "commercial T5C R5: …and the certificate is still LIVE, so the refusal actually held" \
+  "SELECT COALESCE(string_agg(\"id\", ','), '(none)') FROM \"BillCertificate\" WHERE \"projectId\"='p1' AND \"billId\"='$UP5C_BILL' AND \"supersededAt\" IS NULL;" \
+  "$UP5C_LIVE"
+# a PARTIAL release is still a retained balance — the case an "any release at all" rule waves through
+$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-R2A','p1','UP5C-D2',0.20,'first milestone','USER-1','UP5C-CMD-R2A')"
+assert_rejects "commercial T5C R5: a PARTIALLY released withholding still blocks the correction" \
+  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='still short' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+# …and once the money is returned the SAME correction is ACCEPTED, which is what makes the seal
+# precise rather than merely strict: it is about a retained balance, not about supersession
+$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-R2B','p1','UP5C-D2',0.30,'balance returned','USER-1','UP5C-CMD-R2B')"
+assert "commercial T5C R5: the withholding is now fully released" \
+  "SELECT (d.\"amount\" - COALESCE(SUM(r.\"amount\"),0))::text FROM \"BillDeduction\" d LEFT JOIN \"BillDeductionRelease\" r ON r.\"deductionId\"=d.\"id\" WHERE d.\"id\"='UP5C-D2' GROUP BY d.\"amount\";" \
   "0.00"
-# supersede it, paired with the bill status — a standalone supersession is refused (T5B R1-F2)
-$PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='restated' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
-# R4-F2 — the replacement MUST carry the balance. `restateDeductions` is SERVICE code; this is the
-# same rule where a bypass writer actually lands.
-assert_rejects "commercial T5C R4-F2: a replacement certificate that DROPS an unreleased withholding (the balance would vanish with no release)" \
-  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP5C-C3','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP5C-CMD3'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") SELECT 'UP5C-C3-'||\"id\",'p1','UP5C-C3',\"stockTransactionId\",\"consumedQty\" FROM \"CertifiedAcceptanceConsumption\" WHERE \"projectId\"='p1' AND \"certificateId\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
-# …and the SAME transaction WITH the carried row is accepted, so the seal is precise and not merely strict
-$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP5C-C3','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP5C-CMD3'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") SELECT 'UP5C-C3-'||\"id\",'p1','UP5C-C3',\"stockTransactionId\",\"consumedQty\" FROM \"CertifiedAcceptanceConsumption\" WHERE \"projectId\"='p1' AND \"certificateId\"='$UP5C_LIVE'; INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\",\"restatedFromId\") VALUES('UP5C-RST','p1','UP5C-C3','$UP5C_BILL','retention',0.50,'USER-1','UP5C-CMD','UP5C-D2'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
-  && printf 'ok      %s\n' "commercial T5C R4-F2: the same replacement WITH the carried withholding is ACCEPTED" \
-  || { printf 'FAILED  %s\n' "commercial T5C R4-F2: a correct re-statement was rejected — the seal is over-strict"; FAIL=1; }
-# R4-F3 — a re-statement carries the SAME withholding forward; changing its terms is a new judgement
-assert_rejects "commercial T5C R4-F3: re-stating a withholding with a DIFFERENT amount" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\",\"restatedFromId\") VALUES('UP5C-ALT','p1','UP5C-C3','$UP5C_BILL','retention',0.90,'USER-1','UP5C-CMD','UP5C-D3')"
-# R3-2 — a release lands on the LIVE row, not the superseded one it came from
-assert_rejects "commercial T5C R3-2: releasing the RE-STATED-FROM row (money given back against a certificate nobody is paying)" \
-  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RSRC','p1','UP5C-D2',0.10,'wrong row','USER-1','UP5C-RCMD')"
-$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-RLIVE','p1','UP5C-RST',0.10,'defects period closed','USER-1','UP5C-RCMD')" \
-  && printf 'ok      %s\n' "commercial T5C R3-2: releasing the LIVE re-stated row is ACCEPTED (the seal names the source, not releases as such)" \
-  || { printf 'FAILED  %s\n' "commercial T5C R3-2: the live release was rejected — the seal is over-strict"; FAIL=1; }
+$PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T5C R5: the SAME correction after an attributable release is ACCEPTED (the seal is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T5C R5: a correction with nothing left held was rejected — the seal is over-strict"; FAIL=1; }
+assert "commercial T5C R5: the ledger survives the correction as append-only HISTORY — nothing was deleted to make it legal" \
+  "SELECT (SELECT COUNT(*) FROM \"BillDeduction\" WHERE \"id\"='UP5C-D2')::text || '/' || (SELECT COUNT(*) FROM \"BillDeductionRelease\" WHERE \"deductionId\"='UP5C-D2')::text;" \
+  "1/2"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

@@ -269,3 +269,74 @@ caught by the suite rather than assumed:
   conflicts with the re-statement's `FOR UPDATE`. So the re-statement genuinely
   waits for an open release and carries the reduced balance, rather than racing
   it. PROBE 17 asserts the wait and the conserved arithmetic.
+
+## Round 5 — the split
+
+Four findings, all P2, all confirmed against the code:
+
+| Finding | Disposition |
+| --- | --- |
+| label supersession-raised exceptions distinctly | DISSOLVED by the split — see below |
+| require carried releases, not just a carried deduction | LEAVES with re-statement |
+| bind ledger commands to the row they produced | FIXED here — `resultRef` IS the row, both tables |
+| preserve restated ledger evidence fields | LEAVES with re-statement |
+
+Three of the four landed on seals rounds 3 and 4 had just added, which was the
+third consecutive round where findings arrived on the previous round's new code.
+The orchestrator's own state comment reported the unit at five finding-bearing
+heads — its stated limit — and recommended splitting.
+
+Two of the four are the same shape, and it is a shape this document had already
+named one head earlier: *when a fix names a direction, a side, or a half, write
+down what the opposite one is.* The carried-releases finding is the deduction
+half sealed without the release half. The evidence-fields finding is two fields
+of a copy checked out of five. That closure was written as prose, and prose did
+not change the behaviour it described — the same author wrote the same defect
+twice in the head that recorded the lesson.
+
+Both instances live in the re-statement machinery, and so does the third round-4
+finding before them. That is the actual signal: not four independent slips, but
+one mechanism whose faithful-copy rule needs more care than a paragraph in a
+review packet. It earns its own review unit.
+
+### What the split is
+
+§H's rule is that a retained balance never vanishes without an attributable
+release. Two mechanisms honour it:
+
+1. CARRY the ledger onto the replacement certificate (re-statement).
+2. REFUSE the correction until the money is given back attributably.
+
+This PR now does (2). Re-statement — carrying both row kinds together, sealing
+that the copy is faithful in every evidence-bearing field, keeping a source row
+releasable exactly once — becomes a follow-up unit.
+
+The refusal is STRICTER than re-statement: every state it permits, re-statement
+permits too, and it permits no act re-statement would refuse. That is the
+criterion that made splitting Task 5B safe, and it is why this is a split and
+not a gap. The practice's path is unchanged in substance — release the
+withholding, then correct the certificate — and the release is the attributable
+act §H wanted either way.
+
+The cost is stated plainly: until the follow-up lands, a certificate carrying
+unreleased money cannot be corrected in place.
+
+### Why finding 1 dissolves rather than being fixed
+
+The finding was that `supersede()` reports a `claim` mover while a deduction's
+withheld fold disappears. With supersession refused while an unreleased
+withholding stands, the withheld fold is necessarily ZERO at supersession, so
+the only money moving is the claim leaving `certified-payable`. `claim` is then
+the accurate label, and a deduction-shaped mover would name an act that cannot
+occur. This is recorded rather than silently dropped, because "the finding no
+longer applies" is a claim a reviewer should be able to check: PROBE 8 pins the
+refusal and PROBE 19 pins it at PostgreSQL.
+
+### CLOSURE 5 — a copy is checked field by field, or it is not checked
+
+Not adopted here, because the machinery it would govern is leaving. It is
+recorded as the entry condition for the follow-up unit: any rule that copies a
+row forward states the COMPLETE field list it preserves, and a test enumerates
+that list against the table's columns so a new column fails the test rather than
+silently escaping the copy. Three findings across two rounds came from checking
+a subset; the next unit does not get to rediscover that.

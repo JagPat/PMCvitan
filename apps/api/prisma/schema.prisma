@@ -3588,18 +3588,9 @@ model BillDeduction {
   /// §C rule ii — every fact records the command that produced it
   sourceCommandId String
 
-  /// §H/§F — the row on the SUPERSEDED certificate this one RE-STATES. Supersession does not
-  /// discard withholdings: a retained balance that vanished without an attributable release is
-  /// exactly what §H forbids, so certifying a replacement carries the live ledger forward and this
-  /// column is the audit chain. Unique, so one source row can never be restated twice.
-  restatedFrom   BillDeduction?  @relation("billDeductionRestatement", fields: [projectId, restatedFromId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  restatedFromId String?
-  restatedAs     BillDeduction[] @relation("billDeductionRestatement")
-
   releases BillDeductionRelease[]
 
   @@unique([projectId, id])
-  @@unique([projectId, restatedFromId])
   @@index([projectId, certificateId])
   @@index([projectId, billId])
 }
@@ -3622,16 +3613,10 @@ model BillDeductionRelease {
   releasedAt      DateTime @default(now())
   releasedBy      User     @relation("billDeductionReleases", fields: [releasedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   releasedById    String
+  /// §C rule ii — every fact records the command that produced it, and R5-F3 binds that command's
+  /// `resultRef` back to THIS row, so a succeeded receipt cannot be reused to append a second one
   sourceCommandId String
 
-  /// the release row on the superseded certificate this one re-states. §H: both halves of the fold
-  /// always share one scope, so releases are re-scoped WITH their deductions or the live
-  /// certificate would read the retention as unreleased and claw back money already given.
-  restatedFrom   BillDeductionRelease?  @relation("billReleaseRestatement", fields: [projectId, restatedFromId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
-  restatedFromId String?
-  restatedAs     BillDeductionRelease[] @relation("billReleaseRestatement")
-
   @@unique([projectId, id])
-  @@unique([projectId, restatedFromId])
   @@index([projectId, deductionId])
 }
