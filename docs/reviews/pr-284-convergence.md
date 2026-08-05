@@ -652,3 +652,48 @@ fix moves a lock earlier, every probe that observes that lock is observing a
 point that may no longer exist** — so the re-point followed the shape PROBE 13
 already settled on, and the assertion it proves is unchanged: two concurrent ₹60
 releases against a ₹100 withholding cannot both stand.
+
+## Round 10 — three P2s, one root, and all three refuse VALID work
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | the service precheck compared NET carried against the replacement, while the copied rows are GROSS and the SQL floor replays them | carried rows contribute their NET as an opening balance; the peak is taken over events this certificate originated |
+| 2 | copied rows collapse onto one timestamp, so a replay sorts every deduction before every release | dissolved by the same change — a carried ledger is no longer replayed at all |
+| 3 | provenance admitted a carried row citing its IMMEDIATE source, so a SECOND correction was refused | the chain is admitted by induction: the terms check binds each copy's command to its source's, down to the root where `resultRef` IS the row |
+
+Every one of these refuses a **valid** correction. That is a different failure
+mode from the previous nine rounds, and worth naming as its own root:
+
+**Root D — a seal that judges a copy as though it were an original.** The round-8
+and round-9 seals were written for rows recording something that HAPPENED on this
+certificate. A re-stated row records something that happened on the certificate
+this one replaces; what crosses is a BALANCE, not a history. Applying the
+event-level rules to it produces refusals that are individually well-argued and
+collectively wrong — the ₹40 gross peak, the collapsed timestamps and the
+immediate-source provenance are all correct statements about rows that originated
+here, and all three rows did not.
+
+The fix is one idea in three places rather than three fixes: **the carry brings
+forward a balance, and only what this certificate originated is folded as
+events.** Finding 2 then needs no code of its own — a ledger that is not replayed
+cannot be reordered.
+
+### What the strictness did NOT lose
+
+Relaxing a seal to admit valid work is exactly where a loosening hides, so both
+directions are pinned. The round-8 attack is untouched, because those rows ARE new
+here (`restatedFromId IS NULL`) and are still folded in order and still peak. And
+the carried balance itself may not exceed what the replacement certifies — PROBE
+25 asserts the ₹25-onto-₹25 correction is ACCEPTED and the same ledger onto a ₹10
+certificate is REFUSED, with both halves carried so the refusal is the balance
+rule rather than the dropped-release seal answering for it.
+
+### A probe that assumed an API
+
+PROBE 25 was first written as `certify(..., { certifiedAmount: '25.00' })`. There
+is no such input — `certify` DERIVES its amount from the evidence drawn, which is
+the whole point of Task 5B's frozen-evidence rule. The probe passed its first
+assertion and failed its second, which is the good outcome: an invented parameter
+that had silently done nothing would have left the probe green and meaningless.
+The correction path at a lower figure is therefore written directly, which is also
+the shape a bypass writer would use and so the one the seal must hold against.

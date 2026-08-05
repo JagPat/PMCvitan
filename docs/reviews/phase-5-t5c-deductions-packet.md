@@ -222,7 +222,7 @@ closures are RED-proved by breaking them, not by observing them pass.
 
 ## Evidence
 
-`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **26/26 GREEN**
+`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **29/29 GREEN**
 (22 before the split: the three re-statement probes left with the mechanism, and
 two probes were added for the refusal and its DB seal; round 6 added PROBE 20 and
 PROBE 21).
@@ -250,13 +250,28 @@ mine did not, and checking turned up five more of the same shape.
 - **the round-4 liveness seal and the round-5 refusal seal** are RED-proved by
   DROPPING them from a live database: without `BillDeduction_coherent` PROBE 18
   fails, and without `phase5_t5c_supersede_needs_release` PROBE 19 fails;
-  restored, 26/26.
+  restored, 29/29.
 - **the round-5 provenance binding** is RED-proved the same way: with the
   `resultRef` comparison removed, PROBE 16's two reuse assertions pass a reused
   receipt. Its probe-side twin matters as much — `mintCommand` now REQUIRES the
   caller to name the row the command produced, because the old default would have
   made every hostile insert in the file fail on provenance rather than on the rule
   it names.
+
+### Round 10: a carried ledger is a balance, not a history
+
+Three P2s with one root, and all three REFUSED valid corrections — the round-8/9
+seals judged a re-stated row as though it recorded something that happened on the
+new certificate. It did not: it happened on the certificate this one replaces, and
+what crosses is a BALANCE. Carried rows now contribute their net as an opening
+balance and the running peak is taken over events this certificate originated,
+which fixes the gross-vs-net refusal and dissolves the timestamp-ordering one (a
+ledger that is not replayed cannot be reordered). Provenance admits a carry by
+induction — the terms check binds each copy's command to its source's, down to the
+root where `resultRef` IS the row — so a retention survives more than one
+correction. Neither direction is lost: the round-8 attack rows are new here and
+still peak, and a carried balance above what the replacement certifies is still
+refused. PROBES 25–27 pin the acceptances and the refusals.
 
 ### Round 9: the ordering was caller-supplied, and the split is reversed
 
@@ -399,7 +414,7 @@ scoped to `NEW."id"`, the pin fires again. Anything new still trips it.
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 738/738 (+3: CLOSURE 3, CLOSURE 4, the single-writer pin) |
-| `phase5-t5c-deductions.test.ts` | **26/26** |
+| `phase5-t5c-deductions.test.ts` | **29/29** |
 | full integration, pristine migrated DB | **81 files / 915 tests** |
 | `upgrade-proof.sh` | PASSED — 424 assertions, 0 failures; the T5C block each paired with an accept, walking its OWN bill through the lifecycle, and the round-5 seals asserted on the COHERENT §F correction shape (partial release still blocks; full release then allows the same correction) |
 | migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |

@@ -199,6 +199,7 @@ RETURNS void AS $$
 DECLARE
   v_certified numeric;
   v_withheld  numeric;
+  v_opening   numeric;
   v_live      timestamp;
 BEGIN
   -- Codex P2 — LOCK the certificate BEFORE folding. Without it this trigger COUNTS without
@@ -217,31 +218,53 @@ BEGIN
 
   -- Codex round 8 — the fold used to be NET, over the whole ledger at once, and a net fold cannot
   -- see a withholding that never existed to take. A bypass transaction inserting a ₹150 deduction
-  -- and a ₹50 release against a ₹100 certificate left `v_withheld` = 100 and passed, and the
-  -- append-only ledger then said permanently that ₹150 was withheld from a ₹100 payable. Splitting
-  -- it across two ₹60 rows with a ₹20 release did the same thing.
+  -- and a ₹50 release against a ₹100 certificate left the fold at 100 and passed. So the bound is
+  -- the §C shape this phase already uses for stock: fold the ledger IN ORDER and require the
+  -- RUNNING balance to stay within the certificate.
   --
-  -- A gross cap (`SUM(deductions) <= certified`) closes that and breaks something honest: withhold
-  -- ₹100, give all ₹100 back, withhold ₹100 again is a sequence whose net never exceeds the
-  -- certificate, and a gross cap refuses it at ₹200.
+  -- Codex round 10 — but that fold must run over what actually HAPPENED HERE. A re-stated row did
+  -- not happen on this certificate: it happened against the one this replaces, and what crosses to
+  -- the replacement is a BALANCE, not a history to replay. Replaying it refuses valid corrections —
+  -- withhold ₹40 of ₹100, return ₹15, correct to ₹25: the ₹25 carried fits, and replaying the ₹40
+  -- peaks above it. The same replay reorders an interleaved ledger, because every copied row is
+  -- written in one transaction.
   --
-  -- So the bound is the §C shape this phase already uses for stock: fold the ledger IN ORDER and
-  -- require the RUNNING balance to stay within the certificate. A release ranks after a deduction
-  -- at the same instant, because money cannot come back before it was withheld — without that,
-  -- a release written in the same transaction could sort ahead of its own deduction.
+  -- So carried rows contribute their NET as an OPENING balance, and the running peak is taken over
+  -- the events this certificate actually originated. The round-8 attack is untouched: those rows
+  -- are new here (`restatedFromId IS NULL`), so they are still folded in order and still peak.
+  SELECT COALESCE(SUM(d."amount"), 0) - COALESCE((
+           SELECT SUM(r."amount") FROM "BillDeductionRelease" r
+            JOIN "BillDeduction" d2 ON d2."projectId" = r."projectId" AND d2."id" = r."deductionId"
+            WHERE d2."projectId" = p_project AND d2."certificateId" = p_certificate
+              AND d2."restatedFromId" IS NOT NULL
+         ), 0)
+    INTO v_opening
+    FROM "BillDeduction" d
+   WHERE d."projectId" = p_project AND d."certificateId" = p_certificate
+     AND d."restatedFromId" IS NOT NULL;
+
+  -- the carried balance alone may not exceed what the replacement certifies; `restateDeductions`
+  -- refuses this in the service with a message naming the shortfall, and this is its DB backstop
+  IF v_opening > v_certified THEN
+    RAISE EXCEPTION 'Certificate % carries % of retained balance forward, more than the % it certifies — a withholding is taken FROM a payable, and the replacement cannot hold what it never certified; release the difference first (%)', p_certificate, v_opening, v_certified, p_certificate;
+  END IF;
+
   SELECT COALESCE(MAX(running), 0) INTO v_withheld FROM (
-    SELECT SUM(delta) OVER (ORDER BY at, rank, rid ROWS UNBOUNDED PRECEDING) AS running
+    SELECT v_opening + SUM(delta) OVER (ORDER BY at, rank, rid ROWS UNBOUNDED PRECEDING) AS running
       FROM (
         SELECT d."recordedAt" AS at, 0 AS rank, d."id" AS rid, d."amount" AS delta
           FROM "BillDeduction" d
          WHERE d."projectId" = p_project AND d."certificateId" = p_certificate
+           AND d."restatedFromId" IS NULL
         UNION ALL
         SELECT r."releasedAt", 1, r."id", -r."amount"
           FROM "BillDeductionRelease" r
           JOIN "BillDeduction" d2 ON d2."projectId" = r."projectId" AND d2."id" = r."deductionId"
          WHERE d2."projectId" = p_project AND d2."certificateId" = p_certificate
+           AND d2."restatedFromId" IS NULL
       ) events
   ) balance;
+  v_withheld := GREATEST(v_withheld, v_opening);
 
   IF v_withheld > v_certified THEN
     RAISE EXCEPTION 'Unreleased deductions of % exceed the % this certificate certified — a withholding is taken FROM a payable, and there is nothing beyond the certificate to withhold from; recover the remainder against the NEXT certificate (%)', v_withheld, v_certified, p_certificate;
@@ -332,8 +355,17 @@ BEGIN
   -- can be carried exactly once), and the coherence seals below prove the source is on a superseded
   -- certificate of the same bill and that the terms match field for field. A writer cannot invent a
   -- re-statement to reuse a receipt, because the receipt must belong to the row it names.
-  IF v_result IS DISTINCT FROM NEW."id"
-     AND NOT (NEW."restatedFromId" IS NOT NULL AND v_result IS NOT DISTINCT FROM NEW."restatedFromId") THEN
+  -- Codex round 10 — a retention outlives more than one correction, and on the SECOND carry the row
+  -- cites the ROOT's command (the terms check requires exactly that) while `restatedFromId` names
+  -- the FIRST copy. Matching only the immediate source refused the honest chain.
+  --
+  -- A carried row is admitted by INDUCTION rather than by matching a name: the coherence seal
+  -- requires its `sourceCommandId` to equal its source's, field for field, and the source itself
+  -- passed this check when it was inserted — down to the root, where `resultRef` IS the row. So
+  -- every row in a chain rests on the root's command, and there is no new capability here: the
+  -- terms check makes a carried row an exact copy of a real superseded row, and `restatedFromId` is
+  -- UNIQUE, so it can be carried exactly once.
+  IF v_result IS DISTINCT FROM NEW."id" AND NEW."restatedFromId" IS NULL THEN
     RAISE EXCEPTION '% row % cites command %, which produced % — a ledger row records the command that PRODUCED it, and reusing a succeeded receipt attributes money to an act that did not move it', TG_TABLE_NAME, NEW."id", NEW."sourceCommandId", COALESCE(v_result, '(nothing)');
   END IF;
   -- Codex round 8 — type, status and `resultRef` proved everything about the cited act EXCEPT who
