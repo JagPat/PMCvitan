@@ -464,3 +464,57 @@ not read. The mechanical form, stated so it does not need remembering: **before 
 push, the gate's own predicates are evaluated against the head — the trailer via
 `git interpret-trailers --parse`, and the changed-file set via `git show --stat`
 against `CONVERGENCE_PACKET`.** Both are one command. Neither is a judgement call.
+
+## Round 7 — root B, in the upgrade proof
+
+One P2, and it is root B exactly: **evidence asserted without checking that it
+discriminates.**
+
+The assertion named the superseded-certificate rule but cited `UP5C-CMD`, a
+command bound to `UP5C-DED`. So the row was rejected for *provenance*, not for
+liveness, and the line would have stayed green with the rule it names deleted.
+The file states the correct discipline eight hundred lines above the defect —
+*"every fixture below binds to the id of the row it is about to attempt"* — which
+is the familiar shape: the rule was written down, and then not applied to a
+fixture added later.
+
+Verified rather than assumed, on the scratch database with BOTH liveness seals
+disabled:
+
+| fixture | what rejects it once the named rule is gone |
+| --- | --- |
+| old, cites `UP5C-CMD` | the provenance trigger — assertion still passes, proving nothing |
+| new, cites `UP5C-CMD-LATE` | nothing; the row is ACCEPTED — assertion fails, as it should |
+
+Two seals had to come off, not one: `BillDeduction_targets_live` (immediate) and
+`BillDeduction_coherent` (deferred) both carry the rule, and with only the first
+disabled the second still rejected — which is why the first attempt at this proof
+looked green and had to be pushed further before it said anything.
+
+### The twins, checked mechanically
+
+Root A's standing lesson is that a finding names one instance and the twin is one
+step away, so every ledger fixture in the file was audited by script rather than
+by eye: each row's id against the `resultRef` of the command it cites. Four
+mismatches, all four deliberate and correctly named — `UP5C-WT` (wrong command
+type), `UP5C-PS` (a command that never succeeded), `UP5C-RWT` (a release citing a
+record command), `UP5C-REUSE`/`UP5C-RREUSE` (reused receipts). Codex found the
+only real instance.
+
+### CLOSURE 7 — an assertion may name the rule that must reject it
+
+Rebinding the fixture fixes the instance. The reason the instance was possible is
+that `assert_rejects` accepted ANY rejection as proof of a NAMED rule, so every
+one of its call sites has this failure mode latent.
+
+`assert_rejects` now takes an optional third argument: an ERE the rejection
+message must match, failing with *"rejected, but by the WRONG rule"* when it does
+not. The superseded-certificate assertion uses it. Omitted, the check is exactly
+the original, so this adds a capability without touching the other call sites.
+
+The honest limit, stated because it matters: the reason-match does NOT by itself
+prove discrimination. With the seal present, the correct rule rejects first and
+the message matches either way — that is why the mis-bound fixture still passed
+the reason check, and why the proof above had to disable the seals instead. The
+argument narrows what an assertion accepts; only removing the rule shows what the
+assertion is actually testing.

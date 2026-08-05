@@ -258,6 +258,21 @@ mine did not, and checking turned up five more of the same shape.
   made every hostile insert in the file fail on provenance rather than on the rule
   it names.
 
+### Round 7: the late-withholding fixture proved provenance, not liveness
+
+Codex round 7 (P2): the superseded-certificate assertion in `upgrade-proof.sh`
+cited a command bound to a DIFFERENT row, so the provenance trigger rejected it
+and the line would have stayed green with the liveness rule deleted. The fixture
+now mints its own command, and `assert_rejects` gained an optional expected-reason
+argument so an assertion can name the rule that must do the rejecting.
+
+Proved on the scratch database with BOTH liveness seals disabled
+(`BillDeduction_targets_live` immediate AND `BillDeduction_coherent` deferred):
+the old fixture is still rejected — by provenance — while the corrected one is
+ACCEPTED, so only the corrected one fails when the rule it names is gone. Every
+other ledger fixture in the file was audited by script for the same defect; the
+four command mismatches found are all deliberate and correctly named.
+
 ### Round 6: the redundant lock in the refusal seal, and what it did not fix
 
 Codex round 6 found a lock-order inversion in `phase5_t5c_supersede_needs_release`.

@@ -764,10 +764,19 @@ assert "the Task-5 provenance FKs seal the issue chain (ledger→activity, ledge
 #    database (not merely constraint-name inspection). First a minimal COHERENT §C chain is
 #    planted (its acceptance proves the correction lets valid legacy-shaped data through); then
 #    each hostile insert must be REJECTED by the seal it targets. ──────────────────────────────
+# The optional third argument is an ERE the rejection message must match, and it exists because of
+# Codex round 6: a fixture bound to the wrong command was rejected by the provenance trigger while
+# NAMING the superseded-certificate rule, so the line stayed green with the rule it named removed.
+# "Something rejected it" is not evidence for a named rule — this lets an assertion say WHICH rule
+# must do the rejecting. Omitted, the check is the original one.
 assert_rejects() {
-  local label="$1" sql="$2"
-  if $PSQL -q -c "$sql" >/dev/null 2>&1; then
+  local label="$1" sql="$2" expect="${3:-}"
+  local err
+  if err=$($PSQL -q -c "$sql" 2>&1 >/dev/null); then
     printf 'FAILED  %s\n        (hostile insert was ACCEPTED — a correction seal is missing)\n' "$label"; FAIL=1
+  elif [ -n "$expect" ] && ! printf '%s' "$err" | grep -qE "$expect"; then
+    printf 'FAILED  %s\n        (rejected, but by the WRONG rule — wanted /%s/, got: %s)\n' \
+      "$label" "$expect" "$(printf '%s' "$err" | tr '\n' ' ' | cut -c1-160)"; FAIL=1
   else
     printf 'ok      %s (rejected by PostgreSQL)\n' "$label"
   fi
@@ -2288,8 +2297,15 @@ $PSQL >/dev/null -c "UPDATE \"BudgetException\" SET \"clearedAt\"=now() WHERE \"
 assert "commercial T5C: the withholdings taken while it was live SURVIVE its supersession as history" \
   "SELECT COUNT(*)::text FROM \"BillDeduction\" WHERE \"certificateId\"='UPT5B-C1';" \
   "1"
+# Codex round 6 (P2). This assertion USED to cite `UP5C-CMD`, which is bound to `UP5C-DED` — so the
+# provenance trigger rejected it for the wrong reason and the line stayed green with the liveness
+# seals removed. It named the superseded-certificate rule while testing command provenance. The
+# fixture binds to the row it is about to attempt, exactly as the `mint5c` rule above states, so the
+# ONLY thing left to reject it is the rule in its name.
+mint5c UP5C-CMD-LATE commercial.deduction.record UP5C-LATE
 assert_rejects "commercial T5C: a NEW withholding against a SUPERSEDED certificate (taken from nothing)" \
-  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-LATE','p1','UPT5B-C1','UPT4-B3','retention',1.00,'USER-1','UP5C-CMD')"
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-LATE','p1','UPT5B-C1','UPT4-B3','retention',1.00,'USER-1','UP5C-CMD-LATE')" \
+  'was superseded'
 
 # ── Codex rounds 3–4 — the re-statement chain, proven end to end on a real supersession ──────────
 # This block builds its OWN outstanding withholding rather than reusing `UP5C-DED` (fully released
