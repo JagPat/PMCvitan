@@ -2,6 +2,8 @@ import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/
 import {
   amendVendorBillSchema,
   certifyBillSchema,
+  recordDeductionSchema,
+  releaseDeductionSchema,
   grantSodExceptionSchema,
   correctMeasurementSchema,
   defineCostHeadSchema,
@@ -14,6 +16,8 @@ import {
   vendorBillStepSchema,
   type AmendVendorBillInput,
   type CertifyBillInput,
+  type RecordDeductionInput,
+  type ReleaseDeductionInput,
   type GrantSodExceptionInput,
   type CorrectMeasurementInput,
   type DefineCostHeadInput,
@@ -26,6 +30,7 @@ import {
   type VendorBillStepInput,
 } from '../contracts';
 import { CommercialService } from './commercial.service';
+import { CommercialDeductionService } from './commercial-deduction.service';
 import { CommercialBudgetService } from './commercial-budget.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
 import { CommercialBillService } from './commercial-bill.service';
@@ -58,6 +63,7 @@ export class CommercialController {
     private readonly bills: CommercialBillService,
     private readonly verification: CommercialVerificationService,
     private readonly certification: CommercialCertificationService,
+    private readonly deductions: CommercialDeductionService,
   ) {}
 
   /** §B — set or REVISE the live budget for one cost head. One command for both: v1 and a
@@ -268,6 +274,47 @@ export class CommercialController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.certification.supersede(projectId, body, user, idempotencyKey);
+  }
+
+  /**
+   * §H (Task 5C) — WITHHOLD money from a certified payable: retention, a penalty, or `other`.
+   *
+   * Its own permission rather than `commercial.certify`: certifying decides what is OWED and
+   * withholding decides what is PAID OF IT, and a practice may well want different people doing
+   * the two.
+   */
+  @Post('commercial/deductions/record')
+  @RolesFor('commercial.deduct')
+  recordDeduction(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(recordDeductionSchema)) body: RecordDeductionInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.deductions.record(projectId, body, user, idempotencyKey);
+  }
+
+  /** §H — give back part of a withholding, as its own attributable row. Never an edit. */
+  @Post('commercial/deductions/release')
+  @RolesFor('commercial.deduct.release')
+  releaseDeduction(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(releaseDeductionSchema)) body: ReleaseDeductionInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.deductions.release(projectId, body, user, idempotencyKey);
+  }
+
+  /** §H — one claim's withholding ledger and the `NET_PAYABLE` it produces. Every figure a fold. */
+  @Get('commercial/bills/:billId/deductions')
+  @RolesFor('commercial.read')
+  readDeductions(
+    @Param('projectId') projectId: string,
+    @Param('billId') billId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.deductions.readLedger(projectId, billId, user);
   }
 
   /** §E — the LIVE certificate on a claim, with the evidence it froze. 404 when none stands. */

@@ -17,7 +17,7 @@ import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBillQuery } from './commercial-bill.query';
-import { CommercialBudgetService } from './commercial-budget.service';
+import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import type {
   AmendVendorBillInput, RecordVendorBillInput, RejectVendorBillInput, VendorBillStepInput,
@@ -561,6 +561,7 @@ export class CommercialBillService {
     projectId: string,
     actor: { actorId: string; role: string },
     lines: ReadonlyArray<{ kind: 'material' | 'labour'; poLineId: string }>,
+    raisedBy: HeadroomMover = 'claim',
   ): Promise<void> {
     const seen = new Set<string>();
     const heads = new Set<string>();
@@ -582,7 +583,7 @@ export class CommercialBillService {
       if (active) heads.add(active.costHeadCode);
     }
     if (heads.size > 0) {
-      await this.budget.evaluate(tx, projectId, actor.actorId, [...heads], 'claim');
+      await this.budget.evaluate(tx, projectId, actor.actorId, [...heads], raisedBy);
     }
   }
 
@@ -596,8 +597,13 @@ export class CommercialBillService {
     projectId: string,
     actor: { actorId: string; role: string },
     billId: string,
+    // Codex P2 — the caller says WHAT MOVED. A deduction and a release both move `certified-payable`
+    // without touching the claim, and an exception they open labelled `claim` sends a PMC hunting
+    // for a vendor claim that never changed. `raisedBy` is the durable explanation, so it must
+    // describe the act, not the code path that noticed.
+    raisedBy: HeadroomMover = 'claim',
   ): Promise<void> {
-    await this.evaluateClaimHeads(tx, projectId, actor, await this.claimTargets(tx, projectId, billId));
+    await this.evaluateClaimHeads(tx, projectId, actor, await this.claimTargets(tx, projectId, billId), raisedBy);
   }
 
   /** The PO lines a bill's CURRENT version claims against — the heads a transition may move. */

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -53,6 +54,8 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.bill.verify': { file: 'commercial/commercial-verification.service.ts', needle: "'commercial.bill.verify'" },
     'commercial.bill.certify': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.bill.certify'" },
     'commercial.sod.grant': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.sod.grant'" },
+    'commercial.deduction.record': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.record'" },
+    'commercial.deduction.release': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.release'" },
     'commercial.certificate.supersede': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.certificate.supersede'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
@@ -64,6 +67,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.bill': "Get('commercial/bills/:billId')",
     'commercial.verification': "Get('commercial/bills/:billId/verification')",
     'commercial.certificate': "Get('commercial/bills/:billId/certificate')",
+    'commercial.deductions': "Get('commercial/bills/:billId/deductions')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -93,6 +97,249 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     // and the manifest agrees with the shared contract, so there is ONE declaration, not two
     expect([...commercialManifest.commands].sort()).toEqual([...COMMERCIAL_COMMANDS].sort());
     expect([...commercialManifest.queries].sort()).toEqual([...COMMERCIAL_QUERIES].sort());
+  });
+
+  /**
+   * CLOSURE 3 — A GUARD THAT READS A PARENT ROW TO DECIDE ABOUT A CHILD WRITE MUST LOCK IT
+   * (PR #284 convergence audit, root A).
+   *
+   * Root A — "a rule reaching the artifact it creates but not the sibling already there" — produced
+   * findings in all three review rounds of Task 5C, and every one was the same physical shape: a
+   * plpgsql guard that SELECTs a parent row, decides on what it read, and did not take `FOR UPDATE`.
+   * Round 1 fixed the withholding bound. Round 2 found its twin, the release bound. Round 3 found
+   * the liveness trigger — written in round 2, one function away from the lock round 2 had added.
+   *
+   * Three rounds of finding twins by hand is the signal that the closure should not be prose. Every
+   * other root in this module got a mechanical one (`FOLD_INPUTS`, the accept-first upgrade-proof
+   * pairs); this is root A's.
+   *
+   * THE RULE HAS TWO HALVES, and the first draft of this pin had only one — it flagged the
+   * withholding bound's FOLD, which is not a defect and could not be fixed as stated, because
+   * PostgreSQL forbids `FOR UPDATE` with an aggregate. You cannot lock a fold. You lock the row that
+   * SCOPES it, and the fold is then serialized by that lock. So:
+   *
+   *   1. a ROW read that decides (`SELECT … INTO`, no aggregate) must itself carry `FOR UPDATE`;
+   *   2. a SET read that decides (an aggregate fold, or an `EXISTS` probe) must be PRECEDED, in the
+   *      same function, by a `FOR UPDATE` — the scoping row must already be held.
+   *
+   * Writing the halves down is the same discipline root A is about: the first draft named one side
+   * of the distinction and left the other implicit, which is how this root produces findings.
+   */
+  it('every deciding guard in the 5C migration is serialized against a concurrent writer', () => {
+    const raw = readFileSync(
+      join(SRC, '../prisma/migrations/20270520000000_phase5_t5c_deductions/migration.sql'),
+      'utf8',
+    );
+
+    // COMMENTS MUST GO BEFORE ANALYSIS, and this is not tidiness — it is the pin's own root-B
+    // moment. The comment above the liveness read explains the fix in prose and contains the words
+    // "SELECT" and "FOR UPDATE". Analysed raw, the statement match STARTED inside that comment and
+    // then found `FOR UPDATE` in it, so the guard passed on its own explanation. Removing the lock
+    // from the migration left this pin GREEN until the comments were stripped.
+    // ONE left-to-right pass, comments consumed before quotes are considered — a per-line quote
+    // scan gets this backwards, because the prose is full of apostrophes (`§H's`, `Task 6's`) that
+    // are not string literals at all.
+    let sql = '';
+    let inString = false;
+    let inComment = false;
+    for (let i = 0; i < raw.length; i += 1) {
+      const c = raw[i]!;
+      if (inComment) {
+        if (c === '\n') { inComment = false; sql += c; }
+        continue;
+      }
+      if (inString) {
+        sql += c;
+        if (c === "'") inString = false;
+        continue;
+      }
+      if (c === '-' && raw[i + 1] === '-') { inComment = true; i += 1; continue; }
+      if (c === "'") inString = true;
+      sql += c;
+    }
+    // the stripper is evidence too: if a future string literal carries `--`, this says so rather
+    // than silently truncating the statement the pin is about to analyse
+    expect(sql, 'a `--` survived comment stripping — the scanner mis-parsed a string literal').not.toMatch(/--/u);
+
+    const functions = [...sql.matchAll(/CREATE OR REPLACE FUNCTION (\w+)[\s\S]*?\$\$ LANGUAGE plpgsql;/gu)];
+    expect(functions.length, 'no plpgsql functions parsed — the pin is not reading the migration').toBeGreaterThan(3);
+
+    // Tables another transaction can change UNDER a deciding read. `CommandExecution` is deliberately
+    // NOT here and the exemption is mechanical, not prose: a command row is created AND finalized
+    // inside the single transaction that also writes the ledger row citing it (`executeCommand`
+    // reserves, runs, and stamps `succeeded` in one `$transaction`), so there is no second writer to
+    // race. The pin below re-derives that from the source rather than trusting this comment.
+    const SHARED = ['BillCertificate', 'BillDeduction', 'BillDeductionRelease', 'VendorBill'];
+    const AGGREGATE = /\b(?:SUM|COUNT|MIN|MAX|AVG|BOOL_OR|BOOL_AND)\s*\(/iu;
+
+    // A fold can also be serialized by a lock this function did not take: the row the fold is SCOPED
+    // to may already be held by the statement that FIRED the trigger. That is invisible to a text
+    // scan, so it is named here one function at a time — never inferred by a pattern.
+    //
+    // A general "a fold scoped by NEW.id is fine" rule would be a hole, not an exemption: the firing
+    // row being locked only helps if the COUNTERPART writer reaches for that same row, and nothing
+    // in this file can check that. So each entry costs a named counterpart and a probe that fails
+    // when the counterpart is removed. Anything new still trips the pin.
+    const SERIALIZED_BY_THE_FIRING_ROW: Record<string, string> = {
+      // Fires AFTER UPDATE on "BillCertificate", so the transaction holds FOR NO KEY UPDATE on that
+      // row until commit — including when the DEFERRED body folds "BillDeduction" scoped to it.
+      // Counterpart: `BillDeduction_targets_live` (BEFORE INSERT, immediate) takes FOR UPDATE on the
+      // same certificate, which conflicts, so neither can pass the other.
+      // Proof, not argument: PROBE 21 in `phase5-t5c-deductions.test.ts` pins the block in BOTH
+      // directions and goes RED when `BillDeduction_targets_live` is disabled.
+      // It takes no lock of its own BECAUSE it must not: reaching for the bill here inverted the
+      // honest bill → certificate order and PostgreSQL answered with a deadlock (Codex round 6).
+      phase5_t5c_supersede_needs_release: 'BillDeduction',
+    };
+
+    const offenders: string[] = [];
+    for (const fn of functions) {
+      const body = fn[0];
+      const name = fn[1]!;
+      // only guards DECIDE; a function that raises nothing cannot be raced into a bad state
+      if (!body.includes('RAISE EXCEPTION')) continue;
+
+      // (1) row reads must lock themselves
+      for (const shared of SHARED) {
+        const pattern = new RegExp('SELECT[^;]*?INTO[^;]*?FROM "' + shared + '"[^;]*;', 'gsu');
+        for (const stmt of body.matchAll(pattern)) {
+          if (AGGREGATE.test(stmt[0])) continue; // a fold — half (2) covers it
+          if (!/FOR UPDATE/u.test(stmt[0])) {
+            offenders.push(`${name} reads a "${shared}" row without FOR UPDATE`);
+          }
+        }
+      }
+
+      // (2) set reads must be preceded by a lock — you cannot lock a fold, so the scoping row must
+      // already be held when it runs
+      const setReads = [
+        ...body.matchAll(/SELECT[^;]*?INTO[^;]*?FROM "(\w+)"[^;]*;/gsu),
+        ...body.matchAll(/IF\s+EXISTS\s*\(\s*SELECT[\s\S]*?FROM "(\w+)"/gu),
+      ];
+      for (const stmt of setReads) {
+        const isFold = AGGREGATE.test(stmt[0]);
+        const isExists = stmt[0].startsWith('IF');
+        if (!isFold && !isExists) continue;
+        if (!SHARED.includes(stmt[1]!)) continue;
+        const before = body.slice(0, stmt.index!);
+        if (SERIALIZED_BY_THE_FIRING_ROW[name] === stmt[1]) {
+          // the exemption has to EARN itself: it only holds while the fold is scoped to the firing
+          // row, so if that scoping ever disappears the pin fires again
+          expect(
+            stmt[0],
+            `${name} claims the firing row serializes its "${stmt[1]}" fold, but no longer scopes the fold to it`,
+          ).toMatch(/NEW\."id"/u);
+          continue;
+        }
+        if (!/FOR UPDATE/u.test(before)) {
+          offenders.push(`${name} folds "${stmt[1]}" with no FOR UPDATE taken before it`);
+        }
+      }
+    }
+    expect(
+      offenders,
+      'a guard decides on state it did not serialize — two concurrent writers can each pass it (PR #284 root A)',
+    ).toEqual([]);
+  });
+
+  /**
+   * CLOSURE 4 — AN INSERT-TIME GUARD OVER MUTABLE STATE NEEDS A COMMIT-TIME TWIN (root A, round 4).
+   *
+   * Round 4's three findings were one shape: a rule enforced at BEFORE INSERT but not at COMMIT, or
+   * in the service but not in the database. A BEFORE INSERT trigger sees the world MID-transaction,
+   * so a bypass writer can insert against a live certificate and then supersede it before
+   * committing — every insert-time check having already passed. What a transaction leaves behind is
+   * what a seal has to be about.
+   *
+   * CLOSURE 3 covers the LOCKING dimension of root A. This covers the TIMING one: if a table has a
+   * BEFORE INSERT guard that decides on another table's rows, it must also carry a deferred
+   * commit-time constraint trigger.
+   */
+  it('every insert-time guard over another table is backed by a commit-time seal', () => {
+    const sql = readFileSync(
+      join(SRC, '../prisma/migrations/20270520000000_phase5_t5c_deductions/migration.sql'),
+      'utf8',
+    );
+    const bodies = new Map(
+      [...sql.matchAll(/CREATE OR REPLACE FUNCTION (\w+)[\s\S]*?\$\$ LANGUAGE plpgsql;/gu)]
+        .map((m) => [m[1]!, m[0]]),
+    );
+    // The twin is DECLARED, not inferred, and that is the point: "the table has some deferred
+    // trigger" is not a closure, because `BillDeduction` already had two and the hole was still
+    // open. Naming the twin means a new insert-time guard cannot be added without deciding what
+    // re-checks it at commit — the check below fails on an undeclared one.
+    const COMMIT_TIME_TWIN: Record<string, string> = {
+      phase5_t5c_deduction_targets_live: 'phase5_t5c_deduction_coherent',
+      // the command's TYPE is immutable once minted, so the insert-time read cannot go stale; its
+      // STATUS can, which is exactly what the deferred twin re-reads
+      phase5_t5c_ledger_command_type: 'phase5_t5c_ledger_command_succeeded',
+      // the ordering that makes the running-balance fold sound: a release may not predate the
+      // withholding it discharges. The parent's `recordedAt` is append-only, so the insert-time
+      // read cannot go stale — but the fold this protects is the §H floor, and the round-4 rule is
+      // that a guard deciding on another table re-checks where the transaction ends
+      phase5_t5c_release_not_before_deduction: 'phase5_t5c_release_coherent',
+    };
+    const deferredOn = new Map<string, string[]>();
+    for (const m of sql.matchAll(/CREATE CONSTRAINT TRIGGER "[^"]+"\s+AFTER \w+ ON "(\w+)" DEFERRABLE INITIALLY DEFERRED\s+FOR EACH ROW EXECUTE FUNCTION (\w+)\(\)/gu)) {
+      deferredOn.set(m[1]!, [...(deferredOn.get(m[1]!) ?? []), m[2]!]);
+    }
+    const beforeInsert = [...sql.matchAll(/CREATE TRIGGER "[^"]+" BEFORE INSERT ON "(\w+)"\s+FOR EACH ROW EXECUTE FUNCTION (\w+)\(\)/gu)];
+    expect(beforeInsert.length, 'no BEFORE INSERT triggers parsed — the pin is not reading the migration').toBeGreaterThan(0);
+    expect(deferredOn.size, 'no deferred constraint triggers parsed — the pin is not reading the migration').toBeGreaterThan(0);
+
+    const foreignReads = (fn: string, table: string): string[] =>
+      [...new Set([...(bodies.get(fn) ?? '').matchAll(/FROM "(\w+)"/gu)].map((r) => r[1]!))]
+        .filter((t) => t !== table);
+
+    const gaps: string[] = [];
+    for (const [, table, fn] of beforeInsert) {
+      const body = bodies.get(fn!) ?? '';
+      if (!body.includes('RAISE EXCEPTION')) continue;
+      // its own row is fully known at insert; another table's rows can still change before commit
+      const reads = foreignReads(fn!, table!);
+      if (reads.length === 0) continue;
+
+      const twin = COMMIT_TIME_TWIN[fn!];
+      if (!twin) { gaps.push(`${fn} guards "${table}" on ${reads.join(', ')} at insert and declares no commit-time twin`); continue; }
+      if (!(deferredOn.get(table!) ?? []).includes(twin)) {
+        gaps.push(`${fn}'s declared twin ${twin} is not a deferred constraint trigger on "${table}"`);
+        continue;
+      }
+      const covered = foreignReads(twin, table!);
+      const missing = reads.filter((r) => !covered.includes(r));
+      if (missing.length > 0) gaps.push(`${twin} does not re-read ${missing.join(', ')} at commit, which ${fn} decided on at insert`);
+    }
+
+    expect(
+      gaps,
+      'an insert-time guard decides on state that can still change before COMMIT, and nothing re-checks it there (PR #284 root A, round 4)',
+    ).toEqual([]);
+  });
+
+  /**
+   * The `CommandExecution` exemption above, re-derived from the source instead of asserted. If a
+   * second write site ever appears — one that could flip `status` under another transaction's
+   * deferred check — the exemption stops holding and this fails, which is the point.
+   */
+  it('a CommandExecution row has exactly one writer: the transaction that mints it', () => {
+    const commands = readFileSync(join(SRC, 'platform/commands.ts'), 'utf8');
+    const writes = [...commands.matchAll(/commandExecution\.(create|update|updateMany|upsert|delete)\b/gu)];
+    expect(
+      writes.map((w) => w[1]),
+      'CommandExecution write sites changed — re-check the exemption in the guard-serialization pin',
+    ).toEqual(['create', 'update']);
+
+    const otherModules = execFileSync(
+      'grep',
+      ['-rlE', 'commandExecution\\.(create|update|updateMany|upsert|delete)\\b', '--include=*.ts', SRC],
+      { encoding: 'utf8' },
+    )
+      .split('\n')
+      .filter((f) => f && !f.endsWith('.test.ts') && !f.endsWith('platform/commands.ts'));
+    expect(
+      otherModules,
+      'a module outside the command ledger writes CommandExecution — the single-writer exemption no longer holds',
+    ).toEqual([]);
   });
 
   /**
@@ -181,6 +428,14 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ],
     },
     {
+      field: 'WITHHELD', owner: 'commercial', readVia: 'withheldAmountFor',
+      why: '§H — withheld money is not payable, so a deduction LOWERS §J `certified-payable` and can CLEAR an open over-budget exception; a release raises it again',
+      writers: [
+        { file: 'commercial/commercial-deduction.service.ts', method: 'record' },
+        { file: 'commercial/commercial-deduction.service.ts', method: 'release' },
+      ],
+    },
+    {
       field: 'BUDGET', owner: 'commercial',
       why: 'authority down is a breach with no commitment write anywhere — §B calls it the most ordinary case',
       writers: [{ file: 'commercial/commercial-budget.service.ts', method: 'setBudget' }],
@@ -206,18 +461,23 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
   });
 
-  it('FOLD_INPUTS covers every bill-side fold the budget query reads', () => {
+  it('FOLD_INPUTS covers every commercial-owned fold the budget query reads', () => {
     // The same derivation as the pin above, for the OTHER contract the fold consumes. The
     // procurement pin reads an interface; this one reads the CALLS, because `CommercialBillQuery`
     // hands back one map per fold rather than one row with fields.
     const fold = readFileSync(join(SRC, 'commercial/commercial-budget.query.ts'), 'utf8');
-    const read = [...fold.matchAll(/this\.bills\.(\w+)\(/gu)].map((m) => m[1]!);
-    expect(read.length, 'no `this.bills.*` calls found — the pin is not actually reading the fold').toBeGreaterThan(0);
+    // Task 5C widened this from `this.bills.*` to every COMMERCIAL-OWNED query the fold reads.
+    // The closure's own root applies to itself: naming one owner would leave the next one blind,
+    // exactly as naming `CERTIFIED` and leaving `BILLED_AMOUNT` unclaimed did. The other four
+    // owners the fold reads (procurement, labour, inventory, measurement) are covered by the
+    // interface pin above, which derives their fields from the read contract itself.
+    const read = [...fold.matchAll(/this\.(?:bills|deductions)\.(\w+)\(/gu)].map((m) => m[1]!);
+    expect(read.length, 'no commercial-owned fold calls found — the pin is not actually reading the fold').toBeGreaterThan(0);
     const claimed = new Set(FOLD_INPUTS.map((i) => i.readVia).filter(Boolean));
     for (const method of new Set(read)) {
       expect(
         claimed.has(method),
-        `the fold reads CommercialBillQuery.${method} but no FOLD_INPUTS row claims it — add the field with its writers, so §B's raise-or-clear covers the money it moves`,
+        `the fold reads a commercial-owned ${method} but no FOLD_INPUTS row claims it — add the field with its writers, so §B's raise-or-clear covers the money it moves`,
       ).toBe(true);
     }
     // …and no row may claim a fold that is no longer read, which would leave a writer test
@@ -236,7 +496,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         const next = src.indexOf('\n  async ', start + 1);
         const body = src.slice(start, next === -1 ? undefined : next);
         expect(
-          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(/u.test(body),
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.evaluateHeadroom\(/u.test(body),
           `${writer.file}#${writer.method} writes ${input.field} (${input.why}) but never re-evaluates — §B requires raise-or-clear in the SAME transaction`,
         ).toBe(true);
       });

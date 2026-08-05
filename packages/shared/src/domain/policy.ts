@@ -131,6 +131,13 @@ export const ROLE_POLICY = {
   // and collapsing them would mean any later widening of who may certify silently widened who may
   // authorise a certifier to override the rule that stops them.
   'commercial.sod.grant': ['pmc'],
+  // §H — WITHHOLDING money from a certified payable, and RELEASING part of it. Separate
+  // permissions for the same reason `certify` and `sod.grant` are separate: they are different
+  // acts, and a practice may well want the person who applies a penalty to be someone other than
+  // the person who can give it back. Same role list today; the point is that widening one later
+  // does not silently widen the other.
+  'commercial.deduct': ['pmc'],
+  'commercial.deduct.release': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

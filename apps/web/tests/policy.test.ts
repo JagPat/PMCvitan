@@ -71,6 +71,8 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   // approve, and collapsing them would let a later widening of verification widen payment too.
   'commercial.certify': ['pmc'],
   'commercial.sod.grant': ['pmc'],
+  'commercial.deduct': ['pmc'],
+  'commercial.deduct.release': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],

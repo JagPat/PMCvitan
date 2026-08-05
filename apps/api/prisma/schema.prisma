@@ -48,6 +48,8 @@ model Project {
   billCertificates BillCertificate[]
   sodExceptions SodException[]
   sodGrants SodGrant[]
+  billDeductions BillDeduction[]
+  billDeductionReleases BillDeductionRelease[]
   certifiedAcceptanceConsumption CertifiedAcceptanceConsumption[]
   certifiedMeasurementConsumption CertifiedMeasurementConsumption[]
   id           String   @id
@@ -849,6 +851,8 @@ model User {
   sodExceptionsApprover     SodException[]     @relation("sodExceptionsApprover")
   sodGrantsActor            SodGrant[]         @relation("sodGrantsActor")
   sodGrantsApprover         SodGrant[]         @relation("sodGrantsApprover")
+  billDeductionsRecorded    BillDeduction[]    @relation("billDeductionsRecorded")
+  billDeductionReleases     BillDeductionRelease[] @relation("billDeductionReleases")
   id                String    @id @default(cuid())
   project           Project   @relation(fields: [projectId], references: [id])
   projectId         String
@@ -3408,6 +3412,7 @@ model BillCertificate {
   measurementConsumption CertifiedMeasurementConsumption[]
   sodExceptions          SodException[]
   sodGrantsConsumed      SodGrant[]
+  deductions             BillDeduction[]
   // The one-LIVE-certificate-per-bill partial unique and the append-only trigger live in the
   // migration (Prisma cannot express a partial unique).
 
@@ -3536,4 +3541,99 @@ model SodGrant {
 
   @@unique([projectId, id])
   @@index([projectId, billId])
+}
+
+/// Phase 5 Task 5C (§H) — a DEDUCTION: money withheld from a certified payable.
+///
+/// **A deduction is a LEDGER ROW against a certification, never a column on it.** A column would
+/// have to be updated to change, and a withholding that can be edited in place is a withholding
+/// that never withheld anything — on a ₹100 certificate with ₹10 retention, quietly dropping the
+/// row raises net payable to ₹100 with no attributable release. A correction is a release row.
+///
+/// **Amounts are strictly positive and the row TYPE carries direction.** Direction is already
+/// modelled — a withholding is this row, a release is its own — so a negative amount encodes the
+/// same thing twice and the two encodings disagree. A `-10` retention makes
+/// `NET_PAYABLE = CERTIFIED − (−10)` raise a ₹100 certificate to ₹110: a deduction that pays out
+/// MORE, sealed append-only so the inflated payable cannot be corrected in place.
+///
+/// `advance-recovery` is NOT in this task's type set. It folds against an `advance` row created
+/// when the advance is PAID, and that is a payment fact — so the enum member arrives in Task 6
+/// together with the row that caps it. Shipping it early offers only two bad options: a recovery
+/// that cannot be represented, or one with no cap at all, which is a withholding against nothing.
+model BillDeduction {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  /// the CERTIFICATE this withholds against. §H: a deduction is a row against a certification, so
+  /// superseding that certificate takes its deductions out of every fold with it — the same live
+  /// rule the consumption sets use.
+  certificate   BillCertificate @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String
+  /// denormalized from the certificate so the bill-scoped folds and the DB seals reach the claim
+  /// without a join, and FK-bound to that same certificate's `(projectId, id, billId)` candidate
+  /// key so it cannot name a different bill than its certificate does
+  billId        String
+
+  /// `retention` · `penalty` · `other` (CHECK). Every declared member is in the `NET_PAYABLE` fold.
+  type   String
+  amount Decimal @db.Decimal(18, 2)
+  /// required for `other` and every `penalty` (CHECK), under the complete non-blank discipline —
+  /// presence is not justification
+  reason String?
+
+  recordedAt      DateTime @default(now())
+  recordedBy      User     @relation("billDeductionsRecorded", fields: [recordedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  recordedById    String
+  /// §C rule ii — every fact records the command that produced it
+  sourceCommandId String
+
+  /// §H/§F — the row on the SUPERSEDED certificate this one RE-STATES. Supersession does not
+  /// discard withholdings: a retained balance that vanished without an attributable release is
+  /// exactly what §H forbids, so certifying a replacement carries the live ledger forward and this
+  /// column is the audit chain. Unique, so one source row can never be restated twice.
+  restatedFrom   BillDeduction?  @relation("billDeductionRestatement", fields: [projectId, restatedFromId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  restatedFromId String?
+  restatedAs     BillDeduction[] @relation("billDeductionRestatement")
+
+  releases BillDeductionRelease[]
+
+  @@unique([projectId, id])
+  @@unique([projectId, restatedFromId])
+  @@index([projectId, certificateId])
+  @@index([projectId, billId])
+}
+
+/// Phase 5 Task 5C (§H) — RELEASING a withholding, as its own append-only row with its own
+/// authority. The retained balance is a FOLD over deductions minus releases with **no stored
+/// balance column** — the Phase-3 §C rule that produced a correct stock model.
+model BillDeductionRelease {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  /// releases are bounded by the unreleased balance of THEIR OWN deduction, so the row names it
+  deduction   BillDeduction @relation(fields: [projectId, deductionId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  deductionId String
+
+  amount Decimal @db.Decimal(18, 2)
+  reason String
+
+  releasedAt      DateTime @default(now())
+  releasedBy      User     @relation("billDeductionReleases", fields: [releasedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  releasedById    String
+  /// §C rule ii — every fact records the command that produced it, and R5-F3 binds that command's
+  /// `resultRef` back to THIS row, so a succeeded receipt cannot be reused to append a second one
+  sourceCommandId String
+
+  /// the release row on the superseded certificate this one re-states. §H: both halves of the fold
+  /// always share one scope, so releases are re-scoped WITH their deductions or the live
+  /// certificate would read the retention as unreleased and claw back money already given.
+  restatedFrom   BillDeductionRelease?  @relation("billReleaseRestatement", fields: [projectId, restatedFromId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  restatedFromId String?
+  restatedAs     BillDeductionRelease[] @relation("billReleaseRestatement")
+
+  @@unique([projectId, id])
+  @@unique([projectId, restatedFromId])
+  @@index([projectId, deductionId])
 }

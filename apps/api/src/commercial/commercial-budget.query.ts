@@ -5,6 +5,7 @@ import { ProcurementQuery } from '../procurement/procurement.query';
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialBillQuery } from './commercial-bill.query';
+import { CommercialDeductionQuery } from './commercial-deduction.query';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -93,6 +94,7 @@ export class CommercialBudgetQuery {
     private readonly inventory: InventoryQuery,
     private readonly measurement: CommercialMeasurementQuery,
     private readonly bills: CommercialBillQuery,
+    private readonly deductions: CommercialDeductionQuery,
   ) {}
 
   /**
@@ -127,6 +129,7 @@ export class CommercialBudgetQuery {
     const [
       materialLines, labourLines, accepted, measured,
       billedMaterial, billedLabour, certifiedMaterial, certifiedLabour,
+      withheldMaterial, withheldLabour,
     ] = await Promise.all([
       this.procurement.committedLinesFor(tx, projectId, materialIds),
       this.labour.committedLinesFor(tx, projectId, labourIds),
@@ -143,6 +146,15 @@ export class CommercialBudgetQuery {
       // into a residual instead of a raw set.
       this.bills.certifiedAmountFor(tx, projectId, 'material', materialIds),
       this.bills.certifiedAmountFor(tx, projectId, 'labour', labourIds),
+      // Phase 5 Task 5C (§H/§J) — the WITHHELD term. §J defines `certified-payable` as
+      // `NET_PAYABLE − APPROVED`, and unit C shipped it with both subtractions as the identity
+      // because neither fact existed. This is the first of them arriving: a withholding is money
+      // that is NOT payable, so it leaves the bucket. It is read here rather than folded into
+      // `certifiedAmountFor` deliberately — hiding it inside a fold this query already reads would
+      // leave `FOLD_INPUTS` blind to a new input, which is the exact closure failure that pin
+      // exists to prevent.
+      this.deductions.withheldAmountFor(tx, projectId, 'material', materialIds),
+      this.deductions.withheldAmountFor(tx, projectId, 'labour', labourIds),
     ]);
 
     for (const code of heads) {
@@ -202,9 +214,14 @@ export class CommercialBudgetQuery {
           // HOW MUCH: the total exposure is unchanged and only the bucket holding it changes.
           const billed = billedMaterial.get(a.poLineId) ?? ZERO;
           const certified = certifiedMaterial.get(a.poLineId) ?? ZERO;
+          const withheld = withheldMaterial.get(a.poLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(receivedValue.sub(billed), ZERO));
           awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
-          certifiedPayable = certifiedPayable.add(certified);
+          // §H — withheld money is NOT payable, so it leaves this bucket. The clamp is belt-and-
+          // braces rather than load-bearing: §H's floor is enforced on the deduction WRITE, at the
+          // service and at PostgreSQL, so a withholding can never exceed the certificate it is
+          // taken from and this subtraction cannot go negative through any legal path.
+          certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld), ZERO));
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
@@ -226,9 +243,10 @@ export class CommercialBudgetQuery {
           // against it — the labour twin of the material split above
           const billed = billedLabour.get(a.labourPoLineId) ?? ZERO;
           const certified = certifiedLabour.get(a.labourPoLineId) ?? ZERO;
+          const withheld = withheldLabour.get(a.labourPoLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(consumed.sub(billed), ZERO));
           awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
-          certifiedPayable = certifiedPayable.add(certified);
+          certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld), ZERO));
         }
       }
       const budget = budgetOf.get(code) ?? null;

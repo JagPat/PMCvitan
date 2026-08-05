@@ -17,6 +17,7 @@ import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { RequirementsQueryService } from '../activities/requirements.query';
 import { CommercialBillService } from '../commercial/commercial-bill.service';
 import { CommercialBillQuery } from '../commercial/commercial-bill.query';
+import { CommercialDeductionQuery } from '../commercial/commercial-deduction.query';
 import type { CommercialActivationPlan } from '@vitan/shared';
 
 /**
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
       const budgetService = new CommercialBudgetService(
         prisma,
         capabilitiesService,
-        new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma), new CommercialMeasurementQuery(), new CommercialBillQuery()),
+        new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma), new CommercialMeasurementQuery(), new CommercialBillQuery(), new CommercialDeductionQuery(new CommercialBillQuery())),
       );
       const activation = new CommercialActivationService(
         prisma,

@@ -61,6 +61,14 @@ export const COMMERCIAL_COMMANDS = [
   // excuses it is the authority's. One command taking an `approverId` cannot tell them apart, and
   // that is exactly how an override becomes a name the certifier typed.
   'commercial.sod.grant',
+  // Phase 5 Task 5C (§H) — WITHHOLD money from a certified payable, and GIVE PART OF IT BACK.
+  // Two commands, and a release is not an "undo": the deduction stays as history and the release
+  // is its own attributable row, because a withholding that could be retracted in place is a
+  // withholding nobody can audit. Their authorities are declared separately for the same reason
+  // `certify` and `sod.grant` are — withholding a vendor's money and returning it are different
+  // acts, and a later widening of one must not silently widen the other.
+  'commercial.deduction.record',
+  'commercial.deduction.release',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -82,6 +90,10 @@ export const COMMERCIAL_QUERIES = [
   // verification triple this is NOT derived: a certificate is a FACT that was written, and
   // recomputing it would be recomputing a decision.
   'commercial.certificate',
+  // Phase 5 Task 5C — the §H ledger for one claim, with the `NET_PAYABLE` it produces. The
+  // withheld and net figures are FOLDS computed on every call: §H forbids a stored balance column,
+  // so there is nothing else they could be.
+  'commercial.deductions',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -155,7 +167,7 @@ export interface BudgetExceptionDto {
    *  case (§G authorises more than the ordered quantity and no commitment releases against the
    *  extra units); `receipt_progress` is a receipt recorded, rejected or reversed, which re-prices
    *  a CLOSED-SHORT line's released remainder with nothing accepted at all. */
-  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim';
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim' | 'deduction' | 'deduction_release';
   raisedAt: string;
   raisedById: string;
   clearedAt: string | null;
@@ -275,6 +287,22 @@ export type VendorBillStatus = (typeof VENDOR_BILL_STATUSES)[number];
  * second claim for the same quantity would pass.
  */
 export const BILL_STATUSES_NOT_LIVE = ['draft', 'rejected', 'disputed', 'resolved'] as const;
+
+/**
+ * The statuses that mean a claim is PAST CERTIFICATION — a live certificate stands behind it.
+ *
+ * §F derives the payment status from three folds, so `certified` is one of four post-certification
+ * statuses rather than a terminal one. Stated ONCE here because three places ask the question and
+ * a fourth asks it in SQL: the certificate↔status biconditional, the `supersede` guard, the read
+ * surface, and `phase5_t5c_past_certification()`. Codex found the first spelling of this where the
+ * database arrow was widened and the service guard was not, so a fully-withheld claim could not be
+ * corrected — the rule reached the artifact it created and not the sibling already there.
+ */
+// (Task 6 will need this set when §F's derivation lands.)
+export const BILL_STATUSES_PAST_CERTIFICATION = ['certified', 'approved-for-payment', 'part-paid', 'paid'] as const;
+export function isPastCertification(status: string): boolean {
+  return (BILL_STATUSES_PAST_CERTIFICATION as readonly string[]).includes(status);
+}
 export function isLiveBillStatus(status: string): boolean {
   return !(BILL_STATUSES_NOT_LIVE as readonly string[]).includes(status);
 }
@@ -488,3 +516,67 @@ export interface CertificateDto {
   /** the frozen labour evidence — what the measurement-correction floor refuses against */
   measurementConsumption: CertifiedConsumptionDto[];
 }
+
+// ── Phase 5 Task 5C (§H) — the DEDUCTION ledger ─────────────────────────────────────────────
+
+/**
+ * The deduction types this task ships. `advance-recovery` is deliberately absent: it folds against
+ * an `advance` row created when the advance is PAID, so the enum member arrives in Task 6 with the
+ * row that caps it. §0b's "every declared member is in the fold" rule then holds at BOTH stages,
+ * rather than being briefly false while a declared type had nothing to fold against.
+ */
+export const DEDUCTION_TYPES = ['retention', 'penalty', 'other'] as const;
+export type DeductionType = (typeof DEDUCTION_TYPES)[number];
+
+/** The types that must carry a reason. A `retention` is a contract term; these are judgements. */
+export const DEDUCTION_TYPES_REQUIRING_REASON: readonly DeductionType[] = ['penalty', 'other'];
+
+/** One withholding against a certified payable. Append-only: corrected by a release, never edited. */
+export interface BillDeductionDto {
+  id: string;
+  certificateId: string;
+  billId: string;
+  type: DeductionType;
+  /** decimal STRING — §A forbids a float64 round trip */
+  amount: string;
+  reason: string | null;
+  recordedAt: string;
+  recordedById: string;
+  /** `amount` less everything released against it — a FOLD, never a stored column */
+  unreleased: string;
+  releases: BillDeductionReleaseDto[];
+}
+
+/** Giving back part of a withholding. Its own row, its own authority, its own attribution. */
+export interface BillDeductionReleaseDto {
+  id: string;
+  deductionId: string;
+  amount: string;
+  reason: string;
+  releasedAt: string;
+  releasedById: string;
+}
+
+/** The `commercial.deductions` read: one bill's ledger and the payable it produces. */
+export interface BillDeductionLedgerDto {
+  billId: string;
+  /** null when no certificate stands — there is nothing to withhold from */
+  certificateId: string | null;
+  certifiedAmount: string | null;
+  deductions: BillDeductionDto[];
+  /** Σ unreleased withholdings against the live certificate */
+  withheld: string;
+  /** §G bound 4 — `CERTIFIED` less unreleased deductions. Never negative: the floor is enforced on
+   *  the deduction write, so no fold ever has to clamp it. */
+  netPayable: string | null;
+  /** the STORED bill status. §F's derivation reads three folds and two of them (`APPROVED`,
+   *  `PAID`) are Task 6's, so it lands there with the rows that supply them; until then a
+   *  withholding moves the money and not the status, and this surface reports what IS rather than
+   *  what a partial derivation would guess. */
+  billStatus: VendorBillStatus;
+}
+
+// §F's `deriveBillStatus` is NOT here. It reads three folds and two of them — `APPROVED` and
+// `PAID` — arrive with Task 6's approval and payment rows, so the function lands beside them
+// rather than being written against two structural zeroes. Task 5C moves the money a deduction
+// withholds; Task 6 moves the status that money implies.
