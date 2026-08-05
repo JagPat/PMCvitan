@@ -340,3 +340,36 @@ row forward states the COMPLETE field list it preserves, and a test enumerates
 that list against the table's columns so a new column fails the test rather than
 silently escaping the copy. Three findings across two rounds came from checking
 a subset; the next unit does not get to rediscover that.
+
+### The PR-body gate, twice
+
+The round-5 head was blocked by `review-scope` before Codex saw it: the rewritten
+body dropped the `<!-- review-size: justified-large -->` marker. The PREVIOUS
+head was blocked by the same gate, for a different missing element, and that
+head's commit message was *"Convergence: record the PR-body gate error that
+blocked the last head."*
+
+So this is the same lesson landing twice, and recording it a second time in prose
+would be the exact mistake this round is about. The mechanical closure:
+
+**CLOSURE 6 — the PR body is an artifact with a contract, and the contract is
+executable.** `scripts/review-efficiency.mjs` already states every requirement:
+the marker must be the FIRST thing in the body (`^` against `body.trimStart()`),
+and all six `REQUIRED_INVARIANTS` need a row with two non-empty cells. Rewriting
+the body means re-satisfying that contract, not re-remembering it — run the
+checker against the drafted body before pushing, exactly as any other test is run
+before pushing. A body rewritten from scratch loses whatever was not re-derived,
+and both blocks were bodies rewritten from scratch.
+
+The very next head proved the closure's own scope was too narrow. The gate then
+rejected the commit MESSAGE: `Review-Convergence: complete` was present, but in
+its own paragraph, so git parsed only the final `Co-Authored-By` block as
+trailers and the marker was invisible. Same failure mode as the PR body — an
+artifact with a machine contract, satisfied by eye instead of by the machine —
+so CLOSURE 6 is stated for the class rather than the instance:
+
+**every artifact with a machine-readable contract is verified with the machine
+that reads it, before the push.** The PR body against
+`scripts/review-efficiency.mjs`; the commit message against
+`git interpret-trailers --parse`. Not "I wrote the marker" but "the parser
+returned it".
