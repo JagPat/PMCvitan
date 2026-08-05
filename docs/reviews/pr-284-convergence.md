@@ -373,3 +373,94 @@ that reads it, before the push.** The PR body against
 `scripts/review-efficiency.mjs`; the commit message against
 `git interpret-trailers --parse`. Not "I wrote the marker" but "the parser
 returned it".
+
+## Round 6 — a lock justified by a caller the seal exists to bypass
+
+One finding: the deferred supersession seal took `VendorBill` `FOR UPDATE`,
+inverting the honest bill → certificate order. Real, and it reproduces as
+PostgreSQL `40P01`.
+
+The comment justifying that lock said: *"`supersede` already holds `lockBill`, so
+the seal adds no new lock order."* That sentence is true. It is true **of the
+service path** — and this seal is a DEFERRED constraint trigger, which exists
+precisely for the writer that did not come through the service. So the lock
+discipline of a DB seal was justified by the behaviour of the caller the seal was
+written to catch.
+
+That is a root worth naming on its own, because it is not root A's twin-one-step-
+away and it is not root B's non-discriminating evidence:
+
+**Root C — a database seal justified by application behaviour.** A seal's premise
+may only cite what the DATABASE guarantees: row locks the firing statement itself
+takes, constraints, other triggers. The moment a seal's correctness argument
+contains the name of a service function, the argument is about the path that does
+not need the seal. The closure is mechanical: any lock or ordering claim written
+inside a trigger must be justifiable with the service layer deleted from the
+picture.
+
+Applied here, the corrected justification cites only database facts — the firing
+`UPDATE` holds `FOR NO KEY UPDATE` on the certificate row to end of transaction,
+and the counterpart `BillDeduction_targets_live` takes `FOR UPDATE` on that same
+row — and those two conflict, so neither writer can pass the other.
+
+### The part I got wrong, and what caught it
+
+I removed the lock on the argument that it "bought no serialization", and pushed
+that argument as a finished head. `commercial.contract.test.ts` — a pin written
+in this PR, at root A — went red: *"a guard decides on state it did not serialize
+— two concurrent writers can each pass it."*
+
+The pin was right to fire. My reasoning happened to be correct, but I had shipped
+it as prose, and prose is exactly what this PR has spent six rounds learning not
+to accept. **A claim that a lock is redundant is a claim about concurrent
+executions, and it is worth what an experiment says it is worth.** PROBE 21 now
+pins the block in both directions and goes RED when the counterpart trigger is
+disabled; the removal is justified by that, not by the paragraph above it.
+
+The pin was also not weakened to let the head pass. `SERIALIZED_BY_THE_FIRING_ROW`
+names one function with its counterpart and its probe, because a general
+"folds scoped by `NEW."id"` are fine" rule would exempt future cases that have no
+counterpart at all — a hole rather than an exemption — and the entry re-derives
+its own premise so it fires again if the scoping disappears.
+
+### What is NOT fixed, and why it is named instead
+
+Removing the 5C lock does not remove the deadlock. The arm that closes the cycle
+is `phase5_t5_certified_bound_check`, fired by 5B's deferred
+`BillCertificate_bound_sealed` in the merged, independently cleared
+`20270510000000_phase5_t5b_certification`. That lock is load-bearing — it folds
+`VendorBillLine` across non-superseded versions, which the certificate row lock
+does not cover — so removing it would trade a deadlock for an unserialized
+bound-3 check.
+
+This was established by instrumenting the live lock graph, not inferred: the
+blocked side is the correction's `COMMIT`, and disabling the 5C seal entirely
+still deadlocks. Under the residual a deadlock aborts both sides and no money
+moves, so what degrades is the error message, not the ledger. PROBE 20 therefore
+pins conservation, which holds under either resolution, and deliberately does not
+pin the error text, which does not.
+
+Reopening a cleared 5B seal at a post-Task-5 review stop is a scope decision, not
+a defect fix. It is named here and in the migration so the next unit inherits it
+knowingly.
+
+### CLOSURE 6, a third time — and the machine I still did not run
+
+Round 5 recorded CLOSURE 6 for the PR body, then immediately re-recorded it for
+the commit message: *every artifact with a machine-readable contract is verified
+with the machine that reads it, before the push.*
+
+This head satisfied that for the commit message — `git interpret-trailers --parse`
+was run, and the trailer was confirmed present rather than assumed. Then the head
+was blocked anyway, by the convergence gate, for the packet: `assessConvergence`
+requires THIS head's commit to CHANGE a file matching
+`docs/reviews/[^/]*convergence[^/]*\.md`. The file existed. I had read its name in
+the packet and treated "it exists" as "the requirement is met" — which is
+precisely satisfying a machine contract by eye.
+
+So the closure holds and my application of it was partial: I ran the machine for
+the artifact I remembered had one, and not for the artifact whose contract I had
+not read. The mechanical form, stated so it does not need remembering: **before a
+push, the gate's own predicates are evaluated against the head — the trailer via
+`git interpret-trailers --parse`, and the changed-file set via `git show --stat`
+against `CONVERGENCE_PACKET`.** Both are one command. Neither is a judgement call.
