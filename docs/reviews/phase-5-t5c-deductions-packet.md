@@ -222,9 +222,10 @@ closures are RED-proved by breaking them, not by observing them pass.
 
 ## Evidence
 
-`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **20/20 GREEN**
+`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **22/22 GREEN**
 (22 before the split: the three re-statement probes left with the mechanism, and
-two probes were added for the refusal and its DB seal).
+two probes were added for the refusal and its DB seal; round 6 added PROBE 20 and
+PROBE 21).
 
 Every probe is RED at `0b87d85` for the trivial reason that the ledger does not
 exist there, so this packet does not lean on that. What it leans on instead is
@@ -249,13 +250,83 @@ mine did not, and checking turned up five more of the same shape.
 - **the round-4 liveness seal and the round-5 refusal seal** are RED-proved by
   DROPPING them from a live database: without `BillDeduction_coherent` PROBE 18
   fails, and without `phase5_t5c_supersede_needs_release` PROBE 19 fails;
-  restored, 20/20.
+  restored, 22/22.
 - **the round-5 provenance binding** is RED-proved the same way: with the
   `resultRef` comparison removed, PROBE 16's two reuse assertions pass a reused
   receipt. Its probe-side twin matters as much — `mintCommand` now REQUIRES the
   caller to name the row the command produced, because the old default would have
   made every hostile insert in the file fail on provenance rather than on the rule
   it names.
+
+### Round 6: the redundant lock in the refusal seal, and what it did not fix
+
+Codex round 6 found a lock-order inversion in `phase5_t5c_supersede_needs_release`.
+The cycle is real and reproduces as PostgreSQL `40P01`. The attribution is
+incomplete, and the difference is recorded here rather than smoothed over.
+
+The seal locked `VendorBill`, justified by "`supersede` already holds `lockBill`,
+so the seal introduces no new order". That is true of the SERVICE path and false
+of the only path this seal ever runs for: a bypass writer updating
+`BillCertificate` alone holds the certificate first, so the seal reaches
+certificate → bill against the honest bill → certificate.
+
+**The lock is removed** because it bought no serialization: the certificate row is
+already locked by the UPDATE that fires the trigger, a concurrent deduction takes
+that same certificate `FOR UPDATE`, and a concurrent release can only reduce an
+outstanding balance. What it did buy was one arm of the cycle.
+
+**Removal is necessary and not sufficient, and the packet will not claim
+otherwise.** With the 5C lock gone the race still deadlocks, because the arm that
+closes the cycle is `phase5_t5_certified_bound_check` — fired by 5B's deferred
+`BillCertificate_bound_sealed`, defined in the merged, independently cleared
+`20270510000000_phase5_t5b_certification`, which 5C does not redefine. This was
+established by instrumenting the live lock graph, not inferred: the blocked side
+is the correction's `COMMIT`, and disabling the 5C seal entirely still deadlocks.
+
+That 5B lock is **load-bearing** — unlike the one removed here, it folds
+`VendorBillLine` across non-superseded versions, a fold the certificate row lock
+does not cover. Removing it would trade a deadlock for an unserialized bound-3
+check. Nor can the order be repaired inside a trigger: a bypass writer takes the
+certificate lock before any trigger runs, so any certificate-side trigger needing
+the bill is certificate → bill by construction. The remedies are 5B-owned (drop
+or restructure that fold) or global (a project-wide certificate-first order across
+cleared services) — either is out of this unit, and both are named rather than
+quietly attempted here.
+
+**No integrity is at risk under the residual.** A deadlock aborts both sides; no
+withholding and no correction commits, and no money moves. What degrades is the
+error quality — `deadlock detected` instead of the seal's precise refusal.
+
+PROBE 20 therefore pins the property that actually holds — **a withholding is
+never committed against a retired certificate**, true under either resolution of
+the race — and deliberately does NOT pin the error text, which after this change
+is not deterministic. A probe asserting the refusal message would be asserting
+something false.
+
+**Why dropping the lock does not cost serialization.** The `commercial.contract`
+pin caught this removal, on the rule that a fold must be preceded by a lock —
+"you cannot lock a fold, so the scoping row must already be held". The rule is
+right, and the removal survives it for a reason a text scan cannot see: the fold's
+scoping row is held by the UPDATE that FIRED the trigger.
+
+| | lock on the certificate row |
+|---|---|
+| supersede | `UPDATE … SET "supersededAt"` → `FOR NO KEY UPDATE`, held to end of transaction, so still held when the DEFERRED body folds at COMMIT |
+| withhold | `BillDeduction_targets_live` (BEFORE INSERT, immediate) → `FOR UPDATE` |
+
+Those two conflict, so neither can pass the other. **PROBE 21** pins that block in
+BOTH directions with two bypass writers touching one table each — no `lockBill`,
+so the certificate row is the only thing that could be serializing them — and
+`waitUntilBlocked` throws if the block never happens, so it cannot pass quietly.
+It is RED-proved the same way the round-4 and round-5 seals are: with
+`BillDeduction_targets_live` disabled on a live database it FAILS, restored 22/22.
+
+The pin is not weakened into a pattern. `SERIALIZED_BY_THE_FIRING_ROW` names this
+ONE function, because the firing row being locked only helps if the counterpart
+writer reaches for that same row, and nothing in a static scan can check that — a
+general "folds scoped by `NEW."id"` are fine" rule would be a hole rather than an
+exemption. The entry also re-derives its own premise: if the fold ever stops being
+scoped to `NEW."id"`, the pin fires again. Anything new still trips it.
 - **CLOSURE 3 and CLOSURE 4** are RED-proved by breaking them, not by watching
   them pass. Remove the lock from the withholding bound, the release bound, or
   the liveness trigger and CLOSURE 3 names the function; unwire the commit-time
@@ -271,7 +342,7 @@ mine did not, and checking turned up five more of the same shape.
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 738/738 (+3: CLOSURE 3, CLOSURE 4, the single-writer pin) |
-| `phase5-t5c-deductions.test.ts` | **20/20** |
+| `phase5-t5c-deductions.test.ts` | **22/22** |
 | full integration, pristine migrated DB | **81 files / 915 tests** |
 | `upgrade-proof.sh` | PASSED — 424 assertions, 0 failures; the T5C block each paired with an accept, walking its OWN bill through the lifecycle, and the round-5 seals asserted on the COHERENT §F correction shape (partial release still blocks; full release then allows the same correction) |
 | migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |

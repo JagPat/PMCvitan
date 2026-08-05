@@ -840,6 +840,173 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
       .toBe(0);
   });
 
+  it('PROBE 20 (§H): a bypass supersession racing an honest withholding never records against a dead payable', async () => {
+    // Codex round 6. The seal used to lock the BILL, on the reasoning that `supersede` already holds
+    // `lockBill` so no new lock order was introduced. True of the SERVICE path — and this seal only
+    // ever runs for the path where it is false.
+    //
+    //   honest  `record`  : bill (`lockBill`) ─→ certificate (`BillDeduction_targets_live`)
+    //   bypass  supersede : certificate (its own UPDATE) ─→ bill (the deferred seal)
+    //
+    // ABBA. PostgreSQL breaks it by aborting somebody with a deadlock, which is a strictly worse
+    // answer than the refusal the seal was written to give.
+    //
+    // PROBE 17 and PROBE 19 do NOT reach this: their bypass updates `VendorBill` in the same
+    // transaction, so it holds BOTH locks before the honest writer asks for either. The inversion
+    // needs a writer that touches the certificate ALONE — which is exactly what a hand-written
+    // correction looks like.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+
+    const holder = new PrismaClient();
+    let letCommit!: () => void;
+    let marked!: () => void;
+    const mayCommit = new Promise<void>((r) => { letCommit = r; });
+    const hasMarked = new Promise<void>((r) => { marked = r; });
+
+    // the CERTIFICATE alone — no `VendorBill` write, so the bill lock is still free when the
+    // deferred seal fires and the honest writer is the one holding it
+    const supersession = holder.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='bypass-race' WHERE "id"=$1`,
+        cert.id, f.memberUser.id,
+      );
+      marked();
+      await mayCommit;
+    }, { timeout: 20_000 });
+
+    let withholding!: PromiseSettledResult<unknown>;
+    let correction!: PromiseSettledResult<unknown>;
+    try {
+      await hasMarked;
+      const settled = Promise.allSettled([
+        deductions.record(projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId)),
+      ]);
+      // the honest writer already holds the BILL and is now waiting on the CERTIFICATE inside the
+      // liveness trigger — the half of the cycle the seal used to close by reaching the other way
+      await waitUntilBlocked('BillDeduction');
+      letCommit();
+      correction = (await Promise.allSettled([supersession]))[0]!;
+      withholding = (await settled)[0]!;
+    } finally {
+      letCommit();
+      await supersession.catch(() => undefined);
+      await holder.$disconnect();
+    }
+
+    // Both sides cannot win: one of them is always resolved against.
+    expect([correction.status, withholding.status].filter((s) => s === 'rejected').length)
+      .toBeGreaterThanOrEqual(1);
+
+    // The property that actually holds, and the one worth having: a withholding is NEVER committed
+    // against a certificate that has been retired. Whether this race ends in the seal's refusal or
+    // in a rollback, the ledger is left in a state §H can defend.
+    const after = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, id: cert.id } });
+    const committed = await t.prisma.billDeduction.count({ where: { projectId, billId } });
+    if (after.supersededAt !== null) {
+      expect(committed, 'a retired certificate must carry no withholding recorded after it died').toBe(0);
+    } else {
+      // the correction lost; the certificate still stands, so a withholding against it is legitimate
+      expect(correction.status).toBe('rejected');
+    }
+
+    // A deadlock abort IS a permitted resolution here, and saying so is the honest part. The
+    // remaining inversion is not this unit's: the certificate-side lock on `VendorBill` that closes
+    // the cycle is taken by `phase5_t5_certified_bound_check`, fired by 5B's deferred
+    // `BillCertificate_bound_sealed` and defined in the merged, independently-cleared
+    // `20270510000000_phase5_t5b_certification`. Unlike the lock this task removed, that one is
+    // LOAD-BEARING: it folds `VendorBillLine` across non-superseded versions, which the certificate
+    // row lock does not cover. Removing it would trade a deadlock for an unserialized bound-3 check.
+    //
+    // Nothing is lost to the abort — both sides roll back and no money moves — so what degrades is
+    // the message, not the ledger. This probe therefore pins CONSERVATION, which holds either way,
+    // and deliberately does not pin the error text, which does not.
+  });
+
+  it('PROBE 21 (§H): the CERTIFICATE row serializes withholding against supersession, with no bill lock', async () => {
+    // The reason the round-6 removal is safe, proved instead of argued.
+    //
+    // `commercial.contract.test.ts` scans the migration for a guard that folds a shared table with
+    // no `FOR UPDATE` before it, on the rule that "you cannot lock a fold, so the scoping row must
+    // already be held". The rule is right. What a STATIC scan cannot see is that this fold's scoping
+    // row is held by the UPDATE that FIRED the trigger:
+    //
+    //   supersede  : `UPDATE "BillCertificate" SET "supersededAt"` → FOR NO KEY UPDATE on the row,
+    //                held to end of transaction, so still held when the DEFERRED seal folds at COMMIT
+    //   withhold   : `BillDeduction_targets_live` (BEFORE INSERT, immediate) → FOR UPDATE on that row
+    //
+    // FOR UPDATE conflicts with FOR NO KEY UPDATE, so the two cannot pass each other — which is the
+    // ENTIRE serialization claim, and a claim about lock conflicts is worth what an experiment says.
+    // This probe pins the conflict itself, in BOTH directions. What follows FROM it — that no
+    // withholding survives against a retired certificate — is PROBE 19 and PROBE 20's job.
+    for (const supersedeFirst of [true, false]) {
+      const projectId = await freshProject();
+      const billId = await certifiedClaim(projectId);
+      const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+      const deductionId = `${cert.id}-race`;
+      const commandId = await mintCommand(projectId, 'commercial.deduction.record', deductionId);
+
+      // BOTH sides are bypass writers touching ONE table each — no `lockBill`, so the certificate
+      // row is the only thing that could be serializing them.
+      const supersede = (c: PrismaClient) => c.$executeRawUnsafe(
+        `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$3, "supersedeReason"='bypass-race'
+          WHERE "projectId" = $1 AND "id" = $2`,
+        projectId, cert.id, f.memberUser.id,
+      );
+      const withhold = (c: PrismaClient) => c.$executeRawUnsafe(
+        `INSERT INTO "BillDeduction" ("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+         VALUES ($1,$2,$3,$4,'retention',30.00,$5,$6)`,
+        deductionId, projectId, cert.id, billId, f.memberUser.id, commandId,
+      );
+      const [held, blocked] = supersedeFirst ? [supersede, withhold] : [withhold, supersede];
+      // the statement the SECOND session is running when it should be stuck
+      const needle = supersedeFirst ? 'INSERT INTO "BillDeduction"' : 'UPDATE "BillCertificate"';
+
+      const a = new PrismaClient();
+      const b = new PrismaClient();
+      let entered!: () => void;
+      const isHolding = new Promise<void>((r) => { entered = r; });
+      let resolveBlocked!: () => void;
+      const isBlocked = new Promise<void>((r) => { resolveBlocked = r; });
+      const ROLLBACK = new Error('probe rollback');
+
+      // A takes its lock and keeps the transaction open
+      const first = a.$transaction(async (tx) => {
+        await held(tx as unknown as PrismaClient);
+        entered();
+        // hold until B is demonstrably stuck, then abandon — the probe is about the WAIT, and
+        // rolling back keeps it from depending on a fully-formed supersede lineage
+        await isBlocked;
+        throw ROLLBACK;
+      }, { timeout: 30_000 }).catch((e: unknown) => e);
+
+      await isHolding;
+      let sawBlock = false;
+      const second = b.$transaction(async (tx) => {
+        await blocked(tx as unknown as PrismaClient);
+        // if we get here at all, we must have waited for A
+        expect(sawBlock, `the second writer passed straight through — nothing serialized them (supersedeFirst=${supersedeFirst})`).toBe(true);
+        throw ROLLBACK;
+      }, { timeout: 30_000 }).catch((e: unknown) => e);
+
+      // THROWS if the block never happens, so a probe that stops proving its claim cannot pass quietly
+      await waitUntilBlocked(needle);
+      sawBlock = true;
+      resolveBlocked();
+      await first;
+      await second;
+
+      // both abandoned, so the ledger is exactly where it started — the probe proves the WAIT and
+      // changes nothing
+      expect(await t.prisma.billDeduction.count({ where: { projectId, billId } })).toBe(0);
+      const after = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, id: cert.id } });
+      expect(after.supersededAt).toBeNull();
+      await a.$disconnect();
+      await b.$disconnect();
+    }
+  });
+
   // ── §C rule ii — a keyed replay appends NOTHING ──────────────────────────────────────────────
 
   it('PROBE 10 (§C): a keyed replay of either write appends nothing', async () => {

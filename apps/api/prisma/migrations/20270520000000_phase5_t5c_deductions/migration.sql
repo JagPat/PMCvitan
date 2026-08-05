@@ -408,16 +408,27 @@ CREATE CONSTRAINT TRIGGER "BillDeduction_coherent"
 CREATE OR REPLACE FUNCTION phase5_t5c_supersede_needs_release() RETURNS trigger AS $$
 DECLARE
   v_live record;
-  v_bill text;
 BEGIN
   IF NEW."supersededAt" IS NULL OR OLD."supersededAt" IS NOT NULL THEN RETURN NULL; END IF;
 
-  -- the BILL scopes this fold, and you cannot lock a fold. `supersede` already holds this lock
-  -- (`lockBill`), so the seal adds no new lock order — it only closes the gap for a writer that
-  -- never took it.
-  SELECT b."id" INTO v_bill FROM "VendorBill" b
-   WHERE b."projectId" = NEW."projectId" AND b."id" = NEW."billId"
-     FOR UPDATE;
+  -- Codex round 6 — this seal took NO lock of its own, and that is deliberate. It used to lock the
+  -- BILL, reasoning that "`supersede` already holds `lockBill`, so the seal adds no new lock order".
+  -- That sentence is true of the SERVICE path and false of the only path this seal ever runs for.
+  -- The honest deduction path locks bill → certificate (`lockBill`, then `BillDeduction_targets_live`
+  -- takes the certificate `FOR UPDATE`). A bypass writer that updates `BillCertificate` alone holds
+  -- the CERTIFICATE first and would then have reached for the bill here — certificate → bill. That
+  -- is an ABBA inversion, and PostgreSQL resolves it by aborting somebody as a deadlock instead of
+  -- returning the refusal below, which is a worse answer than the one this seal exists to give.
+  --
+  -- No lock is needed, because the CERTIFICATE row is already locked by the UPDATE that fired this
+  -- trigger, and the certificate is what the fold is scoped to:
+  --   · a concurrent DEDUCTION must take that same certificate `FOR UPDATE` (`BillDeduction_targets_live`),
+  --     so it cannot slip a new withholding in beside this check — it waits, and then meets a
+  --     superseded certificate and is refused;
+  --   · a concurrent RELEASE only ever REDUCES an outstanding balance, so the worst it can produce
+  --     is a refusal that a retry no longer earns. Strict, never permissive — and the append-only
+  --     ledger means neither direction can be walked back behind us.
+  -- Taking the bill on top of that bought no serialization; it only bought the inversion.
 
   SELECT d."id", (d."amount" - COALESCE((SELECT SUM(r."amount") FROM "BillDeductionRelease" r
                                           WHERE r."projectId" = d."projectId" AND r."deductionId" = d."id"), 0)) AS "outstanding"

@@ -172,6 +172,26 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     const SHARED = ['BillCertificate', 'BillDeduction', 'BillDeductionRelease', 'VendorBill'];
     const AGGREGATE = /\b(?:SUM|COUNT|MIN|MAX|AVG|BOOL_OR|BOOL_AND)\s*\(/iu;
 
+    // A fold can also be serialized by a lock this function did not take: the row the fold is SCOPED
+    // to may already be held by the statement that FIRED the trigger. That is invisible to a text
+    // scan, so it is named here one function at a time — never inferred by a pattern.
+    //
+    // A general "a fold scoped by NEW.id is fine" rule would be a hole, not an exemption: the firing
+    // row being locked only helps if the COUNTERPART writer reaches for that same row, and nothing
+    // in this file can check that. So each entry costs a named counterpart and a probe that fails
+    // when the counterpart is removed. Anything new still trips the pin.
+    const SERIALIZED_BY_THE_FIRING_ROW: Record<string, string> = {
+      // Fires AFTER UPDATE on "BillCertificate", so the transaction holds FOR NO KEY UPDATE on that
+      // row until commit — including when the DEFERRED body folds "BillDeduction" scoped to it.
+      // Counterpart: `BillDeduction_targets_live` (BEFORE INSERT, immediate) takes FOR UPDATE on the
+      // same certificate, which conflicts, so neither can pass the other.
+      // Proof, not argument: PROBE 21 in `phase5-t5c-deductions.test.ts` pins the block in BOTH
+      // directions and goes RED when `BillDeduction_targets_live` is disabled.
+      // It takes no lock of its own BECAUSE it must not: reaching for the bill here inverted the
+      // honest bill → certificate order and PostgreSQL answered with a deadlock (Codex round 6).
+      phase5_t5c_supersede_needs_release: 'BillDeduction',
+    };
+
     const offenders: string[] = [];
     for (const fn of functions) {
       const body = fn[0];
@@ -202,6 +222,15 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         if (!isFold && !isExists) continue;
         if (!SHARED.includes(stmt[1]!)) continue;
         const before = body.slice(0, stmt.index!);
+        if (SERIALIZED_BY_THE_FIRING_ROW[name] === stmt[1]) {
+          // the exemption has to EARN itself: it only holds while the fold is scoped to the firing
+          // row, so if that scoping ever disappears the pin fires again
+          expect(
+            stmt[0],
+            `${name} claims the firing row serializes its "${stmt[1]}" fold, but no longer scopes the fold to it`,
+          ).toMatch(/NEW\."id"/u);
+          continue;
+        }
         if (!/FOR UPDATE/u.test(before)) {
           offenders.push(`${name} folds "${stmt[1]}" with no FOR UPDATE taken before it`);
         }
