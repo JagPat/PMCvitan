@@ -273,6 +273,11 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       // the command's TYPE is immutable once minted, so the insert-time read cannot go stale; its
       // STATUS can, which is exactly what the deferred twin re-reads
       phase5_t5c_ledger_command_type: 'phase5_t5c_ledger_command_succeeded',
+      // the ordering that makes the running-balance fold sound: a release may not predate the
+      // withholding it discharges. The parent's `recordedAt` is append-only, so the insert-time
+      // read cannot go stale — but the fold this protects is the §H floor, and the round-4 rule is
+      // that a guard deciding on another table re-checks where the transaction ends
+      phase5_t5c_release_not_before_deduction: 'phase5_t5c_release_coherent',
     };
     const deferredOn = new Map<string, string[]>();
     for (const m of sql.matchAll(/CREATE CONSTRAINT TRIGGER "[^"]+"\s+AFTER \w+ ON "(\w+)" DEFERRABLE INITIALLY DEFERRED\s+FOR EACH ROW EXECUTE FUNCTION (\w+)\(\)/gu)) {

@@ -558,3 +558,97 @@ the one reported, no probe demonstrates it, and bound 2 already caps each releas
 by its own deduction — so it is named here rather than fixed on speculation. The
 standing rule is that a finding gets its twin checked, not that every neighbouring
 thought gets implemented in the same head.
+
+## Round 9 — two P2s, and a scope decision reversed
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| 1 | the running-balance cap ordered by caller-writable `recordedAt`/`releasedAt`, so a backdated release sorted ahead of its own deduction and hid the peak | FIXED — a release may not predate the withholding it discharges |
+| 2 | supersession refused a correction while money was held, but the plan requires the balance to be CARRIED | FIXED — re-statement is restored, on the owner's decision |
+
+**Finding 1 landed on round 8's own fix, and on something this audit had
+dismissed.** The round-8 entry said an out-of-order release was "a different
+shape, no probe demonstrates it" and left it. Codex demonstrated it in one
+paragraph.
+
+The lesson is narrower than "I was wrong". *No probe demonstrates it* is a
+reasonable bar for deciding what to build next. It is the wrong bar for a seal
+whose entire purpose is to survive a writer who is trying — there, the question is
+not whether anyone has demonstrated an attack but whether the seal's premise is
+something the attacker controls. This one ordered by two columns the caller
+supplies. **An ordering that trusts caller-supplied columns is not an ordering.**
+
+The fix makes the timestamps SOUND rather than out-guessing them in the fold: a
+release may not predate its own deduction, so the fold's ordering is true by
+construction. Equal instants stay legal, which matters because that is what the
+service actually writes — both rows take one `CURRENT_TIMESTAMP` inside one
+transaction, and the rank already orders them.
+
+### Finding 2 — the split is reversed, and by whom
+
+Round 5 split re-statement out of this unit on JagPat's explicit instruction,
+after that machinery produced findings in two consecutive rounds. This PR then
+honoured §H by REFUSING a correction while money was held, and argued the refusal
+was strictly stricter than re-statement.
+
+The refusal *is* stricter. The workaround it forces is not, and that is what the
+argument missed: releasing money that was never returned writes an append-only row
+asserting a payment that did not happen. **False evidence in an immutable ledger
+is a worse outcome than the extra step the refusal was meant to justify** — and
+the plan's own worked example (₹100 certificate, ₹10 retention, corrected to ₹50)
+is exactly that case.
+
+The plan was checked directly rather than taken on the reviewer's word, and it is
+unambiguous (`2026-07-29-phase-5-commercial-control.md:746-771`): supersession
+re-states the deductions, and releases are re-stated WITH them, atomically.
+
+So this was not mine to decide. The finding reverses a scope call the owner made
+explicitly, so it was put back to the owner with the options and the costs, and
+the instruction was to implement re-statement here. **That is why this head does
+what round 5 removed.**
+
+### The two defects that caused the split are fixed, not re-inherited
+
+Restoring a mechanism that was removed *because it generated findings* is only
+safe if the findings are addressed. Both were, and both were the reason CLOSURE 5
+was recorded as this work's entry condition:
+
+- **Round 5 finding 2** — the replacement seal required the carried DEDUCTION and
+  said nothing about its carried RELEASES. A retained balance is a fold over both,
+  so carrying ₹10 while dropping its ₹4 release reads as ₹10 retained and ₹0
+  released, clawing back money the vendor already has. The seal now requires both
+  halves, and the upgrade proof asserts the half-carry is refused.
+- **Round 5 finding 4** — the terms check compared two fields of a five-field
+  copy. It now compares all five, and the release side all four.
+
+**CLOSURE 5 is now executable rather than remembered.** The copied field list is
+stated once in the service, mirrored by the database check, and a test enumerates
+BOTH tables' real columns from `information_schema` and requires every column to
+be either copied-and-checked or explicitly not-copied. A column added later lands
+in neither list and fails that test rather than silently escaping the copy.
+
+### What the tripwires caught in this head
+
+Three gaps, all in code written this round, all found by the pins rather than by
+review: the new ordering guard read its parent row without locking it; the
+dropped-release fold read a row without locking it; and the ordering guard was an
+insert-time decision over another table with no declared commit-time twin. The
+twin is now declared and the check is repeated in the deferred release seal.
+
+That is the pins doing exactly what they were added for, on their author.
+
+A fourth surfaced only in the FULL suite: PROBE 14 asserted that a concurrent
+release is observed blocked at COMMIT, and the ordering guard takes the parent
+`FOR UPDATE` at BEFORE INSERT — so the release path now serializes EARLIER and no
+session was blocked where the probe looked. The invariant is not weaker; the probe
+watched the wrong point.
+
+This is the second time this exact thing has happened in this file, and the first
+time is written a few lines above it: round 3 moved the certificate lock earlier
+and PROBE 13 was re-pointed from "hold both writers open" to "prove the wait",
+because holding both open now deadlocks against the lock the fix installed. PROBE
+14 is the same probe on the release side and was left in the old shape. **When a
+fix moves a lock earlier, every probe that observes that lock is observing a
+point that may no longer exist** — so the re-point followed the shape PROBE 13
+already settled on, and the assertion it proves is unchanged: two concurrent ₹60
+releases against a ₹100 withholding cannot both stand.

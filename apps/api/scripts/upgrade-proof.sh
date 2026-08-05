@@ -2039,9 +2039,17 @@ assert_rejects "commercial T5C R5-F3: a SECOND release reusing the receipt that 
 # transaction — so the only thing left to object to is the ₹0.60 still held. Asserted with 0.40 of
 # 1.00 released, i.e. a PARTIALLY released withholding, which is the case a naive "any release at
 # all" rule would wave through.
-assert_rejects "commercial T5C R5: superseding a certificate that still holds money (the retained balance would vanish)" \
-  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='drops the balance' WHERE \"id\"='UPT5B-C1'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
-assert "commercial T5C R5: …and the certificate is still LIVE, so the refusal actually held" \
+# Codex round 9 — supersession CARRIES the retained balance onto the replacement rather than
+# refusing the correction, so what the database requires is the CARRY, and it is required where the
+# money would otherwise vanish: the replacement certificate's own INSERT. A bare supersession is
+# legal (the bill returns to `verified` and is not payable at all); it is re-certifying without
+# carrying that would drop the balance. Asserted with 0.40 of 1.00 released, i.e. a PARTIALLY
+# released withholding, which is the case a naive "any release at all" rule would wave through.
+mint5c UP5C-CMD-NOCARRY commercial.bill.certify UPT5B-C1-NC
+assert_rejects "commercial T5C R9: re-certifying WITHOUT carrying the retained balance forward" \
+  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='drops the balance' WHERE \"id\"='UPT5B-C1'; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") SELECT 'UPT5B-C1-NC',\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",'UP5C-CMD-NOCARRY' FROM \"BillCertificate\" WHERE \"id\"='UPT5B-C1'; INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") SELECT gen_random_uuid()::text,\"projectId\",'UPT5B-C1-NC',\"stockTransactionId\",\"consumedQty\" FROM \"CertifiedAcceptanceConsumption\" WHERE \"certificateId\"='UPT5B-C1'; COMMIT;" \
+  'does not re-state'
+assert "commercial T5C R9: …and the original certificate is still LIVE, so the refusal actually held" \
   "SELECT (SELECT COUNT(*) FROM \"BillCertificate\" WHERE \"id\"='UPT5B-C1' AND \"supersededAt\" IS NULL)::text || '|' || (SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B3');" \
   "1|certified"
 # From here on the withholding is fully released, so the T5B assertions below inherit no retained
@@ -2341,21 +2349,38 @@ mint5c UP5C-CMD-R2B commercial.deduction.release UP5C-R2B
 $PSQL >/dev/null -c "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-D2','p1','$UP5C_LIVE','$UP5C_BILL','retention',0.50,'USER-1','UP5C-CMD-D2')" \
   && printf 'ok      %s\n' "commercial T5C R4: a fresh unreleased withholding on the live certificate is ACCEPTED" \
   || { printf 'FAILED  %s\n' "commercial T5C R4: the fresh withholding was rejected"; FAIL=1; }
-# ── the split's load-bearing seal, at the point where a bypass writer actually lands ─────────────
+# ── the carry requirement, at the point where a bypass writer actually lands ────────────────────
 #
-# Task 5C refuses the CORRECTION rather than carrying the ledger forward; re-statement is its own
-# review unit. The seal below is what makes that a split rather than a gap, so it is asserted on the
-# shape a bypass writer would use: the coherent §F correction — supersession stamp plus the return
-# to `verified`, in ONE transaction — with ₹0.50 still held.
-assert_rejects "commercial T5C R5: correcting a certificate that still holds money (the retained balance would vanish with no release)" \
-  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='drops the balance' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
-assert "commercial T5C R5: …and the certificate is still LIVE, so the refusal actually held" \
+# §H's rule is that a retained balance never vanishes without an attributable release, and the plan
+# names the mechanism: the replacement CARRIES it. The seal is asserted on the shape a bypass writer
+# would use — supersede the live certificate and re-certify in ONE transaction — with ₹0.50 still
+# held and no carried rows. Round 5's finding 2 is asserted beside it: carrying the DEDUCTION while
+# dropping its RELEASE is refused too, because a retained balance is a fold over BOTH halves.
+mint5c UP5C-CMD-NC2 commercial.bill.certify UP5C-LIVE-NC
+replace_without_carry() {   # $1 = 'nothing' | 'deduction-only'
+  local carry_rows=""
+  if [ "$1" = "deduction-only" ]; then
+    carry_rows="INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\",\"restatedFromId\") SELECT 'UP5C-D2-NC',\"projectId\",'UP5C-LIVE-NC',\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\",\"id\" FROM \"BillDeduction\" WHERE \"id\"='UP5C-D2';"
+  fi
+  printf 'BEGIN; UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=%s, "supersedeReason"=%s WHERE "id"=%s; INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId") SELECT %s,"projectId","billId","versionId","certifiedAmount","certifiedById",%s FROM "BillCertificate" WHERE "id"=%s; INSERT INTO "CertifiedAcceptanceConsumption"("id","projectId","certificateId","stockTransactionId","consumedQty") SELECT gen_random_uuid()::text,"projectId",%s,"stockTransactionId","consumedQty" FROM "CertifiedAcceptanceConsumption" WHERE "certificateId"=%s; %s COMMIT;' \
+    "'USER-1'" "'drops the balance'" "'$UP5C_LIVE'" "'UP5C-LIVE-NC'" "'UP5C-CMD-NC2'" "'$UP5C_LIVE'" "'UP5C-LIVE-NC'" "'$UP5C_LIVE'" "$carry_rows"
+}
+assert_rejects "commercial T5C R9: re-certifying WITHOUT carrying the retained balance (the money would vanish)" \
+  "$(replace_without_carry nothing)" \
+  'does not re-state'
+assert "commercial T5C R9: …and the certificate is still LIVE, so the refusal actually held" \
   "SELECT COALESCE(string_agg(\"id\", ','), '(none)') FROM \"BillCertificate\" WHERE \"projectId\"='p1' AND \"billId\"='$UP5C_BILL' AND \"supersededAt\" IS NULL;" \
   "$UP5C_LIVE"
 # a PARTIAL release is still a retained balance — the case an "any release at all" rule waves through
 $PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-R2A','p1','UP5C-D2',0.20,'first milestone','USER-1','UP5C-CMD-R2A')"
-assert_rejects "commercial T5C R5: a PARTIALLY released withholding still blocks the correction" \
-  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='still short' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+# …and a PARTIAL release is still a retained balance, so a replacement that drops that half is
+# refused — the case an "any release at all" rule waves through (round 5 finding 2)
+assert_rejects "commercial T5C R9: carrying the withholding but DROPPING its release (a fold has two halves)" \
+  "$(replace_without_carry deduction-only)" \
+  'drops its release'
+assert "commercial T5C R9: …and the certificate is still LIVE, so that refusal actually held" \
+  "SELECT COALESCE(string_agg(\"id\", ','), '(none)') FROM \"BillCertificate\" WHERE \"projectId\"='p1' AND \"billId\"='$UP5C_BILL' AND \"supersededAt\" IS NULL;" \
+  "$UP5C_LIVE"
 # …and once the money is returned the SAME correction is ACCEPTED, which is what makes the seal
 # precise rather than merely strict: it is about a retained balance, not about supersession
 $PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-R2B','p1','UP5C-D2',0.30,'balance returned','USER-1','UP5C-CMD-R2B')"

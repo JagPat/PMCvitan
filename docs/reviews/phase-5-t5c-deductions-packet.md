@@ -29,11 +29,12 @@ review stop applies with payment authority fully in place.
    `NET_PAYABLE` floor of zero, and a release bounded by its own deduction.
 3. **The first real subtraction into §J's `certified-payable`** — the term unit C
    shipped with both of its subtractions as the identity.
-4. **A certificate that still holds money is not correctable in place** — the
-   §H rule that a retained balance never vanishes without an attributable
-   release, honoured by REFUSING the supersession rather than carrying the ledger
-   forward. Re-statement is a follow-up review unit; see §"Round 5" for why, and
-   for what that costs.
+4. **Correcting a certificate that still holds money CARRIES the balance
+   forward** — the §H rule that a retained balance never vanishes without an
+   attributable release, honoured by RE-STATING the deductions and their releases
+   onto the replacement in the same transaction, with the superseded rows
+   surviving as history. Round 5 split this out and the refusal took its place;
+   round 9 restored it on the owner's decision — see §"Round 9".
 
 It ships NO §F status derivation and touches NONE of unit A's seals — see the
 next section, which is the part of this change most worth a reviewer's attention.
@@ -105,14 +106,13 @@ asserted the dropping as correct. The deferral ledger's rule is that a task PR
 carries its section forward rather than re-deriving it — I re-derived, and got
 the opposite answer.
 
-> **Superseded by the round-5 split — read §"Round 5" below before this row.**
-> F2's *defect* (a retained balance vanishing with no attributable release) is
-> still fixed and still sealed at PostgreSQL. What changed is the MECHANISM: the
-> re-statement machinery described here has been split into its own review unit,
-> and this PR now honours the same rule by REFUSING the correction until the
-> money is given back. The rows below that describe re-statement seals
-> (`BillCertificate_replacement_restates`, the `restatedFromId` rules, PROBES
-> 8b/8c/17/19/20) are history, not current behaviour.
+> **Split out at round 5, RESTORED at round 9 — read §"Round 9" for why.**
+> F2's defect and its fix are both current again: re-statement carries the ledger
+> forward and `BillCertificate_replacement_restates` requires it at PostgreSQL.
+> The round-5 refusal that stood in between is gone. The two defects that caused
+> the split are fixed rather than re-inherited — the seal now requires the carried
+> RELEASES as well as the deduction, and the terms check compares the complete
+> field list under CLOSURE 5.
 
 ## Round 5 — the split, and what it costs
 
@@ -222,7 +222,7 @@ closures are RED-proved by breaking them, not by observing them pass.
 
 ## Evidence
 
-`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **24/24 GREEN**
+`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **26/26 GREEN**
 (22 before the split: the three re-statement probes left with the mechanism, and
 two probes were added for the refusal and its DB seal; round 6 added PROBE 20 and
 PROBE 21).
@@ -250,13 +250,38 @@ mine did not, and checking turned up five more of the same shape.
 - **the round-4 liveness seal and the round-5 refusal seal** are RED-proved by
   DROPPING them from a live database: without `BillDeduction_coherent` PROBE 18
   fails, and without `phase5_t5c_supersede_needs_release` PROBE 19 fails;
-  restored, 24/24.
+  restored, 26/26.
 - **the round-5 provenance binding** is RED-proved the same way: with the
   `resultRef` comparison removed, PROBE 16's two reuse assertions pass a reused
   receipt. Its probe-side twin matters as much — `mintCommand` now REQUIRES the
   caller to name the row the command produced, because the old default would have
   made every hostile insert in the file fail on provenance rather than on the rule
   it names.
+
+### Round 9: the ordering was caller-supplied, and the split is reversed
+
+Two P2s. **(1)** The round-8 running-balance cap ordered by `recordedAt`/
+`releasedAt` — columns the CALLER supplies — so a backdated release sorted ahead
+of its own deduction and hid the peak. The round-8 audit had named this shape and
+left it because no probe demonstrated it; that is the wrong bar for a seal whose
+job is to survive a writer who is trying. A release may now not predate the
+withholding it discharges, which makes the fold's ordering true by construction;
+equal instants stay legal, because that is what the service writes. PROBE 24 pins
+both.
+
+**(2)** Supersession REFUSED a correction while money was held. The plan requires
+the balance to be CARRIED (`2026-07-29-phase-5-commercial-control.md:746-771`),
+and the refusal's workaround — releasing money that was never returned — writes
+false evidence into an append-only ledger, which is worse than the step it
+avoided. **Re-statement is restored on the owner's explicit decision**, reversing
+the round-5 split. Its two causes are fixed rather than re-inherited: the
+replacement seal now requires the carried RELEASES as well as the deduction
+(round 5 finding 2), and the terms check compares the COMPLETE field list rather
+than two of five (round 5 finding 4). CLOSURE 5 is executable — a test enumerates
+both tables' real columns and requires each to be copied-and-checked or
+explicitly not-copied, so a column added later fails rather than escaping the
+copy. PROBE 8, PROBE 19 and the CLOSURE 5 test pin the carry, the refusals, and
+the field-by-field check.
 
 ### Round 8: a net fold, and an unnamed actor
 
@@ -374,7 +399,7 @@ scoped to `NEW."id"`, the pin fires again. Anything new still trips it.
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 738/738 (+3: CLOSURE 3, CLOSURE 4, the single-writer pin) |
-| `phase5-t5c-deductions.test.ts` | **24/24** |
+| `phase5-t5c-deductions.test.ts` | **26/26** |
 | full integration, pristine migrated DB | **81 files / 915 tests** |
 | `upgrade-proof.sh` | PASSED — 424 assertions, 0 failures; the T5C block each paired with an accept, walking its OWN bill through the lifecycle, and the round-5 seals asserted on the COHERENT §F correction shape (partial release still blocks; full release then allows the same correction) |
 | migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |
