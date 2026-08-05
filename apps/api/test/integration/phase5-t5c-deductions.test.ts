@@ -1033,4 +1033,89 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     await expect(deductions.record(projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId)))
       .rejects.toThrow(/no live certification/u);
   });
+
+  it('PROBE 22 (§H): a same-transaction release cannot make an over-large withholding look valid', async () => {
+    // Codex round 8 (P2). The floor folded deductions NET of releases, so a bypass transaction could
+    // insert a 150 withholding and a 50 release against a 100 certificate and both deferred bounds
+    // passed: v_withheld = 100. The append-only ledger then permanently says 150 was withheld from a
+    // 100 payable — a withholding is taken FROM a payable, and 150 of it never existed to take.
+    //
+    // The fix is not a gross cap. `SUM(deductions) <= certified` would ALSO refuse the honest
+    // sequence "withhold 100, give it all back, withhold 100 again", whose net never exceeds the
+    // certificate. What must hold is the §C-shaped truth: over the ledger IN ORDER, the running
+    // balance never leaves [0, certified].
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+
+    const ded = async (tx: PrismaClient, id: string, amount: string, at: string) => tx.$executeRawUnsafe(
+      `INSERT INTO "BillDeduction"("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId","recordedAt")
+       VALUES($1,$2,$3,$4,'retention',${amount},$5,$6,$7::timestamp)`,
+      id, projectId, cert.id, billId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.deduction.record', id), at,
+    );
+    const rel = async (tx: PrismaClient, id: string, dedId: string, amount: string, at: string) => tx.$executeRawUnsafe(
+      `INSERT INTO "BillDeductionRelease"("id","projectId","deductionId","amount","reason","releasedById","sourceCommandId","releasedAt")
+       VALUES($1,$2,$3,${amount},'probe',$4,$5,$6::timestamp)`,
+      id, projectId, dedId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.deduction.release', id), at,
+    );
+
+    // the reported shape: 150 withheld from a 100 payable, netted back under the floor by a 50 release
+    await expect(t.prisma.$transaction(async (tx) => {
+      await ded(tx as unknown as PrismaClient, `${cert.id}-over`, '150.00', '2026-01-01T01:00:00');
+      await rel(tx as unknown as PrismaClient, `${cert.id}-over-r`, `${cert.id}-over`, '50.00', '2026-01-01T02:00:00');
+    })).rejects.toThrow(/exceed the .* this certificate certified/u);
+
+    // the same trick SPLIT across two rows — 60 + 60 stands at 120 before the 20 comes back
+    await expect(t.prisma.$transaction(async (tx) => {
+      await ded(tx as unknown as PrismaClient, `${cert.id}-a`, '60.00', '2026-01-01T01:00:00');
+      await ded(tx as unknown as PrismaClient, `${cert.id}-b`, '60.00', '2026-01-01T02:00:00');
+      await rel(tx as unknown as PrismaClient, `${cert.id}-a-r`, `${cert.id}-a`, '20.00', '2026-01-01T03:00:00');
+    })).rejects.toThrow(/exceed the .* this certificate certified/u);
+
+    // …and the seal is PRECISE, not merely strict: withhold the whole certificate, give all of it
+    // back, withhold it again. The running balance touches 100 and never passes it.
+    await t.prisma.$transaction(async (tx) => {
+      await ded(tx as unknown as PrismaClient, `${cert.id}-1`, '100.00', '2026-01-02T01:00:00');
+      await rel(tx as unknown as PrismaClient, `${cert.id}-1r`, `${cert.id}-1`, '100.00', '2026-01-02T02:00:00');
+      await ded(tx as unknown as PrismaClient, `${cert.id}-2`, '100.00', '2026-01-02T03:00:00');
+    });
+    expect(await t.prisma.billDeduction.count({ where: { projectId, billId } })).toBe(2);
+  });
+
+  it('PROBE 23 (§H): a ledger row must carry the actor of the command it cites', async () => {
+    // Codex round 8 (P2). Provenance proved the command's type, status and `resultRef` — everything
+    // except WHO. A direct writer runs the command as one person and writes the row in another's
+    // name, and because the ledger is append-only the misattribution is permanent. Money that moves
+    // has to name the human who moved it, which is the whole reason the receipt is cited at all.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+
+    // `mintCommand` runs as memberUser; the row below claims ownerUser did it
+    const dedId = `${cert.id}-actor`;
+    const cmd = await mintCommand(projectId, 'commercial.deduction.record', dedId);
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeduction"("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+       VALUES($1,$2,$3,$4,'retention',10.00,$5,$6)`,
+      dedId, projectId, cert.id, billId, f.ownerUser.id, cmd,
+    )).rejects.toThrow(/was run by/u);
+
+    // the honest row — same command, its own actor — is ACCEPTED
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeduction"("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+       VALUES($1,$2,$3,$4,'retention',10.00,$5,$6)`,
+      dedId, projectId, cert.id, billId, f.memberUser.id, cmd,
+    );
+
+    // and the same rule on the release side, where the column is named differently
+    const relId = `${cert.id}-actor-r`;
+    const rcmd = await mintCommand(projectId, 'commercial.deduction.release', relId);
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeductionRelease"("id","projectId","deductionId","amount","reason","releasedById","sourceCommandId")
+       VALUES($1,$2,$3,5.00,'probe',$4,$5)`,
+      relId, projectId, dedId, f.ownerUser.id, rcmd,
+    )).rejects.toThrow(/was run by/u);
+  });
 });

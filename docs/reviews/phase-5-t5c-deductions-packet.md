@@ -222,7 +222,7 @@ closures are RED-proved by breaking them, not by observing them pass.
 
 ## Evidence
 
-`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **22/22 GREEN**
+`apps/api/test/integration/phase5-t5c-deductions.test.ts` — **24/24 GREEN**
 (22 before the split: the three re-statement probes left with the mechanism, and
 two probes were added for the refusal and its DB seal; round 6 added PROBE 20 and
 PROBE 21).
@@ -250,13 +250,30 @@ mine did not, and checking turned up five more of the same shape.
 - **the round-4 liveness seal and the round-5 refusal seal** are RED-proved by
   DROPPING them from a live database: without `BillDeduction_coherent` PROBE 18
   fails, and without `phase5_t5c_supersede_needs_release` PROBE 19 fails;
-  restored, 22/22.
+  restored, 24/24.
 - **the round-5 provenance binding** is RED-proved the same way: with the
   `resultRef` comparison removed, PROBE 16's two reuse assertions pass a reused
   receipt. Its probe-side twin matters as much — `mintCommand` now REQUIRES the
   caller to name the row the command produced, because the old default would have
   made every hostile insert in the file fail on provenance rather than on the rule
   it names.
+
+### Round 8: a net fold, and an unnamed actor
+
+Two P2s. **(1)** The `NET_PAYABLE` floor folded the ledger net of releases, so a
+bypass transaction could insert a 150 withholding and a 50 release against a 100
+certificate and pass — the append-only ledger then said permanently that 150 was
+withheld from a 100 payable. The fold is now the §C shape used for stock: the
+RUNNING balance, in ledger order, must stay within the certificate, with a release
+ranked after a deduction at the same instant so a same-transaction release cannot
+sort ahead of its own withholding. A gross cap was rejected as the fix because it
+also refuses the honest "withhold 100, return all 100, withhold 100 again", whose
+net never exceeds the certificate; PROBE 22 pins both refusals AND that
+acceptance. **(2)** Provenance proved the cited command's type, status and
+`resultRef` but not WHO ran it, so a direct writer could run the command as one
+person and write the append-only row in another's name. The row's actor must now
+equal the command's actor, one rule for both tables with the column read off the
+row. PROBE 23 pins both tables and the honest row's acceptance.
 
 ### Round 7: the late-withholding fixture proved provenance, not liveness
 
@@ -357,7 +374,7 @@ scoped to `NEW."id"`, the pin fires again. Anything new still trips it.
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 738/738 (+3: CLOSURE 3, CLOSURE 4, the single-writer pin) |
-| `phase5-t5c-deductions.test.ts` | **22/22** |
+| `phase5-t5c-deductions.test.ts` | **24/24** |
 | full integration, pristine migrated DB | **81 files / 915 tests** |
 | `upgrade-proof.sh` | PASSED — 424 assertions, 0 failures; the T5C block each paired with an accept, walking its OWN bill through the lifecycle, and the round-5 seals asserted on the COHERENT §F correction shape (partial release still blocks; full release then allows the same correction) |
 | migration re-apply | the whole `20270520000000` file re-applied over an already-migrated database with no error (F5) |

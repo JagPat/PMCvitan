@@ -2362,6 +2362,26 @@ $PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\
 assert "commercial T5C R5: the withholding is now fully released" \
   "SELECT (d.\"amount\" - COALESCE(SUM(r.\"amount\"),0))::text FROM \"BillDeduction\" d LEFT JOIN \"BillDeductionRelease\" r ON r.\"deductionId\"=d.\"id\" WHERE d.\"id\"='UP5C-D2' GROUP BY d.\"amount\";" \
   "0.00"
+# ── Codex round 8 — the two seals this round added, tried where a bypass writer would try them ────
+# Both fixtures bind their command to the row they are about to attempt (CLOSURE 7) and name the
+# rule that must do the rejecting, so neither can pass on provenance while claiming something else.
+mint5c UP5C-CMD-OVER commercial.deduction.record  UP5C-DOVER
+mint5c UP5C-CMD-OVRR commercial.deduction.release UP5C-ROVER
+assert_rejects "commercial T5C R8: an over-large withholding netted back under the floor by a same-transaction release" \
+  "BEGIN; INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-DOVER','p1','$UP5C_LIVE','$UP5C_BILL','retention',1.50,'USER-1','UP5C-CMD-OVER'); INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-ROVER','p1','UP5C-DOVER',0.50,'nets it back','USER-1','UP5C-CMD-OVRR'); COMMIT;" \
+  'exceed the'
+mint5c UP5C-CMD-ACT commercial.deduction.record UP5C-DACT
+assert_rejects "commercial T5C R8: a withholding attributed to someone other than the actor who ran its command" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-DACT','p1','$UP5C_LIVE','$UP5C_BILL','retention',0.10,'USER-2','UP5C-CMD-ACT')" \
+  'was run by'
+$PSQL >/dev/null -c "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP5C-DACT','p1','$UP5C_LIVE','$UP5C_BILL','retention',0.10,'USER-1','UP5C-CMD-ACT')" \
+  && printf 'ok      %s\n' "commercial T5C R8: the SAME row carrying its command's own actor is ACCEPTED (the seal is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T5C R8: an honestly attributed withholding was rejected — the actor seal is over-strict"; FAIL=1; }
+mint5c UP5C-CMD-DACTR commercial.deduction.release UP5C-DACTR
+$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP5C-DACTR','p1','UP5C-DACT',0.10,'returned','USER-1','UP5C-CMD-DACTR')" \
+  && printf 'ok      %s\n' "commercial T5C R8: …and the balance is returned, so the correction below still has nothing held against it" \
+  || { printf 'FAILED  %s\n' "commercial T5C R8: the release of the round-8 withholding was rejected"; FAIL=1; }
+
 $PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5C R5: the SAME correction after an attributable release is ACCEPTED (the seal is precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T5C R5: a correction with nothing left held was rejected — the seal is over-strict"; FAIL=1; }

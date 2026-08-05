@@ -518,3 +518,43 @@ the message matches either way — that is why the mis-bound fixture still passe
 the reason check, and why the proof above had to disable the seals instead. The
 argument narrows what an assertion accepts; only removing the rule shows what the
 assertion is actually testing.
+
+## Round 8 — two P2s, and the temptation to over-tighten
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| 1 | the floor folded the ledger NET, so a same-transaction release made an over-large withholding look valid | the fold is now the §C shape — the RUNNING balance, in order, must stay within the certificate |
+| 2 | provenance proved the command's type, status and `resultRef` — everything except WHO ran it | the row's actor must BE the command's actor, on both tables |
+
+Finding 1's obvious fix is wrong, and that is the part worth recording. A gross
+cap — `SUM(deductions) <= certified` — closes the reported hole in one line and
+refuses something honest: **withhold ₹100, give all ₹100 back, withhold ₹100
+again** is a sequence whose net never exceeds the certificate, and a gross cap
+rejects it at ₹200. So is a per-row cap against the other rows' net, which
+refuses the same sequence from the other direction.
+
+What actually holds is the invariant this phase already uses for stock: fold the
+ledger IN ORDER and require the running balance to stay inside `[0, certified]`.
+It rejects ₹150-then-release-₹50 (peak 150), rejects the same trick split across
+two ₹60 rows with a ₹20 release (peak 120), and permits the honest re-withholding
+(peak 100). PROBE 22 pins all three, the third specifically so the seal is proved
+PRECISE and not merely strict.
+
+One detail that is easy to get wrong: a release RANKS AFTER a deduction at the
+same instant. Both rows in one transaction carry the same `CURRENT_TIMESTAMP`, and
+without the rank a release could sort ahead of its own deduction and drive the
+running balance negative — a refusal for a ledger that is perfectly sound.
+
+Finding 2 is one sentence for two tables that spell the same fact with different
+column names, so the actor is read off the row (`to_jsonb(NEW)->>…`) rather than
+the check being written twice — the same "state the rule once" move as the
+`resultRef` seal it sits beside.
+
+### What this round did NOT do
+
+The running-balance fold makes an intermediate NEGATIVE balance visible, which
+would mean money returned before it was withheld. That is a different shape from
+the one reported, no probe demonstrates it, and bound 2 already caps each release
+by its own deduction — so it is named here rather than fixed on speculation. The
+standing rule is that a finding gets its twin checked, not that every neighbouring
+thought gets implemented in the same head.
