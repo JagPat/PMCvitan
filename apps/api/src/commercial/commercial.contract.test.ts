@@ -660,6 +660,27 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    * audit for why migration text cannot answer that).
    */
 
+  it('no AUTHORITY_GUARDS matcher is AMBIGUOUS — each names exactly one refusal', () => {
+    // A matcher made of common words classifies the NEXT guard that happens to contain them, so a
+    // new refusal ships already "classified" against someone else's seal and the closure never asks
+    // what enforces it. Fixing the one broad matcher is not the fix; forbidding the class is.
+    const src = readFileSync(join(HERE, 'commercial-payment.service.ts'), 'utf8');
+    const guards = [...src.matchAll(/throw new (?:Conflict|Forbidden)Exception\(([\s\S]{0,400}?)\);\n/gu)]
+      .map((m) => m[1]!);
+
+    for (const row of AUTHORITY_GUARDS) {
+      const hits = guards.filter((g) => g.includes(row.match));
+      expect(
+        hits.length,
+        `AUTHORITY_GUARDS matcher "${row.match}" matches ${hits.length} refusals. It must name exactly one: a matcher this broad silently adopts the next guard that contains the same words, seal and all`,
+      ).toBe(1);
+    }
+
+    // …and no two rows may claim the same refusal
+    const claimed = AUTHORITY_GUARDS.map((r) => guards.findIndex((g) => g.includes(r.match)));
+    expect(new Set(claimed).size, 'two AUTHORITY_GUARDS rows classify the same refusal').toBe(claimed.length);
+  });
+
   it('every money-path refusal in the payment service is classified against a seal', () => {
     const src = readFileSync(join(HERE, 'commercial-payment.service.ts'), 'utf8');
     // derived, not remembered: the guards are READ out of the service, so a new one arrives here

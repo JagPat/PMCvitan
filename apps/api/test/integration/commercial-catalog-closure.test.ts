@@ -119,6 +119,79 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
     stampWithoutTarget: ['now()', 'NULL', 'NULL'],
   };
 
+  /** What "single use" MEANS, written once and asserted by both the XOR test and the seal pin. */
+  const SINGLE_USE_VERDICTS = {
+    unconsumed: 'accepted',
+    certificateOnly: 'accepted',
+    approvalOnly: 'accepted',
+    bothTargets: 'refused',
+    targetWithoutStamp: 'refused',
+    stampWithoutTarget: 'refused',
+  } as const;
+
+  /**
+   * The same behavioural question for a single-column CHECK: which values does PostgreSQL actually
+   * ACCEPT? Parsing the literals a CHECK mentions is not the same question — a weakened
+   * `CHECK ("raisedBy" IN (...) OR "raisedBy" IS NOT NULL)` mentions exactly the same labels and
+   * admits everything.
+   */
+  const labelVerdicts = async (
+    checkDef: string,
+    column: string,
+    values: string[],
+  ): Promise<Record<string, 'accepted' | 'refused'>> => {
+    const expr = checkDef.replace(/^CHECK\s*/iu, '');
+    const out: Record<string, 'accepted' | 'refused'> = {};
+    await t.prisma
+      .$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `CREATE TEMP TABLE label_probe ("${column}" text, CONSTRAINT label_probe_ck CHECK ${expr})`,
+        );
+        for (const value of values) {
+          await tx.$executeRawUnsafe('SAVEPOINT label_sp');
+          try {
+            await tx.$executeRawUnsafe(`INSERT INTO label_probe VALUES ($1)`, value);
+            out[value] = 'accepted';
+            await tx.$executeRawUnsafe('RELEASE SAVEPOINT label_sp');
+          } catch {
+            out[value] = 'refused';
+            await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT label_sp');
+          }
+        }
+        throw new Error('__rollback__');
+      })
+      .catch((e: Error) => {
+        if (!/__rollback__/u.test(e.message)) throw e;
+      });
+    return out;
+  };
+
+  /**
+   * A helper function's own body, resolved UNAMBIGUOUSLY. `proname` alone can match an overload or a
+   * same-named function in another schema, so the seal is the `public` one and there must be exactly
+   * one of it.
+   */
+  const helperBody = async (fn: string): Promise<string> => {
+    const rows = await raw<{ prosrc: string }>(
+      `SELECT prosrc FROM pg_proc WHERE proname = $1 AND pronamespace = 'public'::regnamespace`,
+      fn,
+    );
+    expect(rows.length, `expected exactly one public ${fn}, found ${rows.length}`).toBe(1);
+    return rows[0]!.prosrc;
+  };
+
+  /**
+   * …and the canonical body of each. A caller can stay byte-identical and still call a helper that a
+   * later migration replaced with a no-op, so pinning callers alone leaves the actual predicate
+   * unpinned — the sibling of the caller pin, one level down the call graph.
+   */
+  const HELPER_BODIES: Record<string, string> = {
+    phase5_t6a_approved_bound_check: '3e9b54c56b419b0bb2ab7d59de5c46223a1bbb45cc6634f113002be49e43aa23',
+    phase5_t6a_paid_bound_check: 'da1653892c0fc87e5b8a71ab6f3d217272d42496a8d8385931196a3a23983e24',
+    phase5_t6a_approval_paid_check: '000d68e8f42510361123bb9564077fc8870fc463c0ba32008581a2b03c819b35',
+    phase5_t6a_approval_override_valid: '75b32e8cb998339c677ab9a0033f839fca16b3268ee0801cfd061853068afee3',
+  };
+
   const xorVerdicts = async (checkDef: string): Promise<Record<XorCase, 'accepted' | 'refused'>> => {
     const expr = checkDef.replace(/^CHECK\s*/iu, '');
     const out = {} as Record<XorCase, 'accepted' | 'refused'>;
@@ -173,6 +246,19 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
       writerRaisedByLabels(),
       'the labels PostgreSQL admits and the movers `HeadroomMover` can write are different sets: a mover the type allows and the CHECK refuses fails at runtime with a green build',
     ).toEqual(admitted);
+
+    // …and the CHECK must actually REFUSE everything else. Parsing the literals it mentions cannot
+    // tell an enumeration from `IN (...) OR "raisedBy" IS NOT NULL`, which mentions the same labels
+    // and admits any string a direct writer invents.
+    const probe = [...admitted, 'not_a_real_mover'];
+    const verdicts = await labelVerdicts(def!, 'raisedBy', probe);
+    const expected = Object.fromEntries(
+      probe.map((v) => [v, v === 'not_a_real_mover' ? 'refused' : 'accepted']),
+    );
+    expect(
+      verdicts,
+      'the live raisedBy CHECK does not enforce the enumeration: every admitted label must be accepted and an unknown label REFUSED, or a direct writer can persist a label no client or mover handles',
+    ).toEqual(expected);
   });
 
   // ── 2. every SodGrant consumption target is named AND really validated ─────────────────────────
@@ -238,14 +324,7 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
     expect(
       verdicts,
       'the live SodGrant_consumed_together does not enforce single use. Required: unconsumed (all NULL) accepted; exactly ONE target with a stamp accepted; BOTH targets with a stamp REFUSED; a target without a stamp REFUSED; a stamp with no target REFUSED',
-    ).toEqual({
-      unconsumed: 'accepted',
-      certificateOnly: 'accepted',
-      approvalOnly: 'accepted',
-      bothTargets: 'refused',
-      targetWithoutStamp: 'refused',
-      stampWithoutTarget: 'refused',
-    });
+    ).toEqual(SINGLE_USE_VERDICTS);
   });
 
   it('every consumption target has an ATTACHED, enabled, DEFERRABLE INITIALLY DEFERRED row constraint trigger that fires on UPDATE and carries the canonical body', async () => {
@@ -373,17 +452,80 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
     ],
   };
 
-  const sealKind = async (seal: string): Promise<'constraint' | 'trigger' | 'function' | 'absent'> => {
-    const [row] = await raw<{ c: number; t: number; f: number }>(
-      `SELECT (SELECT count(*) FROM pg_constraint WHERE conname = $1)::int AS c,
-              (SELECT count(*) FROM pg_trigger WHERE tgname = $1 AND NOT tgisinternal)::int AS t,
-              (SELECT count(*) FROM pg_proc WHERE proname = $1)::int AS f`,
-      seal,
-    );
-    if (row!.c > 0) return 'constraint';
-    if (row!.t > 0) return 'trigger';
-    if (row!.f > 0) return 'function';
-    return 'absent';
+  /**
+   * TRIGGER-VALUED SEALS. A trigger name is not an identity either: `tgname` is unique per relation,
+   * so an enabled same-named trigger on ANY other table answers a global lookup while the guarded
+   * relation has none. `tgenabled = 'O'` on top of that proves only that the decoy is switched on.
+   *
+   * So a trigger seal is pinned the same way a consume validator is — owning relation, enabled,
+   * exact firing shape, bound function, and the canonical body reached through `tgfoid`.
+   */
+  interface TriggerSeal {
+    relation: string;
+    /** exact `tgtype`: 7 = BEFORE INSERT ROW, 5 = AFTER INSERT ROW */
+    tgtype: number;
+    fn: string;
+    prosrcSha256: string;
+    /** true when the guard must be deferred to COMMIT rather than fire at statement time */
+    constraintTrigger: boolean;
+  }
+
+  const TRIGGER_SEALS: Record<string, TriggerSeal> = {
+    // an approval draws on a LIVE certificate — checked BEFORE the row lands
+    PaymentApproval_authority_live: {
+      relation: 'PaymentApproval',
+      tgtype: 7,
+      fn: 'phase5_t6a_approval_authority_live',
+      prosrcSha256: '595e7e9054760d623729d527565b1130bc447c670abd666d76352bfe15db84dd',
+      constraintTrigger: false,
+    },
+    // money leaves against the authority that covered it
+    Payment_authority_live: {
+      relation: 'Payment',
+      tgtype: 7,
+      fn: 'phase5_t6a_payment_authority_live',
+      prosrcSha256: 'e60503dd7b7f258d3b52a21a03099fbb7484347cb07976e909fe2d1043150b73',
+      constraintTrigger: false,
+    },
+    // §I's payment half, deferred so the override row may land later in the same transaction
+    PaymentApproval_approver_not_certifier: {
+      relation: 'PaymentApproval',
+      tgtype: 5,
+      fn: 'phase5_t6a_approver_not_certifier',
+      prosrcSha256: '84dfd52318f0d6bb5401e96881664e9342ebe77644db14dfd2a3fa2c84e8d4fe',
+      constraintTrigger: true,
+    },
+  };
+
+  /**
+   * CONSTRAINT-VALUED SEALS. Same defect, same fix: the owning relation is part of the identity, and
+   * what the guard REQUIRES is a behaviour, not a definition string — so the seal is discharged by
+   * the verdict table, the strongest form available.
+   */
+  const CONSTRAINT_SEALS: Record<string, { relation: string; behaviour: 'singleUse' }> = {
+    SodGrant_consumed_together: { relation: 'SodGrant', behaviour: 'singleUse' },
+  };
+
+  const assertTriggerSeal = async (seal: string, want: TriggerSeal): Promise<void> => {
+    const live = (await triggersOn(want.relation)).find((x) => x.tgname === seal);
+    expect(
+      live,
+      `${seal} is not ATTACHED to ${want.relation} — a same-named enabled trigger on any other relation would satisfy a global tgname lookup while this one is unguarded`,
+    ).toBeDefined();
+    expect(live!.enabled, `${seal} is attached to ${want.relation} but not enabled`).toBe('O');
+    expect(
+      live!.tgtype,
+      `${seal} has tgtype ${live!.tgtype}, expected ${want.tgtype} — equality, not a bitmask: a reattachment on the wrong event leaves the guard never firing on the path that matters`,
+    ).toBe(want.tgtype);
+    expect(
+      live!.is_constraint && live!.deferrable && live!.initdeferred,
+      `${seal} deferral does not match its guard: expected constraintTrigger=${want.constraintTrigger}`,
+    ).toBe(want.constraintTrigger);
+    expect(live!.fn, `${seal} is bound to ${live!.fn}, not ${want.fn}`).toBe(want.fn);
+    expect(
+      createHash('sha256').update(live!.prosrc, 'utf8').digest('hex'),
+      `${seal} runs a body that is NOT the canonical ${want.fn}. If the change was deliberate, re-pin the hash in TRIGGER_SEALS in the same commit that changes the migration`,
+    ).toBe(want.prosrcSha256);
   };
 
   it('every seal AUTHORITY_GUARDS names is ENFORCED in the live catalog', async () => {
@@ -391,36 +533,55 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
     expect(named.length, 'no seals named — AUTHORITY_GUARDS is not being read').toBeGreaterThan(5);
 
     for (const seal of named) {
-      const kind = await sealKind(seal);
-      expect(
-        kind,
-        `AUTHORITY_GUARDS names ${seal} as a seal and no constraint, trigger or function by that name exists — a named seal that never existed, or that a later migration dropped, is worse than an admitted gap`,
-      ).not.toBe('absent');
+      const kinds = [
+        TRIGGER_SEALS[seal] ? 'trigger' : null,
+        CONSTRAINT_SEALS[seal] ? 'constraint' : null,
+        FUNCTION_SEAL_CALLERS[seal] ? 'function' : null,
+      ].filter(Boolean);
 
-      if (kind === 'constraint') {
-        // a constraint is enforced wherever it is attached; the relation-bound readers above cover
-        // the two this closure reasons about by name
+      // EVERY seal carries an explicit expected-object specification. Generic name/kind existence is
+      // what let a decoy answer for the real object; there is no default arm any more.
+      expect(
+        kinds,
+        `AUTHORITY_GUARDS names ${seal} and no expected live object is specified for it. Add it to TRIGGER_SEALS, CONSTRAINT_SEALS or FUNCTION_SEAL_CALLERS — a seal with no specification is a claim with nothing behind it`,
+      ).toHaveLength(1);
+
+      if (TRIGGER_SEALS[seal]) {
+        await assertTriggerSeal(seal, TRIGGER_SEALS[seal]!);
         continue;
       }
 
-      if (kind === 'trigger') {
-        const [row] = await raw<{ enabled: string }>(
-          `SELECT tgenabled AS enabled FROM pg_trigger WHERE tgname = $1 AND NOT tgisinternal`,
-          seal,
-        );
-        expect(row!.enabled, `${seal} is a trigger seal and it is not enabled`).toBe('O');
+      if (CONSTRAINT_SEALS[seal]) {
+        const want = CONSTRAINT_SEALS[seal]!;
+        const def = await constraintDef(seal, want.relation);
+        expect(
+          def,
+          `${seal} is not a live CHECK on ${want.relation} — a same-named constraint on an unrelated relation must not answer for it`,
+        ).not.toBeNull();
+        expect(
+          await xorVerdicts(def!),
+          `${seal} is live on ${want.relation} but does not ENFORCE single use`,
+        ).toEqual(SINGLE_USE_VERDICTS);
         continue;
       }
 
-      // FUNCTION — presence proves nothing. Name the triggers that run it, and prove each one.
-      const callers = FUNCTION_SEAL_CALLERS[seal];
+      // FUNCTION — presence proves nothing. Name the triggers that run it, and prove each one…
+      const callers = FUNCTION_SEAL_CALLERS[seal]!;
+      expect(callers.length, `${seal} names no callers`).toBeGreaterThan(0);
+
+      // …AND pin the helper's own live body. Every caller can be byte-identical and still be calling
+      // a predicate that a later migration hollowed out.
+      const wantHelper = HELPER_BODIES[seal];
       expect(
-        callers,
-        `${seal} is a FUNCTION-valued seal with no entry in FUNCTION_SEAL_CALLERS. A function no trigger runs refuses nothing: name the live callers, or the seal is a claim with no enforcement behind it`,
+        wantHelper,
+        `${seal} is a function-valued seal with no canonical body pinned in HELPER_BODIES — the callers would be proven while the predicate they call is unconstrained`,
       ).toBeDefined();
-      expect(callers!.length, `${seal} names no callers`).toBeGreaterThan(0);
+      expect(
+        createHash('sha256').update(await helperBody(seal), 'utf8').digest('hex'),
+        `${seal} is reached by its callers but its OWN body is not the canonical one. A no-op here passes every caller pin while a direct writer overruns the bound with no exception at commit`,
+      ).toBe(wantHelper);
 
-      for (const want of callers!) {
+      for (const want of callers) {
         const live = (await triggersOn(want.relation)).find((x) => x.tgname === want.trigger);
         expect(
           live,
@@ -436,23 +597,29 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
           `${want.trigger} has tgtype ${live!.tgtype}, expected ${want.tgtype} — equality, not a bitmask`,
         ).toBe(want.tgtype);
         expect(live!.fn, `${want.trigger} is bound to ${live!.fn}, not ${want.callerFn}`).toBe(want.callerFn);
-
-        // the canonical-body pin over the body reached THROUGH tgfoid. This is what makes the seal
-        // load-bearing: a caller rewritten to skip the helper fails here even though it still
-        // exists, is attached, and fires at the right moment.
         expect(
           createHash('sha256').update(live!.prosrc, 'utf8').digest('hex'),
           `${want.trigger} runs a body that is NOT the canonical ${want.callerFn}. If the change was deliberate, re-pin the hash in FUNCTION_SEAL_CALLERS in the same commit that changes the migration`,
         ).toBe(want.callerSha256);
-
-        // …and belt-and-braces: the canonical body must genuinely CALL the helper, with comments
-        // stripped, so a comment-only mention can never stand in for an invocation
         expect(
           callsFunction(live!.prosrc, seal),
           `${want.callerFn} does not CALL ${seal} — a mention in a comment is not an invocation`,
         ).toBe(true);
       }
     }
+  });
+
+  it('no expected-object specification is STALE — every spec answers a seal AUTHORITY_GUARDS still names', () => {
+    const named = new Set(AUTHORITY_GUARDS.map((r) => r.seal).filter((s): s is string => s !== null));
+    const specified = [
+      ...Object.keys(TRIGGER_SEALS),
+      ...Object.keys(CONSTRAINT_SEALS),
+      ...Object.keys(FUNCTION_SEAL_CALLERS),
+    ];
+    expect(
+      specified.filter((s) => !named.has(s)),
+      'a specification names a seal AUTHORITY_GUARDS no longer does — the pin would keep proving an object nothing claims, which is the mirror of the gap it exists to close',
+    ).toEqual([]);
   });
 
   it('every function-valued seal that FUNCTION_SEAL_CALLERS names is actually reached by those callers', async () => {
@@ -681,6 +848,60 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
         createHash('sha256').update(row!.prosrc, 'utf8').digest('hex'),
         'and the canonical-body pin — the preferred proof — must reject this body outright',
       ).not.toBe('84dfd52318f0d6bb5401e96881664e9342ebe77644db14dfd2a3fa2c84e8d4fe');
+    });
+  });
+
+
+  it('RED probe — a same-named enabled trigger on a DECOY relation must not answer for the real seal', async () => {
+    await inRollback(async (tx) => {
+      // the guarded relation loses its authority check…
+      await tx.$executeRawUnsafe('DROP TRIGGER "PaymentApproval_authority_live" ON "PaymentApproval"');
+      // …and an enabled trigger of the same NAME appears on an unrelated relation
+      await tx.$executeRawUnsafe('CREATE TABLE decoy_rel_trg ("id" text)');
+      await tx.$executeRawUnsafe(`
+        CREATE TRIGGER "PaymentApproval_authority_live" BEFORE INSERT ON decoy_rel_trg
+          FOR EACH ROW EXECUTE FUNCTION phase5_t6a_approval_authority_live()`);
+
+      const byName = (await tx.$queryRawUnsafe(
+        `SELECT count(*)::int AS n, min(tgenabled) AS enabled FROM pg_trigger
+          WHERE tgname = 'PaymentApproval_authority_live' AND NOT tgisinternal`,
+      )) as Array<{ n: number; enabled: string }>;
+      const onGuarded = (await tx.$queryRawUnsafe(
+        `SELECT count(*)::int AS n FROM pg_trigger
+          WHERE tgname = 'PaymentApproval_authority_live' AND NOT tgisinternal
+            AND tgrelid = to_regclass('"PaymentApproval"')`,
+      )) as Array<{ n: number }>;
+
+      expect(byName[0]!.n, 'the decoy exists, so a global tgname lookup still finds a trigger').toBe(1);
+      expect(
+        byName[0]!.enabled,
+        'and it is enabled, so the retired kind-exists-and-enabled arm would have passed',
+      ).toBe('O');
+      expect(
+        onGuarded[0]!.n,
+        'PaymentApproval now has NO authority check — approvals no longer require a live certificate, and the relation-bound seal must see that',
+      ).toBe(0);
+    });
+  });
+
+  it('RED probe — reattaching a trigger seal on the WRONG event keeps it enabled and named but changes tgtype', async () => {
+    await inRollback(async (tx) => {
+      await tx.$executeRawUnsafe('DROP TRIGGER "Payment_authority_live" ON "Payment"');
+      // right name, right relation, right function, enabled — and it never fires on INSERT
+      await tx.$executeRawUnsafe(`
+        CREATE TRIGGER "Payment_authority_live" BEFORE DELETE ON "Payment"
+          FOR EACH ROW EXECUTE FUNCTION phase5_t6a_payment_authority_live()`);
+      const [row] = (await tx.$queryRawUnsafe(
+        `SELECT tgtype::int AS tgtype, tgenabled AS enabled FROM pg_trigger
+          WHERE tgname = 'Payment_authority_live' AND NOT tgisinternal
+            AND tgrelid = to_regclass('"Payment"')`,
+      )) as Array<{ tgtype: number; enabled: string }>;
+      expect(row!.enabled, 'the decoy is enabled and on the right relation').toBe('O');
+      expect(row!.tgtype, 'fixture invalid: expected BEFORE DELETE ROW').toBe(TG.ROW + TG.BEFORE + TG.DELETE);
+      expect(
+        row!.tgtype === 7,
+        'a payment can now be recorded against a superseded authority with nothing firing; the exact-tgtype pin must refuse this',
+      ).toBe(false);
     });
   });
 

@@ -145,6 +145,51 @@ and `tgfoid`, never through a name.
 Mutation-checked, not merely observed passing: a raw-substring `callsFunction`, a stale caller hash,
 and a wrong expected `tgtype` each turn the suite RED (2 failed / 14 passed).
 
+### Round 3b — finishing the same correction across all three seal kinds
+
+The round-3 head generalized the **function** arm and left the other two loose: trigger seals were
+resolved by global `tgname` and proved only `tgenabled = 'O'`, and constraint seals fell through to a
+`continue`. That is the same sibling pattern one more time — the fix landed on the arm the findings
+named. Concretely, dropping `PaymentApproval_authority_live` and creating an enabled same-named
+trigger on any other relation left the test green while approvals no longer required a live
+certificate.
+
+There is now **no default arm**. Every non-null `AUTHORITY_GUARDS` seal must carry exactly one
+explicit expected-object specification, and a seal with none fails:
+
+| Kind | Specification | Seals |
+|---|---|---|
+| trigger | owning relation, enabled, exact `tgtype`, deferral, bound function, canonical body via `tgfoid` | `PaymentApproval_authority_live`, `Payment_authority_live`, `PaymentApproval_approver_not_certifier` |
+| constraint | owning relation + the required **behaviour** (the single-use verdict table) | `SodGrant_consumed_together` |
+| function | expected live callers, each fully pinned | the three §G bound helpers + the §I override predicate |
+
+A staleness check runs the other way too: a specification naming a seal `AUTHORITY_GUARDS` no longer
+carries fails, so the map cannot keep proving an object nothing claims.
+
+`SINGLE_USE_VERDICTS` is stated once and asserted by both the XOR test and the constraint seal —
+the rule this closure exists to enforce, applied to the closure.
+
+Two more hostile probes: a same-named **enabled** trigger on a decoy relation while the guarded
+relation has none (the retired arm passed this), and a reattachment on the wrong event that keeps
+name, relation, function and enabled state while never firing on INSERT. Mutation-checked: a wrong
+owning relation and a stale canonical body each turn the suite RED.
+
+### Round 4 — the same rule applied to three more places
+
+Four findings on the round-3 head. The first was the trigger-seal binding already fixed above; the
+other three are the same root reaching further:
+
+| Finding | Sibling it names | Fix |
+|---|---|---|
+| helper's OWN body unpinned | the caller pin stops one level up the call graph: a byte-identical caller can call a predicate a later migration hollowed out | `HELPER_BODIES` pins each helper's canonical `prosrc`, resolved unambiguously in `public` (exactly one row) |
+| `raisedBy` parsed, not exercised | `IN (...) OR "raisedBy" IS NOT NULL` mentions the same literals and admits anything | `labelVerdicts` — every admitted label accepted, an unknown label REFUSED, against the live expression |
+| `match: 'above the'` too broad | a matcher of common words silently adopts the next refusal containing them, seal and all | matcher narrowed to `raises the claim's ceiling`, **and** a new desk closure requires every matcher to hit exactly one refusal and no two rows to claim the same one |
+
+The third is the one worth naming: fixing the broad matcher alone would have been the instance, not
+the class. The closure now forbids the class.
+
+Mutation-checked: a stale helper hash and an inverted `raisedBy` expectation each turn the suite RED.
+
 ## Options considered
 
 - **(a) Move the database half to the live catalog** — reuse the t3c idiom (`pg_constraint` for the
