@@ -206,7 +206,11 @@ BEGIN
    WHERE a."projectId" = p_project AND a."billId" = p_bill
      AND c."supersededAt" IS NULL;
 
-  IF v_approved > v_net THEN
+  -- Only when something is actually approved. With no approvals the bound has nothing to say, and
+  -- a NEGATIVE net payable is §H's floor to refuse, not this one: `0 > -10` is technically a breach
+  -- of bound 4, but raising here would hijack the deduction floor's refusal and report the wrong
+  -- rule for the wrong write. Each seal answers for its own invariant.
+  IF v_approved > 0 AND v_approved > v_net THEN
     RAISE EXCEPTION 'Approvals of % exceed the % payable on this bill — a certification of % carrying unreleased withholdings cannot authorise more than it leaves payable; release the balance or correct the certification first (%)', v_approved, v_net, p_bill, p_bill;
   END IF;
 END;

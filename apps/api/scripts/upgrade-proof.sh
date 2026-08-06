@@ -2407,6 +2407,52 @@ $PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\
   && printf 'ok      %s\n' "commercial T5C R8: …and the balance is returned, so the correction below still has nothing held against it" \
   || { printf 'FAILED  %s\n' "commercial T5C R8: the release of the round-8 withholding was rejected"; FAIL=1; }
 
+# ── Phase 5 Task 6A (§F/§G/§I) — payment authority, over the migrated legacy database ───────────
+#
+# The two tables must arrive EMPTY: a legacy database has no payment authority, and a row here
+# would mean money movement predating the seals this task installs.
+assert "commercial T6A: the payment tables upgrade ROW-FREE over the legacy fixture" \
+  "SELECT (SELECT COUNT(*) FROM \"PaymentApproval\")::text || '/' || (SELECT COUNT(*) FROM \"Payment\")::text;" \
+  "0/0"
+# …and the ceiling column is NULL everywhere, so no existing membership silently loses authority
+assert "commercial T6A: every existing membership keeps unlimited approval authority (NULL ceiling)" \
+  "SELECT COUNT(*)::text FROM \"Membership\" WHERE \"approvalLimit\" IS NOT NULL;" \
+  "0"
+
+# §G bound 4 at PostgreSQL, against the certificate that is LIVE at this point: its 1.00
+# certification carries only fully-released withholdings, so the net payable is 1.00. Placed here
+# deliberately — a superseded certificate leaves nothing payable and the bound would return early,
+# which would make every assertion below vacuous rather than wrong.
+mint5c UP6A-CMD-OVER commercial.payment.approve UP6A-A-OVER
+assert_rejects "commercial T6A: approving MORE than the net payable" \
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OVER','p1','$UP5C_LIVE','$UP5C_BILL',5.00,'USER-1','UP6A-CMD-OVER')" \
+  'exceed the'
+mint5c UP6A-CMD-OK commercial.payment.approve UP6A-A-OK
+$PSQL >/dev/null -c "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OK','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-OK')" \
+  && printf 'ok      %s\n' "commercial T6A: approving EXACTLY the net payable is ACCEPTED (the bound is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T6A: a coherent approval was rejected — bound 4 is over-strict"; FAIL=1; }
+
+# §G bound 5 at PostgreSQL
+mint5c UP6A-CMD-PAYOVER commercial.payment.record UP6A-P-OVER
+assert_rejects "commercial T6A: paying MORE than was approved" \
+  "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6A-P-OVER','p1','UP6A-A-OK','$UP5C_BILL',2.00,'neft','USER-1','UP6A-CMD-PAYOVER')" \
+  'exceed the'
+mint5c UP6A-CMD-PAY commercial.payment.record UP6A-P-OK
+$PSQL >/dev/null -c "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6A-P-OK','p1','UP6A-A-OK','$UP5C_BILL',1.00,'neft','USER-1','UP6A-CMD-PAY')" \
+  && printf 'ok      %s\n' "commercial T6A: paying EXACTLY what was approved is ACCEPTED" \
+  || { printf 'FAILED  %s\n' "commercial T6A: a covered payment was rejected — bound 5 is over-strict"; FAIL=1; }
+
+# append-only, both tables
+assert_rejects "commercial T6A: RAISING an approval after the fact (an authority that can be edited is not one)" \
+  "UPDATE \"PaymentApproval\" SET \"amount\"=99.00 WHERE \"id\"='UP6A-A-OK'"
+assert_rejects "commercial T6A: DELETING a payment (money that left the account is a fact, not a field)" \
+  "DELETE FROM \"Payment\" WHERE \"id\"='UP6A-P-OK'"
+
+# an exception authorises ONE act, never both halves at once
+assert_rejects "commercial T6A: an SoD exception naming BOTH a certificate and an approval" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"approvalId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-X','p1','$UP5C_LIVE','UP6A-A-OK','certifier-may-not-approve','USER-1','USER-2','both halves','UP6A-CMD-OK')"
+
+
 $PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5C R5: the SAME correction after an attributable release is ACCEPTED (the seal is precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T5C R5: a correction with nothing left held was rejected — the seal is over-strict"; FAIL=1; }
