@@ -108,6 +108,43 @@ The pins were mutation-checked, not merely observed passing: a wrong canonical h
 expected `tgtype` each turn the suite RED (2 failed / 9 passed), so the closure fails when the
 guarantee is removed.
 
+## Round 3 — the root goes one level deeper than substrate
+
+The catalog head drew five more findings. None of them said "go back to text": the substrate is
+right. They said the *question form* was still wrong. On the correct substrate I was still asking
+**presence** questions where the invariant is **enforcement**, and still identifying objects by
+**name** where a name is not an identity:
+
+| Loose question | What it accepts |
+|---|---|
+| `pg_constraint WHERE conname = $1` | a same-named CHECK on any other relation |
+| `pg_proc WHERE proname = $1` for the hash | an overload or another schema, while the attached body is weakened |
+| `prosrc LIKE '%helper%'` | `-- helper` in a comment |
+| CHECK *mentions* both targets | a weakened rule admitting both at once |
+| seal *exists* by name | a function whose triggers were all dropped |
+
+So the root is not "text vs catalog". It is **asserting that the right words are present instead of
+that the rule holds** — and text-vs-catalog was only its first and largest instance. Root A again,
+one level in: the comment-stripping fix landed on the migration-text reader in round 2 and the
+sibling survived in `prosrc`.
+
+The correction that follows from that: where a hostile write is possible, **prove the refusal**, and
+where identity matters, **reach the object the way the database reaches it** — through `conrelid`
+and `tgfoid`, never through a name.
+
+### Round-3 proof map
+
+| Finding | Fix | Load-bearing proof |
+|---|---|---|
+| CHECK lookup by name | `conrelid = to_regclass($2)` on every lookup | decoy same-named CHECK on another relation: name-lookup finds 1, relation-bound finds 0 |
+| XOR only mentions targets | six-tuple **behavioural** verdict table, live expression installed verbatim on a temp table under savepoints | a weakened CHECK that still mentions both is caught: `bothTargets: accepted` |
+| hash re-queried by `proname` | hash `trg.prosrc`, the body reached through `tgfoid` | same-name decoy in a second schema makes `proname` ambiguous (2 rows) while the attached body is unambiguously the weakened one |
+| function seals counted by name | `FUNCTION_SEAL_CALLERS` pins each helper's live callers: relation, attached, enabled, deferred, exact `tgtype`, canonical caller body — covering all three §G bound helpers, not only the override | dropping `Payment_bound_sealed` leaves the helper defined and the caller pin fails |
+| substring reachability | canonical caller-body hash (preferred) **plus** comment-stripped call-expression parse | a comment-only mention keeps the substring true and both new checks false |
+
+Mutation-checked, not merely observed passing: a raw-substring `callsFunction`, a stale caller hash,
+and a wrong expected `tgtype` each turn the suite RED (2 failed / 14 passed).
+
 ## Options considered
 
 - **(a) Move the database half to the live catalog** — reuse the t3c idiom (`pg_constraint` for the
