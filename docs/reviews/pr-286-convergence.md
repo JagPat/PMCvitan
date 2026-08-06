@@ -1,16 +1,17 @@
 # PR #286 convergence audit — Phase 5 Task 6A (payment authority)
 
-Two finding-bearing heads: `b9f9b58` (nine findings, three P1) and `8c80152`
-(six findings, four P1). This audit is due because the second head crossed the
-threshold.
+Three finding-bearing heads: `b9f9b58` (nine findings, three P1), `8c80152`
+(six, four P1) and `4e80082` (four, **zero P1**). This audit became due at the
+second head and is carried forward.
 
 | Round | Findings | P1 | Root |
 | --- | --- | --- | --- |
 | 1 | 9 | 3 | **E** ×3, **A** ×2, four one-offs |
 | 2 | 6 | 4 | **E** ×2, **A** ×2 (one of them a closure failure), **F** ×2 |
+| 3 | 4 | **0** | **A** ×3 — every one a sibling of something round 2 added |
 
-The severity went **up**, not down, and that is the number this audit has to
-answer for. Round 2 was smaller but harder, and its composition is the reason:
+Round 2's severity went **up**, not down, and that is the number this audit had
+to answer for. Round 2 was smaller but harder, and its composition is the reason:
 
 - **two of the six findings were created by my round-1 corrections** (the
   superseded-certificate guard I added in the wrong place; the zero ceiling I
@@ -157,14 +158,53 @@ and never raise one. It is wired and labelled anyway, exactly as `measurement`
 is, because the closure's rule is mechanical — and carving out an exception on
 the strength of my own arithmetic is what went wrong twice in Task 2.
 
+## Round 3 — root A again, and what the closures did and did not catch
+
+Four findings, **no P1**. Three are root A in its purest form: round 2 added a
+thing, and the finding is about the thing standing **next to** it.
+
+| Finding | The sibling |
+| --- | --- |
+| P2 | `SodGrant.consumedByApprovalId` was added under an append-only path whose seal guards its clause on `consumedByCertificateId IS NOT NULL` — so the new target skipped validation entirely |
+| P2 | the `payment_approval` label was admitted by the DB CHECK and omitted from the shared DTO union |
+| P2 | `approvalAuthorityFor`'s org arm relies on `forUpdate`, which locks rows that EXIST — and that arm is *defined by* the absence of one |
+
+The fourth is older than this head: `record` has capped at the BILL since the
+first commit, so a second payment could overdraw the one approval it is nested
+under while the bill total stayed conserved. It is the only finding in three
+rounds that is not about something a correction introduced.
+
+### What this says about the split trigger
+
+The paragraph this section replaces committed to splitting 6A if round 3 returned
+findings on code round 2 added. Three of four do. **The split is nevertheless the
+wrong response, and the reason matters more than the rule.**
+
+That trigger was written to catch one failure mode — *"each correction adds review
+surface faster than review retires it"*, the signature that ended PR #279. The
+numbers say the opposite is happening: 9 → 6 → 4 findings, 3 → 4 → **0** P1s.
+None of the four is a consequence of the unit being too large to reason about;
+each is a narrow omission fixed in a few lines, and splitting the PR would not
+have surfaced any of them earlier. A rule applied past the condition it was
+written for is a ritual. JagPat was asked and chose the same.
+
+What the round-3 findings actually indict is root A's closure, which is still
+PROSE: *"when a fix names a direction, a side, or a half, write down what the
+opposite one is."* Round 3 is three more instances of exactly that. The mechanical
+closure for it is the open item this file carries into 6B — the two roots that
+have one (E and the fold-owner set) produced no round-3 findings at all, and root
+A, which has only a paragraph, produced three.
+
+### What the closures did do
+
+**CLOSURE 9 caught one of this round's own fixes.** Adding the approval-scoped
+refusal to `record` failed the build until `AUTHORITY_GUARDS` named the PostgreSQL
+object that refuses the same thing — which is precisely the behaviour root E's
+closure exists for, firing on the first new guard written after it landed.
+
 ## Where this leaves the PR
 
-Round 2's severity rose, and one round-2 finding was a root I had already named
-in round 1's packet. That is the signal PR #279 ended on, and it is the reason
-this head does not carry another prose promise: both live roots now have a test
-that fails.
-
-If a round 3 returns findings on code THIS head added, the honest reading is that
-6A is too large a unit for one review and the payment authority should be split
-the way 5C was — the approval half and the payment half — rather than corrected
-again. That is the owner's call, and this file is where it will be recorded.
+Both roots that got a mechanical closure in round 2 stayed silent in round 3.
+The one still carrying a prose closure produced three findings. That is a clean
+enough signal to act on, and it is the first item of work in 6B rather than a
+fourth restructuring of this one.

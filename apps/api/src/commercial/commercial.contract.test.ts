@@ -715,7 +715,12 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     {
       match: 'would take the paid total past',
       seal: 'phase5_t6a_paid_bound_check',
-      why: '§G bound 5, re-derived at COMMIT and also fired when a certificate is SUPERSEDED, which moves the right-hand side with no `Payment` insert to notice',
+      why: '§G bound 5 at the BILL, re-derived at COMMIT and also fired when a certificate is SUPERSEDED, which moves the right-hand side with no `Payment` insert to notice',
+    },
+    {
+      match: 'above the',
+      seal: 'phase5_t6a_approval_paid_check',
+      why: '§G bound 5 at the APPROVAL — the bill fold is conserved while one authority is overdrawn, so the row-level question is asked where the row is (this closure caught the guard the moment it was written, which is the whole point of it)',
     },
   ];
 

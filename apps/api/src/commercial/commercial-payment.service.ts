@@ -272,16 +272,33 @@ export class CommercialPaymentService {
           );
         }
 
-        // §G BOUND 5, re-derived under the lock. The bound is bill-scoped — `PAID(bill)` ≤
-        // `APPROVED(bill)` — so a second approval genuinely raises the ceiling, but the headroom is
-        // reported against the whole bill rather than this one approval, which is the number the
-        // practice can act on.
+        // §G BOUND 5, re-derived under the lock — and it is TWO questions, not one.
+        //
+        // The bill-scoped bound (`PAID(bill)` ≤ `APPROVED(bill)`) is what §G states, and it is
+        // right for what it measures: a second approval genuinely raises the ceiling. But it is
+        // not the whole rule, because a `Payment` is nested UNDER one approval. Codex round 3
+        // (P2): approve A1=40 and A2=40, pay 40 against A1, then pay 40 against A1 again — the
+        // bill fold sees 80 approved and 40 paid and lets it through, and the ledger then reports
+        // A1 as `paid: 80.00` against an authority of 40 while A2 sits unused. The bill-level
+        // total is conserved and the attribution is a lie, which is the shape §C exists to
+        // forbid: every unit of money answers to exactly one authority.
         const approvedTotal = await this.approvedTotal(tx, projectId, approval.billId);
         const paidTotal = await this.paidTotal(tx, projectId, approval.billId);
         const remaining = approvedTotal.sub(paidTotal);
         if (amount.greaterThan(remaining)) {
           throw new ConflictException(
             `Paying ${amount.toFixed(2)} would take the paid total past the ${approvedTotal.toFixed(2)} approved on this claim — ${paidTotal.toFixed(2)} is already paid, so ${remaining.toFixed(2)} remains. Money may only leave against an authority that covers it`,
+          );
+        }
+
+        // …and the APPROVAL-scoped bound. Reported separately rather than folded into the message
+        // above, because the two refusals send the practice to different places: the bill bound
+        // says "get more approved", this one says "pay against the approval that covers it".
+        const paidHere = await this.paidForApproval(tx, projectId, approval.id);
+        const remainingHere = new Prisma.Decimal(approval.amount).sub(paidHere);
+        if (amount.greaterThan(remainingHere)) {
+          throw new ConflictException(
+            `Paying ${amount.toFixed(2)} against this authorisation would take what it has paid to ${paidHere.add(amount).toFixed(2)}, above the ${new Prisma.Decimal(approval.amount).toFixed(2)} it authorises — ${remainingHere.toFixed(2)} remains on it. Another approval on this claim raises the claim's ceiling, not this one's; pay against the approval that covers the money`,
           );
         }
 
@@ -372,6 +389,18 @@ export class CommercialPaymentService {
       SELECT COALESCE(SUM(p."amount"), 0) AS total
         FROM "Payment" p
        WHERE p."projectId" = ${projectId} AND p."billId" = ${billId}`;
+    return new Prisma.Decimal(rows[0]?.total ?? 0);
+  }
+
+  /** What ONE authorisation has already paid — the fold the per-approval bound measures, and the
+   *  same number `PaymentApprovalDto.paid` reports, so the refusal and the read agree. */
+  private async paidForApproval(
+    tx: Prisma.TransactionClient, projectId: string, approvalId: string,
+  ): Promise<Prisma.Decimal> {
+    const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
+      SELECT COALESCE(SUM(p."amount"), 0) AS total
+        FROM "Payment" p
+       WHERE p."projectId" = ${projectId} AND p."approvalId" = ${approvalId}`;
     return new Prisma.Decimal(rows[0]?.total ?? 0);
   }
 

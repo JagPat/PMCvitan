@@ -2470,6 +2470,34 @@ assert_rejects "commercial T6A: an SoD exception on an approval the rule would n
   "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"approvalId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-X-NOCONF','p1','UP6A-A-OK','certifier-may-not-approve','USER-1','USER-2','no conflict here','UP6A-CMD-NOCONF')" \
   'the rule permits that act outright'
 
+# ── Task 6A, Codex round 3 ───────────────────────────────────────────────────────────────────
+#
+# A grant's approval-side consume was the ONE evidence target with nothing checking it: Task 5's
+# grant seal guards its clause on `consumedByCertificateId IS NOT NULL`, so stamping the approval
+# column skipped it entirely and an approver's authority could be burned against an act it never
+# excused.
+mint5c UP6A-CMD-GRANT2 commercial.sod.grant UP6A-G-LIVE
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-G-LIVE','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','only pmc on site','UP6A-CMD-GRANT2')" \
+  && printf 'ok      %s\n' "commercial T6A R3: a live payment-side grant is ACCEPTED (the approver's own receipt backs it)" \
+  || { printf 'FAILED  %s\n' "commercial T6A R3: a well-formed payment-side grant was rejected"; FAIL=1; }
+assert_rejects "commercial T6A R3: burning a grant against an approval that carries no matching override" \
+  "UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByApprovalId\"='UP6A-A-OK' WHERE \"id\"='UP6A-G-LIVE'" \
+  'carries no matching override'
+
+# The approval-scoped half of bound 5 is NOT asserted here, and the reason is this fixture rather
+# than a gap. Isolating it needs TWO live approvals — the whole point is that the BILL fold sees
+# enough headroom while ONE approval is overdrawn — and this legacy claim's net payable is 1.00,
+# which bound 4 correctly caps at a single approval. Any second payment here is refused by the bill
+# fold first, so an assertion would pass while proving nothing about the new seal.
+#
+# It is proven against live PostgreSQL by PROBE 21 in `phase5-t6a-payments.test.ts`, which builds a
+# 100.00 claim, approves 40 twice, and inserts the overdrawing payment with the service bypassed —
+# the bill fold seeing 80 approved against 80 paid, and only the approval-scoped seal refusing.
+#
+# Nor is an ACCEPTED payment recorded here, for the reason the block above already gives: a payment
+# is append-only, and leaving one standing makes the 5C correction below supersede a certificate
+# whose approval then drops out of `APPROVED` while the payment stays in `PAID`.
+
 
 $PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5C R5: the SAME correction after an attributable release is ACCEPTED (the seal is precise, not merely strict)" \

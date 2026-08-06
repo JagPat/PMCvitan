@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { readinessLockKey } from '../common/readiness-lock';
 
 /** The narrow client surface the standing check needs — satisfied by both a `$transaction` client
  *  and a top-level Prisma client, so non-DI callers (operator CLIs) can construct this directly. */
@@ -218,10 +219,48 @@ export class OrgsParticipant {
         WHERE "projectId" = $1 AND "userId" = $2 AND "status" = 'active'`,
       projectId, userId,
     );
-    // no active membership, yet standing held — the org owner/admin arm. There is no project row
-    // to carry a ceiling, and inventing zero here is exactly the refusal P2 named.
-    if (rows.length === 0) return { standing: true, ceiling: null };
-    return { standing: true, ceiling: rows[0]!.approvalLimit ?? null };
+    if (rows.length > 0) return { standing: true, ceiling: rows[0]!.approvalLimit ?? null };
+
+    // No active membership, yet standing held — the ORG owner/admin arm. There is no project row
+    // to carry a ceiling, and inventing zero here is exactly the refusal round 2 named.
+    //
+    // But this arm needs a lock the row-level one cannot give it (Codex round 3). `FOR UPDATE`
+    // locks rows that EXIST, and the whole premise here is that none does. So a membership INSERT
+    // races: this transaction reads "org admin, unlimited", a concurrent insert makes the same user
+    // an active contractor — or a pmc with a zero ceiling — and `authorize` gives that membership
+    // PRECEDENCE over the org arm, so the authority this arm relied on is gone before the approval
+    // it authorised commits.
+    //
+    // `hasProjectRoleStanding` documents the insert direction as safe on the grounds that it "only
+    // ever grants authority the operator did not have at decision time". That is true of its
+    // original callers and FALSE here: for the org arm an insert REVOKES. A rationale is only as
+    // good as the caller it was written for.
+    //
+    // The serializing primitive is the project readiness lock — the same one `MembersService` takes
+    // on activation and removal, so the insert either waits for this decision or lands before it.
+    // Advisory locks are re-entrant, so a caller already holding it (every command path does) pays
+    // nothing, and a caller that is not holding it is made correct rather than left to a
+    // coincidence. Taken only on THIS arm: the row-lock above already settles the ordinary case.
+    // the lock function returns `void`, which Prisma's row deserializer refuses, and this client
+    // interface offers no `$executeRaw` — so the call is wrapped in a subquery that yields a row
+    await (tx as OrgsParticipantClient).$queryRawUnsafe(
+      'SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended($1, 0))) AS l',
+      readinessLockKey(projectId),
+    );
+    // …and the question is asked AGAIN behind the lock, because the answer before it was taken is
+    // exactly the one that could be stale. An insert that committed while this transaction waited
+    // is visible now, and it decides.
+    const settled = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ approvalLimit: Prisma.Decimal | null }>>(
+      `SELECT "approvalLimit" FROM "Membership"
+        WHERE "projectId" = $1 AND "userId" = $2 AND "status" = 'active'`,
+      projectId, userId,
+    );
+    if (settled.length === 0) return { standing: true, ceiling: null };
+    // a membership appeared: it takes precedence, so the whole standing question is re-asked
+    // through the one method that states it
+    const stillEntitled = await this.hasProjectRoleStanding(tx, projectId, userId, roles, { forUpdate: true });
+    if (!stillEntitled) return { standing: false };
+    return { standing: true, ceiling: settled[0]!.approvalLimit ?? null };
   }
 
 }

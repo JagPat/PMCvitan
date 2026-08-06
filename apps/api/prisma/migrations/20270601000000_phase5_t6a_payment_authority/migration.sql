@@ -281,9 +281,43 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- …and the APPROVAL-scoped half of the same bound.
+--
+-- Codex round 3 (P2). §G states bound 5 over the BILL, and that is right for what it measures — a
+-- second approval genuinely raises the claim's ceiling. It is not the whole rule, because a
+-- `Payment` is nested UNDER one approval: approve A1=40 and A2=40, then pay 40 against A1 twice,
+-- and the bill fold sees 80 approved against 40 paid and admits it. The bill total is conserved
+-- and the ATTRIBUTION is a lie — A1 reports paying 80 on an authority of 40 while A2 sits unused.
+-- §C's rule is that every unit of money answers to exactly one authority, and a fold that only
+-- ever asks about the sum cannot notice when one of them is overdrawn.
+--
+-- Same lock order as its bill-scoped sibling: the approval's own row, which the FK guarantees
+-- exists, taken before the count.
+CREATE OR REPLACE FUNCTION phase5_t6a_approval_paid_check(p_project text, p_approval text)
+RETURNS void AS $$
+DECLARE
+  v_authorised numeric;
+  v_paid       numeric;
+BEGIN
+  SELECT a."amount" INTO v_authorised FROM "PaymentApproval" a
+   WHERE a."projectId" = p_project AND a."id" = p_approval
+     FOR UPDATE;
+  IF v_authorised IS NULL THEN RETURN; END IF;   -- the FK is what refuses a missing approval
+
+  SELECT COALESCE(SUM(p."amount"), 0) INTO v_paid
+    FROM "Payment" p
+   WHERE p."projectId" = p_project AND p."approvalId" = p_approval;
+
+  IF v_paid > v_authorised THEN
+    RAISE EXCEPTION 'Payments of % rest on approval %, which authorises only % — another approval on the same claim raises the CLAIM''S ceiling, not this one''s, and money answers to the authority it is nested under', v_paid, p_approval, v_authorised;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION phase5_t6a_payment_bound_sealed() RETURNS trigger AS $$
 BEGIN
   PERFORM phase5_t6a_paid_bound_check(NEW."projectId", NEW."billId");
+  PERFORM phase5_t6a_approval_paid_check(NEW."projectId", NEW."approvalId");
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -640,6 +674,46 @@ DROP TRIGGER IF EXISTS "SodException_approval_sealed" ON "SodException";
 CREATE CONSTRAINT TRIGGER "SodException_approval_sealed"
   AFTER INSERT ON "SodException" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t6a_sod_exception_approval_sealed();
+
+-- ── …and the GRANT's own consume transition, for the target this task added ───────────────────
+--
+-- Codex round 3 (P2). Task 5's `phase5_t5_grant_sealed` validates a consumed grant against the
+-- certificate that spent it — and its clause is guarded by `consumedByCertificateId IS NOT NULL`,
+-- so an approval-side consume skips it ENTIRELY. Adding `consumedByApprovalId` therefore put a new
+-- evidence target under an existing append-only path with nothing checking it: a direct writer
+-- could stamp `consumedAt` plus any approval id, satisfying the widened CHECK and the FK, and
+-- permanently burn an approver's authority against an act it never excused.
+--
+-- This is a SEPARATE trigger rather than a `CREATE OR REPLACE` of 5B's function, deliberately.
+-- Replacing it would mean copying its two cleared clauses forward, and a seal that judges a copy
+-- as an original is the root this PR's audit already names twice. 5B's function is untouched; this
+-- one answers only for the arm 6A created, and the two compose because both are constraint
+-- triggers on the same table firing at COMMIT.
+CREATE OR REPLACE FUNCTION phase5_t6a_grant_approval_consume_sealed() RETURNS trigger AS $$
+BEGIN
+  IF NEW."consumedByApprovalId" IS NULL THEN RETURN NULL; END IF;
+
+  -- the mirror of 5B clause (c): a consumed grant names an act that actually rests on it, matched
+  -- on the WHOLE scope — rule, actor, approver, bill and claim version — not merely on existence
+  IF NOT EXISTS (
+    SELECT 1 FROM "SodException" s
+      JOIN "PaymentApproval" a ON a."projectId" = s."projectId" AND a."id" = s."approvalId"
+      JOIN "BillCertificate" c ON c."projectId" = a."projectId" AND c."id" = a."certificateId"
+     WHERE s."projectId" = NEW."projectId" AND s."grantId" = NEW."id"
+       AND s."approvalId" = NEW."consumedByApprovalId"
+       AND s."rule" = NEW."rule" AND s."actorId" = NEW."actorId" AND s."approverId" = NEW."approverId"
+       AND a."billId" = NEW."billId" AND c."versionId" = NEW."versionId"
+  ) THEN
+    RAISE EXCEPTION 'Grant % was stamped consumed by approval %, which carries no matching override — an authority is spent BY the act it excuses, on the same rule, actor, approver, bill and claim version', NEW."id", NEW."consumedByApprovalId";
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "SodGrant_approval_consume_sealed" ON "SodGrant";
+CREATE CONSTRAINT TRIGGER "SodGrant_approval_consume_sealed"
+  AFTER INSERT OR UPDATE ON "SodGrant" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6a_grant_approval_consume_sealed();
 
 -- ── diagnostic-first: this migration adds tables, and they must arrive EMPTY ──────────────────
 --
