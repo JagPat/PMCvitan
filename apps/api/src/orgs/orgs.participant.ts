@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { readinessLockKey } from '../common/readiness-lock';
 
 /** The narrow client surface the standing check needs — satisfied by both a `$transaction` client
  *  and a top-level Prisma client, so non-DI callers (operator CLIs) can construct this directly. */
@@ -171,4 +172,95 @@ export class OrgsParticipant {
     );
     return rows[0]?.entitled === true;
   }
+
+  /**
+   * Phase 5 Task 6A (§I) — may `userId` approve on `projectId` at all, and up to what CEILING?
+   *
+   * Approval limits are authority/standing data and `Membership` is orgs-owned, so commercial does
+   * not read the table directly: an orgs-side change to how active membership or a limit downgrade
+   * is interpreted would otherwise leave payment approval and project access disagreeing about the
+   * same actor.
+   *
+   * **Standing and ceiling are ONE answer, not two.** Codex round 2 found both halves of the split:
+   * an earlier spelling selected `approvalLimit` from the active membership and locked THAT, which
+   *
+   *   - never looked at the ROLE, so a request authorised as pmc at the guard could still approve
+   *     after a concurrent downgrade to engineer committed — the lock protected the number and not
+   *     the authority the number qualifies (P1); and
+   *   - treated an ABSENT membership as a zero ceiling, which refuses the ordinary org-owner/admin
+   *     fallback: that user switches into the project as pmc with no `Membership` row at all, holds
+   *     live authority everywhere else, and could approve nothing (P2).
+   *
+   * Both are the same mistake — a fragment of the standing predicate re-stated here instead of
+   * asked of the one place that states it. So the predicate is not re-stated: this asks
+   * `hasProjectRoleStanding` with `forUpdate`, which is the rule `ProjectAccessService.authorize`
+   * applies, org arm included, under the lock that makes a concurrent downgrade wait.
+   *
+   * The ceiling then comes from the ACTIVE membership row that decision already locked. When
+   * standing came from the ORG arm there is no membership row and therefore no project-recorded
+   * ceiling: that path is reported as unlimited, which is what it already is for every other
+   * authority on the project. `null` is UNLIMITED — the state every existing membership is in —
+   * and a ceiling of zero is a real ceiling that refuses everything, because "may not approve" is a
+   * thing a practice may legitimately want to say about a role.
+   */
+  async approvalAuthorityFor(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    userId: string,
+    roles: readonly string[],
+  ): Promise<{ standing: false } | { standing: true; ceiling: Prisma.Decimal | null }> {
+    // ONE statement of the rule, under the lock. `forUpdate` is what makes this an authority
+    // decision rather than a reading of one: the downgrade waits for this transaction.
+    const entitled = await this.hasProjectRoleStanding(tx, projectId, userId, roles, { forUpdate: true });
+    if (!entitled) return { standing: false };
+
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ approvalLimit: Prisma.Decimal | null }>>(
+      `SELECT "approvalLimit" FROM "Membership"
+        WHERE "projectId" = $1 AND "userId" = $2 AND "status" = 'active'`,
+      projectId, userId,
+    );
+    if (rows.length > 0) return { standing: true, ceiling: rows[0]!.approvalLimit ?? null };
+
+    // No active membership, yet standing held — the ORG owner/admin arm. There is no project row
+    // to carry a ceiling, and inventing zero here is exactly the refusal round 2 named.
+    //
+    // But this arm needs a lock the row-level one cannot give it (Codex round 3). `FOR UPDATE`
+    // locks rows that EXIST, and the whole premise here is that none does. So a membership INSERT
+    // races: this transaction reads "org admin, unlimited", a concurrent insert makes the same user
+    // an active contractor — or a pmc with a zero ceiling — and `authorize` gives that membership
+    // PRECEDENCE over the org arm, so the authority this arm relied on is gone before the approval
+    // it authorised commits.
+    //
+    // `hasProjectRoleStanding` documents the insert direction as safe on the grounds that it "only
+    // ever grants authority the operator did not have at decision time". That is true of its
+    // original callers and FALSE here: for the org arm an insert REVOKES. A rationale is only as
+    // good as the caller it was written for.
+    //
+    // The serializing primitive is the project readiness lock — the same one `MembersService` takes
+    // on activation and removal, so the insert either waits for this decision or lands before it.
+    // Advisory locks are re-entrant, so a caller already holding it (every command path does) pays
+    // nothing, and a caller that is not holding it is made correct rather than left to a
+    // coincidence. Taken only on THIS arm: the row-lock above already settles the ordinary case.
+    // the lock function returns `void`, which Prisma's row deserializer refuses, and this client
+    // interface offers no `$executeRaw` — so the call is wrapped in a subquery that yields a row
+    await (tx as OrgsParticipantClient).$queryRawUnsafe(
+      'SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtextextended($1, 0))) AS l',
+      readinessLockKey(projectId),
+    );
+    // …and the question is asked AGAIN behind the lock, because the answer before it was taken is
+    // exactly the one that could be stale. An insert that committed while this transaction waited
+    // is visible now, and it decides.
+    const settled = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ approvalLimit: Prisma.Decimal | null }>>(
+      `SELECT "approvalLimit" FROM "Membership"
+        WHERE "projectId" = $1 AND "userId" = $2 AND "status" = 'active'`,
+      projectId, userId,
+    );
+    if (settled.length === 0) return { standing: true, ceiling: null };
+    // a membership appeared: it takes precedence, so the whole standing question is re-asked
+    // through the one method that states it
+    const stillEntitled = await this.hasProjectRoleStanding(tx, projectId, userId, roles, { forUpdate: true });
+    if (!stillEntitled) return { standing: false };
+    return { standing: true, ceiling: settled[0]!.approvalLimit ?? null };
+  }
+
 }

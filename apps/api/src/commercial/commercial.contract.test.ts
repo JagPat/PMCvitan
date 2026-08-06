@@ -56,6 +56,8 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.sod.grant': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.sod.grant'" },
     'commercial.deduction.record': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.record'" },
     'commercial.deduction.release': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.release'" },
+    'commercial.payment.approve': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.approve'" },
+    'commercial.payment.record': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.record'" },
     'commercial.certificate.supersede': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.certificate.supersede'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
@@ -68,6 +70,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.verification': "Get('commercial/bills/:billId/verification')",
     'commercial.certificate': "Get('commercial/bills/:billId/certificate')",
     'commercial.deductions': "Get('commercial/bills/:billId/deductions')",
+    'commercial.payments': "Get('commercial/bills/:billId/payments')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -403,7 +406,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ],
     },
     {
-      field: 'MEASURED', owner: 'commercial',
+      field: 'MEASURED', owner: 'commercial', readVia: 'measuredForPoLines',
       why: 'measured person-shifts are the labour CONSUMPTION term, so they move money between the committed and received buckets',
       writers: [
         { file: 'commercial/commercial-measurement.service.ts', method: 'append' },
@@ -436,6 +439,11 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ],
     },
     {
+      field: 'APPROVED', owner: 'commercial', readVia: 'approvedAmountFor',
+      why: '§J defines `certified-payable` as `NET_PAYABLE − APPROVED`, so authorising a payment lowers exposure and can CLEAR an open over-budget exception — a headroom mover with no procurement or certification write anywhere',
+      writers: [{ file: 'commercial/commercial-payment.service.ts', method: 'approve' }],
+    },
+    {
       field: 'BUDGET', owner: 'commercial',
       why: 'authority down is a breach with no commitment write anywhere — §B calls it the most ordinary case',
       writers: [{ file: 'commercial/commercial-budget.service.ts', method: 'setBudget' }],
@@ -466,12 +474,24 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     // procurement pin reads an interface; this one reads the CALLS, because `CommercialBillQuery`
     // hands back one map per fold rather than one row with fields.
     const fold = readFileSync(join(SRC, 'commercial/commercial-budget.query.ts'), 'utf8');
-    // Task 5C widened this from `this.bills.*` to every COMMERCIAL-OWNED query the fold reads.
-    // The closure's own root applies to itself: naming one owner would leave the next one blind,
-    // exactly as naming `CERTIFIED` and leaving `BILLED_AMOUNT` unclaimed did. The other four
-    // owners the fold reads (procurement, labour, inventory, measurement) are covered by the
-    // interface pin above, which derives their fields from the read contract itself.
-    const read = [...fold.matchAll(/this\.(?:bills|deductions)\.(\w+)\(/gu)].map((m) => m[1]!);
+    //
+    // CLOSURE 8 (Task 6A, Codex round 2). Task 5C widened this from `this.bills.*` to
+    // `(?:bills|deductions)` — a hand-written alternation of the owners that existed that day. Task
+    // 6A then taught the fold to read `this.payments.approvedAmountFor`, and this test, whose whole
+    // purpose is to fail when the fold gains an unclaimed input, said nothing: the new owner was
+    // not in the literal. The `payment_approval` mover was missed for exactly that reason, and the
+    // budget went on reporting a breach an approval had already cleared.
+    //
+    // That is this file's own stated root — "a list of sites was the same mistake one level up" —
+    // reproduced INSIDE the closure written to prevent it. So the owner set is no longer written
+    // here either. It is derived from the fold's CONSTRUCTOR: every injected commercial-owned
+    // collaborator is scanned, so adding one to the constructor is what makes its calls visible,
+    // and there is no second place to remember.
+    const ctor = /export class CommercialBudgetQuery\s*\{\s*constructor\(([\s\S]*?)\n\s*\)\s*\{\}/u.exec(fold)?.[1] ?? '';
+    const owners = [...ctor.matchAll(/private readonly (\w+):\s*(Commercial\w+)/gu)].map((m) => m[1]!);
+    expect(owners.length, 'the budget query constructor could not be parsed — the pin is not deriving its owner set').toBeGreaterThan(1);
+    const callPattern = new RegExp(`this\\.(?:${owners.join('|')})\\.(\\w+)\\(`, 'gu');
+    const read = [...fold.matchAll(callPattern)].map((m) => m[1]!);
     expect(read.length, 'no commercial-owned fold calls found — the pin is not actually reading the fold').toBeGreaterThan(0);
     const claimed = new Set(FOLD_INPUTS.map((i) => i.readVia).filter(Boolean));
     for (const method of new Set(read)) {
@@ -611,5 +631,138 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       body.includes('Prisma.TransactionIsolationLevel.RepeatableRead'),
       'readBudget folds four owners across several statements and must pin ONE snapshot, or it can report a headroom that never existed',
     ).toBe(true);
+  });
+
+  /**
+   * CLOSURE 9 — EVERY SERVICE REFUSAL ON THE MONEY PATH IS CLASSIFIED AGAINST WHAT ENFORCES IT
+   * BELOW (Task 6A convergence audit, root "sealed in one place only").
+   *
+   * The root, stated plainly because it has now recurred after being named: Task 6A's round-1
+   * audit recorded "I sealed the arithmetic and left the authority to the service." The round-1
+   * corrections then fixed the stale-approval rule IN THE SERVICE and never mirrored it at
+   * PostgreSQL, and round 2 found exactly that — twice, in the same head. Noticing a root is not a
+   * closure. A closure is a thing that fails.
+   *
+   * So every `ConflictException` and `ForbiddenException` this service raises must appear here with
+   * an answer to one question: what refuses this to a writer that never called the service? A row
+   * either NAMES the PostgreSQL object that does, and the test proves that object exists in the
+   * migration, or it says `seal: null` with a reason — which is a legitimate answer for a guard
+   * that is not about persisted state, and an illegitimate one for a guard that is.
+   *
+   * Adding a guard without a row fails here. That is the whole mechanism.
+   */
+  const AUTHORITY_GUARDS: Array<{ match: string; seal: string | null; why: string }> = [
+    {
+      match: 'Approving a payment is a pmc surface',
+      seal: null,
+      why: 'a ROLE policy, not a property of a row: `ROLE_POLICY` is the single statement and `RolesFor` plus the route-policy tripwire are its enforcement. What a bypass writer defeats by skipping it is §I, and §I is sealed at `PaymentApproval_approver_not_certifier`',
+    },
+    {
+      match: 'Recording a payment is a pmc surface',
+      seal: null,
+      why: 'same policy surface as approving; the money invariant a bypass writer would defeat is bound 5, sealed at `phase5_t6a_paid_bound_check`',
+    },
+    {
+      match: 'The commercial register is a pmc/engineer surface',
+      seal: null,
+      why: 'a READ guard — it authorises no write, so there is no persisted state for a seal to protect',
+    },
+    {
+      match: 'has no live certification',
+      seal: 'PaymentApproval_authority_live',
+      why: 'an approval draws on a LIVE certificate; the three-column FK proves the certificate is this bill’s and says nothing about it standing',
+    },
+    {
+      match: 'no longer holds pmc standing',
+      seal: 'phase5_t6a_approval_override_valid',
+      why: 'the grant-backed override chain — a grant whose approver has lost standing cannot be spent, and the seal re-proves the grant’s own receipt',
+    },
+    {
+      match: 'granted against an earlier claim version',
+      seal: 'phase5_t6a_approval_override_valid',
+      why: 'the seal pins the grant to the certificate’s own `versionId`, so a stale grant cannot excuse an approval on an amended claim',
+    },
+    {
+      match: 'may not also approve its payment',
+      seal: 'PaymentApproval_approver_not_certifier',
+      why: '§I’s payment half, sealed at PG with the override path honoured rather than banned',
+    },
+    {
+      match: 'would take the approved total past',
+      seal: 'phase5_t6a_approved_bound_check',
+      why: '§G bound 4, re-derived at COMMIT under the bill lock over whatever the transaction leaves behind',
+    },
+    {
+      match: 'authorisation was consumed concurrently',
+      seal: 'SodGrant_consumed_together',
+      why: 'the grant is single-use; the CAS loses the race and the CHECK plus 5B’s one-way consume trigger make a second spend unrepresentable',
+    },
+    {
+      match: 'no longer hold the standing on this project',
+      seal: null,
+      why: 'standing is ORGS-owned and orgs-enforced; the money row’s own §I seal is `PaymentApproval_approver_not_certifier`, and a PG copy of the role predicate here would be a second statement of a rule this module does not own',
+    },
+    {
+      match: 'above your approval ceiling',
+      seal: null,
+      why: '§I ceilings are per-MEMBERSHIP authority, not a property of the money row: the ceiling can be raised or lowered after the fact, so a PG check on the approval would refuse a row that was legitimate when written. `Membership_approvalLimit_nonnegative` is the only invariant the column itself has',
+    },
+    {
+      match: 'has since been superseded',
+      seal: 'Payment_authority_live',
+      why: 'money leaves against the authority that covered it — the row-level question the bill-scoped bound cannot ask',
+    },
+    {
+      match: 'would take the paid total past',
+      seal: 'phase5_t6a_paid_bound_check',
+      why: '§G bound 5 at the BILL, re-derived at COMMIT and also fired when a certificate is SUPERSEDED, which moves the right-hand side with no `Payment` insert to notice',
+    },
+    {
+      match: 'above the',
+      seal: 'phase5_t6a_approval_paid_check',
+      why: '§G bound 5 at the APPROVAL — the bill fold is conserved while one authority is overdrawn, so the row-level question is asked where the row is (this closure caught the guard the moment it was written, which is the whole point of it)',
+    },
+  ];
+
+  it('every money-path refusal in the payment service is classified against a seal', () => {
+    const src = readFileSync(join(HERE, 'commercial-payment.service.ts'), 'utf8');
+    // derived, not remembered: the guards are READ out of the service, so a new one arrives here
+    // unclassified and this fails
+    const guards = [...src.matchAll(/throw new (?:Conflict|Forbidden)Exception\(([\s\S]{0,400}?)\);\n/gu)]
+      .map((m) => m[1]!);
+    expect(guards.length, 'no refusals found — the pin is not actually reading the service').toBeGreaterThan(5);
+
+    const unclassified = guards.filter((g) => !AUTHORITY_GUARDS.some((r) => g.includes(r.match)));
+    expect(
+      unclassified,
+      'a refusal on the money path is not classified in AUTHORITY_GUARDS — name the PostgreSQL object that refuses the same thing to a writer that never called the service, or say `seal: null` and why that is right',
+    ).toEqual([]);
+
+    // …and no row may claim a refusal the service no longer makes, which would leave a seal
+    // "covered" by a guard that is gone
+    for (const row of AUTHORITY_GUARDS) {
+      expect(
+        guards.some((g) => g.includes(row.match)),
+        `AUTHORITY_GUARDS claims "${row.match}" but the payment service no longer raises it`,
+      ).toBe(true);
+    }
+  });
+
+  it('every seal AUTHORITY_GUARDS names exists in the migrations', () => {
+    const dir = join(SRC, '..', 'prisma', 'migrations');
+    const sql = readdirSync(dir)
+      .filter((d) => d.startsWith('2027'))
+      .map((d) => {
+        try { return readFileSync(join(dir, d, 'migration.sql'), 'utf8'); } catch { return ''; }
+      })
+      .join('\n');
+    expect(sql.length, 'no Phase-5 migrations read — the pin is not actually reading the schema').toBeGreaterThan(1000);
+    for (const row of AUTHORITY_GUARDS) {
+      if (row.seal === null) continue;
+      expect(
+        sql.includes(row.seal),
+        `AUTHORITY_GUARDS names ${row.seal} as the seal for "${row.match}", and no migration defines it — a named seal that does not exist is worse than an admitted gap`,
+      ).toBe(true);
+    }
   });
 });

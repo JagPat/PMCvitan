@@ -4,6 +4,8 @@ import {
   certifyBillSchema,
   recordDeductionSchema,
   releaseDeductionSchema,
+  approvePaymentSchema,
+  recordPaymentSchema,
   grantSodExceptionSchema,
   correctMeasurementSchema,
   defineCostHeadSchema,
@@ -18,6 +20,8 @@ import {
   type CertifyBillInput,
   type RecordDeductionInput,
   type ReleaseDeductionInput,
+  type ApprovePaymentInput,
+  type RecordPaymentInput,
   type GrantSodExceptionInput,
   type CorrectMeasurementInput,
   type DefineCostHeadInput,
@@ -31,6 +35,7 @@ import {
 } from '../contracts';
 import { CommercialService } from './commercial.service';
 import { CommercialDeductionService } from './commercial-deduction.service';
+import { CommercialPaymentService } from './commercial-payment.service';
 import { CommercialBudgetService } from './commercial-budget.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
 import { CommercialBillService } from './commercial-bill.service';
@@ -64,6 +69,7 @@ export class CommercialController {
     private readonly verification: CommercialVerificationService,
     private readonly certification: CommercialCertificationService,
     private readonly deductions: CommercialDeductionService,
+    private readonly payments: CommercialPaymentService,
   ) {}
 
   /** §B — set or REVISE the live budget for one cost head. One command for both: v1 and a
@@ -315,6 +321,48 @@ export class CommercialController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.deductions.readLedger(projectId, billId, user);
+  }
+
+  /**
+   * §F/§G/§I — AUTHORISE a certified payable for payment.
+   *
+   * A separate authority from certification, and a separate route, because §I's rule needs two
+   * actors to compare: the person who certified may not approve. The certificate is resolved
+   * server-side from what is LIVE — a caller-supplied id could name a superseded certificate that
+   * §G bounds 3–5 deliberately exclude.
+   */
+  @Post('commercial/payments/approve')
+  @RolesFor('commercial.approve-payment')
+  approvePayment(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(approvePaymentSchema)) body: ApprovePaymentInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.payments.approve(projectId, body, user, idempotencyKey);
+  }
+
+  /** §G — record money LEAVING against an approval that covers it (bound 5). */
+  @Post('commercial/payments/record')
+  @RolesFor('commercial.record-payment')
+  recordPayment(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(recordPaymentSchema)) body: RecordPaymentInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.payments.record(projectId, body, user, idempotencyKey);
+  }
+
+  /** §G — one claim's approvals and payments, with the folds bounds 4–5 are measured against. */
+  @Get('commercial/bills/:billId/payments')
+  @RolesFor('commercial.read')
+  readPayments(
+    @Param('projectId') projectId: string,
+    @Param('billId') billId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.payments.ledger(projectId, billId, user);
   }
 
   /** §E — the LIVE certificate on a claim, with the evidence it froze. 404 when none stands. */

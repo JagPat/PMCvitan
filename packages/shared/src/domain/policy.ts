@@ -138,6 +138,12 @@ export const ROLE_POLICY = {
   // does not silently widen the other.
   'commercial.deduct': ['pmc'],
   'commercial.deduct.release': ['pmc'],
+  // Phase 5 Task 6A (§I) — approving payment and recording it are SEPARATE authorities, and both
+  // are separate from certification. The plan is explicit that certification and payment approval
+  // are deliberately apart; declaring one permission for both would make the certifier-vs-approver
+  // rule unenforceable at the route.
+  'commercial.approve-payment': ['pmc'],
+  'commercial.record-payment': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

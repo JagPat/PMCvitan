@@ -57,6 +57,15 @@ export type HeadroomMover =
   // phase has found a mover wearing another act's label.
   | 'deduction'
   | 'deduction_release'
+  // Phase 5 Task 6A (§I/§J) — an APPROVAL lowers `certified-payable` (§J defines the bucket as
+  // `NET_PAYABLE − APPROVED`), so authorising money is a headroom mover with no procurement or
+  // certification write anywhere. Codex round 2 (P2) found it: the fold was taught to subtract
+  // `APPROVED` and the write was not made a mover, so an approval that healed a head's exposure
+  // left the old `BudgetException` open and the budget read went on reporting a breach nobody
+  // could clear. It is named separately, not folded into `claim`, for the reason `raisedBy` exists
+  // at all: an approval-cleared exception labelled `claim` sends a PMC hunting a vendor claim that
+  // never changed.
+  | 'payment_approval'
   | 'commitment'
   | 'budget_revision'
   | 'reattribution'

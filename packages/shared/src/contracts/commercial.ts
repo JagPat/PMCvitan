@@ -69,6 +69,12 @@ export const COMMERCIAL_COMMANDS = [
   // acts, and a later widening of one must not silently widen the other.
   'commercial.deduction.record',
   'commercial.deduction.release',
+  // Phase 5 Task 6A (§F/§G/§I) — AUTHORISE money for payment, and RECORD it leaving. Two commands
+  // because they are two acts by two authorities: an approval says the payable may be paid, a
+  // payment says it was. §I keeps approval apart from certification for the same reason — the
+  // actor who certified may not approve — and a single command would make that rule unstateable.
+  'commercial.payment.approve',
+  'commercial.payment.record',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -94,6 +100,10 @@ export const COMMERCIAL_QUERIES = [
   // withheld and net figures are FOLDS computed on every call: §H forbids a stored balance column,
   // so there is nothing else they could be.
   'commercial.deductions',
+  // Phase 5 Task 6A — one claim's approvals and payments, with the folded approved and paid
+  // totals. FOLDS on every call: §G bounds 4–5 are computed from the rows, so a stored total
+  // would be a second answer to a question the ledger already answers.
+  'commercial.payments',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -167,7 +177,10 @@ export interface BudgetExceptionDto {
    *  case (§G authorises more than the ordered quantity and no commitment releases against the
    *  extra units); `receipt_progress` is a receipt recorded, rejected or reversed, which re-prices
    *  a CLOSED-SHORT line's released remainder with nothing accepted at all. */
-  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim' | 'deduction' | 'deduction_release';
+  /** Task 6A — `payment_approval` joins the union because the DB CHECK now admits it. A label a
+   *  client is told is impossible, and which the server can still return, is a client that
+   *  mishandles the first real one it sees. */
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim' | 'deduction' | 'deduction_release' | 'payment_approval';
   raisedAt: string;
   raisedById: string;
   clearedAt: string | null;
@@ -446,7 +459,24 @@ export interface VerificationDto {
   billStatus: VendorBillStatus;
 }
 
-/** §I — the approver's OWN act: permission for one otherwise-forbidden certification. */
+/**
+ * §I — the two segregation-of-duties rules, named ONCE.
+ *
+ * Both halves of §I are overridable by the same two-act mechanism (a grant the approver issues,
+ * consumed by the act it excuses), so the rule string is part of the shared contract rather than a
+ * constant each service spells for itself: a grant issued for one rule must never be spendable on
+ * the other, and that is only checkable if both sides read the same name.
+ */
+export const SOD_RULES = {
+  /** Task 5 — the actor who recorded the evidence under a claim may not certify it. */
+  evidenceRecorderMayNotCertify: 'evidence-recorder-may-not-certify',
+  /** Task 6A — the actor who certified a claim may not approve its payment. */
+  certifierMayNotApprove: 'certifier-may-not-approve',
+} as const;
+
+export type SodRule = (typeof SOD_RULES)[keyof typeof SOD_RULES];
+
+/** §I — the approver's OWN act: permission for one otherwise-forbidden certification or approval. */
 export interface SodGrantDto {
   id: string;
   billId: string;
@@ -460,6 +490,8 @@ export interface SodGrantDto {
   grantedAt: string;
   consumedAt: string | null;
   consumedByCertificateId: string | null;
+  /** Task 6A — the payment half. A grant is consumed by exactly one act, of exactly one kind. */
+  consumedByApprovalId: string | null;
 }
 
 /** §I — the attributable record that made an otherwise-forbidden act valid. */
@@ -573,6 +605,58 @@ export interface BillDeductionLedgerDto {
    *  `PAID`) are Task 6's, so it lands there with the rows that supply them; until then a
    *  withholding moves the money and not the status, and this surface reports what IS rather than
    *  what a partial derivation would guess. */
+  billStatus: VendorBillStatus;
+}
+
+/** Phase 5 Task 6A — one authorisation that a certified payable may be paid. */
+export interface PaymentApprovalDto {
+  id: string;
+  billId: string;
+  certificateId: string;
+  /** decimal STRING — §A forbids a float64 round trip */
+  amount: string;
+  approvedAt: string;
+  approvedById: string;
+  /** Σ payments drawn against THIS approval — a FOLD, never a stored column */
+  paid: string;
+  payments: PaymentDto[];
+  /**
+   * §I — the override this approval rests on, when the approver is the actor who certified. Null
+   * on the ordinary two-person path. It is READABLE for the same reason the certificate's own
+   * exception is: an authority nobody can see is an authority nobody can review.
+   */
+  sodException: SodExceptionDto | null;
+}
+
+/** Money that actually left, against an approval that covered it. */
+export interface PaymentDto {
+  id: string;
+  approvalId: string;
+  billId: string;
+  amount: string;
+  /** how it moved, so the practice can reconcile against a bank statement */
+  method: string;
+  reference: string | null;
+  paidAt: string;
+  paidById: string;
+}
+
+/** The `commercial.payments` read: one bill's authorisations and what has been paid against them. */
+export interface BillPaymentLedgerDto {
+  billId: string;
+  /** null when no certificate stands — there is nothing to approve against */
+  certificateId: string | null;
+  approvals: PaymentApprovalDto[];
+  /** §G bound 4's left side — Σ approvals against the LIVE certificate */
+  approved: string;
+  /** §G bound 5's left side — Σ payments on this bill */
+  paid: string;
+  /** `NET_PAYABLE` less what is already approved: what a further approval may still authorise.
+   *  Never negative — bound 4 refuses the write that would take it there. */
+  approvable: string | null;
+  /** the STORED bill status. §F's derivation reads three folds and lands in Task 6B with the
+   *  reversal rows that make it correct, so this reports what IS rather than what a partial
+   *  derivation would guess — exactly as the deduction ledger does. */
   billStatus: VendorBillStatus;
 }
 

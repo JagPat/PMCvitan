@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ROLE_POLICY, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
+import { ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
@@ -20,8 +20,10 @@ import type { CertifyBillInput, GrantSodExceptionInput, SupersedeCertificateInpu
 
 const ZERO = new Prisma.Decimal(0);
 
-/** The ONE rule this task's §I defines. Task 6 adds `certifier-may-not-approve` beside it. */
-const SOD_RULE = 'evidence-recorder-may-not-certify';
+/** The rule THIS service's §I half defines. Task 6A adds `certifier-may-not-approve` beside it,
+ *  and both names now live in the shared contract so a grant issued for one can never be spent on
+ *  the other. */
+const SOD_RULE = SOD_RULES.evidenceRecorderMayNotCertify;
 
 /** One measurement row a certificate is about to freeze, with how much of it it draws. */
 interface MeasurementDraw {
@@ -746,7 +748,11 @@ export class CommercialCertificationService {
         }
         const row = await tx.sodGrant.create({
           data: {
-            projectId, billId: input.billId, versionId: version.id, rule: SOD_RULE,
+            // Task 6A — the rule comes from the REQUEST (defaulted to the certification rule by the
+            // contract, so every Task-5 caller is unchanged). An approver authorising a store user
+            // to certify has not thereby authorised anyone to approve that claim's payment, and the
+            // consumption sites select on this column for exactly that reason.
+            projectId, billId: input.billId, versionId: version.id, rule: input.rule ?? SOD_RULE,
             actorId: input.actorId, approverId: actor.actorId, reason: input.reason,
             sourceCommandId: ctx.commandId!,
           },
@@ -764,6 +770,7 @@ export class CommercialCertificationService {
       grantedAt: row.grantedAt.toISOString(),
       consumedAt: row.consumedAt?.toISOString() ?? null,
       consumedByCertificateId: row.consumedByCertificateId,
+      consumedByApprovalId: row.consumedByApprovalId,
     };
   }
 

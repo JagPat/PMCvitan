@@ -99,6 +99,8 @@ const MODEL_OWNER: Record<string, string> = {
   sodGrant: 'commercial',
   billDeduction: 'commercial',
   billDeductionRelease: 'commercial',
+  paymentApproval: 'commercial',
+  payment: 'commercial',
   certifiedAcceptanceConsumption: 'commercial',
   certifiedMeasurementConsumption: 'commercial',
   activityWorkOutput: 'activities',
@@ -241,6 +243,7 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // Phase 5 Task 5C (§H) — the deduction ledger. Dispatches nothing: a withholding is a
   // commercial fact with no external effect, exactly like a certificate.
   'commercial/commercial-deduction.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
+  'commercial/commercial-payment.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
   // Phase 4 Task 2 — the labour COMMERCIAL chain (§F). Writes ONLY labour-owned commercial tables;
   // the reused procurement Vendor/ProjectVendor party is read/validated THROUGH ProcurementParticipant
   // (never a direct foreign write/read — Labour stays a LEAF). requisition submit/approve +
@@ -453,6 +456,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     // Phase 5 Task 5C (§H) — withhold from a certified payable, and give part of it back
     "Post('commercial/deductions/record')",
     "Post('commercial/deductions/release')",
+    "Post('commercial/payments/approve')",
+    "Post('commercial/payments/record')",
     "Post('commercial/bills/amend')",
     "Post('commercial/bills/reject')",
   ],
@@ -578,12 +583,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('163 mutating routes total (§4 command inventory; +2 Phase-5 Task-5C §H deductions)', () => {
+    it('165 mutating routes total (§4 command inventory; +2 Phase-5 Task-6A §F/§G payments)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(163);
+      expect(total).toBe(165);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(163);
+      expect(live).toBe(165);
     });
   });
 

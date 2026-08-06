@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { parseCivilDate } from './common/civil-date';
-import { DEDUCTION_TYPES } from '@vitan/shared';
+import { DEDUCTION_TYPES, SOD_RULES } from '@vitan/shared';
 
 export const sessionSchema = z.object({
   role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']),
@@ -1458,17 +1458,29 @@ export const certifyBillSchema = z.object({ billId: z.string().min(1) }).strict(
 export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
 
 /**
- * §I — GRANT permission for ONE otherwise-forbidden certification. Issued BY the approver, so the
+ * §I — GRANT permission for ONE otherwise-forbidden act. Issued BY the approver, so the
  * authenticated actor IS the authority; `actorId` names the person being excused.
  *
- * The reason belongs to the grant rather than to the certification, because the justification is
- * the APPROVER'S ("Ravi is our only store user this week"), not the certifier's.
+ * The reason belongs to the grant rather than to the act, because the justification is the
+ * APPROVER'S ("Ravi is our only store user this week"), not the excused actor's.
+ *
+ * `rule` names WHICH half of §I is being overridden. Task 6A adds the payment half, and the rule
+ * belongs in the grant rather than being inferred at consumption: a grant issued so a store user
+ * could certify must not silently become permission to approve that claim's payment. It defaults
+ * to the certification rule, so every Task-5 caller is byte-for-byte unchanged.
  */
 export const grantSodExceptionSchema = z
   .object({
     billId: z.string().min(1),
     actorId: z.string().min(1),
     reason: z.string().trim().min(1).max(1000),
+    // OPTIONAL, not `.default()`: a zod default only applies where the schema runs, which is the
+    // HTTP boundary. Every in-process caller — the Task-5 suites, the operator paths — constructs
+    // this object directly, and a default that lives only in the pipe leaves them writing a NULL
+    // rule. The default belongs with the rule, in the service.
+    rule: z
+      .enum([SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove])
+      .optional(),
   })
   .strict();
 export type GrantSodExceptionInput = z.infer<typeof grantSodExceptionSchema>;
@@ -1515,3 +1527,40 @@ export const releaseDeductionSchema = z
   })
   .strict();
 export type ReleaseDeductionInput = z.infer<typeof releaseDeductionSchema>;
+
+/**
+ * §F/§G/§I — AUTHORISE a certified payable for payment.
+ *
+ * The amount is a decimal STRING and refused at zero or below here as well as at PostgreSQL: an
+ * approval's direction is carried by the ROW KIND, so a negative would encode it twice and let one
+ * approval silently undo another on an append-only table (§0b's sign constraint, at its next site).
+ *
+ * No `certificateId`: the approval draws on whatever certificate is LIVE, resolved server-side
+ * under the bill lock. A caller-supplied id would let an approval name a superseded certificate —
+ * retained history that §G bounds 3–5 deliberately exclude — and the bound would then measure
+ * against a certification that no longer stands.
+ */
+export const approvePaymentSchema = z
+  .object({
+    billId: z.string().min(1),
+    amount: z.string().trim().min(1).max(32),
+  })
+  .strict();
+export type ApprovePaymentInput = z.infer<typeof approvePaymentSchema>;
+
+/**
+ * §G — RECORD money leaving against an approval that covers it.
+ *
+ * `method` is required and non-blank: a payment that cannot say how the money moved cannot be
+ * reconciled against a bank statement, which is the only thing that makes it evidence rather than
+ * an assertion. `reference` is optional because not every method has one.
+ */
+export const recordPaymentSchema = z
+  .object({
+    approvalId: z.string().min(1),
+    amount: z.string().trim().min(1).max(32),
+    method: z.string().trim().min(1).max(64),
+    reference: z.string().trim().min(1).max(200).nullish(),
+  })
+  .strict();
+export type RecordPaymentInput = z.infer<typeof recordPaymentSchema>;

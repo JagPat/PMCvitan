@@ -2407,12 +2407,119 @@ $PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\
   && printf 'ok      %s\n' "commercial T5C R8: …and the balance is returned, so the correction below still has nothing held against it" \
   || { printf 'FAILED  %s\n' "commercial T5C R8: the release of the round-8 withholding was rejected"; FAIL=1; }
 
+# ── Phase 5 Task 6A (§F/§G/§I) — payment authority, over the migrated legacy database ───────────
+#
+# The two tables must arrive EMPTY: a legacy database has no payment authority, and a row here
+# would mean money movement predating the seals this task installs.
+assert "commercial T6A: the payment tables upgrade ROW-FREE over the legacy fixture" \
+  "SELECT (SELECT COUNT(*) FROM \"PaymentApproval\")::text || '/' || (SELECT COUNT(*) FROM \"Payment\")::text;" \
+  "0/0"
+# …and the ceiling column is NULL everywhere, so no existing membership silently loses authority
+assert "commercial T6A: every existing membership keeps unlimited approval authority (NULL ceiling)" \
+  "SELECT COUNT(*)::text FROM \"Membership\" WHERE \"approvalLimit\" IS NOT NULL;" \
+  "0"
+
+# §G bound 4 at PostgreSQL, against the certificate that is LIVE at this point: its 1.00
+# certification carries only fully-released withholdings, so the net payable is 1.00. Placed here
+# deliberately — a superseded certificate leaves nothing payable and the bound would return early,
+# which would make every assertion below vacuous rather than wrong.
+mint5c UP6A-CMD-OVER commercial.payment.approve UP6A-A-OVER
+assert_rejects "commercial T6A: approving MORE than the net payable" \
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OVER','p1','$UP5C_LIVE','$UP5C_BILL',5.00,'USER-1','UP6A-CMD-OVER')" \
+  'exceed the'
+mint5c UP6A-CMD-OK commercial.payment.approve UP6A-A-OK
+$PSQL >/dev/null -c "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OK','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-OK')" \
+  && printf 'ok      %s\n' "commercial T6A: approving EXACTLY the net payable is ACCEPTED (the bound is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T6A: a coherent approval was rejected — bound 4 is over-strict"; FAIL=1; }
+
+# §G bound 5 at PostgreSQL
+mint5c UP6A-CMD-PAYOVER commercial.payment.record UP6A-P-OVER
+assert_rejects "commercial T6A: paying MORE than was approved" \
+  "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6A-P-OVER','p1','UP6A-A-OK','$UP5C_BILL',2.00,'neft','USER-1','UP6A-CMD-PAYOVER')" \
+  'exceed the'
+# The ACCEPTED payment is deliberately NOT asserted here, and the reason is the new supersede seal
+# rather than a gap: a payment is append-only, so recording one leaves it standing against this
+# certificate, and the 5C correction below then supersedes that certificate — which drops the
+# approval out of `APPROVED` while the payment stays in `PAID`, and the seal correctly refuses. The
+# fixture cannot both leave a payment here and let the later correction run. The acceptance is
+# proven against live PostgreSQL by PROBE 5 in `phase5-t6a-payments.test.ts`, which builds its own
+# claim and is free to leave a payment standing on it.
+
+# append-only, both tables
+assert_rejects "commercial T6A: RAISING an approval after the fact (an authority that can be edited is not one)" \
+  "UPDATE \"PaymentApproval\" SET \"amount\"=99.00 WHERE \"id\"='UP6A-A-OK'"
+# the payment table's append-only rule, proven on the approval's own trigger pair: the DELETE
+# arm fires for any row, and asserting it against a row that no longer exists would pass vacuously
+assert_rejects "commercial T6A: DELETING an approval (an authority that can be removed is not one)" \
+  "DELETE FROM \"PaymentApproval\" WHERE \"id\"='UP6A-A-OK'"
+
+# an exception authorises ONE act, never both halves at once
+assert_rejects "commercial T6A: an SoD exception naming BOTH a certificate and an approval" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"approvalId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-X','p1','$UP5C_LIVE','UP6A-A-OK','certifier-may-not-approve','USER-1','USER-2','both halves','UP6A-CMD-OK')"
+
+# …and a GRANT is spent by one act of one KIND, for the same reason: naming both would make
+# "which act exercised this authority?" unanswerable (Codex round 2, the widened CHECK)
+mint5c UP6A-CMD-GRANT commercial.sod.grant UP6A-G-BOTH
+assert_rejects "commercial T6A: an SoD grant consumed by BOTH a certificate and an approval" \
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\",\"consumedAt\",\"consumedByCertificateId\",\"consumedByApprovalId\") VALUES('UP6A-G-BOTH','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','both kinds','UP6A-CMD-GRANT',now(),'$UP5C_LIVE','UP6A-A-OK')"
+
+# §I is a BICONDITIONAL. `UP6A-A-OK` was approved by USER-1 while USER-2 certified — the rule
+# permits that act outright, so an override attached to it records an authorisation nobody needed.
+mint5c UP6A-CMD-NOCONF commercial.payment.approve UP6A-X-NOCONF
+assert_rejects "commercial T6A: an SoD exception on an approval the rule would never have refused" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"approvalId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-X-NOCONF','p1','UP6A-A-OK','certifier-may-not-approve','USER-1','USER-2','no conflict here','UP6A-CMD-NOCONF')" \
+  'the rule permits that act outright'
+
+# ── Task 6A, Codex round 3 ───────────────────────────────────────────────────────────────────
+#
+# A grant's approval-side consume was the ONE evidence target with nothing checking it: Task 5's
+# grant seal guards its clause on `consumedByCertificateId IS NOT NULL`, so stamping the approval
+# column skipped it entirely and an approver's authority could be burned against an act it never
+# excused.
+mint5c UP6A-CMD-GRANT2 commercial.sod.grant UP6A-G-LIVE
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-G-LIVE','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','only pmc on site','UP6A-CMD-GRANT2')" \
+  && printf 'ok      %s\n' "commercial T6A R3: a live payment-side grant is ACCEPTED (the approver's own receipt backs it)" \
+  || { printf 'FAILED  %s\n' "commercial T6A R3: a well-formed payment-side grant was rejected"; FAIL=1; }
+assert_rejects "commercial T6A R3: burning a grant against an approval that carries no matching override" \
+  "UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByApprovalId\"='UP6A-A-OK' WHERE \"id\"='UP6A-G-LIVE'" \
+  'carries no matching override'
+
+# The approval-scoped half of bound 5 is NOT asserted here, and the reason is this fixture rather
+# than a gap. Isolating it needs TWO live approvals — the whole point is that the BILL fold sees
+# enough headroom while ONE approval is overdrawn — and this legacy claim's net payable is 1.00,
+# which bound 4 correctly caps at a single approval. Any second payment here is refused by the bill
+# fold first, so an assertion would pass while proving nothing about the new seal.
+#
+# It is proven against live PostgreSQL by PROBE 21 in `phase5-t6a-payments.test.ts`, which builds a
+# 100.00 claim, approves 40 twice, and inserts the overdrawing payment with the service bypassed —
+# the bill fold seeing 80 approved against 80 paid, and only the approval-scoped seal refusing.
+#
+# Nor is an ACCEPTED payment recorded here, for the reason the block above already gives: a payment
+# is append-only, and leaving one standing makes the 5C correction below supersede a certificate
+# whose approval then drops out of `APPROVED` while the payment stays in `PAID`.
+
+
 $PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5C R5: the SAME correction after an attributable release is ACCEPTED (the seal is precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T5C R5: a correction with nothing left held was rejected — the seal is over-strict"; FAIL=1; }
 assert "commercial T5C R5: the ledger survives the correction as append-only HISTORY — nothing was deleted to make it legal" \
   "SELECT (SELECT COUNT(*) FROM \"BillDeduction\" WHERE \"id\"='UP5C-D2')::text || '/' || (SELECT COUNT(*) FROM \"BillDeductionRelease\" WHERE \"deductionId\"='UP5C-D2')::text;" \
   "1/2"
+
+# ── Task 6A, Codex round 2 (P1) — money may not be nested under authority that no longer stands ──
+#
+# The certificate above is now SUPERSEDED, which is exactly the state the bill-scoped bound cannot
+# see: `UP6A-A-OK` drops out of `APPROVED` and any payment against it would stay in `PAID`, so a
+# fold-only seal passes whenever some other live approval happens to cover the total. The question
+# is asked at the ROW, on both tables — the finding named the payment; its sibling is the approval.
+mint5c UP6A-CMD-STALEPAY commercial.payment.record UP6A-P-STALE
+assert_rejects "commercial T6A R2: paying against an approval whose certification was superseded" \
+  "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6A-P-STALE','p1','UP6A-A-OK','$UP5C_BILL',1.00,'neft','USER-1','UP6A-CMD-STALEPAY')" \
+  'superseded'
+mint5c UP6A-CMD-GHOST commercial.payment.approve UP6A-A-GHOST
+assert_rejects "commercial T6A R2: approving against a certificate that is retained history" \
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-GHOST','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-GHOST')" \
+  'superseded'
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

@@ -30,5 +30,19 @@ import { Prisma } from '@prisma/client';
 export async function lockProjectReadiness(tx: Prisma.TransactionClient, projectId: string): Promise<void> {
   // $executeRaw, not $queryRaw: the function returns void, which Prisma's row
   // deserializer refuses; execute only reports the affected-row count
-  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${'readiness:' + projectId}, 0))`);
+  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${readinessLockKey(projectId)}, 0))`);
+}
+
+/**
+ * The lock's KEY, exported so a caller that cannot use `$executeRaw` takes the SAME lock rather
+ * than one that merely looks like it.
+ *
+ * Phase 5 Task 6A (Codex round 3). `OrgsParticipant` is constructible by non-DI callers and its
+ * client interface declares only `$queryRawUnsafe`, so it cannot call `lockProjectReadiness`
+ * directly. Spelling `'readiness:' + projectId` there a second time would be two statements of one
+ * key: the day this prefix changes, one caller silently stops serializing against the other and
+ * nothing fails. One derivation, two callers.
+ */
+export function readinessLockKey(projectId: string): string {
+  return 'readiness:' + projectId;
 }

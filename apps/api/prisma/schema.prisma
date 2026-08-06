@@ -139,6 +139,8 @@ model Project {
   vendorBills        VendorBill[]
   vendorBillVersions VendorBillVersion[]
   vendorBillLines    VendorBillLine[]
+  paymentApprovals PaymentApproval[]
+  payments Payment[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -635,6 +637,13 @@ model Membership {
   status    String   @default("active") // invited | active | removed
   createdAt DateTime @default(now())
 
+  /// Phase 5 Task 6A (§I) — this member's payment-approval ceiling, applied to a claim's
+  /// CUMULATIVE approved total rather than to one authorisation: a per-row check lets a ₹50 holder
+  /// authorise ₹100 as two ₹50 rows, each within limit and the ceiling defeated. NULL is
+  /// "unlimited", which is what every existing membership is; zero is a real ceiling that refuses
+  /// everything, because "may not approve" is a thing a practice may want to say about a role.
+  approvalLimit Decimal? @db.Decimal(18, 2)
+
   // drawing distributions frozen against this membership (Phase 1 Task 3)
   drawingRecipients DrawingRecipient[]
   // corrective/reinspection work assigned to this membership (Phase 1 Task 4)
@@ -920,6 +929,8 @@ model User {
   vendorBillsCreated          VendorBill[]        @relation("vendorBillsCreated")
   vendorBillVersionsCreated   VendorBillVersion[] @relation("vendorBillVersionsCreated")
   vendorBillVersionsSuperseded VendorBillVersion[] @relation("vendorBillVersionsSuperseded")
+  paymentApprovalsApproved PaymentApproval[] @relation("paymentApprovalsApproved")
+  paymentsRecorded Payment[] @relation("paymentsRecorded")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -3210,6 +3221,8 @@ model VendorBill {
   //   (projectId, vendorId, vendorBillNumber) WHERE "status" NOT IN ('rejected','resolved')
   // It releases on the LIFECYCLE'S OWN terminal states and on nothing else (§F, probe 5bj): a
   // predicate naming a state §F does not define would never release at all.
+  paymentApprovals PaymentApproval[]
+  payments Payment[]
 }
 
 /// §F — an IMMUTABLE claim version. Amending issues a NEW version and supersedes this one; §0's
@@ -3413,6 +3426,7 @@ model BillCertificate {
   sodExceptions          SodException[]
   sodGrantsConsumed      SodGrant[]
   deductions             BillDeduction[]
+  approvals              PaymentApproval[]
   // The one-LIVE-certificate-per-bill partial unique and the append-only trigger live in the
   // migration (Prisma cannot express a partial unique).
 
@@ -3480,6 +3494,12 @@ model SodException {
   certificate   BillCertificate? @relation(fields: [projectId, certificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   certificateId String?
 
+  /// the APPROVAL this exception authorizes (Task 6A, the payment half of §I). A row names
+  /// exactly ONE fact — a certificate OR an approval — because an exception is authority for one
+  /// act, never a standing waiver a later override can point at (CHECK in the migration).
+  approval   PaymentApproval? @relation(fields: [projectId, approvalId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  approvalId String?
+
   /// the GRANT this override rests on — the approver's own authenticated act (Codex round-7 P1).
   /// Without it `approverId` is only a name the certifier typed into their own request.
   grant   SodGrant? @relation(fields: [projectId, grantId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
@@ -3532,10 +3552,15 @@ model SodGrant {
   grantedAt       DateTime @default(now())
   sourceCommandId String
 
-  /// SINGLE-USE. Both halves move together (CHECK) and the transition is one-way (trigger).
+  /// SINGLE-USE, and consumed by exactly ONE act of exactly one KIND. Both halves move together
+  /// and exactly one target is named (CHECK); the transition is one-way (trigger).
   consumedAt              DateTime?
   consumedBy              BillCertificate? @relation(fields: [projectId, consumedByCertificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   consumedByCertificateId String?
+  /// Task 6A — the payment half of §I. A grant issued for `certifier-may-not-approve` is spent by
+  /// the APPROVAL it excuses, never by a certificate.
+  consumedByApproval      PaymentApproval? @relation(fields: [projectId, consumedByApprovalId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  consumedByApprovalId    String?
 
   exceptions SodException[]
 
@@ -3636,4 +3661,74 @@ model BillDeductionRelease {
   @@unique([projectId, id])
   @@unique([projectId, restatedFromId])
   @@index([projectId, deductionId])
+}
+
+/// Phase 5 Task 6A (§F/§G/§I) — APPROVING money for payment. Certification says what a vendor is
+/// owed; an approval is the separate authority that says it may be PAID, and §I keeps the two
+/// apart deliberately: the actor who certified may not approve.
+model PaymentApproval {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  /// the CERTIFICATE this approval draws on. The three-column FK proves it is a certificate OF
+  /// THIS BILL, the same shape the deduction ledger uses.
+  certificate   BillCertificate @relation(fields: [projectId, certificateId, billId], references: [projectId, id, billId], onDelete: NoAction, onUpdate: NoAction)
+  certificateId String
+  bill          VendorBill      @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  billId        String
+
+  /// FROZEN money (§A `Decimal(18,2)`, half-up, never float64). §G bound 4 caps the CUMULATIVE
+  /// approved total at `NET_PAYABLE` — certified minus unreleased deductions — and it is NET, not
+  /// gross: capping at the gross certificate would make the §H ledger decorative.
+  amount Decimal @db.Decimal(18, 2)
+
+  approvedAt      DateTime @default(now())
+  approvedBy      User     @relation("paymentApprovalsApproved", fields: [approvedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approvedById    String
+  /// §C rule ii — every fact records the command that produced it, and the 5C provenance rule
+  /// binds that command's `resultRef` AND its actor back to THIS row
+  sourceCommandId String
+
+  payments      Payment[]
+  sodExceptions SodException[]
+  /// the §I grants this approval CONSUMED — at most one, and the seal requires exactly one
+  /// whenever the approver is the actor who certified
+  consumedGrants SodGrant[]
+
+  @@unique([projectId, id])
+  /// the FK target proving a payment and an SoD exception belong to an approval OF THIS BILL
+  @@unique([projectId, id, billId])
+  @@index([projectId, billId])
+  @@index([projectId, certificateId])
+}
+
+/// Phase 5 Task 6A (§F/§G) — the money actually LEAVING. A payment is a row against an approval,
+/// never a column on it, and §G bound 5 caps the cumulative paid total at what was approved.
+model Payment {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  approval   PaymentApproval @relation(fields: [projectId, approvalId, billId], references: [projectId, id, billId], onDelete: NoAction, onUpdate: NoAction)
+  approvalId String
+  bill       VendorBill      @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  billId     String
+
+  /// FROZEN money (§A `Decimal(18,2)`, half-up, never float64)
+  amount Decimal @db.Decimal(18, 2)
+
+  /// how the money moved, so the practice can reconcile against a bank statement
+  method    String
+  reference String?
+
+  paidAt          DateTime @default(now())
+  paidBy          User     @relation("paymentsRecorded", fields: [paidById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  paidById        String
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@unique([projectId, id, billId])
+  @@index([projectId, billId])
+  @@index([projectId, approvalId])
 }
