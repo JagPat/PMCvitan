@@ -195,6 +195,23 @@ closure for it is the open item this file carries into 6B — the two roots that
 have one (E and the fold-owner set) produced no round-3 findings at all, and root
 A, which has only a paragraph, produced three.
 
+> **DISCHARGED in Task 6B (`CLOSURE 10`).** Shipped as the FIRST unit of 6B rather
+> than beside its substance, deliberately: a closure that lands with the work it
+> polices cannot have caught anything in that work.
+>
+> Both mechanizable round-3 instances have one physical shape — *a set whose
+> members are written down in more than one place, and a change that added a
+> member to one place only* — so the pin derives the member set from the authority
+> and requires every other enumeration to match. It is proven RED at the real
+> `4e80082` head, where it fails with both findings verbatim: the `raisedBy`
+> label sets differ, and *"consumedByApprovalId is a consumption target that no
+> trigger function validates"*.
+>
+> The third instance is **not** claimed as covered. `approvalAuthorityFor`'s org
+> arm resting on `forUpdate` — which locks rows that EXIST, on the arm *defined by*
+> the absence of one — is a semantic argument about a lock's reach, not a set with
+> two spellings. Claiming it would be the overclaim this root is made of.
+
 ### What the closures did do
 
 **CLOSURE 9 caught one of this round's own fixes.** Adding the approval-scoped

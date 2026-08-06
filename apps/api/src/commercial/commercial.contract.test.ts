@@ -765,4 +765,111 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ).toBe(true);
     }
   });
+
+  /**
+   * CLOSURE 10 — A SET ENUMERATED IN MORE THAN ONE PLACE MUST AGREE ACROSS ALL OF THEM
+   * (Task 6A convergence audit, root A — the open item that audit carries into 6B).
+   *
+   * Root A is "the fix lands on the instance a finding names, the sibling survives". It is the
+   * oldest live root in this module: named in the PR #284 audit, still producing findings in
+   * PR #286, where it accounted for THREE of round 3's four. The two roots that got a MECHANICAL
+   * closure in round 2 — E (`AUTHORITY_GUARDS`) and the fold-owner set (`FOLD_INPUTS`) — produced
+   * none at all in the same round. That asymmetry is the entire argument for this pin. Root A's
+   * closure was a paragraph: "when a fix names a direction, a side, or a half, write down what the
+   * opposite one is." A paragraph does not fail, and the audit says so in as many words: naming a
+   * root is not a closure, a closure is a thing that fails.
+   *
+   * Both of round 3's mechanizable instances have ONE physical shape — a SET whose members are
+   * written down in more than one place, and a change that added a member to one place only:
+   *
+   *   - `payment_approval` was admitted by `BudgetException_raisedBy_check` and left OUT of the
+   *     shared DTO union. A label the server can return and the client is told is impossible is a
+   *     client that mishandles the first real one it sees.
+   *   - `consumedByApprovalId` joined `SodGrant`'s consumption-target family under an append-only
+   *     path whose validation clause is guarded on `consumedByCertificateId IS NOT NULL`, so the
+   *     new target skipped validation ENTIRELY — a false authority in a register that has no
+   *     correcting row.
+   *
+   * So the rule is mechanical: DERIVE the member set from the authority that defines it, and
+   * require every other enumeration to carry exactly those members. Adding the next one to a
+   * single place fails here, at the desk, with no database.
+   *
+   * NOT pinned here, stated rather than glossed: round 3's third instance — `approvalAuthorityFor`'s
+   * org arm resting on `forUpdate`, which locks rows that EXIST, on the arm *defined by* the absence
+   * of one — is a semantic argument about a lock's reach, not a set with two spellings. Claiming it
+   * as covered would be exactly the overclaim this root is made of.
+   */
+  const MIGRATION_DIR = join(SRC, '..', 'prisma', 'migrations');
+  const orderedMigrationSql = (): string[] =>
+    readdirSync(MIGRATION_DIR)
+      .filter((d) => /^\d{14}_/u.test(d))
+      .sort()
+      .map((d) => {
+        try {
+          return readFileSync(join(MIGRATION_DIR, d, 'migration.sql'), 'utf8');
+        } catch {
+          return '';
+        }
+      });
+
+  it('the raisedBy label set is identical in PostgreSQL and the shared contract', () => {
+    // derived from the LAST definition, because each migration drops and re-adds the constraint and
+    // it is the final one that is live — reading any earlier one would pin a set nothing enforces
+    const defs = orderedMigrationSql().flatMap((sql) => [
+      ...sql.matchAll(/ADD CONSTRAINT "BudgetException_raisedBy_check"\s*CHECK \("raisedBy" IN \(([^)]*)\)\)/gu),
+    ].map((m) => m[1]!));
+    expect(defs.length, 'no BudgetException_raisedBy_check definition found — the pin is not reading the schema').toBeGreaterThan(0);
+    const admitted = [...defs[defs.length - 1]!.matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]!).sort();
+    expect(admitted.length, 'the live CHECK admits nothing — the pin parsed an empty set').toBeGreaterThan(5);
+
+    const contract = readFileSync(join(SRC, '..', '..', '..', 'packages', 'shared', 'src', 'contracts', 'commercial.ts'), 'utf8');
+    const union = /\n\s*raisedBy:\s*([^;]+);/u.exec(contract);
+    expect(union, 'BudgetExceptionDto.raisedBy not found in the shared contract').not.toBeNull();
+    const declared = [...union![1]!.matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]!).sort();
+
+    expect(
+      declared,
+      'the `raisedBy` labels PostgreSQL admits and the labels the shared DTO declares are different sets. Whichever side you added to, add to the other: a label only the CHECK knows is one the server can return and every client believes impossible; a label only the union knows is one no write can ever produce',
+    ).toEqual(admitted);
+  });
+
+  it('every SodGrant consumption target is named by the XOR check and validated by a trigger', () => {
+    const schema = readFileSync(join(SRC, '..', 'prisma', 'schema.prisma'), 'utf8');
+    const model = /model SodGrant \{([\s\S]*?)\n\}/u.exec(schema);
+    expect(model, 'model SodGrant not found — the pin is not reading the schema').not.toBeNull();
+    // the family is DERIVED from the model, so a third target arrives here the moment it is declared
+    const family = [...model![1]!.matchAll(/^\s*(consumedBy[A-Za-z]*Id)\s+String\?/gmu)].map((m) => m[1]!);
+    expect(
+      family.length,
+      'fewer than two consumption targets found — this pin exists because the family GREW, so parsing one member means the parse is wrong',
+    ).toBeGreaterThan(1);
+
+    const sql = orderedMigrationSql().join('\n');
+
+    // (i) the XOR check — last definition wins — must name every member, or a new target can be
+    // stamped alongside an existing one with nothing to refuse the pair
+    const checks = [...sql.matchAll(/ADD CONSTRAINT "SodGrant_consumed_together"\s*CHECK \(([\s\S]*?)\);/gu)].map((m) => m[1]!);
+    expect(checks.length, 'no SodGrant_consumed_together definition found — the pin is not reading the schema').toBeGreaterThan(0);
+    const live = checks[checks.length - 1]!;
+    for (const column of family) {
+      expect(
+        live.includes(`"${column}"`),
+        `${column} is a consumption target and the live SodGrant_consumed_together CHECK does not mention it — the grant is single-use only for the targets the CHECK counts`,
+      ).toBe(true);
+    }
+
+    // (ii) …and each member must be reachable by a trigger that can actually REFUSE, which is the
+    // half `consumedByApprovalId` skipped: it was added to the CHECK and to no validation clause
+    const refusingFunctions = sql
+      .split(/CREATE OR REPLACE FUNCTION/u)
+      .slice(1)
+      .filter((body) => body.includes('RAISE EXCEPTION'));
+    expect(refusingFunctions.length, 'no refusing trigger functions parsed — the pin is not reading the migrations').toBeGreaterThan(0);
+    for (const column of family) {
+      expect(
+        refusingFunctions.some((body) => body.includes(`"${column}"`)),
+        `${column} is a consumption target that no trigger function validates — a grant can be stamped consumed by an act that carries no matching override, and an append-only register has no correcting row`,
+      ).toBe(true);
+    }
+  });
 });
