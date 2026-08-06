@@ -227,6 +227,11 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     await certification.certify(projectId, { billId }, pmc(projectId));
     return billId;
   };
+  const positionOf = async (projectId: string, code = 'CIVIL') => {
+    const { positions } = await budget.readBudget(projectId, pmc(projectId));
+    return positions.find((p) => p.costHeadCode === code)!;
+  };
+
   // A second person, because §I's whole point is that one actor cannot do both halves. The 5C
   // fixture certifies as `f.memberUser`, so every approval below is made by `f.ownerUser`.
   const approver = (projectId: string): AuthUser => asUser(projectId, f.ownerUser.id);
@@ -416,5 +421,130 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // §F's derivation is 6B's, beside the reversal rows that make it correct. Until then the status
     // is the STORED one — reporting what is, not what a partial derivation would guess.
     expect(after.billStatus).toBe('certified');
+  });
+
+  it('PROBE 10 (§I): the certifier-vs-approver rule is sealed at PostgreSQL, not only in the service', async () => {
+    // Codex round 1 (P1). The service refused this and that was the ONLY thing refusing it: a
+    // bypass writer can mint a succeeded approve command for the certifier and forge a within-net
+    // approval. The rule this whole task exists for was the one rule not sealed.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const mint = async (type: string, ref: string, actorId: string): Promise<string> => t.prisma.$transaction(async (tx) => {
+      const c = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId,
+          commandType: type, idempotencyKey: `t6a-sod-${seq++}`, requestHash: 'x', status: 'reserved',
+        },
+        select: { id: true },
+      });
+      await tx.commandExecution.update({ where: { id: c.id }, data: { status: 'succeeded', resultRef: ref, completedAt: new Date() } });
+      return c.id;
+    });
+
+    // the certifier is `f.memberUser`; a forged approval in their own name
+    const forged = `${cert.id}-forged`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
+       VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+      forged, projectId, cert.id, billId, f.memberUser.id,
+      await mint('commercial.payment.approve', forged, f.memberUser.id),
+    )).rejects.toThrow(/who certified this claim/u);
+
+    // …and the ATTRIBUTABLE override makes it valid, because §I requires the exception to exist
+    const excused = `${cert.id}-excused`;
+    const cmd = await mint('commercial.payment.approve', excused, f.memberUser.id);
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
+         VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+        excused, projectId, cert.id, billId, f.memberUser.id, cmd,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "SodException"("id","projectId","approvalId","rule","actorId","approverId","reason","sourceCommandId")
+         VALUES($1,$2,$3,'certifier-may-not-approve',$4,$5,'two-person practice',$6)`,
+        `${excused}-x`, projectId, excused, f.memberUser.id, f.ownerUser.id, cmd,
+      );
+    });
+    expect(await t.prisma.paymentApproval.count({ where: { projectId, id: excused } })).toBe(1);
+  });
+
+  it('PROBE 11 (§G bound 5): superseding a certificate cannot strand a payment above its authority', async () => {
+    // Codex round 1 (P1), and reachable on the ORDINARY service path — no bypass writer needed.
+    // The paid fold excludes approvals on superseded certificates, so supersession itself can break
+    // the bound with no Payment insert to notice: approve 100, pay 100, supersede, and the approval
+    // leaves APPROVED while the payment stays in PAID.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const approval = await payments.approve(projectId, { billId, amount: '100.00' }, approver(projectId));
+    await payments.record(projectId, { approvalId: approval.id, amount: '100.00', method: 'neft' }, pmc(projectId));
+
+    await expect(certification.supersede(projectId, { billId, reason: 'corrected' }, pmc(projectId)))
+      .rejects.toThrow(/exceed the/u);
+
+    // …and superseding a certificate whose payments are still covered is ACCEPTED, so the seal is
+    // about the breach and not about supersession
+    const other = await freshProject();
+    const otherBill = await certifiedClaim(other);
+    await payments.approve(other, { billId: otherBill, amount: '40.00' }, approver(other));
+    await certification.supersede(other, { billId: otherBill, reason: 'corrected' }, pmc(other));
+    expect(await t.prisma.billCertificate.count({ where: { projectId: other, billId: otherBill, supersededAt: null } })).toBe(0);
+  });
+
+  it('PROBE 12 (§G): a payment may not rest on an approval whose certificate was superseded', async () => {
+    // Codex round 1 (P1). APPROVED counts only approvals on the LIVE certificate, so paying against
+    // a stale one attaches append-only cash evidence to an authority outside the bound entirely.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const stale = await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+
+    await certification.supersede(projectId, { billId, reason: 'corrected' }, pmc(projectId));
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    const live = await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+
+    await expect(payments.record(projectId, { approvalId: stale.id, amount: '40.00', method: 'neft' }, pmc(projectId)))
+      .rejects.toThrow(/has since been superseded/u);
+
+    // …and the LIVE approval pays
+    await payments.record(projectId, { approvalId: live.id, amount: '40.00', method: 'neft' }, pmc(projectId));
+    expect((await payments.ledger(projectId, billId, pmc(projectId))).paid).toBe('40.00');
+  });
+
+  it('PROBE 13 (§A/§0b): sub-paisa and blank evidence are refused before they reach an append-only row', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+
+    // 0.005 passed every comparison and was then coerced by DECIMAL(18,2) to 0.01, so the ledger
+    // recorded an amount the command never asked for — on a row that cannot be corrected
+    await expect(payments.approve(projectId, { billId, amount: '0.005' }, approver(projectId)))
+      .rejects.toThrow(/finer than the paisa/u);
+    await expect(payments.approve(projectId, { billId, amount: 'not-money' }, approver(projectId)))
+      .rejects.toThrow(/is not an amount/u);
+
+    const approval = await payments.approve(projectId, { billId, amount: '10.00' }, approver(projectId));
+    await expect(payments.record(projectId, { approvalId: approval.id, amount: '0.005', method: 'neft' }, pmc(projectId)))
+      .rejects.toThrow(/finer than the paisa/u);
+
+    // a whitespace-only bank reference is a present-but-useless one on an append-only row
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Payment"("id","projectId","approvalId","billId","amount","method","reference","paidById","sourceCommandId")
+       VALUES($1,$2,$3,$4,1.00,'neft','   ',$5,$6)`,
+      `${approval.id}-blank`, projectId, approval.id, billId, f.memberUser.id, approval.id,
+    )).rejects.toThrow();
+  });
+
+  it('PROBE 14 (§J): approved money leaves certified-payable', async () => {
+    // Codex round 1 (P2). The contract defines the bucket as NET_PAYABLE − APPROVED; the fold
+    // subtracted only withholdings, so a fully approved bill still reported as awaiting approval.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '500.00', reason: 'civil plan' }, pmc(projectId));
+    const billId = await certifiedClaim(projectId);
+    expect((await positionOf(projectId)).certifiedPayable).toBe('100.00');
+
+    await payments.approve(projectId, { billId, amount: '60.00' }, approver(projectId));
+    expect((await positionOf(projectId)).certifiedPayable).toBe('40.00');
+
+    await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+    expect((await positionOf(projectId)).certifiedPayable).toBe('0.00');
   });
 });

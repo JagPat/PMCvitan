@@ -143,6 +143,46 @@ export class CommercialDeductionQuery {
   }
 
   /**
+   * The attribution rule itself, with the certificate-scoped total left to the caller.
+   *
+   * `withheldAmountFor` above and Task 6A's `approvedAmountFor` are the same walk — live claim
+   * lines, the live certificates naming their versions, a total per certificate, then each line's
+   * share of its version — differing only in WHICH total they fold. Task 6A needed the second one,
+   * and copying the walk would have put the attribution rule at two sites, which is precisely what
+   * the comment above says must not happen. So the walk is stated once and the total is a
+   * parameter.
+   */
+  async attributeCertificateScopedTotal(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: 'material' | 'labour',
+    poLineIds: readonly string[],
+    totalPerCertificate: (certificateIds: string[]) => Promise<Map<string, Prisma.Decimal>>,
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const out = new Map<string, Prisma.Decimal>();
+    for (const id of poLineIds) out.set(id, ZERO);
+    if (poLineIds.length === 0) return out;
+
+    const lines = await this.bills.liveLineSharesFor(tx, projectId, kind, poLineIds);
+    if (lines.length === 0) return out;
+
+    const certificates = await tx.billCertificate.findMany({
+      where: { projectId, supersededAt: null, versionId: { in: [...new Set(lines.map((l) => l.versionId))] } },
+      select: { id: true, versionId: true },
+    });
+    if (certificates.length === 0) return out;
+
+    const totals = await totalPerCertificate(certificates.map((c) => c.id));
+    const byVersion = new Map(certificates.map((c) => [c.versionId, totals.get(c.id) ?? ZERO]));
+    return attributeByLineShare(
+      lines,
+      byVersion,
+      await this.bills.versionTotals(tx, projectId, [...byVersion.keys()]),
+      out,
+    );
+  }
+
+  /**
    * The withholdings on one certificate that still have money held against them (§H).
    *
    * This is what makes a certificate uncorrectable in place: superseding it would drop a retained

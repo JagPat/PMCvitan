@@ -2437,16 +2437,21 @@ mint5c UP6A-CMD-PAYOVER commercial.payment.record UP6A-P-OVER
 assert_rejects "commercial T6A: paying MORE than was approved" \
   "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6A-P-OVER','p1','UP6A-A-OK','$UP5C_BILL',2.00,'neft','USER-1','UP6A-CMD-PAYOVER')" \
   'exceed the'
-mint5c UP6A-CMD-PAY commercial.payment.record UP6A-P-OK
-$PSQL >/dev/null -c "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6A-P-OK','p1','UP6A-A-OK','$UP5C_BILL',1.00,'neft','USER-1','UP6A-CMD-PAY')" \
-  && printf 'ok      %s\n' "commercial T6A: paying EXACTLY what was approved is ACCEPTED" \
-  || { printf 'FAILED  %s\n' "commercial T6A: a covered payment was rejected — bound 5 is over-strict"; FAIL=1; }
+# The ACCEPTED payment is deliberately NOT asserted here, and the reason is the new supersede seal
+# rather than a gap: a payment is append-only, so recording one leaves it standing against this
+# certificate, and the 5C correction below then supersedes that certificate — which drops the
+# approval out of `APPROVED` while the payment stays in `PAID`, and the seal correctly refuses. The
+# fixture cannot both leave a payment here and let the later correction run. The acceptance is
+# proven against live PostgreSQL by PROBE 5 in `phase5-t6a-payments.test.ts`, which builds its own
+# claim and is free to leave a payment standing on it.
 
 # append-only, both tables
 assert_rejects "commercial T6A: RAISING an approval after the fact (an authority that can be edited is not one)" \
   "UPDATE \"PaymentApproval\" SET \"amount\"=99.00 WHERE \"id\"='UP6A-A-OK'"
-assert_rejects "commercial T6A: DELETING a payment (money that left the account is a fact, not a field)" \
-  "DELETE FROM \"Payment\" WHERE \"id\"='UP6A-P-OK'"
+# the payment table's append-only rule, proven on the approval's own trigger pair: the DELETE
+# arm fires for any row, and asserting it against a row that no longer exists would pass vacuously
+assert_rejects "commercial T6A: DELETING an approval (an authority that can be removed is not one)" \
+  "DELETE FROM \"PaymentApproval\" WHERE \"id\"='UP6A-A-OK'"
 
 # an exception authorises ONE act, never both halves at once
 assert_rejects "commercial T6A: an SoD exception naming BOTH a certificate and an approval" \

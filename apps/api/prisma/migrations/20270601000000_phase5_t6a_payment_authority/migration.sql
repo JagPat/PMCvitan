@@ -108,6 +108,14 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Payment_method_nonblank') THEN
     ALTER TABLE "Payment" ADD CONSTRAINT "Payment_method_nonblank" CHECK (btrim("method", E' \t\n\x0B\f\r') <> '');
   END IF;
+  -- …and the same discipline on the OPTIONAL reference. Absent is a legitimate answer (not every
+  -- method has one); whitespace is not. The row is append-only, so a present-but-useless bank
+  -- reference is permanent, and the API contract already treats a blank one as absent — a database
+  -- that stores it anyway leaves the two disagreeing about the same payment.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Payment_reference_nonblank') THEN
+    ALTER TABLE "Payment" ADD CONSTRAINT "Payment_reference_nonblank"
+    CHECK ("reference" IS NULL OR btrim("reference", E' \t\n\x0B\f\r') <> '');
+  END IF;
 END $$;
 
 -- ── append-only: money that moved is not editable ────────────────────────────────────────────
@@ -285,6 +293,62 @@ CREATE CONSTRAINT TRIGGER "Payment_bound_sealed"
   AFTER INSERT ON "Payment" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t6a_payment_bound_sealed();
 
+
+CREATE OR REPLACE FUNCTION phase5_t6a_certificate_paid_bound_sealed() RETURNS trigger AS $$
+BEGIN
+  IF NEW."supersededAt" IS NULL OR OLD."supersededAt" IS NOT NULL THEN RETURN NULL; END IF;
+  PERFORM phase5_t6a_paid_bound_check(NEW."projectId", NEW."billId");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── §I sealed at PostgreSQL — the certifier may not approve ──────────────────────────────────
+--
+-- The service refuses this, and until now that was the ONLY thing refusing it. A bypass writer can
+-- mint a succeeded `commercial.payment.approve` command for the actor who certified and insert a
+-- within-net approval: every other constraint here passes, and the append-only authority row is
+-- forged. The rule this whole task exists for was the one rule not sealed.
+--
+-- The exception path is honoured rather than banned: an attributable `SodException` naming THIS
+-- approval makes it valid, which is exactly what §I says an override is for. Deferred, so the
+-- exception may be written in the same transaction as the approval it authorises.
+CREATE OR REPLACE FUNCTION phase5_t6a_approver_not_certifier() RETURNS trigger AS $$
+DECLARE v_certifier text;
+BEGIN
+  SELECT c."certifiedById" INTO v_certifier FROM "BillCertificate" c
+   WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."certificateId";
+
+  IF v_certifier IS DISTINCT FROM NEW."approvedById" THEN RETURN NULL; END IF;
+
+  IF EXISTS (SELECT 1 FROM "SodException" x
+              WHERE x."projectId" = NEW."projectId" AND x."approvalId" = NEW."id") THEN
+    RETURN NULL;  -- an attributable override, which §I requires to be possible
+  END IF;
+
+  RAISE EXCEPTION 'Approval % is made by %, who certified this claim — certification says what is owed and approval releases it, and one person doing both is the separation §I exists to keep; a different approver, or an attributable SoD exception naming this approval, is required', NEW."id", NEW."approvedById";
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "PaymentApproval_approver_not_certifier" ON "PaymentApproval";
+CREATE CONSTRAINT TRIGGER "PaymentApproval_approver_not_certifier"
+  AFTER INSERT ON "PaymentApproval" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6a_approver_not_certifier();
+
+-- ── §G bound 5 also fires when a CERTIFICATE is superseded ───────────────────────────────────
+--
+-- The paid fold deliberately excludes approvals on superseded certificates, and that exclusion is
+-- what makes the bound meaningful. But it also means supersession itself can BREAK the bound with
+-- no `Payment` insert to notice: approve ₹100, pay ₹100, then supersede — the approval drops out of
+-- `APPROVED` while the payment stays in `PAID`, leaving ₹100 paid against ₹0 approved.
+--
+-- That is reachable on the ORDINARY service path, not by a bypass writer, which makes it the more
+-- important half. A rule enforced on one write and not on the write that invalidates it has not
+-- been enforced — the same shape as the deduction-after-approval seal above. Same rule, every site.
+DROP TRIGGER IF EXISTS "BillCertificate_paid_bound_sealed" ON "BillCertificate";
+CREATE CONSTRAINT TRIGGER "BillCertificate_paid_bound_sealed"
+  AFTER UPDATE ON "BillCertificate" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6a_certificate_paid_bound_sealed();
+
 -- ── provenance: the command that PRODUCED the row, not merely one of the right type ──────────
 --
 -- 5C's round-5 F3, at its next two sites. A type check is satisfied by EVERY prior command of that
@@ -354,13 +418,61 @@ DO $$ BEGIN
     ALTER TABLE "SodException" ADD CONSTRAINT "SodException_approval_fkey" FOREIGN KEY ("projectId", "approvalId")
     REFERENCES "PaymentApproval"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SodException_names_one_fact') THEN
-    ALTER TABLE "SodException" ADD CONSTRAINT "SodException_names_one_fact"
-    CHECK (("certificateId" IS NOT NULL AND "approvalId" IS NULL)
-        OR ("certificateId" IS NULL AND "approvalId" IS NOT NULL));
-  END IF;
+  -- Task 5B shipped this NAME as `CHECK ("certificateId" IS NOT NULL)`, so an `IF NOT EXISTS`
+  -- guard silently skips the replacement and the approval side stays UNREACHABLE — the column
+  -- exists, the FK exists, and every insert with a null `certificateId` is refused by a constraint
+  -- written before there was a second fact to name. Dropping by name first is the only way to widen
+  -- a CHECK, and it is safe here because the new one is strictly narrower on the certificate side.
+  ALTER TABLE "SodException" DROP CONSTRAINT IF EXISTS "SodException_names_one_fact";
+  ALTER TABLE "SodException" ADD CONSTRAINT "SodException_names_one_fact"
+  CHECK (("certificateId" IS NOT NULL AND "approvalId" IS NULL)
+      OR ("certificateId" IS NULL AND "approvalId" IS NOT NULL));
 END $$;
 CREATE INDEX IF NOT EXISTS "SodException_projectId_approvalId_idx" ON "SodException"("projectId", "approvalId");
+
+
+-- ── §I — the APPROVAL side of the exception carries the same evidence seals ──────────────────
+--
+-- Task 5B's `phase5_t5_sod_exception_sealed` returns early when `certificateId IS NULL`, which is
+-- every approval-side row: adding the column alone would have given this half of the authority
+-- table an immutability trigger and NO insert-side validation at all. §I is explicit that an
+-- exception IS the thing making an otherwise-forbidden act valid, so an unvalidated one is
+-- indistinguishable from no override.
+--
+-- What it must prove: the approval exists in THIS project (the FK), the exception is written in the
+-- same transaction as the act it authorises (the approval must be visible), the reason is real, and
+-- the rule names the payment rule rather than borrowing the certification one.
+CREATE OR REPLACE FUNCTION phase5_t6a_sod_exception_approval_sealed() RETURNS trigger AS $$
+DECLARE v_approver text;
+BEGIN
+  IF NEW."approvalId" IS NULL THEN RETURN NULL; END IF;
+
+  SELECT a."approvedById" INTO v_approver FROM "PaymentApproval" a
+   WHERE a."projectId" = NEW."projectId" AND a."id" = NEW."approvalId";
+  IF v_approver IS NULL THEN
+    RAISE EXCEPTION 'SoD exception % names approval %, which does not exist in this project — an override is authority for ONE act and must be written with it', NEW."id", NEW."approvalId";
+  END IF;
+
+  -- the actor the rule would have refused IS the approver of the row being excused; an exception
+  -- naming somebody else excuses nobody and leaves the real act unauthorised
+  IF NEW."actorId" IS DISTINCT FROM v_approver THEN
+    RAISE EXCEPTION 'SoD exception % excuses % but approval % was made by % — an override names the actor it authorises', NEW."id", NEW."actorId", NEW."approvalId", v_approver;
+  END IF;
+  -- and it may not excuse itself: the stronger authority is a DIFFERENT person
+  IF NEW."approverId" = NEW."actorId" THEN
+    RAISE EXCEPTION 'SoD exception % is authorised by the same person it excuses — an override needs a stronger authority, not the same one twice', NEW."id";
+  END IF;
+  IF NEW."rule" <> 'certifier-may-not-approve' THEN
+    RAISE EXCEPTION 'SoD exception % names rule "%" on an approval — the payment-side rule is `certifier-may-not-approve`, and an override that names the wrong rule documents an act nobody reviewed', NEW."id", NEW."rule";
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "SodException_approval_sealed" ON "SodException";
+CREATE CONSTRAINT TRIGGER "SodException_approval_sealed"
+  AFTER INSERT ON "SodException" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6a_sod_exception_approval_sealed();
 
 -- ── diagnostic-first: this migration adds tables, and they must arrive EMPTY ──────────────────
 --

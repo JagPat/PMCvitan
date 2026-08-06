@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 /** The narrow client surface the standing check needs — satisfied by both a `$transaction` client
  *  and a top-level Prisma client, so non-DI callers (operator CLIs) can construct this directly. */
@@ -171,4 +171,36 @@ export class OrgsParticipant {
     );
     return rows[0]?.entitled === true;
   }
+
+  /**
+   * Phase 5 Task 6A (§I) — this member's payment-approval CEILING, read through the owner.
+   *
+   * Approval limits are authority/standing data and `Membership` is orgs-owned, so commercial does
+   * not read the table directly: an orgs-side change to how active membership or a limit downgrade
+   * is interpreted would otherwise leave payment approval and project access disagreeing about the
+   * same actor.
+   *
+   * `null` is UNLIMITED — the state every existing membership is in — and a ceiling of zero is a
+   * real ceiling that refuses everything, because "may not approve" is a thing a practice may
+   * legitimately want to say about a role. A member with no ACTIVE standing has no ceiling to
+   * report and no authority either; the caller's own authorization check is what refuses them, and
+   * returning `null` here would read as unlimited, so an absent membership is reported as a zero
+   * ceiling instead. Locked with the decision, for the same reason `hasProjectRoleStanding` locks:
+   * a concurrent downgrade must wait rather than land after the limit is read.
+   */
+  async approvalCeilingFor(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    userId: string,
+  ): Promise<Prisma.Decimal | null> {
+    const rows = await (tx as Prisma.TransactionClient).$queryRaw<Array<{ approvalLimit: Prisma.Decimal | null }>>`
+      SELECT "approvalLimit" FROM "Membership"
+       WHERE "projectId" = ${projectId} AND "userId" = ${userId} AND "status" = 'active'
+       FOR UPDATE`;
+    // an absent ACTIVE membership has no authority at all; reporting `null` here would read as
+    // UNLIMITED, so it is reported as a zero ceiling and the caller's own check does the refusing
+    if (rows.length === 0) return new Prisma.Decimal(0);
+    return rows[0]!.approvalLimit ?? null;
+  }
+
 }

@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   ROLE_POLICY,
@@ -15,6 +15,7 @@ import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { ApprovePaymentInput, RecordPaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -56,6 +57,11 @@ export class CommercialPaymentService {
     // §H's fold decides what is payable at all. Own module, one owner: bound 4 asks the same
     // question the deduction ledger answers, rather than growing a second copy of it here.
     private readonly deductions: CommercialDeductionQuery,
+    // §I's ceiling is authority/standing data and `Membership` is ORGS-owned. Reading it here
+    // directly would bypass the owner boundary: an orgs-side change to how active membership or a
+    // downgrade is interpreted would leave payment approval and project access disagreeing about
+    // the same actor. `commercial.workflowParticipants` already declares this edge.
+    private readonly orgs: OrgsParticipant,
   ) {}
 
   private assertApprove(user: AuthUser): void {
@@ -92,7 +98,7 @@ export class CommercialPaymentService {
     this.assertApprove(user);
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
-    const amount = new Prisma.Decimal(input.amount);
+    const amount = this.parseAmount(input.amount);
 
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'commercial.payment.approve', idempotencyKey, requestHash: hashRequest(input),
@@ -165,7 +171,7 @@ export class CommercialPaymentService {
     this.assertRecord(user);
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
-    const amount = new Prisma.Decimal(input.amount);
+    const amount = this.parseAmount(input.amount);
 
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'commercial.payment.record', idempotencyKey, requestHash: hashRequest(input),
@@ -175,9 +181,25 @@ export class CommercialPaymentService {
 
         const approval = await tx.paymentApproval.findFirst({
           where: { projectId, id: input.approvalId },
-          select: { id: true, billId: true, amount: true },
+          select: { id: true, billId: true, amount: true, certificateId: true },
         });
         if (!approval) throw new NotFoundException('Payment approval not found in this project');
+
+        // The approval must still be LIVE authority. `APPROVED(bill)` counts only approvals on the
+        // live certificate, so paying against one whose certificate has been superseded attaches
+        // append-only cash evidence to an authority that no longer participates in the bound at
+        // all: approve 40 on C1, supersede C1, certify C2 and approve 40 there, and the bill-level
+        // headroom check alone would let the C1 approval pay. Money leaves against the authority
+        // that covered it, or it does not leave.
+        const cert = await tx.billCertificate.findFirstOrThrow({
+          where: { projectId, id: approval.certificateId },
+          select: { supersededAt: true },
+        });
+        if (cert.supersededAt !== null) {
+          throw new ConflictException(
+            'That approval rests on a certification that has since been superseded, so it is no longer the authority this claim is paid against — approve against the certificate that stands, and pay against that approval',
+          );
+        }
 
         await this.lockBill(tx, projectId, approval.billId);
 
@@ -302,11 +324,7 @@ export class CommercialPaymentService {
   private async assertWithinLimit(
     tx: Prisma.TransactionClient, projectId: string, actorId: string, cumulative: Prisma.Decimal,
   ): Promise<void> {
-    const membership = await tx.membership.findFirst({
-      where: { projectId, userId: actorId },
-      select: { approvalLimit: true },
-    });
-    const limit = membership?.approvalLimit ?? null;
+    const limit = await this.orgs.approvalCeilingFor(tx, projectId, actorId);
     if (limit === null) return;
     if (cumulative.greaterThan(limit)) {
       throw new ForbiddenException(
@@ -363,4 +381,62 @@ export class CommercialPaymentService {
     const p = await this.prisma.payment.findFirstOrThrow({ where: { projectId, id } });
     return this.toPaymentDto(p);
   }
+
+  /**
+   * §A — money arrives as a decimal STRING and is parsed EXACTLY, by the same rules the deduction
+   * ledger uses. Sub-paisa is refused HERE rather than left to the column: `0.005` passes every
+   * comparison in this service and is then coerced by `DECIMAL(18,2)` to `0.01`, so an append-only
+   * row would record an amount the command never asked for and no correction is possible.
+   */
+  private parseAmount(raw: string): Prisma.Decimal {
+    let amount: Prisma.Decimal;
+    try {
+      amount = new Prisma.Decimal(raw);
+    } catch {
+      throw new BadRequestException(`"${raw}" is not an amount`);
+    }
+    if (!amount.isFinite()) throw new BadRequestException(`"${raw}" is not an amount`);
+    if (amount.lessThanOrEqualTo(ZERO)) {
+      throw new BadRequestException('An amount is strictly positive — the row KIND carries direction, and a negative would encode it twice');
+    }
+    if (amount.decimalPlaces() > 2) {
+      throw new BadRequestException(`${raw} is finer than the paisa this ledger records`);
+    }
+    return amount;
+  }
+
+
+  /**
+   * §J — the APPROVED term, per PO line, so `certified-payable` can be what the shared contract
+   * says it is: `NET_PAYABLE − APPROVED`.
+   *
+   * Codex round 1 (P2): without this a fully approved ₹100 bill still reported ₹100 awaiting
+   * approval, because the budget fold subtracted only withholdings. Money that has been authorised
+   * has left the "awaiting approval" bucket whether or not it has been paid, and a forecast that
+   * says otherwise shows a practice money it has already committed.
+   *
+   * Attributed by the SAME rule as the withheld term and through the SAME function — an approval is
+   * bill-scoped while the buckets are per cost head, and two copies of that attribution would
+   * disagree the first time either changed. Live certificates only, for the same reason: a
+   * superseded certificate's approvals are not in `APPROVED(bill)` either.
+   */
+  async approvedAmountFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: 'material' | 'labour',
+    poLineIds: readonly string[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    return this.deductions.attributeCertificateScopedTotal(
+      tx, projectId, kind, poLineIds,
+      async (certificateIds) => {
+        const rows = await tx.paymentApproval.groupBy({
+          by: ['certificateId'],
+          where: { projectId, certificateId: { in: certificateIds } },
+          _sum: { amount: true },
+        });
+        return new Map(rows.map((r) => [r.certificateId, r._sum.amount ?? ZERO]));
+      },
+    );
+  }
+
 }

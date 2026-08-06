@@ -55,6 +55,11 @@ export const commercialManifest: ModuleManifest = {
     // that is owned but not read-encapsulated produces no `cross-module-read` finding when a
     // foreign module reads it, which is the gap the Phase-4 correction-4 pin was added for.
     'billDeduction', 'billDeductionRelease',
+    // Phase 5 Task 6A — append-only MONEY tables. Owned but not read-encapsulated left the boundary
+    // analyzer unable to flag a foreign synchronous read of them, which is the same shape as the
+    // Phase-4 T1 correction-4 finding on `workerSkill`.
+    'paymentApproval',
+    'payment',
   ],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the

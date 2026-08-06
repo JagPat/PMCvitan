@@ -6,6 +6,7 @@ import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialBillQuery } from './commercial-bill.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
+import { CommercialPaymentService } from './commercial-payment.service';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -95,6 +96,9 @@ export class CommercialBudgetQuery {
     private readonly measurement: CommercialMeasurementQuery,
     private readonly bills: CommercialBillQuery,
     private readonly deductions: CommercialDeductionQuery,
+    // §J — the APPROVED term of `certified-payable`. Same module, and the attribution walk is
+    // shared with the withheld term rather than copied.
+    private readonly payments: CommercialPaymentService,
   ) {}
 
   /**
@@ -130,6 +134,7 @@ export class CommercialBudgetQuery {
       materialLines, labourLines, accepted, measured,
       billedMaterial, billedLabour, certifiedMaterial, certifiedLabour,
       withheldMaterial, withheldLabour,
+      approvedMaterial, approvedLabour,
     ] = await Promise.all([
       this.procurement.committedLinesFor(tx, projectId, materialIds),
       this.labour.committedLinesFor(tx, projectId, labourIds),
@@ -155,6 +160,11 @@ export class CommercialBudgetQuery {
       // exists to prevent.
       this.deductions.withheldAmountFor(tx, projectId, 'material', materialIds),
       this.deductions.withheldAmountFor(tx, projectId, 'labour', labourIds),
+      // §J — APPROVED money has left `certified-payable` whether or not it has been paid: the
+      // contract defines the bucket as `NET_PAYABLE − APPROVED`, and a forecast that omits the
+      // subtraction shows a practice money it has already authorised.
+      this.payments.approvedAmountFor(tx, projectId, 'material', materialIds),
+      this.payments.approvedAmountFor(tx, projectId, 'labour', labourIds),
     ]);
 
     for (const code of heads) {
@@ -215,13 +225,14 @@ export class CommercialBudgetQuery {
           const billed = billedMaterial.get(a.poLineId) ?? ZERO;
           const certified = certifiedMaterial.get(a.poLineId) ?? ZERO;
           const withheld = withheldMaterial.get(a.poLineId) ?? ZERO;
+          const approved = approvedMaterial.get(a.poLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(receivedValue.sub(billed), ZERO));
           awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
           // §H — withheld money is NOT payable, so it leaves this bucket. The clamp is belt-and-
           // braces rather than load-bearing: §H's floor is enforced on the deduction WRITE, at the
           // service and at PostgreSQL, so a withholding can never exceed the certificate it is
           // taken from and this subtraction cannot go negative through any legal path.
-          certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld), ZERO));
+          certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld).sub(approved), ZERO));
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
@@ -244,9 +255,10 @@ export class CommercialBudgetQuery {
           const billed = billedLabour.get(a.labourPoLineId) ?? ZERO;
           const certified = certifiedLabour.get(a.labourPoLineId) ?? ZERO;
           const withheld = withheldLabour.get(a.labourPoLineId) ?? ZERO;
+          const approved = approvedLabour.get(a.labourPoLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(consumed.sub(billed), ZERO));
           awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
-          certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld), ZERO));
+          certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld).sub(approved), ZERO));
         }
       }
       const budget = budgetOf.get(code) ?? null;
