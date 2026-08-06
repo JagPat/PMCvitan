@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
+import { AUTHORITY_GUARDS } from './commercial.authority-guards';
+import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
 
 const HERE = join(__dirname);
 const SRC = join(__dirname, '..');
@@ -645,84 +647,18 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    *
    * So every `ConflictException` and `ForbiddenException` this service raises must appear here with
    * an answer to one question: what refuses this to a writer that never called the service? A row
-   * either NAMES the PostgreSQL object that does, and the test proves that object exists in the
-   * migration, or it says `seal: null` with a reason — which is a legitimate answer for a guard
-   * that is not about persisted state, and an illegitimate one for a guard that is.
+   * either NAMES the PostgreSQL object that does, or it says `seal: null` with a reason — which is
+   * a legitimate answer for a guard that is not about persisted state, and an illegitimate one for
+   * a guard that is.
    *
    * Adding a guard without a row fails here. That is the whole mechanism.
+   *
+   * The rows themselves live in `commercial.authority-guards.ts`, because TWO closures on
+   * different substrates read them: this one proves every refusal the SERVICE raises is classified
+   * (a source fact), and `test/integration/commercial-catalog-closure.test.ts` proves every named
+   * seal is really installed in the LIVE database (a database fact — see the PR #287 convergence
+   * audit for why migration text cannot answer that).
    */
-  const AUTHORITY_GUARDS: Array<{ match: string; seal: string | null; why: string }> = [
-    {
-      match: 'Approving a payment is a pmc surface',
-      seal: null,
-      why: 'a ROLE policy, not a property of a row: `ROLE_POLICY` is the single statement and `RolesFor` plus the route-policy tripwire are its enforcement. What a bypass writer defeats by skipping it is §I, and §I is sealed at `PaymentApproval_approver_not_certifier`',
-    },
-    {
-      match: 'Recording a payment is a pmc surface',
-      seal: null,
-      why: 'same policy surface as approving; the money invariant a bypass writer would defeat is bound 5, sealed at `phase5_t6a_paid_bound_check`',
-    },
-    {
-      match: 'The commercial register is a pmc/engineer surface',
-      seal: null,
-      why: 'a READ guard — it authorises no write, so there is no persisted state for a seal to protect',
-    },
-    {
-      match: 'has no live certification',
-      seal: 'PaymentApproval_authority_live',
-      why: 'an approval draws on a LIVE certificate; the three-column FK proves the certificate is this bill’s and says nothing about it standing',
-    },
-    {
-      match: 'no longer holds pmc standing',
-      seal: 'phase5_t6a_approval_override_valid',
-      why: 'the grant-backed override chain — a grant whose approver has lost standing cannot be spent, and the seal re-proves the grant’s own receipt',
-    },
-    {
-      match: 'granted against an earlier claim version',
-      seal: 'phase5_t6a_approval_override_valid',
-      why: 'the seal pins the grant to the certificate’s own `versionId`, so a stale grant cannot excuse an approval on an amended claim',
-    },
-    {
-      match: 'may not also approve its payment',
-      seal: 'PaymentApproval_approver_not_certifier',
-      why: '§I’s payment half, sealed at PG with the override path honoured rather than banned',
-    },
-    {
-      match: 'would take the approved total past',
-      seal: 'phase5_t6a_approved_bound_check',
-      why: '§G bound 4, re-derived at COMMIT under the bill lock over whatever the transaction leaves behind',
-    },
-    {
-      match: 'authorisation was consumed concurrently',
-      seal: 'SodGrant_consumed_together',
-      why: 'the grant is single-use; the CAS loses the race and the CHECK plus 5B’s one-way consume trigger make a second spend unrepresentable',
-    },
-    {
-      match: 'no longer hold the standing on this project',
-      seal: null,
-      why: 'standing is ORGS-owned and orgs-enforced; the money row’s own §I seal is `PaymentApproval_approver_not_certifier`, and a PG copy of the role predicate here would be a second statement of a rule this module does not own',
-    },
-    {
-      match: 'above your approval ceiling',
-      seal: null,
-      why: '§I ceilings are per-MEMBERSHIP authority, not a property of the money row: the ceiling can be raised or lowered after the fact, so a PG check on the approval would refuse a row that was legitimate when written. `Membership_approvalLimit_nonnegative` is the only invariant the column itself has',
-    },
-    {
-      match: 'has since been superseded',
-      seal: 'Payment_authority_live',
-      why: 'money leaves against the authority that covered it — the row-level question the bill-scoped bound cannot ask',
-    },
-    {
-      match: 'would take the paid total past',
-      seal: 'phase5_t6a_paid_bound_check',
-      why: '§G bound 5 at the BILL, re-derived at COMMIT and also fired when a certificate is SUPERSEDED, which moves the right-hand side with no `Payment` insert to notice',
-    },
-    {
-      match: 'above the',
-      seal: 'phase5_t6a_approval_paid_check',
-      why: '§G bound 5 at the APPROVAL — the bill fold is conserved while one authority is overdrawn, so the row-level question is asked where the row is (this closure caught the guard the moment it was written, which is the whole point of it)',
-    },
-  ];
 
   it('every money-path refusal in the payment service is classified against a seal', () => {
     const src = readFileSync(join(HERE, 'commercial-payment.service.ts'), 'utf8');
@@ -748,36 +684,14 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
   });
 
-  it('every seal AUTHORITY_GUARDS names is still LIVE in the migrations', () => {
-    // Task 6B, Codex round 1: this asked `sql.includes(seal)`, which cannot tell "created" from
-    // "created and later dropped" — the same stream-vs-set defect the reviewer named on CLOSURE 10.
-    // It is fixed HERE too rather than only where the finding pointed, because that is the root
-    // this file exists to close: the fix belongs to the set the member came from.
-    expect(
-      orderedMigrationSql().length,
-      'no migrations read — the pin is not actually reading the schema',
-    ).toBeGreaterThan(1000);
-    for (const row of AUTHORITY_GUARDS) {
-      if (row.seal === null) continue;
-      expect(
-        isLiveObject(row.seal),
-        `AUTHORITY_GUARDS names ${row.seal} as the seal for "${row.match}", and no migration leaves it live — a named seal that never existed, or that a later migration dropped, is worse than an admitted gap`,
-      ).toBe(true);
-    }
-  });
-
+  /**
   /**
    * CLOSURE 10 — A SET ENUMERATED IN MORE THAN ONE PLACE MUST AGREE ACROSS ALL OF THEM
    * (Task 6A convergence audit, root A — the open item that audit carries into 6B).
    *
    * Root A is "the fix lands on the instance a finding names, the sibling survives". It is the
    * oldest live root in this module: named in the PR #284 audit, still producing findings in
-   * PR #286, where it accounted for THREE of round 3's four. The two roots that got a MECHANICAL
-   * closure in round 2 — E (`AUTHORITY_GUARDS`) and the fold-owner set (`FOLD_INPUTS`) — produced
-   * none at all in the same round. That asymmetry is the entire argument for this pin. Root A's
-   * closure was a paragraph: "when a fix names a direction, a side, or a half, write down what the
-   * opposite one is." A paragraph does not fail, and the audit says so in as many words: naming a
-   * root is not a closure, a closure is a thing that fails.
+   * PR #286, where it accounted for THREE of round 3's four.
    *
    * Both of round 3's mechanizable instances have ONE physical shape — a SET whose members are
    * written down in more than one place, and a change that added a member to one place only:
@@ -790,182 +704,45 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    *     new target skipped validation ENTIRELY — a false authority in a register that has no
    *     correcting row.
    *
-   * So the rule is mechanical: DERIVE the member set from the authority that defines it, and
-   * require every other enumeration to carry exactly those members. Adding the next one to a
-   * single place fails here, at the desk, with no database.
+   * THE CLOSURE IS SPLIT BY SUBSTRATE, and that split is the PR #287 convergence audit's finding.
+   * Its first two heads each drew three findings, all one defect: it asked what PostgreSQL
+   * currently enforces and answered by parsing migration text. Text cannot answer that — 41 of the
+   * 80 migrations wrap DDL in conditional `DO $$ BEGIN` blocks whose execution depends on runtime
+   * catalog predicates, so on more than half of them a regex replay is guessing. So:
    *
-   * NOT pinned here, stated rather than glossed: round 3's third instance — `approvalAuthorityFor`'s
-   * org arm resting on `forUpdate`, which locks rows that EXIST, on the arm *defined by* the absence
-   * of one — is a semantic argument about a lock's reach, not a set with two spellings. Claiming it
-   * as covered would be exactly the overclaim this root is made of.
-   */
-  const MIGRATION_DIR = join(SRC, '..', 'prisma', 'migrations');
-  const orderedMigrationSql = (): string =>
-    readdirSync(MIGRATION_DIR)
-      .filter((d) => /^\d{14}_/u.test(d))
-      .sort()
-      .map((d) => {
-        try {
-          return readFileSync(join(MIGRATION_DIR, d, 'migration.sql'), 'utf8');
-        } catch {
-          return '';
-        }
-      })
-      .join('\n');
-
-  /**
-   * MIGRATIONS ARE A STREAM, NOT A SET — and the first draft of this closure read them as a set.
+   *   - the SOURCE half stays here, at the desk, with no database: the DTO union against the
+   *     `HeadroomMover` writer union.
+   *   - the DATABASE half moved to `test/integration/commercial-catalog-closure.test.ts`, which
+   *     reads `pg_constraint`, `pg_trigger` and `pg_proc` after migrations — the substrate that
+   *     OWNS the fact, following the cleared `labour/t3c` precedent.
    *
-   * It took the LAST `ADD CONSTRAINT` in the concatenated text and called it live, so a later
-   * migration that dropped a constraint (or dropped it and forgot to re-add it) would leave the pin
-   * reporting a guarantee PostgreSQL no longer makes. Codex found that on the closure itself, which
-   * is root A landing on the very test written to close root A.
+   * The lesson root A now carries: a closure must be built on the substrate that owns the fact it
+   * asserts. Naming a root is not a closure; a closure is a thing that fails — and a closure that
+   * can only fail on a proxy for its subject is a paragraph wearing a test's clothes.
    *
-   * Replaying the drop/add stream in order is the fix, and — the actual lesson — it is used by
-   * EVERY reader below rather than only by the constraint the finding named.
+   * NOT pinned in either half, stated rather than glossed: round 3's third instance —
+   * `approvalAuthorityFor`'s org arm resting on `forUpdate`, which locks rows that EXIST, on the
+   * arm *defined by* the absence of one — is a semantic argument about a lock's reach, not a set
+   * with two spellings.
    */
-  const liveCheckBody = (constraint: string): string | null => {
-    const stream = new RegExp(
-      `DROP\\s+CONSTRAINT\\s+(?:IF\\s+EXISTS\\s+)?"${constraint}"`
-        + `|ADD\\s+CONSTRAINT\\s+"${constraint}"\\s*CHECK\\s*\\(([\\s\\S]*?)\\);`,
-      'gu',
-    );
-    let live: string | null = null;
-    for (const op of orderedMigrationSql().matchAll(stream)) live = op[1] ?? null;
-    return live;
-  };
-
-  /**
-   * …and the same stream discipline for whether a named object still EXISTS. A seal a later
-   * migration dropped is not a seal, and `sql.includes(name)` cannot tell the difference between
-   * "created" and "created then dropped".
-   */
-  const isLiveObject = (name: string): boolean => {
-    const stream = new RegExp(
-      `(DROP)\\s+(?:CONSTRAINT|TRIGGER|FUNCTION)\\s+(?:IF\\s+EXISTS\\s+)?"?${name}"?`
-        + `|(?:ADD\\s+CONSTRAINT\\s+"${name}"`
-        + `|CREATE\\s+(?:CONSTRAINT\\s+)?TRIGGER\\s+"${name}"`
-        + `|CREATE\\s+OR\\s+REPLACE\\s+FUNCTION\\s+${name}\\s*\\()`,
-      'gu',
-    );
-    let live = false;
-    for (const op of orderedMigrationSql().matchAll(stream)) live = op[1] === undefined;
-    return live;
-  };
-
-  /**
-   * The FUNCTIONS a live trigger actually attaches to `table`.
-   *
-   * The first draft asked only whether some `CREATE OR REPLACE FUNCTION` chunk containing
-   * `RAISE EXCEPTION` also mentioned the column — so an unattached helper, or text that merely
-   * happened to sit in the same chunk, satisfied it. A function that refuses nothing because no
-   * trigger runs it is not a guard, and dropping the `CREATE CONSTRAINT TRIGGER ... ON "SodGrant"`
-   * attachment would have left the pin green.
-   */
-  const liveTriggerFunctionsOn = (table: string): string[] => {
-    const stream = new RegExp(
-      `DROP\\s+TRIGGER\\s+(?:IF\\s+EXISTS\\s+)?"(\\w+)"\\s+ON\\s+"${table}"`
-        + `|CREATE\\s+(?:CONSTRAINT\\s+)?TRIGGER\\s+"(\\w+)"[^;]*?\\sON\\s+"${table}"[^;]*?`
-        + `EXECUTE\\s+(?:FUNCTION|PROCEDURE)\\s+(\\w+)\\s*\\(`,
-      'gu',
-    );
-    const attached = new Map<string, string>();
-    for (const op of orderedMigrationSql().matchAll(stream)) {
-      if (op[1] !== undefined) attached.delete(op[1]);
-      else if (op[2] !== undefined && op[3] !== undefined) attached.set(op[2], op[3]);
-    }
-    return [...new Set(attached.values())];
-  };
-
-  const functionBody = (fn: string): string => {
-    const bodies = [
-      ...orderedMigrationSql().matchAll(
-        new RegExp(`CREATE\\s+OR\\s+REPLACE\\s+FUNCTION\\s+${fn}\\s*\\(([\\s\\S]*?)\\$\\$\\s+LANGUAGE`, 'gu'),
-      ),
-    ];
-    return bodies.length ? bodies[bodies.length - 1]![1]! : '';
-  };
-
-  it('the raisedBy label set is identical everywhere it is written down', () => {
-    const admittedBody = liveCheckBody('BudgetException_raisedBy_check');
-    expect(
-      admittedBody,
-      'no LIVE BudgetException_raisedBy_check — the stream ends on a DROP, so nothing constrains the column and every set below would be compared against a rule PostgreSQL is not applying',
-    ).not.toBeNull();
-    const admitted = [...admittedBody!.matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]!).sort();
-    expect(admitted.length, 'the live CHECK admits nothing — the pin parsed an empty set').toBeGreaterThan(5);
-
-    const contract = readFileSync(join(SRC, '..', '..', '..', 'packages', 'shared', 'src', 'contracts', 'commercial.ts'), 'utf8');
-    const dtoUnion = /\n\s*raisedBy:\s*([^;]+);/u.exec(contract);
-    expect(dtoUnion, 'BudgetExceptionDto.raisedBy not found in the shared contract').not.toBeNull();
-    const declared = [...dtoUnion![1]!.matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]!).sort();
-
-    // The THIRD enumeration, and the one the first draft of this closure missed — which is root A
-    // again, inside the closure for root A: the fix landed on the pair the finding named (CHECK vs
-    // DTO) and the sibling survived. `HeadroomMover` is the WRITER's set. A mover added there
-    // without widening the CHECK type-checks cleanly and fails at runtime; a label the CHECK and
-    // the DTO both advertise with no writer that can produce it is a promise nothing keeps.
-    const service = readFileSync(join(HERE, 'commercial-budget.service.ts'), 'utf8');
-    const writerUnion = /export type HeadroomMover =([\s\S]*?);/u.exec(service);
-    expect(writerUnion, 'HeadroomMover not found in commercial-budget.service.ts').not.toBeNull();
-    const writes = [
-      ...writerUnion![1]!.replace(/\/\/.*$/gmu, '').matchAll(/'([a-z_]+)'/gu),
-    ].map((m) => m[1]!).sort();
-
-    expect(
-      declared,
-      'the `raisedBy` labels PostgreSQL admits and the labels the shared DTO declares are different sets. Whichever side you added to, add to the other: a label only the CHECK knows is one the server can return and every client is told is impossible; a label only the DTO knows is one no write can ever produce',
-    ).toEqual(admitted);
+  it('the raisedBy label set is identical in the two SOURCE enumerations', () => {
+    // The THIRD enumeration — the live `BudgetException_raisedBy_check` — is the AUTHORITY, and it
+    // is NOT read here. It is a database fact, and `docs/reviews/pr-287-convergence.md` records why
+    // migration text cannot answer one: the live set is proven against `pg_constraint` by
+    // `test/integration/commercial-catalog-closure.test.ts`, which compares it to BOTH sets below.
+    //
+    // What remains at the desk is the pair that is genuinely source-to-source, and it is the pair
+    // the first draft of this closure MISSED — root A inside the closure for root A: the fix landed
+    // on CHECK-vs-DTO and the sibling survived. A mover added to `HeadroomMover` without widening
+    // the DTO is a label every client is told is impossible; a DTO label no mover writes is a
+    // promise nothing keeps.
+    const declared = dtoRaisedByLabels();
+    const writes = writerRaisedByLabels();
+    expect(declared.length, 'the shared DTO declares nothing — the pin parsed an empty set').toBeGreaterThan(5);
     expect(
       writes,
-      'the `raisedBy` labels PostgreSQL admits and the movers `HeadroomMover` can write are different sets. A mover the type allows and the CHECK refuses fails at runtime with a green build; a label the CHECK allows and no mover writes is unreachable',
-    ).toEqual(admitted);
+      'the `raisedBy` labels the shared DTO declares and the movers `HeadroomMover` can write are different sets. Whichever side you added to, add to the other',
+    ).toEqual(declared);
   });
 
-  it('every SodGrant consumption target is named by the XOR check and validated by a trigger', () => {
-    const schema = readFileSync(join(SRC, '..', 'prisma', 'schema.prisma'), 'utf8');
-    const model = /model SodGrant \{([\s\S]*?)\n\}/u.exec(schema);
-    expect(model, 'model SodGrant not found — the pin is not reading the schema').not.toBeNull();
-    // the family is DERIVED from the model, so a third target arrives here the moment it is declared
-    const family = [...model![1]!.matchAll(/^\s*(consumedBy[A-Za-z]*Id)\s+String\?/gmu)].map((m) => m[1]!);
-    expect(
-      family.length,
-      'fewer than two consumption targets found — this pin exists because the family GREW, so parsing one member means the parse is wrong',
-    ).toBeGreaterThan(1);
-
-    // (i) the LIVE XOR check must name every member, or a new target can be stamped alongside an
-    // existing one with nothing to refuse the pair
-    const xor = liveCheckBody('SodGrant_consumed_together');
-    expect(
-      xor,
-      'no LIVE SodGrant_consumed_together — the stream ends on a DROP, so the grant is not single-use at PostgreSQL at all and naming targets is beside the point',
-    ).not.toBeNull();
-    for (const column of family) {
-      expect(
-        xor!.includes(`"${column}"`),
-        `${column} is a consumption target and the live SodGrant_consumed_together CHECK does not mention it — the grant is single-use only for the targets the CHECK counts`,
-      ).toBe(true);
-    }
-
-    // (ii) …and each member must be validated by a function an ATTACHED trigger actually runs. The
-    // first draft accepted any function chunk that mentioned the column, so an unattached helper —
-    // or a dropped trigger attachment — satisfied it. That is the same defect one level down as the
-    // one `consumedByApprovalId` had: present in the text, refusing nothing.
-    const attached = liveTriggerFunctionsOn('SodGrant').map((fn) => ({ fn, body: functionBody(fn) }));
-    expect(
-      attached.length,
-      'no live trigger is attached to SodGrant — the pin is not reading the migrations, or every attachment was dropped',
-    ).toBeGreaterThan(0);
-    const refusing = attached.filter((t) => t.body.includes('RAISE EXCEPTION'));
-    expect(
-      refusing.length,
-      'no trigger attached to SodGrant can RAISE — an attachment that cannot refuse is not a guard',
-    ).toBeGreaterThan(0);
-    for (const column of family) {
-      expect(
-        refusing.some((t) => t.body.includes(`"${column}"`)),
-        `${column} is a consumption target that no trigger ATTACHED to SodGrant validates — a grant can be stamped consumed by an act that carries no matching override, and an append-only register has no correcting row`,
-      ).toBe(true);
-    }
-  });
 });

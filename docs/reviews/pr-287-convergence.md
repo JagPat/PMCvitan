@@ -64,7 +64,51 @@ question is reading one of those places out of migration text.
 Note the asymmetry inside the round-1 findings: `HeadroomMover` was a genuine source-to-source
 comparison and needed no database. It is the one finding that did not recur.
 
-## Options
+## Selected substrate
+
+**Option (a), authorised by JagPat on PR #287.** The closure is split along the boundary its own
+findings drew:
+
+| Half | Substrate | Home |
+|---|---|---|
+| Source sets (`BudgetExceptionDto.raisedBy` ↔ `HeadroomMover`) | source text, no database | `commercial.contract.test.ts` |
+| Live constraints, triggers, function bodies | `pg_constraint` / `pg_trigger` / `pg_proc` after migrations | `test/integration/commercial-catalog-closure.test.ts` |
+
+Two sets are read by both halves, so each is extracted to ONE module rather than copied — root A's
+own rule applied to root A's closure: `commercial.authority-guards.ts` (the seal classification) and
+`commercial.raisedby-sets.ts` (the two source enumerations).
+
+Deployed migrations are byte-for-byte unchanged; this correction is test- and closure-only.
+
+## Proof map
+
+| Requirement | Evidence |
+|---|---|
+| live `raisedBy` CHECK matches both source sets | `pg_get_constraintdef` parsed to labels, compared to `dtoRaisedByLabels()` and `writerRaisedByLabels()` |
+| XOR names every consumption target | family derived from `schema.prisma`; `SodGrant_consumed_together` read from `pg_constraint` |
+| each target's trigger is really attached | `pg_trigger.tgrelid = to_regclass('"SodGrant"')` — attachment is the query, not an inference |
+| enabled | `tgenabled = 'O'` |
+| DEFERRABLE INITIALLY DEFERRED row constraint trigger | `tgconstraint <> 0 AND tgdeferrable AND tginitdeferred` |
+| fires on UPDATE, exact timing | `tgtype = 21` (ROW+INSERT+UPDATE, AFTER) — **equality, not a bitmask** |
+| canonical body | `sha256(pg_proc.prosrc)` pinned per target (t3c precedent, hashed for size) |
+| named helper is reached | `prosrc LIKE '%phase5_t6a_approval_override_valid%'` on the function bound to each live caller trigger |
+
+**Hostile behavioural probes**, each mutating the live catalog inside a transaction and rolling
+back, so the removal is real rather than mocked: dropped trigger attachment (function left intact —
+precisely the state the retired parser called "validated"); weakened caller with the helper still
+defined (a presence test would pass); same-name INSERT-only re-declaration (attached, enabled,
+deferrable, correctly bound — and every consume UPDATE sails past); dropped CHECK while the
+migration text still contains its `ADD CONSTRAINT` verbatim.
+
+**Retired-parser probes** keep the audit's central claim executable rather than asserted: the old
+design is shown accepting a commented example as installed DDL, and returning a body unconditionally
+for a conditional `DO $$ BEGIN … IF NOT EXISTS` block.
+
+The pins were mutation-checked, not merely observed passing: a wrong canonical hash and a wrong
+expected `tgtype` each turn the suite RED (2 failed / 9 passed), so the closure fails when the
+guarantee is removed.
+
+## Options considered
 
 - **(a) Move the database half to the live catalog** — reuse the t3c idiom (`pg_constraint` for the
   live CHECK body, `pg_trigger` + exact `tgtype` for attachment and firing, `pg_proc.prosrc` for the
@@ -74,8 +118,8 @@ comparison and needed no database. It is the one finding that did not recur.
   `HeadroomMover`), and record the database seal as its own task. Smaller, honest, but leaves the
   `SodGrant` consumption-target family — the concrete regression root A was drawn from — unpinned.
 
-**Recommendation: (a).** The precedent is in-repo, cleared, and was written against these exact
-failure modes. (b) leaves the closure unable to fail on the instance that motivated it.
+**Recommendation: (a)** — selected. The precedent is in-repo, cleared, and was written against these
+exact failure modes. (b) leaves the closure unable to fail on the instance that motivated it.
 
 ## Open item carried forward
 
