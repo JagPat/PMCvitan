@@ -637,6 +637,13 @@ model Membership {
   status    String   @default("active") // invited | active | removed
   createdAt DateTime @default(now())
 
+  /// Phase 5 Task 6A (§I) — this member's payment-approval ceiling, applied to a claim's
+  /// CUMULATIVE approved total rather than to one authorisation: a per-row check lets a ₹50 holder
+  /// authorise ₹100 as two ₹50 rows, each within limit and the ceiling defeated. NULL is
+  /// "unlimited", which is what every existing membership is; zero is a real ceiling that refuses
+  /// everything, because "may not approve" is a thing a practice may want to say about a role.
+  approvalLimit Decimal? @db.Decimal(18, 2)
+
   // drawing distributions frozen against this membership (Phase 1 Task 3)
   drawingRecipients DrawingRecipient[]
   // corrective/reinspection work assigned to this membership (Phase 1 Task 4)

@@ -42,6 +42,9 @@ export const commercialManifest: ModuleManifest = {
     // that is owned but not read-encapsulated produces no `cross-module-read` finding when a
     // foreign module reads it, which is the gap the Phase-4 correction-4 pin was added for.
     'billDeduction', 'billDeductionRelease',
+    // Phase 5 Task 6A (§F/§G/§I) — the payment authority and the money that left against it
+    'paymentApproval',
+    'payment',
   ],
   readEncapsulated: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
@@ -90,6 +93,8 @@ export const commercialManifest: ModuleManifest = {
     'POST /projects/:projectId/commercial/deductions/release',
     'POST /projects/:projectId/commercial/bills/amend',
     'POST /projects/:projectId/commercial/bills/reject',
+    'POST /projects/:projectId/commercial/payments/approve',
+    'POST /projects/:projectId/commercial/payments/record',
   ],
   permissions: ['pmc'],
 };

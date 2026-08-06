@@ -371,3 +371,15 @@ BEGIN
     RAISE EXCEPTION 'Phase 5 Task 6A expected to create its tables empty, found % approval(s) and % payment(s) — money movement exists that predates the seals this migration installs; investigate before deploying', v_a, v_p;
   END IF;
 END $$;
+
+-- §I — the approval CEILING, per membership. Applied to a claim's cumulative approved total, never
+-- per row: a per-row check lets a ₹50 holder authorise ₹100 as two ₹50 rows, each within limit and
+-- the ceiling defeated. NULL is "unlimited", which is what every existing membership is, so this
+-- column changes no current behaviour; zero is a real ceiling that refuses everything, because
+-- "may not approve" is a thing a practice may legitimately want to say about a role.
+ALTER TABLE "Membership" ADD COLUMN IF NOT EXISTS "approvalLimit" DECIMAL(18,2);
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Membership_approvalLimit_nonnegative') THEN
+    ALTER TABLE "Membership" ADD CONSTRAINT "Membership_approvalLimit_nonnegative" CHECK ("approvalLimit" IS NULL OR "approvalLimit" >= 0);
+  END IF;
+END $$;

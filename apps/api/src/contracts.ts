@@ -1515,3 +1515,40 @@ export const releaseDeductionSchema = z
   })
   .strict();
 export type ReleaseDeductionInput = z.infer<typeof releaseDeductionSchema>;
+
+/**
+ * §F/§G/§I — AUTHORISE a certified payable for payment.
+ *
+ * The amount is a decimal STRING and refused at zero or below here as well as at PostgreSQL: an
+ * approval's direction is carried by the ROW KIND, so a negative would encode it twice and let one
+ * approval silently undo another on an append-only table (§0b's sign constraint, at its next site).
+ *
+ * No `certificateId`: the approval draws on whatever certificate is LIVE, resolved server-side
+ * under the bill lock. A caller-supplied id would let an approval name a superseded certificate —
+ * retained history that §G bounds 3–5 deliberately exclude — and the bound would then measure
+ * against a certification that no longer stands.
+ */
+export const approvePaymentSchema = z
+  .object({
+    billId: z.string().min(1),
+    amount: z.string().trim().min(1).max(32),
+  })
+  .strict();
+export type ApprovePaymentInput = z.infer<typeof approvePaymentSchema>;
+
+/**
+ * §G — RECORD money leaving against an approval that covers it.
+ *
+ * `method` is required and non-blank: a payment that cannot say how the money moved cannot be
+ * reconciled against a bank statement, which is the only thing that makes it evidence rather than
+ * an assertion. `reference` is optional because not every method has one.
+ */
+export const recordPaymentSchema = z
+  .object({
+    approvalId: z.string().min(1),
+    amount: z.string().trim().min(1).max(32),
+    method: z.string().trim().min(1).max(64),
+    reference: z.string().trim().min(1).max(200).nullish(),
+  })
+  .strict();
+export type RecordPaymentInput = z.infer<typeof recordPaymentSchema>;

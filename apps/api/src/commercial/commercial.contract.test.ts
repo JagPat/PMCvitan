@@ -56,6 +56,8 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.sod.grant': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.sod.grant'" },
     'commercial.deduction.record': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.record'" },
     'commercial.deduction.release': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.release'" },
+    'commercial.payment.approve': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.approve'" },
+    'commercial.payment.record': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.record'" },
     'commercial.certificate.supersede': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.certificate.supersede'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
@@ -68,6 +70,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.verification': "Get('commercial/bills/:billId/verification')",
     'commercial.certificate': "Get('commercial/bills/:billId/certificate')",
     'commercial.deductions': "Get('commercial/bills/:billId/deductions')",
+    'commercial.payments': "Get('commercial/bills/:billId/payments')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {

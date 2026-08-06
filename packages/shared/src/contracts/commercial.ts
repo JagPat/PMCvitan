@@ -69,6 +69,12 @@ export const COMMERCIAL_COMMANDS = [
   // acts, and a later widening of one must not silently widen the other.
   'commercial.deduction.record',
   'commercial.deduction.release',
+  // Phase 5 Task 6A (§F/§G/§I) — AUTHORISE money for payment, and RECORD it leaving. Two commands
+  // because they are two acts by two authorities: an approval says the payable may be paid, a
+  // payment says it was. §I keeps approval apart from certification for the same reason — the
+  // actor who certified may not approve — and a single command would make that rule unstateable.
+  'commercial.payment.approve',
+  'commercial.payment.record',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -94,6 +100,10 @@ export const COMMERCIAL_QUERIES = [
   // withheld and net figures are FOLDS computed on every call: §H forbids a stored balance column,
   // so there is nothing else they could be.
   'commercial.deductions',
+  // Phase 5 Task 6A — one claim's approvals and payments, with the folded approved and paid
+  // totals. FOLDS on every call: §G bounds 4–5 are computed from the rows, so a stored total
+  // would be a second answer to a question the ledger already answers.
+  'commercial.payments',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -573,6 +583,52 @@ export interface BillDeductionLedgerDto {
    *  `PAID`) are Task 6's, so it lands there with the rows that supply them; until then a
    *  withholding moves the money and not the status, and this surface reports what IS rather than
    *  what a partial derivation would guess. */
+  billStatus: VendorBillStatus;
+}
+
+/** Phase 5 Task 6A — one authorisation that a certified payable may be paid. */
+export interface PaymentApprovalDto {
+  id: string;
+  billId: string;
+  certificateId: string;
+  /** decimal STRING — §A forbids a float64 round trip */
+  amount: string;
+  approvedAt: string;
+  approvedById: string;
+  /** Σ payments drawn against THIS approval — a FOLD, never a stored column */
+  paid: string;
+  payments: PaymentDto[];
+}
+
+/** Money that actually left, against an approval that covered it. */
+export interface PaymentDto {
+  id: string;
+  approvalId: string;
+  billId: string;
+  amount: string;
+  /** how it moved, so the practice can reconcile against a bank statement */
+  method: string;
+  reference: string | null;
+  paidAt: string;
+  paidById: string;
+}
+
+/** The `commercial.payments` read: one bill's authorisations and what has been paid against them. */
+export interface BillPaymentLedgerDto {
+  billId: string;
+  /** null when no certificate stands — there is nothing to approve against */
+  certificateId: string | null;
+  approvals: PaymentApprovalDto[];
+  /** §G bound 4's left side — Σ approvals against the LIVE certificate */
+  approved: string;
+  /** §G bound 5's left side — Σ payments on this bill */
+  paid: string;
+  /** `NET_PAYABLE` less what is already approved: what a further approval may still authorise.
+   *  Never negative — bound 4 refuses the write that would take it there. */
+  approvable: string | null;
+  /** the STORED bill status. §F's derivation reads three folds and lands in Task 6B with the
+   *  reversal rows that make it correct, so this reports what IS rather than what a partial
+   *  derivation would guess — exactly as the deduction ledger does. */
   billStatus: VendorBillStatus;
 }
 

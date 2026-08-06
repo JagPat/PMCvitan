@@ -55,6 +55,7 @@ import { CommercialBillService } from './commercial/commercial-bill.service';
 import { CommercialVerificationService } from './commercial/commercial-verification.service';
 import { CommercialCertificationService } from './commercial/commercial-certification.service';
 import { CommercialDeductionService } from './commercial/commercial-deduction.service';
+import { CommercialPaymentService } from './commercial/commercial-payment.service';
 import { CommercialDeductionQuery } from './commercial/commercial-deduction.query';
 import { CommercialBillQuery } from './commercial/commercial-bill.query';
 import { CommercialActivationService } from './commercial/commercial-activation.service';
@@ -163,6 +164,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     CommercialVerificationService,
     CommercialCertificationService,
     CommercialDeductionService,
+    CommercialPaymentService,
     CommercialDeductionQuery,
     CommercialBillQuery,
     CommercialActivationService,
