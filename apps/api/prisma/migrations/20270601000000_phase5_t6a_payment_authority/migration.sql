@@ -293,6 +293,77 @@ CREATE CONSTRAINT TRIGGER "Payment_bound_sealed"
   AFTER INSERT ON "Payment" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t6a_payment_bound_sealed();
 
+-- ── a money row's OWN authority must be LIVE, not merely the bill's total ────────────────────
+--
+-- Codex round 2 (P1). The bound above is bill-scoped, and that is right for what it measures — a
+-- second approval genuinely raises the ceiling. But it is the WRONG question to ask of one payment:
+-- approve ₹40 on C1, supersede C1, certify C2 and approve ₹40 there, then insert a `Payment`
+-- against the OLD C1 approval. `v_approved` counts C2's live ₹40, `v_paid` counts the stale ₹40,
+-- `40 <= 40` passes — and the cash evidence is nested under an authority that is not in
+-- `APPROVED(bill)` at all.
+--
+-- So the row-level question is asked at the row: this row's certification still stands.
+--
+-- BOTH rows, not just the one the finding named. `PaymentApproval` has the identical hole — its
+-- three-column FK proves the certificate belongs to this bill and says nothing about it being live,
+-- and `phase5_t6a_approved_bound_check` deliberately excludes superseded certificates, so a direct
+-- writer's approval against dead certification passes every constraint by being invisible to all of
+-- them. It is inert money (no payment can now draw on it) and it is still a false authority sitting
+-- in an append-only register. This PR's audit names "the fix lands on the instance a finding named
+-- and the sibling survives" as a recurring root; the sibling is sealed here, in the same head.
+--
+-- BEFORE INSERT rather than deferred: it is a property of the row itself, nothing later in the
+-- transaction can make a superseded certificate live again, and failing at the offending statement
+-- names the row.
+CREATE OR REPLACE FUNCTION phase5_t6a_assert_certificate_live(
+  p_project text, p_bill text, p_certificate text, p_what text, p_row text
+) RETURNS void AS $$
+DECLARE
+  v_superseded timestamp(3);
+  v_lock       text;
+BEGIN
+  -- the BILL first, always — the one lock order this file uses, so a direct writer that reaches
+  -- this trigger and a service transaction that already holds the bill can never deadlock
+  SELECT b."id" INTO v_lock FROM "VendorBill" b
+   WHERE b."projectId" = p_project AND b."id" = p_bill
+     FOR UPDATE;
+
+  SELECT c."supersededAt" INTO v_superseded FROM "BillCertificate" c
+   WHERE c."projectId" = p_project AND c."id" = p_certificate;
+
+  IF v_superseded IS NOT NULL THEN
+    RAISE EXCEPTION '% % rests on a certification superseded at % — a superseded certificate is retained history, not the authority money moves against; act on the certificate that stands', p_what, p_row, v_superseded;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t6a_approval_authority_live() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t6a_assert_certificate_live(
+    NEW."projectId", NEW."billId", NEW."certificateId", 'Payment approval', NEW."id");
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "PaymentApproval_authority_live" ON "PaymentApproval";
+CREATE TRIGGER "PaymentApproval_authority_live" BEFORE INSERT ON "PaymentApproval"
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6a_approval_authority_live();
+
+CREATE OR REPLACE FUNCTION phase5_t6a_payment_authority_live() RETURNS trigger AS $$
+DECLARE v_certificate text;
+BEGIN
+  SELECT a."certificateId" INTO v_certificate FROM "PaymentApproval" a
+   WHERE a."projectId" = NEW."projectId" AND a."id" = NEW."approvalId";
+  PERFORM phase5_t6a_assert_certificate_live(
+    NEW."projectId", NEW."billId", v_certificate, 'Payment', NEW."id");
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "Payment_authority_live" ON "Payment";
+CREATE TRIGGER "Payment_authority_live" BEFORE INSERT ON "Payment"
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6a_payment_authority_live();
+
 
 CREATE OR REPLACE FUNCTION phase5_t6a_certificate_paid_bound_sealed() RETURNS trigger AS $$
 BEGIN
@@ -302,6 +373,51 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- ── §I — the payment half of the SoD record ──────────────────────────────────────────────────
+--
+-- `SodException` already exists from Task 5 with a nullable `certificateId` and a comment reserving
+-- this half. An exception is authority for ONE act, never a standing waiver a later override can
+-- point at, so a row names exactly one fact.
+ALTER TABLE "SodException" ADD COLUMN IF NOT EXISTS "approvalId" TEXT;
+-- …and the GRANT the override rests on is consumed by exactly one act, of exactly one KIND. Task 5
+-- shipped `consumedByCertificateId`; the payment half needs its own target, because a grant that
+-- could point at either would make "which act spent this authority?" unanswerable.
+ALTER TABLE "SodGrant" ADD COLUMN IF NOT EXISTS "consumedByApprovalId" TEXT;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SodException_approval_fkey') THEN
+    ALTER TABLE "SodException" ADD CONSTRAINT "SodException_approval_fkey" FOREIGN KEY ("projectId", "approvalId")
+    REFERENCES "PaymentApproval"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SodGrant_approval_fkey') THEN
+    ALTER TABLE "SodGrant" ADD CONSTRAINT "SodGrant_approval_fkey" FOREIGN KEY ("projectId", "consumedByApprovalId")
+    REFERENCES "PaymentApproval"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
+  -- Task 5B shipped this NAME as `CHECK ("certificateId" IS NOT NULL)`, so an `IF NOT EXISTS`
+  -- guard silently skips the replacement and the approval side stays UNREACHABLE — the column
+  -- exists, the FK exists, and every insert with a null `certificateId` is refused by a constraint
+  -- written before there was a second fact to name. Dropping by name first is the only way to widen
+  -- a CHECK, and it is safe here because the new one is strictly narrower on the certificate side.
+  ALTER TABLE "SodException" DROP CONSTRAINT IF EXISTS "SodException_names_one_fact";
+  ALTER TABLE "SodException" ADD CONSTRAINT "SodException_names_one_fact"
+  CHECK (("certificateId" IS NOT NULL AND "approvalId" IS NULL)
+      OR ("certificateId" IS NULL AND "approvalId" IS NOT NULL));
+  -- the same widening on the grant's consumption, and for the same reason: 5B's CHECK named the
+  -- certificate alone, so with a second target it would forbid every payment-side consume. Both
+  -- halves still move together, and exactly ONE target is named — an authority is exercised once.
+  ALTER TABLE "SodGrant" DROP CONSTRAINT IF EXISTS "SodGrant_consumed_together";
+  ALTER TABLE "SodGrant" ADD CONSTRAINT "SodGrant_consumed_together"
+  CHECK (("consumedAt" IS NULL AND "consumedByCertificateId" IS NULL AND "consumedByApprovalId" IS NULL)
+      OR ("consumedAt" IS NOT NULL
+          AND (("consumedByCertificateId" IS NOT NULL)::int + ("consumedByApprovalId" IS NOT NULL)::int) = 1));
+END $$;
+CREATE INDEX IF NOT EXISTS "SodException_projectId_approvalId_idx" ON "SodException"("projectId", "approvalId");
+-- ONE override per approval per rule, mirroring `SodException_certificate_rule_key`. A second row
+-- would make "the authority that excused this" ambiguous, and ambiguity in an authority record is
+-- the same as not having one.
+CREATE UNIQUE INDEX IF NOT EXISTS "SodException_approval_rule_key"
+  ON "SodException"("projectId", "approvalId", "rule") WHERE "approvalId" IS NOT NULL;
+
+
 -- ── §I sealed at PostgreSQL — the certifier may not approve ──────────────────────────────────
 --
 -- The service refuses this, and until now that was the ONLY thing refusing it. A bypass writer can
@@ -309,9 +425,65 @@ $$ LANGUAGE plpgsql;
 -- within-net approval: every other constraint here passes, and the append-only authority row is
 -- forged. The rule this whole task exists for was the one rule not sealed.
 --
--- The exception path is honoured rather than banned: an attributable `SodException` naming THIS
--- approval makes it valid, which is exactly what §I says an override is for. Deferred, so the
--- exception may be written in the same transaction as the approval it authorises.
+-- The exception path is honoured rather than banned — §I is explicit that a two-person practice
+-- must still be able to operate — but an override is only an override if the AUTHORITY ACTUALLY
+-- ACTED. That predicate is `phase5_t6a_approval_override_valid`, below, and it is defined ONCE:
+-- this trigger and the exception's own seal both call it, so "what makes an override real" cannot
+-- be answered two ways by the two rows that answer it.
+CREATE OR REPLACE FUNCTION phase5_t6a_approval_override_valid(p_project text, p_approval text)
+RETURNS boolean AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM "SodException" s
+      JOIN "PaymentApproval" a  ON a."projectId"  = s."projectId" AND a."id"  = s."approvalId"
+      JOIN "BillCertificate" c  ON c."projectId"  = a."projectId" AND c."id"  = a."certificateId"
+      JOIN "CommandExecution" ace ON ace."projectId" = a."projectId" AND ace."id" = a."sourceCommandId"
+      JOIN "SodGrant" g         ON g."projectId"  = s."projectId" AND g."id"  = s."grantId"
+      JOIN "CommandExecution" gce ON gce."projectId" = g."projectId" AND gce."id" = g."sourceCommandId"
+     WHERE s."projectId" = p_project AND s."approvalId" = p_approval
+       -- the override names THIS rule. A grant issued so a store user could CERTIFY is not
+       -- permission for anyone to approve that claim's payment; §I has two halves and one row
+       -- must not silently satisfy the other.
+       AND s."rule" = 'certifier-may-not-approve'
+       -- the actor the rule would have refused IS the approver of the row being excused
+       AND s."actorId" = a."approvedById"
+       AND s."approverId" <> s."actorId"
+       -- …produced by the SAME command as the act it excuses, proven by that command's RECEIPT
+       -- rather than by two rows copying one id: `executeCommand` writes status and `resultRef`
+       -- inside the act's own transaction, so at COMMIT the receipt either says it produced THIS
+       -- approval or the override is not this act's.
+       AND s."sourceCommandId" = a."sourceCommandId"
+       AND ace."commandType" = 'commercial.payment.approve'
+       AND ace."status" = 'succeeded'
+       AND ace."resultRef" = a."id"
+       AND ace."actorId" = a."approvedById"
+       -- …and it rests on a GRANT, which is the whole point. Codex round 2 (P1): the earlier seal
+       -- tested `EXISTS` on the exception, so a direct writer could insert the forbidden approval
+       -- plus an exception naming any colleague as `approverId` and reusing the approval's own
+       -- command id. "A different id" is not a stronger authority; it is a name typed into a
+       -- field. Task 5's certification half already learned this (its rounds 7 and 8), and the
+       -- correction did not travel to the sibling created for the payment half.
+       AND g."approverId" = s."approverId"
+       AND g."actorId"    = s."actorId"
+       AND g."rule"       = s."rule"
+       AND g."billId"     = a."billId"
+       -- version-pinned: an amendment is a different claim, and permission to release money
+       -- against the one the approver looked at must not survive it
+       AND g."versionId"  = c."versionId"
+       -- the REASON is the approver's, not the excused actor's — the read surface reports the
+       -- exception's reason as the authorisation, so leaving it free lets the person being
+       -- excused write the one sentence a reviewer trusts
+       AND g."reason"     = s."reason"
+       -- SINGLE-USE, and consumed by THIS approval
+       AND g."consumedByApprovalId" = a."id"
+       -- …and the grant itself is the approver's own authenticated act, by its receipt
+       AND gce."commandType" = 'commercial.sod.grant'
+       AND gce."status" = 'succeeded'
+       AND gce."actorId" = g."approverId"
+       AND gce."resultRef" = g."id"
+  );
+$$ LANGUAGE sql;
+
 CREATE OR REPLACE FUNCTION phase5_t6a_approver_not_certifier() RETURNS trigger AS $$
 DECLARE v_certifier text;
 BEGIN
@@ -320,12 +492,11 @@ BEGIN
 
   IF v_certifier IS DISTINCT FROM NEW."approvedById" THEN RETURN NULL; END IF;
 
-  IF EXISTS (SELECT 1 FROM "SodException" x
-              WHERE x."projectId" = NEW."projectId" AND x."approvalId" = NEW."id") THEN
-    RETURN NULL;  -- an attributable override, which §I requires to be possible
+  IF phase5_t6a_approval_override_valid(NEW."projectId", NEW."id") THEN
+    RETURN NULL;  -- an attributable override resting on the approver's own act, which §I requires
   END IF;
 
-  RAISE EXCEPTION 'Approval % is made by %, who certified this claim — certification says what is owed and approval releases it, and one person doing both is the separation §I exists to keep; a different approver, or an attributable SoD exception naming this approval, is required', NEW."id", NEW."approvedById";
+  RAISE EXCEPTION 'Approval % is made by %, who certified this claim — certification says what is owed and approval releases it, and one person doing both is the separation §I exists to keep; a different approver, or an override resting on a `certifier-may-not-approve` grant a pmc with standing issued and this act consumed, is required', NEW."id", NEW."approvedById";
 END;
 $$ LANGUAGE plpgsql;
 
@@ -407,30 +578,6 @@ CREATE CONSTRAINT TRIGGER "Payment_command_succeeded"
   AFTER INSERT ON "Payment" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t6a_command_succeeded();
 
--- ── §I — the payment half of the SoD record ──────────────────────────────────────────────────
---
--- `SodException` already exists from Task 5 with a nullable `certificateId` and a comment reserving
--- this half. An exception is authority for ONE act, never a standing waiver a later override can
--- point at, so a row names exactly one fact.
-ALTER TABLE "SodException" ADD COLUMN IF NOT EXISTS "approvalId" TEXT;
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SodException_approval_fkey') THEN
-    ALTER TABLE "SodException" ADD CONSTRAINT "SodException_approval_fkey" FOREIGN KEY ("projectId", "approvalId")
-    REFERENCES "PaymentApproval"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
-  END IF;
-  -- Task 5B shipped this NAME as `CHECK ("certificateId" IS NOT NULL)`, so an `IF NOT EXISTS`
-  -- guard silently skips the replacement and the approval side stays UNREACHABLE — the column
-  -- exists, the FK exists, and every insert with a null `certificateId` is refused by a constraint
-  -- written before there was a second fact to name. Dropping by name first is the only way to widen
-  -- a CHECK, and it is safe here because the new one is strictly narrower on the certificate side.
-  ALTER TABLE "SodException" DROP CONSTRAINT IF EXISTS "SodException_names_one_fact";
-  ALTER TABLE "SodException" ADD CONSTRAINT "SodException_names_one_fact"
-  CHECK (("certificateId" IS NOT NULL AND "approvalId" IS NULL)
-      OR ("certificateId" IS NULL AND "approvalId" IS NOT NULL));
-END $$;
-CREATE INDEX IF NOT EXISTS "SodException_projectId_approvalId_idx" ON "SodException"("projectId", "approvalId");
-
-
 -- ── §I — the APPROVAL side of the exception carries the same evidence seals ──────────────────
 --
 -- Task 5B's `phase5_t5_sod_exception_sealed` returns early when `certificateId IS NULL`, which is
@@ -443,11 +590,15 @@ CREATE INDEX IF NOT EXISTS "SodException_projectId_approvalId_idx" ON "SodExcept
 -- same transaction as the act it authorises (the approval must be visible), the reason is real, and
 -- the rule names the payment rule rather than borrowing the certification one.
 CREATE OR REPLACE FUNCTION phase5_t6a_sod_exception_approval_sealed() RETURNS trigger AS $$
-DECLARE v_approver text;
+DECLARE
+  v_approver  text;
+  v_certifier text;
 BEGIN
   IF NEW."approvalId" IS NULL THEN RETURN NULL; END IF;
 
-  SELECT a."approvedById" INTO v_approver FROM "PaymentApproval" a
+  SELECT a."approvedById", c."certifiedById" INTO v_approver, v_certifier
+    FROM "PaymentApproval" a
+    JOIN "BillCertificate" c ON c."projectId" = a."projectId" AND c."id" = a."certificateId"
    WHERE a."projectId" = NEW."projectId" AND a."id" = NEW."approvalId";
   IF v_approver IS NULL THEN
     RAISE EXCEPTION 'SoD exception % names approval %, which does not exist in this project — an override is authority for ONE act and must be written with it', NEW."id", NEW."approvalId";
@@ -464,6 +615,22 @@ BEGIN
   END IF;
   IF NEW."rule" <> 'certifier-may-not-approve' THEN
     RAISE EXCEPTION 'SoD exception % names rule "%" on an approval — the payment-side rule is `certifier-may-not-approve`, and an override that names the wrong rule documents an act nobody reviewed', NEW."id", NEW."rule";
+  END IF;
+
+  -- §I is a BICONDITIONAL, and the certificate half has enforced both directions since Task 5. An
+  -- override on an approval the rule would never have refused authorises nothing, and a trail that
+  -- carries one reports a conflict that did not happen.
+  IF v_certifier IS DISTINCT FROM v_approver THEN
+    RAISE EXCEPTION 'SoD exception % excuses approval %, which was made by % while % certified the claim — the rule permits that act outright, and an override for a conflict that does not exist records an authorisation nobody needed', NEW."id", NEW."approvalId", v_approver, COALESCE(v_certifier, '(nobody)');
+  END IF;
+
+  -- …and the whole of what makes it REAL, asked of the one predicate that states it. Codex round 2
+  -- (P1): the earlier seal validated the exception's SHAPE and never proved the approver acted, so
+  -- a direct writer could name any colleague and reuse the approval's own command id. The grant is
+  -- the signature; `phase5_t6a_approval_override_valid` is where that is stated, once, for both
+  -- this row and the approval that leans on it.
+  IF NOT phase5_t6a_approval_override_valid(NEW."projectId", NEW."approvalId") THEN
+    RAISE EXCEPTION 'SoD exception % does not rest on a `certifier-may-not-approve` grant this approval consumed — an override is legitimate because a stronger authority ACTED, and a name in a field is not that act; a pmc with standing must issue the grant with `commercial.sod.grant` and this approval must consume it', NEW."id";
   END IF;
   RETURN NULL;
 END;
@@ -487,6 +654,18 @@ BEGIN
     RAISE EXCEPTION 'Phase 5 Task 6A expected to create its tables empty, found % approval(s) and % payment(s) — money movement exists that predates the seals this migration installs; investigate before deploying', v_a, v_p;
   END IF;
 END $$;
+
+-- ── §B — an APPROVAL is a headroom mover, and `raisedBy` must be able to say so ──────────────
+--
+-- Codex round 2 (P2). §J defines `certified-payable` as `NET_PAYABLE − APPROVED`, so this task
+-- taught the budget fold a new subtraction — and a write that moves a fold input must raise or
+-- clear the over-budget exception in its own transaction. `raisedBy` is the durable explanation a
+-- human reads months later, so the approval gets its OWN label rather than borrowing `claim`: an
+-- approval-cleared exception labelled `claim` sends a PMC hunting for a vendor claim that never
+-- changed. Same widening shape every prior task used for the same CHECK.
+ALTER TABLE "BudgetException" DROP CONSTRAINT IF EXISTS "BudgetException_raisedBy_check";
+ALTER TABLE "BudgetException" ADD CONSTRAINT "BudgetException_raisedBy_check"
+  CHECK ("raisedBy" IN ('commitment', 'budget_revision', 'reattribution', 'acceptance', 'receipt_progress', 'measurement', 'claim', 'deduction', 'deduction_release', 'payment_approval'));
 
 -- §I — the approval CEILING, per membership. Applied to a claim's cumulative approved total, never
 -- per row: a per-row check lets a ₹50 holder authorise ₹100 as two ₹50 rows, each within limit and

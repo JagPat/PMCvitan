@@ -173,34 +173,55 @@ export class OrgsParticipant {
   }
 
   /**
-   * Phase 5 Task 6A (§I) — this member's payment-approval CEILING, read through the owner.
+   * Phase 5 Task 6A (§I) — may `userId` approve on `projectId` at all, and up to what CEILING?
    *
    * Approval limits are authority/standing data and `Membership` is orgs-owned, so commercial does
    * not read the table directly: an orgs-side change to how active membership or a limit downgrade
    * is interpreted would otherwise leave payment approval and project access disagreeing about the
    * same actor.
    *
-   * `null` is UNLIMITED — the state every existing membership is in — and a ceiling of zero is a
-   * real ceiling that refuses everything, because "may not approve" is a thing a practice may
-   * legitimately want to say about a role. A member with no ACTIVE standing has no ceiling to
-   * report and no authority either; the caller's own authorization check is what refuses them, and
-   * returning `null` here would read as unlimited, so an absent membership is reported as a zero
-   * ceiling instead. Locked with the decision, for the same reason `hasProjectRoleStanding` locks:
-   * a concurrent downgrade must wait rather than land after the limit is read.
+   * **Standing and ceiling are ONE answer, not two.** Codex round 2 found both halves of the split:
+   * an earlier spelling selected `approvalLimit` from the active membership and locked THAT, which
+   *
+   *   - never looked at the ROLE, so a request authorised as pmc at the guard could still approve
+   *     after a concurrent downgrade to engineer committed — the lock protected the number and not
+   *     the authority the number qualifies (P1); and
+   *   - treated an ABSENT membership as a zero ceiling, which refuses the ordinary org-owner/admin
+   *     fallback: that user switches into the project as pmc with no `Membership` row at all, holds
+   *     live authority everywhere else, and could approve nothing (P2).
+   *
+   * Both are the same mistake — a fragment of the standing predicate re-stated here instead of
+   * asked of the one place that states it. So the predicate is not re-stated: this asks
+   * `hasProjectRoleStanding` with `forUpdate`, which is the rule `ProjectAccessService.authorize`
+   * applies, org arm included, under the lock that makes a concurrent downgrade wait.
+   *
+   * The ceiling then comes from the ACTIVE membership row that decision already locked. When
+   * standing came from the ORG arm there is no membership row and therefore no project-recorded
+   * ceiling: that path is reported as unlimited, which is what it already is for every other
+   * authority on the project. `null` is UNLIMITED — the state every existing membership is in —
+   * and a ceiling of zero is a real ceiling that refuses everything, because "may not approve" is a
+   * thing a practice may legitimately want to say about a role.
    */
-  async approvalCeilingFor(
+  async approvalAuthorityFor(
     tx: OrgsParticipantClient | Prisma.TransactionClient,
     projectId: string,
     userId: string,
-  ): Promise<Prisma.Decimal | null> {
-    const rows = await (tx as Prisma.TransactionClient).$queryRaw<Array<{ approvalLimit: Prisma.Decimal | null }>>`
-      SELECT "approvalLimit" FROM "Membership"
-       WHERE "projectId" = ${projectId} AND "userId" = ${userId} AND "status" = 'active'
-       FOR UPDATE`;
-    // an absent ACTIVE membership has no authority at all; reporting `null` here would read as
-    // UNLIMITED, so it is reported as a zero ceiling and the caller's own check does the refusing
-    if (rows.length === 0) return new Prisma.Decimal(0);
-    return rows[0]!.approvalLimit ?? null;
+    roles: readonly string[],
+  ): Promise<{ standing: false } | { standing: true; ceiling: Prisma.Decimal | null }> {
+    // ONE statement of the rule, under the lock. `forUpdate` is what makes this an authority
+    // decision rather than a reading of one: the downgrade waits for this transaction.
+    const entitled = await this.hasProjectRoleStanding(tx, projectId, userId, roles, { forUpdate: true });
+    if (!entitled) return { standing: false };
+
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ approvalLimit: Prisma.Decimal | null }>>(
+      `SELECT "approvalLimit" FROM "Membership"
+        WHERE "projectId" = $1 AND "userId" = $2 AND "status" = 'active'`,
+      projectId, userId,
+    );
+    // no active membership, yet standing held — the org owner/admin arm. There is no project row
+    // to carry a ceiling, and inventing zero here is exactly the refusal P2 named.
+    if (rows.length === 0) return { standing: true, ceiling: null };
+    return { standing: true, ceiling: rows[0]!.approvalLimit ?? null };
   }
 
 }

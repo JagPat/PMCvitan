@@ -3552,10 +3552,15 @@ model SodGrant {
   grantedAt       DateTime @default(now())
   sourceCommandId String
 
-  /// SINGLE-USE. Both halves move together (CHECK) and the transition is one-way (trigger).
+  /// SINGLE-USE, and consumed by exactly ONE act of exactly one KIND. Both halves move together
+  /// and exactly one target is named (CHECK); the transition is one-way (trigger).
   consumedAt              DateTime?
   consumedBy              BillCertificate? @relation(fields: [projectId, consumedByCertificateId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   consumedByCertificateId String?
+  /// Task 6A — the payment half of §I. A grant issued for `certifier-may-not-approve` is spent by
+  /// the APPROVAL it excuses, never by a certificate.
+  consumedByApproval      PaymentApproval? @relation(fields: [projectId, consumedByApprovalId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  consumedByApprovalId    String?
 
   exceptions SodException[]
 
@@ -3687,6 +3692,9 @@ model PaymentApproval {
 
   payments      Payment[]
   sodExceptions SodException[]
+  /// the §I grants this approval CONSUMED — at most one, and the seal requires exactly one
+  /// whenever the approver is the actor who certified
+  consumedGrants SodGrant[]
 
   @@unique([projectId, id])
   /// the FK target proving a payment and an SoD exception belong to an approval OF THIS BILL

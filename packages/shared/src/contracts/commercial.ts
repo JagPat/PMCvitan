@@ -456,7 +456,24 @@ export interface VerificationDto {
   billStatus: VendorBillStatus;
 }
 
-/** §I — the approver's OWN act: permission for one otherwise-forbidden certification. */
+/**
+ * §I — the two segregation-of-duties rules, named ONCE.
+ *
+ * Both halves of §I are overridable by the same two-act mechanism (a grant the approver issues,
+ * consumed by the act it excuses), so the rule string is part of the shared contract rather than a
+ * constant each service spells for itself: a grant issued for one rule must never be spendable on
+ * the other, and that is only checkable if both sides read the same name.
+ */
+export const SOD_RULES = {
+  /** Task 5 — the actor who recorded the evidence under a claim may not certify it. */
+  evidenceRecorderMayNotCertify: 'evidence-recorder-may-not-certify',
+  /** Task 6A — the actor who certified a claim may not approve its payment. */
+  certifierMayNotApprove: 'certifier-may-not-approve',
+} as const;
+
+export type SodRule = (typeof SOD_RULES)[keyof typeof SOD_RULES];
+
+/** §I — the approver's OWN act: permission for one otherwise-forbidden certification or approval. */
 export interface SodGrantDto {
   id: string;
   billId: string;
@@ -470,6 +487,8 @@ export interface SodGrantDto {
   grantedAt: string;
   consumedAt: string | null;
   consumedByCertificateId: string | null;
+  /** Task 6A — the payment half. A grant is consumed by exactly one act, of exactly one kind. */
+  consumedByApprovalId: string | null;
 }
 
 /** §I — the attributable record that made an otherwise-forbidden act valid. */
@@ -598,6 +617,12 @@ export interface PaymentApprovalDto {
   /** Σ payments drawn against THIS approval — a FOLD, never a stored column */
   paid: string;
   payments: PaymentDto[];
+  /**
+   * §I — the override this approval rests on, when the approver is the actor who certified. Null
+   * on the ordinary two-person path. It is READABLE for the same reason the certificate's own
+   * exception is: an authority nobody can see is an authority nobody can review.
+   */
+  sodException: SodExceptionDto | null;
 }
 
 /** Money that actually left, against an approval that covered it. */

@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 6
-task_state: merged
+task_state: in_review
 work_item: phase-5-task-6
 reviewed_merge: 6ecf93a
-open_pr: 285
+open_pr: 286
 next_task: phase-5-task-7
 blocking_directive: none
 updated: 2026-08-05

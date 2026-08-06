@@ -2,9 +2,11 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { Prisma } from '@prisma/client';
 import {
   ROLE_POLICY,
+  SOD_RULES,
   type BillPaymentLedgerDto,
   type PaymentApprovalDto,
   type PaymentDto,
+  type SodExceptionDto,
   type VendorBillStatus,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
@@ -15,10 +17,31 @@ import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
+import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { ApprovePaymentInput, RecordPaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
+
+/** The rule THIS half of §I defines. Named once, in the shared contract, so a grant issued for the
+ *  certification rule can never be spent here. */
+const SOD_RULE = SOD_RULES.certifierMayNotApprove;
+
+/** The persisted shape each read maps from — declared once so the two read paths cannot drift. */
+interface PaymentRow {
+  id: string; approvalId: string; billId: string; amount: Prisma.Decimal;
+  method: string; reference: string | null; paidAt: Date; paidById: string;
+}
+interface SodExceptionRow {
+  rule: string; actorId: string; approverId: string; reason: string;
+  recordedAt: Date; grantId: string | null;
+}
+interface ApprovalRow {
+  id: string; billId: string; certificateId: string; amount: Prisma.Decimal;
+  approvedAt: Date; approvedById: string;
+  payments: PaymentRow[];
+  sodExceptions: SodExceptionRow[];
+}
 
 /**
  * Phase 5 Task 6A (§F/§G/§I) — PAYMENT AUTHORITY.
@@ -62,6 +85,10 @@ export class CommercialPaymentService {
     // downgrade is interpreted would leave payment approval and project access disagreeing about
     // the same actor. `commercial.workflowParticipants` already declares this edge.
     private readonly orgs: OrgsParticipant,
+    // §B — an approval MOVES §J `certified-payable`, so it is a headroom mover and must raise or
+    // clear the over-budget exception in its OWN transaction. Same evaluator every other mover
+    // uses; a second copy of the raise-or-clear rule is how the label drifts from what moved.
+    private readonly bills: CommercialBillService,
   ) {}
 
   private assertApprove(user: AuthUser): void {
@@ -118,13 +145,14 @@ export class CommercialPaymentService {
         // already keeps the measurer or acceptor away from certification.
         const certificate = await tx.billCertificate.findFirstOrThrow({
           where: { projectId, id: position.certificateId },
-          select: { certifiedById: true },
+          select: { certifiedById: true, versionId: true },
         });
-        if (certificate.certifiedById === actor.actorId) {
-          throw new ForbiddenException(
-            'The person who certified this claim may not also approve its payment — certification says what is owed and approval releases it, and one person doing both is the separation §I exists to keep. A different approver, or an attributable exception from an org admin, is required',
-          );
-        }
+        // …and when it IS the certifier, the override is CONSUMED, never asserted. Resolved before
+        // the row is written so a refusal costs nothing; the grant is spent afterwards, against the
+        // approval id it authorises.
+        const override = certificate.certifiedById === actor.actorId
+          ? await this.resolveSodGrant(tx, projectId, input.billId, certificate.versionId, actor.actorId)
+          : null;
 
         // §G BOUND 4, re-derived under the lock and stated as the REMAINING headroom, because a
         // refusal that only says "too much" leaves the practice guessing at the number.
@@ -137,10 +165,11 @@ export class CommercialPaymentService {
           );
         }
 
-        // §I — APPROVAL LIMITS, applied to the CUMULATIVE total rather than to this row. A per-row
-        // check lets a ₹50-limit approver authorise ₹100 as two ₹50 rows: each within limit, bound
-        // 4 satisfied, the ceiling defeated. Crossing it escalates and never silently succeeds.
-        await this.assertWithinLimit(tx, projectId, actor.actorId, approvedSoFar.add(amount));
+        // §I — STANDING and the APPROVAL LIMIT, one locked decision through the owner. The limit is
+        // applied to the CUMULATIVE total rather than to this row: a per-row check lets a ₹50-limit
+        // approver authorise ₹100 as two ₹50 rows, each within limit, bound 4 satisfied, the
+        // ceiling defeated. Crossing it escalates and never silently succeeds.
+        await this.assertApprovalAuthority(tx, projectId, actor.actorId, approvedSoFar.add(amount));
 
         const approval = await tx.paymentApproval.create({
           data: {
@@ -148,6 +177,35 @@ export class CommercialPaymentService {
             amount, approvedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
+
+        if (override) {
+          // the grant is spent with a CAS on the still-unconsumed row, so two concurrent approvals
+          // cannot both claim one authority — `updateMany` returning 0 is that race losing
+          const { count } = await tx.sodGrant.updateMany({
+            where: { id: override.grantId, projectId, consumedAt: null },
+            data: { consumedAt: new Date(), consumedByApprovalId: approval.id },
+          });
+          if (count === 0) {
+            throw new ConflictException('That authorisation was consumed concurrently — reload and retry');
+          }
+          await tx.sodException.create({
+            data: {
+              projectId, approvalId: approval.id, grantId: override.grantId, rule: SOD_RULE,
+              actorId: actor.actorId, approverId: override.approverId, reason: override.reason,
+              // the exception is produced by the SAME command as the act it excuses — the seal
+              // checks exactly this, because an override citing a different act is not this act's
+              sourceCommandId: ctx.commandId!,
+            },
+          });
+        }
+
+        // §B — an approval lowers §J `certified-payable`, so it can CLEAR an open over-budget
+        // exception on the heads this claim touches. Codex round 2 (P2): the fold was taught to
+        // subtract `APPROVED` and the write was not made a mover, so a head whose exposure this
+        // approval had already healed kept reporting a breach nobody could clear.
+        await this.bills.evaluateHeadsForBill(
+          tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId, 'payment_approval',
+        );
 
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.approve',
@@ -185,12 +243,25 @@ export class CommercialPaymentService {
         });
         if (!approval) throw new NotFoundException('Payment approval not found in this project');
 
+        // The BILL is what scopes both folds this command decides on, so it is locked before any of
+        // them is read. `PaymentApproval` is append-only and its `certificateId` is frozen, so
+        // resolving WHICH bill to lock above is safe; nothing decided is read before the lock.
+        await this.lockBill(tx, projectId, approval.billId);
+
         // The approval must still be LIVE authority. `APPROVED(bill)` counts only approvals on the
         // live certificate, so paying against one whose certificate has been superseded attaches
         // append-only cash evidence to an authority that no longer participates in the bound at
         // all: approve 40 on C1, supersede C1, certify C2 and approve 40 there, and the bill-level
         // headroom check alone would let the C1 approval pay. Money leaves against the authority
         // that covered it, or it does not leave.
+        //
+        // Codex round 2 (P1) — and it is read UNDER the bill lock, not before it. `supersededAt` is
+        // mutable: read ahead of the lock, this transaction can see `null`, a supersession can
+        // commit, and by the time the folds are taken the guard has already passed on a fact that
+        // is no longer true. A guard is only authoritative under the lock that serializes what it
+        // guards against. (`lockProjectReadiness` above happens to serialize supersession today,
+        // which is why no probe caught it — but a guard whose correctness rests on a coarser lock
+        // being taken somewhere else is not a guard, it is a coincidence.)
         const cert = await tx.billCertificate.findFirstOrThrow({
           where: { projectId, id: approval.certificateId },
           select: { supersededAt: true },
@@ -200,8 +271,6 @@ export class CommercialPaymentService {
             'That approval rests on a certification that has since been superseded, so it is no longer the authority this claim is paid against — approve against the certificate that stands, and pay against that approval',
           );
         }
-
-        await this.lockBill(tx, projectId, approval.billId);
 
         // §G BOUND 5, re-derived under the lock. The bound is bill-scoped — `PAID(bill)` ≤
         // `APPROVED(bill)` — so a second approval genuinely raises the ceiling, but the headroom is
@@ -253,19 +322,10 @@ export class CommercialPaymentService {
     const approvals = await this.prisma.paymentApproval.findMany({
       where: { projectId, billId },
       orderBy: { approvedAt: 'asc' },
-      include: { payments: { orderBy: { paidAt: 'asc' } } },
+      include: { payments: { orderBy: { paidAt: 'asc' } }, sodExceptions: true },
     });
 
-    const rows: PaymentApprovalDto[] = approvals.map((a) => ({
-      id: a.id,
-      billId: a.billId,
-      certificateId: a.certificateId,
-      amount: a.amount.toFixed(2),
-      approvedAt: a.approvedAt.toISOString(),
-      approvedById: a.approvedById,
-      paid: a.payments.reduce((t, p) => t.add(p.amount), ZERO).toFixed(2),
-      payments: a.payments.map((p) => this.toPaymentDto(p)),
-    }));
+    const rows: PaymentApprovalDto[] = approvals.map((a) => this.toApprovalDto(a));
 
     // The approved fold counts approvals against the LIVE certificate only — a superseded one is
     // retained history, and summing it would compare an overstated total against the bound.
@@ -316,21 +376,88 @@ export class CommercialPaymentService {
   }
 
   /**
-   * §I — approval limits, against the CUMULATIVE total. A membership with no ceiling recorded is
-   * unlimited, which is the existing behaviour for every project that has never set one; a ceiling
-   * of zero is a real ceiling and refuses everything, because "cannot approve" is a thing a
-   * practice may legitimately want to say about a role.
+   * §I — STANDING and the approval ceiling, as ONE locked decision asked of the owner.
+   *
+   * The `RolesFor` guard authorised the REQUEST; this authorises the WRITE, and the two are not the
+   * same moment. Codex round 2 (P1): an earlier spelling asked only for the ceiling, so a token
+   * that passed the guard as pmc could still append an approval after a concurrent downgrade to
+   * engineer had committed — the lock protected the number and not the authority the number
+   * qualifies. `approvalAuthorityFor` decides the same role/standing predicate project access uses,
+   * under that lock, and returns the ceiling only when the actor still holds it.
+   *
+   * A ceiling of `null` is unlimited — the state every existing membership is in, and the state of
+   * the org owner/admin arm, which has no project membership row to carry one. A ceiling of zero is
+   * a real ceiling and refuses everything, because "cannot approve" is a thing a practice may
+   * legitimately want to say about a role.
    */
-  private async assertWithinLimit(
+  private async assertApprovalAuthority(
     tx: Prisma.TransactionClient, projectId: string, actorId: string, cumulative: Prisma.Decimal,
   ): Promise<void> {
-    const limit = await this.orgs.approvalCeilingFor(tx, projectId, actorId);
+    const authority = await this.orgs.approvalAuthorityFor(
+      tx, projectId, actorId, ROLE_POLICY['commercial.approve-payment'],
+    );
+    if (!authority.standing) {
+      throw new ForbiddenException(
+        'You no longer hold the standing on this project that approving a payment requires — a role change committed while this request was in flight, and money does not leave on authority that has been withdrawn',
+      );
+    }
+    const limit = authority.ceiling;
     if (limit === null) return;
     if (cumulative.greaterThan(limit)) {
       throw new ForbiddenException(
         `This would take the approved total on this claim to ${cumulative.toFixed(2)}, above your approval ceiling of ${new Prisma.Decimal(limit).toFixed(2)} — the limit applies to the claim's cumulative approved total, not to one authorisation, so splitting it into smaller approvals does not clear it. It needs a higher-limit approver`,
       );
     }
+  }
+
+  /**
+   * §I — the OVERRIDE that lets the certifier approve, CONSUMED rather than asserted.
+   *
+   * The plan is explicit that silently banning the override is not an option: a two-person practice
+   * must still be able to operate. It is equally explicit that the override is only legitimate
+   * because it writes a sealed record — so this is the same two-act mechanism certification uses,
+   * against the same `SodGrant` table, selected on the PAYMENT rule so an authority issued for
+   * certification can never be spent here.
+   *
+   * The shape is deliberately the one Task 5's round 10 arrived at: candidates are FILTERED by
+   * standing rather than "pick one, then check it", because more than one live grant can legally
+   * exist (a downgraded approver's stale row beside a valid replacement) and picking arbitrarily
+   * refuses good work.
+   */
+  private async resolveSodGrant(
+    tx: Prisma.TransactionClient, projectId: string, billId: string, versionId: string, actorId: string,
+  ): Promise<{ grantId: string; approverId: string; reason: string }> {
+    const live = await tx.sodGrant.findMany({
+      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
+      select: { id: true, approverId: true, reason: true },
+      orderBy: { grantedAt: 'asc' },
+    });
+    for (const candidate of live) {
+      // standing is the ORGS module's question, asked under a lock because this IS an authority
+      // decision — a concurrent downgrade must not commit behind an approval it granted
+      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate: true })) {
+        return { grantId: candidate.id, approverId: candidate.approverId, reason: candidate.reason };
+      }
+    }
+    if (live.length > 0) {
+      throw new ForbiddenException(
+        'The authorisation to approve this claim was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again',
+      );
+    }
+    // version-pinned, exactly as certification's grant is: an amendment is a DIFFERENT claim, and
+    // permission to release money against the one the approver looked at must not carry over
+    const stale = await tx.sodGrant.count({
+      where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
+    });
+    if (stale > 0) {
+      throw new ConflictException(
+        'The authorisation to approve this claim was granted against an earlier claim version — the claim has been amended since, so it needs authorising again',
+      );
+    }
+    throw new ForbiddenException(
+      'The person who certified this claim may not also approve its payment — certification says what is owed and approval releases it, and one person doing both is the separation §I exists to keep. '
+      + 'A different approver, or a pmc with standing authorising it with `commercial.sod.grant` naming the `certifier-may-not-approve` rule, is required.',
+    );
   }
 
   private async lockBill(
@@ -344,10 +471,7 @@ export class CommercialPaymentService {
     return bill;
   }
 
-  private toPaymentDto(p: {
-    id: string; approvalId: string; billId: string; amount: Prisma.Decimal;
-    method: string; reference: string | null; paidAt: Date; paidById: string;
-  }): PaymentDto {
+  private toPaymentDto(p: PaymentRow): PaymentDto {
     return {
       id: p.id,
       approvalId: p.approvalId,
@@ -363,8 +487,15 @@ export class CommercialPaymentService {
   private async approvalById(projectId: string, id: string): Promise<PaymentApprovalDto> {
     const a = await this.prisma.paymentApproval.findFirstOrThrow({
       where: { projectId, id },
-      include: { payments: { orderBy: { paidAt: 'asc' } } },
+      include: { payments: { orderBy: { paidAt: 'asc' } }, sodExceptions: true },
     });
+    return this.toApprovalDto(a);
+  }
+
+  /** ONE mapping, so the ledger and the single-approval reload cannot report the same row two ways
+   *  — the §I override in particular, which is the field a reviewer looks for. */
+  private toApprovalDto(a: ApprovalRow): PaymentApprovalDto {
+    const sod = a.sodExceptions[0];
     return {
       id: a.id,
       billId: a.billId,
@@ -374,6 +505,14 @@ export class CommercialPaymentService {
       approvedById: a.approvedById,
       paid: a.payments.reduce((t, p) => t.add(p.amount), ZERO).toFixed(2),
       payments: a.payments.map((p) => this.toPaymentDto(p)),
+      sodException: sod ? this.toSodExceptionDto(sod) : null,
+    };
+  }
+
+  private toSodExceptionDto(s: SodExceptionRow): SodExceptionDto {
+    return {
+      rule: s.rule, actorId: s.actorId, approverId: s.approverId, reason: s.reason,
+      recordedAt: s.recordedAt.toISOString(), grantId: s.grantId,
     };
   }
 
@@ -405,38 +544,5 @@ export class CommercialPaymentService {
     return amount;
   }
 
-
-  /**
-   * §J — the APPROVED term, per PO line, so `certified-payable` can be what the shared contract
-   * says it is: `NET_PAYABLE − APPROVED`.
-   *
-   * Codex round 1 (P2): without this a fully approved ₹100 bill still reported ₹100 awaiting
-   * approval, because the budget fold subtracted only withholdings. Money that has been authorised
-   * has left the "awaiting approval" bucket whether or not it has been paid, and a forecast that
-   * says otherwise shows a practice money it has already committed.
-   *
-   * Attributed by the SAME rule as the withheld term and through the SAME function — an approval is
-   * bill-scoped while the buckets are per cost head, and two copies of that attribution would
-   * disagree the first time either changed. Live certificates only, for the same reason: a
-   * superseded certificate's approvals are not in `APPROVED(bill)` either.
-   */
-  async approvedAmountFor(
-    tx: Prisma.TransactionClient,
-    projectId: string,
-    kind: 'material' | 'labour',
-    poLineIds: readonly string[],
-  ): Promise<Map<string, Prisma.Decimal>> {
-    return this.deductions.attributeCertificateScopedTotal(
-      tx, projectId, kind, poLineIds,
-      async (certificateIds) => {
-        const rows = await tx.paymentApproval.groupBy({
-          by: ['certificateId'],
-          where: { projectId, certificateId: { in: certificateIds } },
-          _sum: { amount: true },
-        });
-        return new Map(rows.map((r) => [r.certificateId, r._sum.amount ?? ZERO]));
-      },
-    );
-  }
 
 }

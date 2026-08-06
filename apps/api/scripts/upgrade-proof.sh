@@ -2457,6 +2457,19 @@ assert_rejects "commercial T6A: DELETING an approval (an authority that can be r
 assert_rejects "commercial T6A: an SoD exception naming BOTH a certificate and an approval" \
   "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"approvalId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-X','p1','$UP5C_LIVE','UP6A-A-OK','certifier-may-not-approve','USER-1','USER-2','both halves','UP6A-CMD-OK')"
 
+# …and a GRANT is spent by one act of one KIND, for the same reason: naming both would make
+# "which act exercised this authority?" unanswerable (Codex round 2, the widened CHECK)
+mint5c UP6A-CMD-GRANT commercial.sod.grant UP6A-G-BOTH
+assert_rejects "commercial T6A: an SoD grant consumed by BOTH a certificate and an approval" \
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\",\"consumedAt\",\"consumedByCertificateId\",\"consumedByApprovalId\") VALUES('UP6A-G-BOTH','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','both kinds','UP6A-CMD-GRANT',now(),'$UP5C_LIVE','UP6A-A-OK')"
+
+# §I is a BICONDITIONAL. `UP6A-A-OK` was approved by USER-1 while USER-2 certified — the rule
+# permits that act outright, so an override attached to it records an authorisation nobody needed.
+mint5c UP6A-CMD-NOCONF commercial.payment.approve UP6A-X-NOCONF
+assert_rejects "commercial T6A: an SoD exception on an approval the rule would never have refused" \
+  "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"approvalId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-X-NOCONF','p1','UP6A-A-OK','certifier-may-not-approve','USER-1','USER-2','no conflict here','UP6A-CMD-NOCONF')" \
+  'the rule permits that act outright'
+
 
 $PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected' WHERE \"id\"='$UP5C_LIVE'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5C R5: the SAME correction after an attributable release is ACCEPTED (the seal is precise, not merely strict)" \
@@ -2464,6 +2477,21 @@ $PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(
 assert "commercial T5C R5: the ledger survives the correction as append-only HISTORY — nothing was deleted to make it legal" \
   "SELECT (SELECT COUNT(*) FROM \"BillDeduction\" WHERE \"id\"='UP5C-D2')::text || '/' || (SELECT COUNT(*) FROM \"BillDeductionRelease\" WHERE \"deductionId\"='UP5C-D2')::text;" \
   "1/2"
+
+# ── Task 6A, Codex round 2 (P1) — money may not be nested under authority that no longer stands ──
+#
+# The certificate above is now SUPERSEDED, which is exactly the state the bill-scoped bound cannot
+# see: `UP6A-A-OK` drops out of `APPROVED` and any payment against it would stay in `PAID`, so a
+# fold-only seal passes whenever some other live approval happens to cover the total. The question
+# is asked at the ROW, on both tables — the finding named the payment; its sibling is the approval.
+mint5c UP6A-CMD-STALEPAY commercial.payment.record UP6A-P-STALE
+assert_rejects "commercial T6A R2: paying against an approval whose certification was superseded" \
+  "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6A-P-STALE','p1','UP6A-A-OK','$UP5C_BILL',1.00,'neft','USER-1','UP6A-CMD-STALEPAY')" \
+  'superseded'
+mint5c UP6A-CMD-GHOST commercial.payment.approve UP6A-A-GHOST
+assert_rejects "commercial T6A R2: approving against a certificate that is retained history" \
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-GHOST','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-GHOST')" \
+  'superseded'
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

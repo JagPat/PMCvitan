@@ -451,10 +451,13 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
       await mint('commercial.payment.approve', forged, f.memberUser.id),
     )).rejects.toThrow(/who certified this claim/u);
 
-    // …and the ATTRIBUTABLE override makes it valid, because §I requires the exception to exist
+    // …and a FORGED override does not make it valid. Codex round 2 (P1): the earlier seal tested
+    // `EXISTS` on an exception naming this approval, so a bypass writer could insert the forbidden
+    // approval plus an exception naming any colleague as `approverId` and reusing the approval's
+    // own command id. A different id is not a stronger authority; it is a name typed into a field.
     const excused = `${cert.id}-excused`;
     const cmd = await mint('commercial.payment.approve', excused, f.memberUser.id);
-    await t.prisma.$transaction(async (tx) => {
+    await expect(t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
         `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
          VALUES($1,$2,$3,$4,10.00,$5,$6)`,
@@ -465,8 +468,242 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
          VALUES($1,$2,$3,'certifier-may-not-approve',$4,$5,'two-person practice',$6)`,
         `${excused}-x`, projectId, excused, f.memberUser.id, f.ownerUser.id, cmd,
       );
+    })).rejects.toThrow(/who certified this claim|does not rest on a `certifier-may-not-approve` grant/u);
+    expect(await t.prisma.paymentApproval.count({ where: { projectId, id: excused } })).toBe(0);
+  });
+
+  it('PROBE 15 (§I): the override is an act the approver PERFORMED, and the certifier may then approve', async () => {
+    // Codex round 2 (P1), the service half. §I is explicit that silently banning the override is
+    // not an option — a two-person practice must still be able to operate — and equally explicit
+    // that it is legitimate only because a stronger authority ACTED. So it is the same two-act
+    // mechanism certification uses: the approver issues a grant with their own authenticated
+    // command, and the act consumes it.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+
+    // with no grant, the certifier is refused and told exactly what would authorise it
+    await expect(payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId)))
+      .rejects.toThrow(/`commercial.sod.grant` naming the `certifier-may-not-approve` rule/u);
+
+    // a grant for the CERTIFICATION rule does not authorise a payment approval — §I has two halves
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'wrong half', rule: 'evidence-recorder-may-not-certify',
+    }, asUser(projectId, other));
+    await expect(payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId)))
+      .rejects.toThrow(/may not also approve its payment/u);
+
+    // …and the payment-side grant does, with the override readable on the approval it excused
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const approval = await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect(approval.sodException).not.toBeNull();
+    expect(approval.sodException!.rule).toBe('certifier-may-not-approve');
+    expect(approval.sodException!.approverId).toBe(other);
+    // the REASON is the approver's, not the excused actor's — the read reports it as the
+    // authorisation, so leaving it free would let the person being excused write it
+    expect(approval.sodException!.reason).toBe('only pmc on site this week');
+
+    // the grant is SINGLE-USE: a second approval by the certifier needs a second authorisation
+    const grant = await t.prisma.sodGrant.findFirstOrThrow({
+      where: { projectId, rule: 'certifier-may-not-approve', consumedAt: { not: null } },
     });
-    expect(await t.prisma.paymentApproval.count({ where: { projectId, id: excused } })).toBe(1);
+    expect(grant.consumedByApprovalId).toBe(approval.id);
+    expect(grant.consumedByCertificateId).toBeNull();
+    await expect(payments.approve(projectId, { billId, amount: '5.00' }, pmc(projectId)))
+      .rejects.toThrow(/may not also approve its payment/u);
+  });
+
+  it('PROBE 16 (§I): the ceiling read DECIDES standing, so a downgrade mid-flight refuses', async () => {
+    // Codex round 2 (P1). An earlier spelling read `approvalLimit` from the active membership and
+    // locked THAT — never looking at the role. A request authorised as pmc at the guard could still
+    // append an approval after a concurrent downgrade to engineer committed: the lock protected the
+    // number and not the authority the number qualifies.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    await secondPmc(projectId);
+
+    await t.prisma.membership.updateMany({
+      where: { projectId, userId: f.ownerUser.id }, data: { role: 'engineer' },
+    });
+    await expect(payments.approve(projectId, { billId, amount: '10.00' }, approver(projectId)))
+      .rejects.toThrow(/no longer hold the standing/u);
+
+    // …and restoring it approves, so the guard is about live standing and not about refusing
+    await t.prisma.membership.updateMany({
+      where: { projectId, userId: f.ownerUser.id }, data: { role: 'pmc' },
+    });
+    expect((await payments.approve(projectId, { billId, amount: '10.00' }, approver(projectId))).amount).toBe('10.00');
+  });
+
+  it('PROBE 17 (§I): an org owner with no project membership may approve; a zero ceiling refuses', async () => {
+    // Codex round 2 (P2). Treating an ABSENT membership as a zero ceiling refused the ordinary
+    // org-owner/admin fallback: that user switches into the project as pmc with no `Membership` row
+    // at all, holds live authority everywhere else, and could approve nothing.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    // the fixture's evidence recorder is the org owner, so the membership is removed AFTER the
+    // claim is built: what is under test is the arm that applies when no active membership exists
+    await t.prisma.membership.deleteMany({ where: { projectId, userId: f.ownerUser.id } });
+    expect(await t.prisma.membership.count({ where: { projectId, userId: f.ownerUser.id } })).toBe(0);
+
+    const approval = await payments.approve(projectId, { billId, amount: '25.00' }, approver(projectId));
+    expect(approval.amount).toBe('25.00');
+
+    // …and a ceiling of ZERO on a real membership is a real ceiling: "may not approve" is a thing a
+    // practice may legitimately want to say about a role
+    await secondPmc(projectId);
+    await t.prisma.membership.updateMany({
+      where: { projectId, userId: f.ownerUser.id }, data: { approvalLimit: new Prisma.Decimal('0.00') },
+    });
+    await expect(payments.approve(projectId, { billId, amount: '1.00' }, approver(projectId)))
+      .rejects.toThrow(/above your approval ceiling of 0\.00/u);
+  });
+
+  it('PROBE 18 (§G): the liveness guard runs UNDER the bill lock, and PG refuses stale authority', async () => {
+    // Codex round 2 (P1), both halves of one defect. The service checked the certificate BEFORE
+    // taking the bill lock, so a supersession committing in between passed a guard on a fact that
+    // was no longer true; and the PostgreSQL bound is bill-scoped, so it admits a payment on a
+    // stale approval whenever another live approval happens to cover the total.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const stale = await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+
+    // a second session HOLDS the bill row and supersedes the certificate without committing
+    const other = new PrismaClient();
+    try {
+      let released!: () => void;
+      let ready!: () => void;
+      const holding = new Promise<void>((resolve) => { released = resolve; });
+      const staged = new Promise<void>((resolve) => { ready = resolve; });
+      const held = other.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT "id" FROM "VendorBill" WHERE "projectId"=$1 AND "id"=$2 FOR UPDATE`, projectId, billId);
+        await tx.$executeRawUnsafe(`UPDATE "BillCertificate" SET "supersededAt"=now(), "supersedeReason"='raced', "supersededById"=$3 WHERE "projectId"=$1 AND "billId"=$2 AND "supersededAt" IS NULL`, projectId, billId, f.memberUser.id);
+        // the bill status is the certificate's projection and the two move together (5B's seal),
+        // so the holder performs the WHOLE supersession — this probe is about ordering, not about
+        // finding a half-supersession PostgreSQL already refuses
+        await tx.$executeRawUnsafe(`UPDATE "VendorBill" SET "status"='verified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`, projectId, billId);
+        ready();
+        await holding;
+      }, { timeout: 30_000 });
+      // the conflicting session only starts once the holder DEMONSTRABLY holds the row — the wait
+      // this probe is about is not observable if the race is started before the lock is taken
+      await staged;
+
+      // the payment now blocks — CONDITION-based, never a fixed sleep
+      const paying = payments
+        .record(projectId, { approvalId: stale.id, amount: '40.00', method: 'neft' }, pmc(projectId))
+        .then(() => 'committed' as const, (e: Error) => e);
+      let blocked = false;
+      for (let i = 0; i < 400 && !blocked; i++) {
+        const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT COUNT(*) AS n FROM pg_stat_activity
+            WHERE datname=current_database() AND cardinality(pg_blocking_pids(pid)) > 0`,
+        );
+        blocked = Number(rows[0]!.n) > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(blocked, 'the payment must WAIT for the bill lock — a guard read ahead of the lock decides on a fact that can still change').toBe(true);
+
+      released();
+      await held;
+      const outcome = await paying;
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/has since been superseded/u);
+    } finally {
+      await other.$disconnect();
+    }
+    expect(await t.prisma.payment.count({ where: { projectId, billId } })).toBe(0);
+  });
+
+  it('PROBE 19 (§G): PostgreSQL refuses money nested under authority that no longer stands', async () => {
+    // Codex round 2 (P1). Approve 40 on C1, supersede C1, certify C2 and approve 40 there, then
+    // insert a Payment against the OLD approval: the bill-scoped fold counts C2 on the approved
+    // side and the stale payment on the paid side, so `40 <= 40` passes. The row-level question the
+    // fold cannot ask is asked at the row.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const stale = await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+    await certification.supersede(projectId, { billId, reason: 'corrected' }, pmc(projectId));
+    const live = await certification.certify(projectId, { billId }, pmc(projectId));
+    const fresh = await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+
+    const mint = async (type: string, ref: string): Promise<string> => t.prisma.$transaction(async (tx) => {
+      const c = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId: f.ownerUser.id,
+          commandType: type, idempotencyKey: `t6a-live-${seq++}`, requestHash: 'x', status: 'reserved',
+        },
+        select: { id: true },
+      });
+      await tx.commandExecution.update({ where: { id: c.id }, data: { status: 'succeeded', resultRef: ref, completedAt: new Date() } });
+      return c.id;
+    });
+
+    const staleId = `${stale.id}-cash`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Payment"("id","projectId","approvalId","billId","amount","method","paidById","sourceCommandId")
+       VALUES($1,$2,$3,$4,40.00,'neft',$5,$6)`,
+      staleId, projectId, stale.id, billId, f.ownerUser.id, await mint('commercial.payment.record', staleId),
+    )).rejects.toThrow(/superseded/u);
+
+    // …and the SIBLING the finding did not name: an approval on a superseded certificate passes
+    // every fold by being invisible to all of them, and is still a false authority in an
+    // append-only register
+    const ghost = `${stale.id}-ghost`;
+    const dead = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: { not: null } } });
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
+       VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+      ghost, projectId, dead.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', ghost),
+    )).rejects.toThrow(/superseded/u);
+
+    // …and the LIVE authority pays, so the seals are precise rather than merely strict
+    await payments.record(projectId, { approvalId: fresh.id, amount: '40.00', method: 'neft' }, pmc(projectId));
+    expect(live.id).not.toBe(dead.id);
+    expect((await payments.ledger(projectId, billId, pmc(projectId))).paid).toBe('40.00');
+  });
+
+  it('PROBE 20 (§B/§J): approving is a headroom MOVER, so it clears the exception it healed', async () => {
+    // Codex round 2 (P2). §J defines `certified-payable` as `NET_PAYABLE − APPROVED`, and this task
+    // taught the fold that subtraction without making the write a mover — so an approval that
+    // healed a head's exposure left the old exception open and the budget went on reporting a
+    // breach nobody could clear.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '50.00', reason: 'thin plan' }, pmc(projectId));
+    const billId = await certifiedClaim(projectId);
+
+    const breached = await positionOf(projectId);
+    expect(breached.certifiedPayable).toBe('100.00');
+    expect(breached.exception, 'a 100 payable against a 50 budget is a breach').not.toBeNull();
+
+    // approving 60 leaves 40 payable against a 50 budget — healthy
+    await payments.approve(projectId, { billId, amount: '60.00' }, approver(projectId));
+    const healed = await positionOf(projectId);
+    expect(healed.certifiedPayable).toBe('40.00');
+    expect(healed.exception, 'the approval healed the head and must have cleared its exception in the same transaction').toBeNull();
+
+    // the register keeps the history — the row is CLEARED, never deleted
+    const closed = await t.prisma.budgetException.findFirstOrThrow({
+      where: { projectId, costHeadCode: 'CIVIL' }, orderBy: { raisedAt: 'desc' },
+    });
+    expect(closed.clearedAt).not.toBeNull();
+
+    // …and `payment_approval` is a real label the CHECK admits, not a name only TypeScript knows.
+    // An approval can only ever LOWER exposure, so like `measurement` it is wired and labelled
+    // rather than demonstrated by a raise — the closure's rule is mechanical, and carving out an
+    // exception on the strength of my own arithmetic is what went wrong twice in Task 2.
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BudgetException"("id","projectId","costHeadCode","headroom","budget","exposure","raisedBy","raisedById")
+       VALUES($1,$2,'MEP',-1.00,10.00,11.00,'payment_approval',$3)`,
+      `${projectId}-label`, projectId, f.memberUser.id,
+    );
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BudgetException"("id","projectId","costHeadCode","headroom","budget","exposure","raisedBy","raisedById")
+       VALUES($1,$2,'MEP',-1.00,10.00,11.00,'not-a-mover',$3)`,
+      `${projectId}-bad`, projectId, f.memberUser.id,
+    )).rejects.toThrow();
   });
 
   it('PROBE 11 (§G bound 5): superseding a certificate cannot strand a payment above its authority', async () => {

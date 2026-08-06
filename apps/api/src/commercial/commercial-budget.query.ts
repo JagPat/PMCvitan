@@ -6,7 +6,7 @@ import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialBillQuery } from './commercial-bill.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
-import { CommercialPaymentService } from './commercial-payment.service';
+import { CommercialPaymentQuery } from './commercial-payment.query';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -98,7 +98,7 @@ export class CommercialBudgetQuery {
     private readonly deductions: CommercialDeductionQuery,
     // §J — the APPROVED term of `certified-payable`. Same module, and the attribution walk is
     // shared with the withheld term rather than copied.
-    private readonly payments: CommercialPaymentService,
+    private readonly payments: CommercialPaymentQuery,
   ) {}
 
   /**
