@@ -748,20 +748,20 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
   });
 
-  it('every seal AUTHORITY_GUARDS names exists in the migrations', () => {
-    const dir = join(SRC, '..', 'prisma', 'migrations');
-    const sql = readdirSync(dir)
-      .filter((d) => d.startsWith('2027'))
-      .map((d) => {
-        try { return readFileSync(join(dir, d, 'migration.sql'), 'utf8'); } catch { return ''; }
-      })
-      .join('\n');
-    expect(sql.length, 'no Phase-5 migrations read — the pin is not actually reading the schema').toBeGreaterThan(1000);
+  it('every seal AUTHORITY_GUARDS names is still LIVE in the migrations', () => {
+    // Task 6B, Codex round 1: this asked `sql.includes(seal)`, which cannot tell "created" from
+    // "created and later dropped" — the same stream-vs-set defect the reviewer named on CLOSURE 10.
+    // It is fixed HERE too rather than only where the finding pointed, because that is the root
+    // this file exists to close: the fix belongs to the set the member came from.
+    expect(
+      orderedMigrationSql().length,
+      'no migrations read — the pin is not actually reading the schema',
+    ).toBeGreaterThan(1000);
     for (const row of AUTHORITY_GUARDS) {
       if (row.seal === null) continue;
       expect(
-        sql.includes(row.seal),
-        `AUTHORITY_GUARDS names ${row.seal} as the seal for "${row.match}", and no migration defines it — a named seal that does not exist is worse than an admitted gap`,
+        isLiveObject(row.seal),
+        `AUTHORITY_GUARDS names ${row.seal} as the seal for "${row.match}", and no migration leaves it live — a named seal that never existed, or that a later migration dropped, is worse than an admitted gap`,
       ).toBe(true);
     }
   });
@@ -800,7 +800,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    * as covered would be exactly the overclaim this root is made of.
    */
   const MIGRATION_DIR = join(SRC, '..', 'prisma', 'migrations');
-  const orderedMigrationSql = (): string[] =>
+  const orderedMigrationSql = (): string =>
     readdirSync(MIGRATION_DIR)
       .filter((d) => /^\d{14}_/u.test(d))
       .sort()
@@ -810,26 +810,115 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         } catch {
           return '';
         }
-      });
+      })
+      .join('\n');
 
-  it('the raisedBy label set is identical in PostgreSQL and the shared contract', () => {
-    // derived from the LAST definition, because each migration drops and re-adds the constraint and
-    // it is the final one that is live — reading any earlier one would pin a set nothing enforces
-    const defs = orderedMigrationSql().flatMap((sql) => [
-      ...sql.matchAll(/ADD CONSTRAINT "BudgetException_raisedBy_check"\s*CHECK \("raisedBy" IN \(([^)]*)\)\)/gu),
-    ].map((m) => m[1]!));
-    expect(defs.length, 'no BudgetException_raisedBy_check definition found — the pin is not reading the schema').toBeGreaterThan(0);
-    const admitted = [...defs[defs.length - 1]!.matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]!).sort();
+  /**
+   * MIGRATIONS ARE A STREAM, NOT A SET — and the first draft of this closure read them as a set.
+   *
+   * It took the LAST `ADD CONSTRAINT` in the concatenated text and called it live, so a later
+   * migration that dropped a constraint (or dropped it and forgot to re-add it) would leave the pin
+   * reporting a guarantee PostgreSQL no longer makes. Codex found that on the closure itself, which
+   * is root A landing on the very test written to close root A.
+   *
+   * Replaying the drop/add stream in order is the fix, and — the actual lesson — it is used by
+   * EVERY reader below rather than only by the constraint the finding named.
+   */
+  const liveCheckBody = (constraint: string): string | null => {
+    const stream = new RegExp(
+      `DROP\\s+CONSTRAINT\\s+(?:IF\\s+EXISTS\\s+)?"${constraint}"`
+        + `|ADD\\s+CONSTRAINT\\s+"${constraint}"\\s*CHECK\\s*\\(([\\s\\S]*?)\\);`,
+      'gu',
+    );
+    let live: string | null = null;
+    for (const op of orderedMigrationSql().matchAll(stream)) live = op[1] ?? null;
+    return live;
+  };
+
+  /**
+   * …and the same stream discipline for whether a named object still EXISTS. A seal a later
+   * migration dropped is not a seal, and `sql.includes(name)` cannot tell the difference between
+   * "created" and "created then dropped".
+   */
+  const isLiveObject = (name: string): boolean => {
+    const stream = new RegExp(
+      `(DROP)\\s+(?:CONSTRAINT|TRIGGER|FUNCTION)\\s+(?:IF\\s+EXISTS\\s+)?"?${name}"?`
+        + `|(?:ADD\\s+CONSTRAINT\\s+"${name}"`
+        + `|CREATE\\s+(?:CONSTRAINT\\s+)?TRIGGER\\s+"${name}"`
+        + `|CREATE\\s+OR\\s+REPLACE\\s+FUNCTION\\s+${name}\\s*\\()`,
+      'gu',
+    );
+    let live = false;
+    for (const op of orderedMigrationSql().matchAll(stream)) live = op[1] === undefined;
+    return live;
+  };
+
+  /**
+   * The FUNCTIONS a live trigger actually attaches to `table`.
+   *
+   * The first draft asked only whether some `CREATE OR REPLACE FUNCTION` chunk containing
+   * `RAISE EXCEPTION` also mentioned the column — so an unattached helper, or text that merely
+   * happened to sit in the same chunk, satisfied it. A function that refuses nothing because no
+   * trigger runs it is not a guard, and dropping the `CREATE CONSTRAINT TRIGGER ... ON "SodGrant"`
+   * attachment would have left the pin green.
+   */
+  const liveTriggerFunctionsOn = (table: string): string[] => {
+    const stream = new RegExp(
+      `DROP\\s+TRIGGER\\s+(?:IF\\s+EXISTS\\s+)?"(\\w+)"\\s+ON\\s+"${table}"`
+        + `|CREATE\\s+(?:CONSTRAINT\\s+)?TRIGGER\\s+"(\\w+)"[^;]*?\\sON\\s+"${table}"[^;]*?`
+        + `EXECUTE\\s+(?:FUNCTION|PROCEDURE)\\s+(\\w+)\\s*\\(`,
+      'gu',
+    );
+    const attached = new Map<string, string>();
+    for (const op of orderedMigrationSql().matchAll(stream)) {
+      if (op[1] !== undefined) attached.delete(op[1]);
+      else if (op[2] !== undefined && op[3] !== undefined) attached.set(op[2], op[3]);
+    }
+    return [...new Set(attached.values())];
+  };
+
+  const functionBody = (fn: string): string => {
+    const bodies = [
+      ...orderedMigrationSql().matchAll(
+        new RegExp(`CREATE\\s+OR\\s+REPLACE\\s+FUNCTION\\s+${fn}\\s*\\(([\\s\\S]*?)\\$\\$\\s+LANGUAGE`, 'gu'),
+      ),
+    ];
+    return bodies.length ? bodies[bodies.length - 1]![1]! : '';
+  };
+
+  it('the raisedBy label set is identical everywhere it is written down', () => {
+    const admittedBody = liveCheckBody('BudgetException_raisedBy_check');
+    expect(
+      admittedBody,
+      'no LIVE BudgetException_raisedBy_check — the stream ends on a DROP, so nothing constrains the column and every set below would be compared against a rule PostgreSQL is not applying',
+    ).not.toBeNull();
+    const admitted = [...admittedBody!.matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]!).sort();
     expect(admitted.length, 'the live CHECK admits nothing — the pin parsed an empty set').toBeGreaterThan(5);
 
     const contract = readFileSync(join(SRC, '..', '..', '..', 'packages', 'shared', 'src', 'contracts', 'commercial.ts'), 'utf8');
-    const union = /\n\s*raisedBy:\s*([^;]+);/u.exec(contract);
-    expect(union, 'BudgetExceptionDto.raisedBy not found in the shared contract').not.toBeNull();
-    const declared = [...union![1]!.matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]!).sort();
+    const dtoUnion = /\n\s*raisedBy:\s*([^;]+);/u.exec(contract);
+    expect(dtoUnion, 'BudgetExceptionDto.raisedBy not found in the shared contract').not.toBeNull();
+    const declared = [...dtoUnion![1]!.matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]!).sort();
+
+    // The THIRD enumeration, and the one the first draft of this closure missed — which is root A
+    // again, inside the closure for root A: the fix landed on the pair the finding named (CHECK vs
+    // DTO) and the sibling survived. `HeadroomMover` is the WRITER's set. A mover added there
+    // without widening the CHECK type-checks cleanly and fails at runtime; a label the CHECK and
+    // the DTO both advertise with no writer that can produce it is a promise nothing keeps.
+    const service = readFileSync(join(HERE, 'commercial-budget.service.ts'), 'utf8');
+    const writerUnion = /export type HeadroomMover =([\s\S]*?);/u.exec(service);
+    expect(writerUnion, 'HeadroomMover not found in commercial-budget.service.ts').not.toBeNull();
+    const writes = [
+      ...writerUnion![1]!.replace(/\/\/.*$/gmu, '').matchAll(/'([a-z_]+)'/gu),
+    ].map((m) => m[1]!).sort();
 
     expect(
       declared,
-      'the `raisedBy` labels PostgreSQL admits and the labels the shared DTO declares are different sets. Whichever side you added to, add to the other: a label only the CHECK knows is one the server can return and every client believes impossible; a label only the union knows is one no write can ever produce',
+      'the `raisedBy` labels PostgreSQL admits and the labels the shared DTO declares are different sets. Whichever side you added to, add to the other: a label only the CHECK knows is one the server can return and every client is told is impossible; a label only the DTO knows is one no write can ever produce',
+    ).toEqual(admitted);
+    expect(
+      writes,
+      'the `raisedBy` labels PostgreSQL admits and the movers `HeadroomMover` can write are different sets. A mover the type allows and the CHECK refuses fails at runtime with a green build; a label the CHECK allows and no mover writes is unreachable',
     ).toEqual(admitted);
   });
 
@@ -844,31 +933,38 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       'fewer than two consumption targets found — this pin exists because the family GREW, so parsing one member means the parse is wrong',
     ).toBeGreaterThan(1);
 
-    const sql = orderedMigrationSql().join('\n');
-
-    // (i) the XOR check — last definition wins — must name every member, or a new target can be
-    // stamped alongside an existing one with nothing to refuse the pair
-    const checks = [...sql.matchAll(/ADD CONSTRAINT "SodGrant_consumed_together"\s*CHECK \(([\s\S]*?)\);/gu)].map((m) => m[1]!);
-    expect(checks.length, 'no SodGrant_consumed_together definition found — the pin is not reading the schema').toBeGreaterThan(0);
-    const live = checks[checks.length - 1]!;
+    // (i) the LIVE XOR check must name every member, or a new target can be stamped alongside an
+    // existing one with nothing to refuse the pair
+    const xor = liveCheckBody('SodGrant_consumed_together');
+    expect(
+      xor,
+      'no LIVE SodGrant_consumed_together — the stream ends on a DROP, so the grant is not single-use at PostgreSQL at all and naming targets is beside the point',
+    ).not.toBeNull();
     for (const column of family) {
       expect(
-        live.includes(`"${column}"`),
+        xor!.includes(`"${column}"`),
         `${column} is a consumption target and the live SodGrant_consumed_together CHECK does not mention it — the grant is single-use only for the targets the CHECK counts`,
       ).toBe(true);
     }
 
-    // (ii) …and each member must be reachable by a trigger that can actually REFUSE, which is the
-    // half `consumedByApprovalId` skipped: it was added to the CHECK and to no validation clause
-    const refusingFunctions = sql
-      .split(/CREATE OR REPLACE FUNCTION/u)
-      .slice(1)
-      .filter((body) => body.includes('RAISE EXCEPTION'));
-    expect(refusingFunctions.length, 'no refusing trigger functions parsed — the pin is not reading the migrations').toBeGreaterThan(0);
+    // (ii) …and each member must be validated by a function an ATTACHED trigger actually runs. The
+    // first draft accepted any function chunk that mentioned the column, so an unattached helper —
+    // or a dropped trigger attachment — satisfied it. That is the same defect one level down as the
+    // one `consumedByApprovalId` had: present in the text, refusing nothing.
+    const attached = liveTriggerFunctionsOn('SodGrant').map((fn) => ({ fn, body: functionBody(fn) }));
+    expect(
+      attached.length,
+      'no live trigger is attached to SodGrant — the pin is not reading the migrations, or every attachment was dropped',
+    ).toBeGreaterThan(0);
+    const refusing = attached.filter((t) => t.body.includes('RAISE EXCEPTION'));
+    expect(
+      refusing.length,
+      'no trigger attached to SodGrant can RAISE — an attachment that cannot refuse is not a guard',
+    ).toBeGreaterThan(0);
     for (const column of family) {
       expect(
-        refusingFunctions.some((body) => body.includes(`"${column}"`)),
-        `${column} is a consumption target that no trigger function validates — a grant can be stamped consumed by an act that carries no matching override, and an append-only register has no correcting row`,
+        refusing.some((t) => t.body.includes(`"${column}"`)),
+        `${column} is a consumption target that no trigger ATTACHED to SodGrant validates — a grant can be stamped consumed by an act that carries no matching override, and an append-only register has no correcting row`,
       ).toBe(true);
     }
   });
