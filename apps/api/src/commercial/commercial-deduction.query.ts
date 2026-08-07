@@ -248,7 +248,15 @@ export class CommercialDeductionQuery {
   }
 
   /**
-   * `PAID(bill)` (§0) — Σ payments MINUS Σ payment reversals.
+   * `PAID(bill)` AT THIS TREE — Σ payments. §0 defines the fold as Σ payments MINUS Σ payment
+   * REVERSALS, and **the reversal term arrives in 6B-ii, with the table it reads.**
+   *
+   * An earlier revision of this comment claimed the subtraction was already written here "at zero
+   * rows". It was not, and could not be: 6B-ii owns `PaymentReversal`, so the term would have named
+   * schema that does not exist. Stating an intent the SQL does not carry is worse than stating the
+   * gap — a reader checking whether `PAID` can fall would have been told yes by prose and no by the
+   * query. So this says plainly what is true here, and 6B-ii widens the fold together with its own
+   * §F probes for a falling `PAID`.
    *
    * **Bill-scoped, NOT live-certificate scoped, and the asymmetry with `approvedFor` is the point.**
    * An approval is an AUTHORISATION of a particular certified amount, so it dies with the
@@ -256,10 +264,6 @@ export class CommercialDeductionQuery {
    * supersession never appends a payment reversal, because a fold that dropped when a certificate
    * was corrected would hide a real outflow behind a lower payable. Money already gone is recovered
    * by a separate attributable act, never as a side effect of correcting a document.
-   *
-   * The reversal term is written here now, at zero rows, because it is part of the fold's
-   * DEFINITION rather than of 6B-ii's delivery: 6B-ii adds rows to a subtraction that already
-   * exists, instead of changing what `PAID` means once payments are already being derived against.
    */
   async paidFor(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
