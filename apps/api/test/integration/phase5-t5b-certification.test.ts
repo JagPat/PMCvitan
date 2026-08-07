@@ -704,11 +704,15 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     const cert = await certification.certify(projectId, { billId }, pmc(projectId));
 
     // a STANDALONE supersession leaves a `certified` bill whose live certificate is gone —
-    // `readCertificate` would 404 on a bill that says money is authorised
+    // `readCertificate` would 404 on a bill that says money is authorised.
+    // Task 6B-i widened this seal from the single member `certified` to §F's whole derived family
+    // (`approved-for-payment`/`part-paid`/`paid` all presuppose exactly one live certificate too),
+    // so its message names the PROJECTION rather than the one status it used to be exact for. The
+    // guarantee this probe pins is unchanged and now covers three more states.
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='forged' WHERE "id"=$1`,
       cert.id, f.memberUser.id,
-    )).rejects.toThrow(/live certificate\(s\) — the status is the certificate/u);
+    )).rejects.toThrow(/live certificate\(s\) — a payment status is the certificate's projection/u);
 
     // …and the other direction: moving the bill off `certified` while its certificate still stands
     await expect(t.prisma.$executeRawUnsafe(

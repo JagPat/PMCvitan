@@ -17,6 +17,7 @@ import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
+import { CommercialStatusService } from './commercial-status.service';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { ApprovePaymentInput, RecordPaymentInput } from '../contracts';
@@ -89,6 +90,7 @@ export class CommercialPaymentService {
     // clear the over-budget exception in its OWN transaction. Same evaluator every other mover
     // uses; a second copy of the raise-or-clear rule is how the label drifts from what moved.
     private readonly bills: CommercialBillService,
+    private readonly status: CommercialStatusService,
   ) {}
 
   private assertApprove(user: AuthUser): void {
@@ -132,7 +134,7 @@ export class CommercialPaymentService {
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
-        await this.lockBill(tx, projectId, input.billId);
+        const bill = await this.lockBill(tx, projectId, input.billId);
 
         // §H's own fold, under the lock. It answers both "is anything payable" and "how much".
         const position = await this.deductions.positionFor(tx, projectId, input.billId);
@@ -156,7 +158,7 @@ export class CommercialPaymentService {
 
         // §G BOUND 4, re-derived under the lock and stated as the REMAINING headroom, because a
         // refusal that only says "too much" leaves the practice guessing at the number.
-        const approvedSoFar = await this.approvedTotal(tx, projectId, input.billId);
+        const approvedSoFar = await this.deductions.approvedFor(tx, projectId, input.billId);
         const netPayable = new Prisma.Decimal(position.netPayable);
         const remaining = netPayable.sub(approvedSoFar);
         if (amount.greaterThan(remaining)) {
@@ -207,6 +209,10 @@ export class CommercialPaymentService {
           tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId, 'payment_approval',
         );
 
+        // §F — an approval MOVES `APPROVED`, so the derived status is re-read from the folds in
+        // this same transaction, under the bill lock taken above. One derivation, every mover.
+        await this.status.reDerive(tx, projectId, input.billId, bill.status as VendorBillStatus);
+
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.approve',
           entity: 'PaymentApproval', entityId: approval.id,
@@ -246,7 +252,7 @@ export class CommercialPaymentService {
         // The BILL is what scopes both folds this command decides on, so it is locked before any of
         // them is read. `PaymentApproval` is append-only and its `certificateId` is frozen, so
         // resolving WHICH bill to lock above is safe; nothing decided is read before the lock.
-        await this.lockBill(tx, projectId, approval.billId);
+        const bill = await this.lockBill(tx, projectId, approval.billId);
 
         // The approval must still be LIVE authority. `APPROVED(bill)` counts only approvals on the
         // live certificate, so paying against one whose certificate has been superseded attaches
@@ -282,8 +288,8 @@ export class CommercialPaymentService {
         // A1 as `paid: 80.00` against an authority of 40 while A2 sits unused. The bill-level
         // total is conserved and the attribution is a lie, which is the shape §C exists to
         // forbid: every unit of money answers to exactly one authority.
-        const approvedTotal = await this.approvedTotal(tx, projectId, approval.billId);
-        const paidTotal = await this.paidTotal(tx, projectId, approval.billId);
+        const approvedTotal = await this.deductions.approvedFor(tx, projectId, approval.billId);
+        const paidTotal = await this.deductions.paidFor(tx, projectId, approval.billId);
         const remaining = approvedTotal.sub(paidTotal);
         if (amount.greaterThan(remaining)) {
           throw new ConflictException(
@@ -310,6 +316,10 @@ export class CommercialPaymentService {
           },
         });
 
+        // §F — a payment MOVES `PAID`. `certified → approved-for-payment → part-paid → paid` are
+        // all derived here rather than written by hand at four sites.
+        await this.status.reDerive(tx, projectId, approval.billId, bill.status as VendorBillStatus);
+
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.record',
           entity: 'Payment', entityId: payment.id,
@@ -329,68 +339,54 @@ export class CommercialPaymentService {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
 
-    const bill = await this.prisma.vendorBill.findFirst({
-      where: { projectId, id: billId },
-      select: { id: true, status: true },
-    });
-    if (!bill) throw new NotFoundException('Vendor bill not found in this project');
+    // ONE SNAPSHOT for the status and the folds it is derived from (Codex round 1, P2).
+    //
+    // Before this task the status could not contradict the folds, because it never moved with them
+    // — reading them at different instants was harmless. §F changes that: `payment.approve` now
+    // moves `VendorBill.status` in the SAME transaction as the approval row, so an unsynchronized
+    // read can straddle that commit. Read the bill first and a concurrent approval lands before the
+    // approvals query, and this surface answers `approved: 100.00`, `approvable: 0.00`,
+    // `billStatus: certified` — three numbers that were each true once and are not true together.
+    // A repeatable-read snapshot makes the whole response one instant, which is what the deduction
+    // ledger already does for the same reason.
+    return this.prisma.$transaction(async (tx) => {
+      const bill = await tx.vendorBill.findFirst({
+        where: { projectId, id: billId },
+        select: { id: true, status: true },
+      });
+      if (!bill) throw new NotFoundException('Vendor bill not found in this project');
 
-    const position = await this.deductions.positionFor(this.prisma, projectId, billId);
-    const approvals = await this.prisma.paymentApproval.findMany({
-      where: { projectId, billId },
-      orderBy: { approvedAt: 'asc' },
-      include: { payments: { orderBy: { paidAt: 'asc' } }, sodExceptions: true },
-    });
+      const position = await this.deductions.positionFor(tx, projectId, billId);
+      const approvals = await tx.paymentApproval.findMany({
+        where: { projectId, billId },
+        orderBy: { approvedAt: 'asc' },
+        include: { payments: { orderBy: { paidAt: 'asc' } }, sodExceptions: true },
+      });
 
-    const rows: PaymentApprovalDto[] = approvals.map((a) => this.toApprovalDto(a));
+      const rows: PaymentApprovalDto[] = approvals.map((a) => this.toApprovalDto(a));
 
-    // The approved fold counts approvals against the LIVE certificate only — a superseded one is
-    // retained history, and summing it would compare an overstated total against the bound.
-    const approved = approvals
-      .filter((a) => position && a.certificateId === position.certificateId)
-      .reduce((t, a) => t.add(a.amount), ZERO);
-    const paid = approvals.reduce((t, a) => t.add(a.payments.reduce((s, p) => s.add(p.amount), ZERO)), ZERO);
+      // The approved fold counts approvals against the LIVE certificate only — a superseded one is
+      // retained history, and summing it would compare an overstated total against the bound.
+      const approved = approvals
+        .filter((a) => position && a.certificateId === position.certificateId)
+        .reduce((t, a) => t.add(a.amount), ZERO);
+      const paid = approvals.reduce((t, a) => t.add(a.payments.reduce((s, p) => s.add(p.amount), ZERO)), ZERO);
 
-    return {
-      billId,
-      certificateId: position?.certificateId ?? null,
-      approvals: rows,
-      approved: approved.toFixed(2),
-      paid: paid.toFixed(2),
-      approvable: position ? new Prisma.Decimal(position.netPayable).sub(approved).toFixed(2) : null,
-      billStatus: bill.status as VendorBillStatus,
-    };
+      return {
+        billId,
+        certificateId: position?.certificateId ?? null,
+        approvals: rows,
+        approved: approved.toFixed(2),
+        paid: paid.toFixed(2),
+        approvable: position ? new Prisma.Decimal(position.netPayable).sub(approved).toFixed(2) : null,
+        billStatus: bill.status as VendorBillStatus,
+      };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
   // ── folds and helpers ────────────────────────────────────────────────────────────────────────
 
-  /**
-   * §G bound 4's left side. Approvals against the LIVE certificate only: a superseded certificate's
-   * approvals must not count, or the bound compares an overstated total against a payable that no
-   * longer exists.
-   */
-  private async approvedTotal(
-    tx: Prisma.TransactionClient, projectId: string, billId: string,
-  ): Promise<Prisma.Decimal> {
-    const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
-      SELECT COALESCE(SUM(a."amount"), 0) AS total
-        FROM "PaymentApproval" a
-        JOIN "BillCertificate" c ON c."projectId" = a."projectId" AND c."id" = a."certificateId"
-       WHERE a."projectId" = ${projectId} AND a."billId" = ${billId}
-         AND c."supersededAt" IS NULL`;
-    return new Prisma.Decimal(rows[0]?.total ?? 0);
-  }
 
-  /** §G bound 5's left side. */
-  private async paidTotal(
-    tx: Prisma.TransactionClient, projectId: string, billId: string,
-  ): Promise<Prisma.Decimal> {
-    const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
-      SELECT COALESCE(SUM(p."amount"), 0) AS total
-        FROM "Payment" p
-       WHERE p."projectId" = ${projectId} AND p."billId" = ${billId}`;
-    return new Prisma.Decimal(rows[0]?.total ?? 0);
-  }
 
   /** What ONE authorisation has already paid — the fold the per-approval bound measures, and the
    *  same number `PaymentApprovalDto.paid` reports, so the refusal and the read agree. */

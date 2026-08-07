@@ -14,6 +14,7 @@ import { executeCommand, hashRequest, type CommandScope } from '../platform/comm
 import { resolveActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { CommercialStatusService } from './commercial-status.service';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialBillService } from './commercial-bill.service';
@@ -56,6 +57,7 @@ export class CommercialDeductionService {
     // §B's mover rule — a withholding lowers §J's `certified-payable`, so it moves headroom and
     // discharges raise-or-clear through the same public helper certification and verification use.
     private readonly billService: CommercialBillService,
+    private readonly status: CommercialStatusService,
   ) {}
 
   private assertDeduct(user: AuthUser): void {
@@ -108,7 +110,7 @@ export class CommercialDeductionService {
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
-        await this.lockBill(tx, projectId, input.billId);
+        const bill = await this.lockBill(tx, projectId, input.billId);
 
         const position = await this.deductions.positionFor(tx, projectId, input.billId);
         if (!position) {
@@ -132,6 +134,11 @@ export class CommercialDeductionService {
         });
 
         await this.evaluateHeadroom(tx, projectId, input.billId, actor.actorId, user.role, 'deduction');
+        // §F — a withholding LOWERS `NET_PAYABLE`, so it can carry a bill FORWARD: withhold the
+        // whole remaining payable on an approved-and-paid claim and `NET_PAYABLE = PAID` makes it
+        // `paid`, with no cash moving. The first arm means nothing remains payable, not that money
+        // was sent.
+        await this.status.reDerive(tx, projectId, input.billId, bill.status as VendorBillStatus);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.record', entity: 'BillDeduction', entityId: deduction.id,
         });
@@ -178,7 +185,7 @@ export class CommercialDeductionService {
           select: { billId: true },
         });
         if (!located) throw new NotFoundException('Deduction not found in this project');
-        await this.lockBill(tx, projectId, located.billId);
+        const bill = await this.lockBill(tx, projectId, located.billId);
 
         // Codex round 2 — re-read the deduction INSIDE the lock: every fact this act decides on is
         // read under the lock that protects it, never located outside and trusted within.
@@ -204,6 +211,12 @@ export class CommercialDeductionService {
         });
 
         await this.evaluateHeadroom(tx, projectId, deduction.billId, actor.actorId, user.role, 'deduction_release');
+        // §F — THE BACKWARD CASE, and the reason the CAS has no forward-only guard. A release
+        // RAISES `NET_PAYABLE`, so a bill that legitimately reached `paid` returns to `certified`:
+        // certify ₹100, withhold ₹10, approve and pay ₹90 → `NET_PAYABLE = PAID = ₹90` → `paid`;
+        // release ₹5 → `APPROVED = PAID = ₹90 < NET_PAYABLE = ₹95` → `certified`. Leaving it `paid`
+        // would contradict §J, which reports the ₹5 as still owed from the same folds.
+        await this.status.reDerive(tx, projectId, deduction.billId, bill.status as VendorBillStatus);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.deduction.release', entity: 'BillDeductionRelease', entityId: row.id,
         });
@@ -262,9 +275,12 @@ export class CommercialDeductionService {
         deductions: rows,
         withheld: (position?.withheld ?? ZERO).toFixed(2),
         netPayable: position?.netPayable.toFixed(2) ?? null,
-        // the STORED status. §F's derivation is Task 6's (see `evaluateHeadroom`), so reporting a
-        // derived value here would be this surface claiming a payment lifecycle the system does
-        // not yet run — and a read that is ahead of the writes is how a stale truth gets believed.
+        // the STORED status — and as of Task 6B-i that IS the derived one. This comment used to
+        // say the derivation was still ahead of the writes and that reporting it here would claim
+        // a lifecycle the system did not yet run. Both writers now re-derive in the same
+        // transaction as the row they append, and the seal in `20270610000000` refuses any bill
+        // whose stored status disagrees with its folds, so reading the column is reading the
+        // derivation. (A workaround outlives its cause unless someone goes back and deletes it.)
         billStatus: bill.status as VendorBillStatus,
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });

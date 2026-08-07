@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES } from '@vitan/shared';
+import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
+import { DERIVED_BILL_STATUSES, isDerivedBillStatus } from './commercial-status';
 
 const HERE = join(__dirname);
 const SRC = join(__dirname, '..');
@@ -764,6 +765,119 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       writes,
       'the `raisedBy` labels the shared DTO declares and the movers `HeadroomMover` can write are different sets. Whichever side you added to, add to the other',
     ).toEqual(declared);
+  });
+
+  // ── §F's derived family has ONE source, not two that happen to agree today ────────────────────
+  //
+  // JagPat, alongside Codex round 1 on PR #289. `commercial-status.ts` shipped
+  // `DERIVED_BILL_STATUSES`/`isDerivedBillStatus` as a fresh listing of the same four members the
+  // shared contract already declares — while its own comments claimed one family definition. The
+  // shared declaration had even left a note saying Task 6 would need it.
+  //
+  // The failure is concrete and silent in both directions. Add a fifth member to the shared set and
+  // it becomes supersedable (the `supersede` guard reads the shared one) and read-visible, while
+  // `CommercialStatusService.reDerive` skips it — a bill whose folds move and whose status does not.
+  // Add one only locally and it gets derived while the shared lifecycle and read guards reject or
+  // omit it. Neither shows up as a type error.
+  //
+  // They are now the SAME array, and this pins that they stay it — identity, not equality, so a
+  // future copy-paste that happens to list the same members still fails here.
+  // ── CLOSURE A (PR #289 convergence) — the seal set is DERIVED, never a list ───────────────────
+  //
+  // `docs/reviews/pr-289-convergence.md`, root A. Four findings in one unit were the same mistake:
+  // the code wrote down the members instead of deriving them from what the fold reads. The family
+  // was enumerated and the member left to the service; the seal was put on the bill and not its
+  // fold tables; then five of the SIX fold tables were enumerated and `BillCertificate` — named in
+  // this unit's own mover list — was missed.
+  //
+  // §B already solved this: `FOLD_INPUTS` derives its mover set from what the fold READS, because a
+  // hand-kept list of six sites had gone stale once already. This is that idiom for §F's seals.
+  //
+  // The tables are read out of the fold queries themselves, so a SEVENTH fold input added to
+  // `commercial-deduction.query.ts` without a matching seal fails HERE — at the desk, with no
+  // database and no reviewer required — rather than becoming the next bypass.
+  it('§F: every table the folds READ carries a derivation seal — the set is derived, not listed', () => {
+    const query = readFileSync(join(HERE, 'commercial-deduction.query.ts'), 'utf8');
+    const migration = readFileSync(
+      join(SRC, '../prisma/migrations/20270610000000_phase5_t6b_status_derivation/migration.sql'),
+      'utf8',
+    );
+
+    // what the three folds actually touch, extracted GENERICALLY — the first draft of this closure
+    // matched delegates with `tx\.(billCertificate|billDeduction|…)\.`, which is the five members
+    // written down again inside the closure whose whole point is not to write them down. 6B-ii adds
+    // `tx.paymentReversal` to `PAID`, and that alternation would not have matched it: the closure
+    // would have stayed green with `PaymentReversal` unsealed. Root A inside the closure for root A,
+    // for the third time in this module's history.
+    //
+    // So: any `tx.<delegate>.` reference, mapped to its model by the same camelCase→PascalCase rule
+    // Prisma uses, and INTERSECTED with the real model list from `schema.prisma` so a typo or a
+    // non-model property (`tx.$queryRaw` never matches — `$` is not a lowercase letter) cannot
+    // invent a requirement that no table could satisfy.
+    const sealedTables = (): Set<string> => new Set(
+      [...migration.matchAll(/^CREATE CONSTRAINT TRIGGER "(\w+)_t6b_status_sealed"/gmu)].map((m) => m[1]!),
+    );
+    const models = new Set(
+      [...readFileSync(join(SRC, '../prisma/schema.prisma'), 'utf8').matchAll(/^model\s+(\w+)\s*\{/gmu)].map((m) => m[1]!),
+    );
+    expect(models.size, 'no Prisma models were parsed — the model list is empty, so every delegate would be discarded').toBeGreaterThan(20);
+
+    const fromRaw = [...query.matchAll(/FROM\s+"(\w+)"/gu)].map((m) => m[1]!);
+    const fromJoin = [...query.matchAll(/JOIN\s+"(\w+)"/gu)].map((m) => m[1]!);
+    // the model set is a PARAMETER so the mutation check below can simulate the schema 6B-ii will
+    // have, rather than being unable to name the very addition this closure exists to catch
+    const delegatesIn = (source: string, known: ReadonlySet<string> = models): string[] =>
+      [...source.matchAll(/\btx\.([a-z][A-Za-z0-9]*)\./gu)]
+        .map((m) => `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)}`)
+        .filter((model) => known.has(model));
+    const readTables = [...new Set([...fromRaw, ...fromJoin, ...delegatesIn(query)])].sort();
+
+    expect(readTables.length, 'no fold table was found — the extraction is matching nothing, so this pin proves nothing').toBeGreaterThan(2);
+
+    // …and the extractor is MUTATION-TESTED against the exact future addition that broke the first
+    // draft. This is the shape 6B-ii will introduce; if the extractor stops seeing it, this fails
+    // here rather than in the next unit's review.
+    const withReversal = new Set([...models, 'PaymentReversal']);
+    expect(
+      delegatesIn('await tx.paymentReversal.findMany({ where: { billId } });', withReversal),
+      'the delegate extractor does not see `tx.paymentReversal` — 6B-ii would add an unsealed fold input to `PAID` and this closure would stay green',
+    ).toEqual(['PaymentReversal']);
+    // …and the consequence is what matters: an unsealed new fold input must be REPORTED, not merely
+    // seen. This is the assertion the first draft could not have made.
+    expect(
+      delegatesIn('await tx.paymentReversal.findMany();', withReversal).filter((t) => !sealedTables().has(t)),
+      '`PaymentReversal` would be read by a fold and carry no `_t6b_status_sealed` trigger, yet the closure did not flag it',
+    ).toEqual(['PaymentReversal']);
+    expect(
+      delegatesIn('await tx.$queryRaw`SELECT 1`; await tx.notAModel.findMany();'),
+      'the extractor invented a table from a non-model property',
+    ).toEqual([]);
+
+    const sealed = sealedTables();
+    // the bill itself is sealed too, and is not a "read" of the folds — it is the thing they derive
+    expect(sealed.has('VendorBill'), 'the bill carries no derivation seal').toBe(true);
+
+    const unsealed = readTables.filter((t) => !sealed.has(t));
+    expect(
+      unsealed,
+      `these tables are READ by §F's folds but carry no \`_t6b_status_sealed\` trigger, so a write to them can move the derivation and leave the stored status behind: ${unsealed.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {
+    expect(
+      DERIVED_BILL_STATUSES as readonly string[],
+      'DERIVED_BILL_STATUSES is no longer the shared BILL_STATUSES_PAST_CERTIFICATION array. Alias the shared one rather than restating its members',
+    ).toBe(BILL_STATUSES_PAST_CERTIFICATION as readonly string[]);
+
+    // …and the two predicates answer identically across the WHOLE status vocabulary, so an aliased
+    // constant with a hand-rolled predicate beside it cannot pass either.
+    for (const status of VENDOR_BILL_STATUSES) {
+      expect(
+        isDerivedBillStatus(status),
+        `\`${status}\`: isDerivedBillStatus and isPastCertification disagree — they are one question asked by two callers`,
+      ).toBe(isPastCertification(status));
+    }
   });
 
 });

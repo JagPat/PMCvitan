@@ -222,20 +222,72 @@ export class CommercialDeductionQuery {
   }
 
   /**
-   * `APPROVED(bill)` and `PAID(bill)` (§0) — the two folds §F's derivation needs beside
-   * `NET_PAYABLE`.
+   * `APPROVED(bill)` (§0) — Σ approvals against the bill's LIVE certificate.
    *
-   * **At the Task-5C tree both are structurally zero, and that is a property of the tree rather
-   * than a stub.** No approval or payment row exists to fold: Task 6 ships them. They are stated
-   * here, beside the fold that DOES exist, so the derivation reads all three from one owner and
-   * Task 6 fills these in rather than teaching `deriveBillStatus` a second source of truth — which
-   * is exactly the second-site drift §0 exists to prevent.
+   * Task 5C declared this beside `NET_PAYABLE` and returned a structural zero, with the reason
+   * written down: so the §F derivation reads all three folds from ONE owner, and Task 6 fills these
+   * in rather than teaching the derivation a second source of truth. 6B-i is that fill.
+   *
+   * **Live-certificate scoped, not every approval the bill ever collected.** A certificate is
+   * superseded, not edited (§F), and its approvals authorised THAT amount: certify ₹100, approve
+   * ₹100, supersede to ₹50, and a bill-wide set reports ₹100 approved against a ₹50 payable — a
+   * breach of §G bound 4 the moment the correction lands, with the approval append-only so nothing
+   * walks it back. Scoping to the live certificate makes supersession lower this fold
+   * automatically and forces the reduced amount to be re-approved by someone with the authority.
    */
-  async approvedFor(_tx: Prisma.TransactionClient, _projectId: string, _billId: string): Promise<Prisma.Decimal> {
-    return ZERO;
+  async approvedFor(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<Prisma.Decimal> {
+    const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
+      SELECT COALESCE(SUM(a."amount"), 0) AS total
+        FROM "PaymentApproval" a
+        JOIN "BillCertificate" c ON c."projectId" = a."projectId" AND c."id" = a."certificateId"
+       WHERE a."projectId" = ${projectId} AND a."billId" = ${billId}
+         AND c."supersededAt" IS NULL`;
+    return new Prisma.Decimal(rows[0]?.total ?? 0);
   }
 
-  async paidFor(_tx: Prisma.TransactionClient, _projectId: string, _billId: string): Promise<Prisma.Decimal> {
-    return ZERO;
+  /**
+   * `PAID(bill)` AT THIS TREE — Σ payments. §0 defines the fold as Σ payments MINUS Σ payment
+   * REVERSALS, and **the reversal term arrives in 6B-ii, with the table it reads.**
+   *
+   * An earlier revision of this comment claimed the subtraction was already written here "at zero
+   * rows". It was not, and could not be: 6B-ii owns `PaymentReversal`, so the term would have named
+   * schema that does not exist. Stating an intent the SQL does not carry is worse than stating the
+   * gap — a reader checking whether `PAID` can fall would have been told yes by prose and no by the
+   * query. So this says plainly what is true here, and 6B-ii widens the fold together with its own
+   * §F probes for a falling `PAID`.
+   *
+   * **Bill-scoped, NOT live-certificate scoped, and the asymmetry with `approvedFor` is the point.**
+   * An approval is an AUTHORISATION of a particular certified amount, so it dies with the
+   * certificate that carried it. A payment is CASH THAT LEFT THE PRACTICE. §0 is explicit that
+   * supersession never appends a payment reversal, because a fold that dropped when a certificate
+   * was corrected would hide a real outflow behind a lower payable. Money already gone is recovered
+   * by a separate attributable act, never as a side effect of correcting a document.
+   */
+  async paidFor(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<Prisma.Decimal> {
+    const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
+      SELECT COALESCE(SUM(p."amount"), 0) AS total
+        FROM "Payment" p
+       WHERE p."projectId" = ${projectId} AND p."billId" = ${billId}`;
+    return new Prisma.Decimal(rows[0]?.total ?? 0);
+  }
+
+  /**
+   * All three §F folds for one bill, read together. `netPayable` is ZERO when no live certificate
+   * stands — `positionFor` returns null there, and a bill with nothing certified has nothing
+   * payable, which is the value the derivation's first arm needs.
+   */
+  async foldsFor(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<{ netPayable: Prisma.Decimal; approved: Prisma.Decimal; paid: Prisma.Decimal }> {
+    const position = await this.positionFor(tx, projectId, billId);
+    const [approved, paid] = await Promise.all([
+      this.approvedFor(tx, projectId, billId),
+      this.paidFor(tx, projectId, billId),
+    ]);
+    return { netPayable: position?.netPayable ?? ZERO, approved, paid };
   }
 }

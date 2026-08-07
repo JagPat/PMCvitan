@@ -2428,7 +2428,11 @@ assert_rejects "commercial T6A: approving MORE than the net payable" \
   "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OVER','p1','$UP5C_LIVE','$UP5C_BILL',5.00,'USER-1','UP6A-CMD-OVER')" \
   'exceed the'
 mint5c UP6A-CMD-OK commercial.payment.approve UP6A-A-OK
-$PSQL >/dev/null -c "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OK','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-OK')" \
+# Task 6B-i — the approval now carries the status it derives, in the SAME transaction, because the
+# derivation seal refuses a fold that moves without it. That is not a weakening of this assertion:
+# the row is identical and bound 4 still decides whether it may exist. It is the fixture being made
+# to do what `payment.approve` does, which is what an upgrade proof should be exercising anyway.
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OK','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-OK'); UPDATE \"VendorBill\" SET \"status\"='approved-for-payment', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T6A: approving EXACTLY the net payable is ACCEPTED (the bound is precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T6A: a coherent approval was rejected — bound 4 is over-strict"; FAIL=1; }
 
@@ -2520,6 +2524,177 @@ mint5c UP6A-CMD-GHOST commercial.payment.approve UP6A-A-GHOST
 assert_rejects "commercial T6A R2: approving against a certificate that is retained history" \
   "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-GHOST','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-GHOST')" \
   'superseded'
+
+# ── Phase 5 Task 6B unit i (§F) — the DERIVED payment status, over the migrated legacy database ──
+#
+# This unit adds NO table and NO column, so there is no row-free assertion to make. What it changes
+# is the LIFECYCLE — and, after Codex round 1, WHO decides the member. The first head guarded only
+# FAMILY MEMBERSHIP here and left the member to the service, which meant one raw UPDATE could store
+# `paid` on a bill with nothing approved and nothing paid. The database now computes the exact
+# derivation and refuses any disagreement, fired from the bill AND from every table that can make
+# the equation false. So every arrow below moves a FOLD and the status TOGETHER, which is the shape
+# the real commands use, and each is paired with the otherwise-identical write that is refused.
+assert "commercial T6B: §F's derived family has ONE definition in SQL, and it is IMMUTABLE" \
+  "SELECT p.\"proname\" || '/' || p.\"provolatile\"::text || '/' || (SELECT COUNT(*) FROM pg_proc c WHERE c.\"prosrc\" LIKE '%phase5_t6b_derived_bill_status%' AND c.\"proname\" IN ('phase5_t5_certificate_projection_check','phase5_t4_bill_lifecycle'))::text FROM pg_proc p WHERE p.\"proname\" = 'phase5_t6b_derived_bill_status';" \
+  "phase5_t6b_derived_bill_status/i/2"
+assert "commercial T6B: the predicate answers for the WHOLE family and for nothing outside it" \
+  "SELECT string_agg(phase5_t6b_derived_bill_status(s)::text, '/' ORDER BY s) FROM unnest(ARRAY['approved-for-payment','certified','draft','paid','part-paid','rejected','submitted','verified']) s;" \
+  "true/true/false/true/true/false/false/false"
+# Codex round 1 — the TRUTH TABLE is in SQL too, and the seal that uses it is installed on all five
+# tables that can move a fold. A name-and-count assertion would prove neither, so the derivation is
+# exercised directly below and the trigger set is checked by relation as well as by name.
+assert "commercial T6B R1: the derivation seal fires from the bill AND from every fold table" \
+  "SELECT string_agg(c.\"relname\", '/' ORDER BY c.\"relname\") FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" WHERE t.\"tgname\" LIKE '%_t6b_status_sealed' AND NOT t.\"tgisinternal\" AND t.\"tgdeferrable\" AND t.\"tginitdeferred\";" \
+  "BillCertificate/BillDeduction/BillDeductionRelease/Payment/PaymentApproval/VendorBill"
+
+# A FRESH live certificate on the bill the 6A block left at `verified` — the arrows below are
+# vacuous without one, because the projection seal refuses every derived status with no certificate.
+mint5c UP6B-CMD-C1 commercial.bill.certify UP6B-C1
+if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP6B-C1','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP6B-CMD-C1'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6B-A1','p1','UP6B-C1','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+then printf 'ok      %s\n' "commercial T6B: a fresh live certificate stands on the bill, so the family arrows below are not vacuous"
+else printf 'FAILED  %s\n' "commercial T6B: could not stand up a live certificate — every family assertion below would be vacuous"; FAIL=1
+fi
+assert "commercial T6B R1: the DATABASE derives the certified member for that bill, nothing withheld or paid" \
+  "SELECT phase5_t6b_derive_bill_status('p1', '$UP5C_BILL');" \
+  "certified"
+
+# `t6b_arrow <label> <from> <to> <sql moving the fold>` — one coherent transaction moving a fold and
+# the status together, then an assertion that the bill actually stood at `from` and actually reached
+# `to`. An acceptance is evidence only when the state moved: without that check a silent setup
+# failure leaves the bill already at `to`, the lifecycle trigger skips on
+# `NEW.status IS DISTINCT FROM OLD.status`, and a no-op UPDATE reports success.
+t6b_arrow() {
+  local label="$1" from="$2" to="$3" fold="$4"
+  local before after
+  before=$($PSQL -tAc "SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='$UP5C_BILL'")
+  $PSQL >/dev/null -c "BEGIN; $fold; UPDATE \"VendorBill\" SET \"status\"='$to', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" 2>/dev/null
+  after=$($PSQL -tAc "SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='$UP5C_BILL'")
+  if [ "$before" = "$from" ] && [ "$after" = "$to" ]; then
+    printf 'ok      %s\n' "commercial T6B §F: $label ($from -> $to, fold and status moving together)"
+  else
+    printf 'FAILED  %s\n' "commercial T6B §F: $label did not happen (stood at '$before', ended at '$after')"; FAIL=1
+  fi
+}
+
+# withholding the WHOLE payable leaves NET_PAYABLE = PAID = 0, which §F calls `paid`
+mint5c UP6B-CMD-D1 commercial.deduction.record UP6B-D1
+t6b_arrow "a fully-withheld claim is settled at zero" certified paid \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP6B-D1','p1','UP6B-C1','$UP5C_BILL','retention',1.00,'USER-1','UP6B-CMD-D1')"
+# …and giving part of it back RAISES the payable, so the status must move BACKWARD. A forward-only
+# guard would strand this bill at `paid` while §J still reported money owed.
+mint5c UP6B-CMD-R1 commercial.deduction.release UP6B-R1
+t6b_arrow "a release moves the status BACKWARD — the derivation is not monotonic" paid certified \
+  "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP6B-R1','p1','UP6B-D1',0.40,'first milestone','USER-1','UP6B-CMD-R1')"
+mint5c UP6B-CMD-A1 commercial.payment.approve UP6B-A1
+t6b_arrow "an authority against the released payable" certified approved-for-payment \
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6B-A1','p1','UP6B-C1','$UP5C_BILL',0.40,'USER-1','UP6B-CMD-A1')"
+
+# ── Codex round 1 — the two mouths of the same gap ───────────────────────────────────────────────
+#
+# The STATUS moving without its folds…
+assert_rejects "commercial T6B R1: a raw status flip inside the family, with no fold behind it" \
+  "UPDATE \"VendorBill\" SET \"status\"='paid', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" \
+  'its own folds derive'
+assert_rejects "commercial T6B R1: …and the flip BACK to a member it has legitimately held is refused too" \
+  "UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" \
+  'its own folds derive'
+# …and the FOLDS moving without the status. The payment below is valid by every EARLIER seal — a
+# live certificate, a real succeeded command of the right type, within its own authority — and a
+# weaker forgery would have been rejected before it ever reached the derivation.
+mint5c UP6B-CMD-PX commercial.payment.record UP6B-PX
+assert_rejects "commercial T6B R1: a VALID payment appended without moving the status it changes" \
+  "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6B-PX','p1','UP6B-A1','$UP5C_BILL',0.40,'neft','USER-1','UP6B-CMD-PX')" \
+  'its own folds derive'
+# …while a fold write that does NOT change the answer is ACCEPTED, which is the seal being precise
+# rather than a blanket ban on writing a fold table. Releasing the remaining ₹0.60 raises
+# NET_PAYABLE to ₹1.00 with ₹0.40 approved and nothing paid — still `approved-for-payment`.
+mint5c UP6B-CMD-R2 commercial.deduction.release UP6B-R2
+$PSQL >/dev/null -c "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP6B-R2','p1','UP6B-D1',0.60,'second milestone','USER-1','UP6B-CMD-R2')" \
+  && printf 'ok      %s\n' "commercial T6B R1: a fold write that does not move the derived answer is ACCEPTED (coherence, not a ban)" \
+  || { printf 'FAILED  %s\n' "commercial T6B R1: a release that leaves the status correct was rejected — the seal is over-strict"; FAIL=1; }
+assert "commercial T6B R1: …and the stored column still equals what the database derives" \
+  "SELECT (SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='$UP5C_BILL') || '/' || phase5_t6b_derive_bill_status('p1', '$UP5C_BILL');" \
+  "approved-for-payment/approved-for-payment"
+
+# The projection seal, now stated over the FAMILY. Before this unit it named `certified` alone, so a
+# bill sitting at another member with its certificate superseded out from under it was
+# unrepresentable only by accident — the status was unreachable. It is reachable now, and this bill
+# is at `approved-for-payment` with NO cash against it, so §G bound 5 is satisfied and the
+# projection rule is the one being tested.
+assert_rejects "commercial T6B §F: superseding the certificate an APPROVED-FOR-PAYMENT bill projects" \
+  "UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='forged' WHERE \"id\"='UP6B-C1'" \
+  "certificate's projection"
+# …and the same correction done coherently in one transaction is ACCEPTED from a member that is NOT
+# `certified` — precisely the arrow this unit widened, and the acceptance that makes the refusal
+# above evidence rather than mere strictness.
+$PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected' WHERE \"id\"='UP6B-C1'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T6B §F: correcting a certificate from a NON-certified family member is ACCEPTED (the widened guard is precise)" \
+  || { printf 'FAILED  %s\n' "commercial T6B §F: a coherent supersession from approved-for-payment was refused — the widened arrow is not open"; FAIL=1; }
+
+# A REPLACEMENT certificate, so the cash arrows below have an authority to stand on. The withholding
+# above is fully released, so nothing is carried and §H's carry seal is satisfied.
+mint5c UP6B-CMD-C2 commercial.bill.certify UP6B-C2
+if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP6B-C2','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP6B-CMD-C2'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6B-A2EV','p1','UP6B-C2','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+then printf 'ok      %s\n' "commercial T6B: the corrected certification stands, and the cash arrows below are not vacuous"
+else printf 'FAILED  %s\n' "commercial T6B: could not re-certify — the cash arrows below would be vacuous"; FAIL=1
+fi
+mint5c UP6B-CMD-A3 commercial.payment.approve UP6B-A3
+t6b_arrow "an authority over the corrected certification" certified approved-for-payment \
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6B-A3','p1','UP6B-C2','$UP5C_BILL',1.00,'USER-1','UP6B-CMD-A3')"
+mint5c UP6B-CMD-P1 commercial.payment.record UP6B-P1
+t6b_arrow "cash leaving against part of that authority" approved-for-payment part-paid \
+  "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6B-P1','p1','UP6B-A3','$UP5C_BILL',0.40,'neft','USER-1','UP6B-CMD-P1')"
+mint5c UP6B-CMD-P2 commercial.payment.record UP6B-P2
+t6b_arrow "the balance leaving settles the claim" part-paid paid \
+  "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6B-P2','p1','UP6B-A3','$UP5C_BILL',0.60,'neft','USER-1','UP6B-CMD-P2')"
+assert "commercial T6B R1: the DATABASE and the stored column agree after every arrow" \
+  "SELECT (SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='$UP5C_BILL') || '/' || phase5_t6b_derive_bill_status('p1', '$UP5C_BILL');" \
+  "paid/paid"
+
+# …and nothing ESCAPES the family except supersession, nor JUMPS into it except `verified ->
+# certified`. Each of these differs from an accepted arrow above only in whether one endpoint is
+# outside the family, so a rejection here is about membership, not about the UPDATE.
+assert_rejects "commercial T6B §F: a derived status escaping FORWARD into the claim lifecycle" \
+  "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" \
+  'cannot move from'
+assert_rejects "commercial T6B §F: rejecting a claim that has already paid out (money left; the claim is not droppable)" \
+  "UPDATE \"VendorBill\" SET \"status\"='rejected', \"statusReason\"='too late', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" \
+  'cannot move from'
+assert_rejects "commercial T6B §F: CREATING a claim already inside the derived family, skipping every arrow" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UP6B-XP','p1','UP45-VEN','INV-PAID','2026-08-27','paid','USER-1','UP45-CMD')"
+assert_rejects "commercial T6B §F: jumping into the family from OUTSIDE the certification arrow (disputed -> paid)" \
+  "UPDATE \"VendorBill\" SET \"status\"='paid', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
+  'cannot move from'
+
+# ── the SIXTH fold table, which the first sweep of this correction missed (JagPat) ───────────────
+#
+# `BillCertificate` is a fold INPUT twice over: `certifiedAmount` feeds NET_PAYABLE, and
+# `supersededAt IS NULL` decides which approvals are in APPROVED at all. Superseding a certificate
+# and replacing it in ONE otherwise-valid raw transaction therefore moves the folds while writing
+# no ledger row and no bill row — the Task-5B projection seal still sees one live certificate beside
+# an in-family status, and before the sixth trigger nothing else fired either.
+#
+# Reached here on a bill that is `paid` with cash standing, so the replacement is refused by §G
+# bound 5 rather than by the derivation. The DERIVATION-side refusal, on a claim with an authority
+# but no cash, is proven by R1-F5 in `phase5-t6b-status-derivation.test.ts`, which can build that
+# state freely; this asserts what the SEAL SET looks like on a migrated legacy database.
+assert "commercial T6B R1: the certificate carries the same deferred derivation trigger as the ledger tables" \
+  "SELECT t.\"tgname\" || '/' || t.\"tgdeferrable\"::text || '/' || t.\"tginitdeferred\"::text || '/' || p.\"proname\" FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" JOIN pg_proc p ON p.\"oid\" = t.\"tgfoid\" WHERE c.\"relname\" = 'BillCertificate' AND t.\"tgname\" = 'BillCertificate_t6b_status_sealed';" \
+  "BillCertificate_t6b_status_sealed/true/true/phase5_t6b_fold_status_sealed"
+
+# §0's rule survives the widening: cash already gone is not corrected by correcting a document. The
+# bill is `paid` now — a member only this unit made reachable — and 6A's §G bound-5 seal, not
+# anything added here, is what refuses the correction. This unit's job was to not weaken it.
+assert_rejects "commercial T6B §0: superseding a certificate that has already paid out, from the newly-reachable PAID member" \
+  "UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='too late' WHERE \"id\"='UP6B-C2'" \
+  'exceed the'
+
+# The BACKFILL (Codex finding 2) is idempotent — the migration has already run over this database,
+# so re-running its expression here must move nothing. A non-zero count would mean the migration
+# left the very incoherence it exists to remove.
+assert "commercial T6B R1: re-running the migration's backfill over the upgraded database moves NOTHING" \
+  "WITH c AS (UPDATE \"VendorBill\" b SET \"status\" = phase5_t6b_derive_bill_status(b.\"projectId\", b.\"id\"), \"statusChangedAt\" = now() WHERE phase5_t6b_derived_bill_status(b.\"status\") AND b.\"status\" <> phase5_t6b_derive_bill_status(b.\"projectId\", b.\"id\") RETURNING 1) SELECT COUNT(*)::text FROM c;" \
+  "0"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
