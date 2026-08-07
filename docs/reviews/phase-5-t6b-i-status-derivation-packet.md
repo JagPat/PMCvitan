@@ -25,9 +25,13 @@ statuses need — as a **family**, not as a list.
 
 - Base SHA: `5b8186a`
 - Scope: one architectural concern — §F's status derivation
-- Changed files / changed lines: 17 files, ~2,190 changed lines after the
-  round-1 correction. The reviewed head `392b46f` was 16 files / 1,315 lines; the
-  PR body carries the `justified-large` marker and the reason.
+- Changed files / changed lines: **19 files, 2,998 additions / 111 deletions =
+  3,109 changed lines** — the FINAL merged totals for PR #289 at `main`
+  `023307e`. Historical, and labelled as such: the Codex-reviewed head `392b46f`
+  was 16 files / 1,315 lines, and two earlier revisions of this line said
+  "17 files / ~2,190" and "13 files / ~1,040", both of which were stale by the
+  time they were written. The PR body carried the `justified-large` marker and
+  the reason.
 - Split considered: yes, and taken. `docs/STATUS.md` records the 6B split. Unit
   ii (the `PaymentReversal` table and its subtraction from `PAID`) is NOT here;
   6C's advance-recovery is not here; Task 7's frontend and forecast are not here.
@@ -359,7 +363,7 @@ All four GREEN here.
 | `phase5-t6b-status-derivation.test.ts` | 19/19 |
 | `phase5-t5b` / `t5c` / `t6a` / `t6b` | 120/120 |
 | `upgrade-proof.sh` | PASSED — 470 assertions, 0 failures |
-| `phase5-t6b-production-runner-proof.sh` | PASSED — 7/7 on the real `prisma migrate deploy` |
+| `phase5-t6b-production-runner-proof.sh` | PASSED — 12/12 on the real `prisma migrate deploy`, incl. the seeded 6A-shaped row corrected by name |
 | `test:e2e:api:allmodules` / `:outbox` | 35/35 and 29/29 |
 
 The round-1 seal also broke seven **pre-existing** upgrade-proof fixture writes,
