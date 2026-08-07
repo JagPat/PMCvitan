@@ -318,6 +318,15 @@ It now drives `ProjectionRebuilder.rebuild` directly — allocate → seed → c
 diagnosis anywhere — so the only thing that can wait on the lock is the seed's own refresh. Verified
 RED (`barrier timeout: nothing ever blocked`) with the lock removed.
 
+### Convergence
+
+Two finding-bearing heads triggered the convergence protocol. The architectural
+audit is `docs/reviews/pr-295-convergence.md`; it names **Root B** — the platform's
+unstated precondition that every projection input is announced by a domain event —
+as the single fact behind findings 5, 6, 7, 8 and the partition-only gap, and adds
+**CLOSURE E** so the next event-less module that adds a projection is stopped at
+the desk rather than three review rounds later.
+
 ## The probes
 
 | # | § | What it proves |
@@ -333,6 +342,7 @@ RED (`barrier timeout: nothing ever blocked`) with the lock removed.
 | 39 | §J | a PARTITION-ONLY write refreshes the forecast too — paying and reversing move the stored `paid`/`approved` with nothing drained, because nothing was emitted |
 | 40 | §B/§J | the operator sweep REOPENS a breach the §J completion re-created, labels it `fold_correction`, is idempotent on a second run, and CLEARS again once the budget is corrected |
 | 41 | §J | the rebuild SEED serializes on the forecast advisory lock — a holder BLOCKS it (`pg_blocking_pids`, condition-based) and it completes on release |
+| CLOSURE E | §G | a rebuildable projection whose owning module declares `producesEvents: []` MUST supply `lockFor` — both sides derived, both directions non-vacuous, mutation-tested RED |
 | CLOSURE D | §J | every forecast event type is catalog-declared AND resolves to `dispatch`; the labour family is present by name; an unrelated event stays a no-op |
 
 Probes 36 and 37 were verified RED with the two `refreshCashForecast` calls

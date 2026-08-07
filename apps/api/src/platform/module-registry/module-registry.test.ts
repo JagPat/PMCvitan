@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { DOMAIN_EVENT_TYPES, validateRegistry, type ModuleManifest } from '@vitan/shared';
 import { MODULE_MANIFESTS, KNOWN_ROLES, validateModuleRegistry, enabledModuleIds, moduleModelOwnership } from './registry';
+import { REBUILDABLE_PROJECTIONS } from '../projections/rebuild-operations';
+import { CASH_FORECAST_PROJECTION } from '../../commercial/cash-forecast.projection';
 
 /**
  * Phase 2 Task 7 — the module registry validates. This is the SAME check
@@ -238,5 +240,58 @@ describe('Phase 2 Task 7 — module registry', () => {
     expect(codes.has('shared-model')).toBe(true); // 'decision' owned by both decisions and x
     expect(codes.has('cycle')).toBe(true); // x -> y -> x
     expect(codes.has('unknown-permission')).toBe(true); // role 'nope'
+  });
+
+  /**
+   * CLOSURE E (PR #295 convergence, root B) — A PROJECTION WHOSE OWNER EMITS NO EVENTS MUST
+   * DECLARE ITS OWN SERIALIZATION.
+   *
+   * The platform's projection machinery carries an UNSTATED PRECONDITION: that every input to a
+   * projection is announced by a domain event. Seven projections satisfied it, so it was never
+   * written down — and everything built on top quietly assumed it:
+   *
+   *   - `diagnose` locks the project's `ProjectEventStream` row and calls the window frozen. It is
+   *     frozen only against writers that emit.
+   *   - the rebuild's catch-up phase repairs anything the seed missed — by REPLAYING EVENTS. With
+   *     no events, "catch-up will fix it" is false and every window becomes permanent.
+   *   - a stale projection is normally detectable as an undelivered event. With none, staleness has
+   *     no signal at all.
+   *
+   * Phase 5 Task 7A added the first projection that breaks the precondition, and five separate
+   * defects followed from the same place — an overwrite race, a discovery race, a false `corrupt`
+   * verdict, an unlocked repair sweep, and a refresh obligation hung on the wrong predicate.
+   *
+   * The fix class is not another lock. It is to make the precondition EXPLICIT and checkable: a
+   * projection owned by a module with `producesEvents: []` must supply `lockFor`, which is the
+   * declaration that it serializes its own writers. Derived on both sides — the projection set from
+   * `REBUILDABLE_PROJECTIONS`, the emitting-ness from the owning manifest — so the next event-less
+   * module that adds a projection is stopped here rather than three review rounds later.
+   */
+  it('a rebuildable projection whose owning module emits NO events declares its own lockFor', () => {
+    const ownerOf = (consumer: string): ModuleManifest => {
+      const id = consumer.slice(0, consumer.indexOf('.'));
+      const owner = MODULE_MANIFESTS.find((m) => m.id === id);
+      if (!owner) throw new Error(`${consumer} has no owning module '${id}' — the naming convention this derivation reads has changed`);
+      return owner;
+    };
+    const consumers = Object.keys(REBUILDABLE_PROJECTIONS);
+    expect(consumers.length, 'no rebuildable projections found — this closure would pass vacuously').toBeGreaterThan(5);
+
+    const eventless = consumers.filter((c) => ownerOf(c).producesEvents.length === 0);
+    expect(
+      eventless,
+      'no event-less projection owner was found. That is either correct or the derivation has stopped working — `commercial` is one, so an empty result means this closure sees nothing',
+    ).toContain(CASH_FORECAST_PROJECTION);
+
+    for (const consumer of eventless) {
+      expect(
+        typeof REBUILDABLE_PROJECTIONS[consumer]!.lockFor,
+        `${consumer} is owned by a module with producesEvents: [], so the operator diagnosis cannot freeze its writers by locking ProjectEventStream and its rebuild's catch-up has no events to replay. It must supply lockFor — the declaration that it serializes its own writers`,
+      ).toBe('function');
+    }
+    // …and the seven event-driven projections are NOT required to, so the rule stays a statement
+    // about the precondition rather than a blanket demand nobody reads
+    const emitting = consumers.filter((c) => ownerOf(c).producesEvents.length > 0);
+    expect(emitting.length, 'the derivation classifies every projection as event-less — it is not discriminating').toBeGreaterThan(5);
   });
 });
