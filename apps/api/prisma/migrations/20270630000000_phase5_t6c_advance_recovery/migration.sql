@@ -150,15 +150,31 @@ BEGIN
     FROM "VendorAdvance" a
    WHERE a."projectId" = p_project AND a."vendorId" = p_vendor;
 
-  -- every advance-recovery on ANY of this counterparty's claims, live certificate or superseded.
-  -- A superseded certificate's deductions leave `NET_PAYABLE` (§H) but the cash they recovered did
-  -- not come back — supersession never refunds an advance — so scoping this to live certificates
-  -- would free the recovered balance for a second recovery of the same money.
-  SELECT COALESCE(SUM(d."amount"), 0) INTO v_recovered
+  -- what this counterparty's claims have ACTUALLY recovered: the UNRELEASED `advance-recovery`
+  -- withholding on its LIVE certificates.
+  --
+  -- Both halves were learned from a failing probe. An earlier revision counted every
+  -- `advance-recovery` row on any certificate, live or superseded, reasoning that supersession
+  -- never refunds an advance — and that forgot §H's RE-STATEMENT: superseding carries the
+  -- deductions forward onto the replacement as NEW rows, so a bill-wide count sees the same ₹100
+  -- recovery twice and refuses the honest correction at `certify`, which is where the restatement
+  -- lands. The live scope is right for the same reason it is right for `NET_PAYABLE`: a restated
+  -- recovery is the SAME recovery and the superseded row is history, while a supersession with no
+  -- replacement leaves the vendor owed the full claim again — genuinely un-recovered.
+  --
+  -- Releases net off because releasing an `advance-recovery` gives the money back to the vendor, so
+  -- the advance is owed again. Mirrors `CommercialDeductionQuery.recoverableFor` clause for clause.
+  SELECT COALESCE(SUM(d."amount" - COALESCE(rel.released, 0)), 0)
+    INTO v_recovered
     FROM "BillDeduction" d
+    JOIN "BillCertificate" c ON c."projectId" = d."projectId" AND c."id" = d."certificateId"
     JOIN "VendorBill" b ON b."projectId" = d."projectId" AND b."id" = d."billId"
+    LEFT JOIN LATERAL (
+      SELECT SUM(r."amount") AS released FROM "BillDeductionRelease" r
+       WHERE r."projectId" = d."projectId" AND r."deductionId" = d."id"
+    ) rel ON TRUE
    WHERE d."projectId" = p_project AND b."vendorId" = p_vendor
-     AND d."type" = 'advance-recovery';
+     AND d."type" = 'advance-recovery' AND c."supersededAt" IS NULL;
 
   IF v_recovered > v_advanced THEN
     RAISE EXCEPTION 'Advance recoveries of % stand against % actually advanced to this counterparty — a recovery takes back money that went out, and there is no more of it to take (%)', v_recovered, v_advanced, p_vendor;

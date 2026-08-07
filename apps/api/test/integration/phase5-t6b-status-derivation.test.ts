@@ -38,7 +38,7 @@ import { derivedBillStatus } from '../../src/commercial/commercial-status';
  * 10 in particular was three findings that each refused VALID work, so the acceptances here carry
  * as much weight as the refusals.
  */
-describe('Phase 5 Task 6B — the §F status derivation, and the reversal that makes it fall (live PG)', () => {
+describe('Phase 5 Task 6 — the §F/§H money folds: derivation, reversal, advance recovery (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   let requirements: RequirementsService;
@@ -1367,5 +1367,375 @@ describe('Phase 5 Task 6B — the §F status derivation, and the reversal that m
         paid: new Prisma.Decimal(ledger.paid),
       }),
     ).toBe(ledger.billStatus);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // Task 6C — the ADVANCE, and the recovery that draws it down
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  //
+  // Same file, same reason as unit ii: these reuse `issuedMaterialLine` / `acceptOnLine` /
+  // `verifiedClaim` / `certifiedClaim` / `expectDerived` / `mintCommand` unchanged, and a sibling
+  // file would have restated ~290 lines of fixture. A fixture stated twice is the drift this module
+  // keeps deleting — the two copies disagree the first time either is fixed.
+  //
+  // What is genuinely new here is a bound that is NOT bill-scoped. §H's advance pool belongs to a
+  // COUNTERPARTY, so probe 24 is the one that matters most: two recoveries on two DIFFERENT bills
+  // of the same vendor take two different bill locks and never meet.
+
+  /** a certified ₹`qty` claim, with its counterparty named — every 6C probe needs both. */
+  const certifiedClaimFor = async (
+    projectId: string, vendorId?: string, qty = '100',
+  ): Promise<{ billId: string; vendorId: string }> => {
+    const line = await issuedMaterialLine(projectId, { qty, vendorId });
+    await acceptOnLine(projectId, line, qty);
+    const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: qty }]);
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    return { billId, vendorId: line.vendorId };
+  };
+
+  const advancePositionOf = async (projectId: string, billId: string) =>
+    (await deductions.readLedger(projectId, billId, pmc(projectId))).advance;
+
+  it('PROBE 22 (§H): a recovery cannot take back more than actually went out — the plan’s 5bp, in order', async () => {
+    const projectId = await freshProject();
+    // a ₹200 certificate, deliberately. §H's bound 1 (a withholding cannot exceed what the
+    // certificate leaves payable) is checked FIRST, so a ₹150 recovery against a ₹100 certificate
+    // is refused by the CERTIFICATE and never reaches the advance ceiling — the first draft of this
+    // probe asserted the advance message and got bound 1's, which is the two bounds being distinct
+    // rather than either being wrong. PROBE 26 is the mirror: bound 1 firing while the pool is fine.
+    const { billId, vendorId } = await certifiedClaimFor(projectId, undefined, '200');
+
+    // nothing advanced yet: the ceiling is zero, so even ₹1 is refused. This is the arm that makes
+    // the whole task necessary — without it the sign, fold and status probes all pass while the
+    // vendor is underpaid by whatever was "recovered".
+    await expect(deductions.record(
+      projectId, { billId, type: 'advance-recovery', amount: '1' }, pmc(projectId),
+    )).rejects.toThrow(/0\.00 went out, 0\.00 has already been recovered, so 0\.00 remains/u);
+
+    await deductions.payAdvance(projectId, {
+      vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId));
+    expect((await advancePositionOf(projectId, billId)).recoverable).toBe('100.00');
+
+    // ₹150 REFUSED, naming the balance — a message that only says "too much" leaves the practice
+    // guessing at the number it is allowed
+    await expect(deductions.record(
+      projectId, { billId, type: 'advance-recovery', amount: '150' }, pmc(projectId),
+    )).rejects.toThrow(/100\.00 went out, 0\.00 has already been recovered, so 100\.00 remains/u);
+
+    // …₹100 PERMITTED. The bound is PRECISE, not merely strict: an off-by-one here would make a
+    // full recovery — the ordinary case — impossible.
+    await deductions.record(projectId, { billId, type: 'advance-recovery', amount: '100' }, pmc(projectId));
+    const after = await advancePositionOf(projectId, billId);
+    expect(after.advanced).toBe('100.00');
+    expect(after.recovered).toBe('100.00');
+    expect(after.recoverable).toBe('0.00');
+
+    // …and a further ₹1 REFUSED, cumulatively. Two part-recoveries cannot exceed together what
+    // neither could alone, which is what "the fold, with no stored balance" buys.
+    const second = await certifiedClaimFor(projectId, vendorId);
+    await expect(deductions.record(
+      projectId, { billId: second.billId, type: 'advance-recovery', amount: '1' }, pmc(projectId),
+    )).rejects.toThrow(/100\.00 has already been recovered, so 0\.00 remains/u);
+  });
+
+  it('PROBE 23 (§F): a fully-offset certificate reaches `paid` with no cash moving — the plan’s 5bs', async () => {
+    // §F's FIRST arm is `NET_PAYABLE = PAID`, and this is the case that ordering exists for. Offset
+    // a ₹100 certificate entirely with a ₹100 advance-recovery and all three folds are zero. If
+    // `APPROVED = 0` were asked first the bill would sit at `certified` forever — approval and
+    // payment rows are STRICTLY POSITIVE (§H), so there is no legal row anyone could write to
+    // advance it. Until 6C the arm was unreachable through a recovery, because the type did not
+    // exist; this is the probe the plan wrote it for.
+    const projectId = await freshProject();
+    const { billId, vendorId } = await certifiedClaimFor(projectId);
+    await deductions.payAdvance(projectId, {
+      vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId));
+
+    expect(await expectDerived(projectId, billId, 'certified, nothing offset yet')).toBe('certified');
+    await deductions.record(projectId, { billId, type: 'advance-recovery', amount: '100' }, pmc(projectId));
+
+    const folds = await foldsOf(projectId, billId);
+    expect(folds.netPayable.toFixed(2), 'the whole payable is offset').toBe('0.00');
+    expect(folds.approved.toFixed(2)).toBe('0.00');
+    expect(folds.paid.toFixed(2), 'no cash moved — the recovery is a withholding, not a payment').toBe('0.00');
+    expect(await expectDerived(projectId, billId, 'nothing remains payable')).toBe('paid');
+
+    // …and `paid` here means "nothing remains payable", not "money was sent". The advance is not in
+    // `PAID(bill)` and cannot be: `paidFor` folds `"Payment"` by `billId`, and an advance has none.
+    const ledger = await payments.ledger(projectId, billId, pmc(projectId));
+    expect(ledger.paid, 'the advance never entered PAID').toBe('0.00');
+  });
+
+  it('PROBE 24 (§0b): the ceiling serializes on the COUNTERPARTY — two bills, one vendor', async () => {
+    // The defect this exists to prevent, and the reason §0b's bill-first lock is not enough on its
+    // own: two recoveries on two DIFFERENT bills of the same vendor take two DIFFERENT bill locks
+    // and never meet. Under READ COMMITTED both read the same ₹100 recoverable, both pass, and both
+    // commit — ₹200 recovered against ₹100 that went out, with every row append-only.
+    const projectId = await freshProject();
+    const first = await certifiedClaimFor(projectId);
+    const second = await certifiedClaimFor(projectId, first.vendorId);
+    await deductions.payAdvance(projectId, {
+      vendorId: first.vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId));
+
+    const gate = new PrismaClient();
+    try {
+      let release!: () => void; let staged!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const ready = new Promise<void>((r) => { staged = r; });
+      // a third session holds the BINDING — the one row both recoveries must touch
+      const holder = gate.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT "vendorId" FROM "ProjectVendor" WHERE "projectId"=$1 AND "vendorId"=$2 FOR UPDATE`, projectId, first.vendorId);
+        staged();
+        await held;
+      }, { timeout: 30_000 });
+      await ready;
+
+      const recovering = deductions
+        .record(projectId, { billId: first.billId, type: 'advance-recovery', amount: '100' }, pmc(projectId))
+        .then(() => 'committed' as const, (e: Error) => e);
+
+      // CONDITION-based, and it asserts WHICH statement waits. "A backend is blocked" is a PROXY:
+      // this recovery also takes a bill lock and a readiness lock, so a bare blocked-count would be
+      // satisfied by either and would pass against a build that never locked the vendor at all.
+      let waiting = '';
+      for (let i = 0; i < 400 && !waiting; i++) {
+        const rows = await t.prisma.$queryRawUnsafe<Array<{ q: string }>>(
+          `SELECT query AS q FROM pg_stat_activity
+            WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0`);
+        waiting = rows[0]?.q ?? '';
+        if (!waiting) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(waiting, 'the recovery must WAIT for the vendor binding — the bill lock alone lets two bills of one counterparty read the same balance').toMatch(/"ProjectVendor"/u);
+
+      release();
+      await holder;
+      expect(await recovering, 'the first recovery, unblocked, commits').toBe('committed');
+    } finally {
+      await gate.$disconnect();
+    }
+
+    // …and the SECOND bill's recovery is now refused: the pool is empty, and it found that out
+    // because the binding serialized the two
+    await expect(deductions.record(
+      projectId, { billId: second.billId, type: 'advance-recovery', amount: '100' }, pmc(projectId),
+    )).rejects.toThrow(/100\.00 has already been recovered, so 0\.00 remains/u);
+    expect((await advancePositionOf(projectId, second.billId)).recovered, 'exactly one ₹100 came back').toBe('100.00');
+  });
+
+  it('PROBE 30 (§0b): the DATABASE ceiling SERIALIZES on the binding — it does not merely count', async () => {
+    // PROBE 24 proves the SERVICE waits, and that is a different claim: it holds the binding through
+    // `ProcurementParticipant.lockVendorBinding`, so a gate on that row blocks the service whether
+    // or not the SEAL locks anything. Run the mutation and PROBE 24 still passes — which is the
+    // definition of a probe asserting a proxy, and 6B-ii's PROBE 19(b) is the same lesson one unit
+    // earlier: a lock is only observable by making something WAIT on it.
+    //
+    // So this one skips the service entirely. A raw `BillDeduction` insert takes FK key-share locks
+    // on its certificate and its bill and touches `ProjectVendor` NOWHERE — there is no foreign key
+    // to it from this table — so the ONLY thing that can make this write wait on the binding is
+    // `phase5_t6c_recoverable_check` taking it at COMMIT. Remove that `FOR UPDATE` and the barrier
+    // below times out.
+    const projectId = await freshProject();
+    const { billId, vendorId } = await certifiedClaimFor(projectId);
+    await deductions.payAdvance(projectId, {
+      vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId));
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({
+      where: { projectId, billId, supersededAt: null }, select: { id: true },
+    });
+
+    const gate = new PrismaClient();
+    const racer = new PrismaClient();
+    try {
+      let release!: () => void; let staged!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const ready = new Promise<void>((r) => { staged = r; });
+      const holder = gate.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT "vendorId" FROM "ProjectVendor" WHERE "projectId"=$1 AND "vendorId"=$2 FOR NO KEY UPDATE`, projectId, vendorId);
+        staged();
+        await held;
+      }, { timeout: 30_000 });
+      await ready;
+
+      // a WITHIN-BOUND recovery, so the only possible outcome is "commits, after waiting" — a
+      // refusal here would prove nothing about the lock
+      const forged = `it-6c-serialize-${seq++}`;
+      const commandId = await mintCommand(projectId, 'commercial.deduction.record', f.memberUser.id, forged);
+      const racing = racer.$executeRawUnsafe(
+        `INSERT INTO "BillDeduction"("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+         VALUES ($1,$2,$3,$4,'advance-recovery',50.00,$5,$6)`,
+        forged, projectId, cert.id, billId, f.memberUser.id, commandId,
+      ).then(() => 'committed' as const, (e: Error) => e);
+
+      let waiting = '';
+      for (let i = 0; i < 400 && !waiting; i++) {
+        const rows = await t.prisma.$queryRawUnsafe<Array<{ q: string }>>(
+          `SELECT query AS q FROM pg_stat_activity
+            WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0`);
+        waiting = rows[0]?.q ?? '';
+        if (!waiting) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(waiting, 'the commit-time ceiling must TAKE the binding — a seal that only counted would let two bypass writers each read the same balance and both commit').toMatch(/BillDeduction/u);
+
+      release();
+      await holder;
+      expect(await racing, 'once the binding is free the write commits').toBe('committed');
+    } finally {
+      await Promise.all([gate.$disconnect(), racer.$disconnect()]);
+    }
+    expect((await advancePositionOf(projectId, billId)).recoverable).toBe('50.00');
+  });
+
+  it('PROBE 25 (§H): an advance to one counterparty cannot be recovered from another’s claim', async () => {
+    const projectId = await freshProject();
+    const a = await certifiedClaimFor(projectId);
+    const b = await certifiedClaimFor(projectId);   // a DIFFERENT vendor — `issuedMaterialLine` mints one
+    expect(a.vendorId).not.toBe(b.vendorId);
+
+    await deductions.payAdvance(projectId, {
+      vendorId: a.vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId));
+
+    // B's claim sees a zero pool, because the fold is scoped to the claim's own counterparty
+    expect((await advancePositionOf(projectId, b.billId)).recoverable).toBe('0.00');
+    await expect(deductions.record(
+      projectId, { billId: b.billId, type: 'advance-recovery', amount: '100' }, pmc(projectId),
+    )).rejects.toThrow(/0\.00 went out/u);
+
+    // …while A's own claim recovers it, so the refusal above is containment and not a blanket ban
+    await deductions.record(projectId, { billId: a.billId, type: 'advance-recovery', amount: '100' }, pmc(projectId));
+    expect((await advancePositionOf(projectId, a.billId)).recoverable).toBe('0.00');
+  });
+
+  it('PROBE 26 (§H): BOTH ceilings apply — the certificate’s and the advance’s', async () => {
+    // A recovery is a `BillDeduction`, so §H's bound 1 (a withholding cannot exceed what the
+    // certificate leaves payable) still governs it. 6C adds a SECOND ceiling rather than replacing
+    // the first, and the probe that matters is the case where one is satisfied and the other is not:
+    // a ₹200 advance against a ₹100 certificate has plenty of pool and no payable to take it from.
+    const projectId = await freshProject();
+    const { billId, vendorId } = await certifiedClaimFor(projectId);
+    await deductions.payAdvance(projectId, {
+      vendorId, amount: '200', reason: 'over-advanced', method: 'neft',
+    }, pmc(projectId));
+
+    await expect(deductions.record(
+      projectId, { billId, type: 'advance-recovery', amount: '150' }, pmc(projectId),
+    )).rejects.toThrow(/can carry 100\.00 more of withholding/u);
+
+    // ₹100 fits both ceilings and is taken; the remaining ₹100 of advance stays recoverable against
+    // a LATER certificate, which is exactly what §H's bound-1 refusal tells the operator to do
+    await deductions.record(projectId, { billId, type: 'advance-recovery', amount: '100' }, pmc(projectId));
+    expect((await advancePositionOf(projectId, billId)).recoverable).toBe('100.00');
+  });
+
+  it('PROBE 27 (§H): the advance fact’s own seals, and its provenance', async () => {
+    const projectId = await freshProject();
+    const { billId, vendorId } = await certifiedClaimFor(projectId);
+
+    // an unbound counterparty is refused by the OWNER of the binding, not by a local read
+    await expect(deductions.payAdvance(projectId, {
+      vendorId: 'not-a-bound-vendor', amount: '10', reason: 'x', method: 'neft',
+    }, pmc(projectId))).rejects.toThrow(/not bound to this project/u);
+
+    // §H sign discipline, at the service and at PG
+    await expect(deductions.payAdvance(projectId, {
+      vendorId, amount: '0', reason: 'nothing moved', method: 'neft',
+    }, pmc(projectId))).rejects.toThrow(/strictly positive/u);
+
+    const advance = await deductions.payAdvance(projectId, {
+      vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId));
+
+    const forged = `it-6c-negative-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "VendorAdvance"("id","projectId","vendorId","amount","reason","method","paidById","sourceCommandId")
+       VALUES ($1,$2,$3,-10.00,'a negative advance','neft',$4,$5)`,
+      forged, projectId, vendorId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.advance.pay', f.memberUser.id, forged),
+    )).rejects.toThrow(/VendorAdvance_amount_positive/u);
+
+    const blank = `it-6c-blank-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "VendorAdvance"("id","projectId","vendorId","amount","reason","method","paidById","sourceCommandId")
+       VALUES ($1,$2,$3,10.00,'   ','neft',$4,$5)`,
+      blank, projectId, vendorId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.advance.pay', f.memberUser.id, blank),
+    )).rejects.toThrow(/VendorAdvance_reason_nonblank/u);
+
+    // append-only: cash that left is evidence, and recovering it is a deduction, never an edit here
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorAdvance" SET "amount" = 1000.00 WHERE "id" = $1`, advance.id,
+    )).rejects.toThrow(/append-only/u);
+    await expect(t.prisma.$executeRawUnsafe(
+      `DELETE FROM "VendorAdvance" WHERE "id" = $1`, advance.id,
+    )).rejects.toThrow(/append-only/u);
+
+    // provenance — the fourth arm of `phase5_t6a_command_succeeded` is really installed
+    const wrongType = `it-6c-wrongtype-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "VendorAdvance"("id","projectId","vendorId","amount","reason","method","paidById","sourceCommandId")
+       VALUES ($1,$2,$3,10.00,'wrong receipt','neft',$4,$5)`,
+      wrongType, projectId, vendorId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.payment.record', f.memberUser.id, wrongType),
+    )).rejects.toThrow(/records the command that PRODUCED it/u);
+
+    // …and a raw OVER-recovery is refused by the database, with every earlier seal satisfied
+    await deductions.record(projectId, { billId, type: 'advance-recovery', amount: '100' }, pmc(projectId));
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({
+      where: { projectId, billId, supersededAt: null }, select: { id: true },
+    });
+    const overRecovery = `it-6c-over-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeduction"("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,'advance-recovery',10.00,$5,$6)`,
+      overRecovery, projectId, cert.id, billId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.deduction.record', f.memberUser.id, overRecovery),
+    )).rejects.toThrow(/there is no more of it to take/u);
+  });
+
+  it('PROBE 28 (§H): a SUPERSEDED certificate’s recovery still counts — supersession never refunds cash', async () => {
+    // The one scoping decision in this fold that could plausibly have gone the other way, so it is
+    // probed rather than asserted in a comment. A superseded certificate's deductions leave
+    // `NET_PAYABLE` (§H) — but the advance they recovered did not come back. Scoping the recovered
+    // side to LIVE certificates would free the balance for a second recovery of the same money.
+    const projectId = await freshProject();
+    const { billId, vendorId } = await certifiedClaimFor(projectId);
+    await deductions.payAdvance(projectId, {
+      vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId));
+    await deductions.record(projectId, { billId, type: 'advance-recovery', amount: '100' }, pmc(projectId));
+    expect((await advancePositionOf(projectId, billId)).recoverable).toBe('0.00');
+
+    // supersede: `NET_PAYABLE` is restated onto the replacement (§H re-statement), and the advance
+    // position must NOT reopen
+    await certification.supersede(projectId, { billId, reason: 'corrected' }, pmc(projectId));
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    const position = await advancePositionOf(projectId, billId);
+    expect(position.advanced).toBe('100.00');
+    expect(position.recovered, 'the recovered balance survives the correction — the cash did not come back').toBe('100.00');
+    expect(position.recoverable).toBe('0.00');
+  });
+
+  it('PROBE 29 (§D): authority and replay on the advance', async () => {
+    const projectId = await freshProject();
+    const { billId, vendorId } = await certifiedClaimFor(projectId);
+
+    const engineer = { sub: f.memberUser.id, role: 'engineer', projectId } as AuthUser;
+    await expect(deductions.payAdvance(projectId, {
+      vendorId, amount: '100', reason: 'not mine to commit', method: 'neft',
+    }, engineer)).rejects.toThrow(/pmc surface/u);
+
+    const key = `it-6c-replay-${seq++}`;
+    const first = await deductions.payAdvance(projectId, {
+      vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId), key);
+    const again = await deductions.payAdvance(projectId, {
+      vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
+    }, pmc(projectId), key);
+    expect(again.id).toBe(first.id);
+    expect(await t.prisma.vendorAdvance.count({ where: { projectId, vendorId } })).toBe(1);
+    // the fold saw ONE advance, not two — a replay that appended would silently double the ceiling
+    expect((await advancePositionOf(projectId, billId)).advanced).toBe('100.00');
   });
 });
