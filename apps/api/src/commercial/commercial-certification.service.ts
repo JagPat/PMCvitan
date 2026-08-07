@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
+import { BILL_STATUSES_PAST_CERTIFICATION, ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
@@ -571,11 +571,31 @@ export class CommercialCertificationService {
       run: async (tx) => {
         await lockProjectReadiness(tx, projectId);
         const bill = await this.lockBill(tx, projectId, input.billId);
-        // `certified` is the only post-certification status at this tree: §F's derivation, and the
-        // `paid` it can reach, land in Task 6. When they do, this guard names the SET rather than
-        // the member — `BILL_STATUSES_PAST_CERTIFICATION` is already stated in shared for it.
-        if (bill.status !== 'certified') {
+        // Task 6B-i — the SET, exactly as the note left here for this task said it would be.
+        // §F's derivation makes `approved-for-payment`, `part-paid` and `paid` reachable, and every
+        // one of them stands on a LIVE certificate, so guarding on the member would refuse a
+        // correction with the false reason that no certification exists.
+        if (!(BILL_STATUSES_PAST_CERTIFICATION as readonly string[]).includes(bill.status)) {
           throw new ConflictException(`A ${bill.status} claim has no live certification to supersede`);
+        }
+
+        // §0 — …but CASH already gone is not corrected by correcting a document. Supersession takes
+        // the certificate's approvals out of `APPROVED` and never appends a payment reversal,
+        // because `PAID` records money that actually left the practice: superseding a paid
+        // certificate would leave `PAID > APPROVED = 0` with both rows append-only, breaking §G
+        // bound 5 with evidence nothing can walk back, and hiding a real outflow behind a lower
+        // payable. Recovering money is its own attributable act — the reversal is 6B-ii's — so this
+        // refuses until one exists rather than silently orphaning the payment.
+        //
+        // Reachable before this task and unguarded: 6A made payments possible while the bill stayed
+        // `certified`, so the hole predates the derivation. It is closed here because this is the
+        // increment that makes the paid state legible, and widening the status guard without it
+        // would have turned a latent hole into an ordinary path.
+        const paidSoFar = await this.deductions.paidFor(tx, projectId, input.billId);
+        if (paidSoFar.greaterThan(0)) {
+          throw new ConflictException(
+            `This claim has ${paidSoFar.toFixed(2)} already paid against its certificate — a certificate is not corrected while the cash it authorised stands. Reverse the payment first; recovering money is a separate attributable act, never a side effect of correcting a document`,
+          );
         }
         const live = await tx.billCertificate.findFirst({
           where: { projectId, billId: input.billId, supersededAt: null },
@@ -591,7 +611,11 @@ export class CommercialCertificationService {
           },
         });
         if (count === 0) throw new ConflictException('This certificate was superseded concurrently — reload and retry');
-        await this.cas(tx, projectId, input.billId, 'certified', 'verified');
+        // Task 6B-i — the CAS moves from whatever DERIVED status this bill actually holds, not from
+        // the one member that used to be the only possibility. `bill.status` was read under the row
+        // lock above and the guard has already required it to be in the family, so this is the
+        // status supersession is correcting.
+        await this.cas(tx, projectId, input.billId, bill.status, 'verified');
         // §F — supersession returns the bill to the FORWARD lifecycle, and `verified` is outside
         // the derived family, so `reDerive` correctly declines to touch it. The call is kept so the
         // mover set stays complete by construction: the guard is `isDerivedBillStatus`, one rule at
