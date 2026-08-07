@@ -6,6 +6,7 @@ import {
   releaseDeductionSchema,
   approvePaymentSchema,
   recordPaymentSchema,
+  reversePaymentSchema,
   grantSodExceptionSchema,
   correctMeasurementSchema,
   defineCostHeadSchema,
@@ -22,6 +23,7 @@ import {
   type ReleaseDeductionInput,
   type ApprovePaymentInput,
   type RecordPaymentInput,
+  type ReversePaymentInput,
   type GrantSodExceptionInput,
   type CorrectMeasurementInput,
   type DefineCostHeadInput,
@@ -352,6 +354,24 @@ export class CommercialController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.payments.record(projectId, body, user, idempotencyKey);
+  }
+
+  /**
+   * §0/§H — RECOVER money already paid, against the payment that moved it.
+   *
+   * Its own route and its own permission, not a signed `record`: §H makes every append-only money
+   * row strictly positive with the row TYPE carrying direction, and a practice may legitimately
+   * want the person who can send money to be unable to claw it back.
+   */
+  @Post('commercial/payments/reverse')
+  @RolesFor('commercial.reverse-payment')
+  reversePayment(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(reversePaymentSchema)) body: ReversePaymentInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.payments.reverse(projectId, body, user, idempotencyKey);
   }
 
   /** §G — one claim's approvals and payments, with the folds bounds 4–5 are measured against. */

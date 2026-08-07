@@ -61,6 +61,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.deduction.release': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.deduction.release'" },
     'commercial.payment.approve': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.approve'" },
     'commercial.payment.record': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.record'" },
+    'commercial.payment.reverse': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.reverse'" },
     'commercial.certificate.supersede': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.certificate.supersede'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
@@ -798,10 +799,21 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
   // database and no reviewer required — rather than becoming the next bypass.
   it('§F: every table the folds READ carries a derivation seal — the set is derived, not listed', () => {
     const query = readFileSync(join(HERE, 'commercial-deduction.query.ts'), 'utf8');
-    const migration = readFileSync(
-      join(SRC, '../prisma/migrations/20270610000000_phase5_t6b_status_derivation/migration.sql'),
-      'utf8',
-    );
+    // EVERY migration, not the one file that happened to install the first six seals.
+    //
+    // Task 6B-ii found this: the seal SET was derived while the PLACE it was derived from was a
+    // hand-written path to `20270610000000`. `PaymentReversal_t6b_status_sealed` is installed by
+    // `20270620000000`, so the closure reported a correctly-sealed table as unsealed — root A one
+    // level up from the version this closure was written to catch, and this time it failed CLOSED
+    // (a false alarm rather than a miss), which is the only reason it is a footnote and not a
+    // finding. A seal is a seal wherever it is installed; the migrations directory is the fact.
+    const migrationsDir = join(SRC, '../prisma/migrations');
+    const migration = readdirSync(migrationsDir)
+      .filter((d) => !d.endsWith('.toml'))
+      .map((d) => {
+        try { return readFileSync(join(migrationsDir, d, 'migration.sql'), 'utf8'); } catch { return ''; }
+      })
+      .join('\n');
 
     // what the three folds actually touch, extracted GENERICALLY — the first draft of this closure
     // matched delegates with `tx\.(billCertificate|billDeduction|…)\.`, which is the five members
@@ -834,20 +846,40 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
 
     expect(readTables.length, 'no fold table was found — the extraction is matching nothing, so this pin proves nothing').toBeGreaterThan(2);
 
-    // …and the extractor is MUTATION-TESTED against the exact future addition that broke the first
-    // draft. This is the shape 6B-ii will introduce; if the extractor stops seeing it, this fails
-    // here rather than in the next unit's review.
-    const withReversal = new Set([...models, 'PaymentReversal']);
+    // …and the extractor is MUTATION-TESTED against a delegate it has never seen.
+    //
+    // The 6B-i spelling used `tx.paymentReversal` for this, because that was the addition 6B-ii
+    // would make and the alternation it replaced could not have matched. 6B-ii has now made it, and
+    // the reversal is genuinely sealed — so keeping it as the mutation case would test nothing: the
+    // "unsealed" arm would be vacuously empty. Asserting a fixture that has become true is the
+    // defect PR #290's audit is about, one substrate over.
+    //
+    // So the case is a SYNTHETIC model that is deliberately not in the schema and not sealed. That
+    // is the honest shape of the question — "an unseen fold input is seen AND reported" — and it
+    // stays a real question for 6C's advance fact and everything after it, rather than expiring the
+    // moment the named guess ships.
+    const unseen = 'SomeFutureFoldInput';
+    const withUnseen = new Set([...models, unseen]);
     expect(
-      delegatesIn('await tx.paymentReversal.findMany({ where: { billId } });', withReversal),
-      'the delegate extractor does not see `tx.paymentReversal` — 6B-ii would add an unsealed fold input to `PAID` and this closure would stay green',
-    ).toEqual(['PaymentReversal']);
+      delegatesIn('await tx.someFutureFoldInput.findMany({ where: { billId } });', withUnseen),
+      'the delegate extractor does not see an ordinary `tx.<delegate>.` read — a new fold input would be added to `PAID` unsealed and this closure would stay green',
+    ).toEqual([unseen]);
     // …and the consequence is what matters: an unsealed new fold input must be REPORTED, not merely
-    // seen. This is the assertion the first draft could not have made.
+    // seen. This is the assertion the alternation-based draft could not have made.
     expect(
-      delegatesIn('await tx.paymentReversal.findMany();', withReversal).filter((t) => !sealedTables().has(t)),
-      '`PaymentReversal` would be read by a fold and carry no `_t6b_status_sealed` trigger, yet the closure did not flag it',
+      delegatesIn('await tx.someFutureFoldInput.findMany();', withUnseen).filter((t) => !sealedTables().has(t)),
+      'a table read by a fold with no `_t6b_status_sealed` trigger was not flagged',
+    ).toEqual([unseen]);
+    // the REAL 6B-ii addition, asserted the other way round: it is seen, and it IS sealed. This is
+    // what the previous head's failing arm turned into, kept as evidence rather than deleted.
+    expect(
+      delegatesIn('await tx.paymentReversal.findMany({ where: { billId } });'),
+      '`tx.paymentReversal` is no longer recognised as the `PaymentReversal` model',
     ).toEqual(['PaymentReversal']);
+    expect(
+      sealedTables().has('PaymentReversal'),
+      '`PaymentReversal` is a fold input of `PAID` and carries no `_t6b_status_sealed` trigger',
+    ).toBe(true);
     expect(
       delegatesIn('await tx.$queryRaw`SELECT 1`; await tx.notAModel.findMany();'),
       'the extractor invented a table from a non-model property',
@@ -862,6 +894,81 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       unsealed,
       `these tables are READ by §F's folds but carry no \`_t6b_status_sealed\` trigger, so a write to them can move the derivation and leave the stored status behind: ${unsealed.join(', ')}`,
     ).toEqual([]);
+  });
+
+  // ── CLOSURE B (Task 6B-ii) — a fold has ONE definition, in both languages ─────────────────────
+  //
+  // `docs/reviews/pr-289-convergence.md`, root A, at the substrate it had not reached yet. The
+  // seal closure above derives WHICH TABLES the folds read. This derives WHICH FUNCTIONS compute
+  // `PAID`, and requires each of them to compute the whole of it.
+  //
+  // The failure it prevents is specific and was live in this unit. §0 defines `PAID(bill)` as
+  // Σ payments MINUS Σ payment reversals, and three PL/pgSQL functions compute it: §G bound 5
+  // bill-scoped, §G bound 5 approval-scoped, and §F's own truth-table mirror. Widen two and forget
+  // the third and nothing looks broken — until a ₹100 reversal fails to unlock the supersession it
+  // exists for, because the un-widened bound still reads ₹100 paid. The reversal row is appended,
+  // the fold falls everywhere a reader looks, and the correction is still refused.
+  //
+  // A hand-kept list of those three is the same mistake one level down, so the set is EXTRACTED:
+  // any function body that aggregates over `"Payment"` is a `PAID` twin, and must subtract
+  // `"PaymentReversal"`. 6C adds `advance-recovery` and will be tempted to write a fourth.
+  it('§0: every SQL function that folds `Payment` also subtracts `PaymentReversal`', () => {
+    const migrationsDir = join(SRC, '../prisma/migrations');
+    const sql = readdirSync(migrationsDir)
+      .filter((d) => !d.endsWith('.toml'))
+      .sort()
+      .map((d) => {
+        try { return readFileSync(join(migrationsDir, d, 'migration.sql'), 'utf8'); } catch { return ''; }
+      })
+      .join('\n');
+
+    // Each `CREATE OR REPLACE FUNCTION` body, keyed by name. LAST definition wins, which is the
+    // semantics PostgreSQL itself has: this migration REPLACES 6A's two functions, and a closure
+    // that read the first definition would report the pre-widening text forever.
+    const bodies = new Map<string, string>();
+    for (const m of sql.matchAll(/CREATE OR REPLACE FUNCTION\s+(\w+)\s*\([\s\S]*?\$\$\s+LANGUAGE/gu)) {
+      bodies.set(m[1]!, m[0]!);
+    }
+    expect(bodies.size, 'no PL/pgSQL function bodies were parsed — this closure would pass vacuously').toBeGreaterThan(10);
+
+    // a `PAID` twin is a body that AGGREGATES over the payment table. A body that merely mentions
+    // `"Payment"` (a lock, an existence check, an FK diagnostic) is not folding it and is not asked
+    // to subtract anything.
+    const folds = (body: string): boolean => /SUM\(\s*\w+\."amount"\s*\)[\s\S]{0,400}?FROM\s+"Payment"\s/u.test(body);
+    const netsReversals = (body: string): boolean => /FROM\s+"PaymentReversal"/u.test(body);
+
+    const twins = [...bodies.entries()].filter(([, body]) => folds(body)).map(([name]) => name).sort();
+    expect(
+      twins,
+      'no SQL function was recognised as folding `Payment` — the extraction is matching nothing, so this closure proves nothing',
+    ).not.toEqual([]);
+
+    const missing = twins.filter((name) => !netsReversals(bodies.get(name)!));
+    expect(
+      missing,
+      `these SQL functions fold \`Payment\` without subtracting \`PaymentReversal\`, so they compute a \`PAID\` that can only rise — §0 defines it as Σ payments MINUS Σ reversals, and a twin that disagrees refuses the correction a reversal exists to permit: ${missing.join(', ')}`,
+    ).toEqual([]);
+
+    // the three §0 named twins are present by NAME as well as by count, so a rename that silently
+    // dropped one from the extraction cannot leave this green on the survivors
+    for (const name of ['phase5_t6a_paid_bound_check', 'phase5_t6a_approval_paid_check', 'phase5_t6b_derive_bill_status']) {
+      expect(twins.includes(name), `${name} is no longer recognised as a \`PAID\` fold — either it stopped folding payments, or the extraction stopped seeing it`).toBe(true);
+    }
+
+    // …and the detector is MUTATION-TESTED in both directions, because a predicate that answers
+    // `true` to everything would make the assertion above meaningless.
+    expect(
+      folds('SELECT COALESCE(SUM(p."amount"), 0) INTO v INNER\n FROM "Payment" p WHERE 1=1;'),
+      'the fold detector does not recognise an ordinary aggregate over "Payment"',
+    ).toBe(true);
+    expect(
+      folds('SELECT p."id" INTO v FROM "Payment" p WHERE p."id" = x FOR UPDATE;'),
+      'the fold detector treats a plain row read of "Payment" as a fold, so it would demand a reversal term from a lock',
+    ).toBe(false);
+    expect(
+      netsReversals('SELECT COALESCE(SUM(p."amount"), 0) FROM "Payment" p;'),
+      'the netting detector reports a reversal term in a body that has none',
+    ).toBe(false);
   });
 
   it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {

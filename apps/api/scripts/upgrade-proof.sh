@@ -2540,12 +2540,12 @@ assert "commercial T6B: §F's derived family has ONE definition in SQL, and it i
 assert "commercial T6B: the predicate answers for the WHOLE family and for nothing outside it" \
   "SELECT string_agg(phase5_t6b_derived_bill_status(s)::text, '/' ORDER BY s) FROM unnest(ARRAY['approved-for-payment','certified','draft','paid','part-paid','rejected','submitted','verified']) s;" \
   "true/true/false/true/true/false/false/false"
-# Codex round 1 — the TRUTH TABLE is in SQL too, and the seal that uses it is installed on all five
-# tables that can move a fold. A name-and-count assertion would prove neither, so the derivation is
+# Codex round 1 — the TRUTH TABLE is in SQL too, and the seal that uses it is installed on every
+# table that can move a fold (six of them after 6B-ii added the reversal). A name-and-count assertion would prove neither, so the derivation is
 # exercised directly below and the trigger set is checked by relation as well as by name.
 assert "commercial T6B R1: the derivation seal fires from the bill AND from every fold table" \
   "SELECT string_agg(c.\"relname\", '/' ORDER BY c.\"relname\") FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" WHERE t.\"tgname\" LIKE '%_t6b_status_sealed' AND NOT t.\"tgisinternal\" AND t.\"tgdeferrable\" AND t.\"tginitdeferred\";" \
-  "BillCertificate/BillDeduction/BillDeductionRelease/Payment/PaymentApproval/VendorBill"
+  "BillCertificate/BillDeduction/BillDeductionRelease/Payment/PaymentApproval/PaymentReversal/VendorBill"
 
 # A FRESH live certificate on the bill the 6A block left at `verified` — the arrows below are
 # vacuous without one, because the projection seal refuses every derived status with no certificate.
@@ -2695,6 +2695,75 @@ assert_rejects "commercial T6B §0: superseding a certificate that has already p
 assert "commercial T6B R1: re-running the migration's backfill over the upgraded database moves NOTHING" \
   "WITH c AS (UPDATE \"VendorBill\" b SET \"status\" = phase5_t6b_derive_bill_status(b.\"projectId\", b.\"id\"), \"statusChangedAt\" = now() WHERE phase5_t6b_derived_bill_status(b.\"status\") AND b.\"status\" <> phase5_t6b_derive_bill_status(b.\"projectId\", b.\"id\") RETURNING 1) SELECT COUNT(*)::text FROM c;" \
   "0"
+
+
+# ── Task 6B unit ii (§0/§H) — the money coming BACK ──────────────────────────────────────────
+#
+# The table is CREATED by this migration, so the first thing to prove about the upgrade is that it
+# arrived EMPTY over a legacy fixture: `PAID` reads exactly what it read before (Σ payments − 0),
+# no stored status moved, and no backfill was needed. A migration that quietly wrote rows here
+# would be inventing money.
+assert "commercial T6B-ii: the reversal table upgrades ROW-FREE over the legacy fixture" \
+  "SELECT COUNT(*)::text FROM \"PaymentReversal\";" \
+  "0"
+assert "commercial T6B-ii: its four seals are installed, with the deferred ones deferred" \
+  "SELECT string_agg(t.\"tgname\" || '/' || t.\"tginitdeferred\"::text, ',' ORDER BY t.\"tgname\") FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" WHERE c.\"relname\" = 'PaymentReversal' AND NOT t.\"tgisinternal\";" \
+  "PaymentReversal_append_only/false,PaymentReversal_bound_sealed/true,PaymentReversal_command_succeeded/true,PaymentReversal_t6b_status_sealed/true"
+
+# Provenance first, while the payment still has reversible headroom: run after the arrows below and
+# the BOUND fires first, so the assertion would pass for the wrong rule. A refusal is only evidence
+# of the rule it names.
+mint5c UP6BII-CMD-WRONG commercial.payment.record UP6BII-WRONG
+assert_rejects "commercial T6B-ii: a reversal citing a receipt of the WRONG command type" \
+  "INSERT INTO \"PaymentReversal\"(\"id\",\"projectId\",\"paymentId\",\"billId\",\"amount\",\"reason\",\"reversedById\",\"sourceCommandId\") VALUES('UP6BII-WRONG','p1','UP6B-P1','$UP5C_BILL',0.01,'wrong receipt','USER-1','UP6BII-CMD-WRONG')" \
+  'records the command that PRODUCED it'
+
+# The claim above stands at `paid` with ₹1.00 approved and ₹1.00 paid across two rows. Cash coming
+# back must move the derivation BACKWARDS, and the arrow helper asserts the state really moved —
+# an acceptance is evidence only when it changed something.
+mint5c UP6BII-CMD-V1 commercial.payment.reverse UP6BII-V1
+t6b_arrow "part of the cash coming back un-settles the claim" paid part-paid \
+  "INSERT INTO \"PaymentReversal\"(\"id\",\"projectId\",\"paymentId\",\"billId\",\"amount\",\"reason\",\"reversedById\",\"sourceCommandId\") VALUES('UP6BII-V1','p1','UP6B-P1','$UP5C_BILL',0.40,'wrong account','USER-1','UP6BII-CMD-V1')"
+mint5c UP6BII-CMD-V2 commercial.payment.reverse UP6BII-V2
+t6b_arrow "the rest coming back leaves the AUTHORITY standing and the cash at zero" part-paid approved-for-payment \
+  "INSERT INTO \"PaymentReversal\"(\"id\",\"projectId\",\"paymentId\",\"billId\",\"amount\",\"reason\",\"reversedById\",\"sourceCommandId\") VALUES('UP6BII-V2','p1','UP6B-P2','$UP5C_BILL',0.60,'recall the rest','USER-1','UP6BII-CMD-V2')"
+
+# …and the fold really fell, in the DATABASE's own arithmetic rather than only in the status column
+assert "commercial T6B-ii §0: PAID is Σ payments MINUS Σ reversals, at PG" \
+  "SELECT (COALESCE((SELECT SUM(\"amount\") FROM \"Payment\" WHERE \"billId\"='$UP5C_BILL'),0) - COALESCE((SELECT SUM(\"amount\") FROM \"PaymentReversal\" WHERE \"billId\"='$UP5C_BILL'),0))::text;" \
+  "0.00"
+
+# §0's correction ORDERING, which is the reason this unit exists. The SAME supersession that was
+# refused above — while ₹1.00 stood paid — is now PERMITTED, because the cash was recovered by its
+# own attributable act first. This is the acceptance half: a seal that only ever refuses has not
+# been shown to be right.
+# …in ONE transaction, because a certificate and the status it projects move together (5B's seal):
+# superseding alone takes APPROVED to 0 and the derivation with it, which the derivation seal
+# correctly refuses. The service does both in one transaction and so does this.
+if $PSQL >/dev/null 2>&1 -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected after full recovery' WHERE \"id\"='UP6B-C2'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+then printf 'ok      %s\n' "commercial T6B-ii §0: with PAID recovered to zero the correction is PERMITTED (reverse in full, THEN supersede)"
+else printf 'FAILED  %s\n' "commercial T6B-ii §0: the correction is still refused after a full reversal — the bound's PAID twin was not widened, so the reversal unlocks nothing"; FAIL=1
+fi
+
+# the four forgeries this table must refuse, each otherwise well-formed
+mint5c UP6BII-CMD-NEG commercial.payment.reverse UP6BII-NEG
+assert_rejects "commercial T6B-ii §H: a NEGATIVE reversal (direction belongs to the row TYPE, not its sign)" \
+  "INSERT INTO \"PaymentReversal\"(\"id\",\"projectId\",\"paymentId\",\"billId\",\"amount\",\"reason\",\"reversedById\",\"sourceCommandId\") VALUES('UP6BII-NEG','p1','UP6B-P1','$UP5C_BILL',-0.10,'a negative reversal','USER-1','UP6BII-CMD-NEG')" \
+  'PaymentReversal_amount_positive'
+mint5c UP6BII-CMD-BLANK commercial.payment.reverse UP6BII-BLANK
+assert_rejects "commercial T6B-ii §H: a BLANK reason (recovering cash is an attributable act, and this row cannot acquire one later)" \
+  "INSERT INTO \"PaymentReversal\"(\"id\",\"projectId\",\"paymentId\",\"billId\",\"amount\",\"reason\",\"reversedById\",\"sourceCommandId\") VALUES('UP6BII-BLANK','p1','UP6B-P1','$UP5C_BILL',0.10,'   ','USER-1','UP6BII-CMD-BLANK')" \
+  'PaymentReversal_reason_nonblank'
+mint5c UP6BII-CMD-OVER commercial.payment.reverse UP6BII-OVER
+assert_rejects "commercial T6B-ii §0: returning MORE than that payment moved" \
+  "INSERT INTO \"PaymentReversal\"(\"id\",\"projectId\",\"paymentId\",\"billId\",\"amount\",\"reason\",\"reversedById\",\"sourceCommandId\") VALUES('UP6BII-OVER','p1','UP6B-P1','$UP5C_BILL',0.10,'one paisa too many','USER-1','UP6BII-CMD-OVER')" \
+  'which moved only'
+assert_rejects "commercial T6B-ii: EDITING a reversal (money that came back is evidence)" \
+  "UPDATE \"PaymentReversal\" SET \"amount\"=0.01 WHERE \"id\"='UP6BII-V1'" \
+  'append-only'
+assert_rejects "commercial T6B-ii: DELETING one" \
+  "DELETE FROM \"PaymentReversal\" WHERE \"id\"='UP6BII-V1'" \
+  'append-only'
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

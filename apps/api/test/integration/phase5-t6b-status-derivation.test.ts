@@ -38,7 +38,7 @@ import { derivedBillStatus } from '../../src/commercial/commercial-status';
  * 10 in particular was three findings that each refused VALID work, so the acceptances here carry
  * as much weight as the refusals.
  */
-describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live PG)', () => {
+describe('Phase 5 Task 6B — the §F status derivation, and the reversal that makes it fall (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   let requirements: RequirementsService;
@@ -62,7 +62,7 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -288,6 +288,30 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
     ).toBe(derivedBillStatus(folds));
     return stored;
   };
+
+  /**
+   * A REAL, succeeded command receipt of the given type and actor, minted outside the services.
+   *
+   * Every money row must cite the command that PRODUCED it (5A's provenance floor, sealed at
+   * `phase5_t6a_command_succeeded`), so a bypass probe that skipped this would be rejected by an
+   * EARLIER seal and prove nothing about the one under test. Hoisted here in 6B-ii because a second
+   * probe needed it: two copies of a forgery helper is how two probes start forging differently.
+   */
+  const mintCommand = async (
+    projectId: string, type: string, actorId: string, resultRef: string,
+  ): Promise<string> => t.prisma.$transaction(async (tx) => {
+    const c = await tx.commandExecution.create({
+      data: {
+        scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId,
+        commandType: type, idempotencyKey: `t6b-bypass-${seq++}`, requestHash: 'x', status: 'reserved',
+      },
+      select: { id: true },
+    });
+    await tx.commandExecution.update({
+      where: { id: c.id }, data: { status: 'succeeded', resultRef, completedAt: new Date() },
+    });
+    return c.id;
+  });
 
   // ── the §F truth table, every arm reached through real commands ───────────────────────────────
 
@@ -521,19 +545,8 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
     // below carries a real, succeeded command of the right TYPE and actor. The point of the probe is
     // that a row can be perfectly well-formed by every EARLIER seal and still leave the status
     // behind — a weaker forgery would be rejected before it reached the derivation.
-    const mint = async (type: string, actorId: string, resultRef: string): Promise<string> => t.prisma.$transaction(async (tx) => {
-      const c = await tx.commandExecution.create({
-        data: {
-          scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId,
-          commandType: type, idempotencyKey: `t6bi-bypass-${seq++}`, requestHash: 'x', status: 'reserved',
-        },
-        select: { id: true },
-      });
-      await tx.commandExecution.update({
-        where: { id: c.id }, data: { status: 'succeeded', resultRef, completedAt: new Date() },
-      });
-      return c.id;
-    });
+    const mint = (type: string, actorId: string, resultRef: string): Promise<string> =>
+      mintCommand(projectId, type, actorId, resultRef);
     const forgedApproval = `it-6bi-bypass-approval-${seq++}`;
     const forgedPayment = `it-6bi-bypass-payment-${seq++}`;
     const forgedDeduction = `it-6bi-bypass-deduction-${seq++}`;
@@ -931,5 +944,425 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
     ]);
     expect(p.billStatus, 'the two ledgers read the same way and answer the same').toBe(d.billStatus);
     expect(p.approved).toBe('40.00');
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // Task 6B unit ii — the reversal, and a `PAID` that can FALL
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  //
+  // These live in this file rather than a sibling because they are §F probes: every one of them
+  // asserts the SAME invariant the unit-i probes above assert — the stored status equals what its
+  // own folds derive — through a mover that lowers `PAID` instead of raising it. They reuse
+  // `certifiedClaim`, `approver`, `expectDerived`, `mintCommand` and the barrier helper unchanged.
+  //
+  // A sibling file would have had to restate ~290 lines of fixture, and a fixture stated twice is
+  // the drift this module keeps deleting: the two copies disagree the first time either is fixed.
+
+  /** certified ₹100 → approved ₹100 → paid `amount`, returned with the payment that moved it. */
+  const paidClaim = async (
+    projectId: string, amount = '100',
+  ): Promise<{ billId: string; approvalId: string; paymentId: string }> => {
+    const billId = await certifiedClaim(projectId);
+    const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    const payment = await payments.record(
+      projectId, { approvalId: approval.id, amount, method: 'neft' }, pmc(projectId),
+    );
+    return { billId, approvalId: approval.id, paymentId: payment.id };
+  };
+
+  it('PROBE 14 (§0): a reversal SUBTRACTS from `PAID` — never adds, and never a negative row', async () => {
+    const projectId = await freshProject();
+    const { billId, paymentId } = await paidClaim(projectId);
+    expect((await foldsOf(projectId, billId)).paid.toFixed(2)).toBe('100.00');
+
+    const after = await payments.reverse(
+      projectId, { paymentId, amount: '50', reason: 'wrong account' }, pmc(projectId),
+    );
+    // ₹50, never ₹150. The row TYPE carries the direction, so the fold subtracts rather than the
+    // row being signed — which is what makes both of the alternatives below unrepresentable.
+    expect((await foldsOf(projectId, billId)).paid.toFixed(2)).toBe('50.00');
+    expect(after.amount, 'the payment itself is untouched — it is what it always was').toBe('100.00');
+    expect(after.reversed).toBe('50.00');
+    expect(after.reversals).toHaveLength(1);
+    expect(after.reversals[0]!.reason).toBe('wrong account');
+
+    // a NEGATIVE reversal is refused by PostgreSQL, so "reversing a reversal" cannot be spelled as
+    // a minus sign either. §H's sign rule holds on this table exactly as it does on `Payment`.
+    const forged = `it-6bii-negative-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentReversal"("id","projectId","paymentId","billId","amount","reason","reversedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,-10.00,'a negative reversal',$5,$6)`,
+      forged, projectId, paymentId, billId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.payment.reverse', f.memberUser.id, forged),
+    )).rejects.toThrow(/PaymentReversal_amount_positive/u);
+
+    // …and a ZERO one, which would be a row claiming an act that moved nothing
+    const forgedZero = `it-6bii-zero-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentReversal"("id","projectId","paymentId","billId","amount","reason","reversedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,0.00,'nothing moved',$5,$6)`,
+      forgedZero, projectId, paymentId, billId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.payment.reverse', f.memberUser.id, forgedZero),
+    )).rejects.toThrow(/PaymentReversal_amount_positive/u);
+
+    // the row is APPEND-ONLY: money that came back is evidence in the same sense money leaving is
+    const row = await t.prisma.paymentReversal.findFirstOrThrow({ where: { projectId, paymentId } });
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "PaymentReversal" SET "amount" = 10.00 WHERE "id" = $1`, row.id,
+    )).rejects.toThrow(/append-only/u);
+    await expect(t.prisma.$executeRawUnsafe(
+      `DELETE FROM "PaymentReversal" WHERE "id" = $1`, row.id,
+    )).rejects.toThrow(/append-only/u);
+
+    // a blank reason is refused too — a reversal's justification IS its reason, and an append-only
+    // row cannot acquire one later
+    await expect(payments.reverse(
+      projectId, { paymentId, amount: '1', reason: '   ' }, pmc(projectId),
+    )).rejects.toThrow();
+    expect(await expectDerived(projectId, billId, 'after every refused write')).toBe('part-paid');
+  });
+
+  it('PROBE 15 (§0): a reversal cannot return more than its OWN payment moved — service and PG', async () => {
+    const projectId = await freshProject();
+    // TWO payments against one approval, so the bill-level total is not the question: reversing ₹80
+    // against a ₹40 payment keeps `Σ reversals ≤ Σ payments` at the BILL while the attribution is a
+    // lie. That is the shape 6A round 3 found on the paying side, asked here on the returning side.
+    const billId = await certifiedClaim(projectId);
+    const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    const first = await payments.record(projectId, { approvalId: approval.id, amount: '40', method: 'neft' }, pmc(projectId));
+    await payments.record(projectId, { approvalId: approval.id, amount: '60', method: 'neft' }, pmc(projectId));
+    expect((await foldsOf(projectId, billId)).paid.toFixed(2)).toBe('100.00');
+
+    await expect(payments.reverse(
+      projectId, { paymentId: first.id, amount: '80', reason: 'too much' }, pmc(projectId),
+    )).rejects.toThrow(/would return more than payment .* it paid 40\.00/u);
+
+    // EXACTLY the payment's amount is PERMITTED — the bound is precise, not merely strict, and an
+    // off-by-one here would make a full reversal (the only kind §0's ordering accepts) impossible
+    await payments.reverse(projectId, { paymentId: first.id, amount: '40', reason: 'wrong account' }, pmc(projectId));
+    expect((await foldsOf(projectId, billId)).paid.toFixed(2)).toBe('60.00');
+
+    // …and one paisa more, cumulatively, is refused: two part-reversals cannot exceed together what
+    // neither could alone
+    await expect(payments.reverse(
+      projectId, { paymentId: first.id, amount: '0.01', reason: 'once more' }, pmc(projectId),
+    )).rejects.toThrow(/40\.00 has already come back, so 0\.00 remains reversible/u);
+
+    // the same over-reversal from a writer that never called the service is refused by PostgreSQL,
+    // with every earlier seal satisfied — a real succeeded receipt of the right type and actor
+    const forged = `it-6bii-over-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentReversal"("id","projectId","paymentId","billId","amount","reason","reversedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,10.00,'behind its back',$5,$6)`,
+      forged, projectId, first.id, billId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.payment.reverse', f.memberUser.id, forged),
+    )).rejects.toThrow(/which moved only/u);
+
+    expect(await expectDerived(projectId, billId, 'after the refusals')).toBe('part-paid');
+  });
+
+  it('PROBE 16 (§F): a reversal runs the derivation BACKWARDS, in its own transaction', async () => {
+    const projectId = await freshProject();
+    const { billId, paymentId } = await paidClaim(projectId);
+    expect(await expectDerived(projectId, billId, 'fully paid')).toBe('paid');
+
+    // partial: `0 < PAID < APPROVED` → `part-paid`
+    await payments.reverse(projectId, { paymentId, amount: '40', reason: 'partial recall' }, pmc(projectId));
+    expect(await expectDerived(projectId, billId, 'after a partial reversal')).toBe('part-paid');
+
+    // full: `PAID = 0 < APPROVED` → `approved-for-payment`. The authority still stands; only the
+    // cash came back. A lifecycle that only moved forward would have stranded this bill at `paid`
+    // while `PAID` was zero — a stored status claiming money left that is sitting in the bank.
+    await payments.reverse(projectId, { paymentId, amount: '60', reason: 'recall the rest' }, pmc(projectId));
+    expect(await expectDerived(projectId, billId, 'after the full reversal')).toBe('approved-for-payment');
+    expect((await foldsOf(projectId, billId)).paid.toFixed(2)).toBe('0.00');
+
+    // …and the money can leave again against the SAME approval, because a reversal frees that
+    // authority's own headroom too (`paidForApproval` nets). Without it the bill would derive
+    // `approved-for-payment` while the only approval on it refused every payment.
+    await payments.record(projectId, { approvalId: (await payments.ledger(projectId, billId, pmc(projectId))).approvals[0]!.id, amount: '100', method: 'neft' }, pmc(projectId));
+    expect(await expectDerived(projectId, billId, 're-paid against the same authority')).toBe('paid');
+  });
+
+  it('PROBE 17 (§0): the correction ORDERING — reverse in full, THEN supersede, THEN re-approve', async () => {
+    // The plan's 5ad/5ah, end to end. Until this unit existed the first step had no command, so a
+    // certificate carrying cash was correct and permanently uncorrectable: bound 5 refuses a
+    // supersession that would drop `APPROVED` to 0 beneath a standing `PAID`, and nothing could
+    // lower `PAID`. That refusal was right; what was missing was the way out of it.
+    const projectId = await freshProject();
+    const { billId, paymentId } = await paidClaim(projectId);
+    expect(await expectDerived(projectId, billId, 'certified, approved and paid')).toBe('paid');
+
+    // (1) superseding now is REFUSED — ₹100 paid would stand against ₹0 approved
+    await expect(certification.supersede(projectId, { billId, reason: 'over-certified' }, pmc(projectId)))
+      .rejects.toThrow(/exceed the/u);
+
+    // (2) a PARTIAL reversal is not enough, and this is the half an "excess only" rule gets wrong:
+    // reverse ₹50, supersede to ₹50, and `APPROVED` is ₹0 while `PAID` is ₹50. Still refused.
+    await payments.reverse(projectId, { paymentId, amount: '50', reason: 'partial recall' }, pmc(projectId));
+    expect(await expectDerived(projectId, billId, 'half the cash back')).toBe('part-paid');
+    await expect(certification.supersede(projectId, { billId, reason: 'over-certified' }, pmc(projectId)))
+      .rejects.toThrow(/exceed the/u);
+
+    // (3) the FULL reversal takes `PAID` to zero, and the supersession is then PERMITTED — both
+    // sides of bound 5 are 0, which holds trivially
+    await payments.reverse(projectId, { paymentId, amount: '50', reason: 'recall the rest' }, pmc(projectId));
+    expect(await expectDerived(projectId, billId, 'all the cash back')).toBe('approved-for-payment');
+    await certification.supersede(projectId, { billId, reason: 'over-certified' }, pmc(projectId));
+
+    // the bill returns to the FORWARD lifecycle, and BOTH folds are zero: the ₹100 approval survives
+    // on the superseded certificate as history — it records what was authorised then — while
+    // `APPROVED` counts the live certificate only
+    expect(await storedStatus(projectId, billId)).toBe('verified');
+    const folds = await foldsOf(projectId, billId);
+    expect(folds.approved.toFixed(2), 'the superseded certificate takes its approvals with it').toBe('0.00');
+    expect(folds.paid.toFixed(2), 'the cash was recovered by its own attributable act').toBe('0.00');
+    const ledger = await payments.ledger(projectId, billId, pmc(projectId));
+    expect(ledger.approvals, 'the ₹100 approval is retained as history').toHaveLength(1);
+    expect(ledger.approved, 'but it no longer counts, because its certificate no longer stands').toBe('0.00');
+
+    // (4) …and the corrected amount needs a FRESH attributable approval. Re-certifying puts the
+    // claim back at the START of the payment lifecycle — `certified`, with `APPROVED` at zero —
+    // rather than inheriting the authority that was granted against the certificate it replaced.
+    //
+    // The certified amount itself is the CLAIM's, not this command's: `certify` folds the live
+    // version, so correcting ₹100 down to ₹50 is a claim AMENDMENT (Task 4's `bills.amend`, already
+    // cleared) and not something the payment side can or should do. What §0's ordering fixes, and
+    // what this probe is about, is the SEQUENCE in which cash and document move — so the probe
+    // re-certifies the unchanged claim and asserts the authority did not survive.
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(await expectDerived(projectId, billId, 're-certified')).toBe('certified');
+    const reFolds = await foldsOf(projectId, billId);
+    expect(reFolds.netPayable.toFixed(2), 'the claim is payable again').toBe('100.00');
+    expect(reFolds.approved.toFixed(2), 'and no approval carried over from the superseded certificate').toBe('0.00');
+    await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    expect(await expectDerived(projectId, billId, 'freshly approved')).toBe('approved-for-payment');
+  });
+
+  it('PROBE 18 (§F): a bypass reversal that leaves the status behind is REFUSED — the sixth fold table', async () => {
+    // `PaymentReversal` is a NEW input to `PAID`, so it needs its OWN derivation seal. This is the
+    // trigger 6B-i's convergence closure was written to demand: its delegate extractor is
+    // mutation-tested against exactly this addition, so the closure failed at the desk until the
+    // trigger existed. This probe is the database half of the same question.
+    const projectId = await freshProject();
+    const { billId, paymentId } = await paidClaim(projectId);
+
+    const forged = `it-6bii-behind-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentReversal"("id","projectId","paymentId","billId","amount","reason","reversedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,100.00,'behind its back',$5,$6)`,
+      forged, projectId, paymentId, billId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.payment.reverse', f.memberUser.id, forged),
+    )).rejects.toThrow(/its own folds derive/u);
+    expect(await expectDerived(projectId, billId, 'the refusal changed nothing')).toBe('paid');
+
+    // …and the seal is PRECISE rather than a blanket ban on writing the table — the distinction
+    // R1-F4 established for the other five, asked here. A claim approved ₹100 and paid ₹60 derives
+    // `part-paid` from `0 < PAID < APPROVED`; a bypass reversal of ₹20 lowers `PAID` to ₹40, which
+    // is STILL that arm. The fold moved and the derivation did not, so there is nothing incoherent
+    // to refuse and the write is ACCEPTED.
+    const second = await freshProject();
+    const secondBill = await certifiedClaim(second);
+    const approval = await payments.approve(second, { billId: secondBill, amount: '100' }, approver(second));
+    const payment = await payments.record(second, { approvalId: approval.id, amount: '60', method: 'neft' }, pmc(second));
+    expect(await expectDerived(second, secondBill, 'part paid')).toBe('part-paid');
+
+    const benign = `it-6bii-benign-${seq++}`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentReversal"("id","projectId","paymentId","billId","amount","reason","reversedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,20.00,'still part-paid',$5,$6)`,
+      benign, second, payment.id, secondBill, f.memberUser.id,
+      await mintCommand(second, 'commercial.payment.reverse', f.memberUser.id, benign),
+    );
+    expect(await expectDerived(second, secondBill, 'a fold write that does not move the answer')).toBe('part-paid');
+
+    // …while the REST of it does move the answer — `PAID` to zero, which §F calls
+    // `approved-for-payment` — and is refused
+    const moving = `it-6bii-moving-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentReversal"("id","projectId","paymentId","billId","amount","reason","reversedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,40.00,'takes PAID to zero',$5,$6)`,
+      moving, second, payment.id, secondBill, f.memberUser.id,
+      await mintCommand(second, 'commercial.payment.reverse', f.memberUser.id, moving),
+    )).rejects.toThrow(/its own folds derive/u);
+
+    // …and the same write THROUGH the service, which re-derives in its own transaction, is accepted
+    await payments.reverse(second, { paymentId: payment.id, amount: '40', reason: 'recall the rest' }, pmc(second));
+    expect(await expectDerived(second, secondBill, 'the service path')).toBe('approved-for-payment');
+
+    // provenance is sealed too: a reversal citing a command of the WRONG TYPE is refused, so the
+    // third arm of `phase5_t6a_command_succeeded` is really installed rather than merely written
+    const forgedType = `it-6bii-wrongtype-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentReversal"("id","projectId","paymentId","billId","amount","reason","reversedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,10.00,'wrong receipt',$5,$6)`,
+      forgedType, projectId, paymentId, billId, f.memberUser.id,
+      await mintCommand(projectId, 'commercial.payment.record', f.memberUser.id, forgedType),
+    )).rejects.toThrow(/records the command that PRODUCED it/u);
+  });
+
+  it('PROBE 19 (§0b): a reversal SERIALIZES — on the bill through the service, on the payment at PG', async () => {
+    // The plan names this shape: *"Concurrent reversals over-release `PAID` by the identical
+    // shape"* two concurrent payments break bound 5. Under READ COMMITTED both sessions read
+    // `reversed = 0` against a ₹80 payment, both pass a ₹50 bound, and both commit — ₹100 returned
+    // against ₹80 that left, with every row append-only.
+    //
+    // Two halves, because there are two writers to serialize and they are stopped in different
+    // places. Both are CONDITION-based (`pg_blocking_pids`), never a sleep, and both assert WHICH
+    // statement is waiting rather than that something is: "a backend is blocked" is a PROXY, and
+    // the first draft of half (b) passed against a deliberately un-serialized trigger because of it.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    const payment = await payments.record(projectId, { approvalId: approval.id, amount: '80', method: 'neft' }, pmc(projectId));
+
+    /** poll until some backend is waiting on another's lock, and return WHAT it was running */
+    const blockedQuery = async (why: string): Promise<string> => {
+      for (let i = 0; i < 400; i++) {
+        const rows = await t.prisma.$queryRawUnsafe<Array<{ q: string }>>(
+          `SELECT query AS q FROM pg_stat_activity
+            WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0`,
+        );
+        if (rows.length > 0) return rows[0]!.q;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error(`barrier timeout: ${why}`);
+    };
+
+    // ── (a) the SERVICE path serializes on the BILL (§0b's order, taken FIRST) ─────────────────
+    const other = new PrismaClient();
+    try {
+      let release!: () => void; let staged!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const ready = new Promise<void>((r) => { staged = r; });
+      const holder = other.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT "id" FROM "VendorBill" WHERE "projectId"=$1 AND "id"=$2 FOR UPDATE`, projectId, billId);
+        staged();
+        await held;
+      }, { timeout: 30_000 });
+      await ready;
+
+      const reversing = payments
+        .reverse(projectId, { paymentId: payment.id, amount: '50', reason: 'session B' }, pmc(projectId))
+        .then(() => 'committed' as const, (e: Error) => e);
+      const waiting = await blockedQuery('the reversal must WAIT for the bill lock — a fold read ahead of it decides on a balance that can still change');
+      expect(waiting, 'the reversal is blocked somewhere other than the bill row it is required to take FIRST').toMatch(/"VendorBill"/u);
+
+      release();
+      await holder;
+      expect(await reversing, 'the reversal, unblocked, commits').toBe('committed');
+    } finally {
+      await other.$disconnect();
+    }
+    expect((await foldsOf(projectId, billId)).paid.toFixed(2)).toBe('30.00');
+
+    // ── (b) the DATABASE bound SERIALIZES rather than merely counting ──────────────────────────
+    //
+    // Phase 4 T3's F3 is the finding this half exists to avoid repeating: a commit-time trigger that
+    // COUNTS without locking lets two independent sessions each see zero and both commit. So the
+    // claim is not "the trigger rejects an over-reversal" (PROBE 15 shows that) but "it takes the
+    // lock" — and a lock is only observable by making something WAIT on it.
+    //
+    // The gate therefore holds `FOR NO KEY UPDATE`, and the mode is the whole design. An INSERT
+    // into `PaymentReversal` takes `FOR KEY SHARE` on its referenced `Payment` row for the foreign
+    // key, and `FOR KEY SHARE` conflicts ONLY with `FOR UPDATE` — so a gate holding `FOR UPDATE`
+    // would block the INSERT itself, and the barrier would be satisfied by the FK rather than by
+    // the trigger. That is exactly what the first draft did, and it passed against a trigger with
+    // the `FOR UPDATE` deliberately removed. `FOR NO KEY UPDATE` lets the FK through and conflicts
+    // only with the trigger's own `FOR UPDATE`, so the wait it observes can have no other cause.
+    const gate = new PrismaClient();
+    const racer = new PrismaClient();
+    try {
+      let release!: () => void; let staged!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      const ready = new Promise<void>((r) => { staged = r; });
+      const holder = gate.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SELECT "id" FROM "Payment" WHERE "projectId"=$1 AND "id"=$2 FOR NO KEY UPDATE`, projectId, payment.id);
+        staged();
+        await held;
+      }, { timeout: 30_000 });
+      await ready;
+
+      // a bypass reversal of ₹10 leaves `PAID` at ₹20 — still `part-paid`, so the derivation seal
+      // has nothing to refuse and the ONLY thing that can make this wait is the bound's own lock
+      const forged = `it-6bii-serialize-${seq++}`;
+      const commandId = await mintCommand(projectId, 'commercial.payment.reverse', f.memberUser.id, forged);
+      const racing = racer.$executeRawUnsafe(
+        `INSERT INTO "PaymentReversal"("id","projectId","paymentId","billId","amount","reason","reversedById","sourceCommandId")
+         VALUES ($1,$2,$3,$4,10.00,'serialized',$5,$6)`,
+        forged, projectId, payment.id, billId, f.memberUser.id, commandId,
+      ).then(() => 'committed' as const, (e: Error) => e);
+      const waiting = await blockedQuery('the commit-time bound must TAKE the payment row — a trigger that only counted would not wait for it, and two sessions would each read a stale balance');
+      // the waiter is the COMMIT of the racing insert: PostgreSQL reports the statement that owns
+      // the deferred trigger, so the blocked query is the INSERT and the lock it wants is the
+      // trigger's. What matters is that it waits at all, with the FK path deliberately unblocked.
+      expect(waiting, 'something other than the racing reversal is blocked').toMatch(/PaymentReversal/u);
+
+      release();
+      await holder;
+      expect(await racing, 'once the row is free the write commits').toBe('committed');
+    } finally {
+      await Promise.all([gate.$disconnect(), racer.$disconnect()]);
+    }
+
+    // …and the arithmetic is conserved: ₹80 left, ₹60 has come back, ₹20 stands
+    expect((await foldsOf(projectId, billId)).paid.toFixed(2)).toBe('20.00');
+    expect(await expectDerived(projectId, billId, 'after both barriers')).toBe('part-paid');
+    await expect(payments.reverse(
+      projectId, { paymentId: payment.id, amount: '30', reason: 'one too many' }, pmc(projectId),
+    )).rejects.toThrow(/60\.00 has already come back, so 20\.00 remains reversible/u);
+  });
+  it('PROBE 20 (§D/§0): containment, replay and authority', async () => {
+    const a = await freshProject();
+    const b = await freshProject();
+    const { paymentId, billId } = await paidClaim(a);
+
+    // a sibling project cannot reach this payment — the command is project-scoped and the row is
+    // resolved inside that scope, so there is nothing to authorise against
+    await expect(payments.reverse(b, { paymentId, amount: '10', reason: 'wrong project' }, pmc(b)))
+      .rejects.toThrow(/not found in this project/u);
+
+    // an engineer may read the commercial register and may not recover money from it
+    const engineer = { sub: f.memberUser.id, role: 'engineer', projectId: a } as AuthUser;
+    await expect(payments.reverse(a, { paymentId, amount: '10', reason: 'not mine to make' }, engineer))
+      .rejects.toThrow(/pmc surface/u);
+
+    // a KEYED replay appends nothing and re-derives to the same status — the command ledger's own
+    // rule, asserted on the row count because "the same answer" is not the same as "no second row"
+    const key = `it-6bii-replay-${seq++}`;
+    const first = await payments.reverse(a, { paymentId, amount: '25', reason: 'recall' }, pmc(a), key);
+    const again = await payments.reverse(a, { paymentId, amount: '25', reason: 'recall' }, pmc(a), key);
+    expect(again.id).toBe(first.id);
+    expect(await t.prisma.paymentReversal.count({ where: { projectId: a, paymentId } })).toBe(1);
+    expect((await foldsOf(a, billId)).paid.toFixed(2)).toBe('75.00');
+    expect(await expectDerived(a, billId, 'after the replay')).toBe('part-paid');
+  });
+
+  it('PROBE 21 (§F): the payment ledger reports the reversal and the `PAID` it lowered', async () => {
+    const projectId = await freshProject();
+    const { billId, paymentId, approvalId } = await paidClaim(projectId);
+    await payments.reverse(projectId, { paymentId, amount: '30', reason: 'duplicate transfer' }, pmc(projectId));
+
+    const ledger = await payments.ledger(projectId, billId, pmc(projectId));
+    // the fold and the rows it is folded from agree, at every level of the response
+    expect(ledger.paid, '§G bound 5’s left side is net of reversals').toBe('70.00');
+    expect(ledger.billStatus).toBe('part-paid');
+    const approval = ledger.approvals.find((a) => a.id === approvalId)!;
+    expect(approval.paid, 'the authority reports what it actually released').toBe('70.00');
+    const payment = approval.payments.find((p) => p.id === paymentId)!;
+    expect(payment.amount, 'the payment is still what it was — money did leave').toBe('100.00');
+    expect(payment.reversed).toBe('30.00');
+    expect(payment.reversals).toHaveLength(1);
+    expect(payment.reversals[0]!.reason, 'a reviewer can see WHY it came back, not only that it did').toBe('duplicate transfer');
+    expect(payment.reversals[0]!.reversedById).toBe(f.memberUser.id);
+
+    // and the read is one instant: the status beside the folds it is derived from
+    expect(
+      derivedBillStatus({
+        netPayable: new Prisma.Decimal((await foldsOf(projectId, billId)).netPayable),
+        approved: new Prisma.Decimal(ledger.approved),
+        paid: new Prisma.Decimal(ledger.paid),
+      }),
+    ).toBe(ledger.billStatus);
   });
 });

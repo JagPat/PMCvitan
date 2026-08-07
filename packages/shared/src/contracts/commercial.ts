@@ -75,6 +75,12 @@ export const COMMERCIAL_COMMANDS = [
   // actor who certified may not approve — and a single command would make that rule unstateable.
   'commercial.payment.approve',
   'commercial.payment.record',
+  // Phase 5 Task 6B unit ii (§0/§H) — money coming BACK. A third act by the payer's authority, and
+  // a third command rather than a signed `record`: §H makes every append-only money row strictly
+  // positive with the row TYPE carrying direction, so a reversal cannot be a payment with a minus
+  // sign. It is also the first step of §0's correction ORDERING — reverse the cash in full, then
+  // supersede the certificate, then re-approve the reduced amount — which is why it stands alone.
+  'commercial.payment.reverse',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -639,6 +645,27 @@ export interface PaymentDto {
   reference: string | null;
   paidAt: string;
   paidById: string;
+  /** Task 6B-ii — Σ reversals against THIS payment. A FOLD, never a stored column, and what a
+   *  further reversal is bounded by. */
+  reversed: string;
+  /** the reversals themselves. An append-only fact that lowers `PAID` and is invisible on the
+   *  ledger is money movement nobody can review, which is the opposite of what these rows are for. */
+  reversals: PaymentReversalDto[];
+}
+
+/** Phase 5 Task 6B unit ii — cash coming back, against the payment that moved it. */
+export interface PaymentReversalDto {
+  id: string;
+  paymentId: string;
+  billId: string;
+  /** decimal STRING — §A forbids a float64 round trip. Strictly positive: the row TYPE carries the
+   *  direction, so `PAID` subtracts this rather than adding a negative. */
+  amount: string;
+  /** why the money came back. Required: recovering cash is its own attributable act (§0), never a
+   *  side effect of correcting a document. */
+  reason: string;
+  reversedAt: string;
+  reversedById: string;
 }
 
 /** The `commercial.payments` read: one bill's authorisations and what has been paid against them. */
@@ -649,7 +676,8 @@ export interface BillPaymentLedgerDto {
   approvals: PaymentApprovalDto[];
   /** §G bound 4's left side — Σ approvals against the LIVE certificate */
   approved: string;
-  /** §G bound 5's left side — Σ payments on this bill */
+  /** §G bound 5's left side — `PAID(bill)`, which is Σ payments MINUS Σ payment reversals (§0).
+   *  Task 6B-ii supplies the reversal term, so this number can now FALL. */
   paid: string;
   /** `NET_PAYABLE` less what is already approved: what a further approval may still authorise.
    *  Never negative — bound 4 refuses the write that would take it there. */

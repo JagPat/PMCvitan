@@ -144,6 +144,13 @@ export const ROLE_POLICY = {
   // rule unenforceable at the route.
   'commercial.approve-payment': ['pmc'],
   'commercial.record-payment': ['pmc'],
+  // Phase 5 Task 6B unit ii (§H) — recovering money already paid. The PAYER'S authority, which is
+  // why it sits beside `record-payment` rather than under it: reversing is the same person's act
+  // on the same bank relationship, and §0 makes it the first step of the correction ordering a
+  // certificate carrying cash requires. Its OWN permission for the reason every pair in this block
+  // is separate — a practice may want the person who can send money to be unable to claw it back,
+  // and widening one must never silently widen the other.
+  'commercial.reverse-payment': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

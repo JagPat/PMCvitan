@@ -141,6 +141,7 @@ model Project {
   vendorBillLines    VendorBillLine[]
   paymentApprovals PaymentApproval[]
   payments Payment[]
+  paymentReversals PaymentReversal[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -931,6 +932,7 @@ model User {
   vendorBillVersionsSuperseded VendorBillVersion[] @relation("vendorBillVersionsSuperseded")
   paymentApprovalsApproved PaymentApproval[] @relation("paymentApprovalsApproved")
   paymentsRecorded Payment[] @relation("paymentsRecorded")
+  paymentsReversed PaymentReversal[] @relation("paymentsReversed")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -3223,6 +3225,7 @@ model VendorBill {
   // predicate naming a state §F does not define would never release at all.
   paymentApprovals PaymentApproval[]
   payments Payment[]
+  paymentReversals PaymentReversal[]
 }
 
 /// §F — an IMMUTABLE claim version. Amending issues a NEW version and supersedes this one; §0's
@@ -3727,8 +3730,49 @@ model Payment {
   paidById        String
   sourceCommandId String
 
+  reversals PaymentReversal[]
+
   @@unique([projectId, id])
   @@unique([projectId, id, billId])
   @@index([projectId, billId])
   @@index([projectId, approvalId])
+}
+
+/// Phase 5 Task 6B unit ii (§0/§F/§H) — cash coming BACK, as its own append-only row.
+///
+/// `PAID(bill)` is Σ payments MINUS Σ payment reversals, and the reversal has to be a distinct row
+/// TYPE rather than a signed amount: every append-only money row in this phase is strictly positive
+/// with the type carrying direction (§H), so a positive "reversing payment" would read ₹150 paid on
+/// a ₹100 bill and a negative one is refused by `Payment_amount_positive`. Neither is a reversal.
+///
+/// It is a row against ONE payment, never a column on it, for the same reason a release is a row
+/// against one deduction: the reversed total is a FOLD with no stored balance to drift. The
+/// three-column FK proves the payment it reverses is a payment OF THIS BILL, so `billId` — which
+/// the bill-scoped fold and the §F derivation seal both read — cannot disagree with it.
+model PaymentReversal {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  payment   Payment    @relation(fields: [projectId, paymentId, billId], references: [projectId, id, billId], onDelete: NoAction, onUpdate: NoAction)
+  paymentId String
+  bill      VendorBill @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  billId    String
+
+  /// FROZEN money (§A `Decimal(18,2)`, half-up, never float64). STRICTLY POSITIVE, and bounded by
+  /// what its own payment actually paid — cumulatively, so two part-reversals cannot exceed it.
+  amount Decimal @db.Decimal(18, 2)
+
+  /// why the money came back. Recovering cash is its own attributable act (§0), never a side effect
+  /// of correcting a document, so the reason is required rather than optional.
+  reason String
+
+  reversedAt      DateTime @default(now())
+  reversedBy      User     @relation("paymentsReversed", fields: [reversedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reversedById    String
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, billId])
+  @@index([projectId, paymentId])
 }

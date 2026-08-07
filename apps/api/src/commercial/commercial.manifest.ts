@@ -45,6 +45,9 @@ export const commercialManifest: ModuleManifest = {
     // Phase 5 Task 6A (§F/§G/§I) — the payment authority and the money that left against it
     'paymentApproval',
     'payment',
+    // Phase 5 Task 6B unit ii (§0/§H) — the money that came BACK. `PAID(bill)` subtracts it, so it
+    // is a fold input in the same sense the payment is.
+    'paymentReversal',
   ],
   readEncapsulated: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
@@ -60,6 +63,7 @@ export const commercialManifest: ModuleManifest = {
     // Phase-4 T1 correction-4 finding on `workerSkill`.
     'paymentApproval',
     'payment',
+    'paymentReversal',
   ],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the
@@ -100,6 +104,8 @@ export const commercialManifest: ModuleManifest = {
     'POST /projects/:projectId/commercial/bills/reject',
     'POST /projects/:projectId/commercial/payments/approve',
     'POST /projects/:projectId/commercial/payments/record',
+    // Phase 5 Task 6B unit ii (§0/§H) — money coming back
+    'POST /projects/:projectId/commercial/payments/reverse',
   ],
   permissions: ['pmc'],
 };
