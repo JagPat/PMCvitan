@@ -8,7 +8,7 @@ import { INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection
 import { ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
 import { MATERIAL_READINESS_PROJECTION, computeMaterialReadingsDto } from '../../activities/material-readiness.projection';
 import { LABOUR_READINESS_PROJECTION, computeLabourReadinessDto } from '../../labour/labour-readiness.projection';
-import { CASH_FORECAST_PROJECTION, computeCashForecastDto } from '../../commercial/cash-forecast.projection';
+import { CASH_FORECAST_PROJECTION, computeCashForecastDto, lockCashForecast } from '../../commercial/cash-forecast.projection';
 import { computeDrawingsBase } from '../../drawings/drawings-serialize';
 import { computeDailyLogSlice } from '../../daily-log/daily-log-serialize';
 import { computeInspectionsBase } from '../../inspections/inspections-serialize';
@@ -91,6 +91,20 @@ interface Rebuildable {
   stored(tx: Prisma.TransactionClient, generationId: string, projectId: string): Promise<unknown>;
   /** The comparable recomputed from CANONICAL state through the owning module's own serializer. */
   canonical(tx: Prisma.TransactionClient, projectId: string): Promise<unknown>;
+  /**
+   * OPTIONAL extra serialization, taken inside the diagnosis transaction before either read.
+   *
+   * `diagnose` already holds the project's `ProjectEventStream` row FOR UPDATE, which freezes event
+   * emission — and for seven of the eight projections that IS the whole write path, so the stored
+   * and canonical reads are guaranteed to describe one instant.
+   *
+   * `commercial.cash-forecast` is the exception (Codex round-2): its commercial writers emit no
+   * events and refresh WRITE-THROUGH, so the stream lock does not reach them. A payment committing
+   * between the two reads makes the recompute disagree with the row — and `diagnose` would report
+   * `corrupt`, blaming the very write that made the row current, then fail the after-rebuild gate.
+   * A projection whose writes the stream lock does not cover supplies its own lock here.
+   */
+  lockFor?(tx: Prisma.TransactionClient, projectId: string): Promise<void>;
 }
 
 /**
@@ -162,6 +176,8 @@ export const REBUILDABLE_PROJECTIONS: Record<string, Rebuildable> = {
   // bucket and forgets to refresh cannot be caught by a missing event — nothing was ever emitted to
   // be missed — so the operator diagnostic is where that omission surfaces as `corrupt`.
   [CASH_FORECAST_PROJECTION]: {
+    // the ONE projection whose writers the stream lock cannot freeze — see `lockFor` above
+    lockFor: (tx, projectId) => lockCashForecast(tx, projectId),
     stored: async (tx, generationId, projectId) =>
       (await tx.cashForecastProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
     canonical: (tx, projectId) => computeCashForecastDto(tx, projectId),
@@ -200,6 +216,9 @@ export class ProjectionRebuildOperations {
       // Freeze event allocation for this project (emitEvent locks this row FOR UPDATE to assign
       // stream positions). A project with no stream row has no events — nothing can race either.
       await tx.$queryRaw`SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = ${projectId} FOR UPDATE`;
+      // …and any serialization the projection's OWN writers need, which the stream lock does not
+      // provide when those writers emit no events (Codex round-2, `commercial.cash-forecast`).
+      if (spec.lockFor) await spec.lockFor(tx, projectId);
       const stream = await tx.projectEventStream.findUnique({ where: { projectId }, select: { nextPosition: true } });
       const head = stream ? stream.nextPosition - 1n : -1n;
       const gen = await tx.projectionGeneration.findFirst({

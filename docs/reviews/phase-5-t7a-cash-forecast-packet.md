@@ -260,6 +260,64 @@ now takes the target generation rows `FOR UPDATE` **before** computing, in ascen
 the seed (one generation) and the write-through (up to two) acquire the shared subset in the same
 sequence and cannot deadlock.
 
+## Codex round 2 — five more findings on head `f345d2c`
+
+Round 1's fixes were accepted. Round 2 found five more, and three of them are the same lesson
+arriving from a different direction: **a projection whose module emits no events falls outside every
+serialization the platform provides by default.**
+
+**Round-2 F1 (P1) — target discovery outran generation creation.** Round 1's F5 fix locked the
+generation rows it had ALREADY FOUND, which closes the overwrite race and leaves a second one open:
+the rebuilder allocates its `building` generation in its OWN transaction, so a row can APPEAR
+between a writer's discovery and its commit. Locking rows cannot prevent a row from appearing. The
+write would then refresh only the id it captured, the seed would have run on pre-write money, and
+the stale generation would activate with nothing for catch-up to replay.
+
+The fix replaces the row lock with a per-(project, consumer) **advisory lock taken as the first
+statement**, with the target set discovered under it. Every writer reaches `refreshCashForecast`,
+including the rebuild seed, so whichever side goes second discovers the other's committed generation
+and computes with its money visible. One lock, always first — no acquisition order exists to invert.
+
+**Round-2 F2 (P2) — the operator diagnosis raced the write-through.** `diagnose` holds the project's
+`ProjectEventStream` row, which freezes event emission — and for seven of the eight projections that
+IS the whole write path. Commercial's writers emit nothing, so a payment could commit between the
+stored read and the canonical recompute and be reported as `corrupt`, blaming the very write that
+made the row current. `Rebuildable` gains an optional `lockFor` hook; cash-forecast supplies the same
+advisory lock, and the other seven are untouched because they do not need it.
+
+**Round-2 F3 (P2) — the sweep took no readiness lock.** `commercial:reevaluate` is a headroom mover
+like any other, and §B's rule is that every one of them locks first. Without it the fold is torn: the
+sweep reads a ₹50 budget, a concurrent `budget.set` raises it to ₹500 and commits, and the sweep
+writes a `fold_correction` breach against a budget that no longer exists — an upgrade repair
+corrupting the register it exists to repair.
+
+**Round-2 F4 (P2) — net counting hid real movement.** The report compared open-exception TOTALS
+before and after, so a project that reopens one stale breach while clearing another reports
+`raised: 0, cleared: 0` while two durable rows moved. It now diffs the open row IDs. The first
+spelling claimed in its own comment to count "from the register rather than from what the sweep
+believes it did" — and counting the wrong thing from the register is not better than believing.
+
+**Round-2 F5 (P2) — the required reason was discarded.** The CLI demands `--reason` and then dropped
+it from the audit, so every reopened exception said only `fold_correction` plus an operator id.
+Nothing distinguished the mandated §J upgrade repair from an accidental rerun. A required flag that
+is thrown away is a required flag that lies about being required.
+
+### The probe for round-2 F1 asserted a proxy first — the third time this phase
+
+PROBE 41's first spelling drove the rebuild through the operator wrapper `ops.run`, and it **PASSED
+against a build with the advisory lock removed from `refreshCashForecast`**. The barrier was
+satisfied by a different mechanism than the one under test: `ops.run` diagnoses before rebuilding,
+and diagnosis takes the same lock through the `lockFor` hook round-2 F2 had just added.
+
+This is the same defect as 6B-ii's PROBE 19(b) (a barrier satisfied by a foreign key rather than the
+trigger under test) and 6C's PROBE 24 (a gate blocked by the service's own lock rather than the
+seal's). Three times, and the shape is identical every time: **the probe asserts that SOMETHING
+blocked, and something always does.**
+
+It now drives `ProjectionRebuilder.rebuild` directly — allocate → seed → catch-up → barrier, with no
+diagnosis anywhere — so the only thing that can wait on the lock is the seed's own refresh. Verified
+RED (`barrier timeout: nothing ever blocked`) with the lock removed.
+
 ## The probes
 
 | # | § | What it proves |
@@ -274,6 +332,7 @@ sequence and cannot deadlock.
 | 38 | §J/§D | the read falls back to LIVE for an absent generation (honestly dated `null`), serves the projection once one exists, and 404s off-pilot |
 | 39 | §J | a PARTITION-ONLY write refreshes the forecast too — paying and reversing move the stored `paid`/`approved` with nothing drained, because nothing was emitted |
 | 40 | §B/§J | the operator sweep REOPENS a breach the §J completion re-created, labels it `fold_correction`, is idempotent on a second run, and CLEARS again once the budget is corrected |
+| 41 | §J | the rebuild SEED serializes on the forecast advisory lock — a holder BLOCKS it (`pg_blocking_pids`, condition-based) and it completes on release |
 | CLOSURE D | §J | every forecast event type is catalog-declared AND resolves to `dispatch`; the labour family is present by name; an unrelated event stays a no-op |
 
 Probes 36 and 37 were verified RED with the two `refreshCashForecast` calls

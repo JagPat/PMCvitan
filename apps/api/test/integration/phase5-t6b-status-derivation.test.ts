@@ -30,7 +30,7 @@ import { CommercialDeductionQuery } from '../../src/commercial/commercial-deduct
 import { derivedBillStatus } from '../../src/commercial/commercial-status';
 import { CommercialService } from '../../src/commercial/commercial.service';
 import { reevaluateAll } from '../../src/commercial/commercial-reevaluate.cli';
-import { CASH_FORECAST_PROJECTION, computeCashForecastDto } from '../../src/commercial/cash-forecast.projection';
+import { CASH_FORECAST_PROJECTION, computeCashForecastDto, lockCashForecast } from '../../src/commercial/cash-forecast.projection';
 import { readServableGeneration } from '../../src/platform/projections/generation';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { ProjectionRebuildOperations } from '../../src/platform/projections/rebuild-operations';
@@ -238,8 +238,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
 
 
   /** certify a ₹100 claim on CIVIL and hand back the bill — every probe below starts here. */
-  const certifiedClaim = async (projectId: string, qty = '100'): Promise<string> => {
-    const line = await issuedMaterialLine(projectId, { qty });
+  const certifiedClaim = async (projectId: string, qty = '100', costHeadCode = 'CIVIL'): Promise<string> => {
+    const line = await issuedMaterialLine(projectId, { qty, costHeadCode });
     await acceptOnLine(projectId, line, qty);
     const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: qty }]);
     await certification.certify(projectId, { billId }, pmc(projectId));
@@ -1924,6 +1924,29 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
   };
   const rebuildForecast = () => ops.run({ operatorIdentity: 'op', reason: 'test rebuild', consumers: [CASH_FORECAST_PROJECTION] });
 
+  /**
+   * Block until SOME backend is waiting on a lock held by `holderPid`.
+   *
+   * `pg_blocking_pids` asks the exact question — is anything waiting for THIS session — rather than
+   * matching query text, which this file's shared database makes unreliable: a sibling suite's
+   * statement can match a pattern just as well as the one under test. The waiter's own pid is not
+   * knowable here (the rebuild runs on the app's pooled client and picks a connection itself), so
+   * the assertion is scoped by the HOLDER, which is unambiguous. The condition gates progress; the
+   * interval is only the observation cadence.
+   */
+  const waitUntilBlockedBy = async (holderPid: number): Promise<void> => {
+    for (let i = 0; i < 300; i++) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ waiting: boolean }>>(
+        `SELECT EXISTS (SELECT 1 FROM pg_stat_activity a
+                         WHERE a.pid <> $1::int AND $1::int = ANY(pg_blocking_pids(a.pid))) AS waiting`,
+        holderPid,
+      );
+      if (rows[0]?.waiting === true) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`barrier timeout: nothing ever blocked on the forecast lock held by backend ${holderPid}`);
+  };
+
   it('PROBE 35 (§J/§G): live == projection == rebuild, and a rebuild emits ZERO events + ZERO notifications', async () => {
     const projectId = await freshProject();
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
@@ -2079,11 +2102,91 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     expect(second.raised).toBe(0);
     expect((await t.prisma.budgetException.findMany({ where: { projectId, costHeadCode: 'CIVIL', clearedAt: null } })), 'never two open rows on one head').toHaveLength(1);
 
-    // …and it CLEARS as well as raises: give the head enough budget and the sweep closes the row
+    // …and correcting the budget clears the breach WITHOUT the sweep, because §B's rule is that the
+    // write which moves headroom raises-or-clears in its own transaction. The sweep exists for the
+    // one case no write covers — a fold whose DEFINITION changed — so finding nothing to do here is
+    // the correct result, not a missing capability.
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '500.00', reason: 'plan corrected' }, pmc(projectId));
+    expect((await positionOf(projectId)).exception, '`setBudget` cleared it in its own transaction — that is §B, not the sweep').toBeNull();
     const healed = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep after correction' });
-    expect(healed.raised).toBe(0);
-    expect((await positionOf(projectId)).exception, 'a sweep is not a one-way ratchet').toBeNull();
+    expect(healed.raised, 'and the sweep is a no-op over an already-consistent register').toBe(0);
+    expect(healed.cleared).toBe(0);
+
+    // Codex round-2 (P2) — RAISES AND CLEARS ARE COUNTED SEPARATELY. A project that reopens one
+    // stale breach while clearing another leaves the OPEN TOTAL unchanged, so net before/after
+    // counting reports `raised: 0, cleared: 0` while two durable rows moved. MEP is set up to
+    // breach and CIVIL to heal, in one sweep.
+    await budget.setBudget(projectId, { costHeadCode: 'MEP', amount: '1.00', reason: 'thin' }, pmc(projectId));
+    const mepBill = await certifiedClaim(projectId, '100', 'MEP');
+    await payments.approve(projectId, { billId: mepBill, amount: '100.00' }, approver(projectId));
+    // CIVIL is healthy and MEP now breaches; force the register into the OPPOSITE of the truth so
+    // one sweep must do both
+    await t.prisma.budgetException.updateMany({ where: { projectId, costHeadCode: 'MEP', clearedAt: null }, data: { clearedAt: new Date() } });
+    await t.prisma.budgetException.create({
+      data: { projectId, costHeadCode: 'CIVIL', headroom: new Prisma.Decimal('-1'), budget: new Prisma.Decimal('500'), exposure: new Prisma.Decimal('501'), raisedBy: 'fold_correction', raisedById: f.memberUser.id },
+    });
+    const openBefore = await t.prisma.budgetException.count({ where: { projectId, clearedAt: null } });
+    const both = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep both directions' });
+    expect(await t.prisma.budgetException.count({ where: { projectId, clearedAt: null } }), 'the OPEN TOTAL is unchanged — which is exactly why a net count reports nothing').toBe(openBefore);
+    expect(both.raised, 'MEP reopened').toBe(1);
+    expect(both.cleared, 'CIVIL closed').toBe(1);
+
+    // Codex round-2 (P2) — the REASON is persisted. A required flag that is discarded is a required
+    // flag that lies about being required: months later nothing distinguishes the mandated §J
+    // upgrade repair from an accidental rerun.
+    const audits = await t.prisma.auditLog.findMany({ where: { projectId, action: 'commercial.reevaluate' }, orderBy: { at: 'asc' } });
+    expect(audits.length, 'every sweep of a project records one').toBeGreaterThanOrEqual(1);
+    expect((audits.at(-1)!.payload as { reason?: string }).reason).toBe('test sweep both directions');
+  });
+
+  it('PROBE 41 (§J): the rebuild SEED serializes on the forecast lock — discovery cannot outrun a new generation', async () => {
+    // Codex round-2 (P1). Round 1 locked the target generation rows it had ALREADY FOUND. That
+    // closes the overwrite race and leaves a second one open, because the rebuilder allocates its
+    // `building` generation in its OWN transaction: a row can APPEAR between a writer's discovery
+    // and its commit, and locking rows cannot prevent a row from appearing. The write would then
+    // refresh only the id it captured, the seed would have run on pre-write money, and the stale
+    // generation would ACTIVATE with no event for catch-up to replay.
+    //
+    // The fix is a per-(project, consumer) advisory lock taken as the FIRST statement, with the
+    // target set discovered under it — and the rebuild seed reaches the same function, so it takes
+    // the same lock. This proves that serialization exists: a session holding the lock BLOCKS the
+    // seed, and the seed completes once it is released. RED at `f345d2c`, where the seed took no
+    // lock a holder could contend with and the rebuild ran straight through.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100000', reason: 'pilot budget' }, pmc(projectId));
+    await issuedMaterialLine(projectId, { qty: '1' });
+    await drainRelay();
+
+    const holder = new PrismaClient();
+    try {
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      let holderPid = 0;
+      const holding = holder.$transaction(async (tx) => {
+        holderPid = (await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid;
+        await lockCashForecast(tx as never, projectId);
+        await held;
+      }, { timeout: 30_000 });
+      while (holderPid === 0) await new Promise((r) => setTimeout(r, 20));
+
+      // The RAW rebuilder, deliberately, not the operator `ops.run` wrapper.
+      //
+      // The first spelling of this probe used `ops.run`, and it PASSED against a build with the
+      // advisory lock removed from `refreshCashForecast` — because `ops.run` diagnoses first, and
+      // diagnosis takes the same lock through the `lockFor` hook that round-2 F2 added. The barrier
+      // was satisfied by a DIFFERENT mechanism than the one under test, which is the third time this
+      // phase a probe has asserted a proxy (6B-ii's PROBE 19(b), 6C's PROBE 24). `rebuild()` runs
+      // allocate → seed → catch-up → barrier with no diagnosis anywhere, so the ONLY thing that can
+      // wait on this lock is the seed's own refresh.
+      const rebuild = t.app.get(ProjectionRebuilder).rebuild(CASH_FORECAST_PROJECTION, projectId);
+      await waitUntilBlockedBy(holderPid);
+      release();
+      await holding;
+      await rebuild;
+    } finally {
+      await holder.$disconnect();
+    }
+    expect(await storedForecast(projectId)).toEqual(await liveForecast(projectId));
   });
 
   it('PROBE 38 (§J): the read falls back to LIVE rather than serving a stale or absent generation', async () => {

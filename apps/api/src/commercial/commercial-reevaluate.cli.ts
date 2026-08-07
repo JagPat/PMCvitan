@@ -12,6 +12,7 @@ import { InventoryQuery } from '../inventory/inventory.query';
 import { bindCashForecastDeps } from './cash-forecast.projection';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
+import { lockProjectReadiness } from '../common/readiness-lock';
 
 /**
  * Phase 5 Task 7A — the OPERATOR RE-EVALUATION SWEEP (§B/§J), and why an upgrade needs one.
@@ -107,20 +108,51 @@ export async function reevaluateAll(
     // money, and a per-head transaction would let a concurrent write split the sweep's own view.
     // Per-PROJECT rather than one global transaction because a sweep that holds every project's
     // rows for its whole duration would block the sites it is repairing for.
-    const before = await prisma.budgetException.count({ where: { projectId, clearedAt: null } });
-    await prisma.$transaction(async (tx) => {
+    const moved = await prisma.$transaction(async (tx) => {
+      // Codex round-2 (P2). The sweep is a HEADROOM MOVER like any other, and §B's rule is that
+      // every one of them takes the project readiness lock first. Without it this fold is torn: the
+      // sweep reads a head's ₹50 budget, a concurrent `commercial.budget.set` raises it to ₹500 and
+      // commits, and the sweep then writes a `fold_correction` breach against a budget that no
+      // longer exists — leaving the Inbox showing a breach the live read says is healthy, which is
+      // the precise disagreement §B's same-transaction rule exists to prevent. An upgrade repair
+      // that can corrupt the register it is repairing is worse than no repair.
+      await lockProjectReadiness(tx, projectId);
+
+      // Codex round-2 (P2) — the OPEN ROW IDS, not a count. Net before/after totals report
+      // `raised: 0, cleared: 0` when one project both reopens a stale cleared breach and clears a
+      // stale open one: two durable rows changed and the operator is told nothing happened. The
+      // first spelling of this function claimed in its own comment to count "from the register
+      // rather than from what the sweep believes it did", and counting the wrong thing from the
+      // register is not better than believing.
+      const idsBefore = new Set((await tx.budgetException.findMany({
+        where: { projectId, clearedAt: null }, select: { id: true },
+      })).map((e) => e.id));
+
       await budget.evaluate(tx, projectId, operator.userId, heads.map((h) => h.code), 'fold_correction');
+
+      const idsAfter = new Set((await tx.budgetException.findMany({
+        where: { projectId, clearedAt: null }, select: { id: true },
+      })).map((e) => e.id));
+      const raised = [...idsAfter].filter((id) => !idsBefore.has(id)).length;
+      const cleared = [...idsBefore].filter((id) => !idsAfter.has(id)).length;
+
       await recordAudit(tx, {
         projectId,
         actor: systemActor(operator.userId, operator.userId, 'operator'),
         action: 'commercial.reevaluate',
         entity: 'BudgetException',
         entityId: `${projectId}:fold_correction`,
+        // Codex round-2 (P2) — the REASON is persisted. The CLI demands `--reason` and the first
+        // spelling then discarded it, so every reopened exception said only `fold_correction` plus
+        // an operator id: nothing distinguished the mandated §J upgrade repair from an accidental
+        // rerun, months later, to the person who has to decide whether the breach is real. A
+        // required flag that is thrown away is a required flag that lies about being required.
+        payload: { reason: operator.reason, heads: heads.length, raised, cleared },
       });
+      return { raised, cleared };
     });
-    const after = await prisma.budgetException.count({ where: { projectId, clearedAt: null } });
-    if (after > before) report.raised += after - before;
-    if (before > after) report.cleared += before - after;
+    report.raised += moved.raised;
+    report.cleared += moved.cleared;
   }
   return report;
 }

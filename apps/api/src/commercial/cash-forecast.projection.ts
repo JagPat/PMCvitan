@@ -54,6 +54,33 @@ const ZERO = new Prisma.Decimal(0);
 
 export const CASH_FORECAST_PROJECTION = 'commercial.cash-forecast';
 
+/**
+ * The per-(project, consumer) serialization key for this projection's stored row.
+ *
+ * Exported because THREE callers must take the SAME lock rather than three that merely look alike:
+ * `refreshCashForecast` (which every writer reaches, including the rebuild seed), and the operator
+ * `diagnose`, which compares stored against canonical and would otherwise race a write-through
+ * refresh into a false `corrupt` verdict. The prefix is written once, here, for the reason
+ * `readinessLockKey` is: the day it changes, two callers must not silently stop serializing.
+ */
+export function cashForecastLockKey(projectId: string): string {
+  return 'cash-forecast:' + projectId;
+}
+
+/**
+ * Take that lock. The operator diagnostic calls this through the projection registry's `lockFor`
+ * hook so the stored-vs-canonical comparison sees ONE consistent instant.
+ *
+ * Every OTHER projection is safe without it: their inputs arrive as events, and `diagnose` already
+ * holds the project's stream-allocation row, which freezes event emission. This projection's
+ * commercial writers emit nothing, so that lock does not reach them — a payment can commit between
+ * the stored read and the canonical recompute and be reported as corruption by the very write that
+ * made the row current.
+ */
+export async function lockCashForecast(tx: Prisma.TransactionClient, projectId: string): Promise<void> {
+  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${cashForecastLockKey(projectId)}, 0))`);
+}
+
 let boundDeps: { budget: CommercialBudgetQuery } | null = null;
 
 /** Boot binds the budget query the recompute routes through (idempotent). */
@@ -138,20 +165,30 @@ export async function computeCashForecastDto(
 export async function refreshCashForecast(
   tx: Prisma.TransactionClient, projectId: string, generationId?: string,
 ): Promise<void> {
-  // LOCK BEFORE COMPUTING (Codex F5, P1). The order of these three steps is the correctness
-  // argument, not an implementation detail.
+  // LOCK FIRST, THEN DISCOVER, THEN COMPUTE, THEN WRITE. That order is the correctness argument,
+  // and round 2 corrected round 1's version of it.
   //
-  // A rebuild's canonical seed and a write-through refresh both target the SAME `building`
-  // generation, and the seed is long. Compute-then-write let them interleave: the seed computes an
-  // old picture, a concurrent payment commits and writes the new one, the seed resumes and upserts
-  // its older DTO over it. The catch-up phase cannot repair that, because the commercial write
-  // emitted no event for it to replay — so the rebuild would ACTIVATE a generation holding money
-  // that was already stale, which is the one thing a repair must never do.
+  // Round 1 (Codex F5) took the target generation rows `FOR UPDATE` — but only the rows it had
+  // ALREADY FOUND, and it found them before locking anything. That closes the overwrite race and
+  // leaves a second one open, because the rebuilder allocates its `building` generation in its OWN
+  // transaction, separate from the seed:
   //
-  // Taking the generation rows FOR UPDATE first makes the loser BLOCK, then compute with the
-  // winner's row visible, then write. Ascending `id` order is what makes it deadlock-free: the
-  // seed holds one generation and the write-through may hold two, so any two callers acquire the
-  // shared subset in the same sequence.
+  //   1. a payment transaction reads the generation set — only `active` exists yet
+  //   2. the rebuild allocates a `building` generation and COMMITS that allocation
+  //   3. the rebuild seeds it from canonical, still seeing the pre-payment money
+  //   4. the payment refreshes only the id it captured at step 1, then commits
+  //
+  // Nothing is left to repair the building generation: the payment emitted no event, so catch-up
+  // has nothing to replay, and a generation holding pre-payment money is ACTIVATED. Locking rows
+  // cannot prevent a row from appearing.
+  //
+  // So the lock is a per-(project, consumer) ADVISORY lock taken as the first statement, and the
+  // target set is discovered UNDER it. Every writer of this projection — the ordered consumer, the
+  // write-through, and the rebuild seed, which reaches this same function — takes it, so whichever
+  // side goes second discovers the other's committed generation and computes with its money
+  // visible. One lock, always first, so no acquisition order exists to invert.
+  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${cashForecastLockKey(projectId)}, 0))`);
+
   const targets = generationId
     ? [generationId]
     : (await tx.projectionGeneration.findMany({
@@ -159,7 +196,6 @@ export async function refreshCashForecast(
         select: { id: true },
       })).map((g) => g.id);
   if (targets.length === 0) return; // no generation yet — the read falls back live, correctly
-  await tx.$queryRaw`SELECT "id" FROM "ProjectionGeneration" WHERE "id" = ANY(${targets}::text[]) ORDER BY "id" FOR UPDATE`;
 
   const dto = (await computeCashForecastDto(tx, projectId)) as unknown as Prisma.InputJsonValue;
   for (const id of targets) {
