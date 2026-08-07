@@ -149,8 +149,11 @@ Review Stops" section of the phase plan.
   same flip.** `assessRunnerState` consults `work_item` BEFORE `next_task`, so a
   merge record that still names the finished unit sends the runner straight back
   into completed work — silently, because every field is individually valid and
-  preferring a named follow-on is the right default. Pinned in
-  `scripts/autonomous-status-state.test.mjs` in both directions.
+  preferring a named follow-on is the right default. ENFORCED in
+  `scripts/autonomous-status-state.test.mjs` against THIS document — an earlier
+  revision said "pinned in both directions", which was accurate and was the
+  problem: a fixture can only demonstrate the resolution, so the guard has to
+  read the artifact.
 
 ## Maintenance queue
 
