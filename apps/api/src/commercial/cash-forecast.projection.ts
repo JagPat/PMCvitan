@@ -78,6 +78,9 @@ export function cashForecastLockKey(projectId: string): string {
  * made the row current.
  */
 export async function lockCashForecast(tx: Prisma.TransactionClient, projectId: string): Promise<void> {
+  // The caller (`diagnose`) already holds the stream row, which is the required order —
+  // `ProjectEventStream` BEFORE the cash-forecast advisory lock. Taking it again here would be a
+  // harmless no-op; not taking it keeps this function honest about what it does.
   await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${cashForecastLockKey(projectId)}, 0))`);
 }
 
@@ -182,11 +185,40 @@ export async function refreshCashForecast(
   // has nothing to replay, and a generation holding pre-payment money is ACTIVATED. Locking rows
   // cannot prevent a row from appearing.
   //
-  // So the lock is a per-(project, consumer) ADVISORY lock taken as the first statement, and the
-  // target set is discovered UNDER it. Every writer of this projection — the ordered consumer, the
-  // write-through, and the rebuild seed, which reaches this same function — takes it, so whichever
-  // side goes second discovers the other's committed generation and computes with its money
-  // visible. One lock, always first, so no acquisition order exists to invert.
+  // So the lock is a per-(project, consumer) ADVISORY lock, and the target set is discovered UNDER
+  // it. Every writer of this projection — the ordered consumer, the write-through, and the rebuild
+  // seed, which reaches this same function — takes it, so whichever side goes second discovers the
+  // other's committed generation and computes with its money visible.
+  //
+  // ── AND THE STREAM ROW COMES FIRST (Codex round-3, P1) ────────────────────────────────────────
+  //
+  // Round 2 called this "one lock, always first, so no acquisition order exists to invert". That
+  // was true of the two cash-forecast callers and false of the system: the real ordering graph
+  // includes `ProjectEventStream`, which `emitEvent` locks to allocate a position and the rebuild's
+  // activation barrier holds while it replays the tail.
+  //
+  //   - the BARRIER holds the stream row, then replays a forecast-relevant tail event, whose
+  //     handler lands here and waits for the advisory lock;
+  //   - a concurrent PO issue takes the advisory lock through `evaluate`, then calls `emitEvent`
+  //     and waits for the stream row.
+  //
+  // Stream→advisory against advisory→stream is a deadlock, and PostgreSQL resolves it by killing
+  // one of them — either the operator's rebuild or a live purchase order.
+  //
+  // The fix is a TOTAL ORDER rather than a rule callers must remember:
+  //
+  //     lockProjectReadiness  <  ProjectEventStream  <  cash-forecast advisory
+  //
+  // Taking the stream row HERE, before the advisory lock, makes every holder of the advisory lock
+  // already hold the stream row — so no caller can arrive at them in the other sequence, whatever
+  // it does afterwards. A project with no stream row yet locks nothing, which is correct: no
+  // position has ever been allocated, so there is nothing to order against, and the advisory lock
+  // still serializes the forecast writers.
+  //
+  // The cost is that a commercial write now serializes with event allocation for its project. That
+  // is the same coarse, human-scale granularity `lockProjectReadiness` already chose, and most of
+  // these writers hold that lock anyway.
+  await tx.$queryRaw`SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = ${projectId} FOR UPDATE`;
   await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${cashForecastLockKey(projectId)}, 0))`);
 
   const targets = generationId

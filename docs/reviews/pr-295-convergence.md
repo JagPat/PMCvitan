@@ -19,7 +19,9 @@ another isolated patch. This is that audit.
 | 9 | Codex | `f345d2c` | P2 | The sweep's report compared totals, hiding a raise that cancelled a clear |
 | 10 | Codex | `f345d2c` | P2 | `--reason` was required, then discarded |
 | — | CI | `1bf577f` | — | Two operator-rebuild coverage lists, one named `ALL_FIVE` holding seven entries |
-| — | self | in-branch | — | Paying was exempt from §J's refresh; `APPROVED` was misclassified as a headroom mover; PROBE 41 asserted a proxy |
+| 11 | Codex | `ce015a1` | P1 | The advisory lock inverted against `ProjectEventStream` — barrier and PO issue take the pair in opposite order |
+| 12 | Codex | `ce015a1` | P2 | The sweep read the orgs-owned `User` table directly to validate `--operator` |
+| — | self | in-branch | — | Paying was exempt from §J's refresh; `APPROVED` was misclassified as a headroom mover; PROBE 41 asserted a proxy; PROBE 42's first comment claimed a 40P01 the test does not show |
 
 ## Root A — a hand-written list standing in for a derived set
 
@@ -103,12 +105,56 @@ is discriminating rather than a blanket demand). Mutation-tested RED.
 The next event-less module that adds a projection is stopped at the desk, not
 three review rounds later.
 
+### Round 3 confirmed Root B, from the outside
+
+A third head drew two more findings, and the P1 is Root B seen from the platform's
+side rather than the module's.
+
+Round 2's fix introduced a per-(project, consumer) advisory lock and its comment
+claimed *"one lock, always first, so no acquisition order exists to invert."* That
+was true of the two cash-forecast callers and **false of the system.** The real
+ordering graph includes `ProjectEventStream` — which `emitEvent` locks to allocate
+a position, and which the rebuild's activation barrier holds while replaying the
+tail:
+
+- the **barrier** holds the stream row, replays a forecast-relevant tail event,
+  and waits for the advisory lock;
+- a concurrent **PO issue** takes the advisory lock through `evaluate`, then calls
+  `emitEvent` and waits for the stream row.
+
+Opposite sequences on the same pair — PostgreSQL resolves it by killing the
+operator's rebuild or a live purchase order.
+
+This is Root B because the hazard exists only for a projection whose writers do
+not emit: for the other seven, the write-through path does not exist, so no
+transaction ever holds a projection lock while reaching for a stream position. The
+fix is a **total order** rather than a rule callers must remember —
+`lockProjectReadiness < ProjectEventStream < cash-forecast advisory` — achieved by
+taking the stream row inside `refreshCashForecast`, before the advisory lock. Every
+holder of the advisory lock then already holds the stream row and cannot be waiting
+for it, whatever the caller does afterwards.
+
+The second finding (P2) is an ordinary boundary miss: the sweep validated
+`--operator` by reading the orgs-owned `User` table directly, in a CLI file the
+boundary analyzer cannot see. `OrgsParticipant.resolveUserIdentity` exists so that
+"whether email is unique, whether a disabled or merged account still resolves"
+changes once rather than per module, and the §L activation path beside it already
+routes through it. The stakes are durable: this sweep stamps `raisedById` on
+append-only observations.
+
 ## Root C — an artefact that claims more than it does
 
 Findings 9 and 10 are small and share a shape worth naming, because it is the
 shape that survives review most easily: **the code says something true-sounding
 that nothing checks.**
 
+- Round 2's lock comment claimed no order could be inverted, on the strength of
+  looking at two callers rather than the graph. Round 3's finding 11 is that claim
+  being wrong.
+- PROBE 42's first comment asserted the RED failure was a `40P01` deadlock. The
+  observed failure is the barrier timing out — the write simply never waits. The
+  comment now says what the test shows and why a two-session probe cannot show the
+  deadlock itself.
 - The sweep's report compared open-exception TOTALS, so a project that reopened
   one breach while clearing another reported `raised: 0, cleared: 0`. The function
   carried a comment claiming it counted "from the register rather than from what

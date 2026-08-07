@@ -13,6 +13,7 @@ import { bindCashForecastDeps } from './cash-forecast.projection';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /**
  * Phase 5 Task 7A — the OPERATOR RE-EVALUATION SWEEP (§B/§J), and why an upgrade needs one.
@@ -166,11 +167,22 @@ async function main(): Promise<void> {
   }
   const prisma = new PrismaService();
   try {
-    const actor = await prisma.user.findUnique({ where: { id: f.operator }, select: { id: true } });
+    // Codex round-3 (P2) — IDENTITY IS ORGS' QUESTION, not a `User` row this module reads.
+    //
+    // The first spelling read `prisma.user` directly. That is a cross-module read the boundary
+    // analyzer cannot see (this is a CLI file), and it quietly re-decides a question orgs owns:
+    // whether an email resolves, whether a disabled or merged account still does, what precedence
+    // an id-vs-email collision has. `OrgsParticipant.resolveUserIdentity` exists precisely so those
+    // rules "change once rather than in every module that happens to accept an operator string" —
+    // and the §L activation path beside this one already routes through it.
+    //
+    // The stakes are durable: this sweep stamps `BudgetException.raisedById` and audit rows. An
+    // identity the owning module would reject must not end up on an append-only observation.
+    const actor = await new OrgsParticipant().resolveUserIdentity(prisma, f.operator);
     if (!actor) {
       // the exception rows carry a real `raisedById` FK, so an unresolvable operator must fail
       // BEFORE any work rather than half-way through the sweep
-      process.stderr.write(`commercial:reevaluate: --operator ${f.operator} is not a user id\n`);
+      process.stderr.write(`commercial:reevaluate: --operator ${f.operator} does not resolve to a user\n`);
       process.exitCode = 2;
       return;
     }

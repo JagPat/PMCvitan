@@ -2189,6 +2189,63 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     expect(await storedForecast(projectId)).toEqual(await liveForecast(projectId));
   });
 
+  it('PROBE 42 (§0b): the forecast lock is taken AFTER the stream row — no order to invert', async () => {
+    // Codex round-3 (P1). Round 2 called the advisory lock "one lock, always first, so no
+    // acquisition order exists to invert". That was true of the two cash-forecast callers and FALSE
+    // of the system: the real ordering graph includes `ProjectEventStream`, which `emitEvent` locks
+    // to allocate a position and the rebuild's activation barrier HOLDS while it replays the tail.
+    //
+    //   barrier: stream → (replay a forecast event) → advisory
+    //   PO issue: advisory (via `evaluate`) → stream (via `emitEvent`)
+    //
+    // Opposite sequences on the same pair. PostgreSQL resolves that by killing one — the operator's
+    // rebuild, or a live purchase order.
+    //
+    // The fix is a TOTAL ORDER (`readiness < stream < forecast`) rather than a rule callers must
+    // remember, and this asserts the property that makes it total: a transaction that holds the
+    // STREAM row can still acquire the forecast lock, because every holder of the forecast lock
+    // already holds the stream row and therefore cannot be waiting for it.
+    //
+    // RED at `ce015a1`, and the OBSERVED failure is worth stating precisely rather than assumed:
+    // with the stream lock removed the commercial write does not wait at all, so the barrier times
+    // out (`nothing ever blocked`). That is the property this probe exists for — a write that can
+    // hold the forecast lock WITHOUT holding the stream row is exactly the participant that closes
+    // the cycle. The deadlock itself needs a third party (the barrier mid-replay) and is therefore
+    // not what a two-session probe can show; what it CAN show is that the edge which makes the
+    // graph cyclic is gone. Claiming a 40P01 here would be claiming more than the test proves.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100000', reason: 'pilot budget' }, pmc(projectId));
+    await issuedMaterialLine(projectId, { qty: '1' });
+    await drainRelay();
+
+    const holder = new PrismaClient();
+    try {
+      // session A: hold the STREAM row, exactly as the activation barrier does
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      let holderPid = 0;
+      const holding = holder.$transaction(async (tx) => {
+        holderPid = (await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid;
+        await tx.$queryRawUnsafe('SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = $1 FOR UPDATE', projectId);
+        await held;
+      }, { timeout: 30_000 });
+      while (holderPid === 0) await new Promise((r) => setTimeout(r, 20));
+
+      // session B: a commercial write. It must WAIT for the stream row (the ordering that makes the
+      // graph acyclic) rather than seizing the forecast lock and then waiting — which is what
+      // produced the cycle.
+      const write = budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '90000', reason: 'revised' }, pmc(projectId));
+      await waitUntilBlockedBy(holderPid);
+      release();
+      await holding;
+      await write; // completes cleanly — never aborted with a deadlock
+    } finally {
+      await holder.$disconnect();
+    }
+    expect((await positionOf(projectId)).budget, 'the revision committed rather than being killed as a deadlock victim').toBe('90000.00');
+    expect(await storedForecast(projectId)).toEqual(await liveForecast(projectId));
+  });
+
   it('PROBE 38 (§J): the read falls back to LIVE rather than serving a stale or absent generation', async () => {
     // The standing read discipline. A lagging generation is never served as authoritative — the
     // caller gets the canonical compute instead, through the SAME function, so a fallback is a

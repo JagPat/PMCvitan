@@ -327,6 +327,31 @@ as the single fact behind findings 5, 6, 7, 8 and the partition-only gap, and ad
 **CLOSURE E** so the next event-less module that adds a projection is stopped at
 the desk rather than three review rounds later.
 
+## Codex round 3 — two findings on head `ce015a1`
+
+**Round-3 F1 (P1) — the advisory lock inverted against `ProjectEventStream`.** Round 2's
+comment claimed *"one lock, always first, so no acquisition order exists to invert"* —
+true of the two cash-forecast callers, false of the system. The rebuild's activation
+barrier holds the stream row and then replays a forecast-relevant tail event, which
+waits for the advisory lock; a concurrent PO issue takes the advisory lock through
+`evaluate` and then calls `emitEvent`, which waits for the stream row. Opposite
+sequences on the same pair, resolved by PostgreSQL killing one of them.
+
+The fix is a TOTAL ORDER rather than a rule callers must remember —
+`lockProjectReadiness < ProjectEventStream < cash-forecast advisory` — achieved by
+taking the stream row inside `refreshCashForecast`, before the advisory lock. Every
+holder of the advisory lock then already holds the stream row and cannot be waiting
+for it, whatever the caller does next. This is Root B again: the hazard exists only
+because this projection's writers do not emit, so only here does a transaction hold a
+projection lock while reaching for a stream position.
+
+**Round-3 F2 (P2) — operator identity.** The sweep validated `--operator` by reading
+the orgs-owned `User` table directly, in a CLI file the boundary analyzer cannot see.
+`OrgsParticipant.resolveUserIdentity` exists so "whether a disabled or merged account
+still resolves" changes once rather than per module, and the §L activation path beside
+it already routes through it. The stakes are durable — this sweep stamps `raisedById`
+on append-only observations.
+
 ## The probes
 
 | # | § | What it proves |
@@ -342,6 +367,7 @@ the desk rather than three review rounds later.
 | 39 | §J | a PARTITION-ONLY write refreshes the forecast too — paying and reversing move the stored `paid`/`approved` with nothing drained, because nothing was emitted |
 | 40 | §B/§J | the operator sweep REOPENS a breach the §J completion re-created, labels it `fold_correction`, is idempotent on a second run, and CLEARS again once the budget is corrected |
 | 41 | §J | the rebuild SEED serializes on the forecast advisory lock — a holder BLOCKS it (`pg_blocking_pids`, condition-based) and it completes on release |
+| 42 | §0b | the forecast lock is taken AFTER the stream row, so the total order holds — a transaction holding the stream row is never blocked by a forecast-lock holder (RED: without it the write never waits at all) |
 | CLOSURE E | §G | a rebuildable projection whose owning module declares `producesEvents: []` MUST supply `lockFor` — both sides derived, both directions non-vacuous, mutation-tested RED |
 | CLOSURE D | §J | every forecast event type is catalog-declared AND resolves to `dispatch`; the labour family is present by name; an unrelated event stays a no-op |
 
