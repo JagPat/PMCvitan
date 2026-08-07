@@ -17,6 +17,7 @@ import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
+import { CommercialStatusService } from './commercial-status.service';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { ApprovePaymentInput, RecordPaymentInput } from '../contracts';
@@ -89,6 +90,7 @@ export class CommercialPaymentService {
     // clear the over-budget exception in its OWN transaction. Same evaluator every other mover
     // uses; a second copy of the raise-or-clear rule is how the label drifts from what moved.
     private readonly bills: CommercialBillService,
+    private readonly status: CommercialStatusService,
   ) {}
 
   private assertApprove(user: AuthUser): void {
@@ -132,7 +134,7 @@ export class CommercialPaymentService {
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
-        await this.lockBill(tx, projectId, input.billId);
+        const bill = await this.lockBill(tx, projectId, input.billId);
 
         // §H's own fold, under the lock. It answers both "is anything payable" and "how much".
         const position = await this.deductions.positionFor(tx, projectId, input.billId);
@@ -207,6 +209,10 @@ export class CommercialPaymentService {
           tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId, 'payment_approval',
         );
 
+        // §F — an approval MOVES `APPROVED`, so the derived status is re-read from the folds in
+        // this same transaction, under the bill lock taken above. One derivation, every mover.
+        await this.status.reDerive(tx, projectId, input.billId, bill.status as VendorBillStatus);
+
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.approve',
           entity: 'PaymentApproval', entityId: approval.id,
@@ -246,7 +252,7 @@ export class CommercialPaymentService {
         // The BILL is what scopes both folds this command decides on, so it is locked before any of
         // them is read. `PaymentApproval` is append-only and its `certificateId` is frozen, so
         // resolving WHICH bill to lock above is safe; nothing decided is read before the lock.
-        await this.lockBill(tx, projectId, approval.billId);
+        const bill = await this.lockBill(tx, projectId, approval.billId);
 
         // The approval must still be LIVE authority. `APPROVED(bill)` counts only approvals on the
         // live certificate, so paying against one whose certificate has been superseded attaches
@@ -309,6 +315,10 @@ export class CommercialPaymentService {
             paidById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
+
+        // §F — a payment MOVES `PAID`. `certified → approved-for-payment → part-paid → paid` are
+        // all derived here rather than written by hand at four sites.
+        await this.status.reDerive(tx, projectId, approval.billId, bill.status as VendorBillStatus);
 
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.record',
