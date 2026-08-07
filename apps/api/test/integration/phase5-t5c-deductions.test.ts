@@ -1452,6 +1452,15 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
            FROM "BillDeductionRelease" WHERE "projectId"=$2 AND "deductionId"=$4`,
         `${newCert}-r`, projectId, `${newCert}-d`, carried.id,
       );
+      // Task 6B-i — same reason as `correctTo` above: §F's coherence seal fires from
+      // `BillCertificate` too, and this leg replaces one. Without the status following its folds
+      // the DERIVATION would refuse this transaction first and the probe would pass on the wrong
+      // rule — a rejection is only evidence when it is the rejection you named.
+      await tx.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status" = phase5_t6b_derive_bill_status("projectId", "id"), "statusChangedAt" = now()
+          WHERE "projectId"=$1 AND "id"=$2 AND "status" <> phase5_t6b_derive_bill_status("projectId", "id")`,
+        projectId, billId,
+      );
     })).rejects.toThrow(/carries .* of retained balance forward, more than the .* it certifies/u);
   });
 
