@@ -62,6 +62,25 @@ That is the same class as PR #289's root B, one layer up from code: a guarantee
 recorded rather than exercised. The difference here is that the recording *was* a
 test, which is the most convincing way to be wrong.
 
+## It happened again while this audit was being written
+
+The head that first carried this audit touched `docs/reviews/pr-290-convergence.md`
+and satisfied the gate. The very next commit — a one-line wording fix to
+`docs/STATUS.md`'s `merged` definition — carried the trailer and touched no
+convergence file, so the gate would have reported "missing packet" again.
+
+PR #289's audit records this same slip, with the mechanical form spelled out:
+*once a convergence trailer is required, every subsequent head needs it, and the
+head must also touch a `docs/reviews/*convergence*.md` file.* I wrote that
+sentence, and then did it again on the next PR.
+
+Which is the honest evidence for this audit's own root. Writing a rule down —
+even prominently, even in the audit whose job is to carry lessons forward — does
+not enforce it. The convergence gate is enforced by CI and caught it; the *note*
+caught nothing. The same is true of the `work_item` rule that started this PR: it
+is now in `docs/STATUS.md`'s prose AND in a test that reads the live document,
+and only the second one will stop the next occurrence.
+
 ## The test if this recurs
 
 If a future finding is "the pin passes on the state it was written to reject",
