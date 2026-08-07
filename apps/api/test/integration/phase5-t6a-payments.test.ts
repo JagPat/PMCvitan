@@ -371,13 +371,26 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
       overId, projectId, cert.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', overId),
     )).rejects.toThrow(/exceed the 100\.00 payable/u);
 
-    // a coherent approval IS accepted, so the seal is precise
+    // a coherent approval IS accepted, so the seal is precise.
+    //
+    // Task 6B-i — it carries the status the approval derives, in the same transaction. §F's
+    // coherence seal refuses a bypass writer that moves a fold and leaves `VendorBill.status`
+    // behind, and a ₹30 approval on a ₹100 payable derives `approved-for-payment`. Bound 4 is what
+    // decides whether this row may exist and that is untouched; what changed is that a raw writer
+    // must now do the whole of what `payment.approve` does, not the half it finds convenient.
     const okId = `${cert.id}-ok`;
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES($1,$2,$3,$4,30.00,$5,$6)`,
-      okId, projectId, cert.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', okId),
-    );
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
+         VALUES($1,$2,$3,$4,30.00,$5,$6)`,
+        okId, projectId, cert.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', okId),
+      );
+      await tx.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='approved-for-payment', "statusChangedAt"=now()
+          WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      );
+    });
 
     // bound 5 at PG: paying more than the 30 approved
     const payId = `${cert.id}-pay`;
