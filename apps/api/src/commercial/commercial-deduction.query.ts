@@ -304,6 +304,40 @@ export class CommercialDeductionQuery {
   }
 
   /**
+   * `RECOVERABLE(vendor)` (§H) — Σ advances paid to one counterparty MINUS Σ advance-recovery
+   * deductions taken across that counterparty's claims. A fold, never a stored balance.
+   *
+   * **Vendor-scoped, not per-advance, and the asymmetry with a payment reversal is deliberate.**
+   * 6B-ii bounds a reversal by its OWN payment because a payment is nested under one authority, and
+   * an aggregate can be conserved while the attribution is a lie. An advance is not an authority —
+   * it is a POOL. A vendor holding a ₹100 mobilisation advance and a ₹50 materials advance recovers
+   * ₹120 from the next bill with no fact of the matter about which row it came from; forcing a
+   * choice would put an `advanceId` column on `BillDeduction` that no other type uses and that the
+   * practice would have to invent an answer for. What DOES have a fact of the matter is the
+   * counterparty.
+   *
+   * **Recoveries count from EVERY certificate, live or superseded.** A superseded certificate's
+   * deductions leave `NET_PAYABLE` (§H) — but the cash they recovered did not come back, because
+   * supersession never refunds an advance. Scoping this to live certificates would free the
+   * recovered balance for a second recovery of the same money.
+   */
+  async recoverableFor(
+    tx: Prisma.TransactionClient, projectId: string, vendorId: string,
+  ): Promise<{ advanced: Prisma.Decimal; recovered: Prisma.Decimal; recoverable: Prisma.Decimal }> {
+    const rows = await tx.$queryRaw<Array<{ advanced: Prisma.Decimal | null; recovered: Prisma.Decimal | null }>>`
+      SELECT COALESCE((SELECT SUM(a."amount") FROM "VendorAdvance" a
+                        WHERE a."projectId" = ${projectId} AND a."vendorId" = ${vendorId}), 0) AS advanced,
+             COALESCE((SELECT SUM(d."amount")
+                         FROM "BillDeduction" d
+                         JOIN "VendorBill" b ON b."projectId" = d."projectId" AND b."id" = d."billId"
+                        WHERE d."projectId" = ${projectId} AND b."vendorId" = ${vendorId}
+                          AND d."type" = 'advance-recovery'), 0) AS recovered`;
+    const advanced = new Prisma.Decimal(rows[0]?.advanced ?? 0);
+    const recovered = new Prisma.Decimal(rows[0]?.recovered ?? 0);
+    return { advanced, recovered, recoverable: advanced.sub(recovered) };
+  }
+
+  /**
    * All three §F folds for one bill, read together. `netPayable` is ZERO when no live certificate
    * stands — `positionFor` returns null there, and a bill with nothing certified has nothing
    * payable, which is the value the derivation's first arm needs.

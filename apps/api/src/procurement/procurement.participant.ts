@@ -51,6 +51,36 @@ export class ProcurementParticipant {
   }
 
   /**
+   * Phase 5 Task 6C (the `commercial → procurement` workflow-participant edge) — the same binding,
+   * LOCKED, and returned so the caller can fold against it.
+   *
+   * §H's advance pool is VENDOR-scoped: `RECOVERABLE = Σ advances − Σ advance-recovery` over one
+   * counterparty. §0b's bill-first lock is not enough to serialize it, because two recoveries on two
+   * DIFFERENT bills of the same vendor take two different bill locks and never meet — both would
+   * read the same recoverable balance and both commit. The `ProjectVendor` row is the one row both
+   * transactions must touch, so it is the serialization point, and commercial takes it THROUGH this
+   * participant rather than reading `ProjectVendor` directly (read-encapsulation — the boundary
+   * analyzer flagged the direct read, and this is the routed fix).
+   *
+   * Called INSIDE the commercial command transaction, AFTER the bill lock, so the order stays total
+   * (bill → vendor). `phase5_t6c_recoverable_check` takes the same row at COMMIT for the same
+   * reason: a seal that measured a different row from the service would serialize nothing.
+   */
+  async lockVendorBinding(
+    tx: Prisma.TransactionClient, projectId: string, vendorId: string,
+  ): Promise<string> {
+    const rows = await tx.$queryRaw<Array<{ vendorId: string }>>`
+      SELECT "vendorId" FROM "ProjectVendor"
+       WHERE "projectId" = ${projectId} AND "vendorId" = ${vendorId}
+       FOR UPDATE`;
+    const bound = rows[0];
+    if (!bound) {
+      throw new BadRequestException('vendorId is not bound to this project — bind the vendor first (§H/§F)');
+    }
+    return bound.vendorId;
+  }
+
+  /**
    * Phase 4 Task 2 — resolve a procurement-owned `Vendor` of an ORG (its identity + display name),
    * through this participant so Labour never reads `Vendor` directly (read-encapsulation; Labour stays
    * a LEAF). Used by the labour `VendorLabourProfile` surface. `db` may be the request tx OR the

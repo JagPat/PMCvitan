@@ -142,6 +142,7 @@ model Project {
   paymentApprovals PaymentApproval[]
   payments Payment[]
   paymentReversals PaymentReversal[]
+  vendorAdvances VendorAdvance[]
 }
 
 // Phase 2 Task 4 — the per-project event stream counter. Exactly one row per project
@@ -933,6 +934,7 @@ model User {
   paymentApprovalsApproved PaymentApproval[] @relation("paymentApprovalsApproved")
   paymentsRecorded Payment[] @relation("paymentsRecorded")
   paymentsReversed PaymentReversal[] @relation("paymentsReversed")
+  advancesPaid VendorAdvance[] @relation("advancesPaid")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -1228,6 +1230,8 @@ model ProjectVendor {
   purchaseOrders PurchaseOrder[]
   // Phase 5 Task 4 (§F) — the bills this counterparty has claimed on this project
   vendorBills    VendorBill[]
+  // Phase 5 Task 6C (§H) — money paid to this counterparty ahead of any certified claim
+  advances       VendorAdvance[]
 
   @@unique([projectId, vendorId])
   @@unique([projectId, id])
@@ -3749,6 +3753,48 @@ model Payment {
 /// against one deduction: the reversed total is a FOLD with no stored balance to drift. The
 /// three-column FK proves the payment it reverses is a payment OF THIS BILL, so `billId` — which
 /// the bill-scoped fold and the §F derivation seal both read — cannot disagree with it.
+/// Phase 5 Task 6C (§H) — money paid to a vendor BEFORE any bill certifies it, and the pool that
+/// `advance-recovery` deductions draw down.
+///
+/// It is deliberately NOT a `Payment`. A payment is nested under a `PaymentApproval` on a
+/// `BillCertificate` — that is what makes §G bound 5 (`PAID ≤ APPROVED`) askable — and an advance
+/// has neither: it is paid against the commercial relationship, not against a certified claim. A
+/// row here must therefore never enter `PAID(bill)`, or a mobilisation advance would read as
+/// payment of a bill nobody has certified.
+///
+/// VENDOR-scoped through the same `ProjectVendor` binding a bill uses (§H tenancy), so an advance
+/// paid to one counterparty can never be recovered from another's claim.
+model VendorAdvance {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id])
+
+  binding  ProjectVendor @relation(fields: [projectId, vendorId], references: [projectId, vendorId], onDelete: NoAction, onUpdate: NoAction)
+  vendorId String
+
+  /// FROZEN money (§A `Decimal(18,2)`, half-up, never float64). STRICTLY POSITIVE: §H gives every
+  /// append-only money row in this phase a positive amount with the row TYPE carrying direction.
+  amount Decimal @db.Decimal(18, 2)
+
+  /// what the advance is FOR — mobilisation, materials, a specific milestone. Required: an advance
+  /// is a commercial commitment recovered over later bills, and one nobody can explain is a
+  /// payment with no story attached to it.
+  reason String
+
+  /// how the money moved, so the practice can reconcile against a bank statement — the same pair
+  /// `Payment` carries, because this is cash leaving by the same route
+  method    String
+  reference String?
+
+  paidAt          DateTime @default(now())
+  paidBy          User     @relation("advancesPaid", fields: [paidById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  paidById        String
+  sourceCommandId String
+
+  @@unique([projectId, id])
+  @@index([projectId, vendorId])
+}
+
 model PaymentReversal {
   id        String  @id @default(cuid())
   projectId String

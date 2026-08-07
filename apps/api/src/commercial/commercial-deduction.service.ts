@@ -6,6 +6,7 @@ import {
   type BillDeductionDto,
   type BillDeductionLedgerDto,
   type DeductionType,
+  type VendorAdvanceDto,
   type VendorBillStatus,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
@@ -18,7 +19,8 @@ import { CommercialStatusService } from './commercial-status.service';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialBillService } from './commercial-bill.service';
-import type { RecordDeductionInput, ReleaseDeductionInput } from '../contracts';
+import { ProcurementParticipant } from '../procurement/procurement.participant';
+import type { PayAdvanceInput, RecordDeductionInput, ReleaseDeductionInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -43,10 +45,12 @@ const ZERO = new Prisma.Decimal(0);
  * Both writes re-evaluate §B's budget exception under the same lock, because a withholding lowers
  * §J's `certified-payable` and a release raises it again.
  *
- * **Neither derives the §F payment status, and that is deliberate** — see `evaluateHeadroom`. §F
- * reads three folds and two of them arrive with Task 6's approval and payment rows, so the
- * derivation lands there rather than being written against two structural zeroes. Until then a
- * deduction moves the money and not the status.
+ * **Task 6C adds a THIRD bound, and it is the first one here that is not bill-scoped.** An
+ * `advance-recovery` withholds against the certificate like any other type, so bound 1 still
+ * applies — but it also draws down cash the practice actually paid the counterparty, and that pool
+ * is VENDOR-scoped. Two recoveries on two different bills of the same vendor take two different
+ * bill locks and never meet, so the §0b bill-first order is not enough on its own: the
+ * `ProjectVendor` row is the serialization point, taken AFTER the bill so the order stays total.
  */
 @Injectable()
 export class CommercialDeductionService {
@@ -58,7 +62,18 @@ export class CommercialDeductionService {
     // discharges raise-or-clear through the same public helper certification and verification use.
     private readonly billService: CommercialBillService,
     private readonly status: CommercialStatusService,
+    // §H's advance pool is scoped to a counterparty, and `ProjectVendor` is PROCUREMENT-owned and
+    // read-encapsulated. The binding check and the serialization lock both go through its owner —
+    // `commercial.workflowParticipants` already declares this edge, and the boundary analyzer
+    // caught the first draft reading the table directly.
+    private readonly procurement: ProcurementParticipant,
   ) {}
+
+  private assertPayAdvance(user: AuthUser): void {
+    if (!(ROLE_POLICY['commercial.pay-advance'] as readonly string[]).includes(user.role)) {
+      throw new ForbiddenException('Advancing money to a counterparty is a pmc surface — it commits cash with no certificate behind it');
+    }
+  }
 
   private assertDeduct(user: AuthUser): void {
     if (!(ROLE_POLICY['commercial.deduct'] as readonly string[]).includes(user.role)) {
@@ -125,6 +140,22 @@ export class CommercialDeductionService {
           );
         }
 
+        // BOUND 3 (Task 6C, §H) — an `advance-recovery` also draws down cash that actually went
+        // out, and that pool is VENDOR-scoped rather than bill-scoped. The §0b bill lock above is
+        // not enough on its own: two recoveries on two DIFFERENT bills of the same counterparty
+        // take two different bill locks and never meet, so both would read the same recoverable
+        // balance, both pass, and both commit. `recoverableFor` is therefore read under the
+        // vendor's own row lock, taken AFTER the bill so the order stays total (bill → vendor).
+        if (type === 'advance-recovery') {
+          const vendorId = await this.lockVendorOfBill(tx, projectId, input.billId);
+          const { advanced, recovered, recoverable } = await this.deductions.recoverableFor(tx, projectId, vendorId);
+          if (amount.greaterThan(recoverable)) {
+            throw new ConflictException(
+              `Recovering ${amount.toFixed(2)} would take back more than this counterparty was advanced — ${advanced.toFixed(2)} went out, ${recovered.toFixed(2)} has already been recovered, so ${recoverable.toFixed(2)} remains. A recovery takes back money that actually left; withhold the rest as a penalty or a retention if that is what it is`,
+            );
+          }
+        }
+
         const deduction = await tx.billDeduction.create({
           data: {
             projectId, certificateId: position.certificateId, billId: input.billId,
@@ -146,6 +177,72 @@ export class CommercialDeductionService {
       },
     });
     return this.deductionById(projectId, outcome.resultRef!);
+  }
+
+  // ── §H — pay a counterparty AHEAD of any certified claim ─────────────────────────────────────
+
+  /**
+   * Record cash going out to a vendor before a bill certifies it, creating the pool that
+   * `advance-recovery` deductions draw down.
+   *
+   * **It is not a `Payment`, and the difference is structural rather than a naming choice.** A
+   * payment is nested under a `PaymentApproval` on a `BillCertificate` — that nesting is what makes
+   * §G bound 5 (`PAID ≤ APPROVED`) askable at all. An advance has neither parent: it precedes every
+   * claim it will be recovered from, which is what makes it an advance. Forcing it into `Payment`
+   * would need a fabricated approval on a certificate nobody issued, and it would enter `PAID(bill)`
+   * — reading as payment of a claim that does not exist.
+   *
+   * So the advance reaches a bill only through a DEDUCTION, which lowers `NET_PAYABLE` (money the
+   * vendor no longer receives) rather than raising `PAID` (money the vendor received). Different
+   * facts, and §H keeps them apart.
+   *
+   * No bound applies to the advance itself. That is not an omission: an advance is a commercial
+   * decision about a relationship, not a draw against a ceiling the system holds. What IS bounded is
+   * the recovery, and it is bounded by this row.
+   */
+  async payAdvance(
+    projectId: string, input: PayAdvanceInput, user: AuthUser, idempotencyKey?: string,
+  ): Promise<VendorAdvanceDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertPayAdvance(user);
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const amount = this.parseAmount(input.amount);
+
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'commercial.advance.pay', idempotencyKey, requestHash: hashRequest(input),
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+
+        // the counterparty must be BOUND to this project (§H tenancy), asked of the module that
+        // OWNS the binding. `ProjectVendor` is procurement's and read-encapsulated, so a direct
+        // read here would be a boundary violation — the analyzer says so, and this is the routed
+        // form. The composite FK is the database backstop.
+        await this.procurement.assertVendorBound(tx, projectId, input.vendorId);
+
+        const advance = await tx.vendorAdvance.create({
+          data: {
+            projectId, vendorId: input.vendorId, amount,
+            reason: input.reason, method: input.method, reference: input.reference ?? null,
+            paidById: actor.actorId, sourceCommandId: ctx.commandId!,
+          },
+        });
+
+        // §F — deliberately NO `reDerive` here, and §B — deliberately no headroom evaluation.
+        // An advance touches no bill: it moves none of `NET_PAYABLE`, `APPROVED` or `PAID` for any
+        // claim, and it moves no cost head's exposure (§J's buckets are per head, and an advance is
+        // not attributed to one until a recovery lands on a certified claim). Calling either would
+        // append an observation labelled against a write that moved nothing — the label drift §B's
+        // round 4 removed. The RECOVERY is the mover, and it re-derives through `record` above.
+        await recordAudit(tx, {
+          projectId, actor, action: 'commercial.advance.pay',
+          entity: 'VendorAdvance', entityId: advance.id,
+        });
+        return { resultRef: advance.id, events: [] };
+      },
+    });
+    return this.advanceById(projectId, outcome.resultRef!);
   }
 
   // ── §H — release part of a withholding ───────────────────────────────────────────────────────
@@ -264,10 +361,17 @@ export class CommercialDeductionService {
     this.assertRead(user);
 
     return this.prisma.$transaction(async (tx) => {
-      const bill = await tx.vendorBill.findFirst({ where: { projectId, id: billId }, select: { status: true } });
-      if (!bill) throw new NotFoundException('Vendor bill not found in this project');
+      const billVendor = await tx.vendorBill.findFirst({
+        where: { projectId, id: billId }, select: { status: true, vendorId: true },
+      });
+      if (!billVendor) throw new NotFoundException('Vendor bill not found in this project');
+      const bill = billVendor;
       const position = await this.deductions.positionFor(tx, projectId, billId);
       const rows = position ? await this.ledgerRows(tx, projectId, position.certificateId) : [];
+      // Task 6C — the ceiling an `advance-recovery` is bounded by, read from the SAME snapshot as
+      // everything else here. An operator who can only learn the balance from a refusal is being
+      // asked to guess, and the refusal names it precisely because this read exists to agree with it.
+      const advance = await this.deductions.recoverableFor(tx, projectId, billVendor.vendorId);
       return {
         billId,
         certificateId: position?.certificateId ?? null,
@@ -282,6 +386,12 @@ export class CommercialDeductionService {
         // whose stored status disagrees with its folds, so reading the column is reading the
         // derivation. (A workaround outlives its cause unless someone goes back and deletes it.)
         billStatus: bill.status as VendorBillStatus,
+        advance: {
+          vendorId: billVendor.vendorId,
+          advanced: advance.advanced.toFixed(2),
+          recovered: advance.recovered.toFixed(2),
+          recoverable: advance.recoverable.toFixed(2),
+        },
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
@@ -375,6 +485,40 @@ export class CommercialDeductionService {
   }
 
   /** §0b — the BILL is taken FIRST, before any foreign row, so the lock order stays total. */
+  /**
+   * The counterparty of a bill, with its `ProjectVendor` binding LOCKED.
+   *
+   * Task 6C's serialization point. §0b takes the bill first and that is enough for every bound that
+   * is bill-scoped — this one is not, so the row both transactions must touch is the binding, taken
+   * after the bill so the order stays total and no honest transaction waits on it in the other
+   * direction. `phase5_t6c_recoverable_check` takes the same row for the same reason.
+   */
+  private async advanceById(projectId: string, id: string): Promise<VendorAdvanceDto> {
+    const a = await this.prisma.vendorAdvance.findFirstOrThrow({ where: { projectId, id } });
+    return {
+      id: a.id,
+      vendorId: a.vendorId,
+      amount: a.amount.toFixed(2),
+      reason: a.reason,
+      method: a.method,
+      reference: a.reference,
+      paidAt: a.paidAt.toISOString(),
+      paidById: a.paidById,
+    };
+  }
+
+  private async lockVendorOfBill(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<string> {
+    // the bill is commercial's own, so its counterparty is read here; the BINDING is procurement's,
+    // so the lock is taken through the participant that owns it
+    const bill = await tx.vendorBill.findFirst({
+      where: { projectId, id: billId }, select: { vendorId: true },
+    });
+    if (!bill) throw new NotFoundException('Vendor bill not found in this project');
+    return this.procurement.lockVendorBinding(tx, projectId, bill.vendorId);
+  }
+
   private async lockBill(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
   ): Promise<{ id: string; status: string }> {

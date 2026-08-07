@@ -62,6 +62,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.payment.approve': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.approve'" },
     'commercial.payment.record': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.record'" },
     'commercial.payment.reverse': { file: 'commercial/commercial-payment.service.ts', needle: "commandType: 'commercial.payment.reverse'" },
+    'commercial.advance.pay': { file: 'commercial/commercial-deduction.service.ts', needle: "commandType: 'commercial.advance.pay'" },
     'commercial.certificate.supersede': { file: 'commercial/commercial-certification.service.ts', needle: "'commercial.certificate.supersede'" },
   };
   const querySite: Record<(typeof COMMERCIAL_QUERIES)[number], string> = {
@@ -798,7 +799,55 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
   // `commercial-deduction.query.ts` without a matching seal fails HERE — at the desk, with no
   // database and no reviewer required — rather than becoming the next bypass.
   it('§F: every table the folds READ carries a derivation seal — the set is derived, not listed', () => {
-    const query = readFileSync(join(HERE, 'commercial-deduction.query.ts'), 'utf8');
+    const source = readFileSync(join(HERE, 'commercial-deduction.query.ts'), 'utf8');
+
+    // §F'S FOLDS, not "every fold in the file" — Task 6C found this.
+    //
+    // The first spelling scanned the whole query file, which was exact only while every fold in it
+    // fed `derivedBillStatus`. 6C adds `recoverableFor` — §H's VENDOR-scoped advance pool, which is
+    // a ceiling on a deduction and NOT one of §F's three folds — and it reads `VendorAdvance`. The
+    // closure duly demanded a `_t6b_status_sealed` trigger on a table whose writes cannot move any
+    // bill's derived status, and which has no `billId` for the seal's resolver to read: a seal that
+    // could not have been installed correctly even if someone tried.
+    //
+    // So the surface is DERIVED from `foldsFor`, which is what `reDerive` actually calls: take its
+    // body, follow every `this.<method>` transitively, and scan only that text. A fourth §F fold
+    // added to `foldsFor` is covered automatically; a fold that §F does not read is not demanded.
+    // This is the same correction as reading every migration instead of one — the set was derived
+    // while the PLACE it was derived from was assumed.
+    // Class members here are indented two spaces, so a method runs from its `async name(` to the
+    // next line that is exactly `  }`. Brace-counting from the first `{` does NOT work: these
+    // signatures return inline object types (`Promise<{ netPayable: … }>`), so the first brace
+    // after the name belongs to the RETURN TYPE and the walk would stop inside it — which is
+    // exactly how the first draft of this extraction produced a 78-character "fold surface" and
+    // would have passed vacuously if the guard below had not been there.
+    const methodBody = (name: string): string => {
+      const start = source.indexOf(`async ${name}(`);
+      if (start < 0) return '';
+      const end = source.indexOf('\n  }', start);
+      return end < 0 ? '' : source.slice(start, end + 4);
+    };
+    const foldSurface = (): string => {
+      const seen = new Set<string>();
+      const pending = ['foldsFor'];
+      let out = '';
+      while (pending.length > 0) {
+        const name = pending.pop()!;
+        if (seen.has(name)) continue;
+        seen.add(name);
+        const body = methodBody(name);
+        out += body;
+        for (const m of body.matchAll(/this\.(\w+)\(/gu)) pending.push(m[1]!);
+      }
+      return out;
+    };
+    const query = foldSurface();
+    expect(query.length, '`foldsFor` was not found or resolves to nothing — the §F fold surface is empty, so this closure would pass vacuously').toBeGreaterThan(200);
+    // …and the walk really is TRANSITIVE: `foldsFor` calls `positionFor`, which calls `withheldFor`,
+    // which is where the deduction tables are read. A one-level extraction would miss them.
+    expect(query.includes('billDeductionRelease'), 'the fold surface does not reach `withheldFor` — the walk stopped before the tables two hops down').toBe(true);
+    // …and it EXCLUDES the folds §F does not read, which is the whole point of narrowing it
+    expect(query.includes('VendorAdvance'), '`recoverableFor` is inside the §F fold surface — it is §H\'s ceiling on a deduction, not an input to `derivedBillStatus`').toBe(false);
     // EVERY migration, not the one file that happened to install the first six seals.
     //
     // Task 6B-ii found this: the seal SET was derived while the PLACE it was derived from was a

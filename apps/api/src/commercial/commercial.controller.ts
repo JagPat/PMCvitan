@@ -7,6 +7,7 @@ import {
   approvePaymentSchema,
   recordPaymentSchema,
   reversePaymentSchema,
+  payAdvanceSchema,
   grantSodExceptionSchema,
   correctMeasurementSchema,
   defineCostHeadSchema,
@@ -24,6 +25,7 @@ import {
   type ApprovePaymentInput,
   type RecordPaymentInput,
   type ReversePaymentInput,
+  type PayAdvanceInput,
   type GrantSodExceptionInput,
   type CorrectMeasurementInput,
   type DefineCostHeadInput,
@@ -372,6 +374,25 @@ export class CommercialController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.payments.reverse(projectId, body, user, idempotencyKey);
+  }
+
+  /**
+   * §H — PAY a counterparty ahead of any certified claim.
+   *
+   * On the deduction service rather than the payment one, because the fact it creates is a ceiling
+   * for a DEDUCTION: an advance is recovered by an `advance-recovery` withholding, never by a
+   * payment. Its own permission — an advance commits cash with no certificate behind it, which is a
+   * different risk from paying a claim that was certified, approved and bounded.
+   */
+  @Post('commercial/advances')
+  @RolesFor('commercial.pay-advance')
+  payAdvance(
+    @Param('projectId') projectId: string,
+    @Body(new ZodPipe(payAdvanceSchema)) body: PayAdvanceInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.deductions.payAdvance(projectId, body, user, idempotencyKey);
   }
 
   /** §G — one claim's approvals and payments, with the folds bounds 4–5 are measured against. */
