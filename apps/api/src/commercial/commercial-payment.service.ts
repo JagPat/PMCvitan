@@ -156,7 +156,7 @@ export class CommercialPaymentService {
 
         // §G BOUND 4, re-derived under the lock and stated as the REMAINING headroom, because a
         // refusal that only says "too much" leaves the practice guessing at the number.
-        const approvedSoFar = await this.approvedTotal(tx, projectId, input.billId);
+        const approvedSoFar = await this.deductions.approvedFor(tx, projectId, input.billId);
         const netPayable = new Prisma.Decimal(position.netPayable);
         const remaining = netPayable.sub(approvedSoFar);
         if (amount.greaterThan(remaining)) {
@@ -282,8 +282,8 @@ export class CommercialPaymentService {
         // A1 as `paid: 80.00` against an authority of 40 while A2 sits unused. The bill-level
         // total is conserved and the attribution is a lie, which is the shape §C exists to
         // forbid: every unit of money answers to exactly one authority.
-        const approvedTotal = await this.approvedTotal(tx, projectId, approval.billId);
-        const paidTotal = await this.paidTotal(tx, projectId, approval.billId);
+        const approvedTotal = await this.deductions.approvedFor(tx, projectId, approval.billId);
+        const paidTotal = await this.deductions.paidFor(tx, projectId, approval.billId);
         const remaining = approvedTotal.sub(paidTotal);
         if (amount.greaterThan(remaining)) {
           throw new ConflictException(
@@ -364,33 +364,7 @@ export class CommercialPaymentService {
 
   // ── folds and helpers ────────────────────────────────────────────────────────────────────────
 
-  /**
-   * §G bound 4's left side. Approvals against the LIVE certificate only: a superseded certificate's
-   * approvals must not count, or the bound compares an overstated total against a payable that no
-   * longer exists.
-   */
-  private async approvedTotal(
-    tx: Prisma.TransactionClient, projectId: string, billId: string,
-  ): Promise<Prisma.Decimal> {
-    const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
-      SELECT COALESCE(SUM(a."amount"), 0) AS total
-        FROM "PaymentApproval" a
-        JOIN "BillCertificate" c ON c."projectId" = a."projectId" AND c."id" = a."certificateId"
-       WHERE a."projectId" = ${projectId} AND a."billId" = ${billId}
-         AND c."supersededAt" IS NULL`;
-    return new Prisma.Decimal(rows[0]?.total ?? 0);
-  }
 
-  /** §G bound 5's left side. */
-  private async paidTotal(
-    tx: Prisma.TransactionClient, projectId: string, billId: string,
-  ): Promise<Prisma.Decimal> {
-    const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
-      SELECT COALESCE(SUM(p."amount"), 0) AS total
-        FROM "Payment" p
-       WHERE p."projectId" = ${projectId} AND p."billId" = ${billId}`;
-    return new Prisma.Decimal(rows[0]?.total ?? 0);
-  }
 
   /** What ONE authorisation has already paid — the fold the per-approval bound measures, and the
    *  same number `PaymentApprovalDto.paid` reports, so the refusal and the read agree. */
