@@ -3,7 +3,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
-import { ProjectionRebuildOperations } from '../../src/platform/projections/rebuild-operations';
+import { ProjectionRebuildOperations, REBUILDABLE_PROJECTIONS } from '../../src/platform/projections/rebuild-operations';
 import { DrawingsService } from '../../src/drawings/drawings.service';
 import { DrawingsQueryService } from '../../src/drawings/drawings.query';
 import { DECISIONS_PROJECTION } from '../../src/decisions/decisions.projection';
@@ -13,6 +13,7 @@ import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projec
 import { ACTIVITIES_PROJECTION } from '../../src/activities/activities.projection';
 import { MATERIAL_READINESS_PROJECTION } from '../../src/activities/material-readiness.projection';
 import { LABOUR_READINESS_PROJECTION } from '../../src/labour/labour-readiness.projection';
+import { CASH_FORECAST_PROJECTION } from '../../src/commercial/cash-forecast.projection';
 import type { AuthUser } from '../../src/common/auth';
 import { Prisma } from '@prisma/client';
 
@@ -156,16 +157,30 @@ describe('Task 10 finalization — checkpoint-aware operator rebuild diagnostics
     expect(drawingsAttempt.before.state).toBe('corrupt');
     expect(drawingsAttempt.after?.state).toBe('current-match');
 
-    // The invocation record precedes the per-pair outcome records, and every pair recorded one —
-    // the default run covers ALL SEVEN production projections (final-review P1 correction;
-    // Phase 4 Task 4 added labour.readiness).
+    // The invocation record precedes the per-pair outcome records, and EVERY registered projection
+    // recorded one. The expected set is DERIVED from `REBUILDABLE_PROJECTIONS` rather than listed:
+    // this assertion is about the default run's COMPLETENESS ("no projection is silently skipped"),
+    // and a hand-kept copy of the registry answers a different question — "does the run cover the
+    // seven I remembered" — which stays green while the eighth goes unrebuilt. That is the failure
+    // it was written to prevent, so the list was the one thing it could not be. Phase 5 Task 7A is
+    // where the copy went stale; `pr-289-convergence.md` root A, again.
+    //
+    // The registry itself is pinned by name below, so a projection quietly REMOVED from it cannot
+    // make this vacuous either.
     const audits = await t.prisma.outboxOperatorAction.findMany({ where: { operatorIdentity: OPERATOR }, orderBy: { at: 'asc' } });
     expect(audits[0]!.action).toBe('projection.rebuild');
     expect(audits[0]!.reason).toBe('repair corrupted probe generation');
     const outcomes = audits.filter((a) => a.action === 'projection.rebuild.result');
-    expect(outcomes.map((o) => o.consumer).sort()).toEqual(
-      [DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION, ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION, LABOUR_READINESS_PROJECTION].sort(),
-    );
+    expect(outcomes.map((o) => o.consumer).sort()).toEqual(Object.keys(REBUILDABLE_PROJECTIONS).sort());
+    // …and the registry contains the projections this suite knows by name, so "derived" cannot
+    // degrade into "whatever happens to be registered, including nothing".
+    for (const known of [
+      DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION,
+      ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION, LABOUR_READINESS_PROJECTION,
+      CASH_FORECAST_PROJECTION,
+    ]) {
+      expect(Object.keys(REBUILDABLE_PROJECTIONS), `${known} left REBUILDABLE_PROJECTIONS — the operator rebuild would silently stop covering it`).toContain(known);
+    }
     for (const o of outcomes) {
       expect(o.projectId).toBe(projectId);
       expect(o.reason).toMatch(/^ok: generation \d+/);

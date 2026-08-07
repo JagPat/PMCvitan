@@ -121,6 +121,27 @@ things standing between "a writer forgot" and "the money page is wrong for a wee
 are this closure and the operator diagnostic — which is why the RUNBOOK now says
 so under step 3.
 
+### CI then found root A twice more, in the operator-rebuild suites
+
+Adding the eighth projection made two integration suites fail, and both for exactly
+the reason CLOSURE C exists. `projection-rebuild-operations.test.ts` asserted the
+default run's consumer set against a **hand-written list of seven**, and
+`projection-rebuild-upgrade.test.ts` did the same through a constant literally
+named `ALL_FIVE` **that already held seven entries**.
+
+The name is the whole argument. Both assertions are about COMPLETENESS — *"the
+default operator run skips no projection"* — and a hand-kept copy of the registry
+answers a different question: *"does the run cover the ones I remembered."* That
+question stays green while a new projection goes unrebuilt on every production
+upgrade, which is precisely the defect the assertion was written to catch.
+`ALL_FIVE` had gone stale twice before this unit found it a third time.
+
+Both now derive the expected set from `REBUILDABLE_PROJECTIONS`, with the registry
+pinned by name so "derived" cannot decay into "whatever happens to be registered,
+including nothing". Recorded rather than quietly fixed, because the count is the
+point: that is occurrence six and seven of the same root inside one phase, and the
+second one was carrying its own staleness in its identifier.
+
 That framing is `docs/reviews/pr-289-convergence.md` root A applied ahead of a
 finding rather than after one. This phase has found *a hand-written list standing
 in for a derived set* five separate times, most recently inside the very file
