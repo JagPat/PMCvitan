@@ -803,19 +803,57 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       'utf8',
     );
 
-    // what the three folds actually touch: quoted table names in the raw SQL, plus the Prisma
-    // delegates the batched withheld fold uses
+    // what the three folds actually touch, extracted GENERICALLY — the first draft of this closure
+    // matched delegates with `tx\.(billCertificate|billDeduction|…)\.`, which is the five members
+    // written down again inside the closure whose whole point is not to write them down. 6B-ii adds
+    // `tx.paymentReversal` to `PAID`, and that alternation would not have matched it: the closure
+    // would have stayed green with `PaymentReversal` unsealed. Root A inside the closure for root A,
+    // for the third time in this module's history.
+    //
+    // So: any `tx.<delegate>.` reference, mapped to its model by the same camelCase→PascalCase rule
+    // Prisma uses, and INTERSECTED with the real model list from `schema.prisma` so a typo or a
+    // non-model property (`tx.$queryRaw` never matches — `$` is not a lowercase letter) cannot
+    // invent a requirement that no table could satisfy.
+    const sealedTables = (): Set<string> => new Set(
+      [...migration.matchAll(/^CREATE CONSTRAINT TRIGGER "(\w+)_t6b_status_sealed"/gmu)].map((m) => m[1]!),
+    );
+    const models = new Set(
+      [...readFileSync(join(SRC, '../prisma/schema.prisma'), 'utf8').matchAll(/^model\s+(\w+)\s*\{/gmu)].map((m) => m[1]!),
+    );
+    expect(models.size, 'no Prisma models were parsed — the model list is empty, so every delegate would be discarded').toBeGreaterThan(20);
+
     const fromRaw = [...query.matchAll(/FROM\s+"(\w+)"/gu)].map((m) => m[1]!);
     const fromJoin = [...query.matchAll(/JOIN\s+"(\w+)"/gu)].map((m) => m[1]!);
-    const fromDelegate = [...query.matchAll(/tx\.(billCertificate|billDeduction|billDeductionRelease|payment|paymentApproval)\./gu)]
-      .map((m) => `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)}`);
-    const readTables = [...new Set([...fromRaw, ...fromJoin, ...fromDelegate])].sort();
+    // the model set is a PARAMETER so the mutation check below can simulate the schema 6B-ii will
+    // have, rather than being unable to name the very addition this closure exists to catch
+    const delegatesIn = (source: string, known: ReadonlySet<string> = models): string[] =>
+      [...source.matchAll(/\btx\.([a-z][A-Za-z0-9]*)\./gu)]
+        .map((m) => `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)}`)
+        .filter((model) => known.has(model));
+    const readTables = [...new Set([...fromRaw, ...fromJoin, ...delegatesIn(query)])].sort();
 
     expect(readTables.length, 'no fold table was found — the extraction is matching nothing, so this pin proves nothing').toBeGreaterThan(2);
 
-    const sealed = new Set(
-      [...migration.matchAll(/^CREATE CONSTRAINT TRIGGER "(\w+)_t6b_status_sealed"/gmu)].map((m) => m[1]!),
-    );
+    // …and the extractor is MUTATION-TESTED against the exact future addition that broke the first
+    // draft. This is the shape 6B-ii will introduce; if the extractor stops seeing it, this fails
+    // here rather than in the next unit's review.
+    const withReversal = new Set([...models, 'PaymentReversal']);
+    expect(
+      delegatesIn('await tx.paymentReversal.findMany({ where: { billId } });', withReversal),
+      'the delegate extractor does not see `tx.paymentReversal` — 6B-ii would add an unsealed fold input to `PAID` and this closure would stay green',
+    ).toEqual(['PaymentReversal']);
+    // …and the consequence is what matters: an unsealed new fold input must be REPORTED, not merely
+    // seen. This is the assertion the first draft could not have made.
+    expect(
+      delegatesIn('await tx.paymentReversal.findMany();', withReversal).filter((t) => !sealedTables().has(t)),
+      '`PaymentReversal` would be read by a fold and carry no `_t6b_status_sealed` trigger, yet the closure did not flag it',
+    ).toEqual(['PaymentReversal']);
+    expect(
+      delegatesIn('await tx.$queryRaw`SELECT 1`; await tx.notAModel.findMany();'),
+      'the extractor invented a table from a non-model property',
+    ).toEqual([]);
+
+    const sealed = sealedTables();
     // the bill itself is sealed too, and is not a "read" of the folds — it is the thing they derive
     expect(sealed.has('VendorBill'), 'the bill carries no derivation seal').toBe(true);
 

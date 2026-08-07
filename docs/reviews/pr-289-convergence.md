@@ -111,6 +111,50 @@ raw write that moved a fold and left the status behind, which is the state findi
 4 asked the database to refuse. No rule under test was weakened; each fixture now
 does the whole of what its real command does.
 
+## Root A, a third time — inside the closure for root A
+
+JagPat, on the head that carried this audit. **Closure A was itself enumerated.**
+Its delegate extractor read
+
+```
+tx\.(billCertificate|billDeduction|billDeductionRelease|payment|paymentApproval)\.
+```
+
+— the five members written down again, inside the closure whose entire purpose is
+not to write them down. The consequence is specific and imminent: 6B-ii adds
+`tx.paymentReversal` to `PAID`, that alternation would not match it, and the
+closure would have stayed green with `PaymentReversal` unsealed. The closure for
+root A would have failed at exactly the moment root A next occurred.
+
+PR #287's audit recorded this same meta-pattern — "root A inside the closure for
+root A" — which makes this its third occurrence in the module. The lesson is not
+"derive the set"; it is that **the closure is code too, and gets the same review
+as the thing it closes.**
+
+The extractor is now generic: any `tx.<delegate>.`, mapped camelCase→PascalCase,
+intersected with the real model list parsed from `schema.prisma` (so a typo or a
+non-model property cannot invent a requirement). And it is **mutation-tested
+against the exact future addition**: the probe feeds `tx.paymentReversal` through
+the extractor with a model set simulating 6B-ii's schema, asserts it is seen, and
+asserts it is REPORTED as unsealed. Reverting to the old alternation fails that
+probe by name.
+
+## The runner proof's data claim was vacuous
+
+Same head, second finding. The proof migrated a scratch database to 6A but seeded
+no `VendorBill`, so its closing `incoherent = 0` passed because there were **zero
+bills**. The lock-conflict assertions were sound — `SELECT … FOR UPDATE` takes a
+relation-level lock on an empty table — but the rolling-upgrade DATA outcome, the
+thing the finding that prompted the barrier was about, was never tested.
+
+That is root B once more: a claim reported as proven that nothing exercised. The
+script now seeds the exact 6A-shaped row §F must correct — stored `certified`
+with a live ₹100 certificate and a ₹40 approval — runs the real deploy, and
+asserts **that named row** ends at `approved-for-payment` equal to
+`phase5_t6b_derive_bill_status`. The sweep over all bills is kept beside it, with
+an explicit non-empty guard so it can never again pass on an empty table.
+Mutation-verified: removing the backfill turns both assertions RED.
+
 ## A postscript this audit earned the hard way
 
 The head that first carried this audit (`0dfb09f`) satisfied the convergence gate.

@@ -82,6 +82,55 @@ else
   bad "the 6B derivation already exists at the 6A state (found '$pre') — step 1 did not hold the migration back"; exit 1
 fi
 
+# ── 1b. seed a 6A-shaped bill the backfill MUST correct ─────────────────────────────────────────
+#
+# Without this the proof is vacuous where it matters most: `SELECT … FOR UPDATE` takes a
+# relation-level lock on an empty table, so the lock assertions still hold, but the final
+# "no bill disagrees with its folds" passes because there are NO bills. That is not the
+# rolling-upgrade DATA outcome this script claims to prove.
+#
+# The row is the exact state 6A legitimately produced and §F must correct: a bill stored `certified`
+# with a live ₹100 certificate and a ₹40 approval standing on it. Under 6A that is right — the
+# status did not track approvals. Under §F the folds derive `approved-for-payment`, so the backfill
+# has to move it, and the assertion at the end names THIS row.
+#
+# It is inserted with `session_replication_role = 'replica'`, transaction-local, and that is
+# deliberate and worth stating plainly: a production 6A row got here through the full application
+# chain (purchase order → acceptance → claim → verification → certificate), and rebuilding that
+# chain in shell would be a second copy of `upgrade-proof.sh`'s fixture with its own drift. What
+# this script is proving is the BACKFILL and the CUTOVER, and both read only the columns below.
+$PSQL <<'SQL'
+BEGIN;
+SELECT set_config('session_replication_role', 'replica', true);
+INSERT INTO "Org"("id","name","slug") VALUES ('t6b-org','T6B Org','t6b-org');
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+  VALUES ('t6b-proj','t6b-org','T6B Site','T6','','Finishing','T6-01','01 Jan 2026','31 Dec 2026',50,30,60);
+INSERT INTO "User"("id","projectId","role","name","email","passwordHash")
+  VALUES ('t6b-user','t6b-proj','pmc','T6B PMC','t6b@vitan.in','hash');
+INSERT INTO "Vendor"("id","orgId","name","createdById") VALUES ('t6b-vendor','t6b-org','T6B Vendor','t6b-user');
+INSERT INTO "CommandExecution"("id","scopeKind","organizationId","projectId","actorId","commandType","idempotencyKey","requestHash","status","resultRef","completedAt")
+  VALUES ('t6b-cmd','project','t6b-org','t6b-proj','t6b-user','commercial.bill.certify','t6b-key','x','succeeded','t6b-cert',now());
+INSERT INTO "VendorBill"("id","projectId","vendorId","vendorBillNumber","documentDate","status","createdById","sourceCommandId")
+  VALUES ('t6b-bill','t6b-proj','t6b-vendor','T6B-001','2026-08-01','certified','t6b-user','t6b-cmd');
+INSERT INTO "VendorBillVersion"("id","projectId","billId","vendorIdPin","version","claimedAmount","lineCount","createdById")
+  VALUES ('t6b-ver','t6b-proj','t6b-bill','t6b-vendor',1,100.00,1,'t6b-user');
+-- a claim LINE: `phase5_t4_bill_status_sealed` refuses a bill in a live status with nothing
+-- claimed, and the backfill's own UPDATE fires it. The `poLineId` is dangling — the FK trigger is
+-- suppressed for this seeding transaction — because what the line has to satisfy here is the XOR
+-- CHECK (exactly one of material/labour) and the line COUNT, neither of which reads the target.
+INSERT INTO "VendorBillLine"("id","projectId","versionId","billId","vendorId","type","poLineId","quantity","rate","taxAmount","freightAmount","amount")
+  VALUES ('t6b-line','t6b-proj','t6b-ver','t6b-bill','t6b-vendor','material','t6b-poline',1,100,0,0,100.00);
+INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+  VALUES ('t6b-cert','t6b-proj','t6b-bill','t6b-ver',100.00,'t6b-user','t6b-cmd');
+INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
+  VALUES ('t6b-appr','t6b-proj','t6b-cert','t6b-bill',40.00,'t6b-user','t6b-cmd');
+COMMIT;
+SQL
+seeded=$($PSQL -tAc "SELECT \"status\" FROM \"VendorBill\" WHERE \"id\" = 't6b-bill'")
+[ "$seeded" = "certified" ] \
+  && ok "a 6A-shaped bill is seeded: stored \`certified\` with a live 100.00 certificate and a 40.00 approval" \
+  || { bad "could not seed the 6A-shaped bill (status '$seeded') — the data claim below would be vacuous"; exit 1; }
+
 # ── 2. the cutover and the OLD writer are MUTUALLY EXCLUSIVE on the real path ────────────────────
 #
 # The claim is that the two cannot overlap. It is demonstrated from the side that can be held open.
@@ -169,7 +218,21 @@ seals=$($PSQL -tAc "SELECT string_agg(c.relname, '/' ORDER BY c.relname) FROM pg
   && ok "all six derivation seals are installed after the cutover" \
   || bad "the seal set after the cutover is '$seals'"
 
+# ── 5. THE DATA OUTCOME — the seeded row, by name, not a count over an empty table ───────────────
+after=$($PSQL -tAc "SELECT \"status\" FROM \"VendorBill\" WHERE \"id\" = 't6b-bill'")
+derived=$($PSQL -tAc "SELECT phase5_t6b_derive_bill_status('t6b-proj', 't6b-bill')")
+[ "$after" = "approved-for-payment" ] && [ "$derived" = "approved-for-payment" ] \
+  && ok "the backfill CORRECTED the 6A-shaped bill: stored '$after' equals what its folds derive" \
+  || bad "the seeded bill is stored '$after' while its folds derive '$derived' — the backfill did not correct it"
+
+# …and the same statement over every bill, which is the general claim. It is asserted BESIDE the
+# named row rather than instead of it: alone it would pass on an empty table, which is exactly how
+# the first version of this script reported a data outcome it had not tested.
+bills=$($PSQL -tAc "SELECT COUNT(*) FROM \"VendorBill\" WHERE phase5_t6b_derived_bill_status(\"status\")")
 incoherent=$($PSQL -tAc "SELECT COUNT(*) FROM \"VendorBill\" b WHERE phase5_t6b_derived_bill_status(b.\"status\") AND b.\"status\" <> phase5_t6b_derive_bill_status(b.\"projectId\", b.\"id\")")
+[ "${bills:-0}" -ge 1 ] \
+  && ok "…and the sweep below is over $bills in-family bill(s), so it is not passing on an empty table" \
+  || bad "there are no in-family bills — the sweep would pass vacuously"
 [ "$incoherent" = "0" ] \
   && ok "no bill is stored at a status its own folds contradict" \
   || bad "$incoherent bill(s) are stored at a status their folds contradict"
