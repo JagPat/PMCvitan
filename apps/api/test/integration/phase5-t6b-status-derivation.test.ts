@@ -752,6 +752,85 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
     expect(await t.prisma.payment.count({ where: { projectId, billId } })).toBe(1);
   });
 
+  it('R1-F6 (upgrade): the migration is ONE serialized cutover — the OLD writer cannot commit into the gap', async () => {
+    // JagPat, on the upgrade path. The backfill and the seal are two moments, and `docs/DEPLOY.md`
+    // says the previous production container keeps serving until the new deploy succeeds — so
+    // between them the OLD `commercial.payment.approve` can lock a coherent `certified` bill, append
+    // a valid approval and commit with the status unmoved. That was CORRECT under 6A. A constraint
+    // trigger does not validate rows written before it existed, so the bill would be permanently
+    // stored `certified` while its folds derive `approved-for-payment`, with no future write
+    // required to expose it and none able to repair it.
+    //
+    // Two halves, because the claim has two parts and each can fail on its own.
+
+    // ── 1. the barrier is IN the migration, and BEFORE the two things it has to cover ────────────
+    const migration = readFileSync(
+      join(__dirname, '../../prisma/migrations/20270610000000_phase5_t6b_status_derivation/migration.sql'),
+      'utf8',
+    );
+    // the MODE is part of the claim, not decoration: `SHARE ROW EXCLUSIVE` (the first draft) does
+    // not conflict with `ROW SHARE`, so it would have let every `SELECT … FOR UPDATE` through
+    const barrier = migration.search(/^LOCK TABLE "VendorBill" IN EXCLUSIVE MODE;$/mu);
+    const backfill = migration.search(/^\s*UPDATE "VendorBill" b$/mu);
+    // anchored at column 0 so this matches the STATEMENT, not the prose above it that names it —
+    // the first draft of this probe matched its own comment and reported the barrier as too late
+    const firstTrigger = migration.search(/^CREATE CONSTRAINT TRIGGER/mu);
+    expect(barrier, 'the migration takes no cutover barrier, so the backfill and the seal are two moments an old writer can get between').toBeGreaterThan(-1);
+    expect(backfill, 'the backfill moved or was renamed — this probe is asserting against text that no longer exists').toBeGreaterThan(-1);
+    expect(firstTrigger, 'no constraint trigger is created — this probe is asserting against text that no longer exists').toBeGreaterThan(-1);
+    expect(barrier, 'the barrier must precede the BACKFILL').toBeLessThan(backfill);
+    expect(barrier, 'the barrier must precede the first TRIGGER install').toBeLessThan(firstTrigger);
+
+    // ── 2. …and it actually excludes the old fold movers, which is a different claim ─────────────
+    //
+    // Every §F mover begins at `lockBill` (§0b bill-first), which is `SELECT … FOR UPDATE` and takes
+    // ROW SHARE. `EXCLUSIVE` conflicts with it. The probe holds the migration's exact lock
+    // in one session and proves a second session cannot get past that first step — deterministic,
+    // via `pg_stat_activity`, never a sleep.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    expect(await expectDerived(projectId, billId, 'a coherent bill, exactly as the backfill leaves it')).toBe('certified');
+
+    let releaseBarrier!: () => void;
+    const held = new Promise<void>((r) => { releaseBarrier = r; });
+    let barrierTaken!: () => void;
+    const taken = new Promise<void>((r) => { barrierTaken = r; });
+
+    const migrator = new PrismaClient();
+    const oldWriter = new PrismaClient();
+    try {
+      const cutover = migrator.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`LOCK TABLE "VendorBill" IN EXCLUSIVE MODE`);
+        barrierTaken();
+        await held;
+      }, { timeout: 60_000 });
+
+      await taken;
+      // the old container's very first step, verbatim: lock the bill it is about to approve against
+      const blocked = oldWriter.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `SELECT "id" FROM "VendorBill" WHERE "projectId"=$1 AND "id"=$2 FOR UPDATE`,
+          projectId, billId,
+        );
+      }, { timeout: 60_000 }).then(() => 'committed', () => 'failed');
+
+      await waitUntilBlocked('%FOR UPDATE%');
+      // it is still waiting, and the bill is untouched — the old writer cannot reach its INSERT
+      expect(await storedStatus(projectId, billId), 'the bill moved while the cutover barrier was held').toBe('certified');
+
+      releaseBarrier();
+      await cutover;
+      expect(await blocked, 'the old writer should proceed once the cutover has committed').toBe('committed');
+    } finally {
+      releaseBarrier();
+      await migrator.$disconnect();
+      await oldWriter.$disconnect();
+    }
+
+    // …and after the cutover the bill is exactly what the derivation says, with the seal now live
+    expect(await expectDerived(projectId, billId, 'after the cutover')).toBe('certified');
+  });
+
   it('R1-F3 (§F): the payment ledger answers from ONE snapshot — a commit cannot land mid-read', async () => {
     // A DETERMINISTIC interleaving, not a timing loop. The first draft of this probe read the
     // ledger 25 times with nothing else writing and asserted the response was internally

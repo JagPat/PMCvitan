@@ -12,6 +12,55 @@
 --
 -- Everything else in both functions is carried forward VERBATIM.
 
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- THE CUTOVER BARRIER — this whole migration is ONE serialized cutover, not a sequence of steps
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- JagPat, on the upgrade path. Without this line the migration has a window it cannot close, and
+-- the PR's claim that "the backfill is what makes the seal installable" is FALSE as it stood: the
+-- backfill and the seal are two moments, and the OLD container is still serving between them.
+-- `docs/DEPLOY.md` says so explicitly — the previous production container keeps running until the
+-- new deploy succeeds — so the old writer is not a hypothetical, it is the writer in this race.
+--
+-- The interleaving, on an already-certified bill B with no approvals:
+--
+--   1. the migration creates the helper functions and runs the backfill. B is COHERENT as
+--      `certified`, so the backfill neither updates nor row-locks it;
+--   2. before the migration reaches its `CREATE CONSTRAINT TRIGGER` statements, the old container
+--      runs the PRE-6B `commercial.payment.approve`: it locks B, appends a valid `PaymentApproval`
+--      and commits with B still `certified` — which is the intentional 6A behaviour this migration
+--      is upgrading away from, so nothing is wrong with that write at the moment it happens;
+--   3. the migration installs the triggers and commits. A constraint trigger does NOT validate rows
+--      written before it existed, so B is now PERMANENTLY stored `certified` while its folds derive
+--      `approved-for-payment`, and no future write is required to expose it or to repair it.
+--
+-- The barrier makes those three moments one. Every §F fold mover — 5C's two, 6A's two, 5B's two —
+-- begins by locking the bill row (`lockBill`, §0b's bill-first total order), which is
+-- `SELECT … FOR UPDATE` and takes `ROW SHARE`. So an old-version mover that has not yet started
+-- blocks here, and one already in flight is waited for.
+--
+-- The MODE is `EXCLUSIVE`, and the first draft of this barrier got it wrong: it said
+-- `SHARE ROW EXCLUSIVE`, which conflicts with `ROW EXCLUSIVE` (plain INSERT/UPDATE) but NOT with
+-- `ROW SHARE` — so it would have let every `SELECT … FOR UPDATE` straight through and closed
+-- nothing at all. R1-F6's behavioural half caught it, which is why that half exists separately
+-- from the one that only reads this file: a barrier can be present, in the right place, and still
+-- be the wrong lock.
+--
+-- `EXCLUSIVE` conflicts with `ROW SHARE` and everything above it, and is deliberately NOT
+-- `ACCESS EXCLUSIVE`: plain reads keep working through the cutover, which is the difference between
+-- a deploy and an outage.
+--
+-- It respects the order this correction already had to fix once: the BILL is taken FIRST, before
+-- any certificate, deduction, approval or payment table is touched by the `CREATE TRIGGER`
+-- statements below. An old mover therefore never holds one of those while waiting for the bill,
+-- so there is no cycle to deadlock on.
+--
+-- This depends on the migration running in ONE transaction, which Prisma does for PostgreSQL — and
+-- the dependency FAILS CLOSED rather than silently: `LOCK TABLE` outside a transaction block is an
+-- error in PostgreSQL, so a runner that stopped wrapping migrations would abort this deploy loudly
+-- instead of reopening the window.
+LOCK TABLE "VendorBill" IN EXCLUSIVE MODE;
+
 -- ONE definition of §F's derived family, in SQL, mirroring `isDerivedBillStatus` in
 -- `commercial-status.ts`. Three separate guards below encode "past certification"; before this
 -- they each spelled it `= 'certified'`, which was true only while `certified` was the LAST status a

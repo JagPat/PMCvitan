@@ -133,6 +133,54 @@ naming rather than filing: enumerating the members is what keeps failing;
 deriving them from what the fold READS is what works, and it is what
 `FOLD_INPUTS` already does for §B.
 
+### The second adjacent P1 — the UPGRADE PATH, where this correction's own claim was false
+
+This packet said "the backfill is not a courtesy; it is what makes the seal
+installable." That treats the backfill and the seal as one moment. They are two,
+and `docs/DEPLOY.md` says the previous production container keeps serving until
+the new deploy succeeds — so the old writer is not a hypothetical, it is the
+writer in the race:
+
+1. the migration creates the helpers and runs the backfill. An already-certified
+   bill B with no approvals is COHERENT, so the backfill neither updates nor
+   row-locks it;
+2. before the migration reaches `CREATE CONSTRAINT TRIGGER`, the old container
+   runs the pre-6B `commercial.payment.approve` — it locks B, appends a valid
+   `PaymentApproval` and commits with B still `certified`. That was the
+   intentional 6A behaviour; nothing is wrong with the write when it happens;
+3. the migration installs the triggers and commits. A constraint trigger does
+   **not** validate rows written before it existed, so B is permanently stored
+   `certified` while its folds derive `approved-for-payment` — and no future
+   write is required to expose it or able to repair it.
+
+The migration now opens with `LOCK TABLE "VendorBill" IN EXCLUSIVE MODE`, held
+through the backfill, all six trigger installs and the commit. Every §F mover
+begins at `lockBill` (§0b bill-first), which takes `ROW SHARE`; `EXCLUSIVE`
+conflicts with it, so an old-version mover that has not started blocks and one in
+flight is waited for. It is deliberately not `ACCESS EXCLUSIVE` — plain reads
+keep working, which is the difference between a deploy and an outage — and the
+bill is taken FIRST, so the `CREATE TRIGGER` statements on the other five tables
+cannot invert the order this correction already had to fix once.
+
+The dependency on Prisma wrapping a migration in one transaction **fails
+closed**: `LOCK TABLE` outside a transaction block is a PostgreSQL error, so a
+runner that stopped wrapping migrations aborts the deploy loudly rather than
+silently reopening the window.
+
+**The first draft of the barrier was the wrong lock.** It said
+`SHARE ROW EXCLUSIVE`, which conflicts with `ROW EXCLUSIVE` (plain writes) but
+**not** with `ROW SHARE` — so it would have let every `SELECT … FOR UPDATE`
+straight through and closed nothing at all. R1-F6's behavioural half caught it.
+That is precisely why the probe has two halves rather than one: a barrier can be
+present, in the right place, and still be the wrong lock.
+
+**R1-F6** proves the two claims separately — the barrier is in the migration and
+precedes both the backfill and the first trigger install (RED when the line is
+removed), and it actually excludes the old movers (a second session's
+`SELECT … FOR UPDATE` is confirmed BLOCKED via `pg_stat_activity`,
+condition-based and never a sleep, with the bill unchanged while it waits, then
+proceeding once the cutover commits).
+
 ### The adjacent P2 JagPat added to the same batch
 
 `commercial-status.ts` shipped `DERIVED_BILL_STATUSES`/`isDerivedBillStatus` as a
