@@ -16,7 +16,7 @@ task: 6
 task_state: merged
 work_item: none
 reviewed_merge: 6c9c6a2
-open_pr: none
+open_pr: 294
 next_task: phase-5-task-7a
 blocking_directive: none
 updated: 2026-08-07
