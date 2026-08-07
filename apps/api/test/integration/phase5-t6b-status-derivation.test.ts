@@ -1332,7 +1332,10 @@ describe('Phase 5 Task 6B — the §F status derivation, and the reversal that m
     const key = `it-6bii-replay-${seq++}`;
     const first = await payments.reverse(a, { paymentId, amount: '25', reason: 'recall' }, pmc(a), key);
     const again = await payments.reverse(a, { paymentId, amount: '25', reason: 'recall' }, pmc(a), key);
-    expect(again.id).toBe(first.id);
+    // the REVERSAL's identity, not the payment's — both calls return the payment either way, so
+    // comparing `id` would be true even if the second call had appended a second reversal
+    expect(again.reversals.map((r) => r.id)).toEqual(first.reversals.map((r) => r.id));
+    expect(again.reversed).toBe('25.00');
     expect(await t.prisma.paymentReversal.count({ where: { projectId: a, paymentId } })).toBe(1);
     expect((await foldsOf(a, billId)).paid.toFixed(2)).toBe('75.00');
     expect(await expectDerived(a, billId, 'after the replay')).toBe('part-paid');

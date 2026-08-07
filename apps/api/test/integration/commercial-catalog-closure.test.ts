@@ -231,6 +231,19 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
     phase5_t6a_approval_paid_check: [
       { trigger: 'Payment_bound_sealed', relation: 'Payment', ...PAYMENT_BOUND_SEALED },
     ],
+    // Task 6B unit ii — the per-payment reversal bound. Its caller takes the PAYMENT row
+    // `FOR UPDATE` before counting, which is what makes it a serialization point rather than a
+    // count; the probe that proves the WAIT lives in `phase5-t6b-status-derivation.test.ts`, and
+    // this asserts the object it waits on is really the one installed.
+    phase5_t6b_ii_reversal_bound_check: [
+      {
+        trigger: 'PaymentReversal_bound_sealed',
+        relation: 'PaymentReversal',
+        tgtype: 5,
+        callerFn: 'phase5_t6b_ii_reversal_bound_sealed',
+        callerSha256: '498c8091a474011d6313fe59ba3dd8b91da435ed63fd693d60f1ce097356427d',
+      },
+    ],
     phase5_t6a_approval_override_valid: [
       {
         trigger: 'PaymentApproval_approver_not_certifier',
