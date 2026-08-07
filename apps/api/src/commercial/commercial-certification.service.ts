@@ -12,6 +12,7 @@ import { InventoryParticipant, type AcceptedEvidenceRow } from '../inventory/inv
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
 import { CommercialBillQuery } from './commercial-bill.query';
+import { CommercialStatusService } from './commercial-status.service';
 import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
@@ -64,6 +65,7 @@ export class CommercialCertificationService {
     // raise-or-clear obligation through the SAME public helper verification uses, rather than
     // growing a second copy of the fold's closure rule.
     private readonly billService: CommercialBillService,
+    private readonly status: CommercialStatusService,
     // §I's approver standing is an ORGS question — `Membership`/`OrgMembership` are orgs-owned and
     // the owner states the rule. `commercial.workflowParticipants` already declares this edge.
     private readonly orgs: OrgsParticipant,
@@ -307,6 +309,13 @@ export class CommercialCertificationService {
         }
 
         await this.cas(tx, projectId, input.billId, 'verified', 'certified');
+        // §F — certification CREATES `NET_PAYABLE`, so it is a fold-mover like the rest and
+        // re-derives through the same function. At this tree the derivation agrees with the CAS
+        // above (`APPROVED = 0` → `certified`), and that agreement is the point rather than a
+        // reason to skip it: the arm is asserted rather than assumed, and a §H deduction landing in
+        // the same transaction — which can drive `NET_PAYABLE` to zero and make the claim `paid`
+        // with no cash moving — is derived rather than left contradicting its own folds.
+        await this.status.reDerive(tx, projectId, input.billId, 'certified');
         // §B — the §J fold now READS this certificate, so certifying is a headroom MOVER and owes
         // the same raise-or-clear the fold's other inputs owe. It is evaluated ONCE, at the end,
         // after every write this act makes: an intermediate evaluation would read a state that
@@ -583,6 +592,11 @@ export class CommercialCertificationService {
         });
         if (count === 0) throw new ConflictException('This certificate was superseded concurrently — reload and retry');
         await this.cas(tx, projectId, input.billId, 'certified', 'verified');
+        // §F — supersession returns the bill to the FORWARD lifecycle, and `verified` is outside
+        // the derived family, so `reDerive` correctly declines to touch it. The call is kept so the
+        // mover set stays complete by construction: the guard is `isDerivedBillStatus`, one rule at
+        // one site, rather than each mover deciding for itself whether it is allowed to run.
+        await this.status.reDerive(tx, projectId, input.billId, 'verified');
         // §B — the twin of `certify`'s evaluation: superseding puts the money back into
         // `awaiting-certification`, so the same mover obligation applies in the same transaction.
         await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);
