@@ -231,3 +231,192 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+-- Codex round 1 — the family was a PROXY for the derivation
+-- ════════════════════════════════════════════════════════════════════════════════════════════════
+--
+-- The first head of this migration guarded MEMBERSHIP and left the MEMBER to the service, and the
+-- comment above justified it: enumerating §F's arrows in SQL would put a second copy of the truth
+-- table here, free to disagree. That reasoning was wrong in the way this module keeps being found
+-- for. The choice was never "one copy or two" — `phase5_t6b_derived_bill_status` above is already a
+-- second copy of the FAMILY. The choice was WHICH question the database is allowed to answer, and
+-- answering only the coarse one leaves the fine one enforced nowhere:
+--
+--   UPDATE "VendorBill" SET "status"='paid' WHERE ...   -- on a bill with APPROVED = PAID = 0
+--
+-- passes membership, commits, and every read surface then reports an unpaid bill as paid until some
+-- unrelated command happens to re-derive it. That is the stored-status-versus-fold defect §F exists
+-- to prevent, reachable with one statement.
+--
+-- The same gap has a second mouth (Codex finding 4, the same root reaching the other side): a direct
+-- writer can append a VALID `PaymentApproval` — satisfying every 6A seal — and simply not move the
+-- status. The folds derive `approved-for-payment`, the column still says `certified`, and nothing
+-- refuses it. A fix that sealed only `VendorBill` would close the first mouth and leave the second,
+-- so the seal is fired from the bill AND from every table that can make the equation false.
+
+-- §F's truth table, in SQL, mirroring `derivedBillStatus` in `commercial-status.ts` arm for arm and
+-- in the same first-match order. The three folds are computed exactly as
+-- `CommercialDeductionQuery.foldsFor` computes them: `NET_PAYABLE` is the LIVE certificate less its
+-- unreleased withholdings (zero when no certificate stands), `APPROVED` counts approvals on the LIVE
+-- certificate only, and `PAID` is bill-scoped Σ payments — the asymmetry is §0's, because an
+-- authority dies with its certificate and cash that has left does not.
+CREATE OR REPLACE FUNCTION phase5_t6b_derive_bill_status(p_project text, p_bill text)
+RETURNS text AS $$
+DECLARE
+  v_cert     text;
+  v_net      numeric := 0;
+  v_approved numeric := 0;
+  v_paid     numeric := 0;
+BEGIN
+  SELECT c."id",
+         c."certifiedAmount"
+           - COALESCE((SELECT SUM(d."amount") FROM "BillDeduction" d
+                        WHERE d."projectId" = c."projectId" AND d."certificateId" = c."id"), 0)
+           + COALESCE((SELECT SUM(r."amount") FROM "BillDeductionRelease" r
+                         JOIN "BillDeduction" d2
+                           ON d2."projectId" = r."projectId" AND d2."id" = r."deductionId"
+                        WHERE d2."projectId" = c."projectId" AND d2."certificateId" = c."id"), 0)
+    INTO v_cert, v_net
+    FROM "BillCertificate" c
+   WHERE c."projectId" = p_project AND c."billId" = p_bill AND c."supersededAt" IS NULL;
+  -- no live certificate: nothing is payable, which is the value the first arm needs
+  IF v_cert IS NULL THEN v_net := 0; END IF;
+
+  SELECT COALESCE(SUM(a."amount"), 0) INTO v_approved
+    FROM "PaymentApproval" a
+    JOIN "BillCertificate" c ON c."projectId" = a."projectId" AND c."id" = a."certificateId"
+   WHERE a."projectId" = p_project AND a."billId" = p_bill AND c."supersededAt" IS NULL;
+
+  SELECT COALESCE(SUM(p."amount"), 0) INTO v_paid
+    FROM "Payment" p
+   WHERE p."projectId" = p_project AND p."billId" = p_bill;
+
+  -- first match wins, exactly as the TypeScript does
+  IF v_net = v_paid THEN RETURN 'paid'; END IF;
+  IF v_approved = 0 THEN RETURN 'certified'; END IF;
+  IF v_paid = v_approved AND v_approved < v_net THEN RETURN 'certified'; END IF;
+  IF v_paid = 0 THEN RETURN 'approved-for-payment'; END IF;
+  RETURN 'part-paid';
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- The seal: a bill INSIDE the family must hold the status its own folds derive. A bill outside it
+-- is not derived at all (§F's forward lifecycle, which no fold can move), so the check returns.
+--
+-- `FOR UPDATE` before reading, for the same reason §G bound 5 takes it: two sessions each appending
+-- a fold row would otherwise both compute a derivation that was true when they read and false when
+-- they committed. The lock is on the bill, which is §0b's FIRST row, so this adds no new lock order.
+CREATE OR REPLACE FUNCTION phase5_t6b_status_coherent(p_project text, p_bill text)
+RETURNS void AS $$
+DECLARE
+  v_status  text;
+  v_derived text;
+BEGIN
+  SELECT b."status" INTO v_status FROM "VendorBill" b
+   WHERE b."projectId" = p_project AND b."id" = p_bill
+     FOR UPDATE;
+  IF v_status IS NULL THEN RETURN; END IF;
+  IF NOT phase5_t6b_derived_bill_status(v_status) THEN RETURN; END IF;
+
+  v_derived := phase5_t6b_derive_bill_status(p_project, p_bill);
+  IF v_status <> v_derived THEN
+    RAISE EXCEPTION 'Bill % is stored as `%` but its own folds derive `%` — past certification the status is a FUNCTION of NET_PAYABLE, APPROVED and PAID, not a value a writer chooses; move the money and let the derivation follow it', p_bill, v_status, v_derived;
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t6b_bill_status_sealed() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t6b_status_coherent(NEW."projectId", NEW."id");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t6b_fold_status_sealed() RETURNS trigger AS $$
+BEGIN
+  PERFORM phase5_t6b_status_coherent(NEW."projectId", NEW."billId");
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- `BillDeduction`/`BillDeductionRelease` reach the bill through the certificate, so they get their
+-- own resolver rather than a `billId` column this task has no business adding.
+CREATE OR REPLACE FUNCTION phase5_t6b_deduction_status_sealed() RETURNS trigger AS $$
+DECLARE v_bill text;
+BEGIN
+  SELECT c."billId" INTO v_bill FROM "BillCertificate" c
+   WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."certificateId";
+  IF v_bill IS NOT NULL THEN PERFORM phase5_t6b_status_coherent(NEW."projectId", v_bill); END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION phase5_t6b_release_status_sealed() RETURNS trigger AS $$
+DECLARE v_bill text;
+BEGIN
+  SELECT c."billId" INTO v_bill
+    FROM "BillDeduction" d
+    JOIN "BillCertificate" c ON c."projectId" = d."projectId" AND c."id" = d."certificateId"
+   WHERE d."projectId" = NEW."projectId" AND d."id" = NEW."deductionId";
+  IF v_bill IS NOT NULL THEN PERFORM phase5_t6b_status_coherent(NEW."projectId", v_bill); END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ── the BACKFILL, before the seal that would refuse the state it corrects (Codex finding 2) ──────
+--
+-- On an upgrade from the 6A schema a bill can already carry live approvals and payments while its
+-- status is still `certified`: that was the CORRECT value under 6A's rule, and 6A's own PROBE 9
+-- pinned it deliberately. Installing the derivation without moving those rows would leave every
+-- read surface reporting a paid bill as certified until some later command happened to touch it —
+-- and with the seal above installed, the next honest write to such a bill would be REFUSED for a
+-- state it did not create. So the backfill is not a courtesy; it is what makes the seal installable.
+--
+-- It INVENTS NOTHING. Every value comes from rows that already exist, through the same function the
+-- runtime uses, and the WHERE clause is the fixpoint condition — re-running it is a no-op, so this
+-- is idempotent whether it runs once or after a partially-applied deploy.
+--
+-- `statusChangedAt` moves with the status because the lifecycle trigger requires it to (a timestamp
+-- frozen outside its transition is one of this table's seals). That records when the STORED VALUE
+-- changed, which is now, not when the money moved — the money's own timestamps are on the
+-- append-only approval and payment rows, where they have always been, and are not touched here.
+DO $$
+DECLARE v_moved bigint;
+BEGIN
+  WITH corrected AS (
+    UPDATE "VendorBill" b
+       SET "status" = phase5_t6b_derive_bill_status(b."projectId", b."id"),
+           "statusChangedAt" = now()
+     WHERE phase5_t6b_derived_bill_status(b."status")
+       AND b."status" <> phase5_t6b_derive_bill_status(b."projectId", b."id")
+    RETURNING 1
+  )
+  SELECT COUNT(*) INTO v_moved FROM corrected;
+  RAISE NOTICE 'phase5_t6b backfill: % bill(s) moved to the status their folds derive', v_moved;
+END $$;
+
+DROP TRIGGER IF EXISTS "VendorBill_t6b_status_sealed" ON "VendorBill";
+CREATE CONSTRAINT TRIGGER "VendorBill_t6b_status_sealed"
+  AFTER INSERT OR UPDATE ON "VendorBill" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6b_bill_status_sealed();
+
+DROP TRIGGER IF EXISTS "PaymentApproval_t6b_status_sealed" ON "PaymentApproval";
+CREATE CONSTRAINT TRIGGER "PaymentApproval_t6b_status_sealed"
+  AFTER INSERT OR UPDATE ON "PaymentApproval" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6b_fold_status_sealed();
+
+DROP TRIGGER IF EXISTS "Payment_t6b_status_sealed" ON "Payment";
+CREATE CONSTRAINT TRIGGER "Payment_t6b_status_sealed"
+  AFTER INSERT OR UPDATE ON "Payment" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6b_fold_status_sealed();
+
+DROP TRIGGER IF EXISTS "BillDeduction_t6b_status_sealed" ON "BillDeduction";
+CREATE CONSTRAINT TRIGGER "BillDeduction_t6b_status_sealed"
+  AFTER INSERT OR UPDATE ON "BillDeduction" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6b_deduction_status_sealed();
+
+DROP TRIGGER IF EXISTS "BillDeductionRelease_t6b_status_sealed" ON "BillDeductionRelease";
+CREATE CONSTRAINT TRIGGER "BillDeductionRelease_t6b_status_sealed"
+  AFTER INSERT OR UPDATE ON "BillDeductionRelease" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6b_release_status_sealed();

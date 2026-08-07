@@ -249,6 +249,26 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
   const storedStatus = async (projectId: string, billId: string): Promise<string> =>
     (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId }, select: { status: true } })).status;
 
+  // Condition-based synchronization for R1-F3's barrier (NOT a fixed sleep): poll for a backend
+  // that is ACTIVELY WAITING on a lock while running the given statement. The observer runs on the
+  // app's client, a different connection from the two racing sessions, so it cannot perturb them.
+  // This is the idiom the cleared Phase-4 correction-4 probes established.
+  const waitUntilBlocked = async (queryLike: string): Promise<void> => {
+    for (let i = 0; i < 200; i++) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
+        `SELECT COUNT(*)::int AS c FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE $1`,
+        queryLike,
+      );
+      if (Number(rows[0]!.c) >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const all = await t.prisma.$queryRawUnsafe<Array<{ s: string; w: string | null; q: string }>>(
+      `SELECT state AS s, wait_event_type AS w, left(query, 120) AS q FROM pg_stat_activity
+        WHERE datname = current_database() AND query NOT ILIKE '%pg_stat_activity%'`);
+    throw new Error(`barrier timeout: expected a backend blocked on a table lock while running ${queryLike}\n${JSON.stringify(all, null, 1)}`);
+  };
+
   /**
    * THE ALL-MOVER INVARIANT, as a function rather than a list.
    *
@@ -450,5 +470,276 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
     const derived = await expectDerived(projectId, billId, 'part paid');
     const ledger = await payments.ledger(projectId, billId, pmc(projectId));
     expect(ledger.billStatus, 'the ledger read must not answer from a stale column').toBe(derived);
+  });
+
+  // ── Codex round 1 — the family was a PROXY for the derivation ─────────────────────────────────
+  //
+  // The first head guarded MEMBERSHIP at PostgreSQL and left the MEMBER to the service. These four
+  // probes are the bypasses that opened, each written as the finding describes it and each RED at
+  // `392b46f`. The seal is one function fired from five tables, so the probes go at it from both
+  // sides — the bill moving without its folds, and the folds moving without the bill.
+
+  it('R1-F1 (§F): a direct status flip inside the family is REFUSED — the DB derives the member, not just the family', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    expect(await expectDerived(projectId, billId, 'certified, nothing approved')).toBe('certified');
+
+    // one statement, every 6A seal satisfied, a live certificate standing — and before the
+    // derivation seal this committed, after which every read surface reported an unpaid bill as
+    // paid until some unrelated command happened to re-derive it
+    for (const forged of ['paid', 'part-paid', 'approved-for-payment']) {
+      await expect(
+        t.prisma.$executeRawUnsafe(
+          `UPDATE "VendorBill" SET "status"=$3, "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+          projectId, billId, forged,
+        ),
+        `a bill with APPROVED = PAID = 0 must not be storable as \`${forged}\``,
+      ).rejects.toThrow(/its own folds derive/u);
+    }
+    expect(await expectDerived(projectId, billId, 'after three refused flips')).toBe('certified');
+
+    // …and the seal tracks the folds rather than pinning one member: once a real approval moves
+    // them, the member that WAS legal becomes illegal and the new one becomes the only legal value.
+    // (The precise-not-strict half — the same UPDATE statement ACCEPTED when its value matches the
+    // derivation — needs a stale stored status to write over, which only R1-F2 below can construct,
+    // and that is where it is proven.)
+    await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+    expect(await expectDerived(projectId, billId, 'approved through the service')).toBe('approved-for-payment');
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+      projectId, billId,
+    ), 'the member that was legal a moment ago is now the forgery').rejects.toThrow(/its own folds derive/u);
+  });
+
+  it('R1-F4 (§F): a bypass write to ANY fold table that leaves the status behind is REFUSED', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const certificate = await t.prisma.billCertificate.findFirstOrThrow({
+      where: { projectId, billId, supersededAt: null }, select: { id: true },
+    });
+    // A ledger row must cite the command that PRODUCED it (5A's provenance floor), so each bypass
+    // below carries a real, succeeded command of the right TYPE and actor. The point of the probe is
+    // that a row can be perfectly well-formed by every EARLIER seal and still leave the status
+    // behind — a weaker forgery would be rejected before it reached the derivation.
+    const mint = async (type: string, actorId: string, resultRef: string): Promise<string> => t.prisma.$transaction(async (tx) => {
+      const c = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId,
+          commandType: type, idempotencyKey: `t6bi-bypass-${seq++}`, requestHash: 'x', status: 'reserved',
+        },
+        select: { id: true },
+      });
+      await tx.commandExecution.update({
+        where: { id: c.id }, data: { status: 'succeeded', resultRef, completedAt: new Date() },
+      });
+      return c.id;
+    });
+    const forgedApproval = `it-6bi-bypass-approval-${seq++}`;
+    const forgedPayment = `it-6bi-bypass-payment-${seq++}`;
+    const forgedDeduction = `it-6bi-bypass-deduction-${seq++}`;
+
+    // A VALID approval — every 6A seal met, live certificate, within the payable — appended without
+    // moving the status. The folds now derive `approved-for-payment`; the column still says
+    // `certified`. Sealing only `VendorBill` would have closed the other mouth and left this one.
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,40.00,$5,$6)`,
+      forgedApproval, projectId, certificate.id, billId, f.ownerUser.id,
+      await mint('commercial.payment.approve', f.ownerUser.id, forgedApproval),
+    )).rejects.toThrow(/its own folds derive/u);
+
+    // …the same row through the SERVICE, which re-derives in the same transaction, is accepted
+    const approval = await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+    expect(await expectDerived(projectId, billId, 'the service path')).toBe('approved-for-payment');
+
+    // and a bypass PAYMENT is refused by the same seal, through a different trigger
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Payment"("id","projectId","approvalId","billId","amount","method","paidById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,10.00,'neft',$5,$6)`,
+      forgedPayment, projectId, approval.id, billId, f.memberUser.id,
+      await mint('commercial.payment.record', f.memberUser.id, forgedPayment),
+    )).rejects.toThrow(/its own folds derive/u);
+
+    // A bypass WITHHOLDING that does NOT change the answer is ACCEPTED, and that is the seal being
+    // precise rather than a blanket ban on writing a fold table. ₹60 withheld against ₹100
+    // certified with ₹40 approved and nothing paid still derives `approved-for-payment`: the fold
+    // moved, the derivation did not, so there is nothing incoherent to refuse.
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeduction"("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,'retention',60.00,$5,$6)`,
+      forgedDeduction, projectId, certificate.id, billId, f.memberUser.id,
+      await mint('commercial.deduction.record', f.memberUser.id, forgedDeduction),
+    );
+    expect(await expectDerived(projectId, billId, 'a fold write that does not move the answer')).toBe('approved-for-payment');
+
+    // …and one that DOES change it is refused, through the certificate hop. A second bill with no
+    // approval standing, withholding the WHOLE payable: NET_PAYABLE and PAID are both zero, which
+    // §F calls `paid`, while the column still says `certified`.
+    const second = await certifiedClaim(projectId);
+    const secondCert = await t.prisma.billCertificate.findFirstOrThrow({
+      where: { projectId, billId: second, supersededAt: null }, select: { id: true },
+    });
+    const forgedFull = `it-6bi-bypass-deduction-full-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeduction"("id","projectId","certificateId","billId","type","amount","recordedById","sourceCommandId")
+       VALUES ($1,$2,$3,$4,'retention',100.00,$5,$6)`,
+      forgedFull, projectId, secondCert.id, second, f.memberUser.id,
+      await mint('commercial.deduction.record', f.memberUser.id, forgedFull),
+    )).rejects.toThrow(/its own folds derive/u);
+
+    // and the fifth trigger — a bypass RELEASE, which reaches the bill through TWO hops. Withhold
+    // the whole payable through the SERVICE (deriving `paid`), then give ₹40 back behind its back:
+    // NET_PAYABLE rises to ₹40 above a PAID of zero, so the truth is `certified` and the column
+    // still says `paid`. This is the non-monotonic direction, sealed.
+    const held = await deductions.record(projectId, { billId: second, type: 'retention', amount: '100.00' }, pmc(projectId));
+    expect(await expectDerived(projectId, second, 'fully withheld through the service')).toBe('paid');
+    const forgedRelease = `it-6bi-bypass-release-${seq++}`;
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "BillDeductionRelease"("id","projectId","deductionId","amount","reason","releasedById","sourceCommandId")
+       VALUES ($1,$2,$3,40.00,'behind its back',$4,$5)`,
+      forgedRelease, projectId, held.id, f.memberUser.id,
+      await mint('commercial.deduction.release', f.memberUser.id, forgedRelease),
+    )).rejects.toThrow(/its own folds derive/u);
+
+    // every refusal above left the truth intact
+    expect(await expectDerived(projectId, billId, 'after every refused bypass')).toBe('approved-for-payment');
+    expect(await expectDerived(projectId, second, 'the second claim too')).toBe('paid');
+  });
+
+  it('R1-F2 (§F): the migration BACKFILLS a bill 6A left behind, and never invents a fold', async () => {
+    // The 6A schema stored `certified` on a bill that was already approved and paid, and that was
+    // the CORRECT value under 6A's rule — its own PROBE 9 pinned it. This reconstructs that state
+    // by disabling the new seals for one statement (the only way to reach it now), then runs the
+    // migration's own backfill expression and requires it to land on the derived status.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const approval = await payments.approve(projectId, { billId, amount: '100.00' }, approver(projectId));
+    await payments.record(projectId, { approvalId: approval.id, amount: '100.00', method: 'neft' }, pmc(projectId));
+    expect(await expectDerived(projectId, billId, 'fully paid through the service')).toBe('paid');
+
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "VendorBill" DISABLE TRIGGER "VendorBill_t6b_status_sealed"`);
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+      projectId, billId,
+    );
+    await t.prisma.$executeRawUnsafe(`ALTER TABLE "VendorBill" ENABLE TRIGGER "VendorBill_t6b_status_sealed"`);
+    expect(await storedStatus(projectId, billId), 'the pre-migration state 6A legitimately left').toBe('certified');
+
+    // the migration's backfill, verbatim — idempotent because its WHERE clause IS the fixpoint
+    const backfill = `
+      UPDATE "VendorBill" b
+         SET "status" = phase5_t6b_derive_bill_status(b."projectId", b."id"),
+             "statusChangedAt" = now()
+       WHERE phase5_t6b_derived_bill_status(b."status")
+         AND b."status" <> phase5_t6b_derive_bill_status(b."projectId", b."id")`;
+    expect(await t.prisma.$executeRawUnsafe(backfill), 'the stale bill is corrected').toBeGreaterThanOrEqual(1);
+    expect(await expectDerived(projectId, billId, 'after the backfill')).toBe('paid');
+    expect(await t.prisma.$executeRawUnsafe(backfill), 'a second run moves nothing — idempotent').toBe(0);
+
+    // it invented no money: the approval and payment rows are exactly what the service wrote
+    expect(await t.prisma.paymentApproval.count({ where: { projectId, billId } })).toBe(1);
+    expect(await t.prisma.payment.count({ where: { projectId, billId } })).toBe(1);
+  });
+
+  it('R1-F3 (§F): the payment ledger answers from ONE snapshot — a commit cannot land mid-read', async () => {
+    // A DETERMINISTIC interleaving, not a timing loop. The first draft of this probe read the
+    // ledger 25 times with nothing else writing and asserted the response was internally
+    // consistent — which passed at the reviewed head too, because a serial read has no seam to
+    // straddle. It proved nothing, and a probe that is green against the defect it names is worse
+    // than no probe: it reports the bug as fixed.
+    //
+    // The seam is opened with a TABLE LOCK, so the interleaving is enforced by PostgreSQL rather
+    // than guessed at:
+    //   1. session A locks `PaymentApproval` and holds it,
+    //   2. the ledger read starts: `VendorBill` succeeds (status `certified`), then it BLOCKS on
+    //      the approvals query — confirmed via `pg_stat_activity`, condition-based, never a sleep,
+    //   3. while it is blocked, session A appends an approval AND moves the status exactly as
+    //      `payment.approve` does, then commits and releases the lock,
+    //   4. the approvals query finally runs.
+    //
+    // At the reviewed head those two reads are separate statements, so step 4 sees the approval
+    // that step 2 could not: `approved: 40.00` beside `billStatus: certified`, three numbers that
+    // were each true once and are not true together. Under one repeatable-read snapshot the view is
+    // fixed at step 2, so the whole response describes that instant and agrees with itself.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const certificate = await t.prisma.billCertificate.findFirstOrThrow({
+      where: { projectId, billId, supersededAt: null }, select: { id: true },
+    });
+
+    // The two waits are SEPARATE and both condition-based, so nothing here depends on ordering
+    // luck: `locked` resolves when the writer has the table lock, `gate` is what the test opens
+    // once it has SEEN the reader blocked. Polling from inside the transaction callback would
+    // starve the reader of its turn on the event loop — the first attempt did exactly that and
+    // timed out with the reader having issued no query at all.
+    let lockedResolve!: () => void;
+    const locked = new Promise<void>((r) => { lockedResolve = r; });
+    let gateResolve!: () => void;
+    const gate = new Promise<void>((r) => { gateResolve = r; });
+
+    const raceDb = new PrismaClient();
+    try {
+      const held = raceDb.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`LOCK TABLE "PaymentApproval" IN ACCESS EXCLUSIVE MODE`);
+        lockedResolve();
+        await gate;
+        // the approval and the status move together, as the service does — the seam under test is
+        // the READ's, not a forged write's
+        const commandId = `it-6bi-race-cmd-${seq++}`;
+        const approvalId = `it-6bi-race-approval-${seq++}`;
+        // reserved first, then completed — a receipt inserted already `succeeded` records a command
+        // that never ran, and the platform floor refuses it
+        await tx.commandExecution.create({
+          data: {
+            id: commandId, scopeKind: 'project', organizationId: f.orgA.id, projectId,
+            actorId: f.ownerUser.id, commandType: 'commercial.payment.approve',
+            idempotencyKey: `t6bi-race-${seq++}`, requestHash: 'x', status: 'reserved',
+          },
+        });
+        await tx.commandExecution.update({
+          where: { id: commandId },
+          data: { status: 'succeeded', resultRef: approvalId, completedAt: new Date() },
+        });
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
+           VALUES ($1,$2,$3,$4,40.00,$5,$6)`,
+          approvalId, projectId, certificate.id, billId, f.ownerUser.id, commandId,
+        );
+        await tx.$executeRawUnsafe(
+          `UPDATE "VendorBill" SET "status"='approved-for-payment', "statusChangedAt"=now()
+            WHERE "projectId"=$1 AND "id"=$2`,
+          projectId, billId,
+        );
+      }, { timeout: 60_000 });
+
+      await locked;
+      const reading = payments.ledger(projectId, billId, pmc(projectId));
+      await waitUntilBlocked('%"public"."PaymentApproval"%');
+      gateResolve();
+      await held;
+      const ledger = await reading;
+
+      const netPayable = new Prisma.Decimal(ledger.approvable!).add(ledger.approved);
+      expect(
+        derivedBillStatus({
+          netPayable,
+          approved: new Prisma.Decimal(ledger.approved),
+          paid: new Prisma.Decimal(ledger.paid),
+        }),
+        `the response straddles the commit: billStatus=${ledger.billStatus} beside approved=${ledger.approved}`,
+      ).toBe(ledger.billStatus);
+    } finally {
+      await raceDb.$disconnect();
+    }
+
+    // …and once the writer has committed, the next read reports the new instant coherently, so the
+    // snapshot delays the news rather than losing it
+    expect(await expectDerived(projectId, billId, 'after the racing commit')).toBe('approved-for-payment');
+    const [p, d] = await Promise.all([
+      payments.ledger(projectId, billId, pmc(projectId)),
+      deductions.readLedger(projectId, billId, pmc(projectId)),
+    ]);
+    expect(p.billStatus, 'the two ledgers read the same way and answer the same').toBe(d.billStatus);
+    expect(p.approved).toBe('40.00');
   });
 });

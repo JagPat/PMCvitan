@@ -275,9 +275,12 @@ export class CommercialDeductionService {
         deductions: rows,
         withheld: (position?.withheld ?? ZERO).toFixed(2),
         netPayable: position?.netPayable.toFixed(2) ?? null,
-        // the STORED status. §F's derivation is Task 6's (see `evaluateHeadroom`), so reporting a
-        // derived value here would be this surface claiming a payment lifecycle the system does
-        // not yet run — and a read that is ahead of the writes is how a stale truth gets believed.
+        // the STORED status — and as of Task 6B-i that IS the derived one. This comment used to
+        // say the derivation was still ahead of the writes and that reporting it here would claim
+        // a lifecycle the system did not yet run. Both writers now re-derive in the same
+        // transaction as the row they append, and the seal in `20270610000000` refuses any bill
+        // whose stored status disagrees with its folds, so reading the column is reading the
+        // derivation. (A workaround outlives its cause unless someone goes back and deletes it.)
         billStatus: bill.status as VendorBillStatus,
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });

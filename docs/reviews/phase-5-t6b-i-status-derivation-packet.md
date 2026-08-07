@@ -65,6 +65,49 @@ statuses need — as a **family**, not as a list.
    than one at a time as each failure surfaced. Everything else in both replaced
    functions is carried forward verbatim.
 
+6. **The derivation itself, in SQL** (Codex round 1) —
+   `phase5_t6b_derive_bill_status` mirrors `derivedBillStatus` arm for arm, and
+   `phase5_t6b_status_coherent` refuses any bill inside the family whose stored
+   status disagrees with its own folds. It fires at COMMIT from **five** tables:
+   `VendorBill` and every table that can make the equation false. Plus an
+   **idempotent backfill** that moves bills 6A legitimately left at `certified`.
+
+## Codex round 1 — the family was a PROXY for the derivation
+
+Four findings on head `392b46f`, all correct, and two of them the same root
+reaching opposite sides. The first head guarded family MEMBERSHIP at PostgreSQL
+and left the MEMBER to the service, with a comment in the migration justifying
+it: enumerating §F's arrows in SQL would put a second copy of the truth table
+there, free to disagree.
+
+**That reasoning was wrong, in the way this module keeps being found for.** The
+choice was never one copy or two — `phase5_t6b_derived_bill_status` was already
+a second copy of the FAMILY. The choice was which question the database is
+allowed to answer, and answering only the coarse one left the fine one enforced
+nowhere.
+
+| # | P | Finding | Fix |
+|---|---|---|---|
+| 1 | P1 | `UPDATE "VendorBill" SET status='paid'` on a bill with `APPROVED = PAID = 0` passed membership and committed; every read then reported an unpaid bill as paid. | The database computes the exact derivation (`phase5_t6b_derive_bill_status`) and refuses disagreement. |
+| 4 | P1 | The same gap's other mouth: a direct writer appends a VALID `PaymentApproval` — every 6A seal satisfied — and simply does not move the status. | The same coherence function fires from `PaymentApproval`, `Payment`, `BillDeduction` and `BillDeductionRelease` as well as the bill. Sealing only `VendorBill` would have closed one mouth and left the other. |
+| 2 | P1 | On upgrade from 6A a bill can already carry live approvals and payments at `certified` — 6A's PROBE 9 pinned exactly that. The migration installed the derivation without moving those rows. | An idempotent backfill, run BEFORE the seal. It is not a courtesy: without it the next honest write to such a bill would be refused for a state it did not create. It invents nothing — every value comes from existing rows through the same function the runtime uses, and the `WHERE` clause is the fixpoint condition. |
+| 3 | P2 | `commercial.payments` read the bill status and then queried approvals separately, so a concurrent `payment.approve` could land between them and produce `approved: 100.00` beside `billStatus: certified`. | One repeatable-read snapshot, as the deduction ledger has done since 5C. The stale comment there claiming the derivation was still ahead of the writes is deleted. |
+
+The fix that generalises is finding 4's: the seal is **one function fired from
+every table that can falsify the equation**, not a check bolted to the row the
+finding happened to name.
+
+### A probe that proved nothing
+
+R1-F3's first draft read the ledger 25 times with nothing else writing and
+asserted the response was internally consistent. It passed at the reviewed head
+too — a serial read has no seam to straddle. It is now a deterministic
+two-session barrier: a session holds `ACCESS EXCLUSIVE` on `PaymentApproval`,
+the ledger read is confirmed BLOCKED via `pg_stat_activity` (condition-based,
+never a sleep), the writer then commits an approval **and** the status move, and
+the read resumes. At `392b46f` it returns `billStatus=certified` beside
+`approved=40.00`; under one snapshot it is coherent.
+
 ## What this unit deliberately does NOT do
 
 - **No `PaymentReversal`.** `PAID` is `Σ Payment.amount` with no subtraction
@@ -151,16 +194,38 @@ is the point: the derivation must not break the state that already worked.
 
 All 13 are GREEN on this head.
 
+### Codex round 1 — RED at the reviewed head `392b46f`
+
+The reviewed head was checked out into a worktree against its own scratch
+database. Only the four new probes travelled; the derivation function, the
+coherence seal, the backfill and the ledger snapshot stayed behind.
+
+| Probe | RED at `392b46f` |
+| --- | --- |
+| R1-F1 — a raw family flip with no fold behind it | stores `paid` on a bill with `APPROVED = PAID = 0` |
+| R1-F4 — a valid fold row appended without its status | approval, payment and release all commit |
+| R1-F2 — the backfill | the stale bill stays `certified` |
+| R1-F3 — the ledger snapshot | `billStatus=certified` beside `approved=40.00` |
+
+All four GREEN here.
+
 ## Gates
 
 | Gate | Result |
 | --- | --- |
 | `pnpm check` | EXIT 0 — web 543/543, API 746/746, build clean |
 | Full integration, pristine migrated DB | see PR body |
-| `phase5-t6b-status-derivation.test.ts` | 13/13 |
+| `phase5-t6b-status-derivation.test.ts` | 17/17 |
 | `phase5-t5b` / `t5c` / `t6a` | 102/102 |
-| `upgrade-proof.sh` | see PR body |
+| `upgrade-proof.sh` | PASSED — 469 assertions, 0 failures |
 | `test:e2e:api:allmodules` / `:outbox` | see PR body |
+
+The round-1 seal also broke seven **pre-existing** upgrade-proof fixture writes,
+and that is the seal working: those steps appended a fold without moving the
+status, which is now illegal. `UP6A-A-OK` (the approval at exactly the net
+payable) now carries its status move in the same transaction. The row and the
+bound under test are identical; the fixture was made to do what
+`payment.approve` does, which is what an upgrade proof should exercise anyway.
 
 ## Files
 

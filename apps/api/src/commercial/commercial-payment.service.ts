@@ -339,37 +339,49 @@ export class CommercialPaymentService {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
 
-    const bill = await this.prisma.vendorBill.findFirst({
-      where: { projectId, id: billId },
-      select: { id: true, status: true },
-    });
-    if (!bill) throw new NotFoundException('Vendor bill not found in this project');
+    // ONE SNAPSHOT for the status and the folds it is derived from (Codex round 1, P2).
+    //
+    // Before this task the status could not contradict the folds, because it never moved with them
+    // — reading them at different instants was harmless. §F changes that: `payment.approve` now
+    // moves `VendorBill.status` in the SAME transaction as the approval row, so an unsynchronized
+    // read can straddle that commit. Read the bill first and a concurrent approval lands before the
+    // approvals query, and this surface answers `approved: 100.00`, `approvable: 0.00`,
+    // `billStatus: certified` — three numbers that were each true once and are not true together.
+    // A repeatable-read snapshot makes the whole response one instant, which is what the deduction
+    // ledger already does for the same reason.
+    return this.prisma.$transaction(async (tx) => {
+      const bill = await tx.vendorBill.findFirst({
+        where: { projectId, id: billId },
+        select: { id: true, status: true },
+      });
+      if (!bill) throw new NotFoundException('Vendor bill not found in this project');
 
-    const position = await this.deductions.positionFor(this.prisma, projectId, billId);
-    const approvals = await this.prisma.paymentApproval.findMany({
-      where: { projectId, billId },
-      orderBy: { approvedAt: 'asc' },
-      include: { payments: { orderBy: { paidAt: 'asc' } }, sodExceptions: true },
-    });
+      const position = await this.deductions.positionFor(tx, projectId, billId);
+      const approvals = await tx.paymentApproval.findMany({
+        where: { projectId, billId },
+        orderBy: { approvedAt: 'asc' },
+        include: { payments: { orderBy: { paidAt: 'asc' } }, sodExceptions: true },
+      });
 
-    const rows: PaymentApprovalDto[] = approvals.map((a) => this.toApprovalDto(a));
+      const rows: PaymentApprovalDto[] = approvals.map((a) => this.toApprovalDto(a));
 
-    // The approved fold counts approvals against the LIVE certificate only — a superseded one is
-    // retained history, and summing it would compare an overstated total against the bound.
-    const approved = approvals
-      .filter((a) => position && a.certificateId === position.certificateId)
-      .reduce((t, a) => t.add(a.amount), ZERO);
-    const paid = approvals.reduce((t, a) => t.add(a.payments.reduce((s, p) => s.add(p.amount), ZERO)), ZERO);
+      // The approved fold counts approvals against the LIVE certificate only — a superseded one is
+      // retained history, and summing it would compare an overstated total against the bound.
+      const approved = approvals
+        .filter((a) => position && a.certificateId === position.certificateId)
+        .reduce((t, a) => t.add(a.amount), ZERO);
+      const paid = approvals.reduce((t, a) => t.add(a.payments.reduce((s, p) => s.add(p.amount), ZERO)), ZERO);
 
-    return {
-      billId,
-      certificateId: position?.certificateId ?? null,
-      approvals: rows,
-      approved: approved.toFixed(2),
-      paid: paid.toFixed(2),
-      approvable: position ? new Prisma.Decimal(position.netPayable).sub(approved).toFixed(2) : null,
-      billStatus: bill.status as VendorBillStatus,
-    };
+      return {
+        billId,
+        certificateId: position?.certificateId ?? null,
+        approvals: rows,
+        approved: approved.toFixed(2),
+        paid: paid.toFixed(2),
+        approvable: position ? new Prisma.Decimal(position.netPayable).sub(approved).toFixed(2) : null,
+        billStatus: bill.status as VendorBillStatus,
+      };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
   // ── folds and helpers ────────────────────────────────────────────────────────────────────────
