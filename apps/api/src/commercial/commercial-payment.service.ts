@@ -421,6 +421,13 @@ export class CommercialPaymentService {
           },
         });
 
+        // §B — deliberately NOT a headroom mover, which is why there is no `evaluateHeadsForBill`
+        // call here beside `approve`'s. §J's `certified-payable` is `NET_PAYABLE − APPROVED`, and a
+        // reversal moves neither: it shifts money from the `paid` bucket back into `approved`, and
+        // the two sum to the same exposure. `payment.record` is silent here for the same reason.
+        // Calling the evaluator anyway would append a "cleared" or "raised" observation labelled
+        // against a write that moved no headroom, which is the label drift §B's round 4 removed.
+        //
         // §F — a reversal LOWERS `PAID`, so the derivation runs BACKWARDS here: `paid` becomes
         // `approved-for-payment` on a full reversal and `part-paid` on a partial one. The same
         // function every other mover calls, which is what makes live == stored by construction
