@@ -151,6 +151,12 @@ export const ROLE_POLICY = {
   // is separate — a practice may want the person who can send money to be unable to claw it back,
   // and widening one must never silently widen the other.
   'commercial.reverse-payment': ['pmc'],
+  // Phase 5 Task 6C (§H) — paying a counterparty AHEAD of any certified claim. Its own permission
+  // for the reason every pair in this block has one: an advance commits the practice to money with
+  // no certificate behind it yet, which is a different risk from paying a bill that was certified,
+  // approved and bounded. Recovering it needs no new permission — an `advance-recovery` is a
+  // deduction, so `commercial.deduct` already governs it.
+  'commercial.pay-advance': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   // planning & scheduling — the PMC authors the plan

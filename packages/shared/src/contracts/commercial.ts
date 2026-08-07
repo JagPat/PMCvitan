@@ -81,6 +81,11 @@ export const COMMERCIAL_COMMANDS = [
   // sign. It is also the first step of §0's correction ORDERING — reverse the cash in full, then
   // supersede the certificate, then re-approve the reduced amount — which is why it stands alone.
   'commercial.payment.reverse',
+  // Phase 5 Task 6C (§H) — cash paid to a counterparty AHEAD of any certified claim. Its own
+  // command because it is its own act: an advance is not a payment of a bill (it has no approval
+  // and no certificate), and the `advance-recovery` deduction that draws it down is bounded by
+  // this row rather than by the certificate.
+  'commercial.advance.pay',
 ] as const;
 export type CommercialCommand = (typeof COMMERCIAL_COMMANDS)[number];
 
@@ -558,15 +563,26 @@ export interface CertificateDto {
 // ── Phase 5 Task 5C (§H) — the DEDUCTION ledger ─────────────────────────────────────────────
 
 /**
- * The deduction types this task ships. `advance-recovery` is deliberately absent: it folds against
- * an `advance` row created when the advance is PAID, so the enum member arrives in Task 6 with the
- * row that caps it. §0b's "every declared member is in the fold" rule then holds at BOTH stages,
- * rather than being briefly false while a declared type had nothing to fold against.
+ * The §H deduction types.
+ *
+ * `advance-recovery` arrived in Task 6C, WITH the `VendorAdvance` row that caps it — 5C left it out
+ * on purpose and said why: it "folds against an `advance` row created when the advance is PAID, so
+ * the enum member arrives in Task 6 with the row that caps it. §0b's 'every declared member is in
+ * the fold' rule then holds at BOTH stages, rather than being briefly false while a declared type
+ * had nothing to fold against." Shipping the member alone would have been a withholding bounded by
+ * nothing; shipping the advance alone would have been cash with no way home.
  */
-export const DEDUCTION_TYPES = ['retention', 'penalty', 'other'] as const;
+export const DEDUCTION_TYPES = ['retention', 'advance-recovery', 'penalty', 'other'] as const;
 export type DeductionType = (typeof DEDUCTION_TYPES)[number];
 
-/** The types that must carry a reason. A `retention` is a contract term; these are judgements. */
+/**
+ * The types that must carry a reason. A `retention` is a contract term; these are judgements.
+ *
+ * `advance-recovery` is NOT here, and that is the same distinction rather than an omission: it
+ * recovers a specific advance the practice already recorded with its own required reason, so the
+ * justification lives on the `VendorAdvance` row. Demanding a second one here would ask the
+ * operator to restate a fact the ledger already holds.
+ */
 export const DEDUCTION_TYPES_REQUIRING_REASON: readonly DeductionType[] = ['penalty', 'other'];
 
 /** One withholding against a certified payable. Append-only: corrected by a release, never edited. */
@@ -607,11 +623,42 @@ export interface BillDeductionLedgerDto {
   /** §G bound 4 — `CERTIFIED` less unreleased deductions. Never negative: the floor is enforced on
    *  the deduction write, so no fold ever has to clamp it. */
   netPayable: string | null;
-  /** the STORED bill status. §F's derivation reads three folds and two of them (`APPROVED`,
-   *  `PAID`) are Task 6's, so it lands there with the rows that supply them; until then a
-   *  withholding moves the money and not the status, and this surface reports what IS rather than
-   *  what a partial derivation would guess. */
+  /** the DERIVED bill status (§F). Task 6B made it a function of the three folds, so this and the
+   *  numbers above are read from one snapshot and cannot contradict each other. */
   billStatus: VendorBillStatus;
+  /** Task 6C (§H) — what this claim's counterparty still owes back, and what it was advanced.
+   *  A FOLD over the vendor's advances less every advance-recovery taken across its claims, so an
+   *  operator can see the ceiling BEFORE a recovery is refused by it rather than only in the
+   *  refusal. Vendor-scoped, not bill-scoped: an advance is paid to a counterparty, not to a bill. */
+  advance: VendorAdvancePositionDto;
+}
+
+/** Phase 5 Task 6C (§H) — one counterparty's advance position on this project. */
+export interface VendorAdvancePositionDto {
+  vendorId: string;
+  /** Σ advances paid to this counterparty — decimal STRINGs throughout (§A) */
+  advanced: string;
+  /** Σ `advance-recovery` deductions across this counterparty's claims, live certificate or
+   *  superseded: supersession never refunds an advance, so a recovered balance stays recovered */
+  recovered: string;
+  /** `advanced − recovered`, the ceiling a further recovery is bounded by. Never negative — the
+   *  bound is enforced on the deduction WRITE, so no reader has to clamp it. */
+  recoverable: string;
+}
+
+/** Phase 5 Task 6C (§H) — cash paid to a counterparty ahead of any certified claim. */
+export interface VendorAdvanceDto {
+  id: string;
+  vendorId: string;
+  /** decimal STRING — §A forbids a float64 round trip. Strictly positive (§H). */
+  amount: string;
+  /** what the advance is FOR. Required: an advance is recovered over later bills, and one nobody
+   *  can explain is a payment with no story attached to it. */
+  reason: string;
+  method: string;
+  reference: string | null;
+  paidAt: string;
+  paidById: string;
 }
 
 /** Phase 5 Task 6A — one authorisation that a certified payable may be paid. */

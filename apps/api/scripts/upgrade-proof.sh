@@ -2765,6 +2765,92 @@ assert_rejects "commercial T6B-ii: DELETING one" \
   "DELETE FROM \"PaymentReversal\" WHERE \"id\"='UP6BII-V1'" \
   'append-only'
 
+
+# ── Task 6C (§H) — the ADVANCE, and the recovery that draws it down ──────────────────────────
+#
+# Both the table and the enum member are NEW here, so the first thing to prove about the upgrade is
+# that they arrive with nothing already claiming them: no advances, and no `advance-recovery`
+# deduction (5C's CHECK made the type inadmissible, so a pre-existing one would be a withholding
+# that was never bounded by cash and whose ceiling cannot be reconstructed).
+assert "commercial T6C: the advance table upgrades ROW-FREE over the legacy fixture" \
+  "SELECT COUNT(*)::text FROM \"VendorAdvance\";" \
+  "0"
+assert "commercial T6C: …and no advance-recovery predates the row that caps it" \
+  "SELECT COUNT(*)::text FROM \"BillDeduction\" WHERE \"type\" = 'advance-recovery';" \
+  "0"
+assert "commercial T6C §H: the widened type set admits the new member and nothing else" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname='BillDeduction_type_known' AND pg_get_constraintdef(\"oid\") LIKE '%advance-recovery%')::text;" \
+  "1"
+assert "commercial T6C: its seals are installed, with the deferred one deferred" \
+  "SELECT string_agg(t.\"tgname\" || '/' || t.\"tginitdeferred\"::text, ',' ORDER BY t.\"tgname\") FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" WHERE c.\"relname\" = 'VendorAdvance' AND NOT t.\"tgisinternal\";" \
+  "VendorAdvance_append_only/false,VendorAdvance_command_succeeded/true"
+assert "commercial T6C: the recovery CEILING fires from the deduction table, deferred to commit" \
+  "SELECT t.\"tgname\" || '/' || t.\"tgdeferrable\"::text || '/' || t.\"tginitdeferred\"::text || '/' || p.\"proname\" FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" JOIN pg_proc p ON p.\"oid\" = t.\"tgfoid\" WHERE c.\"relname\" = 'BillDeduction' AND t.\"tgname\" = 'BillDeduction_advance_bound_sealed';" \
+  "BillDeduction_advance_bound_sealed/true/true/phase5_t6c_recovery_bound_sealed"
+
+# an advance that is not bounded by anything, then the recovery it caps. The claim used here is the
+# one the 6B block left at `verified` after its supersession, so it is re-certified first — the
+# arrows below would otherwise be vacuous.
+mint5c UP6C-CMD-C3 commercial.bill.certify UP6C-C3
+if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP6C-C3','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP6C-CMD-C3'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6C-A3EV','p1','UP6C-C3','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+then printf 'ok      %s\n' "commercial T6C: a live certificate stands again, so the recovery arrows below are not vacuous"
+else printf 'FAILED  %s\n' "commercial T6C: could not re-certify — the recovery arrows below would be vacuous"; FAIL=1
+fi
+
+# a recovery with NO advance behind it is refused — the arm that makes the whole task necessary,
+# because without it the sign, fold and status probes all pass while the vendor is underpaid
+mint5c UP6C-CMD-D0 commercial.deduction.record UP6C-D0
+assert_rejects "commercial T6C §H: recovering against an advance that was never paid" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP6C-D0','p1','UP6C-C3','$UP5C_BILL','advance-recovery',0.50,'USER-1','UP6C-CMD-D0')" \
+  'there is no more of it to take'
+
+mint5c UP6C-CMD-ADV commercial.advance.pay UP6C-ADV
+if $PSQL >/dev/null -c "INSERT INTO \"VendorAdvance\"(\"id\",\"projectId\",\"vendorId\",\"amount\",\"reason\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6C-ADV','p1','UP45-VEN',1.00,'mobilisation','neft','USER-1','UP6C-CMD-ADV')"
+then printf 'ok      %s\n' "commercial T6C §H: a coherent advance to a BOUND counterparty is ACCEPTED (the seals are precise, not merely strict)"
+else printf 'FAILED  %s\n' "commercial T6C §H: a legitimate advance was refused"; FAIL=1
+fi
+
+# …and NOW the recovery fits. The arrow helper asserts the status really moved: a ₹1 certificate
+# offset entirely by a ₹1 recovery leaves NET_PAYABLE = PAID = 0, which §F's FIRST arm calls `paid`
+# with no cash having moved (the plan's 5bs, on the upgraded database).
+mint5c UP6C-CMD-D1 commercial.deduction.record UP6C-D1
+t6b_arrow "a fully-offset certificate is settled at zero by an advance recovery" certified paid \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP6C-D1','p1','UP6C-C3','$UP5C_BILL','advance-recovery',1.00,'USER-1','UP6C-CMD-D1')"
+
+assert "commercial T6C §H: RECOVERABLE is Σ advances MINUS the unreleased recovery on LIVE certificates" \
+  "SELECT (COALESCE((SELECT SUM(\"amount\") FROM \"VendorAdvance\" WHERE \"vendorId\"='UP45-VEN'),0) - COALESCE((SELECT SUM(d.\"amount\") FROM \"BillDeduction\" d JOIN \"BillCertificate\" c ON c.\"id\"=d.\"certificateId\" JOIN \"VendorBill\" b ON b.\"id\"=d.\"billId\" WHERE b.\"vendorId\"='UP45-VEN' AND d.\"type\"='advance-recovery' AND c.\"supersededAt\" IS NULL),0))::text;" \
+  "0.00"
+
+# …and one paisa more is refused, cumulatively
+mint5c UP6C-CMD-D2 commercial.deduction.record UP6C-D2
+assert_rejects "commercial T6C §H: a CUMULATIVE overshoot, after the pool is spent" \
+  "INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"recordedById\",\"sourceCommandId\") VALUES('UP6C-D2','p1','UP6C-C3','$UP5C_BILL','advance-recovery',0.01,'USER-1','UP6C-CMD-D2')" \
+  'there is no more of it to take'
+
+# the advance fact's own seals, each otherwise well-formed
+mint5c UP6C-CMD-NEG commercial.advance.pay UP6C-NEG
+assert_rejects "commercial T6C §H: a NEGATIVE advance (direction belongs to the row TYPE, not its sign)" \
+  "INSERT INTO \"VendorAdvance\"(\"id\",\"projectId\",\"vendorId\",\"amount\",\"reason\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6C-NEG','p1','UP45-VEN',-1.00,'a negative advance','neft','USER-1','UP6C-CMD-NEG')" \
+  'VendorAdvance_amount_positive'
+mint5c UP6C-CMD-BLANK commercial.advance.pay UP6C-BLANK
+assert_rejects "commercial T6C §H: a BLANK reason (an advance nobody can explain is a payment with no story)" \
+  "INSERT INTO \"VendorAdvance\"(\"id\",\"projectId\",\"vendorId\",\"amount\",\"reason\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6C-BLANK','p1','UP45-VEN',1.00,'   ','neft','USER-1','UP6C-CMD-BLANK')" \
+  'VendorAdvance_reason_nonblank'
+mint5c UP6C-CMD-UNBOUND commercial.advance.pay UP6C-UNBOUND
+assert_rejects "commercial T6C §H: an advance to a counterparty this project never bound" \
+  "INSERT INTO \"VendorAdvance\"(\"id\",\"projectId\",\"vendorId\",\"amount\",\"reason\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6C-UNBOUND','p1','UPT4-VEN',1.00,'wrong project','neft','USER-1','UP6C-CMD-UNBOUND')" \
+  'VendorAdvance_binding_fkey'
+assert_rejects "commercial T6C: EDITING an advance (cash that left is evidence)" \
+  "UPDATE \"VendorAdvance\" SET \"amount\"=99.00 WHERE \"id\"='UP6C-ADV'" \
+  'append-only'
+assert_rejects "commercial T6C: DELETING one" \
+  "DELETE FROM \"VendorAdvance\" WHERE \"id\"='UP6C-ADV'" \
+  'append-only'
+mint5c UP6C-CMD-WRONG commercial.payment.record UP6C-WRONG
+assert_rejects "commercial T6C: an advance citing a receipt of the WRONG command type" \
+  "INSERT INTO \"VendorAdvance\"(\"id\",\"projectId\",\"vendorId\",\"amount\",\"reason\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6C-WRONG','p1','UP45-VEN',1.00,'wrong receipt','neft','USER-1','UP6C-CMD-WRONG')" \
+  'records the command that PRODUCED it'
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller

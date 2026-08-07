@@ -1584,3 +1584,25 @@ export const reversePaymentSchema = z
   })
   .strict();
 export type ReversePaymentInput = z.infer<typeof reversePaymentSchema>;
+
+/**
+ * Task 6C (§H) — PAY a counterparty ahead of any certified claim.
+ *
+ * `reason` is required, unlike a payment's optional `reference`, and the asymmetry is the point: a
+ * payment's justification is the approval it draws on, and an advance has none. It is recovered
+ * over later bills by `advance-recovery` deductions that carry no reason of their own, so this row
+ * is where the whole arrangement is explained or it is explained nowhere.
+ *
+ * The vendor is named directly rather than resolved from a bill, because an advance precedes every
+ * bill it will be recovered from — that is what makes it an advance.
+ */
+export const payAdvanceSchema = z
+  .object({
+    vendorId: z.string().min(1),
+    amount: z.string().trim().min(1).max(32),
+    reason: z.string().trim().min(1).max(500),
+    method: z.string().trim().min(1).max(64),
+    reference: z.string().trim().min(1).max(200).nullish(),
+  })
+  .strict();
+export type PayAdvanceInput = z.infer<typeof payAdvanceSchema>;

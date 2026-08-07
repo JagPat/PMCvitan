@@ -48,6 +48,8 @@ export const commercialManifest: ModuleManifest = {
     // Phase 5 Task 6B unit ii (§0/§H) — the money that came BACK. `PAID(bill)` subtracts it, so it
     // is a fold input in the same sense the payment is.
     'paymentReversal',
+    // Phase 5 Task 6C (§H) — the paid-advance pool an `advance-recovery` deduction draws down
+    'vendorAdvance',
   ],
   readEncapsulated: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
@@ -64,6 +66,7 @@ export const commercialManifest: ModuleManifest = {
     'paymentApproval',
     'payment',
     'paymentReversal',
+    'vendorAdvance',
   ],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the
@@ -106,6 +109,8 @@ export const commercialManifest: ModuleManifest = {
     'POST /projects/:projectId/commercial/payments/record',
     // Phase 5 Task 6B unit ii (§0/§H) — money coming back
     'POST /projects/:projectId/commercial/payments/reverse',
+    // Phase 5 Task 6C (§H) — cash out ahead of a certified claim, and the pool a recovery draws on
+    'POST /projects/:projectId/commercial/advances',
   ],
   permissions: ['pmc'],
 };

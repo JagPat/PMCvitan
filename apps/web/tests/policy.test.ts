@@ -76,6 +76,7 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'commercial.approve-payment': ['pmc'],
   'commercial.record-payment': ['pmc'],
   'commercial.reverse-payment': ['pmc'],
+  'commercial.pay-advance': ['pmc'],
   'activity.start': ['engineer', 'pmc'],
   'activity.complete': ['engineer', 'pmc'],
   'activity.manage': ['pmc'],

@@ -304,6 +304,57 @@ export class CommercialDeductionQuery {
   }
 
   /**
+   * `RECOVERABLE(vendor)` (§H) — Σ advances paid to one counterparty MINUS what its claims have
+   * actually recovered, which is the UNRELEASED `advance-recovery` withholding on that
+   * counterparty's LIVE certificates. A fold, never a stored balance.
+   *
+   * **Vendor-scoped, not per-advance, and the asymmetry with a payment reversal is deliberate.**
+   * 6B-ii bounds a reversal by its OWN payment because a payment is nested under one authority, and
+   * an aggregate can be conserved while the attribution is a lie. An advance is not an authority —
+   * it is a POOL. A vendor holding a ₹100 mobilisation advance and a ₹50 materials advance recovers
+   * ₹120 from the next bill with no fact of the matter about which row it came from; forcing a
+   * choice would put an `advanceId` column on `BillDeduction` that no other type uses and that the
+   * practice would have to invent an answer for. What DOES have a fact of the matter is the
+   * counterparty.
+   *
+   * **LIVE certificates, net of releases — and both halves were learned from a failing probe.**
+   * An earlier revision counted `advance-recovery` rows on EVERY certificate, live or superseded,
+   * reasoning that supersession never refunds an advance. That reasoning forgot §H's RE-STATEMENT:
+   * superseding carries the deductions forward onto the replacement as NEW rows, so a bill-wide
+   * count sees the same ₹100 recovery twice and refuses the honest correction — PROBE 28 failed on
+   * exactly that, at `certify`, which is the moment the restatement lands.
+   *
+   * The live-certificate scope is right for the same reason it is right for `NET_PAYABLE`: a
+   * restated recovery is the SAME recovery, and the superseded row is history. Nothing is freed by
+   * supersession that §H does not also un-withhold — a superseded certificate with no replacement
+   * leaves the vendor owed the full claim again, and the advance genuinely is un-recovered.
+   *
+   * Releases net off for the same reason: releasing an `advance-recovery` gives the money back to
+   * the vendor, so the advance is owed again. A fold that ignored releases would strand the balance
+   * at zero after a correction that returned every rupee.
+   */
+  async recoverableFor(
+    tx: Prisma.TransactionClient, projectId: string, vendorId: string,
+  ): Promise<{ advanced: Prisma.Decimal; recovered: Prisma.Decimal; recoverable: Prisma.Decimal }> {
+    const rows = await tx.$queryRaw<Array<{ advanced: Prisma.Decimal | null; recovered: Prisma.Decimal | null }>>`
+      SELECT COALESCE((SELECT SUM(a."amount") FROM "VendorAdvance" a
+                        WHERE a."projectId" = ${projectId} AND a."vendorId" = ${vendorId}), 0) AS advanced,
+             COALESCE((SELECT SUM(d."amount" - COALESCE(rel.released, 0))
+                         FROM "BillDeduction" d
+                         JOIN "BillCertificate" c ON c."projectId" = d."projectId" AND c."id" = d."certificateId"
+                         JOIN "VendorBill" b ON b."projectId" = d."projectId" AND b."id" = d."billId"
+                         LEFT JOIN LATERAL (
+                           SELECT SUM(r."amount") AS released FROM "BillDeductionRelease" r
+                            WHERE r."projectId" = d."projectId" AND r."deductionId" = d."id"
+                         ) rel ON TRUE
+                        WHERE d."projectId" = ${projectId} AND b."vendorId" = ${vendorId}
+                          AND d."type" = 'advance-recovery' AND c."supersededAt" IS NULL), 0) AS recovered`;
+    const advanced = new Prisma.Decimal(rows[0]?.advanced ?? 0);
+    const recovered = new Prisma.Decimal(rows[0]?.recovered ?? 0);
+    return { advanced, recovered, recoverable: advanced.sub(recovered) };
+  }
+
+  /**
    * All three §F folds for one bill, read together. `netPayable` is ZERO when no live certificate
    * stands — `positionFor` returns null there, and a bill with nothing certified has nothing
    * payable, which is the value the derivation's first arm needs.

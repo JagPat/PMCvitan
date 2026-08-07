@@ -102,6 +102,7 @@ const MODEL_OWNER: Record<string, string> = {
   paymentApproval: 'commercial',
   payment: 'commercial',
   paymentReversal: 'commercial',
+  vendorAdvance: 'commercial',
   certifiedAcceptanceConsumption: 'commercial',
   certifiedMeasurementConsumption: 'commercial',
   activityWorkOutput: 'activities',
@@ -465,6 +466,8 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('commercial/payments/record')",
     // Phase 5 Task 6B unit ii (§0/§H) — money coming back
     "Post('commercial/payments/reverse')",
+    // Phase 5 Task 6C (§H) — cash out ahead of a certified claim
+    "Post('commercial/advances')",
     "Post('commercial/bills/amend')",
     "Post('commercial/bills/reject')",
   ],
@@ -590,12 +593,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('166 mutating routes total (§4 command inventory; +1 Phase-5 Task-6B-ii §0/§H reversal)', () => {
+    it('167 mutating routes total (§4 command inventory; +1 Phase-5 Task-6C §H advance)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(166);
+      expect(total).toBe(167);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(166);
+      expect(live).toBe(167);
     });
   });
 
