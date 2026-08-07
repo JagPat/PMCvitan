@@ -244,6 +244,10 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // commercial fact with no external effect, exactly like a certificate.
   'commercial/commercial-deduction.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
   'commercial/commercial-payment.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
+  // Task 6B-i — §F's derivation has ONE writer of the derived status, and it writes only
+  // `VendorBill.status`, a commercial-owned column, from commercial-owned folds. No foreign read,
+  // no dispatch: the movers that call it already own their own external effects.
+  'commercial/commercial-status.service.ts': { domain: 'commercial', foreign: {}, dispatch: 0 },
   // Phase 4 Task 2 — the labour COMMERCIAL chain (§F). Writes ONLY labour-owned commercial tables;
   // the reused procurement Vendor/ProjectVendor party is read/validated THROUGH ProcurementParticipant
   // (never a direct foreign write/read — Labour stays a LEAF). requisition submit/approve +

@@ -421,9 +421,12 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     expect(after.approved).toBe('70.00');
     expect(after.paid).toBe('30.00');
     expect(after.approvable).toBe('30.00');
-    // §F's derivation is 6B's, beside the reversal rows that make it correct. Until then the status
-    // is the STORED one — reporting what is, not what a partial derivation would guess.
-    expect(after.billStatus).toBe('certified');
+    // The read has ALWAYS reported the stored status rather than guessing — what changed in Task
+    // 6B-i is what the stored status is worth. `payment.record` now re-derives it in the same
+    // transaction, so ₹30 paid against ₹70 approved on a ₹100 payable stores `part-paid`, and this
+    // read reports it without knowing anything new. 6A pinned `certified` here deliberately, saying
+    // the derivation was 6B's; this is 6B changing it knowingly.
+    expect(after.billStatus).toBe('part-paid');
   });
 
   it('PROBE 10 (§I): the certifier-vs-approver rule is sealed at PostgreSQL, not only in the service', async () => {

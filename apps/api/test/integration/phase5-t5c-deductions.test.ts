@@ -302,21 +302,26 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
 
   // ── §F — the status is DERIVED from the folds, and withholding everything settles the bill ────
 
-  it('PROBE 4 (§H): withholding the WHOLE certificate leaves nothing payable, and the STATUS deliberately does not move', async () => {
-    // §H says the insertion re-derives the §F payment status. It does not do that here, and the
-    // packet says so: §F reads three folds and two of them are Task 6's, so the derivation lands
-    // beside the rows that supply them. What 5C guarantees is the MONEY — and this probe pins the
-    // deliberate half-step so Task 6 changes it knowingly rather than discovering it.
+  it('PROBE 4 (§H): withholding the WHOLE certificate leaves nothing payable, and the status FOLLOWS the money', async () => {
+    // 5C wrote this probe pinning the deliberate half-step — the status did NOT move then, because
+    // §F reads three folds and two of them were Task 6's. Task 6B-i supplies the missing two and
+    // wires `deduction.record`/`deductions.release` into the derivation, so this is Task 6 changing
+    // the pin KNOWINGLY, which is what the pin existed for. Nothing about the MONEY moved: the
+    // ledger and §J numbers below are byte-for-byte what 5C asserted.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     expect(await statusOf(projectId, billId)).toBe('certified');
 
     const deduction = await deductions.record(projectId, { billId, type: 'retention', amount: '100.00' }, pmc(projectId));
     expect((await deductions.readLedger(projectId, billId, pmc(projectId))).netPayable).toBe('0.00');
-    expect(await statusOf(projectId, billId), 'Task 5C moves the money, not the status').toBe('certified');
+    // §F: `NET_PAYABLE == PAID` is `paid`, and withholding EVERYTHING settles the claim at zero
+    // without a rupee leaving — a fully-withheld certificate has nothing left to pay.
+    expect(await statusOf(projectId, billId), 'a claim with nothing payable is settled').toBe('paid');
     expect((await positionOf(projectId)).certifiedPayable).toBe('0.00');
 
-    // …and a release makes money payable again, in the ledger and in §J
+    // …and a release makes money payable again, in the ledger and in §J — and takes the status BACK
+    // to `certified`, which is the non-monotonic move §F requires and a forward-only guard would
+    // have refused.
     await deductions.release(projectId, { deductionId: deduction.id, amount: '40.00', reason: 'first milestone released' }, pmc(projectId));
     const ledger = await deductions.readLedger(projectId, billId, pmc(projectId));
     expect(ledger.withheld).toBe('60.00');

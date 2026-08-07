@@ -385,24 +385,37 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
     expect(await storedStatus(projectId, clean), 'supersede returns the bill to `verified`').toBe('verified');
   });
 
-  it('PROBE 13 (§0): superseding a certificate is REFUSED while cash stands against it', async () => {
+  it('PROBE 13 (§0): the WIDENED supersede guard does not open a paid certificate to correction', async () => {
+    // This task widens `supersede`'s status guard from the single member `certified` to the whole
+    // derived FAMILY, because §F makes `approved-for-payment`/`part-paid`/`paid` reachable on a bill
+    // whose certificate is still live, and the member guard would have refused those with the false
+    // reason that no certification exists. The obligation that comes with widening is to prove the
+    // §0 rule — cash already gone is not corrected by correcting a document — still holds on every
+    // newly-reachable member. It does, and NOT because this service restates it: Task 6A's §G
+    // bound-5 seal (`BillCertificate_paid_bound_sealed`, deferred to commit) refuses any supersession
+    // that would leave `PAID` above the `APPROVED` it drops to, which is every case where cash
+    // stands against the live certificate. A second service-level refusal here would be the same
+    // rule at a second site with a second message — the drift this module keeps removing.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
 
-    // with an approval but NO payment the correction path is open — supersession takes the approval
-    // out of `APPROVED` and nothing is orphaned
+    // `approved-for-payment` is newly reachable AND legitimately correctable: supersession takes the
+    // approval out of `APPROVED` and no cash is orphaned, so the widened guard must let it through.
     const other = await certifiedClaim(projectId);
     await payments.approve(projectId, { billId: other, amount: '100' }, approver(projectId));
+    expect(await expectDerived(projectId, other, 'approved but unpaid')).toBe('approved-for-payment');
     await certification.supersede(projectId, { billId: other, reason: 'approved but unpaid' }, pmc(projectId));
     expect(await storedStatus(projectId, other), 'an approved-but-unpaid claim is still correctable').toBe('verified');
 
-    // …once cash has left, it is not. Supersession would drop `APPROVED` to 0 while `PAID` stands,
-    // leaving `PAID > APPROVED` with both rows append-only — §G bound 5 broken by evidence nothing
-    // can walk back, and a real outflow hidden behind a lower payable.
+    // …`part-paid` is newly reachable and is NOT. Supersession would drop `APPROVED` to 0 while
+    // `PAID` stands, leaving `PAID > APPROVED` with both rows append-only — §G bound 5 broken by
+    // evidence nothing can walk back, and a real outflow hidden behind a lower payable. Recovering
+    // money is its own attributable act; the reversal that makes this legal is 6B-ii's.
     await payments.record(projectId, { approvalId: approval.id, amount: '40', method: 'neft' }, pmc(projectId));
+    expect(await expectDerived(projectId, billId, 'cash has left')).toBe('part-paid');
     await expect(certification.supersede(projectId, { billId, reason: 'too late' }, pmc(projectId)))
-      .rejects.toThrow(/already paid against its certificate/u);
+      .rejects.toThrow(/exceed the/u);
     expect(await expectDerived(projectId, billId, 'the refused supersede changed nothing')).toBe('part-paid');
   });
 

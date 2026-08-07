@@ -579,24 +579,12 @@ export class CommercialCertificationService {
           throw new ConflictException(`A ${bill.status} claim has no live certification to supersede`);
         }
 
-        // §0 — …but CASH already gone is not corrected by correcting a document. Supersession takes
-        // the certificate's approvals out of `APPROVED` and never appends a payment reversal,
-        // because `PAID` records money that actually left the practice: superseding a paid
-        // certificate would leave `PAID > APPROVED = 0` with both rows append-only, breaking §G
-        // bound 5 with evidence nothing can walk back, and hiding a real outflow behind a lower
-        // payable. Recovering money is its own attributable act — the reversal is 6B-ii's — so this
-        // refuses until one exists rather than silently orphaning the payment.
-        //
-        // Reachable before this task and unguarded: 6A made payments possible while the bill stayed
-        // `certified`, so the hole predates the derivation. It is closed here because this is the
-        // increment that makes the paid state legible, and widening the status guard without it
-        // would have turned a latent hole into an ordinary path.
-        const paidSoFar = await this.deductions.paidFor(tx, projectId, input.billId);
-        if (paidSoFar.greaterThan(0)) {
-          throw new ConflictException(
-            `This claim has ${paidSoFar.toFixed(2)} already paid against its certificate — a certificate is not corrected while the cash it authorised stands. Reverse the payment first; recovering money is a separate attributable act, never a side effect of correcting a document`,
-          );
-        }
+        // §0's rule that cash already gone is not corrected by correcting a document is ALREADY
+        // enforced — Task 6A's bound-5 seal refuses a supersession that would leave `PAID` above the
+        // `APPROVED` it drops to, which is every case where cash stands against the live
+        // certificate. A service-level refusal here would restate that rule at a second site with a
+        // second message, which is the drift this module keeps removing. The widened status guard
+        // above does not weaken it: superseding a `part-paid` claim still meets the same seal.
         const live = await tx.billCertificate.findFirst({
           where: { projectId, billId: input.billId, supersededAt: null },
           select: { id: true },
