@@ -377,3 +377,34 @@ test('a directive outranks work_item without tripping the override guard', () =>
   assert.equal(verdict.nextStep, 'directive:fix-forward-something');
   assert.ok(!verdict.nextStep.startsWith('task:'), 'a directive is not a bare task step');
 });
+
+// Codex, PR #290 (P1). `work_item` is consulted BEFORE `next_task` when a task is `merged`, so a
+// STATUS flip that records the merge but leaves `work_item` naming the just-merged unit sends the
+// runner straight back into completed work — silently, because every field is individually valid
+// and the state machine is right to prefer a concrete follow-on when one is named.
+//
+// The live document is already checked by the pin above; this one states the RULE, so the next
+// person writing a merge flip fails here rather than in review. The two directions are asserted
+// together because the fix is only meaningful against the failure it prevents.
+test('a merged task must CLEAR work_item, or the runner re-enters the unit it just finished', () => {
+  const flip = (workItem) => assessRunnerState({
+    phase: '5',
+    task: '6',
+    task_state: 'merged',
+    work_item: workItem,
+    open_pr: 'none',
+    blocking_directive: 'none',
+    next_task: 'phase-5-task-6b-ii',
+  });
+
+  assert.equal(
+    flip('phase-5-task-6b-i').nextStep,
+    'work_item:phase-5-task-6b-i',
+    'a merged flip that leaves work_item set resolves BACK to that work item — this is the defect, pinned so the fix below means something',
+  );
+  assert.equal(
+    flip('none').nextStep,
+    'next_task:phase-5-task-6b-ii',
+    'a merged flip with work_item cleared must hand off to next_task',
+  );
+});

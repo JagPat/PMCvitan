@@ -14,7 +14,7 @@ phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 6
 task_state: merged
-work_item: phase-5-task-6b-i
+work_item: none
 reviewed_merge: 023307e
 open_pr: none
 next_task: phase-5-task-6b-ii
@@ -145,7 +145,12 @@ Review Stops" section of the phase plan.
 - `in_review` — PR open as a draft, waiting on a Codex review or on a fix for
   review findings
 - `ready` — PR marked ready for review; the merge is queued behind CI
-- `merged` — squash-merged to `main` and deployed
+- `merged` — squash-merged to `main` and deployed. **CLEAR `work_item` in the
+  same flip.** `assessRunnerState` consults `work_item` BEFORE `next_task`, so a
+  merge record that still names the finished unit sends the runner straight back
+  into completed work — silently, because every field is individually valid and
+  preferring a named follow-on is the right default. Pinned in
+  `scripts/autonomous-status-state.test.mjs` in both directions.
 
 ## Maintenance queue
 
