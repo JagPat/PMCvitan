@@ -231,6 +231,19 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
     phase5_t6a_approval_paid_check: [
       { trigger: 'Payment_bound_sealed', relation: 'Payment', ...PAYMENT_BOUND_SEALED },
     ],
+    // Task 6B unit ii — the per-payment reversal bound. Its caller takes the PAYMENT row
+    // `FOR UPDATE` before counting, which is what makes it a serialization point rather than a
+    // count; the probe that proves the WAIT lives in `phase5-t6b-status-derivation.test.ts`, and
+    // this asserts the object it waits on is really the one installed.
+    phase5_t6b_ii_reversal_bound_check: [
+      {
+        trigger: 'PaymentReversal_bound_sealed',
+        relation: 'PaymentReversal',
+        tgtype: 5,
+        callerFn: 'phase5_t6b_ii_reversal_bound_sealed',
+        callerSha256: '498c8091a474011d6313fe59ba3dd8b91da435ed63fd693d60f1ce097356427d',
+      },
+    ],
     phase5_t6a_approval_override_valid: [
       {
         trigger: 'PaymentApproval_approver_not_certifier',
@@ -251,9 +264,19 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
 
   const HELPER_BODIES: Record<string, string> = {
     phase5_t6a_approved_bound_check: '3e9b54c56b419b0bb2ab7d59de5c46223a1bbb45cc6634f113002be49e43aa23',
-    phase5_t6a_paid_bound_check: 'da1653892c0fc87e5b8a71ab6f3d217272d42496a8d8385931196a3a23983e24',
-    phase5_t6a_approval_paid_check: '000d68e8f42510361123bb9564077fc8870fc463c0ba32008581a2b03c819b35',
+    // Task 6B unit ii CHANGED these two, and this pin is what caught it — which is the pin doing
+    // exactly its job. §0 defines `PAID(bill)` as Σ payments MINUS Σ payment reversals, and both
+    // bounds compute `PAID`; 6A's own comment on the first of them asked for the widening
+    // ("Neither may be a raw `Σ` over positive rows once 6B adds reversals"). The hashes move
+    // BECAUSE the bodies moved, and the source-side closure that requires the reversal term is
+    // `commercial.contract.test.ts`'s CLOSURE B — the two together mean a twin cannot be widened
+    // in the migration without this hash moving, nor this hash moved without the twin being widened.
+    phase5_t6a_paid_bound_check: 'b106e57478bbbd11854868348bde8b2512910d1073b3bd89203396c8295e3674',
+    phase5_t6a_approval_paid_check: '56e9a987063e9d20f57bb2f56e7a9a3dc20870cc071349def7e894a882952eb4',
     phase5_t6a_approval_override_valid: '75b32e8cb998339c677ab9a0033f839fca16b3268ee0801cfd061853068afee3',
+    // …and the new one. A no-op body here would pass every caller pin: the trigger would still be
+    // installed, deferred and bound to the right function, while the bound it names refused nothing.
+    phase5_t6b_ii_reversal_bound_check: 'fd21ee591e5616ae0f794d96d41ed7b14ca02eb4517a7a2edfc671b662cea7d6',
   };
 
   const consumptionFamily = (): string[] => {

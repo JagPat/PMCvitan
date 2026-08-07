@@ -1564,3 +1564,23 @@ export const recordPaymentSchema = z
   })
   .strict();
 export type RecordPaymentInput = z.infer<typeof recordPaymentSchema>;
+
+/**
+ * Task 6B unit ii (§0/§H) — RECOVER money already paid, against the payment that moved it.
+ *
+ * `reason` is required and non-blank, unlike a payment's optional `reference`. A payment's own
+ * justification is the approval it draws on; a reversal has no such parent authority — it undoes
+ * one — so the reason IS its justification, and an append-only row cannot acquire one later.
+ *
+ * There is no `method` field, deliberately. A reversal names the payment it returns, and that
+ * payment already froze how the money moved; asking again would invite a second answer to a
+ * question the ledger has already recorded.
+ */
+export const reversePaymentSchema = z
+  .object({
+    paymentId: z.string().min(1),
+    amount: z.string().trim().min(1).max(32),
+    reason: z.string().trim().min(1).max(500),
+  })
+  .strict();
+export type ReversePaymentInput = z.infer<typeof reversePaymentSchema>;

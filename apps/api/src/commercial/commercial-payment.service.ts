@@ -6,6 +6,7 @@ import {
   type BillPaymentLedgerDto,
   type PaymentApprovalDto,
   type PaymentDto,
+  type PaymentReversalDto,
   type SodExceptionDto,
   type VendorBillStatus,
 } from '@vitan/shared';
@@ -20,18 +21,32 @@ import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialStatusService } from './commercial-status.service';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import type { ApprovePaymentInput, RecordPaymentInput } from '../contracts';
+import type { ApprovePaymentInput, RecordPaymentInput, ReversePaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
+
+/** Every read of a payment carries its reversals: the DTO's `reversed` fold and the ledger's own
+ *  `paid` are both derived from them, so a read path that forgot the include would report a payment
+ *  as fully standing while `PAID(bill)` had already fallen. Declared once for that reason. */
+const PAYMENT_REVERSALS = { reversals: { orderBy: { reversedAt: 'asc' } } } as const;
+
+/** What one payment actually left the practice with — its amount less what has come back. */
+const netOf = (p: { amount: Prisma.Decimal; reversals: Array<{ amount: Prisma.Decimal }> }): Prisma.Decimal =>
+  p.reversals.reduce((t, r) => t.sub(r.amount), p.amount);
 
 /** The rule THIS half of §I defines. Named once, in the shared contract, so a grant issued for the
  *  certification rule can never be spent here. */
 const SOD_RULE = SOD_RULES.certifierMayNotApprove;
 
 /** The persisted shape each read maps from — declared once so the two read paths cannot drift. */
+interface PaymentReversalRow {
+  id: string; paymentId: string; billId: string; amount: Prisma.Decimal;
+  reason: string; reversedAt: Date; reversedById: string;
+}
 interface PaymentRow {
   id: string; approvalId: string; billId: string; amount: Prisma.Decimal;
   method: string; reference: string | null; paidAt: Date; paidById: string;
+  reversals: PaymentReversalRow[];
 }
 interface SodExceptionRow {
   rule: string; actorId: string; approverId: string; reason: string;
@@ -67,11 +82,12 @@ interface ApprovalRow {
  * limit, bound 4 satisfied, the ceiling defeated. The guard folds what is already approved and
  * compares the actor's limit to the resulting TOTAL.
  *
- * **What this service deliberately does NOT do: derive the §F payment status.** Task 5C deferred
- * that because §F reads three folds and two of them did not exist. This task creates those two;
- * the derivation lands in 6B beside the reversal rows that make it correct. Until then the stored
- * status stays `certified`, which is strictly stricter than the finished rule — there is no
- * transition to be wrong about, and no bill can be stranded in a state no legal row can leave.
+ * **Task 6B closes the loop this class opened.** 6A shipped with the stored status pinned at
+ * `certified` and said why: §F reads three folds and two of them did not exist yet. 6B-i made the
+ * status a FUNCTION of all three, and 6B-ii adds the THIRD act — `reverse` — so `PAID` can fall and
+ * the derivation can run backwards. That is not a convenience: §0's correction ordering requires a
+ * certificate carrying cash to be emptied BEFORE it is superseded, and until this command existed
+ * such a bill was correct and permanently uncorrectable.
  */
 @Injectable()
 export class CommercialPaymentService {
@@ -102,6 +118,12 @@ export class CommercialPaymentService {
   private assertRecord(user: AuthUser): void {
     if (!(ROLE_POLICY['commercial.record-payment'] as readonly string[]).includes(user.role)) {
       throw new ForbiddenException('Recording a payment is a pmc surface');
+    }
+  }
+
+  private assertReverse(user: AuthUser): void {
+    if (!(ROLE_POLICY['commercial.reverse-payment'] as readonly string[]).includes(user.role)) {
+      throw new ForbiddenException('Reversing a payment is a pmc surface — it recovers money that already left');
     }
   }
 
@@ -332,6 +354,103 @@ export class CommercialPaymentService {
     return this.paymentById(projectId, outcome.resultRef!);
   }
 
+  // ── §0/§F/§H — reverse ───────────────────────────────────────────────────────────────────────
+
+  /**
+   * Recover money already paid, against the payment that moved it.
+   *
+   * A distinct COMMAND rather than a signed `record`, because §H makes every append-only money row
+   * strictly positive with the row TYPE carrying direction. A positive ₹50 "reversing payment"
+   * reads ₹150 paid on a ₹100 bill; a negative one is refused by PostgreSQL. Neither is a reversal.
+   *
+   * **It does not need the certificate to move, and that is the whole point.** §0's correction
+   * ordering is a SEQUENCE and cash goes first: `PAID(bill)` must be 0 before a certificate carrying
+   * payments may be superseded, because supersession takes `APPROVED` to 0 and a residual paid
+   * amount would be cash standing against an amount nobody has certified. The obvious alternative —
+   * "refuse a supersession that would leave `PAID > APPROVED`" — makes the intended correction
+   * impossible: reverse ₹50 of ₹100, supersede to ₹50, and `APPROVED` is 0 while `PAID` is ₹50, so
+   * the guard refuses the very correction it exists to permit. Full reversal first, then the
+   * document. So this command asks nothing about the certificate's state, deliberately.
+   *
+   * The bound is per PAYMENT (`Σ reversals ≤ that payment's amount`), and §0's bill-scoped statement
+   * follows by summation. Per-payment is the stronger question for the reason 6A round 3 found: a
+   * bill-level total can be conserved while the attribution is a lie.
+   */
+  async reverse(
+    projectId: string, input: ReversePaymentInput, user: AuthUser, idempotencyKey?: string,
+  ): Promise<PaymentDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertReverse(user);
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const amount = this.parseAmount(input.amount);
+
+    const outcome = await executeCommand(this.prisma, {
+      scope, actor, commandType: 'commercial.payment.reverse', idempotencyKey, requestHash: hashRequest(input),
+      synthesizeKeyWhenAbsent: true,
+      run: async (tx, ctx) => {
+        await lockProjectReadiness(tx, projectId);
+
+        const payment = await tx.payment.findFirst({
+          where: { projectId, id: input.paymentId },
+          select: { id: true, billId: true, amount: true },
+        });
+        if (!payment) throw new NotFoundException('Payment not found in this project');
+
+        // §0b — the BILL first, before the payment's own fold is read. `reDerive` below requires it,
+        // and so does every other mover; taking it here keeps the order total (bill → payment) and
+        // is what lets the derivation seal re-acquire it `NOWAIT` at commit without waiting.
+        const bill = await this.lockBill(tx, projectId, payment.billId);
+
+        // the bound, re-derived under the lock. A reversal returns money that actually left, so it
+        // is capped by what its OWN payment carried — cumulatively, or two part-reversals would
+        // each pass and together exceed it.
+        const already = await this.deductions.reversedFor(tx, projectId, payment.id);
+        const reversible = new Prisma.Decimal(payment.amount).sub(already);
+        if (amount.greaterThan(reversible)) {
+          throw new ConflictException(
+            `Reversing ${amount.toFixed(2)} would return more than payment ${payment.id} moved — it paid ${new Prisma.Decimal(payment.amount).toFixed(2)}, ${already.toFixed(2)} has already come back, so ${reversible.toFixed(2)} remains reversible. Money can only be recovered from the payment that sent it`,
+          );
+        }
+
+        const reversal = await tx.paymentReversal.create({
+          data: {
+            projectId, paymentId: payment.id, billId: payment.billId,
+            amount, reason: input.reason,
+            reversedById: actor.actorId, sourceCommandId: ctx.commandId!,
+          },
+        });
+
+        // §B — deliberately NOT a headroom mover, which is why there is no `evaluateHeadsForBill`
+        // call here beside `approve`'s. §J's `certified-payable` is `NET_PAYABLE − APPROVED`, and a
+        // reversal moves neither: it shifts money from the `paid` bucket back into `approved`, and
+        // the two sum to the same exposure. `payment.record` is silent here for the same reason.
+        // Calling the evaluator anyway would append a "cleared" or "raised" observation labelled
+        // against a write that moved no headroom, which is the label drift §B's round 4 removed.
+        //
+        // §F — a reversal LOWERS `PAID`, so the derivation runs BACKWARDS here: `paid` becomes
+        // `approved-for-payment` on a full reversal and `part-paid` on a partial one. The same
+        // function every other mover calls, which is what makes live == stored by construction
+        // rather than by six services agreeing.
+        await this.status.reDerive(tx, projectId, payment.billId, bill.status as VendorBillStatus);
+
+        await recordAudit(tx, {
+          projectId, actor, action: 'commercial.payment.reverse',
+          entity: 'PaymentReversal', entityId: reversal.id,
+        });
+
+        return { resultRef: reversal.id, events: [] };
+      },
+    });
+
+    // the PAYMENT, reloaded — the reversal's meaning is the position it leaves its payment in, and
+    // returning the row alone would make the caller ask a second question to learn what it did
+    const created = await this.prisma.paymentReversal.findFirstOrThrow({
+      where: { projectId, id: outcome.resultRef! }, select: { paymentId: true },
+    });
+    return this.paymentById(projectId, created.paymentId);
+  }
+
   // ── the read ─────────────────────────────────────────────────────────────────────────────────
 
   /** One claim's approvals and payments, with the folds §G bounds 4–5 are measured against. */
@@ -360,7 +479,7 @@ export class CommercialPaymentService {
       const approvals = await tx.paymentApproval.findMany({
         where: { projectId, billId },
         orderBy: { approvedAt: 'asc' },
-        include: { payments: { orderBy: { paidAt: 'asc' } }, sodExceptions: true },
+        include: { payments: { orderBy: { paidAt: 'asc' }, include: PAYMENT_REVERSALS }, sodExceptions: true },
       });
 
       const rows: PaymentApprovalDto[] = approvals.map((a) => this.toApprovalDto(a));
@@ -370,7 +489,9 @@ export class CommercialPaymentService {
       const approved = approvals
         .filter((a) => position && a.certificateId === position.certificateId)
         .reduce((t, a) => t.add(a.amount), ZERO);
-      const paid = approvals.reduce((t, a) => t.add(a.payments.reduce((s, p) => s.add(p.amount), ZERO)), ZERO);
+      // §0's `PAID(bill)` — Σ payments MINUS Σ payment reversals. Folded from the SAME rows the
+      // approvals carry so the ledger cannot report a total its own line items contradict.
+      const paid = approvals.reduce((t, a) => t.add(a.payments.reduce((s, p) => s.add(netOf(p)), ZERO)), ZERO);
 
       return {
         billId,
@@ -388,13 +509,24 @@ export class CommercialPaymentService {
 
 
 
-  /** What ONE authorisation has already paid — the fold the per-approval bound measures, and the
-   *  same number `PaymentApprovalDto.paid` reports, so the refusal and the read agree. */
+  /**
+   * What ONE authorisation has already paid — the fold the per-approval bound measures, and the
+   * same number `PaymentApprovalDto.paid` reports, so the refusal and the read agree.
+   *
+   * Task 6B-ii: NET of reversals, for the same reason the bill-scoped fold is. Money that came back
+   * was not spent against this approval, so leaving it in would keep an authority's headroom
+   * permanently consumed by cash the practice recovered — the reversal would lower `PAID(bill)` and
+   * unlock the claim while the approval it was drawn on stayed full.
+   */
   private async paidForApproval(
     tx: Prisma.TransactionClient, projectId: string, approvalId: string,
   ): Promise<Prisma.Decimal> {
     const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
-      SELECT COALESCE(SUM(p."amount"), 0) AS total
+      SELECT COALESCE(SUM(p."amount"), 0)
+           - COALESCE((SELECT SUM(r."amount")
+                         FROM "PaymentReversal" r
+                         JOIN "Payment" p2 ON p2."projectId" = r."projectId" AND p2."id" = r."paymentId"
+                        WHERE r."projectId" = ${projectId} AND p2."approvalId" = ${approvalId}), 0) AS total
         FROM "Payment" p
        WHERE p."projectId" = ${projectId} AND p."approvalId" = ${approvalId}`;
     return new Prisma.Decimal(rows[0]?.total ?? 0);
@@ -506,13 +638,30 @@ export class CommercialPaymentService {
       reference: p.reference,
       paidAt: p.paidAt.toISOString(),
       paidById: p.paidById,
+      // Task 6B-ii — the fold and the rows it is folded from, together. A reversal that lowers
+      // `PAID` but never appears on the ledger is money movement nobody can review, and reporting
+      // only the total would leave a reviewer unable to see WHY the cash came back.
+      reversed: p.reversals.reduce((t, r) => t.add(r.amount), ZERO).toFixed(2),
+      reversals: p.reversals.map((r) => this.toReversalDto(r)),
+    };
+  }
+
+  private toReversalDto(r: PaymentReversalRow): PaymentReversalDto {
+    return {
+      id: r.id,
+      paymentId: r.paymentId,
+      billId: r.billId,
+      amount: r.amount.toFixed(2),
+      reason: r.reason,
+      reversedAt: r.reversedAt.toISOString(),
+      reversedById: r.reversedById,
     };
   }
 
   private async approvalById(projectId: string, id: string): Promise<PaymentApprovalDto> {
     const a = await this.prisma.paymentApproval.findFirstOrThrow({
       where: { projectId, id },
-      include: { payments: { orderBy: { paidAt: 'asc' } }, sodExceptions: true },
+      include: { payments: { orderBy: { paidAt: 'asc' }, include: PAYMENT_REVERSALS }, sodExceptions: true },
     });
     return this.toApprovalDto(a);
   }
@@ -528,7 +677,9 @@ export class CommercialPaymentService {
       amount: a.amount.toFixed(2),
       approvedAt: a.approvedAt.toISOString(),
       approvedById: a.approvedById,
-      paid: a.payments.reduce((t, p) => t.add(p.amount), ZERO).toFixed(2),
+      // NET of reversals, so this agrees with `paidForApproval` — the refusal and the read are one
+      // number. Money that came back was not spent against this authority.
+      paid: a.payments.reduce((t, p) => t.add(netOf(p)), ZERO).toFixed(2),
       payments: a.payments.map((p) => this.toPaymentDto(p)),
       sodException: sod ? this.toSodExceptionDto(sod) : null,
     };
@@ -542,7 +693,9 @@ export class CommercialPaymentService {
   }
 
   private async paymentById(projectId: string, id: string): Promise<PaymentDto> {
-    const p = await this.prisma.payment.findFirstOrThrow({ where: { projectId, id } });
+    const p = await this.prisma.payment.findFirstOrThrow({
+      where: { projectId, id }, include: PAYMENT_REVERSALS,
+    });
     return this.toPaymentDto(p);
   }
 

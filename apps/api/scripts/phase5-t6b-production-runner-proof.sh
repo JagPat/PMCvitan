@@ -44,14 +44,38 @@ MIGRATION_DIR="$API/prisma/migrations/20270610000000_phase5_t6b_status_derivatio
 # a subdirectory of `migrations/` — Prisma reads every subdirectory there, so it applied the very
 # migration the step exists to hold back, and step 1's own guard caught it.
 HELD_DIR="$API/prisma/.t6b-held-migration"
+# …and every migration that comes AFTER it must be held back too. 6B-ii's `20270620000000` creates
+# `PaymentReversal` and installs its derivation seal by calling `phase5_t6b_fold_status_sealed`,
+# which is 6B-i's function — so leaving it in place would make step 1 fail on a missing function
+# rather than reach Task 6A, and every claim below would be vacuous. This is a LIST because the next
+# unit will add to it; a script that held back one migration by name is the same hand-kept set this
+# module keeps deriving away.
+LATER_DIRS="20270620000000_phase5_t6b_ii_payment_reversal"
+HELD_LATER="$API/prisma/.t6b-held-later"
 FAIL=0
 
 ok()   { printf 'ok      %s\n' "$1"; }
 bad()  { printf 'FAILED  %s\n' "$1"; FAIL=1; }
 
+hold_later() {
+  mkdir -p "$HELD_LATER"
+  for d in $LATER_DIRS; do
+    [ -d "$API/prisma/migrations/$d" ] && mv "$API/prisma/migrations/$d" "$HELD_LATER/$d"
+  done
+  return 0
+}
+restore_later() {
+  for d in $LATER_DIRS; do
+    [ -d "$HELD_LATER/$d" ] && mv "$HELD_LATER/$d" "$API/prisma/migrations/$d"
+  done
+  rmdir "$HELD_LATER" 2>/dev/null
+  return 0
+}
+
 cleanup() {
-  # the migration directory is moved aside in step 1 — never leave it there
+  # the migration directories are moved aside in step 1 — never leave them there
   [ -d "$HELD_DIR" ] && mv "$HELD_DIR" "$MIGRATION_DIR"
+  restore_later
   psql -v ON_ERROR_STOP=1 -X -q "$ADMIN_URL" -c "DROP DATABASE IF EXISTS \"$DB\" WITH (FORCE)" >/dev/null 2>&1
 }
 trap cleanup EXIT
@@ -68,12 +92,17 @@ psql -v ON_ERROR_STOP=1 -X -q "$ADMIN_URL" -c "CREATE DATABASE \"$DB\"" >/dev/nu
 # deploy starts from, and it is what makes the race below reachable at all.
 mv "$MIGRATION_DIR" "$HELD_DIR" || { bad "could not hold the migration back — every claim below would be vacuous"; exit 1; }
 [ -d "$HELD_DIR" ] || { bad "the migration was not held back"; exit 1; }
+hold_later
+for d in $LATER_DIRS; do
+  [ -d "$API/prisma/migrations/$d" ] && { bad "a later migration ($d) was not held back — step 1 would fail on 6B-i's own function and every claim below would be vacuous"; exit 1; }
+done
 if (cd "$API" && DATABASE_URL="$DB_URL" npx prisma migrate deploy >/tmp/t6b-6a.log 2>&1); then
   ok "the database is at Task 6A (the migration under test held back)"
 else
   bad "could not bring the database to Task 6A"; tail -20 /tmp/t6b-6a.log | sed 's/^/          /'; exit 1
 fi
 mv "$HELD_DIR" "$MIGRATION_DIR"
+restore_later
 
 pre=$($PSQL -tAc "SELECT COUNT(*) FROM pg_proc WHERE proname = 'phase5_t6b_derive_bill_status'")
 if [ "$pre" = "0" ]; then

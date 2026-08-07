@@ -248,31 +248,59 @@ export class CommercialDeductionQuery {
   }
 
   /**
-   * `PAID(bill)` AT THIS TREE — Σ payments. §0 defines the fold as Σ payments MINUS Σ payment
-   * REVERSALS, and **the reversal term arrives in 6B-ii, with the table it reads.**
+   * `PAID(bill)` — Σ payments MINUS Σ payment reversals (§0), which is the fold in full as of
+   * Task 6B unit ii. 6B-i left this as `Σ Payment` and said so plainly rather than claiming a
+   * subtraction it could not carry: the reversal term names a table 6B-ii owns, and stating an
+   * intent the SQL does not carry is worse than stating the gap.
    *
-   * An earlier revision of this comment claimed the subtraction was already written here "at zero
-   * rows". It was not, and could not be: 6B-ii owns `PaymentReversal`, so the term would have named
-   * schema that does not exist. Stating an intent the SQL does not carry is worse than stating the
-   * gap — a reader checking whether `PAID` can fall would have been told yes by prose and no by the
-   * query. So this says plainly what is true here, and 6B-ii widens the fold together with its own
-   * §F probes for a falling `PAID`.
+   * **This is the ONE site the widening needed on the TypeScript side.** Every mover reads `PAID`
+   * through here, so `paid` becomes a fold that can FALL for all of them at once — which is what
+   * makes §F's derivation non-monotonic in practice rather than only in principle: a full reversal
+   * takes a `paid` bill back to `approved-for-payment`, and a partial one to `part-paid`.
+   *
+   * A reversal is a distinct row TYPE rather than a signed amount because every append-only money
+   * row in this phase is strictly positive with the type carrying direction (§H). A positive ₹50
+   * "reversing payment" would read ₹150 paid; a negative one is refused by PostgreSQL. The
+   * subtraction belongs in the fold, not in the row.
    *
    * **Bill-scoped, NOT live-certificate scoped, and the asymmetry with `approvedFor` is the point.**
    * An approval is an AUTHORISATION of a particular certified amount, so it dies with the
    * certificate that carried it. A payment is CASH THAT LEFT THE PRACTICE. §0 is explicit that
    * supersession never appends a payment reversal, because a fold that dropped when a certificate
    * was corrected would hide a real outflow behind a lower payable. Money already gone is recovered
-   * by a separate attributable act, never as a side effect of correcting a document.
+   * by a separate attributable act — which is exactly what `commercial.payment.reverse` is, and why
+   * §0's correction ordering puts it FIRST: reverse the cash in full, then supersede, then re-approve.
    */
   async paidFor(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
   ): Promise<Prisma.Decimal> {
     const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>`
-      SELECT COALESCE(SUM(p."amount"), 0) AS total
+      SELECT COALESCE(SUM(p."amount"), 0)
+           - COALESCE((SELECT SUM(r."amount") FROM "PaymentReversal" r
+                        WHERE r."projectId" = ${projectId} AND r."billId" = ${billId}), 0) AS total
         FROM "Payment" p
        WHERE p."projectId" = ${projectId} AND p."billId" = ${billId}`;
     return new Prisma.Decimal(rows[0]?.total ?? 0);
+  }
+
+  /**
+   * `REVERSED(payment)` — Σ reversals against ONE payment, which is what a further reversal is
+   * bounded by (§H's release/deduction shape, one level down).
+   *
+   * Per-payment rather than per-bill, and the bill-scoped statement §0 makes
+   * (`Σ reversals ≤ Σ payments`) is its COROLLARY: if every payment's reversals are within that
+   * payment, the bill bound follows by summation. Two enforcements of one rule is the drift this
+   * module keeps deleting — and per-payment is the stronger question anyway, for the reason 6A
+   * round 3 found the hard way: a bill-level total is conserved while the ATTRIBUTION is a lie.
+   */
+  async reversedFor(
+    tx: Prisma.TransactionClient, projectId: string, paymentId: string,
+  ): Promise<Prisma.Decimal> {
+    const rows = await tx.paymentReversal.findMany({
+      where: { projectId, paymentId },
+      select: { amount: true },
+    });
+    return rows.reduce((a, r) => a.add(r.amount), ZERO);
   }
 
   /**
