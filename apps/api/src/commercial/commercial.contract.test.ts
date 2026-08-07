@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
+import { AUTHORITY_GUARDS } from './commercial.authority-guards';
+import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
 
 const HERE = join(__dirname);
 const SRC = join(__dirname, '..');
@@ -645,84 +647,39 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    *
    * So every `ConflictException` and `ForbiddenException` this service raises must appear here with
    * an answer to one question: what refuses this to a writer that never called the service? A row
-   * either NAMES the PostgreSQL object that does, and the test proves that object exists in the
-   * migration, or it says `seal: null` with a reason — which is a legitimate answer for a guard
-   * that is not about persisted state, and an illegitimate one for a guard that is.
+   * either NAMES the PostgreSQL object that does, or it says `seal: null` with a reason — which is
+   * a legitimate answer for a guard that is not about persisted state, and an illegitimate one for
+   * a guard that is.
    *
    * Adding a guard without a row fails here. That is the whole mechanism.
+   *
+   * The rows themselves live in `commercial.authority-guards.ts`, because TWO closures on
+   * different substrates read them: this one proves every refusal the SERVICE raises is classified
+   * (a source fact), and `test/integration/commercial-catalog-closure.test.ts` proves every named
+   * seal is really installed in the LIVE database (a database fact — see the PR #287 convergence
+   * audit for why migration text cannot answer that).
    */
-  const AUTHORITY_GUARDS: Array<{ match: string; seal: string | null; why: string }> = [
-    {
-      match: 'Approving a payment is a pmc surface',
-      seal: null,
-      why: 'a ROLE policy, not a property of a row: `ROLE_POLICY` is the single statement and `RolesFor` plus the route-policy tripwire are its enforcement. What a bypass writer defeats by skipping it is §I, and §I is sealed at `PaymentApproval_approver_not_certifier`',
-    },
-    {
-      match: 'Recording a payment is a pmc surface',
-      seal: null,
-      why: 'same policy surface as approving; the money invariant a bypass writer would defeat is bound 5, sealed at `phase5_t6a_paid_bound_check`',
-    },
-    {
-      match: 'The commercial register is a pmc/engineer surface',
-      seal: null,
-      why: 'a READ guard — it authorises no write, so there is no persisted state for a seal to protect',
-    },
-    {
-      match: 'has no live certification',
-      seal: 'PaymentApproval_authority_live',
-      why: 'an approval draws on a LIVE certificate; the three-column FK proves the certificate is this bill’s and says nothing about it standing',
-    },
-    {
-      match: 'no longer holds pmc standing',
-      seal: 'phase5_t6a_approval_override_valid',
-      why: 'the grant-backed override chain — a grant whose approver has lost standing cannot be spent, and the seal re-proves the grant’s own receipt',
-    },
-    {
-      match: 'granted against an earlier claim version',
-      seal: 'phase5_t6a_approval_override_valid',
-      why: 'the seal pins the grant to the certificate’s own `versionId`, so a stale grant cannot excuse an approval on an amended claim',
-    },
-    {
-      match: 'may not also approve its payment',
-      seal: 'PaymentApproval_approver_not_certifier',
-      why: '§I’s payment half, sealed at PG with the override path honoured rather than banned',
-    },
-    {
-      match: 'would take the approved total past',
-      seal: 'phase5_t6a_approved_bound_check',
-      why: '§G bound 4, re-derived at COMMIT under the bill lock over whatever the transaction leaves behind',
-    },
-    {
-      match: 'authorisation was consumed concurrently',
-      seal: 'SodGrant_consumed_together',
-      why: 'the grant is single-use; the CAS loses the race and the CHECK plus 5B’s one-way consume trigger make a second spend unrepresentable',
-    },
-    {
-      match: 'no longer hold the standing on this project',
-      seal: null,
-      why: 'standing is ORGS-owned and orgs-enforced; the money row’s own §I seal is `PaymentApproval_approver_not_certifier`, and a PG copy of the role predicate here would be a second statement of a rule this module does not own',
-    },
-    {
-      match: 'above your approval ceiling',
-      seal: null,
-      why: '§I ceilings are per-MEMBERSHIP authority, not a property of the money row: the ceiling can be raised or lowered after the fact, so a PG check on the approval would refuse a row that was legitimate when written. `Membership_approvalLimit_nonnegative` is the only invariant the column itself has',
-    },
-    {
-      match: 'has since been superseded',
-      seal: 'Payment_authority_live',
-      why: 'money leaves against the authority that covered it — the row-level question the bill-scoped bound cannot ask',
-    },
-    {
-      match: 'would take the paid total past',
-      seal: 'phase5_t6a_paid_bound_check',
-      why: '§G bound 5 at the BILL, re-derived at COMMIT and also fired when a certificate is SUPERSEDED, which moves the right-hand side with no `Payment` insert to notice',
-    },
-    {
-      match: 'above the',
-      seal: 'phase5_t6a_approval_paid_check',
-      why: '§G bound 5 at the APPROVAL — the bill fold is conserved while one authority is overdrawn, so the row-level question is asked where the row is (this closure caught the guard the moment it was written, which is the whole point of it)',
-    },
-  ];
+
+  it('no AUTHORITY_GUARDS matcher is AMBIGUOUS — each names exactly one refusal', () => {
+    // A matcher made of common words classifies the NEXT guard that happens to contain them, so a
+    // new refusal ships already "classified" against someone else's seal and the closure never asks
+    // what enforces it. Fixing the one broad matcher is not the fix; forbidding the class is.
+    const src = readFileSync(join(HERE, 'commercial-payment.service.ts'), 'utf8');
+    const guards = [...src.matchAll(/throw new (?:Conflict|Forbidden)Exception\(([\s\S]{0,400}?)\);\n/gu)]
+      .map((m) => m[1]!);
+
+    for (const row of AUTHORITY_GUARDS) {
+      const hits = guards.filter((g) => g.includes(row.match));
+      expect(
+        hits.length,
+        `AUTHORITY_GUARDS matcher "${row.match}" matches ${hits.length} refusals. It must name exactly one: a matcher this broad silently adopts the next guard that contains the same words, seal and all`,
+      ).toBe(1);
+    }
+
+    // …and no two rows may claim the same refusal
+    const claimed = AUTHORITY_GUARDS.map((r) => guards.findIndex((g) => g.includes(r.match)));
+    expect(new Set(claimed).size, 'two AUTHORITY_GUARDS rows classify the same refusal').toBe(claimed.length);
+  });
 
   it('every money-path refusal in the payment service is classified against a seal', () => {
     const src = readFileSync(join(HERE, 'commercial-payment.service.ts'), 'utf8');
@@ -748,21 +705,65 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
   });
 
-  it('every seal AUTHORITY_GUARDS names exists in the migrations', () => {
-    const dir = join(SRC, '..', 'prisma', 'migrations');
-    const sql = readdirSync(dir)
-      .filter((d) => d.startsWith('2027'))
-      .map((d) => {
-        try { return readFileSync(join(dir, d, 'migration.sql'), 'utf8'); } catch { return ''; }
-      })
-      .join('\n');
-    expect(sql.length, 'no Phase-5 migrations read — the pin is not actually reading the schema').toBeGreaterThan(1000);
-    for (const row of AUTHORITY_GUARDS) {
-      if (row.seal === null) continue;
-      expect(
-        sql.includes(row.seal),
-        `AUTHORITY_GUARDS names ${row.seal} as the seal for "${row.match}", and no migration defines it — a named seal that does not exist is worse than an admitted gap`,
-      ).toBe(true);
-    }
+  /**
+  /**
+   * CLOSURE 10 — A SET ENUMERATED IN MORE THAN ONE PLACE MUST AGREE ACROSS ALL OF THEM
+   * (Task 6A convergence audit, root A — the open item that audit carries into 6B).
+   *
+   * Root A is "the fix lands on the instance a finding names, the sibling survives". It is the
+   * oldest live root in this module: named in the PR #284 audit, still producing findings in
+   * PR #286, where it accounted for THREE of round 3's four.
+   *
+   * Both of round 3's mechanizable instances have ONE physical shape — a SET whose members are
+   * written down in more than one place, and a change that added a member to one place only:
+   *
+   *   - `payment_approval` was admitted by `BudgetException_raisedBy_check` and left OUT of the
+   *     shared DTO union. A label the server can return and the client is told is impossible is a
+   *     client that mishandles the first real one it sees.
+   *   - `consumedByApprovalId` joined `SodGrant`'s consumption-target family under an append-only
+   *     path whose validation clause is guarded on `consumedByCertificateId IS NOT NULL`, so the
+   *     new target skipped validation ENTIRELY — a false authority in a register that has no
+   *     correcting row.
+   *
+   * THE CLOSURE IS SPLIT BY SUBSTRATE, and that split is the PR #287 convergence audit's finding.
+   * Its first two heads each drew three findings, all one defect: it asked what PostgreSQL
+   * currently enforces and answered by parsing migration text. Text cannot answer that — 41 of the
+   * 80 migrations wrap DDL in conditional `DO $$ BEGIN` blocks whose execution depends on runtime
+   * catalog predicates, so on more than half of them a regex replay is guessing. So:
+   *
+   *   - the SOURCE half stays here, at the desk, with no database: the DTO union against the
+   *     `HeadroomMover` writer union.
+   *   - the DATABASE half moved to `test/integration/commercial-catalog-closure.test.ts`, which
+   *     reads `pg_constraint`, `pg_trigger` and `pg_proc` after migrations — the substrate that
+   *     OWNS the fact, following the cleared `labour/t3c` precedent.
+   *
+   * The lesson root A now carries: a closure must be built on the substrate that owns the fact it
+   * asserts. Naming a root is not a closure; a closure is a thing that fails — and a closure that
+   * can only fail on a proxy for its subject is a paragraph wearing a test's clothes.
+   *
+   * NOT pinned in either half, stated rather than glossed: round 3's third instance —
+   * `approvalAuthorityFor`'s org arm resting on `forUpdate`, which locks rows that EXIST, on the
+   * arm *defined by* the absence of one — is a semantic argument about a lock's reach, not a set
+   * with two spellings.
+   */
+  it('the raisedBy label set is identical in the two SOURCE enumerations', () => {
+    // The THIRD enumeration — the live `BudgetException_raisedBy_check` — is the AUTHORITY, and it
+    // is NOT read here. It is a database fact, and `docs/reviews/pr-287-convergence.md` records why
+    // migration text cannot answer one: the live set is proven against `pg_constraint` by
+    // `test/integration/commercial-catalog-closure.test.ts`, which compares it to BOTH sets below.
+    //
+    // What remains at the desk is the pair that is genuinely source-to-source, and it is the pair
+    // the first draft of this closure MISSED — root A inside the closure for root A: the fix landed
+    // on CHECK-vs-DTO and the sibling survived. A mover added to `HeadroomMover` without widening
+    // the DTO is a label every client is told is impossible; a DTO label no mover writes is a
+    // promise nothing keeps.
+    const declared = dtoRaisedByLabels();
+    const writes = writerRaisedByLabels();
+    expect(declared.length, 'the shared DTO declares nothing — the pin parsed an empty set').toBeGreaterThan(5);
+    expect(
+      writes,
+      'the `raisedBy` labels the shared DTO declares and the movers `HeadroomMover` can write are different sets. Whichever side you added to, add to the other',
+    ).toEqual(declared);
   });
+
 });
