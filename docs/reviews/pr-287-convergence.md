@@ -203,6 +203,20 @@ Mutation-checked: a stale helper hash and an inverted `raisedBy` expectation eac
 **Recommendation: (a)** — selected. The precedent is in-repo, cleared, and was written against these
 exact failure modes. (b) leaves the closure unable to fail on the instance that motivated it.
 
+### Round 5 — the probes were not evidence, and the cases were hand-listed
+
+Three findings, all the same root reaching places the earlier rounds had not:
+
+| Finding | The proxy | The fix |
+|---|---|---|
+| RED probes asserted **catalog state**, not the closure | a probe that checks `count = 0` passes even if the closure's attachment assertion is deleted — so it was never evidence for the invariant it claimed to guard | every predicate is now a **collector** taking a database handle and returning violations; each probe breaks the catalog and runs the SAME collector, requiring it to complain |
+| XOR cases **hand-listed**, without-stamp only on the certificate arm | a CHECK requiring `consumedAt` for a certificate and forgetting the newer approval arm passed every case, while a grant pointing at an approval with a null stamp reads as UNCONSUMED to the CAS path | cases are **derived over the family**: every target gets `Only` and `WithoutStamp`, every PAIR gets a both-set case, so the next target is covered when it is declared |
+| firing shape stopped at `tgtype` | `AFTER UPDATE OF "col"` or `WHEN (false)` preserves relation, enabled, `tgtype`, bound function and canonical body while the trigger never fires on the path that matters | `tgattr` and `tgqual` are read and asserted; a column-scoped or conditional seal is a violation |
+
+The first is the one worth keeping: **a probe must execute the thing it is evidence for.** Proven by
+mutation — deleting the attachment check or the qualifier check from the collectors turns three
+probes RED, which is precisely what the old direct-state probes could not do.
+
 ## Final state of the closure
 
 | Half | Substrate | What it proves |
