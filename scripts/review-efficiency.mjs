@@ -266,7 +266,13 @@ const DEFERRAL_TRAILER = 'review-deferred-to-probes';
 // an unrecognised value as no task at all — the direction that fails closed. The two shapes
 // are this repository's own task vocabulary, the same strings `docs/STATUS.md` uses for
 // `next_task`/`work_item`.
-const TASK_REFERENCE = /^phase-(?<phase>\d+)-(?:task-\d+|planning)$/iu;
+//
+// The SPLIT UNIT suffixes are part of that vocabulary and were missing, which made the comment
+// above false rather than merely incomplete: `docs/STATUS.md` has named lettered units since Task
+// 5A (`5A`/`5B`/`5C`, then `6A`/`6B`), so `phase-5-task-6b` was already rejected before any
+// finer-grained id existed — a deferral trailer naming the unit actually under review could never
+// parse. The roman suffix admits the second level the 6B split introduced (`6b-i`, `6b-ii`).
+const TASK_REFERENCE = /^phase-(?<phase>\d+)-(?:task-\d+[a-z]?(?:-[iv]+)?|planning)$/iu;
 
 // A shape-valid value can still name a review stop that does not exist:
 // `phase-999-task-999` parses and schedules nothing. The PHASE is checkable against
