@@ -38,7 +38,7 @@ import { derivedBillStatus } from '../../src/commercial/commercial-status';
  * 10 in particular was three findings that each refused VALID work, so the acceptances here carry
  * as much weight as the refusals.
  */
-describe('Phase 5 Task 6 — the §F/§H money folds: derivation, reversal, advance recovery (live PG)', () => {
+describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   let requirements: RequirementsService;
@@ -1737,5 +1737,142 @@ describe('Phase 5 Task 6 — the §F/§H money folds: derivation, reversal, adva
     expect(await t.prisma.vendorAdvance.count({ where: { projectId, vendorId } })).toBe(1);
     // the fold saw ONE advance, not two — a replay that appended would silently double the ceiling
     expect((await advancePositionOf(projectId, billId)).advanced).toBe('100.00');
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // Task 7A — the §J cash forecast: SIX exposure buckets that partition, and a budget that does not
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+  /** every §J bucket for one cost head, as the read reports them. */
+  const bucketsOf = async (projectId: string, code = 'CIVIL') => {
+    const p = await positionOf(projectId, code);
+    return {
+      budget: p.budget, committed: p.committed, receivedNotBilled: p.receivedNotBilled,
+      awaitingCertification: p.awaitingCertification, certifiedPayable: p.certifiedPayable,
+      approved: p.approved, paid: p.paid, exposure: p.exposure, headroom: p.headroom,
+    };
+  };
+  /** the SIX exposure buckets, summed exactly — `budget` is NOT one of them (§J). */
+  const sumSix = (b: Awaited<ReturnType<typeof bucketsOf>>): string =>
+    [b.committed, b.receivedNotBilled, b.awaitingCertification, b.certifiedPayable, b.approved, b.paid]
+      .reduce((t, v) => t.add(new Prisma.Decimal(v)), new Prisma.Decimal(0))
+      .toFixed(2);
+
+  it('PROBE 31 (§J): PAYING moves money BETWEEN buckets and never moves the total', async () => {
+    // THE IDENTITY `commercial.contract.test.ts` CITES BY NAME.
+    //
+    // `FOLD_INPUTS` classifies `PAID` as partition-only — exempt from §B's raise-or-clear pin —
+    // because §J defines `approved` as `APPROVED − PAID` and `paid` as `PAID`, so the two sum to
+    // `APPROVED` for every value of `PAID`. That is an identity, not a judgement, and an identity
+    // asserted in a comment is the shape this module keeps finding defects in. So it is exercised.
+    //
+    // If it were false, `payments.record` would be a headroom mover with no evaluator, and a
+    // practice would watch its budget breach or heal every time it settled an invoice it had
+    // already authorised.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
+    const billId = await certifiedClaim(projectId);
+    const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+
+    const beforePay = await bucketsOf(projectId);
+    expect(beforePay.approved, 'authorised and not yet gone').toBe('100.00');
+    expect(beforePay.paid).toBe('0.00');
+
+    await payments.record(projectId, { approvalId: approval.id, amount: '40', method: 'neft' }, pmc(projectId));
+    const afterPay = await bucketsOf(projectId);
+
+    // the buckets MOVED …
+    expect(afterPay.approved, '`APPROVED − PAID`').toBe('60.00');
+    expect(afterPay.paid, 'the only raw fold').toBe('40.00');
+    // …and the total did NOT. This is the identity.
+    expect(afterPay.exposure, 'paying settled WHO HOLDS the exposure, not how much there is').toBe(beforePay.exposure);
+    expect(afterPay.headroom).toBe(beforePay.headroom);
+    // …and never ₹140 across the two, which is the §J failure a raw `APPROVED` bucket would cause
+    expect(new Prisma.Decimal(afterPay.approved).add(new Prisma.Decimal(afterPay.paid)).toFixed(2)).toBe('100.00');
+
+    // a REVERSAL runs the same identity backwards — it is the other writer the partition-only row
+    // names, so leaving it unprobed would exempt half the classification
+    const payment = (await payments.ledger(projectId, billId, pmc(projectId))).approvals[0]!.payments[0]!;
+    await payments.reverse(projectId, { paymentId: payment.id, amount: '40', reason: 'wrong account' }, pmc(projectId));
+    const afterReverse = await bucketsOf(projectId);
+    expect(afterReverse.approved).toBe('100.00');
+    expect(afterReverse.paid, '§0 — `PAID` is Σ payments MINUS Σ reversals').toBe('0.00');
+    expect(afterReverse.exposure, 'recovering cash moves no headroom either').toBe(beforePay.exposure);
+  });
+
+  it('PROBE 32 (§J): the SIX exposure buckets partition, and `budget` is authority — the plan’s 5o/5bm', async () => {
+    // §J's central claim, and the one an earlier spelling of probe 5o got wrong in two ways at
+    // once: it summed SEVEN buckets and stated an inequality where the invariant is an equality.
+    // `budget` is the CEILING the six are measured against, never a seventh addend.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100', reason: 'pilot budget' }, pmc(projectId));
+
+    // a ₹100 order fully accepted and unbilled: the money is in `received-not-billed` and NOWHERE
+    // else — `committed` is OUTSTANDING, so a fully-accepted order has nothing outstanding
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const accepted = await bucketsOf(projectId);
+    expect(accepted.committed, 'a fully accepted order is no longer an outstanding obligation').toBe('0.00');
+    expect(accepted.receivedNotBilled).toBe('100.00');
+    expect(sumSix(accepted), 'the six sum to exactly the exposure').toBe(accepted.exposure);
+    expect(accepted.exposure).toBe('100.00');
+    expect(accepted.headroom, 'ceiling ₹100 less ₹100 of exposure').toBe('0.00');
+
+    // …and the partition holds as the money walks the chain. Each step moves it ONE bucket along
+    // and leaves the total alone — that is what "residual" means.
+    const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
+    const billed = await bucketsOf(projectId);
+    expect(billed.receivedNotBilled, 'the claim moved it out').toBe('0.00');
+    expect(billed.awaitingCertification).toBe('100.00');
+    expect(sumSix(billed)).toBe(billed.exposure);
+    expect(billed.exposure, 'claiming changed WHERE the exposure sits, not how much').toBe('100.00');
+
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    const certified = await bucketsOf(projectId);
+    expect(certified.awaitingCertification).toBe('0.00');
+    expect(certified.certifiedPayable).toBe('100.00');
+    expect(sumSix(certified)).toBe(certified.exposure);
+    expect(certified.exposure).toBe('100.00');
+
+    await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    const approved = await bucketsOf(projectId);
+    expect(approved.certifiedPayable, '§J — `NET_PAYABLE − APPROVED`').toBe('0.00');
+    expect(approved.approved).toBe('100.00');
+    expect(sumSix(approved)).toBe(approved.exposure);
+    expect(approved.exposure).toBe('100.00');
+    expect(approved.headroom, 'and the headroom never moved through any of it').toBe('0.00');
+  });
+
+  it('PROBE 33 (§J): headroom goes NEGATIVE on over-commitment — it is a signal, not an error', async () => {
+    // 5bm's second half. RED against `BUDGET − COMMITTED`, which reports ₹100 of headroom for a
+    // fully-accepted order because `COMMITTED` is already zero — the exact reading that would tell
+    // a practice it has money it has already spent.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100', reason: 'pilot budget' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '150' });
+    await acceptOnLine(projectId, line, '150');
+
+    const over = await bucketsOf(projectId);
+    expect(over.committed, 'fully accepted — nothing outstanding').toBe('0.00');
+    expect(over.receivedNotBilled).toBe('150.00');
+    expect(over.exposure).toBe('150.00');
+    expect(over.headroom, 'the over-commitment signal §B fires on, not an error to clamp away').toBe('-50.00');
+    expect(sumSix(over)).toBe(over.exposure);
+  });
+
+  it('PROBE 34 (§J): the partition survives tax and freight — the plan’s 5t', async () => {
+    // §J is explicit that the two sides of `received-not-billed` must be the same KIND of money.
+    // `BILLED_AMOUNT` includes claimed tax and freight, so pricing the received side at
+    // quantity × rate makes a fully-accepted line with tax and freight report a NEGATIVE bucket
+    // once billed, and leaves real exposure outside headroom before billing even though
+    // `COMMITTED` is already zero. This asserts the fold reads landed money on both sides.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '10000', reason: 'pilot budget' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+
+    const b = await bucketsOf(projectId);
+    expect(b.committed, '5t — a fully accepted line leaves ₹0 outstanding, never the tax and freight remainder').toBe('0.00');
+    expect(sumSix(b), 'and the six still partition').toBe(b.exposure);
   });
 });

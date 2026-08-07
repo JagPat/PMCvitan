@@ -163,6 +163,9 @@ export class CommercialBudgetService {
       receivedNotBilled: p.receivedNotBilled.toFixed(2),
       awaitingCertification: p.awaitingCertification.toFixed(2),
       certifiedPayable: p.certifiedPayable.toFixed(2),
+      approved: p.approved.toFixed(2),
+      paid: p.paid.toFixed(2),
+      exposure: p.exposure.toFixed(2),
       headroom: p.headroom?.toFixed(2) ?? null,
       exception: exceptionOf.get(p.costHeadCode) ?? null,
     }));

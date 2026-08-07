@@ -171,6 +171,14 @@ export interface CostHeadPositionDto {
    *  `awaitingCertification` rather than adding to the total, so a surface still reporting a
    *  certified claim as awaiting certification is saying the act has not happened after it has. */
   certifiedPayable: string;
+  /** §J `approved` — `APPROVED − PAID`, authorised and not yet gone. Task 7A. */
+  approved: string;
+  /** §J `paid` — `PAID`, the only raw fold, because paid cash is where the money stops. Task 7A. */
+  paid: string;
+  /** §J — `Σ` of the SIX exposure buckets. Reported so a reader can check the partition without
+   *  re-adding them, and so `headroom = budget − exposure` is visibly one subtraction rather than
+   *  six the caller has to trust. `budget` is authority and is NEVER an addend here. */
+  exposure: string;
   /** `BUDGET − Σ exposure`, NEGATIVE when over-committed; null when unbudgeted */
   headroom: string | null;
   /** the OPEN over-budget exception on this head, if one stands right now */
