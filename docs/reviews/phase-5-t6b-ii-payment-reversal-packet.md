@@ -142,6 +142,32 @@ fails if a `Payment` fold forgets the reversal term; the body hash (catalog) fai
 if a body moves without anyone saying so. **Neither can be satisfied by changing
 the other**, which is what makes the pair meaningful rather than redundant.
 
+### Root A, in the third place this module has enumerated the seal set
+
+The production-runner proof — the one gate CI does not run — failed after the
+merge, on a hardcoded expected seal set:
+
+```
+FAILED  the seal set after the cutover is
+        'BillCertificate/…/PaymentApproval/PaymentReversal/VendorBill'
+```
+
+Everything it actually proves passed: the cutover waited for the in-flight old
+writer, nothing was half-installed while it waited, the real
+`prisma migrate deploy` applied the migration, and the backfill corrected the
+seeded 6A-shaped bill. What failed was a six-name string asserting the set is
+exactly what 6B-i installed.
+
+That is the SAME root, in the third place this module has written the set down:
+`upgrade-proof.sh` (corrected in this unit), the contract closure (which derives
+it), and this script (which nobody looked at, because CI does not run it). It is
+now derived from the migrations themselves, with a guard so an extraction that
+matches nothing fails loudly instead of passing vacuously.
+
+The lesson is not "update the third list". It is that a script CI never runs is a
+script whose assertions rot silently — the two closures caught their own instances
+of this at the desk and in CI, and this one had to be run by hand to be found.
+
 ### The barrier that passed for the wrong reason
 
 PROBE 19(b)'s first draft held `SELECT … FOR UPDATE` on the payment row and
