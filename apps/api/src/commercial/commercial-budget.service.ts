@@ -2,9 +2,9 @@ import { ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
   ROLE_POLICY,
-  type BudgetExceptionDto,
+  type CashForecastDto,
+  type CashForecastReadDto,
   type CommercialBudgetDto,
-  type CostHeadPositionDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
@@ -14,6 +14,10 @@ import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialBudgetQuery } from './commercial-budget.query';
+import {
+  CASH_FORECAST_PROJECTION, computeCashForecastDto, refreshCashForecast,
+} from './cash-forecast.projection';
+import { readServableGeneration } from '../platform/projections/generation';
 import type { SetBudgetInput } from '../contracts';
 
 /**
@@ -128,57 +132,48 @@ export class CommercialBudgetService {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
 
-    const { positions, names, open } = await this.prisma.$transaction(async (tx) => {
-      const heads = await tx.costHead.findMany({
-        where: { projectId },
-        select: { code: true, name: true },
-        orderBy: { code: 'asc' },
-      });
-      const codes = heads.map((h) => h.code);
-      const [folded, liveVersions, exceptions] = await Promise.all([
-        this.budget.positionsFor(tx, projectId, codes),
-        tx.budgetLine.findMany({
-          where: { projectId, supersededAt: null },
-          select: { costHeadCode: true, version: true },
-        }),
-        tx.budgetException.findMany({
-          where: { projectId, clearedAt: null },
-          orderBy: { raisedAt: 'asc' },
-        }),
-      ]);
-      return {
-        positions: { folded, versionOf: new Map(liveVersions.map((v) => [v.costHeadCode, v.version])) },
-        names: new Map(heads.map((h) => [h.code, h.name])),
-        open: exceptions,
-      };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    const { heads, openExceptions } = await this.prisma.$transaction(
+      (tx) => this.budget.serializedPositionsFor(tx, projectId),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+    return { positions: heads, openExceptions };
+  }
 
-    const exceptionOf = new Map(open.map((e) => [e.costHeadCode, serializeException(e)]));
-    const rows: CostHeadPositionDto[] = [...positions.folded.values()].map((p) => ({
-      costHeadCode: p.costHeadCode,
-      costHeadName: names.get(p.costHeadCode) ?? p.costHeadCode,
-      budget: p.budget?.toFixed(2) ?? null,
-      budgetVersion: positions.versionOf.get(p.costHeadCode) ?? null,
-      committed: p.committed.toFixed(2),
-      receivedNotBilled: p.receivedNotBilled.toFixed(2),
-      awaitingCertification: p.awaitingCertification.toFixed(2),
-      certifiedPayable: p.certifiedPayable.toFixed(2),
-      approved: p.approved.toFixed(2),
-      paid: p.paid.toFixed(2),
-      exposure: p.exposure.toFixed(2),
-      headroom: p.headroom?.toFixed(2) ?? null,
-      exception: exceptionOf.get(p.costHeadCode) ?? null,
-    }));
-    rows.sort((a, b) => {
-      // unbudgeted heads have no headroom to rank and sort last, by code
-      if (a.headroom === null || b.headroom === null) {
-        if (a.headroom === b.headroom) return a.costHeadCode.localeCompare(b.costHeadCode);
-        return a.headroom === null ? 1 : -1;
-      }
-      const cmp = new Prisma.Decimal(a.headroom).comparedTo(new Prisma.Decimal(b.headroom));
-      return cmp !== 0 ? cmp : a.costHeadCode.localeCompare(b.costHeadCode);
+  /**
+   * Phase 5 Task 7A (§J) — the `commercial.cash-forecast` read: the project's money picture, served
+   * from the EIGHTH rebuildable projection with the standard LIVE fallback.
+   *
+   * The fallback is the same discipline every other module read uses: a generation that is blocked,
+   * bootstrapped-only or lagging the committed stream head is NOT served, and the caller gets the
+   * canonical live compute instead — through the SAME `computeCashForecastDto`, so a fallback is
+   * never a different answer, only a fresher one. Warm-up, a legacy project never rebuilt, and a
+   * relay one commit behind all produce correct money rather than an authoritative empty page.
+   *
+   * `refreshedAt` reports how old the served figure is, and it is deliberately NULL on the live
+   * path rather than `now()`: a surface that cannot distinguish "computed this instant" from
+   * "projected at 14:02" would let a stale-looking timestamp be manufactured by the fallback.
+   */
+  async readCashForecast(projectId: string, user: AuthUser): Promise<CashForecastReadDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertRead(user);
+
+    const projected = await this.prisma.$transaction(async (tx) => {
+      const gen = await readServableGeneration(tx, CASH_FORECAST_PROJECTION, projectId);
+      if (!gen) return null;
+      const row = await tx.cashForecastProjection.findUnique({
+        where: { generationId_projectId: { generationId: gen.id, projectId } },
+        select: { dto: true, updatedAt: true },
+      });
+      // a caught-up generation with NO row yet is not authoritative empty money — fall back
+      return row ? { dto: row.dto as unknown as CashForecastDto, refreshedAt: row.updatedAt } : null;
     });
-    return { positions: rows, openExceptions: open.length };
+    if (projected) return { ...projected.dto, refreshedAt: projected.refreshedAt.toISOString() };
+
+    const live = await this.prisma.$transaction(
+      (tx) => computeCashForecastDto(tx, projectId),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+    return { ...live, refreshedAt: null };
   }
 
   /**
@@ -267,6 +262,23 @@ export class CommercialBudgetService {
    * Idempotent by construction: one OPEN exception per head is a partial unique, so a second
    * breach on an already-excepted head does not stack a duplicate Inbox action, and a head that
    * returns to non-negative headroom has its open row cleared.
+   *
+   * ─────────────────────────────────────────────────────────────────────────────────────────────
+   * Phase 5 Task 7A — this is ALSO §J's write-through refresh seam, and that is a derivation
+   * rather than a convenience.
+   *
+   * §B headroom is `BUDGET − Σ(the six §J exposure buckets)`. So "this write moved headroom" and
+   * "this write moved a §J bucket" are THE SAME PREDICATE — not two lists that happen to agree
+   * today. Every writer already discharges the first obligation (the `FOLD_INPUTS` closure in
+   * `commercial.contract.test.ts` fails the build if one does not), so hanging the forecast refresh
+   * here means a writer cannot satisfy §B and forget §J: there is one call site and one rule.
+   *
+   * The alternative was a list of writers that refresh. This phase has now found the same defect —
+   * a hand-written list standing in for a derived set — five separate times, most recently inside
+   * the very file corrected for it the round before. A sixth is not worth the performance saved.
+   *
+   * The refresh is skipped for an EMPTY head set for the same reason the exception evaluation is:
+   * nothing that any bucket is computed from moved, so recomputing would produce the stored row.
    */
   async evaluate(
     tx: Prisma.TransactionClient,
@@ -316,23 +328,8 @@ export class CommercialBudgetService {
         });
       }
     }
+    // §J — the write-through refresh, LAST, so it sees the exception rows this call just wrote
+    // (they are part of the projected position) as well as the money that moved.
+    await refreshCashForecast(tx, projectId);
   }
-}
-
-function serializeException(r: {
-  id: string; costHeadCode: string; headroom: Prisma.Decimal; budget: Prisma.Decimal; exposure: Prisma.Decimal;
-  raisedBy: string; raisedAt: Date; raisedById: string; clearedAt: Date | null;
-}): BudgetExceptionDto {
-  return {
-    id: r.id,
-    costHeadCode: r.costHeadCode,
-    headroom: r.headroom.toFixed(2),
-    budget: r.budget.toFixed(2),
-    exposure: r.exposure.toFixed(2),
-    // the DB CHECK pins the same three-value set, so the cast reflects a constraint, not a hope
-    raisedBy: r.raisedBy as BudgetExceptionDto['raisedBy'],
-    raisedAt: r.raisedAt.toISOString(),
-    raisedById: r.raisedById,
-    clearedAt: r.clearedAt?.toISOString() ?? null,
-  };
 }

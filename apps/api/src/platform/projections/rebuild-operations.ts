@@ -8,6 +8,7 @@ import { INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection
 import { ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
 import { MATERIAL_READINESS_PROJECTION, computeMaterialReadingsDto } from '../../activities/material-readiness.projection';
 import { LABOUR_READINESS_PROJECTION, computeLabourReadinessDto } from '../../labour/labour-readiness.projection';
+import { CASH_FORECAST_PROJECTION, computeCashForecastDto } from '../../commercial/cash-forecast.projection';
 import { computeDrawingsBase } from '../../drawings/drawings-serialize';
 import { computeDailyLogSlice } from '../../daily-log/daily-log-serialize';
 import { computeInspectionsBase } from '../../inspections/inspections-serialize';
@@ -150,6 +151,20 @@ export const REBUILDABLE_PROJECTIONS: Record<string, Rebuildable> = {
     stored: async (tx, generationId, projectId) =>
       (await tx.labourReadinessProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
     canonical: (tx, projectId) => computeLabourReadinessDto(tx, projectId),
+  },
+  // Phase 5 Task 7A — the EIGHTH projection: the per-project CASH FORECAST (§J). Its stored money
+  // picture is compared against the CANONICAL recompute through the SAME `computeCashForecastDto`
+  // both refresh paths use, so live == projection == rebuild and an operator diagnosis reports
+  // drift exactly as it does for the other seven.
+  //
+  // This one is the only projection with a WRITE-THROUGH refresh path (commercial declares no
+  // events), which makes the diagnosis MORE load-bearing rather than less: a writer that moves a
+  // bucket and forgets to refresh cannot be caught by a missing event — nothing was ever emitted to
+  // be missed — so the operator diagnostic is where that omission surfaces as `corrupt`.
+  [CASH_FORECAST_PROJECTION]: {
+    stored: async (tx, generationId, projectId) =>
+      (await tx.cashForecastProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
+    canonical: (tx, projectId) => computeCashForecastDto(tx, projectId),
   },
 };
 

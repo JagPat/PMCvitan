@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { BudgetExceptionDto, CostHeadPositionDto } from '@vitan/shared';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { InventoryQuery } from '../inventory/inventory.query';
@@ -321,6 +322,67 @@ export class CommercialBudgetQuery {
     return out;
   }
 
+  /**
+   * Phase 5 Task 7A — the SERIALIZED position rows, worst headroom first.
+   *
+   * This exists as ONE function because it now has TWO consumers: the live `commercial.budget`
+   * read, and §J's cash-forecast projection. §J's seven bucket definitions are subtle enough that
+   * two of them were corrected in OPPOSITE directions across plan revisions, so a second mapping
+   * site is a second place for a definition to drift to — and the drift would be invisible,
+   * because both surfaces would go on returning plausible money. The projection cannot disagree
+   * with the live read about what a bucket means, because it does not know: it asks this.
+   *
+   * Sorted worst-first: breaches at the top, then thinning headroom, then unbudgeted heads. That
+   * is the order the practice needs to act in, and it makes the top of the list the same set the
+   * Inbox action counts.
+   */
+  async serializedPositionsFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+  ): Promise<{ heads: CostHeadPositionDto[]; openExceptions: number }> {
+    const catalog = await tx.costHead.findMany({
+      where: { projectId }, select: { code: true, name: true }, orderBy: { code: 'asc' },
+    });
+    const codes = catalog.map((h) => h.code);
+    const [folded, liveVersions, exceptions] = await Promise.all([
+      this.positionsFor(tx, projectId, codes),
+      tx.budgetLine.findMany({
+        where: { projectId, supersededAt: null },
+        select: { costHeadCode: true, version: true },
+      }),
+      tx.budgetException.findMany({ where: { projectId, clearedAt: null }, orderBy: { raisedAt: 'asc' } }),
+    ]);
+    const nameOf = new Map(catalog.map((h) => [h.code, h.name]));
+    const versionOf = new Map(liveVersions.map((v) => [v.costHeadCode, v.version]));
+    const exceptionOf = new Map(exceptions.map((e) => [e.costHeadCode, serializeBudgetException(e)]));
+
+    const heads: CostHeadPositionDto[] = [...folded.values()].map((p) => ({
+      costHeadCode: p.costHeadCode,
+      costHeadName: nameOf.get(p.costHeadCode) ?? p.costHeadCode,
+      budget: p.budget?.toFixed(2) ?? null,
+      budgetVersion: versionOf.get(p.costHeadCode) ?? null,
+      committed: p.committed.toFixed(2),
+      receivedNotBilled: p.receivedNotBilled.toFixed(2),
+      awaitingCertification: p.awaitingCertification.toFixed(2),
+      certifiedPayable: p.certifiedPayable.toFixed(2),
+      approved: p.approved.toFixed(2),
+      paid: p.paid.toFixed(2),
+      exposure: p.exposure.toFixed(2),
+      headroom: p.headroom?.toFixed(2) ?? null,
+      exception: exceptionOf.get(p.costHeadCode) ?? null,
+    }));
+    heads.sort((a, b) => {
+      // unbudgeted heads have no headroom to rank and sort last, by code
+      if (a.headroom === null || b.headroom === null) {
+        if (a.headroom === b.headroom) return a.costHeadCode.localeCompare(b.costHeadCode);
+        return a.headroom === null ? 1 : -1;
+      }
+      const cmp = new Prisma.Decimal(a.headroom).comparedTo(new Prisma.Decimal(b.headroom));
+      return cmp !== 0 ? cmp : a.costHeadCode.localeCompare(b.costHeadCode);
+    });
+    return { heads, openExceptions: exceptions.length };
+  }
+
   /** `BUDGET(costHead)` — the LIVE version's amount, or null when the head is unbudgeted. */
   async budgetFor(tx: Prisma.TransactionClient, projectId: string, costHeadCode: string): Promise<Prisma.Decimal | null> {
     const row = await tx.budgetLine.findFirst({
@@ -329,4 +391,27 @@ export class CommercialBudgetQuery {
     });
     return row?.amount ?? null;
   }
+}
+
+/**
+ * The OPEN over-budget exception, serialized. It lives beside `serializedPositionsFor` because
+ * that is now its only caller — Task 7A moved the position mapping here so the live read and §J's
+ * projection cannot hold two different opinions about a bucket, and this travelled with it.
+ */
+function serializeBudgetException(r: {
+  id: string; costHeadCode: string; headroom: Prisma.Decimal; budget: Prisma.Decimal; exposure: Prisma.Decimal;
+  raisedBy: string; raisedAt: Date; raisedById: string; clearedAt: Date | null;
+}): BudgetExceptionDto {
+  return {
+    id: r.id,
+    costHeadCode: r.costHeadCode,
+    headroom: r.headroom.toFixed(2),
+    budget: r.budget.toFixed(2),
+    exposure: r.exposure.toFixed(2),
+    // the DB CHECK pins the same value set, so the cast reflects a constraint, not a hope
+    raisedBy: r.raisedBy as BudgetExceptionDto['raisedBy'],
+    raisedAt: r.raisedAt.toISOString(),
+    raisedById: r.raisedById,
+    clearedAt: r.clearedAt?.toISOString() ?? null,
+  };
 }

@@ -12,9 +12,11 @@ import { makeInspectionsProjectionConsumer } from '../../inspections/inspections
 import { makeActivitiesProjectionConsumer } from '../../activities/activities.projection';
 import { makeMaterialReadinessProjectionConsumer, bindMaterialReadinessDeps } from '../../activities/material-readiness.projection';
 import { makeLabourReadinessProjectionConsumer, bindLabourReadinessDeps } from '../../labour/labour-readiness.projection';
+import { makeCashForecastProjectionConsumer, bindCashForecastDeps } from '../../commercial/cash-forecast.projection';
 import { InventoryService } from '../../inventory/inventory.service';
 import { SubstitutionsService } from '../../activities/substitutions.service';
 import { LabourCoverageService } from '../../labour/labour-coverage.service';
+import { CommercialBudgetQuery } from '../../commercial/commercial-budget.query';
 import { effectCoverageVersion } from '../external-effects';
 
 /**
@@ -39,6 +41,10 @@ export class OutboxBootstrap implements OnModuleInit {
     // Phase 4 Task 4 — the labour-readiness projection recompute routes forecast coverage through
     // the labour coverage authority; boot binds it once for consumer + rebuild diagnostic.
     private readonly labourCoverage: LabourCoverageService,
+    // Phase 5 Task 7A — the cash-forecast projection recompute routes through the commercial budget
+    // query (which is where every §J bucket is already defined); boot binds it once for the
+    // consumer, the write-through refresh and the operator rebuild diagnostic.
+    private readonly commercialBudget: CommercialBudgetQuery,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -82,6 +88,13 @@ export class OutboxBootstrap implements OnModuleInit {
     // a LEAF and never reads Activities persistence).
     bindLabourReadinessDeps({ coverage: this.labourCoverage });
     registerConsumer(makeLabourReadinessProjectionConsumer());
+    // Phase 5 Task 7A — the EIGHTH rebuildable projection: the per-project CASH FORECAST (§J),
+    // recompute-only. Its ordered consumer covers the FOREIGN facts that move a bucket (the PO
+    // lifecycle, acceptance, measurement); commercial's own writes refresh write-through, because
+    // `commercial.producesEvents` is `[]` by declared design. Both paths call the one compute
+    // function, so the binding below serves the consumer, the write-through and the rebuild alike.
+    bindCashForecastDeps({ budget: this.commercialBudget });
+    registerConsumer(makeCashForecastProjectionConsumer());
     // PR B — persist each consumer's contract BEFORE the relay starts, so the (consumer,
     // consumerKind) delivery FK always resolves and the durable obligation is complete. A contract
     // drift or a failed sync ABORTS boot (never downgraded to a warning): an unsynced catalog would

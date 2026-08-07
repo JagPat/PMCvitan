@@ -9,7 +9,16 @@ import { makeInspectionsProjectionConsumer, INSPECTIONS_PROJECTION } from '../..
 import { makeActivitiesProjectionConsumer, ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
 import { makeMaterialReadinessProjectionConsumer, bindMaterialReadinessDeps, MATERIAL_READINESS_PROJECTION } from '../../activities/material-readiness.projection';
 import { makeLabourReadinessProjectionConsumer, bindLabourReadinessDeps, LABOUR_READINESS_PROJECTION } from '../../labour/labour-readiness.projection';
+import { makeCashForecastProjectionConsumer, bindCashForecastDeps, CASH_FORECAST_PROJECTION } from '../../commercial/cash-forecast.projection';
 import { LabourCoverageService } from '../../labour/labour-coverage.service';
+import { CommercialBudgetQuery } from '../../commercial/commercial-budget.query';
+import { CommercialMeasurementQuery } from '../../commercial/commercial-measurement.query';
+import { CommercialBillQuery } from '../../commercial/commercial-bill.query';
+import { CommercialDeductionQuery } from '../../commercial/commercial-deduction.query';
+import { CommercialPaymentQuery } from '../../commercial/commercial-payment.query';
+import { ProcurementQuery } from '../../procurement/procurement.query';
+import { LabourRequirementQuery } from '../../labour/labour.query';
+import { InventoryQuery } from '../../inventory/inventory.query';
 import { InventoryService } from '../../inventory/inventory.service';
 import { SubstitutionsService } from '../../activities/substitutions.service';
 import { ProcurementParticipant } from '../../procurement/procurement.participant';
@@ -22,9 +31,9 @@ import { RequirementsQueryService } from '../../activities/requirements.query';
  *   pnpm --filter api projection:rebuild --operator <identity> --reason <text> \
  *        [--project <id>] [--consumer <name>]
  *
- * With no `--consumer`, the run covers ALL SEVEN production projection consumers
+ * With no `--consumer`, the run covers ALL EIGHT production projection consumers
  * (decisions.inbox, daily-log.inbox, drawings.inbox, inspections.inbox, activities.schedule,
- * activities.material-readiness, labour.readiness) —
+ * activities.material-readiness, labour.readiness, commercial.cash-forecast) —
  * the production upgrade path depends on this default: a legacy `decisions.inbox` generation can
  * hold a non-empty SUBSET of the canonical register while presenting as caught-up, and only a
  * rebuild (or the next decision event) repairs it.
@@ -71,6 +80,7 @@ async function main(): Promise<void> {
       [ACTIVITIES_PROJECTION]: makeActivitiesProjectionConsumer,
       [MATERIAL_READINESS_PROJECTION]: makeMaterialReadinessProjectionConsumer,
       [LABOUR_READINESS_PROJECTION]: makeLabourReadinessProjectionConsumer,
+      [CASH_FORECAST_PROJECTION]: makeCashForecastProjectionConsumer,
     };
     // Phase 3 Task 6 — the material-readiness recompute routes coverage through inventory +
     // substitutions; the CLI runs standalone, so bind the minimal instances (only the read-only
@@ -84,6 +94,22 @@ async function main(): Promise<void> {
     // Phase 4 Task 4 — the labour-readiness recompute routes forecast coverage through the labour
     // coverage authority (pure reads over the tx; no command surface).
     bindLabourReadinessDeps({ coverage: new LabourCoverageService(prisma) });
+    // Phase 5 Task 7A — the cash-forecast recompute routes through the commercial budget query. Its
+    // collaborators are all pure read folds over the tx, so the CLI can construct the real graph
+    // rather than stub it: nothing here is a `{} as never` that a future refactor could dereference.
+    const bills = new CommercialBillQuery();
+    const deductions = new CommercialDeductionQuery(bills);
+    bindCashForecastDeps({
+      budget: new CommercialBudgetQuery(
+        new ProcurementQuery(prisma),
+        new LabourRequirementQuery(prisma),
+        new InventoryQuery(prisma),
+        new CommercialMeasurementQuery(),
+        bills,
+        deductions,
+        new CommercialPaymentQuery(deductions),
+      ),
+    });
     for (const name of Object.keys(REBUILDABLE_PROJECTIONS)) {
       const make = factories[name];
       if (!make) throw new Error(`no consumer factory wired for rebuildable projection ${name}`);

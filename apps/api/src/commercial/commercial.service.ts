@@ -9,6 +9,7 @@ import { recordAudit } from '../platform/audit';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CommercialParticipant, type AttributionTarget } from './commercial.participant';
+import { refreshCashForecast } from './cash-forecast.projection';
 
 /**
  * Phase 5 Task 1 — the COMMERCIAL service (plan §C/§L).
@@ -82,6 +83,15 @@ export class CommercialService {
           projectId, actor, action: 'commercial.costHead.define',
           entity: 'CostHead', entityId: `${projectId}:${input.code}`,
         });
+        // §J (Task 7A) — the SECOND write-through refresh seam, and the only one that is not
+        // `CommercialBudgetQuery.evaluate`. It exists because this command moves no money and still
+        // changes what the forecast says: a new head APPEARS as an all-zero row, and the `update`
+        // arm above RENAMES an existing one. Neither is a headroom mover, so §B's evaluation would
+        // never fire and the projection would sit one head (or one name) behind the live read until
+        // something unrelated moved. CLOSURE C in `commercial.contract.test.ts` derives the compute
+        // path's read surface and pins that `CostHead` is covered HERE — so this call cannot be
+        // deleted, and a third input model cannot be added without being classified.
+        await refreshCashForecast(tx, projectId);
         return { resultRef: `${projectId}:${input.code}`, events: [] };
       },
     });

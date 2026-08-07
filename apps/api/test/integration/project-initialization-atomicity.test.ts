@@ -428,13 +428,13 @@ describe('project initialization atomicity (live PostgreSQL)', () => {
         // starting phase/activity (so BOTH module projections MATERIALIZE from init events, not the
         // live fallback).
         event: 4,
-        // PR B totality: every registered consumer gets one delivery per event. There are NINE
+        // PR B totality: every registered consumer gets one delivery per event. There are TEN
         // consumers (socket `dispatch` + push + decisions.inbox + daily-log.inbox + drawings.inbox +
         // inspections.inbox + activities.schedule + activities.material-readiness + labour.readiness
-        // — the Phase 4 Task 4 labour-forecast projection), so four events yield 4 × 9 = 36
-        // deliveries. Each projection consumer dispatches only its own module's events (its
-        // deliveries for the others are `noop`s that still advance the ordered cursor).
-        delivery: 36,
+        // + commercial.cash-forecast — the Phase 5 Task 7A §J money projection), so four events
+        // yield 4 × 10 = 40 deliveries. Each projection consumer dispatches only its own module's
+        // events (its deliveries for the others are `noop`s that still advance the ordered cursor).
+        delivery: 40,
         nodes: 1,
         phases: 1,
         activities: 1,

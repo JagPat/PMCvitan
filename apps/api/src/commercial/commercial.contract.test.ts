@@ -76,6 +76,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.certificate': "Get('commercial/bills/:billId/certificate')",
     'commercial.deductions': "Get('commercial/bills/:billId/deductions')",
     'commercial.payments': "Get('commercial/bills/:billId/payments')",
+    'commercial.cash-forecast': "Get('commercial/cash-forecast')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -1070,6 +1071,89 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       netsReversals('SELECT COALESCE(SUM(p."amount"), 0) FROM "Payment" p;'),
       'the netting detector reports a reversal term in a body that has none',
     ).toBe(false);
+  });
+
+  // ── CLOSURE C (Task 7A) — §J's refresh seams are DERIVED from what the forecast READS ─────────
+  //
+  // Root A once more, at the substrate Task 7A introduces. The cash-forecast projection is stored,
+  // so it can go stale — and unlike every other projection in this codebase, a commercial write
+  // that forgets to refresh it emits NO EVENT that could have been missed. There is nothing for a
+  // consumer to notice. The only thing standing between "a writer forgot" and "the money page is
+  // wrong for a week" is this closure and the operator diagnostic.
+  //
+  // So the seams are not listed, they are DERIVED: the forecast is exactly what
+  // `serializedPositionsFor` + `positionsFor` read, this test extracts the `tx.<model>` reads from
+  // those two method bodies, and every model must be CLASSIFIED against the write path that
+  // refreshes it. Two classifications exist and adding a third is meant to be uncomfortable:
+  //
+  //   'evaluate'  — the model is a §B headroom input, so every writer of it already calls
+  //                 `CommercialBudgetService.evaluate` (CLOSURE 2 fails the build otherwise) and
+  //                 `evaluate` refreshes the forecast at its end. §B headroom IS
+  //                 `BUDGET − Σ(the six §J buckets)`, so this is one predicate, not two lists.
+  //   'costHead'  — the model changes what the forecast SAYS while moving no money:
+  //                 `commercial.costHead.define` adds an all-zero row or renames one.
+  //
+  // A model added to the compute path without a classification fails here. A classification whose
+  // named site no longer calls `refreshCashForecast` fails here too.
+  it('§J: every model the cash forecast reads has a write path that refreshes the projection', () => {
+    const querySrc = readFileSync(join(HERE, 'commercial-budget.query.ts'), 'utf8');
+    const methodBody = (name: string): string => {
+      const start = querySrc.indexOf(`async ${name}(`);
+      if (start < 0) return '';
+      // brace-count from the FIRST `{` fails here — that brace belongs to the RETURN TYPE, not the
+      // body. The bodies are class methods at two-space indent, so their closer is unambiguous.
+      const end = querySrc.indexOf('\n  }', start);
+      return end < 0 ? '' : querySrc.slice(start, end + 4);
+    };
+    const surface = methodBody('serializedPositionsFor') + methodBody('positionsFor');
+    expect(
+      surface.length,
+      'the compute surface extracted to nothing — this closure would pass vacuously over an empty string',
+    ).toBeGreaterThan(1500);
+
+    const readModels = [...new Set([...surface.matchAll(/\btx\.(\w+)\.(?:findMany|findFirst|findUnique|aggregate|groupBy|count)\b/gu)].map((m) => m[1]!))].sort();
+    expect(readModels, 'no `tx.<model>` read was extracted from the compute surface').not.toEqual([]);
+
+    // The classification. `commitmentAttribution` is `evaluate`-covered because a re-attribution is
+    // itself a headroom mover on BOTH the source and the target head (CLOSURE 3 pins the label).
+    const REFRESHED_BY: Record<string, 'evaluate' | 'costHead'> = {
+      costHead: 'costHead',
+      budgetLine: 'evaluate',
+      budgetException: 'evaluate',
+      commitmentAttribution: 'evaluate',
+    };
+    const unclassified = readModels.filter((m) => !(m in REFRESHED_BY));
+    expect(
+      unclassified,
+      `the cash forecast reads these models and nothing says which write path refreshes the projection when they change. A stored forecast that no writer refreshes is a money page that silently goes stale — and commercial emits no events, so no consumer can catch it either. Classify each as 'evaluate' (a §B headroom input) or name its own seam: ${unclassified.join(', ')}`,
+    ).toEqual([]);
+    // and the reverse: a classification for a model the compute no longer reads is dead weight that
+    // would let a real gap hide behind a green test
+    const stale = Object.keys(REFRESHED_BY).filter((m) => !readModels.includes(m));
+    expect(stale, `these models are classified as refreshed but the cash forecast no longer reads them: ${stale.join(', ')}`).toEqual([]);
+
+    // …and each named seam ACTUALLY refreshes. A classification is a claim about code, so it is
+    // exercised rather than trusted.
+    const budgetSvc = readFileSync(join(HERE, 'commercial-budget.service.ts'), 'utf8');
+    const evaluateBody = budgetSvc.slice(budgetSvc.indexOf('  async evaluate('));
+    expect(
+      evaluateBody.slice(0, evaluateBody.indexOf('\n  }')).includes('refreshCashForecast(tx, projectId)'),
+      "`CommercialBudgetService.evaluate` no longer refreshes the cash forecast, so every model classified 'evaluate' above has no refresh at all",
+    ).toBe(true);
+    const commercialSvc = readFileSync(join(HERE, 'commercial.service.ts'), 'utf8');
+    const defineBody = commercialSvc.slice(commercialSvc.indexOf('  async defineCostHead('));
+    expect(
+      defineBody.slice(0, defineBody.indexOf('\n  }\n')).includes('refreshCashForecast(tx, projectId)'),
+      '`CommercialService.defineCostHead` no longer refreshes the cash forecast, so a new or renamed cost head leaves the projection behind the live read',
+    ).toBe(true);
+
+    // the extraction is MUTATION-TESTED, because a regex that matches nothing would make every
+    // assertion above vacuously true
+    const probe = 'await tx.someNewFact.findMany({ where: { projectId } });';
+    expect(
+      [...probe.matchAll(/\btx\.(\w+)\.(?:findMany|findFirst|findUnique|aggregate|groupBy|count)\b/gu)].map((m) => m[1]),
+      'the model extraction does not recognise an ordinary `tx.<model>.findMany` read',
+    ).toEqual(['someNewFact']);
   });
 
   it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {

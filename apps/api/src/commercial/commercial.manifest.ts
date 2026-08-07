@@ -50,6 +50,10 @@ export const commercialManifest: ModuleManifest = {
     'paymentReversal',
     // Phase 5 Task 6C (§H) — the paid-advance pool an `advance-recovery` deduction draws down
     'vendorAdvance',
+    // Phase 5 Task 7A (§J) — the EIGHTH rebuildable projection's store. Owned AND read-encapsulated
+    // together, the rule the Phase-4 `workerSkill` correction established: a model that is owned but
+    // not read-encapsulated produces no `cross-module-read` finding when a foreign module reads it.
+    'cashForecastProjection',
   ],
   readEncapsulated: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
@@ -67,6 +71,10 @@ export const commercialManifest: ModuleManifest = {
     'payment',
     'paymentReversal',
     'vendorAdvance',
+    // Phase 5 Task 7A (§J) — the EIGHTH rebuildable projection's store. Owned AND read-encapsulated
+    // together, the rule the Phase-4 `workerSkill` correction established: a model that is owned but
+    // not read-encapsulated produces no `cross-module-read` finding when a foreign module reads it.
+    'cashForecastProjection',
   ],
   dependsOn: ['procurement', 'inventory', 'labour', 'activities'],
   // `orgs` is the Codex round-1 P1 fix: §L activation has no request token, so it resolves the

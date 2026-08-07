@@ -2851,6 +2851,21 @@ assert_rejects "commercial T6C: an advance citing a receipt of the WRONG command
   "INSERT INTO \"VendorAdvance\"(\"id\",\"projectId\",\"vendorId\",\"amount\",\"reason\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6C-WRONG','p1','UP45-VEN',1.00,'wrong receipt','neft','USER-1','UP6C-CMD-WRONG')" \
   'records the command that PRODUCED it'
 
+# ── Phase 5 Task 7A — the EIGHTH rebuildable projection store (§J). A purely additive, row-free
+#    capability add: the generation-scoped CashForecastProjection table exists and holds ZERO rows
+#    over the legacy DB. The migration NEVER writes data — the money picture is recomputed from
+#    canonical facts by the consumer, the write-through refresh and the operator rebuild alike, so
+#    an empty table on the first deploy is correct rather than a gap.
+assert "the Phase-5 Task-7A CashForecastProjection table exists and is ROW-FREE over the legacy DB" \
+  "SELECT (SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'CashForecastProjection')::text || '|' || (SELECT COUNT(*) FROM \"CashForecastProjection\")::text;" \
+  "1|0"
+# …and the generation-scoped uniqueness that makes an upsert-per-(generation, project) safe is
+# installed. Without it two consumers racing the same project would insert two rows and the read
+# would serve whichever it found first.
+assert "the Task-7A (generationId, projectId) unique is installed" \
+  "SELECT COUNT(*)::text FROM pg_indexes WHERE indexname = 'CashForecastProjection_generationId_projectId_key';" \
+  "1"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
