@@ -285,8 +285,8 @@ it was mutation-tested RED at both writers.
 
 - `pnpm check` **EXIT 0** — web 543/543, API 751/751, build clean.
 - The Task-6/7A money-fold suite **44/44** on live PostgreSQL.
-- Full integration suite on a pristine migrated database — see the PR body for the
-  head's exact file/test totals.
+- Full integration suite on a pristine migrated database: **84 files / 1,014 tests**,
+  zero failures.
 - `upgrade-proof.sh` **PASSED** — `CashForecastProjection` arrives ROW-FREE over
   the legacy fixture with its `(generationId, projectId)` unique installed, and
   every prior Phase-1..Phase-5 rejection survives.
