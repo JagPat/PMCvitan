@@ -70,6 +70,12 @@ export type HeadroomMover =
   // at all: an approval-cleared exception labelled `claim` sends a PMC hunting a vendor claim that
   // never changed.
   | 'payment_approval'
+  // Phase 5 Task 7A (§J) — the ONE mover that is not a site write at all. Completing §J's partition
+  // changed what `exposure` MEANS for data that already existed: a head carrying an approval gains
+  // back exactly that `APPROVED`, so a breach 6A's code had cleared is live again with no open row.
+  // The operator sweep that repairs the register records this, because `raisedBy` must describe what
+  // moved and "the definition of exposure changed" is not any of the other ten.
+  | 'fold_correction'
   | 'commitment'
   | 'budget_revision'
   | 'reattribution'

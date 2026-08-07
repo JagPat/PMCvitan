@@ -924,6 +924,34 @@ and records a per-(project, consumer) outcome row, so an interrupted run is attr
 re-runnable (idempotent: each run builds a fresh generation from canonical and swaps behind the
 activation barrier — reads keep serving throughout).
 
+## 3b. Re-evaluate the commercial budget register (Phase 5 Task 7A upgrade ONLY)
+
+```
+pnpm --filter api commercial:reevaluate --operator <userId> --reason "<release>: §J partition completed"
+```
+
+**Required exactly once, on the deploy that first carries Task 7A**, and harmless on every deploy
+after it. Task 7A completes §J's bucket partition, and completing it CHANGES THE ANSWER for data
+that already exists: exposure gains `approved` (= `APPROVED − PAID`) and `paid` (= `PAID`), which
+together add back exactly the `APPROVED` that `certified-payable` subtracts.
+
+That is the correct reading — money a practice has authorised is money it still owes — but the
+`BudgetException` register is an append-only observation written by whichever write moved headroom,
+and **no write moved**. A head with budget 50, a 100 certificate and a 60 approval was breached, had
+its exception cleared by the pre-7A code when the approval "healed" it, and now reads
+`headroom = -50` with nothing open. The budget READ recomputes headroom live so the number is right;
+the Inbox counts the register, so it misses the breach until some unrelated write touches that head.
+
+No migration can repair it: the fold spans procurement, inventory, labour and four commercial folds,
+none of which is expressible in SQL. The sweep is idempotent (one open exception per head is a
+partial unique, and a healthy database is a no-op), attributable (the invocation is audited and every
+row carries `raisedBy = 'fold_correction'`), and complete (every cost head of every commercial-enabled
+project, derived from the capability rows). It also refreshes each project's cash forecast, because
+the §B evaluation it runs does.
+
+`--operator` is a **user id**, not an email: the exception rows carry a real `raisedById` foreign key,
+so an unresolvable operator fails before any work rather than half-way through the sweep.
+
 ## 4. Inspect the diagnostics
 
 The command prints a JSON report. Gate on:

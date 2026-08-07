@@ -200,6 +200,66 @@ picture — **the rebuild making the projection worse**, which is the one thing 
 repair must never do. And generations are per (consumer, project), so an unscoped
 query would write this project's money into other projects' rows.
 
+## Codex round 1 — five findings on head `484cb5f`, all fixed forward
+
+Every one is real, and four of the five are the same shape: **a claim about the world that no
+mechanism was checking.**
+
+**F1 (P1) — the labour PO event names.** `FORECAST_EVENTS` spelled the family `labour_po.*`; the
+catalog declares `labour.po.*`. The consequence was worse than a missed refresh: an unrecognised
+type is a NO-OP delivery, and a no-op **still advances the ordered cursor to the stream head**. So
+the generation stayed SERVABLE while silently omitting every labour commitment, and the read served
+it as authoritative rather than falling back live — a money page confidently short by every labour
+order on the project. Root A once more, in a hand-typed list of strings.
+
+The fix is the TYPE: the array is `readonly DomainEventType[]`, so a name the catalog does not
+declare cannot be written there at all. CLOSURE D pins the behaviour a type cannot — that every
+declared type actually resolves to `dispatch`, that the four repaired names are present, and that an
+unrelated event is still a no-op. Mutation-tested RED.
+
+**F2 (P1) — the upgrade path.** Completing §J's partition RAISES exposure on every head carrying an
+approval, because exposure gains back exactly the `APPROVED` that `certified-payable` subtracts. A
+head that was breached, approved, and had its exception CLEARED by 6A's code now reads
+`headroom = -50` with nothing open — the budget read recomputes headroom live so the number is
+right, but the Inbox counts the register and misses the breach until some unrelated write touches
+that head. Which could be never.
+
+No migration can repair it: the fold spans procurement, inventory, labour and four commercial folds,
+none of it expressible in SQL. So the repair is an operator sweep, `commercial:reevaluate`, shaped
+like the projection rebuild beside it in the runbook — idempotent (one open exception per head is a
+partial unique; a healthy database is a no-op), attributable (audited invocation, and every row
+carries the new `fold_correction` label), and complete (every head of every commercial-enabled
+project, derived from the capability rows). It needed a NEW `HeadroomMover`: none of the ten
+existing labels describes *"the definition of exposure changed"*, and reusing one would be exactly
+the label drift §B's round 4 removed. All three enumerations of the label set — the DTO union,
+`HeadroomMover`, and the DB CHECK — widen together, which CLOSURE 10 already pins.
+
+**F3 (P1) — the activation CLI.** `evaluate` now refreshes, so every caller needs
+`bindCashForecastDeps`. `capability.cli.ts` builds its own graph outside the Nest container, so
+activating a project **with live PO lines** — the exact case §L exists for — threw
+`cash-forecast projection deps not bound` before the capability row could commit. The comment beside
+that graph already said why it must match the container's: *"a CLI that builds a DIFFERENT object
+from the one the container builds is how a code path stops being the path that was tested."*
+
+**F4 (P2) — activation's own `CostHead` writes.** CLOSURE C classified `costHead` as "refreshed by
+`commercial.costHead.define`" and checked that one method. But `CommercialActivationService.activate`
+upserts `CostHead` rows itself, and with no live PO lines it never reaches `evaluate` either — so a
+project with a servable forecast row from earlier foreign events kept being served the old empty
+head list.
+
+The fix is not just the call. **CLOSURE C now DERIVES the writer sites**: every commercial file is
+scanned for a write to a classified model, and each writing file must refresh. A classification
+naming a method is a claim about one site; the obligation is about all of them. Mutation-tested RED.
+
+**F5 (P1) — the rebuild-seed race.** The seed and a write-through refresh both target the same
+`building` generation, and compute-then-write let them interleave: the seed computes an old picture,
+a concurrent payment commits the new one, the seed resumes and upserts its older DTO over it.
+Catch-up cannot repair that, because the commercial write emitted no event to replay — so the
+rebuild would ACTIVATE a stale generation, the repair making the projection worse. `refreshCashForecast`
+now takes the target generation rows `FOR UPDATE` **before** computing, in ascending `id` order so
+the seed (one generation) and the write-through (up to two) acquire the shared subset in the same
+sequence and cannot deadlock.
+
 ## The probes
 
 | # | § | What it proves |
@@ -213,6 +273,8 @@ query would write this project's money into other projects' rows.
 | 37 | §J | defining AND renaming a cost head refreshes the forecast — the second seam |
 | 38 | §J/§D | the read falls back to LIVE for an absent generation (honestly dated `null`), serves the projection once one exists, and 404s off-pilot |
 | 39 | §J | a PARTITION-ONLY write refreshes the forecast too — paying and reversing move the stored `paid`/`approved` with nothing drained, because nothing was emitted |
+| 40 | §B/§J | the operator sweep REOPENS a breach the §J completion re-created, labels it `fold_correction`, is idempotent on a second run, and CLEARS again once the budget is corrected |
+| CLOSURE D | §J | every forecast event type is catalog-declared AND resolves to `dispatch`; the labour family is present by name; an unrelated event stays a no-op |
 
 Probes 36 and 37 were verified RED with the two `refreshCashForecast` calls
 removed, so neither is passing on the consumer path by accident. Probe 39 was RED

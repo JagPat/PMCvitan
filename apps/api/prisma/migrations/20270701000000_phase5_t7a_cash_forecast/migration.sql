@@ -35,3 +35,26 @@ BEGIN
       v_rows;
   END IF;
 END $$;
+
+-- ── §B/§J — the `fold_correction` headroom mover ──────────────────────────────────────────────
+--
+-- Task 7A completes §J's partition, and completing it RAISES exposure on any head that carries an
+-- approval: exposure gains `approved` (= `APPROVED − PAID`) and `paid` (= `PAID`), which together
+-- add back exactly the `APPROVED` that `certified-payable` subtracts. That is the correct reading —
+-- money a practice has authorised is money it still owes — but it changes the answer for data that
+-- already exists.
+--
+-- Concretely: a head with budget 50, a 100 certificate and a 60 approval was BREACHED, then had its
+-- exception CLEARED by 6A's code when the approval lowered exposure. Under 7A it reads
+-- `headroom = -50` again with no open exception, so the Inbox misses a live breach until some
+-- unrelated write happens to touch that head.
+--
+-- The register is an append-only observation and no migration can recompute the fold in SQL (it
+-- spans procurement, inventory, labour and four commercial folds), so the repair is an operator
+-- sweep: `pnpm --filter api commercial:reevaluate`. It needs a label that says what actually moved,
+-- because `raisedBy` is the durable explanation a human reads months later — and none of the ten
+-- existing labels describes "the definition of exposure changed". Reusing one would be exactly the
+-- label drift §B's round 4 removed.
+ALTER TABLE "BudgetException" DROP CONSTRAINT IF EXISTS "BudgetException_raisedBy_check";
+ALTER TABLE "BudgetException" ADD CONSTRAINT "BudgetException_raisedBy_check"
+  CHECK ("raisedBy" IN ('commitment', 'budget_revision', 'reattribution', 'acceptance', 'receipt_progress', 'measurement', 'claim', 'deduction', 'deduction_release', 'payment_approval', 'fold_correction'));

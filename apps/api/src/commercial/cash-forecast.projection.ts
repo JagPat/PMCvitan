@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import type { CashForecastDto, CostHeadPositionDto } from '@vitan/shared';
+import type { CashForecastDto, CostHeadPositionDto, DomainEventType } from '@vitan/shared';
 import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
 import type { CommercialBudgetQuery } from './commercial-budget.query';
 
@@ -138,13 +138,30 @@ export async function computeCashForecastDto(
 export async function refreshCashForecast(
   tx: Prisma.TransactionClient, projectId: string, generationId?: string,
 ): Promise<void> {
-  const dto = (await computeCashForecastDto(tx, projectId)) as unknown as Prisma.InputJsonValue;
+  // LOCK BEFORE COMPUTING (Codex F5, P1). The order of these three steps is the correctness
+  // argument, not an implementation detail.
+  //
+  // A rebuild's canonical seed and a write-through refresh both target the SAME `building`
+  // generation, and the seed is long. Compute-then-write let them interleave: the seed computes an
+  // old picture, a concurrent payment commits and writes the new one, the seed resumes and upserts
+  // its older DTO over it. The catch-up phase cannot repair that, because the commercial write
+  // emitted no event for it to replay — so the rebuild would ACTIVATE a generation holding money
+  // that was already stale, which is the one thing a repair must never do.
+  //
+  // Taking the generation rows FOR UPDATE first makes the loser BLOCK, then compute with the
+  // winner's row visible, then write. Ascending `id` order is what makes it deadlock-free: the
+  // seed holds one generation and the write-through may hold two, so any two callers acquire the
+  // shared subset in the same sequence.
   const targets = generationId
     ? [generationId]
     : (await tx.projectionGeneration.findMany({
         where: { consumer: CASH_FORECAST_PROJECTION, projectId, status: { in: ['active', 'building'] } },
         select: { id: true },
       })).map((g) => g.id);
+  if (targets.length === 0) return; // no generation yet — the read falls back live, correctly
+  await tx.$queryRaw`SELECT "id" FROM "ProjectionGeneration" WHERE "id" = ANY(${targets}::text[]) ORDER BY "id" FOR UPDATE`;
+
+  const dto = (await computeCashForecastDto(tx, projectId)) as unknown as Prisma.InputJsonValue;
   for (const id of targets) {
     await tx.cashForecastProjection.upsert({
       where: { generationId_projectId: { generationId: id, projectId } },
@@ -161,13 +178,24 @@ export async function refreshCashForecast(
  * Each of these changes a term the fold reads: a PO's lifecycle moves `COMMITTED`, an acceptance
  * or a measurement moves the received side, and a stock reversal moves it back.
  */
-const FORECAST_EVENTS = new Set([
+export const FORECAST_EVENT_TYPES: readonly DomainEventType[] = [
   'po.issued', 'po.amended', 'po.cancelled', 'po.closed_short',
-  'labour_po.issued', 'labour_po.amended', 'labour_po.cancelled', 'labour_po.closed_short',
+  // Codex F1 (P1). These four were written `labour_po.*` — a plausible name that does not exist.
+  // The canonical family is `labour.po.*`, and the consequence of the typo was worse than a missed
+  // refresh: an unrecognised type is a NO-OP delivery, and a no-op still advances the ordered
+  // cursor to the stream head. So the generation stayed SERVABLE while omitting every labour
+  // commitment, and `readCashForecast` served it as authoritative rather than falling back live.
+  //
+  // The fix is the TYPE, not the four strings: `readonly DomainEventType[]` makes the compiler the
+  // closure, so a name the catalog does not declare cannot be written here at all. Root A once
+  // more — a hand-typed list standing in for the canonical set — and this is the only form of the
+  // fix that survives the next person adding an event.
+  'labour.po.issued', 'labour.po.amended', 'labour.po.cancelled', 'labour.po.closed_short',
   'delivery.committed', 'delivery.revised', 'delivery.fulfilled', 'delivery.defaulted',
   'capacity.committed', 'capacity.revised', 'capacity.defaulted',
   'stock.transacted',
-]);
+];
+const FORECAST_EVENTS = new Set<string>(FORECAST_EVENT_TYPES);
 
 function deliveryFor(meta: EmittedEventMeta): DeliveryPlan {
   return FORECAST_EVENTS.has(meta.eventType) ? { action: 'dispatch' } : { action: 'noop' };

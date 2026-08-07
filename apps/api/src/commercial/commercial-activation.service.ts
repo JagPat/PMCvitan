@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { ROLE_POLICY, type CommercialActivationPlan } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { recordAudit } from '../platform/audit';
+import { refreshCashForecast } from './cash-forecast.projection';
 import { systemActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { LabourRequirementQuery } from '../labour/labour.query';
@@ -179,6 +180,17 @@ export class CommercialActivationService {
         create: { projectId, capability: COMMERCIAL_CAPABILITY, enabledById: actor.actorId },
         update: {},
       });
+      // §J (Task 7A, Codex F4) — activation is the THIRD write-through seam, and it hid behind the
+      // second one. `commercial.costHead.define` was named as the only non-`evaluate` refresh site,
+      // but this method upserts `CostHead` rows directly too — and when the plan carries no live PO
+      // lines it never reaches `participant.attribute`, so `evaluate` never runs either. A project
+      // that already had a servable forecast row from FOREIGN events (a PO issued before commercial
+      // was enabled) would go on being served the old empty head list, because nothing emits and
+      // nothing refreshes.
+      //
+      // CLOSURE C now DERIVES the writer sites of every classified model rather than trusting the
+      // classification's prose, which is what would have caught this at the desk.
+      await refreshCashForecast(tx, projectId);
       await recordAudit(tx, {
         projectId,
         // Codex round 4 (P2) — the audit records the RESOLVED user id, the same durable identity

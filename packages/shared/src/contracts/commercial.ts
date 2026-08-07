@@ -207,7 +207,11 @@ export interface BudgetExceptionDto {
   /** Task 6A — `payment_approval` joins the union because the DB CHECK now admits it. A label a
    *  client is told is impossible, and which the server can still return, is a client that
    *  mishandles the first real one it sees. */
-  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim' | 'deduction' | 'deduction_release' | 'payment_approval';
+  /** Task 7A — `fold_correction` joins the union: completing §J's partition RAISED exposure on
+   *  every head carrying an approval, so the operator re-evaluation sweep that repairs the register
+   *  after that upgrade needs a label describing what actually moved. A label a client is told is
+   *  impossible, and which the server can still return, is a client that mishandles the first one. */
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim' | 'deduction' | 'deduction_release' | 'payment_approval' | 'fold_correction';
   raisedAt: string;
   raisedById: string;
   clearedAt: string | null;

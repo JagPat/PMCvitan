@@ -11,6 +11,7 @@ import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBudgetQuery } from '../commercial/commercial-budget.query';
 import { CommercialMeasurementQuery } from '../commercial/commercial-measurement.query';
 import { CommercialBudgetService } from '../commercial/commercial-budget.service';
+import { bindCashForecastDeps } from '../commercial/cash-forecast.projection';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ProcurementParticipant } from '../procurement/procurement.participant';
@@ -72,11 +73,19 @@ async function main(): Promise<void> {
       };
       // the activation path constructs its own graph (no Nest container in a CLI)
       const capabilitiesService = new CapabilitiesService(prisma);
-      const budgetService = new CommercialBudgetService(
-        prisma,
-        capabilitiesService,
-        new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma), new CommercialMeasurementQuery(), new CommercialBillQuery(), new CommercialDeductionQuery(new CommercialBillQuery()), new CommercialPaymentQuery(new CommercialDeductionQuery(new CommercialBillQuery()))),
-      );
+      const budgetQuery = new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma), new CommercialMeasurementQuery(), new CommercialBillQuery(), new CommercialDeductionQuery(new CommercialBillQuery()), new CommercialPaymentQuery(new CommercialDeductionQuery(new CommercialBillQuery())));
+      // Phase 5 Task 7A (Codex F3, P1) — `evaluate` now refreshes the §J cash forecast, so EVERY
+      // caller of it needs the projection's deps bound. This CLI builds its own graph outside the
+      // Nest container, so boot's binding never happens here: activating a project that carries
+      // live PO lines reaches `CommercialParticipant.attribute` → `budget.evaluate` → the refresh,
+      // and threw `cash-forecast projection deps not bound` before the capability row could commit.
+      //
+      // That made the documented §L activation path unusable for exactly the projects §L exists
+      // for — the ones with commitments predating enablement. The comment beside this graph already
+      // said why it must match the container's: "a CLI that builds a DIFFERENT object from the one
+      // the container builds is how a code path stops being the path that was tested."
+      bindCashForecastDeps({ budget: budgetQuery });
+      const budgetService = new CommercialBudgetService(prisma, capabilitiesService, budgetQuery);
       const activation = new CommercialActivationService(
         prisma,
         // Phase 5 Task 4 — the participant now also carries the vendor-claim withdrawal guards,

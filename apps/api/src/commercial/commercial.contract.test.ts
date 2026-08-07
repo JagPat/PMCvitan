@@ -2,8 +2,9 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
+import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, DOMAIN_EVENT_TYPES, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
+import { FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
 import { DERIVED_BILL_STATUSES, isDerivedBillStatus } from './commercial-status';
@@ -1182,12 +1183,40 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       evaluateBody.slice(0, evaluateBody.indexOf('\n  }')).includes('refreshCashForecast(tx, projectId)'),
       "`CommercialBudgetService.evaluate` no longer refreshes the cash forecast, so every model classified 'evaluate' above has no refresh at all",
     ).toBe(true);
-    const commercialSvc = readFileSync(join(HERE, 'commercial.service.ts'), 'utf8');
-    const defineBody = commercialSvc.slice(commercialSvc.indexOf('  async defineCostHead('));
+
+    // THE WRITER SITES ARE DERIVED, NOT TRUSTED (Codex F4). The first spelling of this closure
+    // classified `costHead` as "refreshed by `commercial.costHead.define`" and checked that ONE
+    // method — so `CommercialActivationService.activate`, which upserts `CostHead` rows itself and
+    // can return without ever reaching `evaluate`, satisfied a green test while leaving the stored
+    // forecast holding an empty head list.
+    //
+    // A classification naming a method is a claim about one site; the obligation is about ALL of
+    // them. So every commercial file is scanned for a WRITE to a classified model, and each writing
+    // file must refresh — through `refreshCashForecast` or an evaluator that does.
+    const commercialFiles = readdirSync(HERE).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+    const REFRESHERS = /refreshCashForecast\(|this\.evaluate\(|evaluateHeadsForBill\(|this\.budget\.evaluate\(/u;
+    const writeSites: string[] = [];
+    for (const file of commercialFiles) {
+      const src = readFileSync(join(HERE, file), 'utf8');
+      const writes = [...src.matchAll(/\btx\.(\w+)\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\b/gu)]
+        .map((m) => m[1]!)
+        .filter((model) => model in REFRESHED_BY);
+      if (writes.length === 0) continue;
+      writeSites.push(file);
+      expect(
+        REFRESHERS.test(src),
+        `${file} writes ${[...new Set(writes)].join('/')} — a model the cash forecast READS — but never refreshes the projection, directly or through an evaluator. Commercial emits no events, so a stale forecast here is invisible to every consumer`,
+      ).toBe(true);
+    }
     expect(
-      defineBody.slice(0, defineBody.indexOf('\n  }\n')).includes('refreshCashForecast(tx, projectId)'),
-      '`CommercialService.defineCostHead` no longer refreshes the cash forecast, so a new or renamed cost head leaves the projection behind the live read',
-    ).toBe(true);
+      writeSites.length,
+      'no commercial file was found writing a classified model — the writer-site derivation is matching nothing, so it proves nothing',
+    ).toBeGreaterThan(1);
+    // the two seams this unit names must both be among them, so the scan cannot be passing by
+    // having quietly stopped seeing the files it is about
+    for (const named of ['commercial.service.ts', 'commercial-activation.service.ts']) {
+      expect(writeSites, `${named} no longer registers as a writer of a classified model`).toContain(named);
+    }
 
     // the extraction is MUTATION-TESTED, because a regex that matches nothing would make every
     // assertion above vacuously true
@@ -1196,6 +1225,42 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       [...probe.matchAll(/\btx\.(\w+)\.(?:findMany|findFirst|findUnique|aggregate|groupBy|count)\b/gu)].map((m) => m[1]),
       'the model extraction does not recognise an ordinary `tx.<model>.findMany` read',
     ).toEqual(['someNewFact']);
+  });
+
+  /**
+   * CLOSURE D (Task 7A, Codex F1) — the forecast's event set is the CATALOG's, not a plausible one.
+   *
+   * `FORECAST_EVENTS` spelled the labour PO family `labour_po.issued` etc.; the catalog declares
+   * `labour.po.issued`. Both read as reasonable, and the consequence was worse than a missed
+   * refresh: an unrecognised type produces a NO-OP delivery, and a no-op STILL advances the ordered
+   * cursor to the stream head. So the generation stayed SERVABLE while silently omitting every
+   * labour commitment, and `readCashForecast` served it as authoritative rather than falling back
+   * to the live compute — a money page confidently short by every labour order on the project.
+   *
+   * The durable fix is the TYPE: the array is `readonly DomainEventType[]`, so a name the catalog
+   * does not declare cannot be written there at all. This pins the BEHAVIOUR the type cannot — that
+   * each declared type actually resolves to `dispatch` — plus the four names by hand, because a
+   * future edit could keep the set well-typed while dropping the family that was wrong.
+   */
+  it('§J: every forecast event type is catalog-declared AND actually dispatches', () => {
+    const consumer = makeCashForecastProjectionConsumer();
+    expect(FORECAST_EVENT_TYPES.length, 'the forecast event set is empty — this closure would pass vacuously').toBeGreaterThan(10);
+    for (const eventType of FORECAST_EVENT_TYPES) {
+      expect(DOMAIN_EVENT_TYPES as readonly string[], `${eventType} is not a declared domain event, so it can never dispatch`).toContain(eventType);
+      expect(
+        consumer.deliveryFor({ eventType } as never),
+        `${eventType} resolves to a NO-OP delivery — which still advances the ordered cursor, so the generation stays SERVABLE while omitting whatever this event moved`,
+      ).toEqual({ action: 'dispatch' });
+    }
+    // the family that was wrong, by name, so a well-typed set that quietly dropped it still fails
+    for (const eventType of ['labour.po.issued', 'labour.po.amended', 'labour.po.cancelled', 'labour.po.closed_short']) {
+      expect(FORECAST_EVENT_TYPES as readonly string[], `${eventType} left the forecast set — labour commitments would stop reaching the stored money`).toContain(eventType);
+    }
+    // …and the detector is not vacuous: an event the set does NOT carry must be a no-op
+    expect(
+      consumer.deliveryFor({ eventType: 'decision.created' } as never),
+      'an unrelated event dispatches — the forecast would recompute on every event in the system',
+    ).toEqual({ action: 'noop' });
   });
 
   it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {

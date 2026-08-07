@@ -29,6 +29,7 @@ import type { CreateRequirementInput } from '../../src/contracts';
 import { CommercialDeductionQuery } from '../../src/commercial/commercial-deduction.query';
 import { derivedBillStatus } from '../../src/commercial/commercial-status';
 import { CommercialService } from '../../src/commercial/commercial.service';
+import { reevaluateAll } from '../../src/commercial/commercial-reevaluate.cli';
 import { CASH_FORECAST_PROJECTION, computeCashForecastDto } from '../../src/commercial/cash-forecast.projection';
 import { readServableGeneration } from '../../src/platform/projections/generation';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
@@ -2043,6 +2044,46 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     expect(reversed!.totals.paid, '§0 — `PAID` is Σ payments MINUS Σ reversals').toBe('0.00');
     expect(reversed!.totals.approved).toBe('100.00');
     expect(reversed).toEqual(await liveForecast(projectId));
+  });
+
+  it('PROBE 40 (§B/§J): the operator sweep REOPENS a breach the §J completion re-created', async () => {
+    // Codex F2 (P1) — the UPGRADE path, and the one finding of the five that is about data rather
+    // than code. Completing §J's partition raises exposure on every head carrying an approval, so a
+    // breach that 6A's code CLEARED when the approval "healed" it is live again — with no open row,
+    // because no write moved. The Inbox misses it until something unrelated touches that head.
+    //
+    // The post-upgrade state is reproduced exactly: breach, approve, then CLEAR the row the way 6A
+    // would have. Then the sweep, which must reopen it and label it for what actually moved.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '50.00', reason: 'thin plan' }, pmc(projectId));
+    const billId = await certifiedClaim(projectId);
+    await payments.approve(projectId, { billId, amount: '60.00' }, approver(projectId));
+
+    // …the 6A-shaped legacy row: cleared while the head is (under 7A) still breached
+    await t.prisma.budgetException.updateMany({ where: { projectId, costHeadCode: 'CIVIL', clearedAt: null }, data: { clearedAt: new Date() } });
+    const stale = await positionOf(projectId);
+    expect(stale.headroom, 'the head IS over budget').toBe('-50.00');
+    expect(stale.exception, 'and the register says nothing — exactly the post-upgrade gap').toBeNull();
+    expect((await budget.readBudget(projectId, pmc(projectId))).openExceptions, 'so the Inbox counts zero').toBe(0);
+
+    const report = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep' });
+    expect(report.raised, 'the sweep reopened exactly the breach the completion re-created').toBeGreaterThanOrEqual(1);
+
+    const repaired = await positionOf(projectId);
+    expect(repaired.exception, 'the breach is observable again').not.toBeNull();
+    expect(repaired.exception!.raisedBy, '`raisedBy` says what MOVED — the definition of exposure, not a site write').toBe('fold_correction');
+    expect(repaired.exception!.headroom).toBe('-50.00');
+
+    // IDEMPOTENT: a second run raises nothing further (one open row per head is a partial unique)
+    const second = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep again' });
+    expect(second.raised).toBe(0);
+    expect((await t.prisma.budgetException.findMany({ where: { projectId, costHeadCode: 'CIVIL', clearedAt: null } })), 'never two open rows on one head').toHaveLength(1);
+
+    // …and it CLEARS as well as raises: give the head enough budget and the sweep closes the row
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '500.00', reason: 'plan corrected' }, pmc(projectId));
+    const healed = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep after correction' });
+    expect(healed.raised).toBe(0);
+    expect((await positionOf(projectId)).exception, 'a sweep is not a one-way ratchet').toBeNull();
   });
 
   it('PROBE 38 (§J): the read falls back to LIVE rather than serving a stale or absent generation', async () => {
