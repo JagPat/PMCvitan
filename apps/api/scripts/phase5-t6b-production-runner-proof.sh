@@ -242,10 +242,24 @@ applied=$($PSQL -tAc "SELECT COUNT(*) FROM _prisma_migrations WHERE migration_na
   || bad "the migration is not recorded as applied (found '$applied')"
 
 # ── 4. the seals are live, and every in-family bill agrees with its own folds ────────────────────
+#
+# DERIVED from the migrations, not written down. This assertion was a hardcoded six-name string
+# until 6B-ii added `PaymentReversal_t6b_status_sealed` and it failed for saying so — root A one
+# more time, in the third place this module has enumerated the same set (the upgrade proof, the
+# contract closure, and here). The closure in `commercial.contract.test.ts` already derives WHICH
+# TABLES need a seal from what the folds read; this asks a narrower question the closure cannot —
+# is every seal the migrations DECLARE actually installed on this database, after a real
+# `prisma migrate deploy` rather than a `psql --single-transaction` apply.
+expected_seals=$(grep -ho '^CREATE CONSTRAINT TRIGGER "\w*_t6b_status_sealed"' "$API"/prisma/migrations/*/migration.sql \
+  | sed 's/.*"\(.*\)_t6b_status_sealed"/\1/' | sort -u | paste -sd/ -)
 seals=$($PSQL -tAc "SELECT string_agg(c.relname, '/' ORDER BY c.relname) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid WHERE t.tgname LIKE '%_t6b_status_sealed' AND NOT t.tgisinternal")
-[ "$seals" = "BillCertificate/BillDeduction/BillDeductionRelease/Payment/PaymentApproval/VendorBill" ] \
-  && ok "all six derivation seals are installed after the cutover" \
-  || bad "the seal set after the cutover is '$seals'"
+if [ -z "$expected_seals" ]; then
+  bad "no derivation seals were found in the migrations — this assertion would pass vacuously"
+elif [ "$seals" = "$expected_seals" ]; then
+  ok "every derivation seal the migrations declare is installed after the cutover ($expected_seals)"
+else
+  bad "the seal set after the cutover is '$seals', but the migrations declare '$expected_seals'"
+fi
 
 # ── 5. THE DATA OUTCOME — the seeded row, by name, not a count over an empty table ───────────────
 after=$($PSQL -tAc "SELECT \"status\" FROM \"VendorBill\" WHERE \"id\" = 't6b-bill'")
