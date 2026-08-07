@@ -354,12 +354,13 @@ All four GREEN here.
 
 | Gate | Result |
 | --- | --- |
-| `pnpm check` | EXIT 0 — web 543/543, API 746/746, build clean |
-| Full integration, pristine migrated DB | see PR body |
-| `phase5-t6b-status-derivation.test.ts` | 17/17 |
-| `phase5-t5b` / `t5c` / `t6a` | 102/102 |
-| `upgrade-proof.sh` | PASSED — 469 assertions, 0 failures |
-| `test:e2e:api:allmodules` / `:outbox` | see PR body |
+| `pnpm check` | EXIT 0 — web 543/543, API 748/748, build clean |
+| Full integration, pristine migrated DB | 84 files / 987 tests |
+| `phase5-t6b-status-derivation.test.ts` | 19/19 |
+| `phase5-t5b` / `t5c` / `t6a` / `t6b` | 120/120 |
+| `upgrade-proof.sh` | PASSED — 470 assertions, 0 failures |
+| `phase5-t6b-production-runner-proof.sh` | PASSED — 7/7 on the real `prisma migrate deploy` |
+| `test:e2e:api:allmodules` / `:outbox` | 35/35 and 29/29 |
 
 The round-1 seal also broke seven **pre-existing** upgrade-proof fixture writes,
 and that is the seal working: those steps appended a fold without moving the
