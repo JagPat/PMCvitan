@@ -386,6 +386,40 @@ test('a directive outranks work_item without tripping the override guard', () =>
 // The live document is already checked by the pin above; this one states the RULE, so the next
 // person writing a merge flip fails here rather than in review. The two directions are asserted
 // together because the fix is only meaningful against the failure it prevents.
+// THE ENFORCEMENT, against the LIVE document (Codex, PR #290 P1).
+//
+// The pin below states what the resolver DOES with a stale `work_item`, which is useful for
+// explaining the rule and useless for enforcing it: a future merge flip with exactly that shape
+// still passes, because the assertion expects the bad resolution rather than forbidding the bad
+// state. And the `task:*` guard above cannot catch it either — a stale flip resolves to
+// `work_item:*`, which that guard permits. CI would certify a STATUS file that sends the runner
+// backwards, which is precisely the outcome the pin was written to prevent.
+//
+// A test that describes a defect is not a test that prevents one. This is the one that fails.
+test('a MERGED task in the live STATUS must clear work_item — the completed unit is not the next step', async () => {
+  const { now, maintenanceQueue } = await loadStatusDocument();
+  const taskState = (now.task_state ?? '').trim().toLowerCase();
+  if (taskState !== 'merged') return;
+
+  const workItem = (now.work_item ?? '').trim().toLowerCase();
+  assert.equal(
+    workItem === '' || workItem === 'none',
+    true,
+    `docs/STATUS.md records task_state: merged while work_item still names '${now.work_item}'. `
+    + '`assessRunnerState` consults work_item BEFORE next_task, so the runner would re-enter the '
+    + 'unit that just merged instead of advancing. Clear work_item in the same flip that records '
+    + 'the merge.',
+  );
+
+  // …and the consequence, asserted rather than inferred: with it cleared, the handoff is next_task.
+  const verdict = assessRunnerState(now, maintenanceQueue);
+  assert.ok(
+    verdict.nextStep && !verdict.nextStep.startsWith('work_item:'),
+    `docs/STATUS.md is merged but still resolves to '${verdict.nextStep}' — a merged flip must hand `
+    + 'off to next_task, an open PR, a directive or the maintenance queue, never back to a work item.',
+  );
+});
+
 test('a merged task must CLEAR work_item, or the runner re-enters the unit it just finished', () => {
   const flip = (workItem) => assessRunnerState({
     phase: '5',
