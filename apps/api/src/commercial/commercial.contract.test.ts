@@ -782,6 +782,50 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
   //
   // They are now the SAME array, and this pins that they stay it — identity, not equality, so a
   // future copy-paste that happens to list the same members still fails here.
+  // ── CLOSURE A (PR #289 convergence) — the seal set is DERIVED, never a list ───────────────────
+  //
+  // `docs/reviews/pr-289-convergence.md`, root A. Four findings in one unit were the same mistake:
+  // the code wrote down the members instead of deriving them from what the fold reads. The family
+  // was enumerated and the member left to the service; the seal was put on the bill and not its
+  // fold tables; then five of the SIX fold tables were enumerated and `BillCertificate` — named in
+  // this unit's own mover list — was missed.
+  //
+  // §B already solved this: `FOLD_INPUTS` derives its mover set from what the fold READS, because a
+  // hand-kept list of six sites had gone stale once already. This is that idiom for §F's seals.
+  //
+  // The tables are read out of the fold queries themselves, so a SEVENTH fold input added to
+  // `commercial-deduction.query.ts` without a matching seal fails HERE — at the desk, with no
+  // database and no reviewer required — rather than becoming the next bypass.
+  it('§F: every table the folds READ carries a derivation seal — the set is derived, not listed', () => {
+    const query = readFileSync(join(HERE, 'commercial-deduction.query.ts'), 'utf8');
+    const migration = readFileSync(
+      join(SRC, '../prisma/migrations/20270610000000_phase5_t6b_status_derivation/migration.sql'),
+      'utf8',
+    );
+
+    // what the three folds actually touch: quoted table names in the raw SQL, plus the Prisma
+    // delegates the batched withheld fold uses
+    const fromRaw = [...query.matchAll(/FROM\s+"(\w+)"/gu)].map((m) => m[1]!);
+    const fromJoin = [...query.matchAll(/JOIN\s+"(\w+)"/gu)].map((m) => m[1]!);
+    const fromDelegate = [...query.matchAll(/tx\.(billCertificate|billDeduction|billDeductionRelease|payment|paymentApproval)\./gu)]
+      .map((m) => `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)}`);
+    const readTables = [...new Set([...fromRaw, ...fromJoin, ...fromDelegate])].sort();
+
+    expect(readTables.length, 'no fold table was found — the extraction is matching nothing, so this pin proves nothing').toBeGreaterThan(2);
+
+    const sealed = new Set(
+      [...migration.matchAll(/^CREATE CONSTRAINT TRIGGER "(\w+)_t6b_status_sealed"/gmu)].map((m) => m[1]!),
+    );
+    // the bill itself is sealed too, and is not a "read" of the folds — it is the thing they derive
+    expect(sealed.has('VendorBill'), 'the bill carries no derivation seal').toBe(true);
+
+    const unsealed = readTables.filter((t) => !sealed.has(t));
+    expect(
+      unsealed,
+      `these tables are READ by §F's folds but carry no \`_t6b_status_sealed\` trigger, so a write to them can move the derivation and leave the stored status behind: ${unsealed.join(', ')}`,
+    ).toEqual([]);
+  });
+
   it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {
     expect(
       DERIVED_BILL_STATUSES as readonly string[],

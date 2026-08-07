@@ -55,10 +55,24 @@
 -- statements below. An old mover therefore never holds one of those while waiting for the bill,
 -- so there is no cycle to deadlock on.
 --
--- This depends on the migration running in ONE transaction, which Prisma does for PostgreSQL — and
--- the dependency FAILS CLOSED rather than silently: `LOCK TABLE` outside a transaction block is an
--- error in PostgreSQL, so a runner that stopped wrapping migrations would abort this deploy loudly
--- instead of reopening the window.
+-- The transaction is EXPLICIT, and that is a deliberate correction to what this comment first said.
+--
+-- The first draft asserted "Prisma runs a migration in one transaction, and the dependency fails
+-- closed". A review read that as a deploy-breaking bug — the premise being that Prisma does NOT
+-- wrap, so `LOCK TABLE` would abort every production deploy. That premise is FALSE for the pinned
+-- runtime, and it was checked rather than argued: the repo-pinned Prisma 6.19.3 running the real
+-- `prisma migrate deploy` applies this file, with this `LOCK TABLE` in it, over a fresh database —
+-- which it could not do outside a transaction block, since PostgreSQL rejects the statement there.
+--
+-- But the finding was right about the SHAPE of the risk even with a wrong premise, and that is what
+-- this `BEGIN` answers: a cutover barrier must not rest on a runner's default. Implicit wrapping is
+-- not a contract — it is behaviour that can change under a dependency bump, and the failure mode
+-- would be silent (the window reopens) rather than loud. So the boundary is written down here,
+-- where the rule lives, instead of being inferred from the tool that happens to run the file.
+-- `scripts/phase5-t6b-production-runner-proof.sh` then proves the REAL production path, not just
+-- `psql --single-transaction`, so the claim is tested on every run rather than asserted twice.
+BEGIN;
+
 LOCK TABLE "VendorBill" IN EXCLUSIVE MODE;
 
 -- ONE definition of §F's derived family, in SQL, mirroring `isDerivedBillStatus` in
@@ -511,3 +525,8 @@ DROP TRIGGER IF EXISTS "BillCertificate_t6b_status_sealed" ON "BillCertificate";
 CREATE CONSTRAINT TRIGGER "BillCertificate_t6b_status_sealed"
   AFTER INSERT OR UPDATE ON "BillCertificate" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t6b_fold_status_sealed();
+
+-- …and the cutover ends HERE, with the barrier held from the LOCK above through the backfill and
+-- all six trigger installs. Everything between is one transaction, so there is no moment at which
+-- the old container can commit a fold write that the seals will never see.
+COMMIT;
