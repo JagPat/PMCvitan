@@ -684,30 +684,51 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     expect((await payments.ledger(projectId, billId, pmc(projectId))).paid).toBe('40.00');
   });
 
-  it('PROBE 20 (§B/§J): approving is a headroom MOVER, so it clears the exception it healed', async () => {
-    // Codex round 2 (P2). §J defines `certified-payable` as `NET_PAYABLE − APPROVED`, and this task
-    // taught the fold that subtraction without making the write a mover — so an approval that
-    // healed a head's exposure left the old exception open and the budget went on reporting a
-    // breach nobody could clear.
+  it('PROBE 20 (§B/§J): approving MOVES money between buckets and heals nothing — authorising is not unspending', async () => {
+    // REWRITTEN BY PHASE 5 TASK 7A, and the rewrite is the finding.
+    //
+    // Task 6A wrote this probe to assert that approving CLEARS the exception it healed, and that
+    // was true against the fold as 6A left it: §J defines `certified-payable` as
+    // `NET_PAYABLE − APPROVED`, 6A taught the fold that subtraction, and there was nowhere for the
+    // subtracted money to go — so approving genuinely lowered total exposure.
+    //
+    // §J always specified where it goes: `approved` = `APPROVED − PAID`. Task 7A added that bucket
+    // and this probe failed on the spot. The failure is the CORRECT answer, and the old assertion
+    // was the incomplete one: **money a practice has authorised is money it still owes.** A budget
+    // that healed when a payable was approved would tell a practice it had room the moment it
+    // committed to spending, which is the opposite of what a budget is for.
+    //
+    // So the probe now asserts the partition, and `FOLD_INPUTS` reclassifies `APPROVED` as
+    // partition-only to match. The `payment_approval` label stays wired for the reason `measurement`
+    // does — the closure's rule is mechanical, not a judgement about arithmetic.
     const projectId = await freshProject();
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '50.00', reason: 'thin plan' }, pmc(projectId));
     const billId = await certifiedClaim(projectId);
 
     const breached = await positionOf(projectId);
     expect(breached.certifiedPayable).toBe('100.00');
+    expect(breached.exposure, 'a 100 payable is 100 of exposure').toBe('100.00');
     expect(breached.exception, 'a 100 payable against a 50 budget is a breach').not.toBeNull();
 
-    // approving 60 leaves 40 payable against a 50 budget — healthy
+    // approving 60 moves 60 from `certified-payable` into `approved` — and moves the total NOWHERE
     await payments.approve(projectId, { billId, amount: '60.00' }, approver(projectId));
-    const healed = await positionOf(projectId);
-    expect(healed.certifiedPayable).toBe('40.00');
-    expect(healed.exception, 'the approval healed the head and must have cleared its exception in the same transaction').toBeNull();
+    const approved = await positionOf(projectId);
+    expect(approved.certifiedPayable, '§J — `NET_PAYABLE − APPROVED`').toBe('40.00');
+    expect(approved.approved, '§J — `APPROVED − PAID`, and nothing is paid yet').toBe('60.00');
+    expect(
+      new Prisma.Decimal(approved.certifiedPayable).add(new Prisma.Decimal(approved.approved)).toFixed(2),
+      'the two sum to what was payable before — that is the identity FOLD_INPUTS cites',
+    ).toBe('100.00');
+    expect(approved.exposure, 'authorising money does not unspend it').toBe(breached.exposure);
+    expect(approved.headroom).toBe(breached.headroom);
+    expect(approved.exception, 'the breach is real and STANDS — nothing about the money changed').not.toBeNull();
 
-    // the register keeps the history — the row is CLEARED, never deleted
-    const closed = await t.prisma.budgetException.findFirstOrThrow({
-      where: { projectId, costHeadCode: 'CIVIL' }, orderBy: { raisedAt: 'desc' },
+    // the register is append-only either way: the standing row is the SAME row, never re-raised
+    const rows = await t.prisma.budgetException.findMany({
+      where: { projectId, costHeadCode: 'CIVIL' }, orderBy: { raisedAt: 'asc' },
     });
-    expect(closed.clearedAt).not.toBeNull();
+    expect(rows, 'an exposure-neutral write must not stack a duplicate observation').toHaveLength(1);
+    expect(rows[0]!.clearedAt, 'nor clear the one that stands').toBeNull();
 
     // …and `payment_approval` is a real label the CHECK admits, not a name only TypeScript knows.
     // An approval can only ever LOWER exposure, so like `measurement` it is wired and labelled

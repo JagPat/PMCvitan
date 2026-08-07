@@ -19,6 +19,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialStatusService } from './commercial-status.service';
+import { refreshCashForecast } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { ApprovePaymentInput, RecordPaymentInput, ReversePaymentInput } from '../contracts';
@@ -342,6 +343,22 @@ export class CommercialPaymentService {
         // all derived here rather than written by hand at four sites.
         await this.status.reDerive(tx, projectId, approval.billId, bill.status as VendorBillStatus);
 
+        // §J (Task 7A) — the §J REFRESH is a SEPARATE obligation from §B's raise-or-clear, and this
+        // is the one place the two come apart.
+        //
+        // Paying moves no HEADROOM (the identity above), so `FOLD_INPUTS` exempts it from the
+        // evaluator and there is deliberately no `evaluateHeadsForBill` here. But it very much
+        // moves a §J BUCKET — `approved` falls and `paid` rises — and the cash-forecast projection
+        // stores those buckets. Task 7A hung the refresh off `evaluate`, which is right for every
+        // mover that can breach a budget and WRONG for exactly the partition-only ones: without
+        // this call the stored forecast keeps reporting money as authorised-and-unpaid forever
+        // after it left the bank, and no event exists that a consumer could have missed.
+        //
+        // The pin in `commercial.contract.test.ts` reads: every `FOLD_INPUTS` writer refreshes the
+        // forecast, through an evaluator or directly. A partition-only row is exempt from §B, never
+        // from §J.
+        await refreshCashForecast(tx, projectId);
+
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.record',
           entity: 'Payment', entityId: payment.id,
@@ -428,11 +445,30 @@ export class CommercialPaymentService {
         // Calling the evaluator anyway would append a "cleared" or "raised" observation labelled
         // against a write that moved no headroom, which is the label drift §B's round 4 removed.
         //
+        // That reasoning is about §B ONLY. The §J projection refresh below is a different
+        // obligation and this write does owe it — see the note there.
+        //
         // §F — a reversal LOWERS `PAID`, so the derivation runs BACKWARDS here: `paid` becomes
         // `approved-for-payment` on a full reversal and `part-paid` on a partial one. The same
         // function every other mover calls, which is what makes live == stored by construction
         // rather than by six services agreeing.
         await this.status.reDerive(tx, projectId, payment.billId, bill.status as VendorBillStatus);
+
+        // §J (Task 7A) — the §J REFRESH is a SEPARATE obligation from §B's raise-or-clear, and this
+        // is the one place the two come apart.
+        //
+        // Paying moves no HEADROOM (the identity above), so `FOLD_INPUTS` exempts it from the
+        // evaluator and there is deliberately no `evaluateHeadsForBill` here. But it very much
+        // moves a §J BUCKET — `approved` falls and `paid` rises — and the cash-forecast projection
+        // stores those buckets. Task 7A hung the refresh off `evaluate`, which is right for every
+        // mover that can breach a budget and WRONG for exactly the partition-only ones: without
+        // this call the stored forecast keeps reporting money as authorised-and-unpaid forever
+        // after it left the bank, and no event exists that a consumer could have missed.
+        //
+        // The pin in `commercial.contract.test.ts` reads: every `FOLD_INPUTS` writer refreshes the
+        // forecast, through an evaluator or directly. A partition-only row is exempt from §B, never
+        // from §J.
+        await refreshCashForecast(tx, projectId);
 
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.reverse',

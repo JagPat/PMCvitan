@@ -121,6 +121,44 @@ things standing between "a writer forgot" and "the money page is wrong for a wee
 are this closure and the operator diagnostic — which is why the RUNBOOK now says
 so under step 3.
 
+### The seam was ALMOST right, and the gap was found by a probe rather than a review
+
+7A's first spelling hung the refresh off `evaluate` and stopped there. That is wrong, and
+the way it is wrong is instructive: *"moved headroom"* and *"moved a §J bucket"* are
+**almost** the same predicate, and they come apart at exactly the `partitionOnly` rows.
+Paying moves `approved` into `paid` without moving the total, so it is rightly exempt from
+§B's evaluator — and was therefore silently exempt from §J's refresh too.
+
+The consequence would have been a stored forecast reporting money as authorised-and-unpaid
+forever after it left the bank, with **no event a consumer could have missed**. That is the
+exact failure mode the RUNBOOK note above describes, arriving inside the unit that wrote the
+note.
+
+The fix keeps the derivation and moves the obligation to the whole of the table it was
+already using: `payments.record` and `payments.reverse` refresh directly, and CLOSURE 2 now
+pins that **every** `FOLD_INPUTS` writer refreshes — through an evaluator or directly —
+rather than only the non-exempt ones. A partition-only row is exempt from §B, never from §J.
+Mutation-tested RED at both writers; PROBE 39 proves it at runtime.
+
+### `APPROVED` is partition-only too, and a 6A probe is what proved it
+
+Task 6A classified `APPROVED` as a headroom mover and asserted, in PROBE 20, that approving
+CLEARS the exception it healed. That was true against 6A's fold: §J's subtraction was in
+place with nowhere for the subtracted money to go, so approving genuinely lowered the total.
+
+7A added the `approved` bucket §J always specified, and PROBE 20 failed immediately. **The
+failure is the correct answer.** Money a practice has authorised is money it still owes; a
+budget that healed the moment a payable was approved would report room exactly when the
+practice committed to spending. `certified-payable` and `approved` sum to `NET_PAYABLE −
+PAID` for every value of `APPROVED`, which is the same identity `PAID` already carried one
+step down the chain.
+
+So `FOLD_INPUTS` reclassifies the row, PROBE 20 now asserts the partition (and that the
+standing exception is neither cleared nor re-raised by an exposure-neutral write), and the
+`payment_approval` §B label stays wired for the reason `measurement` does — the closure's
+rule is mechanical, and carving out an exception on the strength of my own arithmetic is
+what went wrong twice in Task 2.
+
 ### CI then found root A twice more, in the operator-rebuild suites
 
 Adding the eighth projection made two integration suites fail, and both for exactly
@@ -174,9 +212,12 @@ query would write this project's money into other projects' rows.
 | 36 | §J | the WRITE-THROUGH and CONSUMER paths agree — commercial-only writes store the right money with the relay never drained, and draining changes nothing |
 | 37 | §J | defining AND renaming a cost head refreshes the forecast — the second seam |
 | 38 | §J/§D | the read falls back to LIVE for an absent generation (honestly dated `null`), serves the projection once one exists, and 404s off-pilot |
+| 39 | §J | a PARTITION-ONLY write refreshes the forecast too — paying and reversing move the stored `paid`/`approved` with nothing drained, because nothing was emitted |
 
 Probes 36 and 37 were verified RED with the two `refreshCashForecast` calls
-removed, so neither is passing on the consumer path by accident.
+removed, so neither is passing on the consumer path by accident. Probe 39 was RED
+before `payments.record`/`reverse` refreshed at all, and the CLOSURE 2 pin behind
+it was mutation-tested RED at both writers.
 
 ## Gates
 

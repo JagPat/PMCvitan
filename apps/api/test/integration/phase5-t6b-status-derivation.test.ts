@@ -2005,6 +2005,46 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     expect(renamed, 'and the whole picture still equals the live compute').toEqual(await liveForecast(projectId));
   });
 
+  it('PROBE 39 (§J): a PARTITION-ONLY write refreshes the forecast too — the seam that nearly got away', async () => {
+    // THE ONE 7A GOT WRONG FIRST, and it is worth stating plainly rather than burying.
+    //
+    // 7A hung the write-through refresh off `CommercialBudgetService.evaluate`, on the derivation
+    // that "moved headroom" and "moved a §J bucket" are the same predicate. They are ALMOST the
+    // same, and the gap is exactly the partition-only writers: paying moves `approved` into `paid`
+    // without moving the total, so it is rightly exempt from §B's evaluator — and was therefore
+    // silently exempt from §J's refresh as well.
+    //
+    // The stored forecast would have gone on reporting money as authorised-and-unpaid forever
+    // after it left the bank. No event exists that a consumer could have missed, so nothing
+    // downstream would ever have noticed. RED before `payments.record`/`reverse` refresh.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    await drainRelay(); // the FOREIGN half establishes the generation
+
+    const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    expect((await storedRowAnyGen(projectId))!.totals.approved, 'approving evaluates, so its refresh was never in doubt').toBe('100.00');
+
+    // …and now the write that does NOT evaluate. Nothing is drained afterwards, because nothing
+    // was emitted: the refresh is the only thing that can move this row.
+    await payments.record(projectId, { approvalId: approval.id, amount: '40', method: 'neft' }, pmc(projectId));
+    const paid = await storedRowAnyGen(projectId);
+    expect(paid!.totals.paid, 'cash left the bank and the stored forecast must say so').toBe('40.00');
+    expect(paid!.totals.approved, '§J — `APPROVED − PAID`').toBe('60.00');
+    expect(paid, 'and the whole stored picture still equals the live compute').toEqual(await liveForecast(projectId));
+
+    // the reversal is the other partition-only writer, and runs the identity backwards
+    const payment = (await payments.ledger(projectId, billId, pmc(projectId))).approvals[0]!.payments[0]!;
+    await payments.reverse(projectId, { paymentId: payment.id, amount: '40', reason: 'wrong account' }, pmc(projectId));
+    const reversed = await storedRowAnyGen(projectId);
+    expect(reversed!.totals.paid, '§0 — `PAID` is Σ payments MINUS Σ reversals').toBe('0.00');
+    expect(reversed!.totals.approved).toBe('100.00');
+    expect(reversed).toEqual(await liveForecast(projectId));
+  });
+
   it('PROBE 38 (§J): the read falls back to LIVE rather than serving a stale or absent generation', async () => {
     // The standing read discipline. A lagging generation is never served as authoritative — the
     // caller gets the canonical compute instead, through the SAME function, so a fallback is a

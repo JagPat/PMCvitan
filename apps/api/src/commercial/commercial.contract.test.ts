@@ -462,8 +462,19 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ],
     },
     {
-      field: 'APPROVED', owner: 'commercial', readVia: 'approvedAmountFor',
-      why: '§J defines `certified-payable` as `NET_PAYABLE − APPROVED`, so authorising a payment lowers exposure and can CLEAR an open over-budget exception — a headroom mover with no procurement or certification write anywhere',
+      field: 'APPROVED', owner: 'commercial', readVia: 'approvedAmountFor', partitionOnly: true,
+      // Task 7A RECLASSIFIED this row, and the reclassification was a TEST FAILURE rather than a
+      // judgement. Task 6A wrote it as a headroom mover — "authorising a payment lowers exposure
+      // and can CLEAR an open over-budget exception" — and that was TRUE while `approved` was not
+      // yet a bucket: subtracting `APPROVED` from `certified-payable` with nowhere for it to go
+      // genuinely lowered the total. Task 7A added the bucket §J always specified, and PROBE 20 of
+      // the 6A suite failed on the spot, because an approval no longer heals anything.
+      //
+      // That is the correct behaviour and the old row was the incomplete one: money a practice has
+      // authorised is money it still owes. §B's `payment_approval` label STAYS wired for the same
+      // reason `measurement` does — the closure's rule is mechanical, and carving out an exception
+      // on the strength of my own arithmetic is what went wrong twice in Task 2.
+      why: '§J defines `certified-payable` as `NET_PAYABLE − APPROVED` and `approved` as `APPROVED − PAID`, and those two sum to `NET_PAYABLE − PAID` identically — so authorising moves exposure BETWEEN buckets and can never move the total. An approval cannot clear an over-budget exception, because authorising money does not unspend it',
       writers: [{ file: 'commercial/commercial-payment.service.ts', method: 'approve' }],
     },
     {
@@ -549,6 +560,37 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         expect(
           /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.evaluateHeadroom\(/u.test(body),
           `${writer.file}#${writer.method} writes ${input.field} (${input.why}) but never re-evaluates — §B requires raise-or-clear in the SAME transaction`,
+        ).toBe(true);
+      });
+    }
+  }
+
+  /**
+   * §J's REFRESH is a SEPARATE obligation from §B's raise-or-clear, and Task 7A learned the
+   * difference the hard way.
+   *
+   * 7A hung the cash-forecast write-through off `CommercialBudgetService.evaluate`, on the
+   * derivation that "moved headroom" and "moved a §J bucket" are the same predicate. They are
+   * ALMOST the same, and the gap is exactly the partition-only rows: paying and reversing move a
+   * bucket without moving the total, so they are rightly exempt from the evaluator — and were
+   * therefore silently exempt from the refresh too. The stored forecast would have gone on
+   * reporting money as authorised-and-unpaid forever after it left the bank, with NO event a
+   * consumer could have missed, which is the failure mode CLOSURE C exists for.
+   *
+   * So the obligation is pinned over the WHOLE table rather than the non-exempt part of it: every
+   * writer refreshes, through an evaluator (which refreshes at its end) or directly.
+   */
+  for (const input of FOLD_INPUTS) {
+    for (const writer of input.writers) {
+      it(`${writer.file.split('/').pop()}#${writer.method} refreshes the §J forecast — it writes ${input.owner}.${input.field}`, () => {
+        const src = readFileSync(join(SRC, writer.file), 'utf8');
+        const start = src.indexOf(`async ${writer.method}(`);
+        expect(start, `${writer.file}#${writer.method} not found — FOLD_INPUTS drifted from the code`).toBeGreaterThan(-1);
+        const next = src.indexOf('\n  async ', start + 1);
+        const body = src.slice(start, next === -1 ? undefined : next);
+        expect(
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.evaluateHeadroom\(|refreshCashForecast\(/u.test(body),
+          `${writer.file}#${writer.method} writes ${input.field} — a §J bucket — but neither evaluates nor calls refreshCashForecast, so the stored cash forecast keeps a figure this write already changed. Commercial emits no events, so nothing downstream can notice`,
         ).toBe(true);
       });
     }
