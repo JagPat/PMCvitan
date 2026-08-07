@@ -50,6 +50,15 @@ export interface CostHeadPosition {
    *  supplies it — the same way `MEASURED` and `BILLED_AMOUNT` arrived here — so this term is the
    *  full definition evaluated against the facts that exist, not a placeholder for it. */
   certifiedPayable: Prisma.Decimal;
+  /** §J `approved` — `APPROVED − PAID`, the money authorised to leave that has not left yet.
+   *  Task 7A. Naming it after `APPROVED(bill)` would double-count every partial payment: a ₹100
+   *  approved bill with ₹40 paid would report ₹140 across this bucket and `paid` for one ₹100
+   *  payable. Every §J bucket subtracts the one downstream of it, and this is no exception. */
+  approved: Prisma.Decimal;
+  /** §J `paid` — `PAID(bill)`, Σ payments less Σ payment reversals (§0). Task 7A, and §J calls it
+   *  "the only raw fold, because paid cash is where the money stops": every other bucket subtracts
+   *  its successor, and this one has no successor to subtract. */
+  paid: Prisma.Decimal;
   /** `Σ exposure` — the buckets that measure against the budget, rounded to the money scale.
    *  Carried explicitly so the exception row's `headroom = budget - exposure` CHECK holds by
    *  construction rather than by a caller re-deriving the same subtraction. */
@@ -135,6 +144,7 @@ export class CommercialBudgetQuery {
       billedMaterial, billedLabour, certifiedMaterial, certifiedLabour,
       withheldMaterial, withheldLabour,
       approvedMaterial, approvedLabour,
+      paidMaterial, paidLabour,
     ] = await Promise.all([
       this.procurement.committedLinesFor(tx, projectId, materialIds),
       this.labour.committedLinesFor(tx, projectId, labourIds),
@@ -165,6 +175,10 @@ export class CommercialBudgetQuery {
       // subtraction shows a practice money it has already authorised.
       this.payments.approvedAmountFor(tx, projectId, 'material', materialIds),
       this.payments.approvedAmountFor(tx, projectId, 'labour', labourIds),
+      // §J unit 7A — the last term. `approved` is `APPROVED − PAID` and `paid` is `PAID`, so both
+      // final buckets need this one fold and neither is a raw set.
+      this.payments.paidAmountFor(tx, projectId, 'material', materialIds),
+      this.payments.paidAmountFor(tx, projectId, 'labour', labourIds),
     ]);
 
     for (const code of heads) {
@@ -172,6 +186,8 @@ export class CommercialBudgetQuery {
       let receivedNotBilled = ZERO;
       let awaitingCertification = ZERO;
       let certifiedPayable = ZERO;
+      let approvedNotPaid = ZERO;
+      let paidBucket = ZERO;
       for (const a of attributions) {
         if (a.costHeadCode !== code) continue;
         if (a.poLineId) {
@@ -226,6 +242,7 @@ export class CommercialBudgetQuery {
           const certified = certifiedMaterial.get(a.poLineId) ?? ZERO;
           const withheld = withheldMaterial.get(a.poLineId) ?? ZERO;
           const approved = approvedMaterial.get(a.poLineId) ?? ZERO;
+          const paid = paidMaterial.get(a.poLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(receivedValue.sub(billed), ZERO));
           awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
           // §H — withheld money is NOT payable, so it leaves this bucket. The clamp is belt-and-
@@ -233,6 +250,11 @@ export class CommercialBudgetQuery {
           // service and at PostgreSQL, so a withholding can never exceed the certificate it is
           // taken from and this subtraction cannot go negative through any legal path.
           certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld).sub(approved), ZERO));
+          // §J unit 7A — the last two residuals. §G bound 5 caps `PAID` at `APPROVED`, so the
+          // subtraction cannot go negative through any legal path; the clamp is belt-and-braces of
+          // the same kind as the one above it.
+          approvedNotPaid = approvedNotPaid.add(Prisma.Decimal.max(approved.sub(paid), ZERO));
+          paidBucket = paidBucket.add(paid);
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
@@ -256,15 +278,18 @@ export class CommercialBudgetQuery {
           const certified = certifiedLabour.get(a.labourPoLineId) ?? ZERO;
           const withheld = withheldLabour.get(a.labourPoLineId) ?? ZERO;
           const approved = approvedLabour.get(a.labourPoLineId) ?? ZERO;
+          const paid = paidLabour.get(a.labourPoLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(consumed.sub(billed), ZERO));
           awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
           certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld).sub(approved), ZERO));
+          approvedNotPaid = approvedNotPaid.add(Prisma.Decimal.max(approved.sub(paid), ZERO));
+          paidBucket = paidBucket.add(paid);
         }
       }
       const budget = budgetOf.get(code) ?? null;
       // §J — budget is the CEILING the exposure buckets are measured against, never a bucket
-      // itself. Headroom subtracts every exposure bucket that EXISTS at this task; 5C and Task 6
-      // add the approved/paid residuals as their facts arrive.
+      // itself. Task 7A completes the set: all SIX exposure buckets now exist, so headroom is
+      // `BUDGET − Σ(the six)` in full rather than over whichever subset had shipped.
       //
       // Note that adding `awaitingCertification` does NOT move headroom on its own: the money it
       // holds came OUT of received-not-billed. That is the point — §J's buckets partition, so a
@@ -276,7 +301,10 @@ export class CommercialBudgetQuery {
       // rounded figure — not from separately rounded buckets, whose two half-paisa errors could
       // add to a phantom cent of breach. The displayed buckets are rounded for reporting; the
       // DECISION is made on `exposure`.
-      const exposure = money(committed.add(receivedNotBilled).add(awaitingCertification).add(certifiedPayable));
+      const exposure = money(
+        committed.add(receivedNotBilled).add(awaitingCertification).add(certifiedPayable)
+          .add(approvedNotPaid).add(paidBucket),
+      );
       out.set(code, {
         costHeadCode: code,
         budget,
@@ -284,6 +312,8 @@ export class CommercialBudgetQuery {
         receivedNotBilled: money(receivedNotBilled),
         awaitingCertification: money(awaitingCertification),
         certifiedPayable: money(certifiedPayable),
+        approved: money(approvedNotPaid),
+        paid: money(paidBucket),
         exposure,
         headroom: budget === null ? null : budget.sub(exposure),
       });

@@ -374,6 +374,23 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
      *  finding names leaves its siblings, and `BILLED_AMOUNT` was exactly such a sibling — read by
      *  this fold since Task 4 with no row here, because nothing derived the bill-side set. */
     readVia?: string;
+    /**
+     * PARTITION-ONLY: the fold reads this term to SPLIT an existing exposure across two buckets,
+     * and it provably cannot move the total. Task 7A introduced the first one and the reason is an
+     * identity rather than a judgement — §J defines `approved` as `APPROVED − PAID` and `paid` as
+     * `PAID`, so the two sum to `APPROVED` for every value of `PAID`. Paying money changes WHICH
+     * bucket holds the exposure and not how much there is, exactly as certification does when it
+     * moves money from `awaiting-certification` to `certified-payable`.
+     *
+     * A row marked this way is exempt from the writer/evaluator pin below — and ONLY from that.
+     * It must still be declared, so the "no fold is read without a row" half still catches it, and
+     * `why` must state the identity that makes the exemption true rather than asserting the
+     * exemption. **The identity is also PROVEN at runtime** (`phase5-t7a-cash-forecast.test.ts`,
+     * the partition probe): paying moves the buckets and leaves `exposure` and `headroom`
+     * untouched. A claim like this one is the shape that goes stale silently, so it is not left as
+     * a comment.
+     */
+    partitionOnly?: true;
     writers: Array<{ file: string; method: string }>;
   }> = [
     {
@@ -449,6 +466,14 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       writers: [{ file: 'commercial/commercial-payment.service.ts', method: 'approve' }],
     },
     {
+      field: 'PAID', owner: 'commercial', readVia: 'paidAmountFor', partitionOnly: true,
+      why: '§J splits `APPROVED` into `approved` (= `APPROVED − PAID`) and `paid` (= `PAID`), and those two sum to `APPROVED` identically — so paying moves exposure BETWEEN buckets and can never move the total. `payments.record` and `payments.reverse` are therefore not headroom movers, and making them evaluate would append a raise-or-clear observation labelled against a write that moved no headroom, which is the label drift §B round 4 removed',
+      writers: [
+        { file: 'commercial/commercial-payment.service.ts', method: 'record' },
+        { file: 'commercial/commercial-payment.service.ts', method: 'reverse' },
+      ],
+    },
+    {
       field: 'BUDGET', owner: 'commercial',
       why: 'authority down is a breach with no commitment write anywhere — §B calls it the most ordinary case',
       writers: [{ file: 'commercial/commercial-budget.service.ts', method: 'setBudget' }],
@@ -512,7 +537,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
   });
 
-  for (const input of FOLD_INPUTS) {
+  for (const input of FOLD_INPUTS.filter((i) => !i.partitionOnly)) {
     for (const writer of input.writers) {
       it(`${writer.file.split('/').pop()}#${writer.method} evaluates — it writes ${input.owner}.${input.field}`, () => {
         const src = readFileSync(join(SRC, writer.file), 'utf8');
@@ -527,6 +552,33 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       });
     }
   }
+
+  /**
+   * The partition-only EXEMPTION is itself constrained, or it becomes a way to opt out of §B.
+   *
+   * Two things it may not do: name a writer that does not exist (which would hide a drifted method
+   * behind the exemption), and assert the exemption without stating the identity that earns it.
+   * What it may not do at all is stand alone — the runtime partition probe is what proves the
+   * identity holds, and this only proves the DECLARATION is honest.
+   */
+  it('a partition-only fold input names real writers and states the identity that exempts it', () => {
+    const exempt = FOLD_INPUTS.filter((i) => i.partitionOnly);
+    expect(exempt.length, 'no partition-only row exists — this pin would pass vacuously').toBeGreaterThan(0);
+    for (const input of exempt) {
+      expect(input.readVia, `${input.field} is partition-only but names no fold method`).toBeTruthy();
+      expect(
+        /sum to|sums to|identically/u.test(input.why),
+        `${input.field} claims the partition-only exemption without stating the identity that earns it — "these two sum to X for every value of Y" is the claim, and anything vaguer is an assertion that the writers need not evaluate`,
+      ).toBe(true);
+      for (const writer of input.writers) {
+        const src = readFileSync(join(SRC, writer.file), 'utf8');
+        expect(
+          src.includes(`async ${writer.method}(`),
+          `${writer.file}#${writer.method} does not exist — a partition-only row must still name real writers, or the exemption hides a drift`,
+        ).toBe(true);
+      }
+    }
+  });
 
   /**
    * A multi-mutation act evaluates ONCE, at the end. Evaluating between an amend's three steps
