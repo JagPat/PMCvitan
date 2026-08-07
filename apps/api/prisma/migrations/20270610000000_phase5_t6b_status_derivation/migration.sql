@@ -304,18 +304,36 @@ $$ LANGUAGE plpgsql STABLE;
 -- The seal: a bill INSIDE the family must hold the status its own folds derive. A bill outside it
 -- is not derived at all (§F's forward lifecycle, which no fold can move), so the check returns.
 --
--- `FOR UPDATE` before reading, for the same reason §G bound 5 takes it: two sessions each appending
--- a fold row would otherwise both compute a derivation that was true when they read and false when
--- they committed. The lock is on the bill, which is §0b's FIRST row, so this adds no new lock order.
+-- The read is serialized, for the same reason §G bound 5 serializes: two sessions each appending a
+-- fold row would otherwise both compute a derivation that was true when they read and false when
+-- they committed.
+--
+-- It takes the lock `NOWAIT`, and that is the whole design rather than a detail. This check runs at
+-- COMMIT, which is AFTER the statement-time locks other seals take — `BillDeductionRelease`'s parent
+-- `FOR UPDATE`, the certificate locks in §H's bounds. A plain `FOR UPDATE` here would therefore
+-- acquire the bill LAST, inverting §0b's total order (the bill is taken FIRST, before any
+-- certificate, deduction or payment row), and two concurrent releases deadlock. 5C's PROBE 14 found
+-- exactly that within an hour of the first draft.
+--
+-- `NOWAIT` restores the order by refusing to wait at all. Every honest mover already holds this row
+-- — `lockBill` is the first thing each of the six does — so the re-acquisition is free and can never
+-- fail for them. A writer that reaches here WITHOUT having taken the bill first is either
+-- uncontended (it gets the lock immediately) or is racing a transaction that did take it properly,
+-- and is refused rather than allowed to wait in the wrong order. Serialization by refusal, which
+-- never admits an incoherent pair and never deadlocks.
 CREATE OR REPLACE FUNCTION phase5_t6b_status_coherent(p_project text, p_bill text)
 RETURNS void AS $$
 DECLARE
   v_status  text;
   v_derived text;
 BEGIN
-  SELECT b."status" INTO v_status FROM "VendorBill" b
-   WHERE b."projectId" = p_project AND b."id" = p_bill
-     FOR UPDATE;
+  BEGIN
+    SELECT b."status" INTO v_status FROM "VendorBill" b
+     WHERE b."projectId" = p_project AND b."id" = p_bill
+       FOR UPDATE NOWAIT;
+  EXCEPTION WHEN lock_not_available THEN
+    RAISE EXCEPTION 'Bill % is being changed by a transaction this write did not serialize behind — §0b requires the bill row to be locked FIRST, before any certificate, deduction, approval or payment row', p_bill;
+  END;
   IF v_status IS NULL THEN RETURN; END IF;
   IF NOT phase5_t6b_derived_bill_status(v_status) THEN RETURN; END IF;
 

@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES } from '@vitan/shared';
+import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
+import { DERIVED_BILL_STATUSES, isDerivedBillStatus } from './commercial-status';
 
 const HERE = join(__dirname);
 const SRC = join(__dirname, '..');
@@ -764,6 +765,37 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       writes,
       'the `raisedBy` labels the shared DTO declares and the movers `HeadroomMover` can write are different sets. Whichever side you added to, add to the other',
     ).toEqual(declared);
+  });
+
+  // ── §F's derived family has ONE source, not two that happen to agree today ────────────────────
+  //
+  // JagPat, alongside Codex round 1 on PR #289. `commercial-status.ts` shipped
+  // `DERIVED_BILL_STATUSES`/`isDerivedBillStatus` as a fresh listing of the same four members the
+  // shared contract already declares — while its own comments claimed one family definition. The
+  // shared declaration had even left a note saying Task 6 would need it.
+  //
+  // The failure is concrete and silent in both directions. Add a fifth member to the shared set and
+  // it becomes supersedable (the `supersede` guard reads the shared one) and read-visible, while
+  // `CommercialStatusService.reDerive` skips it — a bill whose folds move and whose status does not.
+  // Add one only locally and it gets derived while the shared lifecycle and read guards reject or
+  // omit it. Neither shows up as a type error.
+  //
+  // They are now the SAME array, and this pins that they stay it — identity, not equality, so a
+  // future copy-paste that happens to list the same members still fails here.
+  it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {
+    expect(
+      DERIVED_BILL_STATUSES as readonly string[],
+      'DERIVED_BILL_STATUSES is no longer the shared BILL_STATUSES_PAST_CERTIFICATION array. Alias the shared one rather than restating its members',
+    ).toBe(BILL_STATUSES_PAST_CERTIFICATION as readonly string[]);
+
+    // …and the two predicates answer identically across the WHOLE status vocabulary, so an aliased
+    // constant with a hand-rolled predicate beside it cannot pass either.
+    for (const status of VENDOR_BILL_STATUSES) {
+      expect(
+        isDerivedBillStatus(status),
+        `\`${status}\`: isDerivedBillStatus and isPastCertification disagree — they are one question asked by two callers`,
+      ).toBe(isPastCertification(status));
+    }
   });
 
 });

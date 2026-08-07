@@ -97,6 +97,63 @@ The fix that generalises is finding 4's: the seal is **one function fired from
 every table that can falsify the equation**, not a check bolted to the row the
 finding happened to name.
 
+### The adjacent P2 JagPat added to the same batch
+
+`commercial-status.ts` shipped `DERIVED_BILL_STATUSES`/`isDerivedBillStatus` as a
+fresh listing of the same four members `packages/shared` already declares as
+`BILL_STATUSES_PAST_CERTIFICATION`/`isPastCertification` — while its own comments
+claimed one family definition. The shared declaration had even left a note saying
+Task 6 would need it.
+
+The failure is silent in both directions: a fifth member added to the shared set
+becomes supersedable and read-visible while `reDerive` skips it; one added only
+locally is derived while the shared lifecycle and read guards reject it. Neither
+is a type error. The two are now **the same array**, and
+`commercial.contract.test.ts` pins it by **identity** (`toBe`), so a future
+copy-paste that happens to list the same members still fails — verified by
+mutation: replacing the alias with `[...BILL_STATUSES_PAST_CERTIFICATION]` turns
+the pin RED. The predicates are also checked to agree across the whole
+`VENDOR_BILL_STATUSES` vocabulary, so an aliased constant with a hand-rolled
+predicate beside it cannot pass either. The SQL mirror
+`phase5_t6b_derived_bill_status` is the one unavoidable second copy — a trigger
+cannot import TypeScript — and the live-catalog closure proves its members.
+
+### The lock order 5C's PROBE 14 found within the hour
+
+The first draft of `phase5_t6b_status_coherent` took a plain `FOR UPDATE` on the
+bill. That check runs at COMMIT — **after** the statement-time locks other seals
+take (`BillDeductionRelease`'s parent `FOR UPDATE`, §H's certificate locks) — so
+it acquired the bill LAST, inverting §0b's total order, and two concurrent
+releases deadlocked.
+
+It now takes the lock `NOWAIT`. Every honest mover already holds the bill row
+(`lockBill` is the first thing each of the six does), so the re-acquisition is
+free and cannot fail for them; a writer that reaches the check without having
+taken the bill first is either uncontended or is racing one that did, and is
+refused rather than allowed to wait in the wrong order. **Serialization by
+refusal** — never admits an incoherent pair, never deadlocks.
+
+### What the seal broke, and why that is the seal working
+
+Ten pre-existing fixtures stopped passing: seven `upgrade-proof.sh` assertions
+and three 5C probes. Every one of them is a raw write that moves a fold and
+leaves the status behind — exactly what finding 4 asked to be refused. None of
+the rules under test changed:
+
+- **5C PROBE 14** now certifies ₹200 instead of ₹100, so withholding ₹100 leaves
+  ₹100 payable and a ₹60 release leaves ₹160 — the bill derives `certified`
+  throughout and the coherence seal has no opinion, leaving the RELEASE BOUND as
+  the only thing that can refuse the second writer, which is what the probe is
+  about. (On ₹100 the withholding derives `paid` and the raw release would be
+  refused by the right database for the wrong rule.)
+- **5C PROBE 22 and 25** carry the status their fold move implies. PROBE 25 uses
+  the migration's own backfill expression scoped to one bill, so it asks the
+  database what the folds derive rather than asserting a member and stays correct
+  for the legs the probe expects to be REFUSED too.
+- **`UP6A-A-OK`** in the upgrade proof now carries its status move in the same
+  transaction — same row, same bound under test, the fixture simply made to do
+  what `payment.approve` does.
+
 ### A probe that proved nothing
 
 R1-F3's first draft read the ledger 25 times with nothing else writing and

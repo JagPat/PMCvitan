@@ -636,7 +636,13 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
     // The invariant is unchanged and is still what is asserted: two concurrent ₹60 releases against
     // a ₹100 withholding cannot both stand.
     const projectId = await freshProject();
-    const billId = await certifiedClaim(projectId);
+    // Task 6B-i — ₹200 certified rather than ₹100, so that withholding ₹100 leaves ₹100 still
+    // payable and a ₹60 release leaves ₹160. The bill therefore derives `certified` throughout and
+    // §F's coherence seal never has an opinion about these raw inserts, leaving the RELEASE BOUND
+    // as the only thing that can refuse the second writer — which is what this probe is about.
+    // (On a ₹100 certificate the ₹100 withholding derives `paid`, and the raw ₹60 release would
+    // then be refused for moving a fold without its status: a true refusal, but the wrong rule.)
+    const billId = await certifiedClaim(projectId, '200');
     const d = await deductions.record(projectId, { billId, type: 'retention', amount: '100.00' }, pmc(projectId));
     // R5-F3 — one command per row, each bound to the row it backs, so the loser below is refused by
     // the BOUND this probe is about rather than by provenance
@@ -904,6 +910,17 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
          VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
         `${newCert}-r`, projectId, carriedId, srcRel.amount, srcRel.reason,
         srcRel.releasedById, srcRel.sourceCommandId, srcRel.id,
+      );
+      // Task 6B-i — a correction that changes what is certified changes NET_PAYABLE, so it changes
+      // the derived status too, and §F's seal refuses a bypass writer that leaves the column
+      // behind. This is the migration's own backfill expression scoped to one bill: it asks the
+      // database what the folds derive rather than asserting a member, so it stays correct for
+      // every `correctTo` leg — including the ones this probe expects to be REFUSED, which abort
+      // on the carry bound regardless.
+      await tx.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status" = phase5_t6b_derive_bill_status("projectId", "id"), "statusChangedAt" = now()
+          WHERE "projectId"=$1 AND "id"=$2 AND "status" <> phase5_t6b_derive_bill_status("projectId", "id")`,
+        projectId, billId,
       );
     });
 
@@ -1231,6 +1248,13 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
       await ded(tx as unknown as PrismaClient, `${cert.id}-1`, '100.00', '2026-01-02T01:00:00');
       await rel(tx as unknown as PrismaClient, `${cert.id}-1r`, `${cert.id}-1`, '100.00', '2026-01-02T02:00:00');
       await ded(tx as unknown as PrismaClient, `${cert.id}-2`, '100.00', '2026-01-02T03:00:00');
+      // Task 6B-i — this leg ENDS with the whole payable withheld, so §F derives `paid` and the
+      // status has to move with it. The withholding bound this probe is about is untouched: what
+      // the seal adds is that a bypass writer cannot leave the status behind the money it moved.
+      await tx.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='paid', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      );
     });
     expect(await t.prisma.billDeduction.count({ where: { projectId, billId } })).toBe(2);
   });
@@ -1372,6 +1396,16 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
          VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
         `${newCert}-r`, projectId, carriedId, srcRel.amount, srcRel.reason,
         srcRel.releasedById, srcRel.sourceCommandId, srcRel.id,
+      );
+      // Task 6B-i — a correction that changes what is certified changes NET_PAYABLE, so it changes
+      // the derived status too, and §F's seal refuses a bypass writer that leaves the column
+      // behind. This asks the database what the folds derive rather than asserting a member, so it
+      // stays correct for every `correctTo` leg — including the ones this probe expects to be
+      // REFUSED, which abort on the carry bound regardless.
+      await tx.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status" = phase5_t6b_derive_bill_status("projectId", "id"), "statusChangedAt" = now()
+          WHERE "projectId"=$1 AND "id"=$2 AND "status" <> phase5_t6b_derive_bill_status("projectId", "id")`,
+        projectId, billId,
       );
     });
 

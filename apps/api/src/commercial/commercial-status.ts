@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { BILL_STATUSES_PAST_CERTIFICATION, isPastCertification } from '@vitan/shared';
 import type { VendorBillStatus } from '@vitan/shared';
 
 /**
@@ -58,13 +59,23 @@ export const derivedBillStatus = ({ netPayable, approved, paid }: BillFolds): Ve
  * This set is what makes re-derivation safe to call from any fold-mover: a mover that runs while
  * the bill is still `verified` (a deduction cannot be, but the list is defensive) must not drag it
  * into the payment lifecycle.
+ *
+ * **It is the SHARED set, aliased — not a second listing of the same four members.** The first head
+ * of this file spelled the members out again while the surrounding comments claimed one family
+ * definition, which is the drift this module keeps deleting: a fifth member added to the shared set
+ * would become supersedable and read-visible while `reDerive` silently skipped it, and one added
+ * only here would be derived while the shared lifecycle and read guards rejected it. The shared
+ * declaration had even left a note saying Task 6 would need it. So the derived family IS
+ * `BILL_STATUSES_PAST_CERTIFICATION` — the two names are the same fact asked by different callers
+ * (`isPastCertification` asks "does a live certificate stand behind this?", `isDerivedBillStatus`
+ * asks "does §F own this status?") and they are answered by one array.
+ *
+ * `commercial.contract.test.ts` pins the identity, so a future divergence fails there rather than
+ * in production. The SQL mirror `phase5_t6b_derived_bill_status` is the one unavoidable second
+ * copy — a trigger cannot import TypeScript — and the live-catalog closure proves its members.
  */
-export const DERIVED_BILL_STATUSES: readonly VendorBillStatus[] = [
-  'certified',
-  'approved-for-payment',
-  'part-paid',
-  'paid',
-];
+export const DERIVED_BILL_STATUSES: readonly VendorBillStatus[] =
+  BILL_STATUSES_PAST_CERTIFICATION as readonly VendorBillStatus[];
 
 export const isDerivedBillStatus = (status: VendorBillStatus): boolean =>
-  DERIVED_BILL_STATUSES.includes(status);
+  isPastCertification(status);

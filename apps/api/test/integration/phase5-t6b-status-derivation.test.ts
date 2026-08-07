@@ -617,12 +617,19 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
     await payments.record(projectId, { approvalId: approval.id, amount: '100.00', method: 'neft' }, pmc(projectId));
     expect(await expectDerived(projectId, billId, 'fully paid through the service')).toBe('paid');
 
-    await t.prisma.$executeRawUnsafe(`ALTER TABLE "VendorBill" DISABLE TRIGGER "VendorBill_t6b_status_sealed"`);
-    await t.prisma.$executeRawUnsafe(
-      `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
-      projectId, billId,
-    );
-    await t.prisma.$executeRawUnsafe(`ALTER TABLE "VendorBill" ENABLE TRIGGER "VendorBill_t6b_status_sealed"`);
+    // Reconstruct the pre-migration state the only way it is still reachable — with triggers
+    // suppressed for ONE transaction. `set_config(..., true)` is TRANSACTION-local and restores
+    // itself at commit or rollback; `ALTER TABLE … DISABLE TRIGGER` (the first draft here) is a
+    // SCHEMA change visible to every session, so a throw between disable and enable would have
+    // left the seal off for every suite that ran afterwards. In a shared-database suite that is a
+    // footgun regardless of whether it happens to fire today.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT set_config('session_replication_role', 'replica', true)`);
+      await tx.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      );
+    });
     expect(await storedStatus(projectId, billId), 'the pre-migration state 6A legitimately left').toBe('certified');
 
     // the migration's backfill, verbatim — idempotent because its WHERE clause IS the fixpoint
