@@ -111,6 +111,24 @@ raw write that moved a fold and left the status behind, which is the state findi
 4 asked the database to refuse. No rule under test was weakened; each fixture now
 does the whole of what its real command does.
 
+## A postscript this audit earned the hard way
+
+The head that first carried this audit (`0dfb09f`) satisfied the convergence gate.
+The next head (`fbbae44`) did not — it added the browser-gate numbers to the
+packet and carried no `Review-Convergence` trailer, so the gate reported "missing
+trailer and packet" on a branch where both had already landed.
+
+That is root B one more time, in the shape of process rather than code: I knew
+the gate reads the trailer *and* the changed-file set from the head commit — the
+same lesson an empty commit taught earlier in this loop — wrote that constraint
+into my own check-in note, and then pushed a head that broke it. A rule recorded
+somewhere other than where it is enforced is a rule that gets missed.
+
+The mechanical form of the lesson, for whoever picks this branch up: **once a
+convergence trailer is required, every subsequent head needs it**, and the head
+must also touch a `docs/reviews/*convergence*.md` file. Amending the packet
+without the audit is not enough.
+
 ## The test if this recurs
 
 If a further finding in this unit is of root A's shape — a member missing from a
