@@ -2521,6 +2521,84 @@ assert_rejects "commercial T6A R2: approving against a certificate that is retai
   "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-GHOST','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-GHOST')" \
   'superseded'
 
+# ── Phase 5 Task 6B unit i (§F) — the DERIVED payment status, over the migrated legacy database ──
+#
+# This unit adds NO table and NO column, so there is no row-free assertion to make. What it changes
+# is the LIFECYCLE: three guards spelled "past certification" as `= 'certified'`, exact only while
+# `certified` was the last status a bill could hold, and they are widened together against one
+# shared predicate. The risk of widening is symmetrical — an under-open arrow set refuses an honest
+# mover, an over-open one admits a status flip with no fold behind it — so both halves are asserted
+# here, and every rejection below is paired with the otherwise-identical case that is ACCEPTED.
+assert "commercial T6B: §F's derived family has ONE definition in SQL, and it is IMMUTABLE" \
+  "SELECT p.\"proname\" || '/' || p.\"provolatile\"::text || '/' || (SELECT COUNT(*) FROM pg_proc c WHERE c.\"prosrc\" LIKE '%phase5_t6b_derived_bill_status%' AND c.\"proname\" IN ('phase5_t5_certificate_projection_check','phase5_t4_bill_lifecycle'))::text FROM pg_proc p WHERE p.\"proname\" = 'phase5_t6b_derived_bill_status';" \
+  "phase5_t6b_derived_bill_status/i/2"
+assert "commercial T6B: the predicate answers for the WHOLE family and for nothing outside it" \
+  "SELECT string_agg(phase5_t6b_derived_bill_status(s)::text, '/' ORDER BY s) FROM unnest(ARRAY['approved-for-payment','certified','draft','paid','part-paid','rejected','submitted','verified']) s;" \
+  "true/true/false/true/true/false/false/false"
+
+# A FRESH live certificate on the bill the 6A block left at `verified` — the arrows below are
+# vacuous without one, because the projection seal refuses every derived status with no certificate.
+mint5c UP6B-CMD-C1 commercial.bill.certify UP6B-C1
+if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP6B-C1','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP6B-CMD-C1'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6B-A1','p1','UP6B-C1','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+then printf 'ok      %s\n' "commercial T6B: a fresh live certificate stands on the bill, so the family arrows below are not vacuous"
+else printf 'FAILED  %s\n' "commercial T6B: could not stand up a live certificate — every family assertion below would be vacuous"; FAIL=1
+fi
+
+# The FAMILY is open in both directions, because the derivation is NOT monotonic: a retention
+# release raises `NET_PAYABLE`, so `paid -> certified` is a required move rather than a corruption.
+#
+# Each arrow ASSERTS the bill actually stood at `from` and actually reached `to`. Without that a
+# silent failure in the setup leaves the bill already at `to`, the trigger skips
+# (`NEW.status IS DISTINCT FROM OLD.status`), and a no-op UPDATE reports success — an acceptance is
+# evidence only when the state moved, which is the mirror of the rejection rule used throughout.
+for arrow in "certified:approved-for-payment" "approved-for-payment:part-paid" "part-paid:paid" "paid:certified" "certified:paid" "paid:approved-for-payment"; do
+  from="${arrow%%:*}"; to="${arrow##*:}"
+  $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='$from', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" 2>/dev/null
+  before=$($PSQL -tAc "SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='$UP5C_BILL'")
+  $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='$to', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" 2>/dev/null
+  after=$($PSQL -tAc "SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='$UP5C_BILL'")
+  if [ "$before" = "$from" ] && [ "$after" = "$to" ]; then
+    printf 'ok      %s\n' "commercial T6B §F: the derived family admits $from -> $to (closed under BOTH directions — the derivation is not monotonic)"
+  else
+    printf 'FAILED  %s\n' "commercial T6B §F: $from -> $to did not happen (stood at '$before', ended at '$after') — an honest re-derivation would fail here"; FAIL=1
+  fi
+done
+
+# …and nothing ESCAPES the family except supersession, nor JUMPS into it except `verified ->
+# certified`. Each of these is the same shape as an accepted arrow above, differing only in whether
+# one endpoint is outside the family — so a rejection here is about membership, not about the UPDATE.
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='part-paid', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" 2>/dev/null
+assert_rejects "commercial T6B §F: a derived status escaping FORWARD into the claim lifecycle (part-paid -> submitted)" \
+  "UPDATE \"VendorBill\" SET \"status\"='submitted', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" \
+  'cannot move from'
+assert_rejects "commercial T6B §F: rejecting a claim that is already part paid (money left; the claim is not droppable)" \
+  "UPDATE \"VendorBill\" SET \"status\"='rejected', \"statusReason\"='too late', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" \
+  'cannot move from'
+assert_rejects "commercial T6B §F: CREATING a claim already inside the derived family, skipping every arrow" \
+  "INSERT INTO \"VendorBill\"(\"id\",\"projectId\",\"vendorId\",\"vendorBillNumber\",\"documentDate\",\"status\",\"createdById\",\"sourceCommandId\") VALUES('UP6B-XP','p1','UP45-VEN','INV-PAID','2026-08-27','paid','USER-1','UP45-CMD')"
+assert_rejects "commercial T6B §F: jumping into the family from OUTSIDE the certification arrow (disputed -> paid)" \
+  "UPDATE \"VendorBill\" SET \"status\"='paid', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
+  'cannot move from'
+
+# The projection seal, now stated over the FAMILY. Before this unit it named `certified` alone, so a
+# bill sitting at `part-paid` with its certificate superseded out from under it was unrepresentable
+# only by accident — the status was unreachable. It is reachable now, and the seal covers it.
+assert_rejects "commercial T6B §F: superseding the certificate a PART-PAID bill projects (the two move together)" \
+  "UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='forged' WHERE \"id\"='UP6B-C1'" \
+  "certificate's projection"
+$PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='paid', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'" 2>/dev/null
+assert_rejects "commercial T6B §F: superseding the certificate a PAID bill projects" \
+  "UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='forged' WHERE \"id\"='UP6B-C1'" \
+  "certificate's projection"
+# …and the SUPERSESSION arrow out of a derived status, done coherently in one transaction, is
+# ACCEPTED from a member that is not `certified` — which is precisely what this unit widened.
+$PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='corrected' WHERE \"id\"='UP6B-C1'; UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
+  && printf 'ok      %s\n' "commercial T6B §F: correcting a certificate from a NON-certified family member is ACCEPTED (the widened guard is precise, not merely strict)" \
+  || { printf 'FAILED  %s\n' "commercial T6B §F: a coherent supersession from paid was refused — the widened arrow is not actually open"; FAIL=1; }
+assert "commercial T6B §F: the bill left the family the only way out, and its certificate is history" \
+  "SELECT (SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='$UP5C_BILL') || '/' || (SELECT COUNT(*) FROM \"BillCertificate\" WHERE \"billId\"='$UP5C_BILL' AND \"supersededAt\" IS NULL)::text;" \
+  "verified/0"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
