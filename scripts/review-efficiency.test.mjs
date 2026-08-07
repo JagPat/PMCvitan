@@ -487,8 +487,11 @@ test('a probe deferral must name the task that will settle it', () => {
     assert.equal(notATask.allowed, false, `"${value}" is not a task reference`);
     assert.match(notATask.missing.join(' '), /name the TASK/u);
   }
-  // the two real shapes are accepted when STATUS shows their phase still has work
-  for (const value of ['phase-5-task-1', 'phase-6-planning']) {
+  // the real shapes are accepted when STATUS shows their phase still has work — INCLUDING the
+  // split-unit ids `docs/STATUS.md` actually uses. Lettered units have existed since Task 5A, so
+  // `phase-5-task-6b` was rejected before any finer id was coined: a deferral trailer naming the
+  // unit under review could never parse, which is the opposite of what the vocabulary is for.
+  for (const value of ['phase-5-task-1', 'phase-6-planning', 'phase-5-task-6b', 'phase-5-task-6b-i']) {
     const real = assessConvergence({
       comments: [],
       reviews,
