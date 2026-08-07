@@ -46,11 +46,20 @@ MIGRATION_DIR="$API/prisma/migrations/20270610000000_phase5_t6b_status_derivatio
 HELD_DIR="$API/prisma/.t6b-held-migration"
 # …and every migration that comes AFTER it must be held back too. 6B-ii's `20270620000000` creates
 # `PaymentReversal` and installs its derivation seal by calling `phase5_t6b_fold_status_sealed`,
-# which is 6B-i's function — so leaving it in place would make step 1 fail on a missing function
-# rather than reach Task 6A, and every claim below would be vacuous. This is a LIST because the next
-# unit will add to it; a script that held back one migration by name is the same hand-kept set this
-# module keeps deriving away.
-LATER_DIRS="20270620000000_phase5_t6b_ii_payment_reversal"
+# which is 6B-i's own function — so leaving it in place would make step 1 fail on a missing function
+# rather than reach Task 6A, and every claim below it would be vacuous.
+#
+# DERIVED, not listed. The first spelling of this was `LATER_DIRS="20270620000000_…"` with a comment
+# admitting it was "a LIST because the next unit will add to it" — and the next unit did, two days
+# later, and did not add to it. That is `docs/reviews/pr-289-convergence.md` root A for the fourth
+# time in this module, in the same file corrected for it last round: the expected SEAL SET was made
+# derived while the hold-back set beside it stayed hand-kept.
+#
+# Prisma applies migrations in lexicographic order, so "later" is exactly "sorts after the directory
+# under test" — a fact the filesystem already holds. The guard below fails loudly if the extraction
+# finds nothing while later migrations plainly exist.
+MIGRATION_NAME="$(basename "$MIGRATION_DIR")"
+LATER_DIRS="$(cd "$API/prisma/migrations" && ls -1d */ 2>/dev/null | tr -d '/' | sort | awk -v cut="$MIGRATION_NAME" '$0 > cut')"
 HELD_LATER="$API/prisma/.t6b-held-later"
 FAIL=0
 
@@ -92,10 +101,16 @@ psql -v ON_ERROR_STOP=1 -X -q "$ADMIN_URL" -c "CREATE DATABASE \"$DB\"" >/dev/nu
 # deploy starts from, and it is what makes the race below reachable at all.
 mv "$MIGRATION_DIR" "$HELD_DIR" || { bad "could not hold the migration back — every claim below would be vacuous"; exit 1; }
 [ -d "$HELD_DIR" ] || { bad "the migration was not held back"; exit 1; }
+echo "        (holding back $(echo "$LATER_DIRS" | wc -w) migration(s) that sort after $MIGRATION_NAME)"
 hold_later
 for d in $LATER_DIRS; do
   [ -d "$API/prisma/migrations/$d" ] && { bad "a later migration ($d) was not held back — step 1 would fail on 6B-i's own function and every claim below would be vacuous"; exit 1; }
 done
+# the extraction must not silently match nothing: a later migration left in place is exactly the
+# failure this derivation exists to prevent, and an empty set would hide it
+if [ -z "$LATER_DIRS" ] && [ -n "$(cd "$API/prisma/migrations" && ls -1d */ | tr -d '/' | awk -v cut="$MIGRATION_NAME" '$0 > cut')" ]; then
+  bad "the later-migration extraction matched nothing while later migrations exist — the hold-back would be silently incomplete"; exit 1
+fi
 if (cd "$API" && DATABASE_URL="$DB_URL" npx prisma migrate deploy >/tmp/t6b-6a.log 2>&1); then
   ok "the database is at Task 6A (the migration under test held back)"
 else

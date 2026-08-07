@@ -150,6 +150,18 @@ wait on the binding is `phase5_t6c_recoverable_check` taking it at COMMIT.
 - **CLOSURE B** (6B-ii's) is satisfied without change: 6C writes no new function
   folding `"Payment"`. That was the inheritance flagged in advance, and the honest
   report is that it did not fire because there was nothing for it to fire on.
+- **`phase5-t6b-production-runner-proof.sh` had root A a FOURTH time**, in the file
+  corrected for it last round. Its `LATER_DIRS` hold-back was a hand-kept list with
+  a comment admitting *"this is a LIST because the next unit will add to it"* — and
+  the next unit did, and did not add to it. The expected seal set beside it had been
+  made derived; this had not. It now derives "later" from the fact the filesystem
+  already holds (Prisma applies lexicographically, so later is *sorts after*), with
+  a guard that fails loudly if the extraction matches nothing while later
+  migrations exist. **PASSED 13/13**, holding back 2 migrations.
+
+  The lesson worth carrying: correcting one enumeration in a file does not correct
+  the file. `pr-289-convergence.md` says *fix the class, not the member* — and the
+  class here was "every set this script hand-keeps", not "the seal set".
 
 ## The probes
 
@@ -170,7 +182,10 @@ wait on the binding is `phase5_t6c_recoverable_check` taking it at COMMIT.
 - `pnpm check` **EXIT 0** — web 543/543, API 749/749, build clean.
 - The Task-6 money-fold suite **36/36** on live PostgreSQL (13 §F probes + 6
   round-1 probes + 8 reversal probes + 9 advance probes).
-- Full integration suite on a pristine migrated database.
+- Full integration suite on a pristine migrated database: **84 files / 1,004
+  tests**, zero failures.
+- `phase5-t6b-production-runner-proof.sh` **PASSED 13/13** on the real
+  `prisma migrate deploy` path — a gate CI structurally cannot run.
 - `upgrade-proof.sh` **PASSED** — the advance table arrives row-free, no
   `advance-recovery` predates it, the widened CHECK admits the member, both seals
   are installed with the deferred one deferred, a coherent advance is ACCEPTED, a
