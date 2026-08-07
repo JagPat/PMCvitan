@@ -120,6 +120,28 @@ the failure message recorded.
 | the approval-scoped twin's reversal term deleted from the migration | CLOSURE B | names `phase5_t6a_approval_paid_check` at the desk |
 | `PaymentReversal_t6b_status_sealed` renamed in the migration | derived-seal closure | `` `PaymentReversal` is a fold input of `PAID` and carries no `_t6b_status_sealed` trigger `` |
 
+### The closure that caught the widening
+
+CI failed on the first head, on `commercial-catalog-closure.test.ts`:
+
+```
+phase5_t6a_paid_bound_check is reached by its callers but its OWN body is not canonical
+phase5_t6a_approval_paid_check is reached by its callers but its OWN body is not canonical
+phase5_t6b_ii_reversal_bound_check is reached by its callers but its OWN body is not canonical
+```
+
+That is the pin doing its job. The live-catalog closure hashes each seal
+FUNCTION's body separately from the triggers that reach it, because a no-op body
+passes every caller pin — the trigger stays installed, deferred and correctly
+bound while the bound it names refuses nothing. This unit widened two of those
+bodies, so their hashes had to move, and moving them is an explicit statement that
+the change was intended.
+
+The two closures now hold the widening from opposite sides. CLOSURE B (source)
+fails if a `Payment` fold forgets the reversal term; the body hash (catalog) fails
+if a body moves without anyone saying so. **Neither can be satisfied by changing
+the other**, which is what makes the pair meaningful rather than redundant.
+
 ### The barrier that passed for the wrong reason
 
 PROBE 19(b)'s first draft held `SELECT … FOR UPDATE` on the payment row and
