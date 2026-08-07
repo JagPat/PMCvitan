@@ -2545,7 +2545,7 @@ assert "commercial T6B: the predicate answers for the WHOLE family and for nothi
 # exercised directly below and the trigger set is checked by relation as well as by name.
 assert "commercial T6B R1: the derivation seal fires from the bill AND from every fold table" \
   "SELECT string_agg(c.\"relname\", '/' ORDER BY c.\"relname\") FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" WHERE t.\"tgname\" LIKE '%_t6b_status_sealed' AND NOT t.\"tgisinternal\" AND t.\"tgdeferrable\" AND t.\"tginitdeferred\";" \
-  "BillDeduction/BillDeductionRelease/Payment/PaymentApproval/VendorBill"
+  "BillCertificate/BillDeduction/BillDeductionRelease/Payment/PaymentApproval/VendorBill"
 
 # A FRESH live certificate on the bill the 6A block left at `verified` — the arrows below are
 # vacuous without one, because the projection seal refuses every derived status with no certificate.
@@ -2665,6 +2665,22 @@ assert_rejects "commercial T6B §F: CREATING a claim already inside the derived 
 assert_rejects "commercial T6B §F: jumping into the family from OUTSIDE the certification arrow (disputed -> paid)" \
   "UPDATE \"VendorBill\" SET \"status\"='paid', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'" \
   'cannot move from'
+
+# ── the SIXTH fold table, which the first sweep of this correction missed (JagPat) ───────────────
+#
+# `BillCertificate` is a fold INPUT twice over: `certifiedAmount` feeds NET_PAYABLE, and
+# `supersededAt IS NULL` decides which approvals are in APPROVED at all. Superseding a certificate
+# and replacing it in ONE otherwise-valid raw transaction therefore moves the folds while writing
+# no ledger row and no bill row — the Task-5B projection seal still sees one live certificate beside
+# an in-family status, and before the sixth trigger nothing else fired either.
+#
+# Reached here on a bill that is `paid` with cash standing, so the replacement is refused by §G
+# bound 5 rather than by the derivation. The DERIVATION-side refusal, on a claim with an authority
+# but no cash, is proven by R1-F5 in `phase5-t6b-status-derivation.test.ts`, which can build that
+# state freely; this asserts what the SEAL SET looks like on a migrated legacy database.
+assert "commercial T6B R1: the certificate carries the same deferred derivation trigger as the ledger tables" \
+  "SELECT t.\"tgname\" || '/' || t.\"tgdeferrable\"::text || '/' || t.\"tginitdeferred\"::text || '/' || p.\"proname\" FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" JOIN pg_proc p ON p.\"oid\" = t.\"tgfoid\" WHERE c.\"relname\" = 'BillCertificate' AND t.\"tgname\" = 'BillCertificate_t6b_status_sealed';" \
+  "BillCertificate_t6b_status_sealed/true/true/phase5_t6b_fold_status_sealed"
 
 # §0's rule survives the widening: cash already gone is not corrected by correcting a document. The
 # bill is `paid` now — a member only this unit made reachable — and 6A's §G bound-5 seal, not

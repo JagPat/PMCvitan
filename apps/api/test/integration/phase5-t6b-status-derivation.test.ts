@@ -606,6 +606,110 @@ describe('Phase 5 Task 6B-i — the §F status derivation over three folds (live
     expect(await expectDerived(projectId, second, 'the second claim too')).toBe('paid');
   });
 
+  it('R1-F5 (§F): the CERTIFICATE is a fold table too — a raw replacement cannot leave the status behind', async () => {
+    // JagPat, alongside Codex round 1. The correction above said the seal fires from every table
+    // that can make the equation false and then enumerated the four ledger tables plus the bill —
+    // leaving out `BillCertificate`, which is a fold INPUT twice over: it supplies
+    // `certifiedAmount` to NET_PAYABLE, and its `supersededAt IS NULL` is the predicate deciding
+    // which approvals count toward APPROVED at all. `certificate.certify` and `certificate.supersede`
+    // are two of this unit's six declared movers, so a mover whose table was unsealed was a mover
+    // the database was not actually watching.
+    //
+    // The bypass is ONE otherwise-valid raw transaction, and every part of it is legitimate on its
+    // own: superseding a certificate is the §F correction path, and replacing it with a coherent
+    // certificate over the same version and evidence is what a correction IS.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const c1 = await t.prisma.billCertificate.findFirstOrThrow({
+      where: { projectId, billId, supersededAt: null }, select: { id: true, versionId: true, certifiedById: true },
+    });
+    await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
+    expect(await expectDerived(projectId, billId, 'an authority stands on C1')).toBe('approved-for-payment');
+
+    // supersede C1, certify C2 over the SAME version and the SAME evidence, touch nothing else.
+    // The approval was made on C1, so it leaves live APPROVED and the folds now derive `certified`
+    // — while the Task-5B projection seal is perfectly satisfied (still exactly one live
+    // certificate beside an in-family status) and no ledger row and no bill row was written, so
+    // none of the five other triggers has anything to fire on.
+    const replace = async () => {
+      const c2 = `it-6bi-cert-replace-${seq++}`;
+      const commandId = `it-6bi-cert-cmd-${seq++}`;
+      await t.prisma.$transaction(async (tx) => {
+        await tx.commandExecution.create({
+          data: {
+            id: commandId, scopeKind: 'project', organizationId: f.orgA.id, projectId,
+            actorId: f.memberUser.id, commandType: 'commercial.bill.certify',
+            idempotencyKey: `t6bi-cert-${seq++}`, requestHash: 'x', status: 'reserved',
+          },
+        });
+        await tx.commandExecution.update({
+          where: { id: commandId }, data: { status: 'succeeded', resultRef: c2, completedAt: new Date() },
+        });
+        await tx.$executeRawUnsafe(
+          `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='corrected'
+            WHERE "projectId"=$3 AND "id"=$1`,
+          c1.id, f.memberUser.id, projectId,
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+           VALUES ($1,$2,$3,$4,100.00,$5,$6)`,
+          c2, projectId, billId, c1.versionId, c1.certifiedById, commandId,
+        );
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "CertifiedAcceptanceConsumption"("id","projectId","certificateId","stockTransactionId","consumedQty")
+           SELECT gen_random_uuid()::text, "projectId", $1, "stockTransactionId", "consumedQty"
+             FROM "CertifiedAcceptanceConsumption" WHERE "projectId"=$2 AND "certificateId"=$3`,
+          c2, projectId, c1.id,
+        );
+      });
+      return c2;
+    };
+    await expect(replace(), 'the certificate table must be sealed like every other fold input')
+      .rejects.toThrow(/its own folds derive/u);
+
+    // nothing moved: C1 still stands and the authority on it is still live
+    expect(await expectDerived(projectId, billId, 'after the refused replacement')).toBe('approved-for-payment');
+    expect(await t.prisma.billCertificate.count({ where: { projectId, billId, supersededAt: null } })).toBe(1);
+
+    // …and the SAME replacement carrying the status its folds derive is ACCEPTED, so the seal is
+    // about coherence and not a ban on correcting a certification.
+    const c2 = `it-6bi-cert-ok-${seq++}`;
+    const okCommand = `it-6bi-cert-okcmd-${seq++}`;
+    await t.prisma.$transaction(async (tx) => {
+      await tx.commandExecution.create({
+        data: {
+          id: okCommand, scopeKind: 'project', organizationId: f.orgA.id, projectId,
+          actorId: f.memberUser.id, commandType: 'commercial.bill.certify',
+          idempotencyKey: `t6bi-cert-ok-${seq++}`, requestHash: 'x', status: 'reserved',
+        },
+      });
+      await tx.commandExecution.update({
+        where: { id: okCommand }, data: { status: 'succeeded', resultRef: c2, completedAt: new Date() },
+      });
+      await tx.$executeRawUnsafe(
+        `UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=$2, "supersedeReason"='corrected'
+          WHERE "projectId"=$3 AND "id"=$1`,
+        c1.id, f.memberUser.id, projectId,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
+         VALUES ($1,$2,$3,$4,100.00,$5,$6)`,
+        c2, projectId, billId, c1.versionId, c1.certifiedById, okCommand,
+      );
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "CertifiedAcceptanceConsumption"("id","projectId","certificateId","stockTransactionId","consumedQty")
+         SELECT gen_random_uuid()::text, "projectId", $1, "stockTransactionId", "consumedQty"
+           FROM "CertifiedAcceptanceConsumption" WHERE "projectId"=$2 AND "certificateId"=$3`,
+        c2, projectId, c1.id,
+      );
+      await tx.$executeRawUnsafe(
+        `UPDATE "VendorBill" SET "status"='certified', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, billId,
+      );
+    });
+    expect(await expectDerived(projectId, billId, 'the coherent replacement')).toBe('certified');
+  });
+
   it('R1-F2 (§F): the migration BACKFILLS a bill 6A left behind, and never invents a fold', async () => {
     // The 6A schema stored `certified` on a bill that was already approved and paid, and that was
     // the CORRECT value under 6A's rule — its own PROBE 9 pinned it. This reconstructs that state

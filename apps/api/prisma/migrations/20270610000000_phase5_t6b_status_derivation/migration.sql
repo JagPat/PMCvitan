@@ -438,3 +438,27 @@ DROP TRIGGER IF EXISTS "BillDeductionRelease_t6b_status_sealed" ON "BillDeductio
 CREATE CONSTRAINT TRIGGER "BillDeductionRelease_t6b_status_sealed"
   AFTER INSERT OR UPDATE ON "BillDeductionRelease" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t6b_release_status_sealed();
+
+-- …and the SIXTH table, which the first sweep of this correction MISSED (JagPat, alongside Codex
+-- round 1). The comment above says the seal fires from every table that can make the equation
+-- false, and then enumerated the four ledger tables plus the bill — leaving out the certificate,
+-- which is a fold INPUT twice over: it supplies `certifiedAmount` to `NET_PAYABLE`, and its
+-- `supersededAt IS NULL` is the predicate deciding which approvals are in `APPROVED` at all.
+--
+-- The bypass is one otherwise-valid raw transaction. Start at `approved-for-payment` with a live C1
+-- and an approval on it and no cash. Supersede C1 and insert its coherent replacement C2 for the
+-- same bill, touching nothing else. The approval was on C1, so it drops out of live `APPROVED` and
+-- the folds now derive `certified`. The Task-5B projection seal is satisfied — there is still
+-- exactly one live certificate beside an in-family status — and not one of the five triggers above
+-- fires, because no ledger row and no bill row was written. The claim commits stored as
+-- `approved-for-payment` while its own folds say `certified`.
+--
+-- This is the same class the rest of this correction is, not a sixth special case: `certify` and
+-- `supersede` are two of the unit's six declared movers, and a mover whose table is unsealed is a
+-- mover the database is not actually watching. The generic resolver suffices — `BillCertificate`
+-- carries both `projectId` and `billId` — and the `NOWAIT` bill-first behaviour is inherited
+-- unchanged, so a certificate write that did not lock the bill first still fails closed.
+DROP TRIGGER IF EXISTS "BillCertificate_t6b_status_sealed" ON "BillCertificate";
+CREATE CONSTRAINT TRIGGER "BillCertificate_t6b_status_sealed"
+  AFTER INSERT OR UPDATE ON "BillCertificate" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION phase5_t6b_fold_status_sealed();

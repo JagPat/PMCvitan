@@ -25,7 +25,9 @@ statuses need — as a **family**, not as a list.
 
 - Base SHA: `5b8186a`
 - Scope: one architectural concern — §F's status derivation
-- Changed files / changed lines: 13 files, ~1,040 changed lines (within budget)
+- Changed files / changed lines: 17 files, ~2,190 changed lines after the
+  round-1 correction. The reviewed head `392b46f` was 16 files / 1,315 lines; the
+  PR body carries the `justified-large` marker and the reason.
 - Split considered: yes, and taken. `docs/STATUS.md` records the 6B split. Unit
   ii (the `PaymentReversal` table and its subtraction from `PAID`) is NOT here;
   6C's advance-recovery is not here; Task 7's frontend and forecast are not here.
@@ -68,9 +70,10 @@ statuses need — as a **family**, not as a list.
 6. **The derivation itself, in SQL** (Codex round 1) —
    `phase5_t6b_derive_bill_status` mirrors `derivedBillStatus` arm for arm, and
    `phase5_t6b_status_coherent` refuses any bill inside the family whose stored
-   status disagrees with its own folds. It fires at COMMIT from **five** tables:
-   `VendorBill` and every table that can make the equation false. Plus an
-   **idempotent backfill** that moves bills 6A legitimately left at `certified`.
+   status disagrees with its own folds. It fires at COMMIT from **six** tables:
+   `VendorBill` and every table that can make the equation false — the four
+   ledger tables and `BillCertificate`. Plus an **idempotent backfill** that
+   moves bills 6A legitimately left at `certified`.
 
 ## Codex round 1 — the family was a PROXY for the derivation
 
@@ -89,13 +92,46 @@ nowhere.
 | # | P | Finding | Fix |
 |---|---|---|---|
 | 1 | P1 | `UPDATE "VendorBill" SET status='paid'` on a bill with `APPROVED = PAID = 0` passed membership and committed; every read then reported an unpaid bill as paid. | The database computes the exact derivation (`phase5_t6b_derive_bill_status`) and refuses disagreement. |
-| 4 | P1 | The same gap's other mouth: a direct writer appends a VALID `PaymentApproval` — every 6A seal satisfied — and simply does not move the status. | The same coherence function fires from `PaymentApproval`, `Payment`, `BillDeduction` and `BillDeductionRelease` as well as the bill. Sealing only `VendorBill` would have closed one mouth and left the other. |
+| 4 | P1 | The same gap's other mouth: a direct writer appends a VALID `PaymentApproval` — every 6A seal satisfied — and simply does not move the status. | The same coherence function fires from `PaymentApproval`, `Payment`, `BillDeduction`, `BillDeductionRelease` and (after JagPat's follow-up below) `BillCertificate`, as well as the bill. Sealing only `VendorBill` would have closed one mouth and left the other. |
 | 2 | P1 | On upgrade from 6A a bill can already carry live approvals and payments at `certified` — 6A's PROBE 9 pinned exactly that. The migration installed the derivation without moving those rows. | An idempotent backfill, run BEFORE the seal. It is not a courtesy: without it the next honest write to such a bill would be refused for a state it did not create. It invents nothing — every value comes from existing rows through the same function the runtime uses, and the `WHERE` clause is the fixpoint condition. |
 | 3 | P2 | `commercial.payments` read the bill status and then queried approvals separately, so a concurrent `payment.approve` could land between them and produce `approved: 100.00` beside `billStatus: certified`. | One repeatable-read snapshot, as the deduction ledger has done since 5C. The stale comment there claiming the derivation was still ahead of the writes is deleted. |
 
 The fix that generalises is finding 4's: the seal is **one function fired from
 every table that can falsify the equation**, not a check bolted to the row the
 finding happened to name.
+
+### The adjacent P1 JagPat found in the correction's own sweep
+
+The fix for finding 4 claimed to seal "every table that can falsify the
+equation" and then enumerated the four ledger tables plus the bill — leaving out
+**`BillCertificate`**, which is a fold input twice over: `certifiedAmount` feeds
+`NET_PAYABLE`, and `supersededAt IS NULL` decides which approvals are in
+`APPROVED` at all. `certificate.certify` and `certificate.supersede` are two of
+this unit's six declared movers, so a mover whose table was unsealed was a mover
+the database was not actually watching.
+
+The bypass is ONE otherwise-valid raw transaction, every part of it legitimate on
+its own. Start at `approved-for-payment` with a live C1, an approval on it and no
+cash. Supersede C1 and insert its coherent replacement C2 over the same version
+and the same evidence, touching nothing else. The approval was made on C1 so it
+leaves live `APPROVED`, the folds now derive `certified`, the Task-5B projection
+seal is satisfied (still exactly one live certificate beside an in-family status)
+— and no ledger row and no bill row was written, so none of the five triggers had
+anything to fire on. The claim commits stored as `approved-for-payment` while its
+own folds say `certified`.
+
+`BillCertificate` now carries the same deferred constraint trigger through the
+same generic resolver (the row already has `projectId` and `billId`), inheriting
+the `NOWAIT` bill-first behaviour unchanged. **R1-F5** is the reproduce-first
+probe: RED at `392b46f` and at the five-trigger head — the raw replacement simply
+commits — and GREEN only with the certificate sealed, paired with the same
+replacement carrying its derived status, which is ACCEPTED.
+
+This is the same class as everything else in this correction, and it is the third
+time in this unit that a fix stopped one member short of its set. That is worth
+naming rather than filing: enumerating the members is what keeps failing;
+deriving them from what the fold READS is what works, and it is what
+`FOLD_INPUTS` already does for §B.
 
 ### The adjacent P2 JagPat added to the same batch
 
