@@ -203,9 +203,35 @@ Mutation-checked: a stale helper hash and an inverted `raisedBy` expectation eac
 **Recommendation: (a)** — selected. The precedent is in-repo, cleared, and was written against these
 exact failure modes. (b) leaves the closure unable to fail on the instance that motivated it.
 
+## Final state of the closure
+
+| Half | Substrate | What it proves |
+|---|---|---|
+| source | `commercial.contract.test.ts`, no database | DTO union ≡ `HeadroomMover`; no `AUTHORITY_GUARDS` matcher is ambiguous |
+| database | `commercial-catalog-closure.test.ts`, live catalog | every seal ENFORCED, per kind, with no default arm |
+
+Nine hostile probes, each mutating the live catalog inside a transaction and rolling back: dropped
+attachment with the function intact · weakened caller with the helper still defined · same-name
+INSERT-only redeclaration · dropped CHECK still present in migration text · decoy CHECK on another
+relation · weakened XOR that still mentions both targets · same-name function decoy in a second
+schema · dropped §G bound trigger with its helper intact · comment-only helper mention. Two
+retired-parser probes keep the audit's central claim executable. Every pin is mutation-checked.
+
 ## Open item carried forward
 
-Root A is now **twice** confirmed to land on the test written to close it — first as the stream-vs-set
-defect, now as the substrate. The lesson is not "check for siblings harder"; it is that a closure
-must be built on the substrate that *owns* the fact it asserts. That belongs in the root's statement,
-not only in this audit.
+Root A landed on the test written to close root A in **every round of this review** — as the
+stream-vs-set defect, then the substrate, then name-vs-identity, then the untouched trigger and
+constraint arms, then the helper one level down the call graph. Five rounds, one root, each time in
+a place the previous fix had not reached.
+
+Two lessons, and the second is the one that generalises:
+
+1. A closure must be built on the substrate that **owns** the fact it asserts. Source text answers
+   source questions; only the catalog answers catalog questions.
+2. **Fix the class, not the member.** Every round that ended cleanly did so because the correction
+   was applied to the whole set the finding was drawn from — every reader got the stream discipline,
+   every seal kind got a specification, every matcher got an ambiguity check — rather than to the
+   one instance named. The rounds that recurred are exactly the ones where the previous fix stopped
+   at the named instance.
+
+Both belong in root A's statement in the module's convergence record, not only in this audit.
