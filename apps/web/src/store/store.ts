@@ -63,7 +63,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
-import type { CommercialView } from './commercial';
+import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
@@ -237,6 +237,16 @@ export interface AppState {
   // there is no `commercialPending` twin; the write lifecycle lands in 7B-iii.
   commercialView: CommercialView | null;
   commercialLoad: 'idle' | 'loading' | 'ready' | 'error';
+  /** Task 7B-ii — the claim LIST and, per claim, its whole lifecycle. Keyed by bill id because a
+   *  user opens one claim at a time and the previously-opened one stays useful while they look at
+   *  another; a single-slot field would blank the first the moment the second was clicked. */
+  commercialBills: CommercialBillRow[] | null;
+  commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  commercialClaims: Record<string, CommercialClaimView>;
+  commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
+  /** Codex I2 — the ordering of the two reads' last SUCCESS; see `ModuleReadState`. */
+  commercialBillsStamp: number;
+  commercialClaimStamp: Record<string, number>;
   labourPending: string[];
   // Codex round 13 — the ORIGINAL allocate input per retained coalesce key (the key alone loses
   // `capacityCommitmentId`, so a resolved supplier draw stopped reserving its commitment in the
@@ -407,6 +417,8 @@ export interface AppActions {
    *  scope-guarded, and latest-request owned: an older reply (success OR failure) never overwrites
    *  a newer one. READ ONLY — the §M write actions and their outbox lifecycle land in 7B-iii. */
   loadCommercial: () => Promise<void>;
+  loadCommercialBills: () => Promise<void>;
+  loadCommercialClaim: (billId: string) => Promise<void>;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -695,6 +707,12 @@ export function getInitialState(): AppState {
     // leave one project's money on another's screen.
     commercialView: null,
     commercialLoad: 'idle',
+    commercialBills: null,
+    commercialBillsLoad: 'idle',
+    commercialClaims: {},
+    commercialClaimLoad: {},
+    commercialBillsStamp: 0,
+    commercialClaimStamp: {},
     labourPending: [],
     labourPendingInputs: {},
     labourOnboardPending: {},
@@ -769,6 +787,15 @@ export const useStore = create<Store>()(
     // bundle request may write labourView (an older success or failure resolving late is dropped).
     let labourLoadSeq = 0;
     let commercialLoadSeq = 0;
+    let commercialBillsSeq = 0;
+    // PER-CLAIM, not one shared counter (the PR #208 F3 lesson, applied before it can bite): a
+    // single token would let opening claim B cancel a still-useful load of claim A, and a slow A
+    // returning after B would be dropped even though nothing newer asked for A.
+    const commercialClaimSeq: Record<string, number> = {};
+    /** Codex I2 — ONE monotonic counter shared by the claim list and the claim bundle, so their
+     *  successes are comparable. Two counters would order each read against itself and answer
+     *  nothing about which of the two is fresher, which is the whole question. */
+    let commercialReadStamp = 0;
     /** Per-activity latest-request ownership for the reservation plan (correction 3, finding 2). Each
      *  `loadReservationPlan(activityId)` claims the next generation for that activity; only the newest
      *  request in the current project scope may write `reservationPlans[activityId]`, so a slow older
@@ -2604,9 +2631,12 @@ export const useStore = create<Store>()(
       const seq = ++commercialLoadSeq;
       const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
         seq === commercialLoadSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
-      // stale-while-revalidate: a refresh over a ready hub keeps the last-good money on screen
-      // rather than blanking it, which is the difference between "loading" and "we lost your data".
-      if (get().commercialLoad !== 'ready') set((s) => { s.commercialLoad = 'loading'; });
+      // Codex I2 — the STATUS says what the read is DOING; the VALUE says what we have. Keeping the
+      // status at 'ready' through a refresh was stale-while-revalidate implemented in the wrong
+      // place: every consumer already gates blanking on the value (`… && !commercial`), so the
+      // guard bought no protection and cost the one thing only the status can say — that a read is
+      // in flight right now. Set it honestly and let the value carry the last-good picture.
+      set((s) => { s.commercialLoad = 'loading'; });
       // Codex round 2 — ONE request, not four. Four reads assemble a page from four database
       // moments, and a re-attribution committing between two of them renders an impossible money
       // position (the obligation under MEP in the budget, the register still naming CIVIL). The
@@ -2623,6 +2653,60 @@ export const useStore = create<Store>()(
         // a NEWER result's load state — the direction the labour hub needed a finding to learn.
         if (owns(s)) s.commercialLoad = 'error';
       }));
+    },
+
+    /**
+     * Task 7B-ii — the claim LIST. Its own load and its own token, because "which claims exist" is
+     * a different question from "where does the money stand" and neither figure is derived from
+     * the other; see `commercialClaim` in the gateway for why that distinction decides bundling.
+     */
+    loadCommercialBills: () => {
+      if (!gateway) return Promise.resolve();
+      if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      const seq = ++commercialBillsSeq;
+      const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === commercialBillsSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
+      set((s) => { s.commercialBillsLoad = 'loading'; }); // honest status; the value survives (I2)
+      // UNWRAP: the route returns the wrapper `VendorBillListDto`, like every other list route.
+      // Storing the envelope would put an object where the screen maps an array.
+      return gateway.commercialBills().then(({ bills }) => {
+        set((s) => {
+          if (!owns(s)) return;
+          s.commercialBills = castDraft<CommercialBillRow[]>(bills);
+          s.commercialBillsLoad = 'ready';
+          s.commercialBillsStamp = ++commercialReadStamp;
+        });
+      }).catch(() => set((s) => { if (owns(s)) s.commercialBillsLoad = 'error'; }));
+    },
+
+    /**
+     * Task 7B-ii — ONE claim's whole lifecycle, from the server's single repeatable-read bundle.
+     *
+     * The token is PER CLAIM. A shared counter would make opening claim B drop a still-wanted load
+     * of claim A, and would let a slow A that nothing newer asked for be discarded — the same class
+     * of defect the reservation-plan generation fixed in PR #208, avoided here rather than found.
+     */
+    loadCommercialClaim: (billId: string) => {
+      if (!gateway) return Promise.resolve();
+      if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      const seq = (commercialClaimSeq[billId] = (commercialClaimSeq[billId] ?? 0) + 1);
+      const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === commercialClaimSeq[billId] && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
+      // Codex I2 — stale-while-revalidate lives in the VALUE, which is retained here exactly as
+      // before; the status goes to 'loading' because that is what is true. Holding it at 'ready'
+      // through a refresh made a lifecycle an accountant is about to authorise money against
+      // indistinguishable from one a completed current read had just confirmed.
+      set((s) => { s.commercialClaimLoad[billId] = 'loading'; });
+      return gateway.commercialClaim(billId).then((claim) => {
+        set((s) => {
+          if (!owns(s)) return;
+          s.commercialClaims[billId] = castDraft<CommercialClaimView>(claim);
+          s.commercialClaimLoad[billId] = 'ready';
+          s.commercialClaimStamp[billId] = ++commercialReadStamp;
+        });
+      }).catch(() => set((s) => { if (owns(s)) s.commercialClaimLoad[billId] = 'error'; }));
     },
     allocateWorker: (activityId, requirementId, originRevision, civilDate, workerId, capacityCommitmentId, labourSpecFingerprint) => {
       // fresh idempotency key per deliberate action; coalesced while pending on the exact

@@ -1,4 +1,4 @@
-import type { CommercialMoneyPositionDto } from '@vitan/shared';
+import type { CommercialClaimDto, CommercialMoneyPositionDto, VendorBillDto } from '@vitan/shared';
 
 /**
  * Phase 5 Task 7B-i (§M) — the MONEY-POSITION bundle: what `loadCommercial()` fetches together
@@ -21,3 +21,20 @@ import type { CommercialMoneyPositionDto } from '@vitan/shared';
  * which is the defect the one-serializer discipline exists to prevent one layer down.
  */
 export type CommercialView = CommercialMoneyPositionDto;
+
+/**
+ * Phase 5 Task 7B-ii (§M) — the CLAIM-LIFECYCLE reads: the other half of §M.
+ *
+ * A bare alias again, for the same reason as `CommercialView`: the server owns the shape, and a
+ * second declaration here is a second place for it to drift.
+ *
+ * Note what is NOT bundled. The claim LIST and the money position are separate loads because no
+ * figure in either is derived from the other, so one snapshot across them would buy no consistency
+ * — while the six reads INSIDE a claim are mutually derived (`approvable` from `netPayable`), which
+ * is exactly why the server folds those in one repeatable-read transaction. Bundling is a response
+ * to derivation, not a habit.
+ */
+export type CommercialClaimView = CommercialClaimDto;
+
+/** One row of the claim list — the entry point to a lifecycle, not the lifecycle itself. */
+export type CommercialBillRow = VendorBillDto;

@@ -17,7 +17,7 @@ import type {
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
-import type { CommercialView } from './commercial';
+import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import type { AllocateLabourInput } from '../data/apiGateway';
 
 /**
@@ -81,6 +81,8 @@ export interface ProjectDataState {
   // There is no `commercialPending` here: 7B-i is READ ONLY, and the write lifecycle lands in
   // 7B-iii with the commands it belongs to.
   commercialView: CommercialView | null;
+  commercialBills: CommercialBillRow[] | null;
+  commercialClaims: Record<string, CommercialClaimView>;
   /** Codex round 13 — the ORIGINAL allocate input per retained coalesce key. The key alone (round
    *  11's parser) loses `capacityCommitmentId`, so in the success→reload gap a resolved
    *  supplier-backed draw stopped reserving its commitment and a second same-slice worker was
@@ -129,6 +131,10 @@ export function emptyProjectData(): ProjectDataState {
     labourView: null,
     labourPending: [],
     commercialView: null,
+    // Task 7B-ii — the claim list and every opened claim's lifecycle are PROJECT data: a claim id
+    // is project-contained, so carrying either across a switch would render another site's money.
+    commercialBills: null,
+    commercialClaims: {},
     labourPendingInputs: {},
     labourOnboardPending: {},
     labourBindPending: {},
@@ -163,6 +169,26 @@ export interface ModuleReadState {
   // snapshot fallback, so no `source`). 'idle' on a non-pilot project; the shell load triggers it.
   labourLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialLoad: 'idle' | 'loading' | 'ready' | 'error';
+  // Task 7B-ii — the claim-list status, and the PER-CLAIM lifecycle status keyed by bill id. The
+  // per-claim map is torn down wholesale rather than pruned: every key in it names a claim in the
+  // scope being left, so nothing in it can be valid in the next one.
+  commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
+  /**
+   * Codex I2 — WHEN each of these two reads last SUCCEEDED, on one monotonic counter.
+   *
+   * The claim list and the claim bundle both carry a bill's `status`, and three rounds of this PR
+   * have now guessed which of the two is fresher from a proxy: "has a claim" (F4), then "has a
+   * claim that did not error" (H4). A proxy for freshness goes wrong the moment the two reads move
+   * independently — which is the normal case, since they have separate tokens and separate
+   * failures. Recording the ordering makes the question decidable instead of heuristic, so the
+   * screen compares two facts rather than standing something else in for them.
+   *
+   * A counter, not a clock: it needs to order two events in one tab, which is exactly what a
+   * monotonic integer does, without a wall clock's determinism problems in tests.
+   */
+  commercialBillsStamp: number;
+  commercialClaimStamp: Record<string, number>;
 }
 export function emptyModuleReadState(): ModuleReadState {
   return {
@@ -179,6 +205,10 @@ export function emptyModuleReadState(): ModuleReadState {
     materialsLoad: 'idle',
     labourLoad: 'idle',
     commercialLoad: 'idle',
+    commercialBillsLoad: 'idle',
+    commercialClaimLoad: {},
+    commercialBillsStamp: 0,
+    commercialClaimStamp: {},
   };
 }
 

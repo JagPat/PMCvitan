@@ -56,6 +56,30 @@ export function useApiSync(): void {
       // client's budget revision, PO issue, certification or payment would leave the money position
       // and the cash forecast stale until someone pressed Refresh. Same discipline: no-op off-pilot.
       void useStore.getState().loadCommercial();
+      // Task 7B-ii — and the claim surfaces an accountant currently has open.
+      //
+      // Codex G2 — the claim LIST too, once it has been OPENED. The first version skipped it on the
+      // grounds that "a ping is not evidence anyone is looking at it". True before the tab is
+      // opened, false after: a list already on screen silently missed a claim another user recorded,
+      // and showed stale statuses, until a full page reload. `billsLoad !== 'idle'` is the honest
+      // test — it means this scope has fetched the list, which is exactly "someone opened it".
+      if (useStore.getState().commercialBillsLoad !== 'idle') {
+        void useStore.getState().loadCommercialBills();
+      }
+      // Codex G3 — INTENT, not results. Keying the refresh on `commercialClaims` (the map of
+      // ARRIVED lifecycles) misses a claim whose FIRST read is still in flight: the ping lands
+      // before the response, there is no key yet, no follow-up is scheduled, and the in-flight
+      // response — snapshotted before the payment committed — then lands as `ready` with a stale
+      // `approvable` and no warning. `commercialClaimLoad` carries the loading and error keys too,
+      // so the union is every claim the user has asked for. Re-reading an in-flight one is safe and
+      // correct: the per-claim token makes the newer read own the slot and drops the older answer.
+      const commercial = useStore.getState();
+      for (const billId of new Set([
+        ...Object.keys(commercial.commercialClaims),
+        ...Object.keys(commercial.commercialClaimLoad),
+      ])) {
+        void useStore.getState().loadCommercialClaim(billId);
+      }
     };
 
     (async () => {
