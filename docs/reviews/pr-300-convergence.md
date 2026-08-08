@@ -1,13 +1,22 @@
 # PR #300 convergence audit — 7B-ii-b, and the difference between a moment and a state
 
-Three finding-bearing heads (`79bbd66`, `01e577f`, `102252d`). **Eleven findings**, one P1, no P0s,
-across four roots: one recurrence this phase has now named five times, and three new ones — all
-three of which are about *me being confident in writing*.
+Four finding-bearing heads (`79bbd66`, `01e577f`, `102252d`, `6d7f546`). **Fourteen findings**, one
+P1, no P0s, across six roots: one recurrence this phase has now named five times, and five new ones
+— most of which are about *me being confident in writing*.
 
 The third round is the one that changes the reading. Its four findings were not new ground: **three
 of them were defects in, or one step beside, the fixes I had just shipped.** A correction that is
 locally right and globally incomplete is the through-line of this PR, and §"Root F" below is the
 attempt to say why.
+
+The fourth round is the one that changes the *response*. Rounds two and three each patched a branch;
+round four's I3 was the **third** finding on this PR of one shape — a state falling through every
+guard and rendering an empty panel — and a third patch would have been the wrong move for a reason
+the first two rounds prove. So the shape is closed structurally instead (§"Root H"), and the same
+decision is applied to all three resources on the screen rather than the one the finding named. The
+untouched third instance — the money bundle, on the tab this hub *opens* on — was found by counting
+instances rather than by review, which is the first time on this PR that the carry-forward list paid
+for itself before a reviewer did.
 
 ## Every finding, in one table
 
@@ -24,6 +33,9 @@ attempt to say why.
 | H2 | `102252d` | P2 | The whole claim workflow sat inside `{commercial && …}`, so a failed money-position read hid tabs whose own reads were fine |
 | H3 | `102252d` | P2 | G1's effect omitted `capabilities` — on the real switch path it fired once into a capability-gated no-op and never again, leaving the blank panel G1 was meant to fix |
 | H4 | `102252d` | P2 | F4's fix preferred the claim bundle *always*, so a **stale** claim overrode a freshly refreshed list row — the mirror of the bug it fixed |
+| I1 | `6d7f546` | P2 | The page-level Refresh drove the money bundle only, so on a claim tab it re-read nothing that was on screen and left the open claim as stale as it found it |
+| I2 | `6d7f546` | P2 | A refresh over a cached claim held its status at `ready`, so a lifecycle carried over from an earlier visit was indistinguishable from one a completed read had just confirmed |
+| I3 | `6d7f546` | P2 | After a shell failure the list is `idle` with the capability absent, so no branch matched and the Claims panel rendered an **empty div** — no explanation, no retry |
 
 ## Root A (recurrence) — one fact in two places, allowed to drift
 
@@ -142,6 +154,93 @@ capability-gated loader would have no-opped — and passed with the bug in place
 the capability state at call time. Third time on this PR that a stub which did not model the thing it
 stood for agreed with the defect.
 
+## Root E, fourth appearance — and the point at which narrowing a proxy stops being a fix
+
+**I2**, and it is the same predicate for the third time.
+
+F4 asked "which of the list row and the claim bundle is fresher?" and answered **"whichever has a
+claim"**. H4 said that was too broad and narrowed it to **"whichever has a claim that did not
+error"**. I2 shows the narrowing still wrong: during a joint refresh the list can come back first
+with `paid` while the claim bundle held from an earlier visit still reads `certified` and has not
+errored at all — so the row goes on stating a lifecycle the list has already superseded, on the
+screen where someone authorises payment.
+
+Three answers to one question, each a property of the *reads* standing in for a property of *time*.
+The fix is not a fourth narrowing. The store now records **when each of the two reads last
+succeeded**, on one monotonic counter shared by both, and the row compares two facts. Nothing is
+inferred from an error, from a status, or from a bundle merely existing.
+
+The second half of I2 is the same root in the status field. `loadCommercialClaim` held the status at
+`ready` through a refresh, which was stale-while-revalidate implemented one field too far left: the
+guard bought nothing (every consumer already gates blanking on the **value**) and cost the only
+signal that says a read is in flight. **The status says what the read is doing; the value says what
+we have.** Both now do exactly one job, and all three commercial loaders were changed together
+rather than the one the finding named.
+
+And a note that belongs under root D as much as here: the probe covering that behaviour **asserted
+the defect**. `expect(s().commercialLoad, 'a refresh blanked the money already on screen').toBe(
+'ready')` was written from the belief that produced the code, so it did not merely fail to catch the
+bug — it pinned it, and any future correction would have had to argue with a green test. Fourth time
+on this PR that a test written beside the code agreed with it.
+
+## Root G (new) — adding a second thing does not update the code that speaks for "everything"
+
+**I1.** The page-level Refresh was written when this hub had money tabs only. 7B-ii added a whole
+second workflow beside them — its own tabs, its own loaders, its own scope teardown, its own realtime
+invalidation, all wired — and never revisited the one control whose job is *"re-read what I am
+looking at"*. So Refresh on the Payments tab re-read the money position and left the open claim
+untouched.
+
+This is the exact inverse of `pr-297-convergence.md`'s root B (*becoming a new consumer of something
+is the signal to re-check its declaration*): **becoming a new sibling of something is the signal to
+re-check what the code that serves "all of it" actually covers.** It is also 7B-i round 1's shape one
+floor down — there the new hub was added to some of the places the other hubs live; here the new
+workflow was added to some of the places the money tabs live.
+
+The fix names the tab's own resources, and takes the opportunity to retire a second proxy in the same
+function: the gate was `capabilitiesKnown`, standing in for "the loader will do something", when the
+loaders gate on `capabilities.includes('commercial')`. Known-but-not-yet-reporting is precisely the
+state where they are inert — so the old Refresh was a dead button exactly when it was needed. Naming
+the loader's own condition is H3's lesson, applied to a different caller.
+
+## Root H (new) — a set of guards enumerates the states you thought of
+
+**I3**, and it is the third instance on this PR: **G1** (a scope reset under an open tab), **H3** (a
+capability-gated loader no-opping), **I3** (a shell failure leaving the list `idle` off-pilot). Three
+different causes, one outcome — a state matched no `&&` guard, `(bills ?? []).map` over `null`
+rendered nothing, and the panel was blank with no explanation and no way out.
+
+The first two were patched with better conditions, and both patches were correct. The third proves
+that patching is the wrong response, because the defect is not in any one condition: independent
+guards **enumerate the states someone thought of**, and there is no place in that shape for the state
+nobody thought of. A fourth branch would fix I3 and leave the shape intact for I4.
+
+So the decision is made once, over the whole space, in one total function:
+
+```
+viewOf(value, status, willLoad) → { show: 'content', value, stale, refreshing } | { show: 'loading' } | { show: 'unavailable' }
+```
+
+Three things make it a closure rather than a tidier spelling. It is a **discriminated union**, so the
+callers `switch` and TypeScript's exhaustiveness check enforces coverage instead of memory. It takes
+**`willLoad`** — the term I3 turns on and the one a status cannot supply, since `idle` is hopeful when
+something is about to fetch and dead when nothing is — and each caller passes the same condition its
+own loader gates on. And it separates **value** from **status**, which is where root E's second half
+lands: the value decides whether there is something to show, the status decides what to say about it.
+
+Two consequences worth stating because neither was in the finding:
+
+- The claim's `claimPanel` wrapper and `claimGuard` fallback are now **one** function. Two functions
+  that are only correct when used together are one function written twice, and the pairing —
+  `{claim ? claimPanel(…) : claimGuard()}`, spelled out at three call sites — is what let a state
+  fall between them. The panel now takes what to render *with* a claim and decides every other case
+  itself, so no call site can get the pairing wrong.
+- **The money bundle had the same hole**, and no finding named it. `reading = (idle || loading) &&
+  !commercial` renders "Loading the money position…" forever when a capability-gated
+  `loadCommercial()` will never fetch — the permanent spinner of F3, on the tab this hub opens on. It
+  was found by doing what carry-forward #6 says to do: count the instances before moving on. There
+  were three. All three now decide the same way.
+
 ## What carries forward
 
 1. **A fixture you type out encodes your belief; a fixture you derive encodes the contract.** Prefer
@@ -151,7 +250,12 @@ stood for agreed with the defect.
 3. **Getting a hazard right in one place is not internalising it.** G3 sat one function from the
    token that exists for the same hazard.
 4. **Check that a verification command verifies.** `tsc -p` on a solution file exits 0 having read
-   nothing; so does a grep with no positive twin. Both were on this PR.
+   nothing; so does a grep with no positive twin. Both were on this PR — and so, a third time, was
+   the `Review-Convergence: complete` trailer on the round-4 head: the line was *present* and the
+   gate still rejected it, because a blank line above `Co-Authored-By` split the message into two
+   paragraphs and git parses only the last. Earlier heads on this PR were checked with
+   `git interpret-trailers --parse`; this one was checked by looking at it. **Present is not
+   parsed**, and the difference is one command.
 5. **Root A is not subtle and will recur again.** Its only reliable defence is a single source, not
    vigilance.
 6. **When you write a principle down, enumerate its instances before moving on.** Both root-F
@@ -159,3 +263,17 @@ stood for agreed with the defect.
 7. **A fix is a new opportunity for the same class of bug.** Three of round three's four findings
    were in or beside round two's fixes: an incomplete condition, an over-corrected preference, and a
    principle applied once. Re-read a correction as if someone else wrote it.
+8. **The third instance of a shape is a design signal, not a third patch.** Two corrections to a
+   condition are ordinary; a third means the defect is in the shape, and the fix is to make the
+   property structural — a total function with an exhaustive `switch`, not another branch. (Root H.)
+9. **Narrowing a proxy is not replacing it.** F4 → H4 → I2 were three answers to *"which read is
+   newer?"*, each derived from something that is not time. If a question has a fact that can be
+   recorded, record it; a heuristic that has been narrowed twice is telling you it was the wrong
+   kind of answer. (Root E.)
+10. **Status and value answer different questions.** "What is the read doing" and "what do we hold"
+    must never be collapsed into one field to serve one screen's convenience — the collapse always
+    costs the signal someone needed on the screen where it matters most.
+11. **Adding a sibling is the signal to re-check whatever speaks for "everything".** A new tab, a new
+    resource, a new workflow inherits the wiring you remember to give it; the controls written before
+    it — a Refresh, a teardown, an invalidation — have to be re-read against the new list. (Root G;
+    the inverse of pr-297's root B.)

@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
+import type { CommercialClaimView } from '@/store/commercial';
 import type { CostHeadPositionDto } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -80,10 +81,51 @@ function money(value: string | null): string {
   return value === null ? '—' : value;
 }
 
+type LoadState = 'idle' | 'loading' | 'ready' | 'error';
+
+/**
+ * Codex I3 — WHAT A RESOURCE SHOWS, as a total function instead of a list of guards.
+ *
+ * This is the third finding on this PR where a state fell through every branch and the panel
+ * rendered **nothing** — no rows, no loading, no error, no explanation, no retry. G1 was a scope
+ * reset under an open tab; H3 was a capability-gated loader no-opping; I3 is a shell failure that
+ * leaves the list `idle` with `onPilot` false, so no branch matches and `(bills ?? []).map` over
+ * null renders an empty div. Three times, three different states, one shape: independent `&&`
+ * guards ENUMERATE the states someone thought of, and a state nobody thought of renders nothing.
+ *
+ * Patching in a fourth branch would fix I3 and leave the shape. So the decision is made once, here,
+ * over the whole space: a resource either has a value to show, is being fetched, or cannot be
+ * shown. The return is a discriminated union, the callers `switch` on it, and TypeScript's
+ * exhaustiveness check is what guarantees coverage — the property is structural rather than
+ * remembered.
+ *
+ * `willLoad` is the term I3 turns on and the one a status alone cannot supply. `idle` means "no
+ * read has happened", which is a HOPEFUL state when something is about to fetch and a DEAD one when
+ * nothing is — and the difference is not visible from the status. The caller passes the same
+ * condition its loader gates on (H3's lesson: name the term, do not proxy it), so "idle and nothing
+ * is coming" resolves to unavailable-with-a-retry rather than a spinner that never ends.
+ */
+type ResourceView<T> =
+  | { show: 'content'; value: T; stale: boolean; refreshing: boolean }
+  | { show: 'loading' }
+  | { show: 'unavailable' };
+
+function viewOf<T>(value: T | null | undefined, status: LoadState | null | undefined, willLoad: boolean): ResourceView<T> {
+  // A value we hold is shown whatever the read is doing — that IS stale-while-revalidate, and it
+  // belongs to the value. What the read is doing is reported ALONGSIDE it (Codex I2): `error` means
+  // what is on screen is known-stale, `loading` means a fresh read is in flight right now.
+  if (value !== null && value !== undefined) {
+    return { show: 'content', value, stale: status === 'error', refreshing: status === 'loading' };
+  }
+  if (status === 'error') return { show: 'unavailable' };
+  if (status === 'loading') return { show: 'loading' };
+  // 'idle', or no status at all (never attempted, or attempted while inert).
+  return willLoad ? { show: 'loading' } : { show: 'unavailable' };
+}
+
 export function CommercialScreen() {
   const commercial = useStore(useShallow((s) => s.commercialView));
   const commercialLoad = useStore((s) => s.commercialLoad);
-  const capabilitiesKnown = useStore((s) => s.capabilitiesKnown);
   const capabilities = useStore(useShallow((s) => s.capabilities));
   const loadCommercial = useStore((s) => s.loadCommercial);
   const loadShell = useStore((s) => s.loadShell);
@@ -91,6 +133,10 @@ export function CommercialScreen() {
   const billsLoad = useStore((s) => s.commercialBillsLoad);
   const claims = useStore(useShallow((s) => s.commercialClaims));
   const claimLoad = useStore(useShallow((s) => s.commercialClaimLoad));
+  // Codex I2 — the ordering of the two reads' last SUCCESS, so "which is fresher" is looked up
+  // rather than guessed. See the row-selection comment on the Claims tab.
+  const billsStamp = useStore((s) => s.commercialBillsStamp);
+  const claimStamp = useStore(useShallow((s) => s.commercialClaimStamp));
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
   const [tab, setTab] = useState<Tab>('position');
@@ -100,15 +146,27 @@ export function CommercialScreen() {
   const [selection, setSelection] = useState<{ scope: string; billId: string | null }>({ scope: '', billId: null });
   const selectedBillId = selection.scope === scopeKey ? selection.billId : null;
 
-  // The money bundle's own states, and they belong to the MONEY tabs only (Codex H2).
-  const reading = (commercialLoad === 'idle' || commercialLoad === 'loading') && !commercial;
-  const unavailable = commercialLoad === 'error' && !commercial;
-  const stale = commercialLoad === 'error' && !!commercial;
-  // While the shell/capability read has FAILED, `loadCommercial()` is a capability-gated no-op, so
-  // Retry must re-drive the shell itself (which reloads the bundle on a pilot, or lets RouteBridge
-  // bounce a non-pilot deep link). The labour hub needed a finding to learn this; it is cloned.
-  const retry = (): void => { if (capabilitiesKnown) { void loadCommercial(); } else { loadShell(); } };
+  // Declared here because THREE things now depend on it: the money view below, the claim-list
+  // load condition, and Refresh — every one of them gating on the capability the loaders
+  // themselves gate on, rather than on a proxy for it (Codex H3, then I1).
+  const onPilot = capabilities.includes('commercial');
 
+  // The money bundle's own states, and they belong to the MONEY tabs only (Codex H2).
+  //
+  // Codex I3, applied to the case the finding did NOT name. `viewOf` was written for the claim
+  // list, and the money bundle three lines up had the same three-independent-guards shape with the
+  // same hole: `commercial === null` with the status still `idle` because `loadCommercial()` is
+  // capability-gated rendered "Loading the money position…" with nothing loading and nothing that
+  // would — the permanent spinner F3 found on the claim panel, on the tab this hub OPENS on.
+  //
+  // Root F of the convergence audit is the reason this is here rather than in the next round:
+  // stating a principle covers the instance you are looking at and nothing else unless you go and
+  // count them. There are three resources on this screen; all three now decide the same way.
+  const moneyView = viewOf(commercial, commercialLoad, onPilot);
+  const reading = moneyView.show === 'loading';
+  const unavailable = moneyView.show === 'unavailable';
+  const stale = moneyView.show === 'content' && moneyView.stale;
+  const moneyRefreshing = moneyView.show === 'content' && moneyView.refreshing;
   const positions = commercial?.budget.positions ?? [];
   // Codex F3 — `commercial/attributions` returns the WHOLE register, superseded history included,
   // because a re-attribution supersedes the old row and inserts its successor rather than editing
@@ -145,10 +203,31 @@ export function CommercialScreen() {
   //
   // Expressing a condition instead of an event (the previous round) is only half of it; the
   // condition also has to be complete. `onPilot` is the missing term, in the guard AND the deps.
-  const onPilot = capabilities.includes('commercial');
   useEffect(() => {
     if (inClaimWorkflow && onPilot && billsLoad === 'idle') void loadCommercialBills();
   }, [inClaimWorkflow, onPilot, billsLoad, loadCommercialBills]);
+
+  /**
+   * Codex I1 — REFRESH RE-READS WHAT THIS SCREEN IS SHOWING.
+   *
+   * The page-level button drove the money bundle alone, because it was written when the hub had
+   * money tabs only and never revisited when the claim workflow was added beside them. On a claim
+   * tab it therefore re-read something not on screen and left the claim list and the open claim —
+   * the lifecycle an accountant is about to authorise money against — exactly as stale as before.
+   *
+   * The gate is `onPilot`, not `capabilitiesKnown`. Both loaders gate on the CAPABILITY itself, so
+   * `capabilitiesKnown` was a proxy for "the loader will do something" that is wrong in the case
+   * that matters: capabilities known but not yet reporting `commercial` (a shell failure, or the
+   * gap after a project switch) makes every loader an inert no-op, and a Refresh that dispatches
+   * inert no-ops is a dead button. Re-driving the shell is the only thing that can recover it, and
+   * naming the loader's own condition is the same lesson H3 cost a round to learn.
+   */
+  const refresh = (): void => {
+    if (!onPilot) { loadShell(); return; }
+    if (onMoneyTab) { void loadCommercial(); return; }
+    void loadCommercialBills();
+    if (selectedBillId) void loadCommercialClaim(selectedBillId);
+  };
 
   const openTab = (next: Tab): void => { setTab(next); };
   const selectClaim = (billId: string): void => {
@@ -168,65 +247,65 @@ export function CommercialScreen() {
   // means the stale id is simply not selected, with no frame in between and nothing to clean up.
   const claim = selectedBillId ? claims[selectedBillId] ?? null : null;
   const claimStatus = selectedBillId ? claimLoad[selectedBillId] ?? null : null;
-  // A distinct `claimReading` is deliberately absent: 'loading' and the torn-down case (a selected
-  // id whose store entry went away with the project) are the SAME answer — we don't have it yet —
-  // so the guard's fallback covers both, and a separate flag would only invite the four-state
-  // enumeration whose missing fourth branch was the crash.
-  const claimStale = claimStatus === 'error' && !!claim;
-  const claimUnavailable = claimStatus === 'error' && !claim;
+  // Nothing auto-loads a claim: selection does, and a selection whose scope no longer matches is
+  // simply not selected (above). So a selected claim with no status at all is a claim nothing is
+  // going to fetch — `willLoad: false` — which `viewOf` answers with a retry rather than the
+  // permanent "Loading the claim…" that was F3's finding.
+  const claimView = viewOf<CommercialClaimView>(claim, claimStatus, false);
 
   /**
-   * Codex F2 — EVERY claim tab wears the stale warning, not just the one it was written on.
+   * Codex F2 — EVERY claim tab wears the same states, because they are properties of the CLAIM.
    *
-   * A refresh that fails over an already-loaded claim keeps the last-good lifecycle on screen (the
-   * per-claim stale-while-revalidate) and marks the status `error`. Certification said so; Payments
-   * and Measurements did not — and Payments is where `approvable` lives, the one figure an
-   * accountant is about to authorise money against. A banner on one tab is not a property of the
-   * claim, so it is hoisted here and every panel renders through it.
-   */
-  const claimPanel = (content: JSX.Element): JSX.Element => (
-    <>
-      {claimStale && (
-        <div style={{ ...rowCard, ...muted, borderColor: 'var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)' }} data-testid="commercial-claim-stale">
-          Showing the last-known claim — the latest couldn&rsquo;t load.{' '}
-          <button onClick={() => selectedBillId && selectClaim(selectedBillId)} data-testid="commercial-claim-stale-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '3px 8px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer' }}>
-            Retry
-          </button>
-        </div>
-      )}
-      {content}
-    </>
-  );
-
-  /**
-   * The state to render when there is no claim to render. Returns null ONLY when `claim` is
-   * non-null, which is what lets every panel below drop its non-null assertions.
+   * The three tabs are views of ONE bundle; a banner on one of them is not a property of the thing
+   * they all show. Round 1 had the warning on Certification only — and Payments is where
+   * `approvable` lives, the figure someone is about to authorise money against.
    *
-   * The last branch is the one that matters and the one the first draft missed: `selectedBillId` is
-   * COMPONENT state while the claim map is STORE state, and a project switch tears the store down
-   * without unmounting this screen. That leaves a selected id with no entry and no status — neither
-   * loading nor error — which a three-branch guard answered with `null`, so the panel dereferenced
-   * an undefined claim and the hub crashed on a plain project switch.
+   * Codex I3 — this used to be TWO functions: a `claimPanel` wrapper and a `claimGuard` fallback,
+   * with every call site spelling `{claim ? claimPanel(…) : claimGuard()}`. Two functions that are
+   * only correct when used together are one function written twice, and the pairing is what let a
+   * state fall between them. Merged, the panel takes what to render WITH a claim and decides every
+   * other case itself, so no call site can get the pairing wrong and the non-null assertion the old
+   * shape needed is gone.
    */
-  const claimGuard = (): JSX.Element | null => {
-    if (claim) return null;
+  const claimPanel = (render: (loaded: CommercialClaimView) => JSX.Element): JSX.Element => {
     if (!selectedBillId) {
       return <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-none">Choose a claim on the Claims tab.</div>;
     }
-    if (claimUnavailable) {
-      return (
-        <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-unavailable">
-          <div>This claim couldn&rsquo;t load.</div>
-          <div style={{ marginTop: 10 }}>
-            <Button variant="ink" onClick={() => selectClaim(selectedBillId)} data-testid="commercial-claim-retry">
-              <RefreshCw size={14} /> Retry
-            </Button>
+    switch (claimView.show) {
+      case 'loading':
+        return <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-loading">Loading the claim…</div>;
+      case 'unavailable':
+        return (
+          <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-unavailable">
+            <div>This claim couldn&rsquo;t load.</div>
+            <div style={{ marginTop: 10 }}>
+              <Button variant="ink" onClick={() => selectClaim(selectedBillId)} data-testid="commercial-claim-retry">
+                <RefreshCw size={14} /> Retry
+              </Button>
+            </div>
           </div>
-        </div>
-      );
+        );
+      case 'content':
+        return (
+          <>
+            {claimView.stale && (
+              <div style={{ ...rowCard, ...muted, borderColor: 'var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)' }} data-testid="commercial-claim-stale">
+                Showing the last-known claim — the latest couldn&rsquo;t load.{' '}
+                <button onClick={() => selectClaim(selectedBillId)} data-testid="commercial-claim-stale-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '3px 8px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer' }}>
+                  Retry
+                </button>
+              </div>
+            )}
+            {/* Codex I2 — a read IS in flight, and saying so is the whole point of an honest status.
+                Without it, a lifecycle held from an earlier visit and a lifecycle a completed read
+                just confirmed look identical on a page about to authorise a payment. */}
+            {claimView.refreshing && (
+              <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-refreshing">Refreshing this claim…</div>
+            )}
+            {render(claimView.value)}
+          </>
+        );
     }
-    // 'loading', or the torn-down case above: both are honestly "we don't have it yet".
-    return <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-loading">Loading the claim…</div>;
   };
 
   return (
@@ -237,7 +316,7 @@ export function CommercialScreen() {
           <h1 style={{ margin: '4px 0 0', fontSize: 21, letterSpacing: '-0.01em' }}>Money position</h1>
           <div style={muted}>What this project has authorised, what it has committed, and what it still owes.</div>
         </div>
-        <Button variant="ghost" onClick={() => retry()} data-testid="commercial-refresh" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <Button variant="ghost" onClick={() => refresh()} data-testid="commercial-refresh" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <RefreshCw size={14} /> Refresh
         </Button>
       </div>
@@ -246,7 +325,7 @@ export function CommercialScreen() {
         <div data-testid="commercial-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginTop: 14 }}>
           <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>Showing the last-known money picture — the latest couldn&rsquo;t load.</span>
-          <button onClick={() => retry()} data-testid="commercial-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <button onClick={() => refresh()} data-testid="commercial-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
             <RefreshCw size={12} /> Retry
           </button>
         </div>
@@ -255,12 +334,18 @@ export function CommercialScreen() {
       {reading && onMoneyTab && (
         <div data-testid="commercial-loading" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the money position…</div>
       )}
+      {/* Codex I2, third instance — a refresh over money already on screen is visible, for the same
+          reason it is on the claim: the figures are what someone acts on, and "held from earlier"
+          and "just confirmed" must not look identical. */}
+      {moneyRefreshing && onMoneyTab && (
+        <div data-testid="commercial-refreshing" style={{ ...mono, marginTop: 12 }}>Refreshing the money position…</div>
+      )}
       {unavailable && onMoneyTab && (
         <div data-testid="commercial-unavailable" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> Commercial unavailable.</div>
           <div style={{ fontSize: 12.5, marginTop: 6 }}>Check your connection and access, then retry.</div>
           <div style={{ marginTop: 14 }}>
-            <Button variant="ink" onClick={() => retry()} data-testid="commercial-retry-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Button variant="ink" onClick={() => refresh()} data-testid="commercial-retry-empty" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <RefreshCw size={15} /> Retry
             </Button>
           </div>
@@ -368,51 +453,64 @@ export function CommercialScreen() {
             </div>
           )}
 
-          {tab === 'claims' && (
+          {tab === 'claims' && (() => {
+            // Codex I3 — the list's state is DECIDED, not enumerated. `willLoad` is exactly the
+            // effect's own condition above, so "idle" is a spinner only while something is actually
+            // going to fetch; after a shell failure `onPilot` is false, nothing will, and the panel
+            // says so with a retry instead of rendering an empty div.
+            const v = viewOf(bills, billsLoad, onPilot && billsLoad === 'idle');
+            return (
             <div data-testid="commercial-claims">
-              {billsLoad === 'loading' && !bills && (
+              {v.show === 'loading' && (
                 <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-loading">Loading claims…</div>
               )}
-              {/* Codex H1 — a cached list whose latest refresh FAILED says so. The previous round
-                  hoisted exactly this warning for the CLAIM and left the LIST without one, so an
-                  open Claims tab could render "No vendor claim has been recorded yet" after a failed
-                  refresh that would have shown the first claim another user recorded. Stating a
-                  principle for one of a symmetric pair is not applying it. */}
-              {billsLoad === 'error' && bills && (
-                <div style={{ ...rowCard, ...muted, borderColor: 'var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)' }} data-testid="commercial-claims-stale">
-                  Showing the last-known claim list — the latest couldn&rsquo;t load.{' '}
-                  <button onClick={() => void loadCommercialBills()} data-testid="commercial-claims-stale-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '3px 8px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer' }}>
-                    Retry
-                  </button>
-                </div>
-              )}
-              {billsLoad === 'error' && !bills && (
+              {v.show === 'unavailable' && (
                 <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-unavailable">
                   <div>Claims couldn&rsquo;t load.</div>
                   <div style={{ marginTop: 10 }}>
-                    <Button variant="ink" onClick={() => void loadCommercialBills()} data-testid="commercial-claims-retry">
+                    <Button variant="ink" onClick={() => refresh()} data-testid="commercial-claims-retry">
                       <RefreshCw size={14} /> Retry
                     </Button>
                   </div>
                 </div>
               )}
-              {bills?.length === 0 && (
-                <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-empty">No vendor claim has been recorded yet.</div>
-              )}
-              {(bills ?? []).map((row) => {
-                // Codex F4 — the SELECTED row reads the loaded claim's bill, not the list's copy.
-                // The list is fetched once when the tab opens; selecting a claim re-reads it. If a
-                // certification or payment landed in between, the row went on saying `verified`
-                // while the Certification and Payments tabs — rendering `claim.bill.status` from
-                // the fresh bundle — said `certified`. One workflow contradicting itself about the
-                // same claim, on the same screen. The freshest read wins for the row it describes.
-                // Codex H4 — prefer the claim bundle only while it is not KNOWN STALE. The previous
-                // round fixed "the row is older than the claim" by always preferring the claim,
-                // which is the same mistake mirrored: after a successful list refresh and a FAILED
-                // claim refresh, the claim is the older of the two and would override a fresher row.
-                // "Has a claim" was standing in for "the claim is fresher" — root E again.
-                const claimIsStale = row.id === selectedBillId && claimStatus === 'error';
-                const b = row.id === selectedBillId && claim && !claimIsStale ? claim.bill : row;
+              {v.show === 'content' && (
+                <>
+                  {/* Codex H1 — a cached list whose latest refresh FAILED says so. Round 2 hoisted
+                      exactly this warning for the CLAIM and left the LIST without one, so an open
+                      Claims tab could render "No vendor claim has been recorded yet" after a failed
+                      refresh that would have shown the first claim another user recorded. Both
+                      resources now render through the SAME decision, so the pair cannot drift. */}
+                  {v.stale && (
+                    <div style={{ ...rowCard, ...muted, borderColor: 'var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)' }} data-testid="commercial-claims-stale">
+                      Showing the last-known claim list — the latest couldn&rsquo;t load.{' '}
+                      <button onClick={() => refresh()} data-testid="commercial-claims-stale-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '3px 8px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer' }}>
+                        Retry
+                      </button>
+                    </div>
+                  )}
+                  {v.refreshing && (
+                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-refreshing">Refreshing the claim list…</div>
+                  )}
+                  {v.value.length === 0 && (
+                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-empty">No vendor claim has been recorded yet.</div>
+                  )}
+                  {v.value.map((row) => {
+                // Codex F4 — the SELECTED row reads whichever of the two reads is FRESHER, because
+                // the list and the claim bundle both carry this bill's status and are fetched
+                // independently. F4 preferred the claim whenever one existed; H4 narrowed that to
+                // "whenever it did not error"; I2 showed the narrowing still wrong — a list refresh
+                // that lands first during a joint refresh is demonstrably newer than a claim held
+                // from an earlier visit, and the row went on showing `certified` while the list had
+                // already returned `paid`.
+                //
+                // All three were proxies for one question — WHICH READ IS NEWER — that the store now
+                // answers with a fact. Two successes on one monotonic counter are ordered; nothing
+                // is inferred from an error, a status or the mere presence of a bundle.
+                const claimFresher = row.id === selectedBillId
+                  && claim !== null
+                  && (claimStamp[row.id] ?? 0) > billsStamp;
+                const b = claimFresher && claim ? claim.bill : row;
                 return (
                   <button
                     key={b.id}
@@ -430,13 +528,16 @@ export function CommercialScreen() {
                     <div style={mono}>{b.id}</div>
                   </button>
                 );
-              })}
+                  })}
+                </>
+              )}
             </div>
-          )}
+            );
+          })()}
 
           {tab === 'certification' && (
             <div data-testid="commercial-certification">
-              {claim ? claimPanel(
+              {claimPanel((claim) => (
                 <>
                   {/* §E — the verification triple, DERIVED server-side on every call. A stored
                       verdict is stale the moment a receipt is reversed, which is why it is not
@@ -481,14 +582,14 @@ export function CommercialScreen() {
                       )}
                     </div>
                   )}
-                </>,
-              ) : claimGuard()}
+                </>
+              ))}
             </div>
           )}
 
           {tab === 'payments' && (
             <div data-testid="commercial-payments">
-              {claim ? claimPanel(
+              {claimPanel((claim) => (
                 <div style={rowCard} data-testid="commercial-payment-ledger">
                   <div style={{ fontWeight: 600 }}>Approvals and payments</div>
                   {/* `approvable` is DERIVED from `netPayable` server-side, and both arrive in the
@@ -508,14 +609,14 @@ export function CommercialScreen() {
                       <span style={num}>{a.amount}</span> approved · paid <span style={num}>{a.paid}</span>
                     </div>
                   ))}
-                </div>,
-              ) : claimGuard()}
+                </div>
+              ))}
             </div>
           )}
 
           {tab === 'measurements' && (
             <div data-testid="commercial-measurements">
-              {claim ? claimPanel(
+              {claimPanel((claim) => (
                 Object.keys(claim.measurements).length === 0 ? (
                   // §D applies to LABOUR lines. A material line's evidence is accepted stock, which
                   // the verification triple already reports — so this says "does not apply" rather
@@ -536,8 +637,8 @@ export function CommercialScreen() {
                       </div>
                     ))}
                   </>
-                ),
-              ) : claimGuard()}
+                )
+              ))}
             </div>
           )}
     </div>

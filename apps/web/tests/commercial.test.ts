@@ -204,19 +204,27 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
     expect(s().commercialView, 'another project\'s money landed on this project\'s hub').toBeNull();
   });
 
-  it('a refresh over a READY hub is stale-while-revalidate — it never blanks to `loading`', async () => {
+  it('a refresh over a READY hub keeps the money on screen AND says a read is in flight', async () => {
+    // Codex I2 — this assertion used to read `commercialLoad === 'ready'` during the refresh, and
+    // that was the defect written down as an expectation: stale-while-revalidate is a property of
+    // the VALUE (don't blank what is on screen), not of the STATUS (don't lie about what the read
+    // is doing). Holding the status at 'ready' bought nothing — every consumer already gates
+    // blanking on the value — and cost the only signal that distinguishes a figure a completed read
+    // just confirmed from one held over from an earlier visit.
     s()._setGateway(gw() as unknown as ApiGateway);
     useStore.setState({ capabilities: ['commercial'] });
     void s().loadCommercial();
     await flush();
     expect(s().commercialLoad).toBe('ready');
+    const onScreen = s().commercialView;
 
     let release!: (v: CommercialView) => void;
     const held = new Promise<CommercialView>((r) => { release = r; });
     s()._setGateway(gw({ commercialMoneyPosition: vi.fn().mockReturnValue(held) }) as unknown as ApiGateway);
     void s().loadCommercial();
     await flush();
-    expect(s().commercialLoad, 'a refresh blanked the money already on screen').toBe('ready');
+    expect(s().commercialView, 'a refresh blanked the money already on screen').toBe(onScreen);
+    expect(s().commercialLoad, 'a read was in flight and the status said otherwise').toBe('loading');
     release(bundle());
     await flush();
     expect(s().commercialLoad).toBe('ready');
@@ -553,6 +561,64 @@ describe('Task 7B-ii (§M) — the claim list and the per-claim lifecycle', () =
     expect(s().commercialClaims).toEqual({});
     expect(s().commercialBillsLoad).toBe('idle');
     expect(s().commercialClaimLoad).toEqual({});
+  });
+
+  it('I2: a refresh over a cached claim keeps the lifecycle AND reports the read in flight', async () => {
+    let release!: (v: unknown) => void;
+    let call = 0;
+    const g = gw({
+      commercialClaim: vi.fn().mockImplementation(() => {
+        call += 1;
+        return call === 1 ? Promise.resolve(claimDto()) : new Promise((r) => { release = r; });
+      }),
+    });
+    pilot(g);
+    await s().loadCommercialClaim('bill-1');
+    expect(s().commercialClaimLoad['bill-1']).toBe('ready');
+    const held = s().commercialClaims['bill-1'];
+
+    void s().loadCommercialClaim('bill-1');
+    await flush();
+    // The VALUE is what stale-while-revalidate protects, and it is untouched…
+    expect(s().commercialClaims['bill-1'], 'a refresh blanked a claim page an accountant is reading').toBe(held);
+    // …while the STATUS reports what is actually happening. RED before: 'ready' throughout, so an
+    // old lifecycle and one a completed current read had just confirmed were indistinguishable.
+    expect(s().commercialClaimLoad['bill-1'], 'a read was in flight and the status said `ready`').toBe('loading');
+
+    release(claimDto({ payments: { ...claimDto().payments, approvable: '10.00' } }));
+    await flush();
+    expect(s().commercialClaimLoad['bill-1']).toBe('ready');
+  });
+
+  it('I2: the two reads\' successes are ORDERED, so "which is fresher" is a fact not a guess', async () => {
+    // F4 preferred the claim whenever one existed; H4 narrowed that to "whenever it did not error";
+    // I2 showed the narrowing still wrong. All three were proxies for one question the store can
+    // simply answer — hence one monotonic counter shared by both reads.
+    const g = gw();
+    pilot(g);
+    await s().loadCommercialBills();
+    const afterList = s().commercialBillsStamp;
+    expect(afterList).toBeGreaterThan(0);
+
+    await s().loadCommercialClaim('bill-1');
+    expect(
+      s().commercialClaimStamp['bill-1'],
+      'the claim succeeded second and must order after the list',
+    ).toBeGreaterThan(afterList);
+
+    // …and a later list refresh orders after the claim, which is the case I2 reported.
+    await s().loadCommercialBills();
+    expect(s().commercialBillsStamp).toBeGreaterThan(s().commercialClaimStamp['bill-1']);
+  });
+
+  it('I2: the read ordering is PROJECT-OWNED — a scope teardown resets it', async () => {
+    const g = gw();
+    pilot(g);
+    await s().loadCommercialBills();
+    await s().loadCommercialClaim('bill-1');
+    useStore.setState({ ...emptyProjectData(), ...emptyModuleReadState() });
+    expect(s().commercialBillsStamp).toBe(0);
+    expect(s().commercialClaimStamp).toEqual({});
   });
 
   it('a claim read that resolves after a project switch is DROPPED', async () => {

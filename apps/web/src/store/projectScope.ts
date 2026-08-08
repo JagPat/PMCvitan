@@ -174,6 +174,21 @@ export interface ModuleReadState {
   // scope being left, so nothing in it can be valid in the next one.
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
+  /**
+   * Codex I2 — WHEN each of these two reads last SUCCEEDED, on one monotonic counter.
+   *
+   * The claim list and the claim bundle both carry a bill's `status`, and three rounds of this PR
+   * have now guessed which of the two is fresher from a proxy: "has a claim" (F4), then "has a
+   * claim that did not error" (H4). A proxy for freshness goes wrong the moment the two reads move
+   * independently — which is the normal case, since they have separate tokens and separate
+   * failures. Recording the ordering makes the question decidable instead of heuristic, so the
+   * screen compares two facts rather than standing something else in for them.
+   *
+   * A counter, not a clock: it needs to order two events in one tab, which is exactly what a
+   * monotonic integer does, without a wall clock's determinism problems in tests.
+   */
+  commercialBillsStamp: number;
+  commercialClaimStamp: Record<string, number>;
 }
 export function emptyModuleReadState(): ModuleReadState {
   return {
@@ -192,6 +207,8 @@ export function emptyModuleReadState(): ModuleReadState {
     commercialLoad: 'idle',
     commercialBillsLoad: 'idle',
     commercialClaimLoad: {},
+    commercialBillsStamp: 0,
+    commercialClaimStamp: {},
   };
 }
 

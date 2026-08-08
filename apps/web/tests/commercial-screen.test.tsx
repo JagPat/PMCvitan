@@ -148,7 +148,12 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     // Defence in depth, and the probe that keeps the guard's structural property honest: with the
     // scope unchanged the selection stands, so a missing entry is the genuinely unknown case. The
     // three-branch guard returned `null` here and the panel crashed
-    // (`Cannot read properties of null (reading 'verification')`); it now says so instead.
+    // (`Cannot read properties of null (reading 'verification')`).
+    //
+    // Codex I3 — and the answer is UNAVAILABLE, not "Loading the claim…". Nothing auto-loads a
+    // claim, so with no value and no status there is no read in flight and none coming: a spinner
+    // here is a promise the screen cannot keep, which is exactly the permanent-loading shape F3
+    // found one branch over. `viewOf`'s `willLoad: false` is what tells the two apart.
     useStore.setState({
       commercialClaims: { 'bill-1': claim() },
       commercialClaimLoad: { 'bill-1': 'ready' },
@@ -160,7 +165,8 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     expect(r.getByTestId('verification-verdict')).toBeTruthy();
 
     act(() => { useStore.setState({ commercialClaims: {}, commercialClaimLoad: {} }); });
-    expect(r.getByTestId('commercial-claim-loading')).toBeTruthy();
+    expect(r.getByTestId('commercial-claim-unavailable')).toBeTruthy();
+    expect(r.getByTestId('commercial-claim-retry')).toBeTruthy();
   });
 
   it('F3: selecting again in the NEW scope works — the reset is not a permanent block', () => {
@@ -202,14 +208,20 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
   });
 
   it('F4: the selected row shows the LOADED claim\'s status, not the list\'s stale copy', () => {
-    // the list was fetched before a certification landed; the claim read is fresher
+    // The list was fetched before a certification landed; the claim read is fresher — and Codex I2
+    // is why that sentence now appears in the FIXTURE instead of only in this comment. The screen
+    // used to infer "fresher" from the claim's mere presence (F4) and then from its not having
+    // errored (H4); it now reads the ordering of the two successes, so the precondition this test
+    // has always described is stated as data rather than implied by a proxy.
     const stale = { ...claim().bill, status: 'verified' as const };
     const fresh = claim(); // status: 'certified'
     useStore.setState({
       commercialBills: [stale],
       commercialBillsLoad: 'ready',
+      commercialBillsStamp: 1,
       commercialClaims: { 'bill-1': fresh },
       commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialClaimStamp: { 'bill-1': 2 }, // the claim read succeeded AFTER the list read
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -342,8 +354,10 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     useStore.setState({
       commercialBills: [{ ...claim().bill, status: 'paid' as const }],
       commercialBillsLoad: 'ready',
+      commercialBillsStamp: 2, // the list's success is the LATER of the two
       commercialClaims: { 'bill-1': claim() },
       commercialClaimLoad: { 'bill-1': 'error' },
+      commercialClaimStamp: { 'bill-1': 1 },
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -359,12 +373,156 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     useStore.setState({
       commercialBills: [{ ...claim().bill, status: 'verified' as const }],
       commercialBillsLoad: 'ready',
+      commercialBillsStamp: 1,
       commercialClaims: { 'bill-1': claim() },
       commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialClaimStamp: { 'bill-1': 2 },
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
     fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
     expect(r.getByTestId('commercial-claim-status-bill-1').textContent).toBe('certified');
+  });
+
+  // ── Codex round 4 ────────────────────────────────────────────────────────────────────────────
+
+  /** The four store loaders the screen can dispatch, stubbed together so a probe can assert not
+   *  only what Refresh DID re-read but what it left alone. */
+  const stubLoaders = () => {
+    const loaders = {
+      loadCommercial: vi.fn().mockResolvedValue(undefined),
+      loadCommercialBills: vi.fn().mockResolvedValue(undefined),
+      loadCommercialClaim: vi.fn().mockResolvedValue(undefined),
+      loadShell: vi.fn(),
+    };
+    // in `act` so the screen has re-read the swapped functions before the click under test
+    act(() => { useStore.setState(loaders as never); });
+    return loaders;
+  };
+
+  it('I1: Refresh on a CLAIM tab re-reads the claim workflow, not the money position', () => {
+    useStore.setState({
+      commercialClaims: { 'bill-1': claim() },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialClaimStamp: { 'bill-1': 2 },
+      commercialBillsStamp: 1,
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-payments'));
+
+    // stubbed AFTER the selection so the load `selectClaim` fires is not counted as Refresh's work
+    const loaders = stubLoaders();
+    fireEvent.click(r.getByTestId('commercial-refresh'));
+
+    // RED before: Refresh drove `loadCommercial()` alone, so the open claim — the lifecycle
+    // someone is about to authorise a payment against — was exactly as stale afterwards.
+    expect(loaders.loadCommercialBills, 'Refresh left the claim list as stale as it found it').toHaveBeenCalled();
+    expect(loaders.loadCommercialClaim).toHaveBeenCalledWith('bill-1');
+    expect(loaders.loadCommercial, 'Refresh re-read a money bundle that is not on screen').not.toHaveBeenCalled();
+  });
+
+  it('I1: Refresh on a MONEY tab still re-reads the money position, and only that', () => {
+    // The symmetric half, and deliberately a REGRESSION GUARD rather than a finding reproduction:
+    // it passes both before and after, because what it protects is the behaviour the fix must not
+    // swing away from. Round 3's H4 was an over-correction that mirrored the bug it fixed; a probe
+    // pinning the untouched direction is the cheap defence against doing that again.
+    useStore.setState({ capabilitiesKnown: true });
+    const r = render(<CommercialScreen />);
+    const loaders = stubLoaders();
+    fireEvent.click(r.getByTestId('commercial-refresh'));
+    expect(loaders.loadCommercial).toHaveBeenCalled();
+    expect(loaders.loadCommercialBills).not.toHaveBeenCalled();
+    expect(loaders.loadCommercialClaim).not.toHaveBeenCalled();
+  });
+
+  it('I1: with the capability missing, Refresh re-drives the SHELL rather than an inert loader', () => {
+    // Every loader gates on `capabilities.includes('commercial')`, so `capabilitiesKnown` was a
+    // proxy for "the loader will do something" that is wrong exactly here: known, but not reporting
+    // the capability. RED before: Refresh dispatched `loadCommercial()`, which returns immediately.
+    useStore.setState({ capabilities: [], capabilitiesKnown: true });
+    const r = render(<CommercialScreen />);
+    const loaders = stubLoaders();
+    fireEvent.click(r.getByTestId('commercial-refresh'));
+    expect(loaders.loadShell, 'Refresh dispatched an inert no-op — a dead button').toHaveBeenCalled();
+    expect(loaders.loadCommercial).not.toHaveBeenCalled();
+  });
+
+  it('I2: a claim being REFRESHED says so, and the row prefers whichever read is newer', () => {
+    // The concrete case: a joint refresh in which the LIST comes back first with `paid` while the
+    // claim bundle held from an earlier visit still says `certified` and its own read is in flight.
+    useStore.setState({
+      commercialBills: [{ ...claim().bill, status: 'paid' as const }],
+      commercialBillsLoad: 'ready',
+      commercialBillsStamp: 2, // the list's success is the later one
+      commercialClaims: { 'bill-1': claim() },
+      commercialClaimLoad: { 'bill-1': 'loading' },
+      commercialClaimStamp: { 'bill-1': 1 },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    // The preference rule only applies to the SELECTED row, so the row has to be selected before
+    // this asserts anything — an unselected row always renders the list's copy and would pass
+    // whatever the rule said. (Root D: a probe that cannot reach the code it names.)
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    // RED before: the row preferred the claim bundle for any status other than `error`, so it went
+    // on saying `certified` after the list had already reported `paid`.
+    expect(
+      r.getByTestId('commercial-claim-status-bill-1').textContent,
+      'the row showed a lifecycle the list had already superseded',
+    ).toBe('paid');
+
+    fireEvent.click(r.getByTestId('commercial-tab-payments'));
+    // …and the tabs still show the last-known bundle (stale-while-revalidate is the VALUE's job),
+    // but no longer pretend a completed read confirmed it.
+    expect(r.getByTestId('payments-approvable')).toBeTruthy();
+    expect(
+      r.getByTestId('commercial-claim-refreshing'),
+      'a lifecycle held from an earlier visit looked identical to one a current read confirmed',
+    ).toBeTruthy();
+  });
+
+  it('I3: a shell failure leaves the Claims panel explained and retryable, never blank', () => {
+    // The real shape: the shell read failed, so capabilities are empty and the list never left
+    // `idle`. RED before: `billsLoad === 'loading'` false, `=== 'error'` false, `bills?.length`
+    // undefined and `(bills ?? []).map` over null — every branch false, an empty div on screen.
+    useStore.setState({ capabilities: [], commercialBills: null, commercialBillsLoad: 'idle' });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    expect(
+      r.getByTestId('commercial-claims-unavailable'),
+      'the Claims tab rendered nothing at all — no rows, no state, no explanation, no retry',
+    ).toBeTruthy();
+
+    const loaders = stubLoaders();
+    fireEvent.click(r.getByTestId('commercial-claims-retry'));
+    expect(loaders.loadShell, 'the retry dispatched a capability-gated no-op').toHaveBeenCalled();
+  });
+
+  it('I3 (symmetric): the MONEY tab has the same hole, and the same decision closes it', () => {
+    // Not a finding — the instance the finding did not name. Root F of the convergence audit says a
+    // principle applies to what you enumerate, so: three resources on this screen, all three routed
+    // through `viewOf`. The money bundle's `reading` guard was `(idle || loading) && !commercial`,
+    // which renders a spinner for a bundle that a capability-gated `loadCommercial()` will never
+    // fetch — the permanent-loading shape, on the tab this hub OPENS on.
+    useStore.setState({ capabilities: [], commercialView: null, commercialLoad: 'idle' });
+    const r = render(<CommercialScreen />);
+    expect(r.getByTestId('commercial-unavailable')).toBeTruthy();
+    expect(() => r.getByTestId('commercial-loading')).toThrow();
+
+    const loaders = stubLoaders();
+    fireEvent.click(r.getByTestId('commercial-retry-empty'));
+    expect(loaders.loadShell).toHaveBeenCalled();
+  });
+
+  it('I3: `idle` while the list IS about to load still shows loading, not unavailable', () => {
+    // The other side of `willLoad`, and the reason it is a parameter rather than a status check:
+    // `idle` is hopeful when the effect is about to fetch and dead when nothing is. Getting this
+    // backwards would replace a blank panel with a false "couldn't load" on every first open.
+    useStore.setState({ commercialBills: null, commercialBillsLoad: 'idle' }); // capability present
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    expect(r.getByTestId('commercial-claims-loading')).toBeTruthy();
   });
 });
