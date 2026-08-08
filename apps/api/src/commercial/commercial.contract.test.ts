@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, DOMAIN_EVENT_TYPES, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
 import { FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
+import { EXTERNAL_EFFECTS } from '../platform/external-effects';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
 import { DERIVED_BILL_STATUSES, isDerivedBillStatus } from './commercial-status';
@@ -78,6 +79,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.deductions': "Get('commercial/bills/:billId/deductions')",
     'commercial.payments': "Get('commercial/bills/:billId/payments')",
     'commercial.cash-forecast': "Get('commercial/cash-forecast')",
+    'commercial.money-position': "Get('commercial/money-position')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -107,6 +109,31 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     // and the manifest agrees with the shared contract, so there is ONE declaration, not two
     expect([...commercialManifest.commands].sort()).toEqual([...COMMERCIAL_COMMANDS].sort());
     expect([...commercialManifest.queries].sort()).toEqual([...COMMERCIAL_QUERIES].sort());
+  });
+
+  /**
+   * …AND THE REVERSE (Codex round 4, 7B-i). The test above walks the DECLARED set and checks each
+   * has a route — so an UNDECLARED route is invisible to it. That is exactly how
+   * `commercial/money-position` reached the web gateway while `COMMERCIAL_QUERIES` still enumerated
+   * only the older reads: the manifest promised less than the controller served, which is the
+   * stale-manifest class this contract exists to prevent, arriving from the direction it was not
+   * looking.
+   *
+   * So the CONTROLLER is the source here and the manifest is the derived check: every commercial
+   * GET must be declared. Root A's answer once more — make the source the checker — applied to the
+   * one direction the original pin left open.
+   */
+  it('every GET the commercial controller serves is a DECLARED query', () => {
+    const controller = readFileSync(join(HERE, 'commercial.controller.ts'), 'utf8');
+    const served = [...controller.matchAll(/@Get\('([^']+)'\)/gu)].map((m) => `Get('${m[1]}')`);
+    expect(served.length, 'no GET routes were extracted — this pin would scan nothing').toBeGreaterThan(5);
+    const declaredRoutes = new Set(Object.values(querySite));
+    const undeclared = served.filter((r) => !declaredRoutes.has(r));
+    expect(
+      undeclared,
+      `the commercial controller serves these reads and no COMMERCIAL_QUERIES entry declares them, so `
+      + `every registry and contract consumer believes they do not exist: ${undeclared.join(', ')}`,
+    ).toEqual([]);
   });
 
   /**
@@ -1261,6 +1288,48 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       consumer.deliveryFor({ eventType: 'decision.created' } as never),
       'an unrelated event dispatches — the forecast would recompute on every event in the system',
     ).toEqual({ action: 'noop' });
+  });
+
+  /**
+   * §M (Task 7B-i, Codex round 3) — THE FLAG AND THE WIRING MOVE TOGETHER, OR NEITHER MOVES.
+   *
+   * Round 2 found that the §M hub's refresh rides the socket `changed` ping, which
+   * `makeSocketConsumer` dispatches only on `invalidate` — so a weightless `commercial.money_moved`
+   * leaves an open Commercial tab stale after a commercial-only write. I flipped the flag.
+   *
+   * Round 3 found what flipping it alone actually does: the event then carries an external effect
+   * that NO commercial command sends. Every commercial service returns `events: []` and injects no
+   * `ExternalEffectDispatcher`, and in the DEFAULT `legacy` sender mode
+   * `OutboxRelay.claimExternalRecovery()` deliberately leaves fresh external deliveries alone for
+   * the lease window because the immediate dispatcher is expected to have sent them. So the
+   * invalidation arrives late — and under `OUTBOX_RELAY_AUTOSTART=false`, never.
+   *
+   * A half-wired external effect is worse than a weightless one, so the flag went back and the
+   * wiring is scheduled as its own unit (~15 command sites across 10 services, plus `evaluate`
+   * returning its meta). What closes the trap is this pin: the two facts are asserted TOGETHER, so
+   * the next person to flip the flag fails here until the dispatch exists, and the person who wires
+   * the dispatch fails here until they flip the flag.
+   */
+  it('§M: commercial\'s event weight and its post-commit dispatch wiring agree', () => {
+    const entry = EXTERNAL_EFFECTS['commercial.money_moved'];
+    const services = readdirSync(HERE).filter((f) => f.endsWith('.service.ts'));
+    expect(services.length, 'no commercial services found — this pin would compare nothing').toBeGreaterThan(5);
+    const dispatching = services.filter((f) => /dispatchCommitted\s*\(/u.test(readFileSync(join(HERE, f), 'utf8')));
+
+    expect(
+      entry.invalidate === dispatching.length > 0,
+      entry.invalidate
+        ? 'commercial.money_moved INVALIDATES but no commercial service dispatches it after commit. '
+          + 'In the default `legacy` sender mode the immediate dispatcher is the sender, and the relay '
+          + 'deliberately holds fresh external deliveries for the lease window — so the invalidation '
+          + `arrives late or never. Wire dispatch into the emitting commands (${services.length} services), `
+          + 'or put the flag back.'
+        : `commercial.money_moved is WEIGHTLESS but ${dispatching.join(', ')} dispatches after commit — `
+          + 'a dispatch with nothing to send. Flip the catalog entry in the same change.',
+    ).toBe(true);
+
+    expect(entry.push, 'money moving is not a notification').toBeNull();
+    expect(entry.eventType).toBe('commercial.money_moved');
   });
 
   it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {

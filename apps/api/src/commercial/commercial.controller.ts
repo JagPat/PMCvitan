@@ -163,6 +163,15 @@ export class CommercialController {
     return this.budget.readCashForecast(projectId, user);
   }
 
+  /** §M (Task 7B-i) — the money position from ONE snapshot: budget, forecast, heads and the
+   *  attribution register folded in a single repeatable-read transaction, so the hub cannot render
+   *  a page assembled from four different database moments. */
+  @Get('commercial/money-position')
+  @RolesFor('commercial.read')
+  readMoneyPosition(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.budget.readMoneyPosition(projectId, user);
+  }
+
   @Get('commercial/cost-heads')
   @RolesFor('commercial.read')
   listCostHeads(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {

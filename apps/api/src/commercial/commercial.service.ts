@@ -9,6 +9,7 @@ import { recordAudit } from '../platform/audit';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CommercialParticipant, type AttributionTarget } from './commercial.participant';
+import { serializeAttribution } from './commercial.serialize';
 import { announceMoneyMoved } from './cash-forecast.projection';
 
 /**
@@ -203,20 +204,3 @@ export class CommercialService {
   }
 }
 
-function serializeAttribution(r: {
-  id: string; poLineId: string | null; labourPoLineId: string | null; costHeadCode: string; reason: string;
-  createdAt: Date; createdById: string; supersededAt: Date | null; supersededById: string | null; supersedeReason: string | null;
-}): CommitmentAttributionDto {
-  return {
-    id: r.id,
-    poLineId: r.poLineId,
-    labourPoLineId: r.labourPoLineId,
-    costHeadCode: r.costHeadCode,
-    reason: r.reason,
-    createdAt: r.createdAt.toISOString(),
-    createdById: r.createdById,
-    supersededAt: r.supersededAt?.toISOString() ?? null,
-    supersededById: r.supersededById,
-    supersedeReason: r.supersedeReason,
-  };
-}

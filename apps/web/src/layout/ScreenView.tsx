@@ -16,6 +16,7 @@ import { PortfolioScreen } from '@/screens/PortfolioScreen';
 import { TeamAccessScreen } from '@/screens/TeamAccessScreen';
 import { MaterialsScreen } from '@/screens/MaterialsScreen';
 import { LabourScreen } from '@/screens/LabourScreen';
+import { CommercialScreen } from '@/screens/CommercialScreen';
 
 export function ScreenView() {
   const screen = useStore((s) => s.screen);
@@ -54,6 +55,8 @@ export function ScreenView() {
       return <MaterialsScreen />;
     case 'labour':
       return <LabourScreen />;
+    case 'commercial':
+      return <CommercialScreen />;
     default:
       return null;
   }

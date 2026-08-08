@@ -63,6 +63,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
+import type { CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
@@ -230,6 +231,12 @@ export interface AppState {
   // snapshot fallback), `null`/'idle' off-pilot, project-owned → torn down on scope change.
   labourView: LabourView | null;
   labourLoad: 'idle' | 'loading' | 'ready' | 'error';
+  // Phase 5 Task 7B-i (§M) — the pilot COMMERCIAL money-position bundle and its module-query load
+  // status. Same discipline again: greenfield module reads with no snapshot fallback,
+  // `null`/'idle' off-pilot, project-owned → torn down on scope change. READ ONLY in 7B-i, so
+  // there is no `commercialPending` twin; the write lifecycle lands in 7B-iii.
+  commercialView: CommercialView | null;
+  commercialLoad: 'idle' | 'loading' | 'ready' | 'error';
   labourPending: string[];
   // Codex round 13 — the ORIGINAL allocate input per retained coalesce key (the key alone loses
   // `capacityCommitmentId`, so a resolved supplier draw stopped reserving its commitment in the
@@ -396,6 +403,10 @@ export interface AppActions {
    *  commercial chain + capacity + today's presence + productivity) together, ONLY when the active
    *  project has the `labour` capability. Scope-guarded + honest load states; a no-op off-pilot. */
   loadLabour: () => Promise<void>;
+  /** Phase 5 Task 7B-i (§M) — fetch the money-position bundle. Inert off the `commercial` pilot,
+   *  scope-guarded, and latest-request owned: an older reply (success OR failure) never overwrites
+   *  a newer one. READ ONLY — the §M write actions and their outbox lifecycle land in 7B-iii. */
+  loadCommercial: () => Promise<void>;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -680,6 +691,10 @@ export function getInitialState(): AppState {
     materialsPending: [],
     labourView: null,
     labourLoad: 'idle',
+    // Phase 5 Task 7B-i (§M) — project-owned like the other two hubs, so a project switch cannot
+    // leave one project's money on another's screen.
+    commercialView: null,
+    commercialLoad: 'idle',
     labourPending: [],
     labourPendingInputs: {},
     labourOnboardPending: {},
@@ -753,6 +768,7 @@ export const useStore = create<Store>()(
     // Phase 4 Task 6 (§J) — the labour twin of materialsLoadSeq: only the NEWEST in-scope labour
     // bundle request may write labourView (an older success or failure resolving late is dropped).
     let labourLoadSeq = 0;
+    let commercialLoadSeq = 0;
     /** Per-activity latest-request ownership for the reservation plan (correction 3, finding 2). Each
      *  `loadReservationPlan(activityId)` claims the next generation for that activity; only the newest
      *  request in the current project scope may write `reservationPlans[activityId]`, so a slow older
@@ -2380,6 +2396,11 @@ export const useStore = create<Store>()(
         if (isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope) && shell.capabilities.includes('labour')) {
           get().loadLabour();
         }
+        // Phase 5 Task 7B-i (§M) — same stance for the commercial pilot: the hub's reads only fire
+        // once the shell has REPORTED the capability, so a non-pilot project issues none of them.
+        if (isCurrentProjectScope(get().activeProjectId, get().projectScopeGeneration, scope) && shell.capabilities.includes('commercial')) {
+          void get().loadCommercial();
+        }
       }).catch(() => {
         // Codex round 12 — a swallowed shell failure left `capabilitiesKnown` false FOREVER while
         // the capability-gated `loadMaterials`/`loadLabour` stayed inert no-ops: a bookmarked pilot
@@ -2392,6 +2413,11 @@ export const useStore = create<Store>()(
           if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope) && !s.capabilitiesKnown) {
             if (s.materialsLoad === 'idle') s.materialsLoad = 'error';
             if (s.labourLoad === 'idle') s.labourLoad = 'error';
+            // Codex F2 (7B-i) — the third hub needs the same transition, or a cold bookmarked
+            // `/commercial` load whose shell request fails renders a permanent "loading" with no
+            // Retry: `capabilitiesKnown` stays false, so `loadCommercial()` is an inert no-op and
+            // nothing else can move `commercialLoad` off 'idle'.
+            if (s.commercialLoad === 'idle') s.commercialLoad = 'error';
           }
         });
       });
@@ -2556,6 +2582,46 @@ export const useStore = create<Store>()(
         // keep the last-good bundle; expose a Retry boundary. An OLDER failure never
         // overwrites a NEWER result's load state.
         if (owns(s)) s.labourLoad = 'error';
+      }));
+    },
+
+    // ── Phase 5 Task 7B-i (§M) — the MONEY-POSITION bundle ─────────────────────────────────────
+    //
+    // The commercial twin of `loadLabour`, cloning the cleared discipline rather than inventing a
+    // third one: capability gate → scope capture → latest-request token → stale-while-revalidate →
+    // ownership-checked apply → ownership-checked failure.
+    //
+    // The token is the part that matters and the part a test can pass without. `loadCommercial()`
+    // is called from the shell, from Retry, from a socket refresh and from a project switch, so two
+    // can be in flight at once — and `Promise.all` over FOUR reads makes an older bundle finishing
+    // late entirely ordinary. Without `seq`, that older bundle would overwrite a newer one's money,
+    // and an older FAILURE would flip a healthy hub to its error boundary. Both directions are
+    // asserted in `commercial.test.ts`, verified RED against a build with the token removed.
+    loadCommercial: () => {
+      if (!gateway) return Promise.resolve();
+      if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      const seq = ++commercialLoadSeq;
+      const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === commercialLoadSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
+      // stale-while-revalidate: a refresh over a ready hub keeps the last-good money on screen
+      // rather than blanking it, which is the difference between "loading" and "we lost your data".
+      if (get().commercialLoad !== 'ready') set((s) => { s.commercialLoad = 'loading'; });
+      // Codex round 2 — ONE request, not four. Four reads assemble a page from four database
+      // moments, and a re-attribution committing between two of them renders an impossible money
+      // position (the obligation under MEP in the budget, the register still naming CIVIL). The
+      // server folds all four in one repeatable-read transaction.
+      return gateway.commercialMoneyPosition().then((position) => {
+        set((s) => {
+          if (!owns(s)) return; // dropped after a switch/re-auth OR superseded by a newer load
+          // castDraft: this is a `readonly` server snapshot stored as-is, never mutated.
+          s.commercialView = castDraft<CommercialView>(position);
+          s.commercialLoad = 'ready';
+        });
+      }).catch(() => set((s) => {
+        // keep the last-good bundle and expose a Retry boundary. An OLDER failure never overwrites
+        // a NEWER result's load state — the direction the labour hub needed a finding to learn.
+        if (owns(s)) s.commercialLoad = 'error';
       }));
     },
     allocateWorker: (activityId, requirementId, originRevision, civilDate, workerId, capacityCommitmentId, labourSpecFingerprint) => {

@@ -92,7 +92,11 @@ export type ScreenKey =
   | 'materials'
   // Phase 4 Task 6 (§J) — the pilot Labour hub (readiness → demand → suppliers → commitments →
   // allocation → attendance → productivity). Capability-gated: present ONLY with `labour`.
-  | 'labour';
+  | 'labour'
+  // Phase 5 Task 7B-i (§M) — the ONE Commercial hub. 7B-i opens it on the MONEY POSITION (budget ·
+  // commitments · cash forecast); the claim-lifecycle tabs land in 7B-ii and the write actions in
+  // 7B-iii. Capability-gated: present ONLY on a project with `commercial`.
+  | 'commercial';
 
 export type Lang = 'en' | 'hi' | 'gu';
 

@@ -128,13 +128,32 @@ export const EXTERNAL_EFFECTS = {
   'activity.labour_unblocked': { eventType: 'activity.labour_unblocked', invalidate: true, push: null },
   'activity_output.recorded': { eventType: 'activity_output.recorded', invalidate: true, push: null },
   // ── commercial (Phase 5 Task 7A, §J) ───────────────────────────────────────────────────────
-  // WEIGHTLESS by design — `invalidate: false, push: null`. Commercial's Task-1 justification for
-  // emitting nothing was "no external effect AND no consumer"; the first half is unchanged and this
-  // entry keeps it literally true. The event exists for its DURABLE OUTBOX DELIVERY, which
-  // `emitEvent` materializes inside the writer's own transaction, so the §J cash-forecast projection
-  // observes every commercial money movement the way the other seven projections observe theirs.
-  // Nothing is sent to any client: no socket invalidation, no push. The commercial screens (Task 7B)
-  // refresh from their own reads.
+  //
+  // WEIGHTLESS — `invalidate: false, push: null` — and the reason is now a scheduled obligation
+  // rather than a claim, because 7B-i tried to change it and found out what that costs.
+  //
+  // Task 1 declared `producesEvents: []` on two grounds: "no external effect" AND "no consumer".
+  // 7A's round-4 correction retired the second (the §J projection is a consumer) and kept the first
+  // by making the event weightless. 7B-i then built the Commercial hub, whose refresh rides the
+  // socket `changed` ping — which `makeSocketConsumer` dispatches ONLY on `invalidate`. So a
+  // commercial-only write (a budget revision, certification, payment, deduction) refreshes the
+  // projection and tells no open tab.
+  //
+  // Flipping this flag alone does NOT fix that, and shipping it flipped would be worse than leaving
+  // it: with `invalidate: true` the event carries an external effect that no commercial command
+  // sends. Every commercial service returns `events: []` and injects no `ExternalEffectDispatcher`,
+  // and in the DEFAULT `legacy` sender mode `OutboxRelay.claimExternalRecovery()` deliberately
+  // leaves fresh external deliveries alone for the lease window because the immediate dispatcher is
+  // expected to have sent them — so the invalidation would arrive late, and never at all under
+  // `OUTBOX_RELAY_AUTOSTART=false`.
+  //
+  // Making it invalidate therefore means wiring post-commit dispatch through ~15 command sites in
+  // 10 services (and `evaluate` returning its meta). That is a platform-wiring unit, not a line in
+  // a read-hub PR, and it is scheduled as such in `docs/STATUS.md`. `commercial.contract.test.ts`
+  // pins the two together: the flag and the wiring move in ONE change or neither.
+  //
+  // Until then the hub refreshes on every FOREIGN money event (PO issue, acceptance, measurement —
+  // all of which invalidate) and on Refresh. What it misses is another user's commercial-only write.
   'commercial.money_moved': { eventType: 'commercial.money_moved', invalidate: false, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },

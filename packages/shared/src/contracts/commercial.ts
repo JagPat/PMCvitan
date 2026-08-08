@@ -123,6 +123,12 @@ export const COMMERCIAL_QUERIES = [
   // every project, and can tolerate one commit of lag. What they cannot tolerate is a fold across
   // four modules per project per page-load.
   'commercial.cash-forecast',
+  // Phase 5 Task 7B-i (§M) — the money POSITION: budget, forecast, heads and the attribution
+  // register from ONE repeatable-read transaction. It exists because a page assembled from four
+  // separate reads can contradict itself (a re-attribution committing between two of them), which
+  // is the rule `readBudget` already applies one level down. The four narrower reads above stay:
+  // they answer narrower questions, and other surfaces ask them one at a time.
+  'commercial.money-position',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -800,6 +806,25 @@ export interface CashForecastTotalsDto {
 }
 
 /** The `commercial.cash-forecast` read: the projected forecast plus how stale it is. */
+/**
+ * Phase 5 Task 7B-i (§M) — the MONEY POSITION, from ONE server snapshot.
+ *
+ * The §M hub's *where do we stand* tabs read this single DTO rather than four endpoints, because a
+ * page assembled from four database moments can contradict itself: a re-attribution committing
+ * between two requests shows a line's obligation under one head in the budget while the attribution
+ * register still names the other. The server folds all four in ONE repeatable-read transaction —
+ * the same rule `readBudget` already applies one level down.
+ */
+export interface CommercialMoneyPositionDto {
+  budget: CommercialBudgetDto;
+  cashForecast: CashForecastReadDto;
+  costHeads: CostHeadDto[];
+  /** The WHOLE register, superseded history included — a re-attribution supersedes and inserts
+   *  rather than editing in place. A *current commitments* surface filters `supersededAt === null`;
+   *  the history is carried so a reader can explain how a line got where it is. */
+  attributions: CommitmentAttributionDto[];
+}
+
 export interface CashForecastReadDto extends CashForecastDto {
   /** when the serving generation last recomputed this project's row, or null if it never has.
    *  Reported because §J's consumer is ordered and asynchronous for foreign facts: a surface that

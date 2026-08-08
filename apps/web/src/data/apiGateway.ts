@@ -54,6 +54,7 @@ import type {
   LabourCommitmentsDto,
   LabourCapacityDto,
   LabourPresenceDto,
+  CommercialMoneyPositionDto,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -901,6 +902,22 @@ export class ApiGateway {
   /** The §I planned-vs-actual productivity rows (activities-owned derived join). */
   labourProductivity(): Promise<LabourProductivityResult> {
     return this.req<LabourProductivityResult>(`/projects/${this.projectId}/activities/labour-productivity`);
+  }
+
+  // ── Phase 5 Task 7B-i (§M) — the MONEY-POSITION reads. Capability-gated on the server (404
+  //    off-pilot), greenfield module-query reads fetched together in `loadCommercial()` only when
+  //    the project has the `commercial` capability. All four are READS: nothing here can refuse a
+  //    purchase order, and no command authority consults them. ──
+
+  /** §M — the MONEY POSITION from ONE server snapshot: budget, cash forecast, cost heads and the
+   *  attribution register, folded in a single repeatable-read transaction.
+   *
+   *  Codex round 2 (7B-i): the first spelling fetched these as FOUR requests, and a page assembled
+   *  from four database moments can contradict itself — a re-attribution committing between two of
+   *  them shows the obligation under one head in the budget while the register still names the
+   *  other. One request, one instant. */
+  commercialMoneyPosition(): Promise<CommercialMoneyPositionDto> {
+    return this.req<CommercialMoneyPositionDto>(`/projects/${this.projectId}/commercial/money-position`);
   }
 
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command
