@@ -11,6 +11,7 @@ export * from './domain/readiness';
 // Authorization policy (single source of truth for role → action)
 export * from './domain/policy';
 export * from './domain/material-spec';
+export * from './domain/money';
 // Phase 4 Task 1 — the deterministic labour-specification identity (trade/skill/shift)
 export * from './domain/labour-spec';
 // Platform: the shared DomainEvent envelope + catalog (Phase 2 Task 4)

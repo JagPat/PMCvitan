@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
 import { enabledScreensFor, SCREEN_CAPABILITY } from '@/lib/screens';
@@ -9,6 +9,7 @@ import storeSource from '@/store/store.ts?raw';
 import gatewaySource from '@/data/apiGateway.ts?raw';
 import syncSource from '@/data/useApiSync.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
+import { budgetCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto } from '@vitan/shared';
 
@@ -679,5 +680,201 @@ describe('Task 7B-ii (§M) — the claim list and the per-claim lifecycle', () =
     expect(gatewaySource).toContain('commercial/claims/');
     // …and the positive twin, so this can never pass by scanning nothing.
     expect(storeSource).toContain('gateway.commercialClaim(billId)');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// Task 7B-iii-a (§M) — the WRITE lifecycle.
+//
+// The three commands are low-stakes on purpose; the LIFECYCLE is the reviewable surface, and it
+// is the one Phase-3 Task 7 shipped beside its reads and then needed four corrections for. Each
+// probe below names the round that paid for the property it pins.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({ online: true, activeProjectId: 'p1', sessionToken: 't' });
+  });
+
+  const s = () => useStore.getState();
+  // Condition-based, never a fixed number of ticks: `flushOutbox` awaits the route call AND a
+  // snapshot refetch AND the money reload, so "two microtasks" is a guess that silently measures
+  // the wrong moment. (Root E — wait for the state to be true, not for an event to have happened.)
+  const settles = (cond: () => boolean) =>
+    vi.waitFor(() => { if (!cond()) throw new Error('not settled yet'); }, { timeout: 5000, interval: 5 });
+  /** A command held open on purpose, and ALWAYS released before the test ends.
+   *
+   *  `flushOutbox` serializes on a latch that lives in the store CLOSURE, not in the state that
+   *  `getInitialState()` resets — so a stub that never settles leaves that latch raised and every
+   *  later flush in the module returns "not run". The first draft of these probes did exactly
+   *  that and three unrelated tests timed out. Holding a resolvable deferred keeps the in-flight
+   *  window observable without stranding the latch. */
+  //  Every deferred is registered and released in afterEach, because a test that FAILS before its
+  //  own `resolve()` would otherwise leave the latch raised and time out every later test in the
+  //  module — turning one real failure into four and making any mutation signal unreadable. A
+  //  probe has to be able to fail alone.
+  const held: Array<(v: unknown) => void> = [];
+  const deferred = () => {
+    let resolve!: (v: unknown) => void;
+    const promise = new Promise((r) => { resolve = r; });
+    held.push(resolve);
+    return { promise, resolve };
+  };
+  afterEach(async () => {
+    while (held.length) held.pop()?.({});
+    await vi.waitFor(() => { if (useStore.getState().outbox.length > 0) throw new Error('draining'); },
+      { timeout: 2000, interval: 5 }).catch(() => { /* a probe may intend a retained op */ });
+  });
+  // Its OWN base stub rather than another describe's `gw`: a helper reached across scopes is a
+  // shared fixture two suites can silently drift apart on, and the write probes need the write
+  // methods typed from the gateway contract anyway (root D — derive the fixture, don't retype it).
+  const writeGw = (over: Partial<ApiGateway> = {}): Partial<ApiGateway> => ({
+    commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    setCommercialBudget: vi.fn<ApiGateway['setCommercialBudget']>().mockResolvedValue(undefined),
+    defineCostHead: vi.fn<ApiGateway['defineCostHead']>().mockResolvedValue(undefined),
+    reattributeCommitment: vi.fn<ApiGateway['reattributeCommitment']>().mockResolvedValue(undefined),
+    // the write ops chase their route JSON with a snapshot refetch (replayOutboxOp), so the
+    // flush needs a resolvable one — a rejecting stub makes every op look transient-failed and
+    // the probe would be measuring the stub, not the lifecycle.
+    snapshot: vi.fn<ApiGateway['snapshot']>().mockResolvedValue({
+      project: { id: 'p1', name: 'P', short: 'P', descriptor: '', stage: '', siteCode: 'P', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+      decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+      drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+    } as never),
+    ...over,
+  });
+  const pilot = (g: Partial<ApiGateway>) => {
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['commercial'] });
+  };
+
+  it('is INERT off-pilot — no op is queued and nothing is marked pending', async () => {
+    const g = writeGw();
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: [] });
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    s().defineCostHead('MEP', 'Mechanical');
+    s().reattributeCommitment({ poLineId: 'PL-1' }, 'MEP', 'miscoded');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(g.setCommercialBudget).not.toHaveBeenCalled();
+    expect(s().outbox).toHaveLength(0);
+    expect(s().commercialPending).toEqual([]);
+  });
+
+  it('the two keys are DIFFERENT things: identity is fresh, coalescing is deterministic', async () => {
+    const held = deferred();
+    pilot(writeGw({ setCommercialBudget: vi.fn().mockReturnValue(held.promise) }));
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    const first = s().outbox[0] as { idempotencyKey: string; coalesceKey: string };
+    expect(first.coalesceKey).toBe('com:budget:CIVIL:100.00');
+    expect(first.idempotencyKey).not.toBe(first.coalesceKey);
+    expect(s().commercialPending).toEqual(['com:budget:CIVIL:100.00']);
+
+    // PR #208 finding 1 — an EQUIVALENT action while pending is coalesced away (one queued op,
+    // one disabled button), NOT queued a second time.
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    expect(s().outbox).toHaveLength(1);
+    held.resolve({});
+    await settles(() => s().outbox.length === 0);
+  });
+
+  it('labour r7: a DIFFERENT amount is a different action, but does not re-enable the button', async () => {
+    const held = deferred();
+    pilot(writeGw({ setCommercialBudget: vi.fn().mockReturnValue(held.promise) }));
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+
+    // the KEY carries the amount, so 200 is genuinely a different action…
+    expect(budgetCoalesceKey('CIVIL', '200.00')).not.toBe(budgetCoalesceKey('CIVIL', '100.00'));
+    // …but the disable TEST is prefix-matched on the head, so editing the input mid-flight does
+    // NOT re-arm the button. RED if the screen tested `commercialPending.includes(key(head,amount))`:
+    // the user retypes the figure and a second revision is written against the same head.
+    expect(
+      s().commercialPending.some((k) => isBudgetPendingForHead(k, 'CIVIL')),
+      'editing the amount while a set is in flight re-enabled the button',
+    ).toBe(true);
+    held.resolve({});
+    await settles(() => s().outbox.length === 0);
+  });
+
+  it('labour r5: the attribution key names the LINE, so a second head for it cannot be queued', async () => {
+    const held = deferred();
+    pilot(writeGw({ reattributeCommitment: vi.fn().mockReturnValue(held.promise) }));
+    s().reattributeCommitment({ poLineId: 'PL-1' }, 'MEP', 'miscoded');
+    expect(s().outbox).toHaveLength(1);
+
+    // change of mind while the first is in flight — §C keeps ONE live attribution per line, so
+    // this must be coalesced away, not queued. RED with a (line, costHead) key: both queue and
+    // one line gets two supersessions.
+    s().reattributeCommitment({ poLineId: 'PL-1' }, 'CIVIL', 'actually civil');
+    expect(s().outbox, 'two attributions were queued for one line').toHaveLength(1);
+
+    // a DIFFERENT line is untouched by that block
+    s().reattributeCommitment({ labourPoLineId: 'LPL-9' }, 'MEP', 'labour line');
+    expect(s().outbox).toHaveLength(2);
+    held.resolve({});
+    await settles(() => s().outbox.length === 0);
+  });
+
+  it('PR #208 F4: an UNCERTAIN failure keeps the op AND re-reads the money', async () => {
+    const setBudget = vi.fn<ApiGateway['setCommercialBudget']>().mockRejectedValue(new Error('network'));
+    const money = vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle());
+    pilot(writeGw({ setCommercialBudget: setBudget, commercialMoneyPosition: money }));
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    await settles(() => (money as ReturnType<typeof vi.fn>).mock.calls.length > 0);
+
+    // the server may have committed despite losing the reply, so the money is re-read…
+    expect(money, 'an uncertain response left the money position unrefreshed').toHaveBeenCalled();
+    // …and the op is RETAINED with its key, so the button stays disabled while it retries
+    expect(s().outbox).toHaveLength(1);
+    expect(s().commercialPending).toEqual(['com:budget:CIVIL:100.00']);
+  });
+
+  it('labour r8: a resolved key clears when the fresh money APPLIES, not in the success gap', async () => {
+    const money = vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle());
+    pilot(writeGw({ commercialMoneyPosition: money }));
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    await settles(() => s().outbox.length === 0 && s().commercialLoad === 'ready');
+
+    // the op resolved and left the outbox; the key is cleared by loadCommercial's APPLY, which
+    // rebuilds the set from the live outbox. RED against a flush that clears keys eagerly
+    // (materials' older design): the key would be gone while the PRE-command figure still
+    // rendered, re-enabling the button and writing a second revision of the same budget.
+    expect(s().outbox).toHaveLength(0);
+    expect(s().commercialPending).toEqual([]);
+    expect(s().commercialLoad).toBe('ready');
+  });
+
+  it('a later legitimate action gets a FRESH idempotency key', async () => {
+    const money = vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle());
+    pilot(writeGw({ commercialMoneyPosition: money }));
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    const firstKey = (s().outbox[0] as { idempotencyKey: string }).idempotencyKey;
+    await settles(() => s().commercialPending.length === 0 && s().outbox.length === 0);
+
+    s().setCommercialBudget('CIVIL', '150.00', 'revised');
+    const secondKey = (s().outbox[0] as { idempotencyKey: string }).idempotencyKey;
+    expect(secondKey, 'a legitimate second action reused the first attempt identity').not.toBe(firstKey);
+  });
+
+  it('hydration is a GUARD: a malformed op is dropped and never becomes `undefined` pending', () => {
+    const { ops, changed } = normalizeCommercialOutbox([
+      { t: 'setCommercialBudget', idempotencyKey: 'i1', coalesceKey: 'com:budget:CIVIL:100.00' },
+      { t: 'setCommercialBudget', idempotencyKey: 'i2' },              // no coalesceKey
+      { t: 'defineCostHead', coalesceKey: 'com:head:MEP' },            // no idempotencyKey
+      { t: 'checkIn' },                                                // not ours — untouched
+    ] as never[]);
+    expect(changed).toBe(true);
+    expect(ops.map((o: { t: string }) => o.t)).toEqual(['setCommercialBudget', 'checkIn']);
+    expect(ops.every((o: { t: string; coalesceKey?: unknown }) => o.t !== 'setCommercialBudget' || typeof o.coalesceKey === 'string')).toBe(true);
+  });
+
+  it('the pending set is PROJECT-OWNED — a scope teardown clears it', async () => {
+    const held = deferred();
+    pilot(writeGw({ setCommercialBudget: vi.fn().mockReturnValue(held.promise) }));
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    expect(s().commercialPending).toHaveLength(1);
+    useStore.setState({ ...emptyProjectData(), ...emptyModuleReadState() });
+    expect(s().commercialPending, "one project's disabled button survived into another").toEqual([]);
+    held.resolve({});
   });
 });

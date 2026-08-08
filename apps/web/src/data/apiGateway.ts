@@ -946,6 +946,24 @@ export class ApiGateway {
     return this.req<CommercialClaimDto>(`/projects/${this.projectId}/commercial/claims/${encodeURIComponent(billId)}`);
   }
 
+  // ── Phase 5 Task 7B-iii-a (§M) — the COMMERCIAL write commands. Each is ONE server command
+  //    routed through the durable write-ahead outbox with the two-key split (see OutboxOp), so a
+  //    lost or uncertain response replays the SAME command exactly once. ──
+
+  /** Set or REVISE the live budget for one cost head (§B — one command for v1 and every revision). */
+  setCommercialBudget(input: SetCommercialBudgetInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/budget', input, idempotencyKey);
+  }
+  /** Define a cost head — the taxonomy budgets and attributions hang off (§C). */
+  defineCostHead(input: DefineCostHeadInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/cost-heads', input, idempotencyKey);
+  }
+  /** Re-attribute ONE live PO line to a different cost head (§C — an atomic replacement,
+   *  never a bare revocation, so no live obligation ever falls out of every budget). */
+  reattributeCommitment(input: ReattributeCommitmentInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/attributions', input, idempotencyKey);
+  }
+
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command
   //    routed through the durable write-ahead outbox with the two-key split (see OutboxOp), so a
   //    lost/uncertain response replays the SAME command exactly once. ──
@@ -1213,6 +1231,27 @@ export interface AllocateLabourInput {
    *  fingerprint, or an ACTIVE substitution target the server verifies + freezes). */
   labourSpecFingerprint?: string;
 }
+// ── Phase 5 Task 7B-iii-a (§M) — the COMMERCIAL write-command inputs. These mirror the server
+//    zod contracts in `apps/api/src/contracts.ts`; money is a STRING end to end (§A forbids a
+//    float64 round trip through the browser as much as through the server). ──
+export interface SetCommercialBudgetInput {
+  costHeadCode: string;
+  /** a money string, never a number — parsed to Decimal server-side */
+  amount: string;
+  reason: string;
+}
+export interface DefineCostHeadInput {
+  code: string;
+  name: string;
+}
+export interface ReattributeCommitmentInput {
+  /** EXACTLY ONE of these two, mirroring the server's XOR refinement and the PG CHECK */
+  poLineId?: string;
+  labourPoLineId?: string;
+  costHeadCode: string;
+  reason: string;
+}
+
 export interface RecordLabourAttendanceInput {
   workerId: string;
   civilDate: string;
@@ -1299,6 +1338,11 @@ export type OutboxOp =
   | { t: 'recordLabourWork'; input: RecordLabourWorkInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'createLabourRequisition'; input: CreateLabourRequisitionInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'releaseLabourAllocation'; allocationId: string; reason: string; idempotencyKey: string; coalesceKey: string }
+  // Phase 5 Task 7B-iii-a (§M) — the commercial write ops, born with the same two-key split
+  // (commercialKeys.ts): a fresh per-action idempotencyKey + a deterministic coalesceKey.
+  | { t: 'setCommercialBudget'; input: SetCommercialBudgetInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'defineCostHead'; input: DefineCostHeadInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'reattributeCommitment'; input: ReattributeCommitmentInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -1379,6 +1423,14 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.recordLabourWork(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'createLabourRequisition':
       return gw.createLabourRequisition(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    // Phase 5 Task 7B-iii-a (§M) — identical replay contract: route JSON chased with a snapshot
+    // refetch; the store's commercial reconcile hook reloads the money position.
+    case 'setCommercialBudget':
+      return gw.setCommercialBudget(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'defineCostHead':
+      return gw.defineCostHead(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'reattributeCommitment':
+      return gw.reattributeCommitment(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'releaseLabourAllocation':
       return gw.releaseLabourAllocation(op.allocationId, op.reason, op.idempotencyKey).then(() => gw.snapshot());
     case 'uploadMedia':
