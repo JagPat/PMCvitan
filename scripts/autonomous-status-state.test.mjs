@@ -420,6 +420,71 @@ test('a MERGED task in the live STATUS must clear work_item — the completed un
   );
 });
 
+// The SAME defect one field over, found by Codex on the very flip that fixed `work_item`.
+//
+// `assessRunnerState` returns `pr:<n>` BEFORE it reaches the `merged → work_item → next_task`
+// chain. So a between-work handoff — the task merged, no follow-on work item, the next unit not
+// yet started — that names its own STATUS-only PR resolves, the moment that PR merges, to the
+// docs PR that just finished instead of to `next_task`. The runner shepherds a merged PR while
+// the named next unit waits.
+//
+// `open_pr` belongs to a TASK PR, and the repository rule says so in the same breath: set it
+// "and align `task_state` with whether the PR is still being built (`in_progress`) or waiting on
+// Codex (`in_review`)". A merged handoff has neither state to align, which is the tell.
+//
+// This is the shape PR #294 shipped and PR #296 was about to reproduce, so it is closed here
+// rather than in a comment nobody reads while writing the next flip. Both directions asserted:
+// the bad state is forbidden AND the good state actually resolves to the handoff.
+test('a MERGED between-work STATUS must clear open_pr — a merged PR is not the next step', async () => {
+  const { now, maintenanceQueue } = await loadStatusDocument();
+  const taskState = (now.task_state ?? '').trim().toLowerCase();
+  const workItem = (now.work_item ?? '').trim().toLowerCase();
+  // only the between-work shape: merged, with no follow-on work item naming an in-flight unit
+  if (taskState !== 'merged') return;
+  if (!(workItem === '' || workItem === 'none')) return;
+
+  const openPr = (now.open_pr ?? '').trim().toLowerCase();
+  assert.equal(
+    openPr === '' || openPr === 'none',
+    true,
+    `docs/STATUS.md records task_state: merged with no work_item while open_pr still names `
+    + `'${now.open_pr}'. \`assessRunnerState\` consults open_pr BEFORE next_task, so once that PR `
+    + 'merges the runner is pointed at a finished PR instead of the next unit. A merged handoff '
+    + 'carries open_pr: none; open_pr belongs to a task PR whose task_state it can be aligned with.',
+  );
+
+  const verdict = assessRunnerState(now, maintenanceQueue);
+  assert.ok(
+    verdict.actionable && verdict.nextStep && !verdict.nextStep.startsWith('pr:'),
+    `docs/STATUS.md is a merged handoff but resolves to '${verdict.nextStep}' — it must hand off to `
+    + 'next_task, a directive or the maintenance queue, never to a pull request.',
+  );
+});
+
+// …and the resolver-level pin, so the guard above is not merely describing today's file.
+test('a merged between-work flip that names its own PR resolves BACKWARDS to that PR', () => {
+  const flip = (openPr) => assessRunnerState({
+    phase: '5',
+    task: '7',
+    task_state: 'merged',
+    work_item: 'none',
+    open_pr: openPr,
+    blocking_directive: 'none',
+    next_task: 'phase-5-task-7b-i',
+  });
+
+  assert.equal(
+    flip('296').nextStep,
+    'pr:296',
+    'a merged handoff that names its own STATUS PR resolves back to that PR — this is the defect, pinned so the fix means something',
+  );
+  assert.equal(
+    flip('none').nextStep,
+    'next_task:phase-5-task-7b-i',
+    'with open_pr cleared the merged handoff advances to the named next unit',
+  );
+});
+
 test('a merged task must CLEAR work_item, or the runner re-enters the unit it just finished', () => {
   const flip = (workItem) => assessRunnerState({
     phase: '5',
