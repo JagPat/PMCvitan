@@ -80,6 +80,16 @@ export function useApiSync(): void {
       ])) {
         void useStore.getState().loadCommercialClaim(billId);
       }
+      // …and every open LINE register. Round 3: without this, the money bundle, the claim list and
+      // the claims all refreshed on a realtime change while a cached `measured=0 / authority=10`
+      // register kept authorising writes another engineer had just consumed — the tab held the one
+      // number the caps are computed from, and it was the one number nothing refreshed.
+      for (const lineId of new Set([
+        ...Object.keys(commercial.commercialLineRegisters),
+        ...Object.keys(commercial.commercialLineRegisterLoad),
+      ])) {
+        void useStore.getState().loadCommercialLineRegister(lineId);
+      }
     };
 
     (async () => {

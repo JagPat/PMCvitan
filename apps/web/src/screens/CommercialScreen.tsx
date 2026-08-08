@@ -49,7 +49,10 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 /** The claim tabs are views of one selected claim; without one there is nothing to show. */
-const CLAIM_TABS: readonly Tab[] = ['certification', 'payments', 'measurements'];
+// Round 3 — 'measurements' LEFT this set. A claim tab is one whose content IS a property of the
+// selected claim; a labour PO line's measurement register is not, and treating it as one made the
+// workflow's first step require its last.
+const CLAIM_TABS: readonly Tab[] = ['certification', 'payments'];
 
 /**
  * Codex H2 — the tabs that need the MONEY bundle, as opposed to the ones that need a claim.
@@ -441,11 +444,25 @@ export function CommercialScreen() {
    * response is to measure again.
    */
   const measurableLineIds = useMemo(() => {
+    // Round 3 — the lines come from the PROJECT's live labour commitments, not from a selected
+    // claim. §D measurement is a fact about a labour PO LINE, recorded when the work is done and
+    // long before any claim exists; scoping the tab under `claimPanel` inverted that, so the
+    // advertised order (measure → lodge → submit) was unreachable and an engineer had to create a
+    // commercial document before they could record an operational fact. A selected claim's own
+    // labour lines are unioned in, so opening a claim still shows exactly what it bills.
+    //
+    // The source is `attributions` — every live commitment carries one under §C — filtered to the
+    // un-superseded rows. A labour PO line that has never been attributed is therefore not listed;
+    // that is stated rather than hidden, and attributing it is the §C action that surfaces it.
     const version = claim?.bill.versions.find((v) => v.live) ?? claim?.bill.versions.at(-1);
-    return [...new Set((version?.lines ?? [])
+    const fromClaim = (version?.lines ?? [])
       .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
-      .map((l) => l.labourPoLineId as string))].sort();
-  }, [claim]);
+      .map((l) => l.labourPoLineId as string);
+    const fromCommitments = (commercial?.attributions ?? [])
+      .filter((a) => a.supersededAt === null && a.labourPoLineId !== null)
+      .map((a) => a.labourPoLineId as string);
+    return [...new Set([...fromClaim, ...fromCommitments])].sort();
+  }, [claim, commercial]);
   /**
    * §D — the frozen labour evidence a LIVE certificate consumes.
    *
@@ -453,6 +470,14 @@ export function CommercialScreen() {
    * claim for it is not a second source for the same thing — it is the second floor §D names.
    * A superseded certificate consumes nothing: superseding it is exactly the act that frees the
    * evidence, which is why the filter is on `supersededAt` rather than on the certificate existing.
+   *
+   * SOUND BUT INCOMPLETE, deliberately, and the distinction is the one round 2 turned on. The
+   * server refuses a withdrawal against ANY live certificate consuming the row; this sees only the
+   * SELECTED claim's. Because global consumption ≥ this, every refusal here is a real refusal —
+   * the bound is in the safe direction — while a row certified by a claim the user has not opened
+   * will pass the screen and be refused by the server. That is incompleteness, not approximation:
+   * it never enables something these numbers rule out. Making it complete needs the register to
+   * carry the global floor, which is a server change and belongs with one.
    */
   const claimCertified = claim?.certificate && claim.certificate.supersededAt === null
     ? claim.certificate.measurementConsumption
@@ -1112,9 +1137,9 @@ export function CommercialScreen() {
 
           {tab === 'measurements' && (
             <div data-testid="commercial-measurements">
-              {/* the claim is not read here any more — the loaded guard still is (round-4 P1: the
-                  register comes from the LINE, so this tab has exactly one source) */}
-              {claimPanel(() => (
+              {/* Round 3 — NOT `claimPanel`: a measurement is a fact about a labour PO line, and
+                  requiring a claim to reach it made the workflow's first step depend on its last. */}
+              {((): JSX.Element => (
                 (() => {
                   // Codex N3 — `claim.measurements` is keyed from the LIVE version, and a newly
                   // lodged claim is `draft`, so it has none. That made the workflow circular: the
@@ -1143,7 +1168,9 @@ export function CommercialScreen() {
                   // the verification triple already reports — so this says "does not apply" rather
                   // than showing empty registers, which would read as "measured nothing".
                   <div style={{ ...rowCard, ...muted }} data-testid="commercial-measurements-empty">
-                    This claim bills no labour lines — material evidence is accepted stock, shown under Certification.
+                    No labour purchase-order lines are attributed on this project yet — §D measurement
+                    applies to labour, and a material claim's evidence is accepted stock, shown under
+                    Certification.
                   </div>
                 ) : (
                   <>
@@ -1294,7 +1321,7 @@ export function CommercialScreen() {
                                 || correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(),
                                   { certified: claimCertified, pending: pendingQty[lineId] ?? [] })
                               }
-                              onClick={() => correctMeasurement(row.id, corrFormFor(row.id).qty.trim(), corrFormFor(row.id).reason.trim())}
+                              onClick={() => correctMeasurement(row.id, corrFormFor(row.id).qty.trim(), corrFormFor(row.id).reason.trim(), lineId)}
                             >
                               {correctionPending(row.id) ? 'Correcting…' : 'Correct'}
                             </Button>
@@ -1319,7 +1346,7 @@ export function CommercialScreen() {
                   </>
                   );
                 })()
-              ))}
+              ))()}
             </div>
           )}
     </div>

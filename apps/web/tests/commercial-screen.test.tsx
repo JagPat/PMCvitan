@@ -87,7 +87,10 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
   };
 
   it('with no claim selected, each claim tab asks for one instead of rendering blanks', () => {
-    for (const tab of ['certification', 'payments', 'measurements'] as const) {
+    // 'measurements' is NOT in this set from round 3 on: a labour PO line's register is not a
+    // property of a claim, and gating it on one made measuring — the workflow's FIRST step —
+    // require lodging a claim, its last.
+    for (const tab of ['certification', 'payments'] as const) {
       const r = openClaimTab(tab);
       expect(r.getByTestId('commercial-claim-none')).toBeTruthy();
       cleanup();
@@ -189,6 +192,33 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     expect(r.getByTestId('verification-verdict').textContent).toBe('matched');
   });
 
+  it('R3-1: the Measurements tab needs no claim — the line is the subject', () => {
+    // RED before: `claimPanel` rendered "Choose a claim", so on a project with no claim yet the
+    // engineer could not measure at all and had to lodge a draft first just to select its lines.
+    useStore.setState({
+      commercialView: {
+        ...bundle(),
+        attributions: [{
+          id: 'att-1', poLineId: null, labourPoLineId: 'LPL-1', costHeadCode: 'CIVIL',
+          reason: 'r', createdAt: '2026-08-01T00:00:00.000Z', createdById: 'u-1',
+          supersededAt: null, supersededById: null, supersedeReason: null,
+        }],
+      } as never,
+      commercialLineRegisters: {
+        'LPL-1': {
+          labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
+          orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+        },
+      } as never,
+      commercialLineRegisterLoad: { 'LPL-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    expect(r.queryByTestId('commercial-claim-none'), 'measuring still demanded a claim').toBeNull();
+    expect(r.getByTestId('commercial-measurement-LPL-1')).toBeTruthy();
+    expect(r.getByTestId('measure-qty-LPL-1')).toBeTruthy();
+  });
+
   it('F2: a failed refresh warns on EVERY claim tab, not just Certification', () => {
     useStore.setState({
       commercialClaims: { 'bill-1': claim() },
@@ -198,7 +228,9 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
     fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
 
-    for (const tab of ['certification', 'payments', 'measurements'] as const) {
+    // 'measurements' left this set in round 3 — it renders a LINE's register, so a stale CLAIM
+    // read is not a property of what it shows. Its own staleness is reported per line register.
+    for (const tab of ['certification', 'payments'] as const) {
       fireEvent.click(r.getByTestId(`commercial-tab-${tab}`));
       expect(
         r.getByTestId('commercial-claim-stale'),

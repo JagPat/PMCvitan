@@ -443,7 +443,7 @@ export interface AppActions {
   ) => void;
   /** §D/§F writes (7B-iii-b) — the engineer's six, on the SAME lifecycle. */
   takeMeasurement: (input: TakeMeasurementInput) => void;
-  correctMeasurement: (measurementId: string, quantity: string, reason: string) => void;
+  correctMeasurement: (measurementId: string, quantity: string, reason: string, labourPoLineId: string) => void;
   recordVendorBill: (input: RecordVendorBillInput) => void;
   submitVendorBill: (billId: string) => void;
   amendVendorBill: (input: AmendVendorBillInput) => void;
@@ -690,11 +690,18 @@ function releaseCommercialKeys(
 function pendingMeasureQty(outbox: readonly unknown[]): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const o of outbox) {
-    const op = o as { t?: unknown; input?: { labourPoLineId?: unknown; quantity?: unknown } };
-    if (op.t !== 'takeMeasurement') continue;
-    const line = op.input?.labourPoLineId;
+    const op = o as {
+      t?: unknown; labourPoLineId?: unknown;
+      input?: { labourPoLineId?: unknown; quantity?: unknown };
+    };
+    // a measurement, and a POSITIVE correction — both consume the line's remaining authority
+    const isMeasure = op.t === 'takeMeasurement';
+    const isCorrection = op.t === 'correctMeasurement';
+    if (!isMeasure && !isCorrection) continue;
+    const line = isMeasure ? op.input?.labourPoLineId : op.labourPoLineId;
     const qty = op.input?.quantity;
     if (typeof line !== 'string' || typeof qty !== 'string') continue;
+    if (isCorrection && qty.startsWith('-')) continue; // a withdrawal frees authority, never spends it
     (out[line] ??= []).push(qty);
   }
   return out;
@@ -1638,10 +1645,14 @@ export const useStore = create<Store>()(
         s.commercialPending.push(ck);
         // and the queued QUANTITY, so the remaining-authority cap can subtract work that is in
         // flight but not yet folded into any register
-        const mi = (op as { t?: string; input?: { labourPoLineId?: unknown; quantity?: unknown } });
-        if (mi.t === 'takeMeasurement' && typeof mi.input?.labourPoLineId === 'string'
-          && typeof mi.input?.quantity === 'string') {
-          (s.commercialPendingQty[mi.input.labourPoLineId] ??= []).push(mi.input.quantity);
+        const mi = (op as {
+          t?: string; labourPoLineId?: unknown; input?: { labourPoLineId?: unknown; quantity?: unknown };
+        });
+        const line = mi.t === 'takeMeasurement' ? mi.input?.labourPoLineId
+          : mi.t === 'correctMeasurement' ? mi.labourPoLineId : undefined;
+        const qty = mi.input?.quantity;
+        if (typeof line === 'string' && typeof qty === 'string' && !qty.startsWith('-')) {
+          (s.commercialPendingQty[line] ??= []).push(qty);
         }
       });
       runWriteAhead(op, label, okMsg);
@@ -2923,9 +2934,15 @@ export const useStore = create<Store>()(
         `Measure ${input.labourPoLineId}`, 'Measurement recorded.',
       );
     },
-    correctMeasurement: (measurementId, quantity, reason) => {
+    correctMeasurement: (measurementId, quantity, reason, labourPoLineId) => {
       dispatchCommercial(
-        { t: 'correctMeasurement', input: { measurementId, quantity, reason }, idempotencyKey: newIdempotencyKey(),
+        // `labourPoLineId` rides on the OP, not in `input`: the server's contract takes only the
+        // measurement id, and a correction is issued from a row inside one line's register, so the
+        // screen knows the line. The cap needs it, because a POSITIVE correction consumes the same
+        // line authority a measurement does — counting only `takeMeasurement` let a queued +5 and
+        // a queued measurement of 5 both pass against one remaining 5.
+        { t: 'correctMeasurement', input: { measurementId, quantity, reason }, labourPoLineId,
+          idempotencyKey: newIdempotencyKey(),
           coalesceKey: correctionCoalesceKey(measurementId, quantity) },
         `Correct ${measurementId}`, 'Correction recorded.',
       );

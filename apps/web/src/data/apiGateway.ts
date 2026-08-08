@@ -1437,7 +1437,9 @@ export type OutboxOp =
   | { t: 'reattributeCommitment'; input: ReattributeCommitmentInput; idempotencyKey: string; coalesceKey: string }
   // Phase 5 Task 7B-iii-b (§D/§F) — the engineer's writes, same two-key split.
   | { t: 'takeMeasurement'; input: TakeMeasurementInput; idempotencyKey: string; coalesceKey: string }
-  | { t: 'correctMeasurement'; input: CorrectMeasurementInput; idempotencyKey: string; coalesceKey: string }
+  // `labourPoLineId` is CLIENT-side only — never sent. The server's contract takes the
+  // measurement id alone; the cap needs the line a positive correction spends authority on.
+  | { t: 'correctMeasurement'; input: CorrectMeasurementInput; labourPoLineId: string; idempotencyKey: string; coalesceKey: string }
   | { t: 'recordVendorBill'; input: RecordVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'submitVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }

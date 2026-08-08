@@ -1134,6 +1134,32 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     gate.resolve({});
   });
 
+  it('R3-2: a queued POSITIVE correction spends the same line authority as a measurement', () => {
+    // RED before: the pending-quantity rebuild recorded only `takeMeasurement`, so a queued +5
+    // correction and a queued measurement of 5 both passed against one remaining 5. The server
+    // applies one and terminally refuses the other, after the UI reported both saved.
+    const gate = deferred();
+    pilot(engGw({ correctMeasurement: vi.fn().mockReturnValue(gate.promise) }));
+    s().correctMeasurement('m1', '5', 'more work', 'LPL-1');
+    expect(s().outbox).toHaveLength(1);
+    expect(
+      s().commercialPendingQty['LPL-1'],
+      'a positive correction spends line authority and was not counted against it',
+    ).toEqual(['5']);
+
+    // a WITHDRAWAL frees authority rather than spending it, so it is never subtracted
+    s().correctMeasurement('m2', '-2', 'miscount', 'LPL-1');
+    expect(s().commercialPendingQty['LPL-1']).toEqual(['5']);
+    gate.resolve({});
+  });
+
+  it('R3-3: the realtime `changed` path refreshes open line registers', () => {
+    // The caps are computed from the register, and it was the one read nothing refreshed — the
+    // money bundle, the claim list and the claims all did.
+    expect(syncSource).toContain('loadCommercialLineRegister(lineId)');
+    expect(syncSource).toContain('commercialLineRegisters');
+  });
+
   it('the §A value rules are the SHARED ones — no second opinion in the browser', async () => {
     const { isMoneyString, isPositiveQuantity } = await import('@vitan/shared');
     // the exact cases Codex J3 named, now answered by the same function the zod contract uses
