@@ -40,6 +40,7 @@ import {
 import { CommercialService } from './commercial.service';
 import { CommercialDeductionService } from './commercial-deduction.service';
 import { CommercialPaymentService } from './commercial-payment.service';
+import { CommercialClaimQuery } from './commercial-claim.query';
 import { CommercialBudgetService } from './commercial-budget.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
 import { CommercialBillService } from './commercial-bill.service';
@@ -74,6 +75,7 @@ export class CommercialController {
     private readonly certification: CommercialCertificationService,
     private readonly deductions: CommercialDeductionService,
     private readonly payments: CommercialPaymentService,
+    private readonly claims: CommercialClaimQuery,
   ) {}
 
   /** §B — set or REVISE the live budget for one cost head. One command for both: v1 and a
@@ -462,6 +464,25 @@ export class CommercialController {
   @RolesFor('commercial.read')
   listBills(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
     return this.bills.list(projectId, user);
+  }
+
+  /**
+   * §M (Task 7B-ii) — ONE claim's whole lifecycle from ONE repeatable-read transaction: the claim
+   * and its versions, the §E triple, the live certificate (null when none stands), the §H ledger
+   * and the §G approvals/payments, plus the §D register behind each labour line it bills.
+   *
+   * The six narrower reads below and above stay — they answer narrower questions and other surfaces
+   * ask them one at a time. This one exists because the lifecycle PAGE asks all of them at once,
+   * and `approvable` is derived from `netPayable`, so two snapshots can disagree about one claim.
+   */
+  @Get('commercial/claims/:billId')
+  @RolesFor('commercial.read')
+  readClaim(
+    @Param('projectId') projectId: string,
+    @Param('billId') billId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.claims.readClaim(projectId, billId, user);
   }
 
   @Get('commercial/bills/:billId')

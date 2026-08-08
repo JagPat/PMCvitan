@@ -444,13 +444,23 @@ export class CommercialVerificationService {
   async readVerification(projectId: string, billId: string, user: AuthUser): Promise<VerificationDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
-    return this.prisma.$transaction(async (tx) => {
-      const bill = await tx.vendorBill.findFirst({
-        where: { projectId, id: billId }, select: { vendorId: true, status: true },
-      });
-      if (!bill) throw new NotFoundException('Vendor bill not found in this project');
-      return this.computeTriple(tx, projectId, billId, bill.vendorId, bill.status as VendorBillStatus);
+    return this.prisma.$transaction((tx) => this.verificationIn(tx, projectId, billId));
+  }
+
+  /**
+   * The §E triple ON A GIVEN TRANSACTION — the ONE spelling, so the standalone
+   * `commercial.verification` route and the §M claim bundle (Task 7B-ii) cannot drift about what
+   * the triple is derived from or when a claim counts as missing. The same reason
+   * `cashForecastIn` exists one page over.
+   */
+  async verificationIn(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<VerificationDto> {
+    const bill = await tx.vendorBill.findFirst({
+      where: { projectId, id: billId }, select: { vendorId: true, status: true },
     });
+    if (!bill) throw new NotFoundException('Vendor bill not found in this project');
+    return this.computeTriple(tx, projectId, billId, bill.vendorId, bill.status as VendorBillStatus);
   }
 
   // ── shared machinery ─────────────────────────────────────────────────────────────────────────

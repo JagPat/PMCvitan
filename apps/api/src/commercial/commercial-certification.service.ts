@@ -819,17 +819,35 @@ export class CommercialCertificationService {
     return cert;
   }
 
+  /**
+   * §M (Task 7B-ii) — the LIVE certificate ON A GIVEN TRANSACTION, or null when none stands.
+   *
+   * Null rather than the route's 404: a claim before certification is an ordinary state of the
+   * lifecycle page, not a missing resource. The liveness predicate travels into the query for the
+   * same reason `readCertificate` carries it — resolving the live certificate and re-reading it by
+   * id leaves a window in which a supersession makes history look current.
+   */
+  async liveCertificateIn(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<CertificateDto | null> {
+    return this.certificateById(projectId, { projectId, billId, supersededAt: null }, tx);
+  }
+
   /** One certificate by identity, live or superseded — the shape both commands and the read return. */
   private async certificateById(projectId: string, certificateId: string): Promise<CertificateDto>;
   private async certificateById(
     projectId: string, where: { projectId: string; billId: string; supersededAt: null },
+    db?: Prisma.TransactionClient,
   ): Promise<CertificateDto | null>;
   private async certificateById(
     projectId: string,
     target: string | { projectId: string; billId: string; supersededAt: null },
+    db?: Prisma.TransactionClient,
   ): Promise<CertificateDto | null> {
     const certificateId = typeof target === 'string' ? target : null;
-    const cert = await this.prisma.billCertificate.findFirst({
+    // the caller's snapshot when it has one, otherwise this service's own client — so the standalone
+    // route and the §M bundle read the SAME shape through the SAME query.
+    const cert = await (db ?? this.prisma).billCertificate.findFirst({
       where: typeof target === 'string' ? { projectId, id: target } : target,
       include: {
         sodExceptions: true,

@@ -782,7 +782,19 @@ export class CommercialBillService {
   async readOne(projectId: string, billId: string, user: AuthUser): Promise<VendorBillDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
-    const row = await this.prisma.vendorBill.findFirst({
+    return this.billIn(this.prisma, projectId, billId);
+  }
+
+  /**
+   * One claim with its version history ON A GIVEN CLIENT — the ONE spelling, so the standalone
+   * `commercial.bill` route and the §M claim bundle (Task 7B-ii) return the same shape from the
+   * same query. The bundle passes its repeatable-read transaction; the route passes this service's
+   * own client, which is a snapshot of one statement and needs no more.
+   */
+  async billIn(
+    db: Prisma.TransactionClient | PrismaService, projectId: string, billId: string,
+  ): Promise<VendorBillDto> {
+    const row = await db.vendorBill.findFirst({
       where: { projectId, id: billId },
       include: { versions: { orderBy: { version: 'asc' }, include: { lines: { orderBy: { id: 'asc' } } } } },
     });

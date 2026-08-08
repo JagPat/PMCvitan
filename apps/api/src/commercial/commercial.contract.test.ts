@@ -6,7 +6,9 @@ import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATI
 import { commercialManifest } from './commercial.manifest';
 import { COMMERCIAL_MONEY_EVENT, FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
 import { CommercialCommandRunner } from './commercial-command.runner';
+import { labourLinesOfLiveVersion } from './commercial-claim.query';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
+import type { VendorBillDto, VendorBillLineDto, VendorBillVersionDto } from '@vitan/shared';
 import { EXTERNAL_EFFECTS } from '../platform/external-effects';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
@@ -82,6 +84,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.payments': "Get('commercial/bills/:billId/payments')",
     'commercial.cash-forecast': "Get('commercial/cash-forecast')",
     'commercial.money-position': "Get('commercial/money-position')",
+    'commercial.claim': "Get('commercial/claims/:billId')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -1369,6 +1372,64 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
 
     expect(entry.push, 'money moving is not a notification').toBeNull();
     expect(entry.eventType).toBe('commercial.money_moved');
+  });
+
+
+  /**
+   * §M (Task 7B-ii) — MEASUREMENTS FOLLOW THE `live` FLAG, NOT THE VERSION NUMBER.
+   *
+   * The first draft of the claim bundle read `versions.at(-1)`. That is wrong and the DTO says so:
+   * `live` is `supersededAt === null && isLiveBillStatus(status)`, so a DISPUTED or REJECTED claim
+   * has no live version at all and its top version's lines are in no fold. Presenting those §D
+   * registers as "what this claim measures" claims more than the data supports.
+   *
+   * This is a UNIT test on purpose. The live-PG probe covering the same code path bills material
+   * only, so it passes whichever version the code picks — it would have ratified the bug. Testing
+   * the rule needs a claim that actually has labour lines on a non-live version, which is cheap to
+   * construct as a DTO and expensive to construct in PostgreSQL.
+   */
+  describe('§M: the claim bundle reads the LIVE version\'s labour lines', () => {
+    const version = (over: Partial<VendorBillVersionDto>): VendorBillVersionDto => ({
+      id: 'ver', version: 1, supersedesVersion: null, claimedAmount: '100.00', lines: [],
+      createdAt: 'x', createdById: 'u', supersededAt: null, supersededById: null,
+      supersedeReason: null, live: false, ...over,
+    });
+    const labourLine = (labourPoLineId: string): VendorBillLineDto => ({
+      id: `line-${labourPoLineId}`, type: 'labour', poLineId: null, labourPoLineId,
+      quantity: '1', rate: '1', taxAmount: '0', freightAmount: '0', amount: '1',
+    });
+    const bill = (versions: VendorBillVersionDto[]): VendorBillDto => ({
+      id: 'bill', vendorId: 'v', vendorBillNumber: 'V-1', documentDate: 'd', status: 'certified',
+      statusChangedAt: 'x', statusReason: null, disputeReason: null, createdAt: 'x', createdById: 'u',
+      versions,
+    });
+
+    it('takes the LIVE version even when a later version exists', () => {
+      const rows = bill([
+        version({ id: 'v1', version: 1, live: true, lines: [labourLine('LPO-live')] }),
+        version({ id: 'v2', version: 2, live: false, lines: [labourLine('LPO-superseded')] }),
+      ]);
+      expect(
+        labourLinesOfLiveVersion(rows),
+        '`versions.at(-1)` would report LPO-superseded — a register for lines that are in no fold',
+      ).toEqual(['LPO-live']);
+    });
+
+    it('reports NOTHING when no version is live (a disputed or rejected claim)', () => {
+      const rows = bill([version({ id: 'v1', version: 1, live: false, lines: [labourLine('LPO-dead')] })]);
+      expect(labourLinesOfLiveVersion(rows)).toEqual([]);
+    });
+
+    it('deduplicates and orders, and ignores material lines', () => {
+      const rows = bill([version({
+        id: 'v1', version: 1, live: true,
+        lines: [
+          labourLine('LPO-b'), labourLine('LPO-a'), labourLine('LPO-b'),
+          { id: 'm', type: 'material', poLineId: 'PO-1', labourPoLineId: null, quantity: '1', rate: '1', taxAmount: '0', freightAmount: '0', amount: '1' },
+        ],
+      })]);
+      expect(labourLinesOfLiveVersion(rows)).toEqual(['LPO-a', 'LPO-b']);
+    });
   });
 
   it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {
