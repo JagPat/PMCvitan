@@ -17,6 +17,7 @@ import {
   LogIn,
   Package,
   HardHat,
+  IndianRupee,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -47,6 +48,7 @@ export const SCREEN_META: Record<ScreenKey, ScreenMeta> = {
   'team-access': { key: 'team-access', label: 'Team Access & Login', short: 'Access', path: '/access', icon: LogIn },
   materials: { key: 'materials', label: 'Materials', short: 'Materials', path: '/materials', icon: Package },
   labour: { key: 'labour', label: 'Labour', short: 'Labour', path: '/labour', icon: HardHat },
+  commercial: { key: 'commercial', label: 'Commercial', short: 'Money', path: '/commercial', icon: IndianRupee },
 };
 
 /**
@@ -61,6 +63,10 @@ export const SCREEN_CAPABILITY: Partial<Record<ScreenKey, string>> = {
   // Phase 4 Task 6 (§J) — the Labour hub is gated by the per-project `labour` capability exactly
   // like Materials: absent from the nav (and inert in the store) unless the shell reports it.
   labour: 'labour',
+  // Phase 5 Task 7B-i (§M) — the Commercial hub is gated by the per-project `commercial` capability
+  // exactly like Materials and Labour: absent from the nav, and inert in the store, unless the
+  // shell reports it. That matches the server, which 404s every commercial read off-pilot.
+  commercial: 'commercial',
 };
 
 /**
@@ -92,6 +98,9 @@ export const SCREEN_MODULE: Record<ScreenKey, string | null> = {
   // Labour (Phase 4 Task 6) — same stance: the `labour` module is registry-enabled everywhere; the
   // per-project pilot gate is the `labour` CAPABILITY above, so the module filter must be a no-op.
   labour: null,
+  // Commercial (Phase 5 Task 7B-i) — same stance again: `commercial` is registry-enabled for every
+  // project, so the module filter must be a no-op and the CAPABILITY above does the pilot gating.
+  commercial: null,
 };
 
 /**
@@ -126,12 +135,12 @@ export function screensFor(role: Role): ScreenMeta[] {
   // 'inbox' ("For You") is the home for every role — a live, cross-cutting to-do list, first
   // in the nav so everyone lands on exactly what needs them before drilling into a screen.
   const keys: Record<Role, ScreenKey[]> = {
-    pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'places', 'team', 'portfolio'],
+    pmc: ['inbox', 'dashboard', 'site-schedule', 'decision-log', 'drafts', 'inspect-review', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team', 'portfolio'],
     client: ['inbox', 'client-decisions', 'client-health', 'decision-log', 'drawings', 'places'],
     // engineers hold activity.start/complete, so they get the Schedule (its authoring
     // controls stay behind activity.manage — pmc only). Materials and Labour (`labour.read` is
     // pmc/engineer) are pmc/engineer planning surfaces.
-    engineer: ['inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'labour', 'places', 'team-access', 'decision-log'],
+    engineer: ['inbox', 'daily-log', 'engineer-check', 'site-schedule', 'drawings', 'materials', 'labour', 'commercial', 'places', 'team-access', 'decision-log'],
     contractor: ['inbox', 'drawings', 'places', 'team-access', 'decision-log'],
     // a discipline consultant: read-mostly reviewer — drawings, the register, the Site Map, project health
     consultant: ['inbox', 'drawings', 'decision-log', 'places', 'client-health'],

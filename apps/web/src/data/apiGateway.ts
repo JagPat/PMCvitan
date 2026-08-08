@@ -54,6 +54,10 @@ import type {
   LabourCommitmentsDto,
   LabourCapacityDto,
   LabourPresenceDto,
+  CommercialBudgetDto,
+  CashForecastReadDto,
+  CostHeadDto,
+  CommitmentAttributionDto,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -901,6 +905,32 @@ export class ApiGateway {
   /** The §I planned-vs-actual productivity rows (activities-owned derived join). */
   labourProductivity(): Promise<LabourProductivityResult> {
     return this.req<LabourProductivityResult>(`/projects/${this.projectId}/activities/labour-productivity`);
+  }
+
+  // ── Phase 5 Task 7B-i (§M) — the MONEY-POSITION reads. Capability-gated on the server (404
+  //    off-pilot), greenfield module-query reads fetched together in `loadCommercial()` only when
+  //    the project has the `commercial` capability. All four are READS: nothing here can refuse a
+  //    purchase order, and no command authority consults them. ──
+
+  /** §B/§J — per-head budget, outstanding COMMITTED, the §J buckets, headroom, open exceptions.
+   *  The LIVE fold, always current: this is the surface a projection can never contradict,
+   *  because both go through the one serializer. */
+  commercialBudget(): Promise<CommercialBudgetDto> {
+    return this.req<CommercialBudgetDto>(`/projects/${this.projectId}/commercial/budget`);
+  }
+  /** §J (Task 7A) — the project cash forecast from the eighth rebuildable projection, with the
+   *  standard servable-generation check and LIVE fallback. `refreshedAt` is null on the fallback
+   *  path, and the hub says so rather than implying a freshness it does not have. */
+  commercialCashForecast(): Promise<CashForecastReadDto> {
+    return this.req<CashForecastReadDto>(`/projects/${this.projectId}/commercial/cash-forecast`);
+  }
+  /** §C — the cost-head catalog. */
+  commercialCostHeads(): Promise<CostHeadDto[]> {
+    return this.req<CostHeadDto[]>(`/projects/${this.projectId}/commercial/cost-heads`);
+  }
+  /** §C — the live attribution register: which head carries which purchase-order line. */
+  commercialAttributions(): Promise<CommitmentAttributionDto[]> {
+    return this.req<CommitmentAttributionDto[]>(`/projects/${this.projectId}/commercial/attributions`);
   }
 
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command

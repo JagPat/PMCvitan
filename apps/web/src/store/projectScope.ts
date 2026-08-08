@@ -17,6 +17,7 @@ import type {
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
+import type { CommercialView } from './commercial';
 import type { AllocateLabourInput } from '../data/apiGateway';
 
 /**
@@ -75,6 +76,11 @@ export interface ProjectDataState {
   // labour bundle / pending key never leaks into another project's Labour hub.
   labourView: LabourView | null;
   labourPending: string[];
+  // Phase 5 Task 7B-i (§M) — the pilot COMMERCIAL money-position bundle. Project-owned like the
+  // other two hubs, so switching project cannot leave one project's money on another's screen.
+  // There is no `commercialPending` here: 7B-i is READ ONLY, and the write lifecycle lands in
+  // 7B-iii with the commands it belongs to.
+  commercialView: CommercialView | null;
   /** Codex round 13 — the ORIGINAL allocate input per retained coalesce key. The key alone (round
    *  11's parser) loses `capacityCommitmentId`, so in the success→reload gap a resolved
    *  supplier-backed draw stopped reserving its commitment and a second same-slice worker was
@@ -122,6 +128,7 @@ export function emptyProjectData(): ProjectDataState {
     materialsPending: [],
     labourView: null,
     labourPending: [],
+    commercialView: null,
     labourPendingInputs: {},
     labourOnboardPending: {},
     labourBindPending: {},
@@ -155,6 +162,7 @@ export interface ModuleReadState {
   // Phase 4 Task 6 (§J) — the pilot Labour bundle load status (module-query-only, greenfield; no
   // snapshot fallback, so no `source`). 'idle' on a non-pilot project; the shell load triggers it.
   labourLoad: 'idle' | 'loading' | 'ready' | 'error';
+  commercialLoad: 'idle' | 'loading' | 'ready' | 'error';
 }
 export function emptyModuleReadState(): ModuleReadState {
   return {
@@ -170,6 +178,7 @@ export function emptyModuleReadState(): ModuleReadState {
     activitiesSource: null,
     materialsLoad: 'idle',
     labourLoad: 'idle',
+    commercialLoad: 'idle',
   };
 }
 
