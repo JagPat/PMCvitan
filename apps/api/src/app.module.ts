@@ -48,6 +48,7 @@ import { LabourCapacityService } from './labour/labour-capacity.service';
 import { LabourCoverageService } from './labour/labour-coverage.service';
 import { CommercialController } from './commercial/commercial.controller';
 import { CommercialService } from './commercial/commercial.service';
+import { CommercialCommandRunner } from './commercial/commercial-command.runner';
 import { CommercialParticipant } from './commercial/commercial.participant';
 import { CommercialMeasurementService } from './commercial/commercial-measurement.service';
 import { CommercialMeasurementQuery } from './commercial/commercial-measurement.query';
@@ -158,6 +159,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     LabourProcurementService,
     LabourCapacityService,
     LabourCoverageService,
+    CommercialCommandRunner,
     CommercialService,
     CommercialParticipant,
     CommercialMeasurementService,

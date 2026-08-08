@@ -20,6 +20,54 @@ import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from 
 /** The transaction handle `emitEvent` writes through — a `$transaction` callback client. */
 export type EventDb = Prisma.TransactionClient;
 
+/**
+ * Phase 5 Task 7B-i-a — THE EMISSION REGISTRY: a command's external effects are what it EMITTED.
+ *
+ * Until now, "which events does this command dispatch after commit?" was answered by hand: `run`
+ * returns an `events` array and the service passes it to {@link ExternalEffectDispatcher}. That
+ * works while the emit and the return live in the same function, and silently fails the moment an
+ * event is emitted BELOW the command body — in a participant, a shared evaluation seam, a helper.
+ * The meta is dropped, the durable `OutboxDelivery` still commits, and the external effect the
+ * catalog declares arrives only when the background relay's recovery claim gets to it (and under
+ * `OUTBOX_RELAY_AUTOSTART=false`, never).
+ *
+ * `commercial.money_moved` is the case that forced this. Its single emit seam is
+ * `CommercialBudgetService.evaluate`, which every money writer already calls — from commercial's
+ * own commands AND, through `CommercialParticipant`, from procurement, labour and inventory
+ * commands. Threading its meta up through all of those would be ~15 hand-edited call sites across
+ * four modules, and would leave the trap armed for the next shared seam.
+ *
+ * So the set is DERIVED instead: `emitEvent` records each meta against the transaction handle it
+ * wrote on, and {@link executeCommand} reads that registry back when `run` returns. A caller that
+ * already returns its events is unaffected (the merge dedupes by `eventId` and preserves emit
+ * order); a caller that emits through a seam it does not own now dispatches correctly without
+ * knowing the seam exists.
+ *
+ * Two properties keep this honest:
+ *   - It is OPT-IN PER TRANSACTION. Only a transaction someone called {@link beginEventCollection}
+ *     on collects, and `executeCommand` is the only caller. A raw `prisma.$transaction` (the orgs
+ *     project lifecycle, the §L activation CLI, a projection rebuild) is untouched.
+ *   - It never creates an external effect. The `OutboxDelivery` rows were already materialized in
+ *     the same transaction by `materializeDeliveries`; the registry only decides whether the
+ *     command's own post-commit dispatcher sends them NOW or the relay sweeps them later.
+ *
+ * The map is weak on the transaction handle, so an entry dies with the transaction it belongs to —
+ * including a rolled-back one, whose events were never committed and must never be dispatched.
+ */
+const emittedByTx = new WeakMap<object, EmittedEventMeta[]>();
+
+/** Start collecting on this transaction handle. Idempotent per transaction; resets the buffer. */
+export function beginEventCollection(tx: EventDb): void {
+  emittedByTx.set(tx as object, []);
+}
+
+/** Every event emitted on this transaction handle since {@link beginEventCollection}, in emit
+ *  order. Empty for a transaction nobody opted in — never a lie about what was emitted, because
+ *  the alternative (collecting everywhere) would make a rebuild's transaction look like a command. */
+export function collectedEvents(tx: EventDb): readonly EmittedEventMeta[] {
+  return emittedByTx.get(tx as object) ?? [];
+}
+
 export interface EmitInput {
   /** The project (site) the event belongs to; also the ordering scope. */
   projectId: string;
@@ -112,5 +160,10 @@ export async function emitEvent(tx: EventDb, input: EmitInput): Promise<EmittedE
   // committed event can never lack its durable delivery work. A no-op when no consumer is
   // registered (unit tests without an app boot), so mocked-prisma services need no outbox stub.
   await materializeDeliveries(tx, meta);
+  // Task 7B-i-a — record the emission for this command's post-commit dispatch. AFTER
+  // `materializeDeliveries`, so the registry only ever holds events whose durable delivery rows
+  // exist: the dispatcher looks its work up BY those rows, and an entry without them would be a
+  // dispatch that silently finds nothing. A no-op on a transaction nobody opted in.
+  emittedByTx.get(tx as object)?.push(meta);
   return meta;
 }

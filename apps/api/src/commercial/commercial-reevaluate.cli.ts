@@ -13,6 +13,9 @@ import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { CommercialCommandRunner } from './commercial-command.runner';
+import { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
+import { OutboxRelay } from '../platform/outbox/relay.service';
 
 /**
  * Phase 5 Task 7A — the OPERATOR RE-EVALUATION SWEEP (§B/§J), and why an upgrade needs one.
@@ -72,7 +75,14 @@ export function buildBudgetService(prisma: PrismaService): CommercialBudgetServi
     deductions,
     new CommercialPaymentQuery(deductions),
   );
-  return new CommercialBudgetService(prisma, new CapabilitiesService(prisma), query);
+  // Task 7B-i-a — a REAL runner, not a stub. The sweep itself never routes through it (it drives
+  // `evaluate` on its own per-project transaction, so its money announcements are carried by the
+  // durable deliveries the relay sweeps, which is the right sender for an operator process with no
+  // socket audience). The graph is still built honestly: if this service's `setBudget` command is
+  // ever invoked from here, it dispatches exactly as it does in the API. `OutboxRelay` schedules
+  // nothing until `start()` is called, so constructing one costs a field.
+  const runner = new CommercialCommandRunner(prisma, new ExternalEffectDispatcher(prisma, new OutboxRelay(prisma)));
+  return new CommercialBudgetService(prisma, runner, new CapabilitiesService(prisma), query);
 }
 
 export interface ReevaluateReport {

@@ -7,7 +7,8 @@ import {
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
-import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
+import { hashRequest, type CommandScope } from '../platform/commands';
+import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor, type EventActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -64,6 +65,7 @@ type BoundVerdict = { poLineId: string; kind: 'material' | 'labour'; breach: str
 export class CommercialBillService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly commands: CommercialCommandRunner,
     private readonly capabilities: CapabilitiesService,
     private readonly procurement: ProcurementParticipant,
     private readonly labour: LabourRequirementParticipant,
@@ -260,7 +262,7 @@ export class CommercialBillService {
     // keys a case- and whitespace-normalized form so the seal does not rest on this call alone).
     const vendorBillNumber = input.vendorBillNumber.trim();
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.bill.record', idempotencyKey, requestHash: hashRequest(input),
       // §C rule ii — `sourceCommandId` is a NOT NULL composite FK, so an unkeyed call reserves a
       // SERVER one-shot command (the cleared Phase-3 inventory precedent). A keyed replay appends
@@ -361,7 +363,7 @@ export class CommercialBillService {
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
 
-    await executeCommand(this.prisma, {
+    await this.commands.run({
       scope, actor, commandType: 'commercial.bill.amend', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, _ctx) => {
@@ -470,7 +472,7 @@ export class CommercialBillService {
     const actor = await resolveActor(this.prisma, user);
     const scope: CommandScope = { scopeKind: 'project', projectId };
 
-    await executeCommand(this.prisma, {
+    await this.commands.run({
       scope, actor, commandType: opts.commandType, idempotencyKey, requestHash: hashRequest(opts.input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, _ctx) => {

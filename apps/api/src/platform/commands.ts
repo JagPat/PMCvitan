@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma.service';
 import type { Actor } from '../common/actor';
 import type { EmittedEventMeta } from './outbox/registry';
+import { beginEventCollection, collectedEvents } from './events';
 
 /**
  * Phase 2 Task 5 — the command-idempotency kernel.
@@ -164,6 +165,33 @@ async function resolveTenant(tx: CommandTx, scope: CommandScope): Promise<{ orga
   return { organizationId: scope.organizationId, projectId: null };
 }
 
+/**
+ * Task 7B-i-a — run `run` with the emission registry open, and answer "what did this command
+ * emit?" from the registry rather than from what `run` chose to hand back.
+ *
+ * The returned `events` array stays the caller's contract: a service still passes
+ * `outcome.events` to its post-commit dispatcher, exactly as before. What changes is that the
+ * array is now COMPLETE — it includes events appended by a participant or a shared evaluation
+ * seam below the command body, which no caller could return without knowing the seam exists.
+ *
+ * `run`'s own `events` are merged rather than replaced. They are normally a subset of the
+ * registry, so the merge is a no-op; keeping the union means a `run` that constructs a meta some
+ * other way is never silently dropped. Dedup is by `eventId`, and the registry's emit order is
+ * preserved because the dispatcher sends a command's effects in causal order.
+ */
+async function runCollectingEvents<T>(
+  tx: CommandTx,
+  input: ExecuteInput<T>,
+  ctx: CommandRunContext,
+): Promise<CommandResult<T>> {
+  beginEventCollection(tx);
+  const result = await input.run(tx, ctx);
+  const merged = [...collectedEvents(tx)];
+  const seen = new Set(merged.map((e) => e.eventId));
+  for (const e of result.events ?? []) if (!seen.has(e.eventId)) merged.push(e);
+  return { ...result, events: merged };
+}
+
 export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInput<T>): Promise<ExecuteOutcome<T>> {
   // 1. Normalize the client key (an all-whitespace header is no key).
   const clientKey = input.idempotencyKey?.trim() || null;
@@ -184,7 +212,7 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
   //    ledger-less mutation exactly as before (`run` receives a null `commandId`). Reached only
   //    when enforcement is OFF (step 2 already refused a missing key under enforcement).
   if (!clientKey && !input.synthesizeKeyWhenAbsent) {
-    const r = await prisma.$transaction((tx) => input.run(tx, { commandId: null }));
+    const r = await prisma.$transaction((tx) => runCollectingEvents(tx, input, { commandId: null }));
     return { replayed: false, resultRef: r.resultRef, value: r.value, events: r.events ?? [] };
   }
 
@@ -218,7 +246,7 @@ export async function executeCommand<T>(prisma: PrismaService, input: ExecuteInp
         },
         select: { id: true },
       });
-      const result = await input.run(tx, { commandId: reservation.id });
+      const result = await runCollectingEvents(tx, input, { commandId: reservation.id });
       await tx.commandExecution.update({
         where: { id: reservation.id },
         data: { status: 'succeeded', resultRef: result.resultRef, completedAt: new Date() },

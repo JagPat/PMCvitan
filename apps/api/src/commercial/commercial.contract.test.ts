@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, DOMAIN_EVENT_TYPES, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
-import { FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
+import { COMMERCIAL_MONEY_EVENT, FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
+import { CommercialCommandRunner } from './commercial-command.runner';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { EXTERNAL_EFFECTS } from '../platform/external-effects';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
@@ -1305,28 +1307,65 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    * invalidation arrives late — and under `OUTBOX_RELAY_AUTOSTART=false`, never.
    *
    * A half-wired external effect is worse than a weightless one, so the flag went back and the
-   * wiring is scheduled as its own unit (~15 command sites across 10 services, plus `evaluate`
-   * returning its meta). What closes the trap is this pin: the two facts are asserted TOGETHER, so
-   * the next person to flip the flag fails here until the dispatch exists, and the person who wires
-   * the dispatch fails here until they flip the flag.
+   * wiring became its own unit (7B-i-a). What closes the trap is this pin: the two facts are
+   * asserted TOGETHER, so the next person to flip the flag fails here until the dispatch exists,
+   * and the person who wires the dispatch fails here until they flip the flag.
+   *
+   * 7B-i-a then made "the dispatch exists" a property rather than seventeen copied lines. Every
+   * commercial command routes through `CommercialCommandRunner`, which is the one place that hands
+   * a committed command's events to the dispatcher — so the second half of this pin is now
+   * DERIVED: no commercial service may call `executeCommand` directly, and the runner must
+   * dispatch. A new commercial command cannot route around it, and a command added to an
+   * already-dispatching service cannot forget a line, because there is no line to forget.
    */
-  it('§M: commercial\'s event weight and its post-commit dispatch wiring agree', () => {
+  it('§M: commercial\'s event weight and its post-commit dispatch wiring agree', async () => {
     const entry = EXTERNAL_EFFECTS['commercial.money_moved'];
     const services = readdirSync(HERE).filter((f) => f.endsWith('.service.ts'));
     expect(services.length, 'no commercial services found — this pin would compare nothing').toBeGreaterThan(5);
-    const dispatching = services.filter((f) => /dispatchCommitted\s*\(/u.test(readFileSync(join(HERE, f), 'utf8')));
+
+    // "Wired" is RUN, not read. A source scan for `dispatchCommitted(` matched this file's own doc
+    // comment, so deleting the call left the pin green — prose satisfying a scan, which is the
+    // failure mode a pin exists to prevent. Driving the runner with a fake dispatcher asserts the
+    // behaviour instead. (That the events REACH the runner from a seam below `run` is the platform
+    // registry's job and is proven live in `phase5-t7bia-money-invalidation.test.ts` probe 1.)
+    const sent: EmittedEventMeta[][] = [];
+    const runner = new CommercialCommandRunner(
+      { $transaction: (cb: (tx: unknown) => unknown) => cb({}) } as never,
+      { dispatchCommitted: async (evs: EmittedEventMeta[]) => { sent.push(evs); } } as never,
+    );
+    const emitted = { eventId: 'ev-money', eventType: COMMERCIAL_MONEY_EVENT } as EmittedEventMeta;
+    await runner.run({
+      scope: { scopeKind: 'project', projectId: 'p1' },
+      actor: { actorId: 'u1', actorName: 'x', actorRole: 'pmc', actorKind: 'human' },
+      commandType: 'commercial.probe', requestHash: 'h',
+      run: async () => ({ resultRef: 'r', events: [emitted] }),
+    });
+    const wired = sent.length === 1 && sent[0]!.some((e) => e.eventId === 'ev-money');
 
     expect(
-      entry.invalidate === dispatching.length > 0,
+      entry.invalidate === wired,
       entry.invalidate
-        ? 'commercial.money_moved INVALIDATES but no commercial service dispatches it after commit. '
+        ? 'commercial.money_moved INVALIDATES but CommercialCommandRunner does not dispatch after commit. '
           + 'In the default `legacy` sender mode the immediate dispatcher is the sender, and the relay '
           + 'deliberately holds fresh external deliveries for the lease window — so the invalidation '
-          + `arrives late or never. Wire dispatch into the emitting commands (${services.length} services), `
-          + 'or put the flag back.'
-        : `commercial.money_moved is WEIGHTLESS but ${dispatching.join(', ')} dispatches after commit — `
+          + 'arrives late or never. Restore the dispatch, or put the flag back.'
+        : 'commercial.money_moved is WEIGHTLESS but CommercialCommandRunner dispatches after commit — '
           + 'a dispatch with nothing to send. Flip the catalog entry in the same change.',
     ).toBe(true);
+
+    // …and every commercial command actually goes through it. A service that calls `executeCommand`
+    // itself has silently opted out of the only dispatch site the module has, which is exactly the
+    // state this whole unit exists to make unreachable.
+    const direct = services.filter((f) => /\bexecuteCommand\s*\(/u.test(readFileSync(join(HERE, f), 'utf8')));
+    expect(
+      direct,
+      `${direct.join(', ')} calls executeCommand directly instead of CommercialCommandRunner.run — `
+      + 'its commands commit without sending their external effects. Route it through the runner.',
+    ).toEqual([]);
+    // …and the runner is genuinely the command path, not an unused wrapper: at least one service
+    // uses it, so deleting every call site cannot leave this pin green.
+    const routed = services.filter((f) => /this\.commands\.run\s*\(/u.test(readFileSync(join(HERE, f), 'utf8')));
+    expect(routed.length, 'no commercial service routes through CommercialCommandRunner').toBeGreaterThan(5);
 
     expect(entry.push, 'money moving is not a notification').toBeNull();
     expect(entry.eventType).toBe('commercial.money_moved');
