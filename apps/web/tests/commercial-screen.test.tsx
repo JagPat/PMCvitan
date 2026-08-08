@@ -822,6 +822,124 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect(r.queryByTestId('measurement-none-LPL-1'), 'a landed register still reported as absent').toBeNull();
   });
 
+  it('P1: a LIVE claim renders the LINE register — the read that releases the key', () => {
+    // Round 3 released `com:meas:` on the line-register read and rendered the claim BUNDLE's copy.
+    // On a live claim the bundle map is populated, so the register read could land, clear the key,
+    // and re-enable Measure over the stale bundle register — the defect being fixed, with the
+    // releasing read and the rendering read looking at different things.
+    const live = claim();
+    useStore.setState({
+      commercialClaims: {
+        'bill-1': {
+          ...live,
+          measurements: {
+            'LPL-1': {
+              labourPoLineId: 'LPL-1', rows: [], measured: '7', effort: '10',   // STALE bundle copy
+              orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+            },
+          },
+          bill: {
+            ...live.bill,
+            versions: [{
+              ...live.bill.versions[0]!,
+              lines: [{
+                id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
+                quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
+              }],
+            }],
+          },
+        } as never,
+      },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialClaimStamp: { 'bill-1': 2 },
+      commercialBillsStamp: 1,
+      commercialLineRegisters: {
+        'LPL-1': {
+          labourPoLineId: 'LPL-1', rows: [], measured: '9', effort: '10',       // the FRESH register
+          orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+        },
+      } as never,
+      commercialLineRegisterLoad: { 'LPL-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+
+    const row = r.getByTestId('commercial-measurement-LPL-1').textContent ?? '';
+    expect(row, 'the stale bundle register was rendered beside a key released by the LINE read').toContain('9');
+    expect(row).not.toContain('7');
+  });
+
+  it('P2: a failed line-register read is recoverable, not a permanently disabled row', () => {
+    // Only a SUCCESSFUL register read releases that line's `com:meas:` key, so a transient failure
+    // with no way back leaves the row disabled after connectivity returns.
+    const loadCommercialLineRegister = vi.fn();
+    const draft = claim();
+    act(() => {
+      useStore.setState({
+        loadCommercialLineRegister,
+        commercialClaims: {
+          'bill-1': {
+            ...draft, measurements: {},
+            bill: {
+              ...draft.bill, status: 'draft' as const,
+              versions: [{
+                ...draft.bill.versions[0]!, live: false,
+                lines: [{
+                  id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
+                  quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
+                }],
+              }],
+            },
+          } as never,
+        },
+        commercialClaimLoad: { 'bill-1': 'ready' },
+        commercialClaimStamp: { 'bill-1': 2 },
+        commercialBillsStamp: 1,
+        commercialLineRegisterLoad: { 'LPL-1': 'error' },
+      } as never);
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+
+    loadCommercialLineRegister.mockClear();
+    fireEvent.click(r.getByTestId('measurement-retry-LPL-1'));
+    expect(loadCommercialLineRegister, 'a failed register read offered no way back').toHaveBeenCalledWith('LPL-1');
+  });
+
+  it('P3: a material line carries the invoice\u2019s tax and freight', () => {
+    // RED before: lodge lines held only quantity and rate, so the server defaulted both to zero and
+    // the claim was certified and paid at its base amount — silently disagreeing with the document.
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-6'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '50'], ['lodge-rate', '100.00'],
+      ['lodge-tax', '900.00'], ['lodge-freight', '250.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    expect(recordVendorBill.mock.calls[0][0].lines[0]).toMatchObject({
+      poLineId: 'PL-1', quantity: '50', rate: '100.00', taxAmount: '900.00', freightAmount: '250.00',
+    });
+
+    // and a blank one is OMITTED rather than sent as an explicit zero the document never stated
+    for (const [id, v] of [['lodge-poline', 'PL-2'], ['lodge-qty', '1'], ['lodge-rate', '5.00'],
+      ['lodge-tax', ''], ['lodge-freight', '']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    const second = recordVendorBill.mock.calls[1][0].lines[1];
+    expect(second).not.toHaveProperty('taxAmount');
+    expect(second).not.toHaveProperty('freightAmount');
+  });
+
   it('N2: a LABOUR line is lodged as `labourPoLineId`, not as a material line', () => {
     const recordVendorBill = vi.fn();
     act(() => { useStore.setState({ recordVendorBill } as never); });

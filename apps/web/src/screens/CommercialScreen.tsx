@@ -237,23 +237,31 @@ export function CommercialScreen() {
    * So the form collects the whole line set first. `lines` is the claim; the `lineKind`/id/qty/rate
    * inputs are an entry row that appends to it.
    */
-  type LodgeLine = { lineKind: 'material' | 'labour'; poLineId: string; qty: string; rate: string };
+  // Round 4 (P2) — a vendor's material invoice carries TAX and FREIGHT, and the contract accepts
+  // both per line. Omitting them defaults each to zero server-side, so a claim with ₹900 tax and
+  // ₹250 freight was lodged, certified and paid at its base amount alone — the claim silently
+  // disagreeing with the document it represents. Optional (a labour line ordinarily has neither),
+  // validated by the SAME money rule when present.
+  type LodgeLine = { lineKind: 'material' | 'labour'; poLineId: string; qty: string; rate: string; tax: string; freight: string };
   type LodgeDraft = { scope: string; vendorId: string; number: string; date: string } & LodgeLine
     & { lines: LodgeLine[] };
   const emptyLodge = (scope: string): LodgeDraft => ({
     scope, vendorId: '', number: '', date: '',
-    lineKind: 'material', poLineId: '', qty: '', rate: '', lines: [],
+    lineKind: 'material', poLineId: '', qty: '', rate: '', tax: '', freight: '', lines: [],
   });
   const [lodgeDraft, setLodgeDraft] = useState(emptyLodge(''));
   const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : emptyLodge(scopeKey);
   const setLodge = (next: Partial<typeof lodge>): void => setLodgeDraft({ ...lodge, scope: scopeKey, ...next });
   // the ENTRY row is addable on its own terms; the CLAIM needs at least one added line
-  const entryValid = lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate);
+  const optionalMoneyOk = (v: string): boolean => v.trim() === '' || isMoneyString(v);
+  const entryValid = lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate)
+    && optionalMoneyOk(lodge.tax) && optionalMoneyOk(lodge.freight);
   const addLodgeLine = (): void => setLodge({
     lines: [...lodge.lines, {
       lineKind: lodge.lineKind, poLineId: lodge.poLineId.trim(), qty: lodge.qty.trim(), rate: lodge.rate.trim(),
+      tax: lodge.tax.trim(), freight: lodge.freight.trim(),
     }],
-    poLineId: '', qty: '', rate: '',
+    poLineId: '', qty: '', rate: '', tax: '', freight: '',
   });
   // Codex N5 — the server's duplicate-document index refuses another claim for the same
   // (vendor, normalized number) unless the existing one is `rejected` or `resolved`. A claim
@@ -365,6 +373,9 @@ export function CommercialScreen() {
     if (onMoneyTab) { void loadCommercial(); return; }
     void loadCommercialBills();
     if (selectedBillId) void loadCommercialClaim(selectedBillId);
+    // the §D registers are their own read, so Refresh has to say so — otherwise a line whose
+    // register failed is unreachable from the one control offered for exactly that situation
+    for (const id of measurableLineIds) void loadLineRegister(id);
   };
 
   const openTab = (next: Tab): void => { setTab(next); };
@@ -818,6 +829,8 @@ export function CommercialScreen() {
                         <input value={lodge.poLineId} onChange={(e) => setLodge({ poLineId: e.target.value })} placeholder="PO line id" data-testid="lodge-poline" style={{ ...input, flex: '1 1 120px' }} />
                         <input value={lodge.qty} onChange={(e) => setLodge({ qty: e.target.value })} placeholder="Quantity" inputMode="decimal" data-testid="lodge-qty" style={{ ...input, flex: '1 1 100px' }} />
                         <input value={lodge.rate} onChange={(e) => setLodge({ rate: e.target.value })} placeholder="Rate" inputMode="decimal" data-testid="lodge-rate" style={{ ...input, flex: '1 1 100px' }} />
+                        <input value={lodge.tax} onChange={(e) => setLodge({ tax: e.target.value })} placeholder="Tax (optional)" inputMode="decimal" data-testid="lodge-tax" style={{ ...input, flex: '1 1 110px' }} />
+                        <input value={lodge.freight} onChange={(e) => setLodge({ freight: e.target.value })} placeholder="Freight (optional)" inputMode="decimal" data-testid="lodge-freight" style={{ ...input, flex: '1 1 120px' }} />
                         <Button variant="outline" disabled={!entryValid} data-testid="lodge-add-line" onClick={addLodgeLine}>
                           Add line
                         </Button>
@@ -833,6 +846,10 @@ export function CommercialScreen() {
                               ...(l.lineKind === 'labour' ? { labourPoLineId: l.poLineId } : { poLineId: l.poLineId }),
                               quantity: l.qty,
                               rate: l.rate,
+                              // omitted rather than sent as '0.00' when blank: the server's own
+                              // default is zero, and an explicit zero would claim the document says so
+                              ...(l.tax === '' ? {} : { taxAmount: l.tax }),
+                              ...(l.freight === '' ? {} : { freightAmount: l.freight }),
                             })),
                           })}
                         >
@@ -845,6 +862,7 @@ export function CommercialScreen() {
                             <div key={`${l.poLineId}:${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
                               <span style={{ ...mono, flex: '1 1 auto' }} data-testid={`lodge-line-${i}`}>
                                 {l.lineKind === 'labour' ? 'Labour' : 'Material'} · {l.poLineId} · {l.qty} × {l.rate}
+                                {l.tax !== '' && ` · tax ${l.tax}`}{l.freight !== '' && ` · freight ${l.freight}`}
                               </span>
                               <Button
                                 variant="ghost"
@@ -1049,7 +1067,9 @@ export function CommercialScreen() {
 
           {tab === 'measurements' && (
             <div data-testid="commercial-measurements">
-              {claimPanel((claim) => (
+              {/* the claim is not read here any more — the loaded guard still is (round-4 P1: the
+                  register comes from the LINE, so this tab has exactly one source) */}
+              {claimPanel(() => (
                 (() => {
                   // Codex N3 — `claim.measurements` is keyed from the LIVE version, and a newly
                   // lodged claim is `draft`, so it has none. That made the workflow circular: the
@@ -1060,12 +1080,19 @@ export function CommercialScreen() {
                   // this unit exists to support.
                   //
                   // So the ROWS come from the lines of the version on screen (`measurableLineIds`),
-                  // and each line's REGISTER comes from the bundle when the claim is live, else from
-                  // that line's own read. Round 2 left the second half out: the form appeared on a
-                  // draft and its effect did not, so a measurement that had landed looked like one
-                  // that had not.
+                  // and each line's REGISTER comes from THAT LINE'S OWN READ — the claim bundle's
+                  // map is deliberately not a source here.
+                  //
+                  // Round 4 (P1) is why it is one source rather than two with a fallback. Round 3
+                  // released `com:meas:` on the line-register read while rendering the bundle's
+                  // copy, so on a LIVE claim the register read could win, clear the key, and
+                  // re-enable Measure over the stale bundle register — the exact defect being
+                  // fixed, with the two halves reading different things. The read that RELEASES a
+                  // key and the read that RENDERS its value have to be the same read; the simplest
+                  // way to guarantee that is to have only one. (Both are `registerIn` server-side,
+                  // so nothing is lost — a second copy was only ever a second opinion.)
                   const measurable: Array<[string, MeasurementRegisterDto | null]> =
-                    measurableLineIds.map((id) => [id, claim.measurements[id] ?? lineRegisters[id] ?? null]);
+                    measurableLineIds.map((id) => [id, lineRegisters[id] ?? null]);
                   return measurable.length === 0 ? (
                   // §D applies to LABOUR lines. A material line's evidence is accepted stock, which
                   // the verification triple already reports — so this says "does not apply" rather
@@ -1088,9 +1115,18 @@ export function CommercialScreen() {
                           // The register has not LANDED yet — which is a different statement from
                           // "nothing is measured", and rendering zeros would make them look alike.
                           <div style={{ ...muted, marginTop: 8 }} data-testid={`measurement-none-${lineId}`}>
-                            {lineRegisterLoad[lineId] === 'error'
-                              ? 'This line\u2019s measurement register is unavailable.'
-                              : 'Reading this line\u2019s measurement register\u2026'}
+                            {lineRegisterLoad[lineId] === 'error' ? (
+                              <>
+                                {/* Round 4 (P2): a failed register read holds this line's
+                                    `com:meas:` key — only a SUCCESSFUL read releases it — so
+                                    without a way back the row stays disabled after connectivity
+                                    returns. Refresh reloads them too; this is the row-local one. */}
+                                This line’s measurement register is unavailable.{' '}
+                                <Button variant="ghost" data-testid={`measurement-retry-${lineId}`} onClick={() => void loadLineRegister(lineId)}>
+                                  Retry
+                                </Button>
+                              </>
+                            ) : 'Reading this line’s measurement register…'}
                           </div>
                         )}
                         {/* §D — take a measurement. `citedOutputId` is REQUIRED by the contract, not

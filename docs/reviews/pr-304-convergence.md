@@ -1,7 +1,7 @@
 # PR #304 convergence audit — the write-ahead window, again
 
-Three finding-bearing heads (`d6d4f6e`, `9fa54c7`, `9d755f2`). **Sixteen findings, eight P1**, on a
-unit whose product surface is six buttons.
+Four finding-bearing heads (`d6d4f6e`, `9fa54c7`, `9d755f2`, `bed5a1f`). **Nineteen findings, nine
+P1**, on a unit whose product surface is six buttons.
 
 Five of round 1's seven are ONE root — one PR #302 already named and I had already written down:
 *the form was written as though the server were the only guard.* Three of round 2's five are inside
@@ -117,6 +117,38 @@ That is the third time this session a probe has been green for a neighbouring re
 common thread is now clear enough to state: **the synchronisation is part of the claim.** A probe
 that waits on the wrong signal is not a weaker probe, it is a different one.
 
+## Round 4 — three more, and the P1 is inside round 3's fix
+
+| # | P | Finding |
+|---|---|---|
+| P1 | P1 | Round 3 RELEASED `com:meas:` on the line-register read and RENDERED the claim bundle's copy. On a live claim the bundle map is populated, so the register read could land, clear the key, and re-enable Measure over a stale register — the defect round 3 existed to fix, with its two halves reading different things |
+| P2 | P2 | Only a SUCCESSFUL register read releases that line's key, and a failed one had no way back: the row stayed disabled after connectivity returned |
+| P3 | P2 | Lodge lines carried only quantity and rate, so a material invoice's tax and freight defaulted to zero server-side — the claim certified and paid at its base amount, silently disagreeing with the document it represents |
+
+**Four consecutive rounds where the finding was inside the previous round's fix** (N1←M1, O3←N3,
+P1←O3). That is the number worth staring at, not the total.
+
+The P1 says something the previous three roots each said one layer up. N1: keys must clear with the
+truth on screen. O1/O2: name WHICH read carries that truth. And now: **the read that releases a key
+and the read that renders its value must be the same read** — round 3 got the release right and left
+the render pointing at the old source, so the two halves disagreed and the button won.
+
+The fix is subtraction rather than precedence. The Measurements tab now has ONE source, the line's
+own register; the claim bundle's map is no longer consulted there at all. Both are `registerIn`
+server-side, so nothing is lost — the second copy was only ever a second opinion, and a second
+opinion is what made "which one do we render" a question that could be answered wrongly. This is
+CLAUDE.md's *one fact, one canonical owner* applied on the client.
+
+**P2 is the cost of that discipline, and worth stating because it is a real trade.** Making one read
+authoritative means a failure of that read now holds a button. Round 3 shipped the authority without
+the recovery path, so a transient failure disabled a row permanently. Authority and recoverability
+arrive together or the first one is a hazard.
+
+**P3 is root N again** — four instances now. Lodging worked, the multi-line fix worked, and the
+amounts were wrong: a claim for ₹5,000 of material plus ₹900 tax and ₹250 freight lodged as ₹5,000.
+Nothing refused it, because the server's default for an omitted amount is zero and zero is a legal
+amount. The quietest defects in this PR have all been the ones where every layer said yes.
+
 ## Root N (new) — wiring is not shipping
 
 **M2.** `recordVendorBill` had a gateway method, an op type, a coalesce key, a store thunk, an
@@ -164,6 +196,13 @@ Taking a finding seriously means implementing what is true, not what is quoted.
 9. **Enumerate the CARDINALITY too, not just the actions.** Root N asked whether each action has a
    surface; O4 is the same question one level down — whether the surface handles the real shape of
    the thing. One line was a surface for lodging and not a surface for an invoice.
-10. **A probe's synchronisation is part of its claim.** O1 waited on a condition its own setup had
+10. **The read that RELEASES a control and the read that RENDERS its value must be the same read.**
+   Where two sources exist, delete one rather than ranking them — a precedence rule is a question
+   that can be answered wrongly later. (P1.)
+11. **Authority and recoverability ship together.** Making one read authoritative means its failure
+   now holds a control; without a way back that is a permanent disable, not a safe default. (P2.)
+12. **A default is not a confirmation.** An omitted amount defaulting to zero looks identical to a
+   document that says zero, and no layer will object. (P3.)
+13. **A probe's synchronisation is part of its claim.** O1 waited on a condition its own setup had
    satisfied, so it asserted before the read under test had landed — and passed under the mutation.
    Mutation-run every probe, including the ones written to catch your own findings.
