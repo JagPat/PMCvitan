@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
 import type { CostHeadPositionDto } from '@vitan/shared';
 import styles from './responsive.module.css';
@@ -136,6 +137,11 @@ export function CommercialScreen() {
   // Codex I2 — the ordering of the two reads' last SUCCESS, so "which is fresher" is looked up
   // rather than guessed. See the row-selection comment on the Claims tab.
   const billsStamp = useStore((s) => s.commercialBillsStamp);
+  // Task 7B-iii-a — the §M writes and their disable-while-pending set.
+  const commercialPending = useStore(useShallow((s) => s.commercialPending));
+  const setBudget = useStore((s) => s.setCommercialBudget);
+  const defineHead = useStore((s) => s.defineCostHead);
+  const reattribute = useStore((s) => s.reattributeCommitment);
   const claimStamp = useStore(useShallow((s) => s.commercialClaimStamp));
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
@@ -144,6 +150,20 @@ export function CommercialScreen() {
   // below is only honoured while its recorded scope still matches — see the comment at `claim`.
   const scopeKey = useStore((s) => `${s.activeProjectId}:${s.projectScopeGeneration}`);
   const [selection, setSelection] = useState<{ scope: string; billId: string | null }>({ scope: '', billId: null });
+  // Form state is SCOPED the same way the claim selection is: a project switch bumps `scopeKey`,
+  // so a half-typed budget for one site can never be submitted against another. Derived, not
+  // reset in an effect — an effect runs after the offending render.
+  const [draft, setDraft] = useState<{ scope: string; head: string; amount: string; reason: string }>(
+    { scope: '', head: '', amount: '', reason: '' },
+  );
+  const form = draft.scope === scopeKey ? draft : { scope: scopeKey, head: '', amount: '', reason: '' };
+  const setForm = (next: Partial<typeof form>): void => setDraft({ ...form, scope: scopeKey, ...next });
+  const [headDraft, setHeadDraft] = useState<{ scope: string; code: string; name: string }>({ scope: '', code: '', name: '' });
+  const headForm = headDraft.scope === scopeKey ? headDraft : { scope: scopeKey, code: '', name: '' };
+  const setHeadForm = (next: Partial<typeof headForm>): void => setHeadDraft({ ...headForm, scope: scopeKey, ...next });
+  const [attrDraft, setAttrDraft] = useState<{ scope: string; head: string; reason: string }>({ scope: '', head: '', reason: '' });
+  const attrForm = attrDraft.scope === scopeKey ? attrDraft : { scope: scopeKey, head: '', reason: '' };
+  const setAttrForm = (next: Partial<typeof attrForm>): void => setAttrDraft({ ...attrForm, scope: scopeKey, ...next });
   const selectedBillId = selection.scope === scopeKey ? selection.billId : null;
 
   // Declared here because THREE things now depend on it: the money view below, the claim-list
@@ -267,6 +287,21 @@ export function CommercialScreen() {
    * other case itself, so no call site can get the pairing wrong and the non-null assertion the old
    * shape needed is gone.
    */
+  // Task 7B-iii-a — disable-while-pending. The BUDGET test is prefix-matched on the cost head
+  // and deliberately ignores the amount: the coalesce key carries the amount (two figures are two
+  // different actions), but a test that included it would re-enable the button the instant the
+  // user edits the input while the first command is still in flight, and write two revisions.
+  // Labour round 7 paid for that distinction.
+  const budgetPending = (code: string): boolean => commercialPending.some((k) => isBudgetPendingForHead(k, code));
+  const headPending = (code: string): boolean => commercialPending.includes(costHeadCoalesceKey(code));
+  // The LINE is the constrained resource — §C keeps exactly one live attribution per line — so a
+  // pending attribution disables the line whatever cost head it names (labour round 5).
+  const attrPending = (lineId: string): boolean => commercialPending.includes(attributionCoalesceKey(lineId));
+  const input: CSSProperties = {
+    border: '1px solid var(--hairline)', borderRadius: 8, padding: '7px 9px',
+    fontSize: 12.5, fontFamily: 'inherit', background: 'var(--canvas)', color: 'var(--ink)', minWidth: 0,
+  };
+
   const claimPanel = (render: (loaded: CommercialClaimView) => JSX.Element): JSX.Element => {
     if (!selectedBillId) {
       return <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-none">Choose a claim on the Claims tab.</div>;
@@ -372,6 +407,83 @@ export function CommercialScreen() {
 
       {tab === 'position' && commercial && (
             <div data-testid="commercial-position">
+              {/* Task 7B-iii-a — the §B budget write. ONE command for v1 and every revision: the
+                  server supersedes the live row and inserts the next version atomically, so the
+                  form does not distinguish "create" from "revise" either. */}
+              <div style={rowCard} data-testid="commercial-budget-form">
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>Set a budget</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <select
+                    value={form.head}
+                    onChange={(e) => setForm({ head: e.target.value })}
+                    data-testid="budget-head"
+                    style={{ ...input, flex: '1 1 140px' }}
+                  >
+                    <option value="">Cost head…</option>
+                    {commercial.costHeads.map((h) => (
+                      <option key={h.code} value={h.code}>{h.code} — {h.name}</option>
+                    ))}
+                  </select>
+                  {/* a money STRING all the way down — §A forbids a float64 round trip, and an
+                      `<input type="number">` would hand one to the store */}
+                  <input
+                    value={form.amount}
+                    onChange={(e) => setForm({ amount: e.target.value })}
+                    placeholder="Amount"
+                    inputMode="decimal"
+                    data-testid="budget-amount"
+                    style={{ ...input, flex: '1 1 110px' }}
+                  />
+                  <input
+                    value={form.reason}
+                    onChange={(e) => setForm({ reason: e.target.value })}
+                    placeholder="Reason"
+                    data-testid="budget-reason"
+                    style={{ ...input, flex: '2 1 180px' }}
+                  />
+                  <Button
+                    variant="ink"
+                    data-testid="budget-submit"
+                    disabled={!form.head || !form.amount.trim() || !form.reason.trim() || budgetPending(form.head)}
+                    onClick={() => { setBudget(form.head, form.amount.trim(), form.reason.trim()); }}
+                  >
+                    {budgetPending(form.head) ? 'Setting…' : 'Set budget'}
+                  </Button>
+                </div>
+              </div>
+
+              {/* §C — the cost-head taxonomy every budget and attribution hangs off. It is on the
+                  hub rather than left to an operator because without at least one head the Budget
+                  tab cannot do anything at all on a freshly enabled pilot project, and
+                  `commercial.manage` is a `pmc` permission like the other two. */}
+              <div style={rowCard} data-testid="commercial-costhead-form">
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>Define a cost head</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  <input
+                    value={headForm.code}
+                    onChange={(e) => setHeadForm({ code: e.target.value })}
+                    placeholder="Code"
+                    data-testid="costhead-code"
+                    style={{ ...input, flex: '1 1 110px' }}
+                  />
+                  <input
+                    value={headForm.name}
+                    onChange={(e) => setHeadForm({ name: e.target.value })}
+                    placeholder="Name"
+                    data-testid="costhead-name"
+                    style={{ ...input, flex: '2 1 180px' }}
+                  />
+                  <Button
+                    variant="ink"
+                    data-testid="costhead-submit"
+                    disabled={!headForm.code.trim() || !headForm.name.trim() || headPending(headForm.code.trim())}
+                    onClick={() => { defineHead(headForm.code.trim(), headForm.name.trim()); }}
+                  >
+                    {headPending(headForm.code.trim()) ? 'Defining…' : 'Define'}
+                  </Button>
+                </div>
+              </div>
+
               {commercial.budget.openExceptions > 0 && (
                 <div data-testid="commercial-open-exceptions" style={{ ...rowCard, borderColor: '#E1BEB6' }}>
                   <span style={breachChip}>OVER BUDGET</span>
@@ -409,15 +521,59 @@ export function CommercialScreen() {
                   No purchase-order line is attributed to a cost head yet.
                 </div>
               )}
-              {liveAttributions.map((a) => (
+              {liveAttributions.map((a) => {
+                // §C: the LINE is the identity a re-attribution supersedes, and exactly one of
+                // the two columns is populated (the PG XOR CHECK). `lineId` is what the coalesce
+                // key and the disable test both name.
+                const lineId = a.poLineId ?? a.labourPoLineId ?? '';
+                const pending = attrPending(lineId);
+                return (
                 <div key={a.id} style={rowCard} data-testid={`commercial-attribution-${a.id}`}>
                   <div style={{ fontWeight: 600 }}>{headName(a.costHeadCode)}</div>
                   <div style={mono}>
                     {a.costHeadCode} · {a.poLineId ? `material line ${a.poLineId}` : `labour line ${a.labourPoLineId}`}
                   </div>
                   {a.reason && <div style={{ ...muted, marginTop: 6 }}>{a.reason}</div>}
+                  {/* Re-attribute this line. An ATOMIC REPLACEMENT, never a revocation — §C has no
+                      "revoke" precisely because it would drop a live vendor obligation out of every
+                      budget while no other head picked the payable up. */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                    <select
+                      value={attrForm.head}
+                      onChange={(e) => setAttrForm({ head: e.target.value })}
+                      data-testid={`attr-head-${a.id}`}
+                      style={{ ...input, flex: '1 1 140px' }}
+                    >
+                      <option value="">Move to…</option>
+                      {commercial.costHeads
+                        .filter((h) => h.code !== a.costHeadCode)
+                        .map((h) => <option key={h.code} value={h.code}>{h.code} — {h.name}</option>)}
+                    </select>
+                    <input
+                      value={attrForm.reason}
+                      onChange={(e) => setAttrForm({ reason: e.target.value })}
+                      placeholder="Reason"
+                      data-testid={`attr-reason-${a.id}`}
+                      style={{ ...input, flex: '2 1 180px' }}
+                    />
+                    <Button
+                      variant="ink"
+                      data-testid={`attr-submit-${a.id}`}
+                      disabled={!attrForm.head || !attrForm.reason.trim() || pending}
+                      onClick={() => {
+                        reattribute(
+                          a.poLineId ? { poLineId: a.poLineId } : { labourPoLineId: a.labourPoLineId as string },
+                          attrForm.head,
+                          attrForm.reason.trim(),
+                        );
+                      }}
+                    >
+                      {pending ? 'Moving…' : 'Re-attribute'}
+                    </Button>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

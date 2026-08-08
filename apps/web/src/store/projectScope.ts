@@ -75,11 +75,15 @@ export interface ProjectDataState {
   // Project-owned exactly like the materials pair: a scope change tears them down so a stale
   // labour bundle / pending key never leaks into another project's Labour hub.
   labourView: LabourView | null;
+  /** Phase 5 Task 7B-iii-a (§M) — the COALESCE keys of commercial commands still in flight.
+   *  Project-owned like every other pending set: a switch tears it down, so a disabled button
+   *  can never survive into a project whose outbox does not contain that op. */
+  commercialPending: string[];
   labourPending: string[];
   // Phase 5 Task 7B-i (§M) — the pilot COMMERCIAL money-position bundle. Project-owned like the
   // other two hubs, so switching project cannot leave one project's money on another's screen.
-  // There is no `commercialPending` here: 7B-i is READ ONLY, and the write lifecycle lands in
-  // 7B-iii with the commands it belongs to.
+  // 7B-i was READ ONLY and said so here; 7B-iii-a lands the first write commands, so
+  // `commercialPending` now sits above with the other pending sets.
   commercialView: CommercialView | null;
   commercialBills: CommercialBillRow[] | null;
   commercialClaims: Record<string, CommercialClaimView>;
@@ -129,6 +133,7 @@ export function emptyProjectData(): ProjectDataState {
     reservationPlans: {},
     materialsPending: [],
     labourView: null,
+    commercialPending: [],
     labourPending: [],
     commercialView: null,
     // Task 7B-ii — the claim list and every opened claim's lifecycle are PROJECT data: a claim id

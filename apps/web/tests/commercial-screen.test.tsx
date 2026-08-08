@@ -526,3 +526,57 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     expect(r.getByTestId('commercial-claims-loading')).toBeTruthy();
   });
 });
+
+describe('Task 7B-iii-a (§M) — the write controls', () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({
+      capabilities: ['commercial'],
+      commercialView: { ...bundle(), costHeads: [{ code: 'CIVIL', name: 'Civil' }, { code: 'MEP', name: 'MEP' }] } as never,
+      commercialLoad: 'ready',
+    });
+  });
+  afterEach(cleanup);
+
+  it('labour r7: editing the amount does NOT re-enable a budget set that is in flight', () => {
+    // The screen — not the helper. A probe that only calls `isBudgetPendingForHead` passes even
+    // if the screen stops using it, which is the shape that let a stub agree with a defect three
+    // times on PR #300. This asserts the rendered button.
+    useStore.setState({ commercialPending: ['com:budget:CIVIL:100.00'] });
+    const r = render(<CommercialScreen />);
+    fireEvent.change(r.getByTestId('budget-head'), { target: { value: 'CIVIL' } });
+    fireEvent.change(r.getByTestId('budget-amount'), { target: { value: '100.00' } });
+    fireEvent.change(r.getByTestId('budget-reason'), { target: { value: 'v1' } });
+    expect((r.getByTestId('budget-submit') as HTMLButtonElement).disabled).toBe(true);
+
+    // the user retypes the figure while the first command is still in flight
+    fireEvent.change(r.getByTestId('budget-amount'), { target: { value: '200.00' } });
+    expect(
+      (r.getByTestId('budget-submit') as HTMLButtonElement).disabled,
+      'the button re-armed mid-flight — the same head would get two revisions',
+    ).toBe(true);
+  });
+
+  it('a budget set for a DIFFERENT head is unaffected by the one in flight', () => {
+    useStore.setState({ commercialPending: ['com:budget:CIVIL:100.00'] });
+    const r = render(<CommercialScreen />);
+    fireEvent.change(r.getByTestId('budget-head'), { target: { value: 'MEP' } });
+    fireEvent.change(r.getByTestId('budget-amount'), { target: { value: '50.00' } });
+    fireEvent.change(r.getByTestId('budget-reason'), { target: { value: 'mep v1' } });
+    expect(
+      (r.getByTestId('budget-submit') as HTMLButtonElement).disabled,
+      'one head in flight disabled every other head',
+    ).toBe(false);
+  });
+
+  it('the form is SCOPED — a project switch cannot submit one site\'s draft against another', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.change(r.getByTestId('budget-head'), { target: { value: 'CIVIL' } });
+    fireEvent.change(r.getByTestId('budget-amount'), { target: { value: '100.00' } });
+    act(() => {
+      useStore.setState({ projectScopeGeneration: useStore.getState().projectScopeGeneration + 1 });
+    });
+    expect((r.getByTestId('budget-amount') as HTMLInputElement).value).toBe('');
+    expect((r.getByTestId('budget-submit') as HTMLButtonElement).disabled).toBe(true);
+  });
+});

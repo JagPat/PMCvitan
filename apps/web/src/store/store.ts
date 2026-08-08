@@ -71,6 +71,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, isCommercialOpType, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -233,8 +234,8 @@ export interface AppState {
   labourLoad: 'idle' | 'loading' | 'ready' | 'error';
   // Phase 5 Task 7B-i (§M) — the pilot COMMERCIAL money-position bundle and its module-query load
   // status. Same discipline again: greenfield module reads with no snapshot fallback,
-  // `null`/'idle' off-pilot, project-owned → torn down on scope change. READ ONLY in 7B-i, so
-  // there is no `commercialPending` twin; the write lifecycle lands in 7B-iii.
+  // `null`/'idle' off-pilot, project-owned → torn down on scope change. 7B-i was READ ONLY and
+  // said so here; 7B-iii-a lands the first §M writes, hence `commercialPending` above.
   commercialView: CommercialView | null;
   commercialLoad: 'idle' | 'loading' | 'ready' | 'error';
   /** Task 7B-ii — the claim LIST and, per claim, its whole lifecycle. Keyed by bill id because a
@@ -247,6 +248,8 @@ export interface AppState {
   /** Codex I2 — the ordering of the two reads' last SUCCESS; see `ModuleReadState`. */
   commercialBillsStamp: number;
   commercialClaimStamp: Record<string, number>;
+  /** Task 7B-iii-a (§M) — coalesce keys of commercial commands in flight (disable-while-pending). */
+  commercialPending: string[];
   labourPending: string[];
   // Codex round 13 — the ORIGINAL allocate input per retained coalesce key (the key alone loses
   // `capacityCommitmentId`, so a resolved supplier draw stopped reserving its commitment in the
@@ -419,6 +422,15 @@ export interface AppActions {
   loadCommercial: () => Promise<void>;
   loadCommercialBills: () => Promise<void>;
   loadCommercialClaim: (billId: string) => Promise<void>;
+  /** §M writes (7B-iii-a). Each dispatches ONE server command through the durable write-ahead
+   *  outbox under a fresh idempotency key, coalesced while pending on its deterministic key. */
+  setCommercialBudget: (costHeadCode: string, amount: string, reason: string) => void;
+  defineCostHead: (code: string, name: string) => void;
+  reattributeCommitment: (
+    line: { poLineId: string } | { labourPoLineId: string },
+    costHeadCode: string,
+    reason: string,
+  ) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -713,6 +725,7 @@ export function getInitialState(): AppState {
     commercialClaimLoad: {},
     commercialBillsStamp: 0,
     commercialClaimStamp: {},
+    commercialPending: [],
     labourPending: [],
     labourPendingInputs: {},
     labourOnboardPending: {},
@@ -1515,6 +1528,19 @@ export const useStore = create<Store>()(
         // draw stopped reserving its commitment and a second same-slice worker re-picked it.
         if (op.t === 'allocateLabour') s.labourPendingInputs[ck] = op.input;
       });
+      runWriteAhead(op, label, okMsg);
+    };
+
+    // ── Phase 5 Task 7B-iii-a (§M) — the pilot COMMERCIAL single-command dispatch: the third
+    //    instance of the SAME two-key lifecycle, cloned from labour (the corrected one) rather
+    //    than from materials. No-op off the commercial pilot. ──
+    const isCommercialOp = (op: OutboxOp): boolean => isCommercialOpType(op.t);
+    const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
+      if (!gateway || !get().capabilities.includes('commercial')) return;
+      const ck = op.coalesceKey;
+      const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
+      if (queued || get().commercialPending.includes(ck)) return;
+      set((s) => { s.commercialPending.push(ck); });
       runWriteAhead(op, label, okMsg);
     };
 
@@ -2647,6 +2673,15 @@ export const useStore = create<Store>()(
           // castDraft: this is a `readonly` server snapshot stored as-is, never mutated.
           s.commercialView = castDraft<CommercialView>(position);
           s.commercialLoad = 'ready';
+          // Task 7B-iii-a — the fresh money IS on screen now: rebuild `commercialPending` from
+          // the live outbox (pending == still-queued). A key resolved by the flush clears HERE,
+          // never in the gap where the pre-command figure still rendered; a transient-failed
+          // op's key survives because its op is still queued. Labour round 8, inherited.
+          s.commercialPending = s.outbox.flatMap((o) =>
+            isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
+              ? [(o as { coalesceKey: string }).coalesceKey]
+              : [],
+          );
         });
       }).catch(() => set((s) => {
         // keep the last-good bundle and expose a Retry boundary. An OLDER failure never overwrites
@@ -2707,6 +2742,50 @@ export const useStore = create<Store>()(
           s.commercialClaimStamp[billId] = ++commercialReadStamp;
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialClaimLoad[billId] = 'error'; }));
+    },
+
+    // ── §M WRITES (7B-iii-a) ────────────────────────────────────────────────────────────────
+    // Each mints a FRESH idempotency key per deliberate action (exactly-once replay on a lost
+    // response) and a DETERMINISTIC coalesce key (dedupe an equivalent action while pending).
+
+    setCommercialBudget: (costHeadCode, amount, reason) => {
+      dispatchCommercial(
+        {
+          t: 'setCommercialBudget',
+          input: { costHeadCode, amount, reason },
+          idempotencyKey: newIdempotencyKey(),
+          coalesceKey: budgetCoalesceKey(costHeadCode, amount),
+        },
+        `Budget for ${costHeadCode}`,
+        'Budget set.',
+      );
+    },
+    defineCostHead: (code, name) => {
+      dispatchCommercial(
+        {
+          t: 'defineCostHead',
+          input: { code, name },
+          idempotencyKey: newIdempotencyKey(),
+          coalesceKey: costHeadCoalesceKey(code),
+        },
+        `Cost head ${code}`,
+        'Cost head defined.',
+      );
+    },
+    reattributeCommitment: (line, costHeadCode, reason) => {
+      // The XOR is the server's contract AND the PG CHECK; the caller passes one shape or the
+      // other, so a request naming both or neither is unrepresentable here rather than refused.
+      const lineId = 'poLineId' in line ? line.poLineId : line.labourPoLineId;
+      dispatchCommercial(
+        {
+          t: 'reattributeCommitment',
+          input: { ...line, costHeadCode, reason },
+          idempotencyKey: newIdempotencyKey(),
+          coalesceKey: attributionCoalesceKey(lineId),
+        },
+        `Re-attribute ${lineId}`,
+        'Commitment re-attributed.',
+      );
     },
     allocateWorker: (activityId, requirementId, originRevision, civilDate, workerId, capacityCommitmentId, labourSpecFingerprint) => {
       // fresh idempotency key per deliberate action; coalesced while pending on the exact
@@ -3577,6 +3656,10 @@ export const useStore = create<Store>()(
       // ANY attempted labour op (succeeded, dropped, or transient) re-derives the labour truth.
       const resolvedLabourCoalesceKeys: string[] = [];
       let labourAttempted = false;
+      // Phase 5 Task 7B-iii-a (§M) — the commercial twin. No `resolved…CoalesceKeys` list, and
+      // that is the labour design not an omission: a resolved key is NOT cleared here (see the
+      // reconcile hook below for why), so there is nothing to collect.
+      let commercialAttempted = false;
       let lastSnap: ApiSnapshot | null = null;
       let synced = 0;
       let dropped = 0;
@@ -3593,23 +3676,27 @@ export const useStore = create<Store>()(
         }
         const mat = isMaterialsOp(ops[i]);
         const lab = isLabourOp(ops[i]);
+        const com = isCommercialOp(ops[i]);
         try {
           lastSnap = await replayOutboxOp(flushGateway, ops[i]);
           synced += 1;
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
           if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
           if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
+          if (com) commercialAttempted = true;
         } catch (err) {
           if (isTerminalOutboxError(err)) {
             dropped += 1; // server will never accept this one — discard and keep going
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
+            if (com) commercialAttempted = true;
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
           if (mat) materialsAttempted = true; // correction 3 finding 3: still refresh truth, keep the op + its coalesceKey
           if (lab) labourAttempted = true; // same for labour: refresh truth, keep the op + its coalesceKey
+          if (com) commercialAttempted = true; // and commercial: an uncertain response still refreshes the money
           break;
         }
       }
@@ -3700,6 +3787,24 @@ export const useStore = create<Store>()(
           get().loadLabour();
         }
       }
+      // Phase 5 Task 7B-iii-a (§M) — the COMMERCIAL reconcile hook, cloned from labour rather
+      // than from materials, deliberately. Materials clears a resolved op's coalesce key HERE;
+      // labour's round 8 found that wrong and commercial inherits the correction: between this
+      // flush and the reload the screen still renders the OLD money position, so clearing the key
+      // in that gap re-enables the button while the pre-command figure is on screen — and a
+      // second set writes a second revision of a budget the first command already changed.
+      // The keys stay in `commercialPending` until `loadCommercial()` APPLIES the fresh bundle,
+      // which rebuilds the set from the live outbox (a transient-failed op is still queued so its
+      // key survives; a resolved one is gone so its key clears WITH the new truth on screen).
+      //
+      // `commercialAttempted` is true for a succeeded, dropped OR transient-failed op (PR #208
+      // finding 4): an uncertain response must still re-read the money, because the server may
+      // have committed despite losing the reply.
+      if (commercialAttempted) {
+        if (scopeStillCurrent(flushScope) && get().capabilities.includes('commercial')) {
+          get().loadCommercial();
+        }
+      }
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
       } finally {
         outboxFlushing = false;
@@ -3735,8 +3840,13 @@ export const useStore = create<Store>()(
           // Phase 4 Task 6 (§J) — labour ops were born two-keyed, so this only DROPS malformed rows
           // (a labour op missing either key must never replay or leak `undefined` into labourPending).
           const labourNorm = normalizeLabourOutbox(materialsNorm.ops);
-          const ops = labourNorm.ops;
-          const changed = materialsNorm.changed || labourNorm.changed;
+          // Phase 5 Task 7B-iii-a (§M) — commercial ops were likewise born two-keyed and no
+          // earlier format was ever persisted, so this is a GUARD (drop a malformed row), not a
+          // migration: there is no legacy key to derive one from, and inventing an identity for a
+          // command whose exactly-once guarantee rests on it would be worse than dropping it.
+          const commercialNorm = normalizeCommercialOutbox(labourNorm.ops);
+          const ops = commercialNorm.ops;
+          const changed = materialsNorm.changed || labourNorm.changed || commercialNorm.changed;
           // persist the migrated queue back to the SAME scoped key so the one-time normalization is durable
           if (changed) storage.setItem(outboxKey(), JSON.stringify(ops));
           set((s) => {
@@ -3763,6 +3873,12 @@ export const useStore = create<Store>()(
             // ops (their durable rows carry the full input, incl. `capacityCommitmentId`). A key
             // retained for an op that resolved before this reload has no row to rebuild from —
             // the screen's key-parser fallback covers it, exactly as before this round.
+            // Task 7B-iii-a — and the same reconstruction for commercial, so a reload keeps an
+            // equivalent still-queued write coalesced and its button disabled.
+            s.commercialPending = s.outbox.flatMap((o) => {
+              const ck = coalesceKeyOf(o);
+              return isCommercialOp(o) && typeof ck === 'string' ? [ck] : [];
+            });
             s.labourPendingInputs = Object.fromEntries(
               s.outbox.flatMap((o) => (o.t === 'allocateLabour' && typeof o.coalesceKey === 'string' ? [[o.coalesceKey, o.input] as const] : [])),
             );
