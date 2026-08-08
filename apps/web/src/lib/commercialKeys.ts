@@ -122,6 +122,10 @@ export const measureCoalesceKey = (labourPoLineId: string, activityId: string): 
 export const correctionCoalesceKey = (measurementId: string, quantity: string): string =>
   `com:mcorr:${measurementId}:${quantity}`;
 
+/** Whether ANY measurement on this LINE is pending, whichever activity it names. */
+export const isMeasurePendingForLine = (key: string, labourPoLineId: string): boolean =>
+  key.startsWith(`com:meas:${labourPoLineId}:`);
+
 /** Whether ANY correction of this measurement is pending, at any delta. */
 export const isCorrectionPendingFor = (key: string, measurementId: string): boolean =>
   key.startsWith(`com:mcorr:${measurementId}:`);
@@ -173,6 +177,13 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // second and the dispatcher accepted it, and two deltas double-withdrew the same evidence.
   const corr = /^com:mcorr:(.+):[^:]*$/u.exec(coalesceKey);
   if (corr) return pending.some((k) => isCorrectionPendingFor(k, corr[1]!));
+  // Round 2 — the LINE is the constrained resource for a measurement, not the (line, activity)
+  // pair the key names. Measure the whole remainder against ACT-1, retarget the form to ACT-2
+  // before the reconcile lands, and the exact-key check sees nothing: both are queued against one
+  // remaining authority and the server terminally refuses the loser. This is labour round 5 and J2
+  // a third time — the key identifies the ACTION, the conflict rule names the RESOURCE.
+  const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
+  if (meas) return pending.some((k) => isMeasurePendingForLine(k, meas[1]!));
   return false;
 }
 

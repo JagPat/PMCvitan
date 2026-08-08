@@ -88,6 +88,8 @@ export interface ProjectDataState {
   commercialView: CommercialView | null;
   commercialBills: CommercialBillRow[] | null;
   commercialClaims: Record<string, CommercialClaimView>;
+  /** §D — queued measurement quantities per labour PO line (the cap subtracts them). */
+  commercialPendingQty: Record<string, string[]>;
   /** §D — one labour PO line's measurement register, keyed by line id. The claim bundle reports
    *  registers only for a LIVE version's lines, and a lodged claim is `draft`, so this is the read
    *  a measurement becomes VISIBLE in. Project-owned: a line id is project-contained. */
@@ -145,6 +147,7 @@ export function emptyProjectData(): ProjectDataState {
     // is project-contained, so carrying either across a switch would render another site's money.
     commercialBills: null,
     commercialClaims: {},
+    commercialPendingQty: {},
     commercialLineRegisters: {},
     labourPendingInputs: {},
     labourOnboardPending: {},

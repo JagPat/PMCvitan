@@ -1114,6 +1114,26 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     expect(s().commercialLineRegisters['LPL-1']?.measured).toBe('2');
   });
 
+  it('R2-5: a second activity on the SAME line is refused by the dispatcher, not just the screen', () => {
+    // The cap belongs to the LINE. Measure the remainder against ACT-1, retarget the form to
+    // ACT-2 before the reconcile lands, and the exact-key check sees nothing — both queue against
+    // one authority and the server terminally refuses the loser. J1's lesson: the durable layer
+    // has to hold it, because an op it accepts has already been reported saved.
+    const gate = deferred();
+    pilot(engGw({ takeMeasurement: vi.fn().mockReturnValue(gate.promise) }));
+    s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '5', citedOutputId: 'OUT-1' });
+    expect(s().outbox).toHaveLength(1);
+    expect(s().commercialPendingQty['LPL-1'], 'the queued QUANTITY is what the cap subtracts').toEqual(['5']);
+
+    s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-2', quantity: '5', citedOutputId: 'OUT-2' });
+    expect(s().outbox, 'a second activity queued against a remainder the first already claimed').toHaveLength(1);
+
+    // a DIFFERENT line is untouched — the constrained resource is this line, not measurement itself
+    s().takeMeasurement({ labourPoLineId: 'LPL-2', activityId: 'ACT-1', quantity: '1', citedOutputId: 'OUT-3' });
+    expect(s().outbox).toHaveLength(2);
+    gate.resolve({});
+  });
+
   it('the §A value rules are the SHARED ones — no second opinion in the browser', async () => {
     const { isMoneyString, isPositiveQuantity } = await import('@vitan/shared');
     // the exact cases Codex J3 named, now answered by the same function the zod contract uses

@@ -247,6 +247,10 @@ export interface AppState {
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaims: Record<string, CommercialClaimView>;
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
+  /** §D — the quantities of measurements queued per labour PO line. The pending SET holds keys,
+   *  and a key carries no amount, so the remaining-authority cap cannot subtract queued work from
+   *  it. Written beside the key at dispatch and rebuilt with it from the live outbox. */
+  commercialPendingQty: Record<string, string[]>;
   /** §D — per-LINE measurement registers, and the read a measurement becomes VISIBLE in. */
   commercialLineRegisters: Record<string, MeasurementRegisterDto>;
   commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
@@ -664,7 +668,10 @@ export function checklistFrozen(
  * read just applied. One function for all four reads: three hand-written copies of this rule was
  * how `com:bill:` came to be released by two of them.
  */
-function releaseCommercialKeys(s: { outbox: readonly unknown[]; commercialPending: string[] }, r: CommercialRead): void {
+function releaseCommercialKeys(
+  s: { outbox: readonly unknown[]; commercialPending: string[]; commercialPendingQty: Record<string, string[]> },
+  r: CommercialRead,
+): void {
   const live = s.outbox.flatMap((o) =>
     isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
       ? [(o as { coalesceKey: string }).coalesceKey]
@@ -674,6 +681,23 @@ function releaseCommercialKeys(s: { outbox: readonly unknown[]; commercialPendin
     ...s.commercialPending.filter((k) => !readClearsKey(k, r)),
     ...live.filter((k) => readClearsKey(k, r)),
   ];
+  // the queued QUANTITIES are re-derived from the same live outbox, so they can never disagree
+  // with the key set about what is still in flight
+  s.commercialPendingQty = pendingMeasureQty(s.outbox);
+}
+
+/** Queued measurement quantities per labour PO line, straight off the live outbox. */
+function pendingMeasureQty(outbox: readonly unknown[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const o of outbox) {
+    const op = o as { t?: unknown; input?: { labourPoLineId?: unknown; quantity?: unknown } };
+    if (op.t !== 'takeMeasurement') continue;
+    const line = op.input?.labourPoLineId;
+    const qty = op.input?.quantity;
+    if (typeof line !== 'string' || typeof qty !== 'string') continue;
+    (out[line] ??= []).push(qty);
+  }
+  return out;
 }
 
 function reconcileSubmission(s: AppState): void {
@@ -756,6 +780,7 @@ export function getInitialState(): AppState {
     commercialBillsLoad: 'idle',
     commercialClaims: {},
     commercialClaimLoad: {},
+    commercialPendingQty: {},
     commercialLineRegisters: {},
     commercialLineRegisterLoad: {},
     commercialBillsStamp: 0,
@@ -1609,7 +1634,16 @@ export const useStore = create<Store>()(
       // keys for one claim, so exact-match coalescing let a reject queue behind a pending submit.
       const queuedKeys = get().outbox.flatMap((o) => { const k = coalesceKeyOf(o); return k ? [k] : []; });
       if (commercialWriteBlocked(ck, queuedKeys) || commercialWriteBlocked(ck, get().commercialPending)) return;
-      set((s) => { s.commercialPending.push(ck); });
+      set((s) => {
+        s.commercialPending.push(ck);
+        // and the queued QUANTITY, so the remaining-authority cap can subtract work that is in
+        // flight but not yet folded into any register
+        const mi = (op as { t?: string; input?: { labourPoLineId?: unknown; quantity?: unknown } });
+        if (mi.t === 'takeMeasurement' && typeof mi.input?.labourPoLineId === 'string'
+          && typeof mi.input?.quantity === 'string') {
+          (s.commercialPendingQty[mi.input.labourPoLineId] ??= []).push(mi.input.quantity);
+        }
+      });
       runWriteAhead(op, label, okMsg);
     };
 

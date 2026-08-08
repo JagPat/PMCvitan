@@ -863,17 +863,24 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('Q-c: the EFFORT cap binds when it is the tighter of the two', () => {
+  it('Q-c: the line-AGGREGATE effort is deliberately NOT a cap', () => {
+    // The server bounds a measurement by effort SCOPED TO THE ACTIVITY being measured, and
+    // `MeasurementRegisterDto.effort` is `EFFORT(poLine)` — the line aggregate. Using it would
+    // enable a quantity the server refuses whenever the effort sits on a different activity, and
+    // it can never refuse one the server allows (activity-scoped ≤ aggregate). So it is not a cap
+    // and is not pretended to be one: the order authority is exact and does the work it can, and
+    // the message no longer claims a bound the screen does not enforce.
     labourClaim('draft', { measured: '0', effort: '3', liveAuthorityPersonShiftQty: 10 });
     const r = openMeasurements();
     fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
     fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
     fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '4' } });
-    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '3' } });
     expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(false);
+    // the AUTHORITY still binds, exactly
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '11' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('measure-over-cap-LPL-1').textContent).not.toContain('effort');
   });
-
   it('Q-d: a correction that would take its OWN row below zero is refused', () => {
     labourClaim('draft', {
       measured: '5',
@@ -910,6 +917,86 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled, '3 − 2 leaves 1').toBe(true);
     fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
     expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R2-1: a POSITIVE correction is measured work, and the line cap binds it', () => {
+    // The server treats a positive correction as another measurement and re-checks the same caps.
+    // `overWithdraws` returned false for every non-negative delta, so at the authority ceiling a
+    // +1 was queued and reported saved before reconnect dropped it.
+    labourClaim('draft', {
+      measured: '10', liveAuthorityPersonShiftQty: 10,
+      rows: [{ id: 'm1', quantity: '10', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null }],
+    });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'more' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(true);
+    // and a WITHDRAWAL is still fine at the ceiling — the two directions have different bounds
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R2-2: a LIVE certificate\u2019s frozen consumption is a withdrawal floor', () => {
+    // The certificate consumes m1 = 1, so those person-shifts cannot be withdrawn until it is
+    // superseded — the server refuses, and the row's own quantity does not say so.
+    const c = claim();
+    labourClaim('certified', {
+      measured: '2',
+      rows: [{ id: 'm1', quantity: '2', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null }],
+    });
+    useStore.setState({
+      commercialClaims: {
+        'bill-1': {
+          ...useStore.getState().commercialClaims['bill-1'],
+          certificate: { ...c.certificate!, supersededAt: null, measurementConsumption: [{ rowId: 'm1', consumedQty: '1' }] },
+        } as never,
+      },
+    });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'miscount' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled, '2 recorded − 1 certified leaves 1').toBe(true);
+    expect(r.getByTestId('correct-over-withdraw-m1').textContent).toContain('certificate');
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R2-3: a SUPERSEDED certificate consumes nothing', () => {
+    const c = claim();
+    labourClaim('certified', {
+      measured: '2',
+      rows: [{ id: 'm1', quantity: '2', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null }],
+    });
+    useStore.setState({
+      commercialClaims: {
+        'bill-1': {
+          ...useStore.getState().commercialClaims['bill-1'],
+          certificate: {
+            ...c.certificate!, supersededAt: '2026-08-22T00:00:00.000Z',
+            measurementConsumption: [{ rowId: 'm1', consumedQty: '1' }],
+          },
+        } as never,
+      },
+    });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'miscount' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
+    // superseding IS the act that frees the evidence, so the full row is withdrawable again
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R2-4: a register whose refresh FAILED is stale, and stale numbers do not authorise writes', () => {
+    labourClaim('draft', { measured: '0', liveAuthorityPersonShiftQty: 10 });
+    useStore.setState({ commercialLineRegisterLoad: { 'LPL-1': 'error' } });
+    const r = openMeasurements();
+    // the figures are still SHOWN — they are the last known truth — but they are labelled, given a
+    // retry, and no longer enable a command another measurer may have just invalidated
+    expect(r.getByTestId('measurement-stale-LPL-1')).toBeTruthy();
+    expect(r.getByTestId('measurement-retry-LPL-1')).toBeTruthy();
+    fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
+    fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '1' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('N2/Q-b: a LABOUR claim line is lodged as `labourPoLineId` and carries no charges', () => {

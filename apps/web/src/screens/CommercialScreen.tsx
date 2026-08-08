@@ -3,11 +3,11 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isBillTransitionPending } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
 import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
-import { exceedsMeasurableCap, overWithdraws, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
+import { correctionRefused, exceedsMeasurableCap, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import styles from './responsive.module.css';
 
 /**
@@ -139,6 +139,7 @@ export function CommercialScreen() {
   // §D — the per-LINE measurement registers. The claim bundle carries registers only for a LIVE
   // version's lines, so this is what a measurement taken on a lodged DRAFT becomes visible in.
   const lineRegisters = useStore(useShallow((s) => s.commercialLineRegisters));
+  const pendingQty = useStore(useShallow((s) => s.commercialPendingQty));
   const lineRegisterLoad = useStore(useShallow((s) => s.commercialLineRegisterLoad));
   const loadLineRegister = useStore((s) => s.loadCommercialLineRegister);
   // Codex I2 — the ordering of the two reads' last SUCCESS, so "which is fresher" is looked up
@@ -445,6 +446,17 @@ export function CommercialScreen() {
       .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
       .map((l) => l.labourPoLineId as string))].sort();
   }, [claim]);
+  /**
+   * §D — the frozen labour evidence a LIVE certificate consumes.
+   *
+   * A different FACT from the register, which knows nothing about certificates, so reading the
+   * claim for it is not a second source for the same thing — it is the second floor §D names.
+   * A superseded certificate consumes nothing: superseding it is exactly the act that frees the
+   * evidence, which is why the filter is on `supersededAt` rather than on the certificate existing.
+   */
+  const claimCertified = claim?.certificate && claim.certificate.supersededAt === null
+    ? claim.certificate.measurementConsumption
+    : [];
   const lineKey = measurableLineIds.join(',');
   useEffect(() => {
     if (!onPilot) return;
@@ -479,8 +491,12 @@ export function CommercialScreen() {
   // The LINE is the constrained resource — §C keeps exactly one live attribution per line — so a
   // pending attribution disables the line whatever cost head it names (labour round 5).
   const attrPending = (lineId: string): boolean => commercialPending.includes(attributionCoalesceKey(lineId));
-  const measurePending = (lineId: string, activityId: string): boolean =>
-    commercialPending.includes(measureCoalesceKey(lineId, activityId));
+  // Round 2 — LINE-wide, not (line, activity): the cap belongs to the line, so a second activity
+  // must not queue against a remainder the first has already claimed. The dispatcher shares the
+  // same rule (`commercialWriteBlocked`), because a screen guard the durable layer does not hold
+  // is not a guard at all.
+  const measurePending = (lineId: string): boolean =>
+    commercialPending.some((k) => isMeasurePendingForLine(k, lineId));
   const correctionPending = (measurementId: string): boolean =>
     commercialPending.some((k) => isCorrectionPendingFor(k, measurementId));
   // §F — submit / amend / reject are three transitions on ONE claim, so a pending any-of-them
@@ -1134,6 +1150,19 @@ export function CommercialScreen() {
                     {measurable.map(([lineId, register]) => (
                       <div key={lineId} style={rowCard} data-testid={`commercial-measurement-${lineId}`}>
                         <div style={mono}>{lineId}</div>
+                        {register !== null && lineRegisterLoad[lineId] === 'error' && (
+                          // Round 2 — a cached register whose LATEST refresh failed is stale, and
+                          // writes derived from it are exactly the ones another measurer may have
+                          // just invalidated. Show it, say so, and refuse the writes until a read
+                          // succeeds — rather than quietly enabling a command against numbers the
+                          // app already knows it could not confirm.
+                          <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid={`measurement-stale-${lineId}`}>
+                            This register could not be refreshed — the figures below may be out of date.{' '}
+                            <Button variant="ghost" data-testid={`measurement-retry-${lineId}`} onClick={() => void loadLineRegister(lineId)}>
+                              Retry
+                            </Button>
+                          </div>
+                        )}
                         {register ? (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
                             <span style={muted}>Measured <span style={num}>{register.measured}</span></span>
@@ -1193,12 +1222,13 @@ export function CommercialScreen() {
                                 !measureFormFor(lineId).activityId.trim()
                                 || !isPositiveQuantity(measureFormFor(lineId).qty)
                                 || !measureFormFor(lineId).outputId.trim()
-                                || measurePending(lineId, measureFormFor(lineId).activityId.trim())
+                                || measurePending(lineId)
                                 // Codex Q-c — and never a quantity the register in front of the
                                 // user already rules out. Without the register there is nothing to
                                 // prove it against, so the control waits rather than guessing.
                                 || register === null
-                                || exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim())
+                                || lineRegisterLoad[lineId] === 'error'
+                                || exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim(), pendingQty[lineId] ?? [])
                               }
                               onClick={() => {
                                 const f = measureFormFor(lineId);
@@ -1210,7 +1240,7 @@ export function CommercialScreen() {
                                 });
                               }}
                             >
-                              {measurePending(lineId, measureFormFor(lineId).activityId.trim()) ? 'Measuring…' : 'Measure'}
+                              {measurePending(lineId) ? 'Measuring…' : 'Measure'}
                             </Button>
                             {measureFormFor(lineId).qty.trim() !== '' && !isPositiveQuantity(measureFormFor(lineId).qty) && (
                               <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`measure-qty-invalid-${lineId}`}>
@@ -1218,10 +1248,10 @@ export function CommercialScreen() {
                               </div>
                             )}
                             {register !== null && isPositiveQuantity(measureFormFor(lineId).qty)
-                              && exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim()) && (
+                              && exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim(), pendingQty[lineId] ?? []) && (
                               <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`measure-over-cap-${lineId}`}>
-                                Only {remainingMeasurable(register)} person-shifts remain measurable on this
-                                line — the tighter of its live order authority and the worked effort attributable to it.
+                                Only {remainingMeasurable(register, pendingQty[lineId] ?? [])} person-shifts remain
+                                measurable on this line's live order authority, net of anything already queued for it.
                               </div>
                             )}
                           </div>
@@ -1256,7 +1286,13 @@ export function CommercialScreen() {
                                 // what this measurement still has to give. The floor is the ROW's,
                                 // not the line's: the server bounds a correction by the row it
                                 // adjusts, so a positive line total does not make this legal.
-                                || (register !== null && overWithdraws(register, row.id, corrFormFor(row.id).qty.trim()))
+                                || register === null || lineRegisterLoad[lineId] === 'error'
+                                // Round 2 — a POSITIVE correction is another measurement to the
+                                // server, which re-checks the same caps; a NEGATIVE one is bounded
+                                // by what its row still has to give AFTER a live certificate's
+                                // frozen consumption.
+                                || correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(),
+                                  { certified: claimCertified, pending: pendingQty[lineId] ?? [] })
                               }
                               onClick={() => correctMeasurement(row.id, corrFormFor(row.id).qty.trim(), corrFormFor(row.id).reason.trim())}
                             >
@@ -1268,11 +1304,12 @@ export function CommercialScreen() {
                               </div>
                             )}
                             {register !== null && isCorrectionDelta(corrFormFor(row.id).qty)
-                              && overWithdraws(register, row.id, corrFormFor(row.id).qty.trim()) && (
+                              && correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(),
+                                { certified: claimCertified, pending: pendingQty[lineId] ?? [] }) && (
                               <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`correct-over-withdraw-${row.id}`}>
-                                This measurement has {remainingWithdrawable(register, row.id)} person-shifts left to
-                                withdraw — correct the other rows on this line individually so each reduction names
-                                the work it walks back.
+                                {corrFormFor(row.id).qty.trim().startsWith('-')
+                                  ? `This measurement has ${remainingWithdrawable(register, row.id, claimCertified)} person-shifts left to withdraw — evidence a live certificate rests on requires superseding that certificate first.`
+                                  : `Only ${remainingMeasurable(register, pendingQty[lineId] ?? [])} person-shifts remain measurable on this line, and a positive correction is measured work too.`}
                               </div>
                             )}
                           </div>
