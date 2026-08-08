@@ -2656,10 +2656,12 @@ export const useStore = create<Store>()(
       const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
         seq === commercialBillsSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
       if (get().commercialBillsLoad !== 'ready') set((s) => { s.commercialBillsLoad = 'loading'; });
-      return gateway.commercialBills().then((rows) => {
+      // UNWRAP: the route returns the wrapper `VendorBillListDto`, like every other list route.
+      // Storing the envelope would put an object where the screen maps an array.
+      return gateway.commercialBills().then(({ bills }) => {
         set((s) => {
           if (!owns(s)) return;
-          s.commercialBills = castDraft<CommercialBillRow[]>(rows);
+          s.commercialBills = castDraft<CommercialBillRow[]>(bills);
           s.commercialBillsLoad = 'ready';
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialBillsLoad = 'error'; }));

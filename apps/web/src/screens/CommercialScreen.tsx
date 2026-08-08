@@ -82,7 +82,11 @@ export function CommercialScreen() {
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
   const [tab, setTab] = useState<Tab>('position');
-  const [selectedBillId, setSelectedBillId] = useState<string | null>(null);
+  // The scope a selection belongs to. A project switch (or a re-auth) bumps this, and the selection
+  // below is only honoured while its recorded scope still matches — see the comment at `claim`.
+  const scopeKey = useStore((s) => `${s.activeProjectId}:${s.projectScopeGeneration}`);
+  const [selection, setSelection] = useState<{ scope: string; billId: string | null }>({ scope: '', billId: null });
+  const selectedBillId = selection.scope === scopeKey ? selection.billId : null;
 
   const reading = (commercialLoad === 'idle' || commercialLoad === 'loading') && !commercial;
   const unavailable = commercialLoad === 'error' && !commercial;
@@ -113,12 +117,20 @@ export function CommercialScreen() {
     if ((next === 'claims' || CLAIM_TABS.includes(next)) && billsLoad === 'idle') void loadCommercialBills();
   };
   const selectClaim = (billId: string): void => {
-    setSelectedBillId(billId);
+    setSelection({ scope: scopeKey, billId });
     // Always re-read on selection. The lifecycle is what someone is about to ACT on — a certified
     // amount or an approvable balance held from an earlier visit is the one number that must not be
     // stale here, and the per-claim token makes a slow earlier read unable to overwrite this one.
     void loadCommercialClaim(billId);
   };
+  // Codex F3 — the SELECTION IS SCOPED. `selectedBillId` is component state and the claim map is
+  // store state, so a project switch tore one down and left the other pointing at a claim that
+  // belongs to a site the user is no longer on. The guard then rendered "Loading the claim…"
+  // forever: nothing was loading, nothing would, and no Retry was offered.
+  //
+  // Derived rather than reset in an effect: an effect runs AFTER the offending render, so there is
+  // a frame in which the old id is live in the new scope. Carrying the scope WITH the selection
+  // means the stale id is simply not selected, with no frame in between and nothing to clean up.
   const claim = selectedBillId ? claims[selectedBillId] ?? null : null;
   const claimStatus = selectedBillId ? claimLoad[selectedBillId] ?? null : null;
   // A distinct `claimReading` is deliberately absent: 'loading' and the torn-down case (a selected
@@ -127,6 +139,29 @@ export function CommercialScreen() {
   // enumeration whose missing fourth branch was the crash.
   const claimStale = claimStatus === 'error' && !!claim;
   const claimUnavailable = claimStatus === 'error' && !claim;
+
+  /**
+   * Codex F2 — EVERY claim tab wears the stale warning, not just the one it was written on.
+   *
+   * A refresh that fails over an already-loaded claim keeps the last-good lifecycle on screen (the
+   * per-claim stale-while-revalidate) and marks the status `error`. Certification said so; Payments
+   * and Measurements did not — and Payments is where `approvable` lives, the one figure an
+   * accountant is about to authorise money against. A banner on one tab is not a property of the
+   * claim, so it is hoisted here and every panel renders through it.
+   */
+  const claimPanel = (content: JSX.Element): JSX.Element => (
+    <>
+      {claimStale && (
+        <div style={{ ...rowCard, ...muted, borderColor: 'var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)' }} data-testid="commercial-claim-stale">
+          Showing the last-known claim — the latest couldn&rsquo;t load.{' '}
+          <button onClick={() => selectedBillId && selectClaim(selectedBillId)} data-testid="commercial-claim-stale-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '3px 8px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer' }}>
+            Retry
+          </button>
+        </div>
+      )}
+      {content}
+    </>
+  );
 
   /**
    * The state to render when there is no claim to render. Returns null ONLY when `claim` is
@@ -318,35 +353,39 @@ export function CommercialScreen() {
               {bills?.length === 0 && (
                 <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-empty">No vendor claim has been recorded yet.</div>
               )}
-              {(bills ?? []).map((b) => (
-                <button
-                  key={b.id}
-                  onClick={() => selectClaim(b.id)}
-                  data-testid={`commercial-claim-row-${b.id}`}
-                  style={{
-                    ...rowCard, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
-                    borderColor: b.id === selectedBillId ? 'var(--ink)' : 'var(--hairline)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
-                    <div style={{ fontWeight: 600 }}>{b.vendorBillNumber}</div>
-                    <span style={mono} data-testid={`commercial-claim-status-${b.id}`}>{b.status}</span>
-                  </div>
-                  <div style={mono}>{b.id}</div>
-                </button>
-              ))}
+              {(bills ?? []).map((row) => {
+                // Codex F4 — the SELECTED row reads the loaded claim's bill, not the list's copy.
+                // The list is fetched once when the tab opens; selecting a claim re-reads it. If a
+                // certification or payment landed in between, the row went on saying `verified`
+                // while the Certification and Payments tabs — rendering `claim.bill.status` from
+                // the fresh bundle — said `certified`. One workflow contradicting itself about the
+                // same claim, on the same screen. The freshest read wins for the row it describes.
+                const b = row.id === selectedBillId && claim ? claim.bill : row;
+                return (
+                  <button
+                    key={b.id}
+                    onClick={() => selectClaim(b.id)}
+                    data-testid={`commercial-claim-row-${b.id}`}
+                    style={{
+                      ...rowCard, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
+                      borderColor: b.id === selectedBillId ? 'var(--ink)' : 'var(--hairline)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+                      <div style={{ fontWeight: 600 }}>{b.vendorBillNumber}</div>
+                      <span style={mono} data-testid={`commercial-claim-status-${b.id}`}>{b.status}</span>
+                    </div>
+                    <div style={mono}>{b.id}</div>
+                  </button>
+                );
+              })}
             </div>
           )}
 
           {tab === 'certification' && (
             <div data-testid="commercial-certification">
-              {claim ? (
+              {claim ? claimPanel(
                 <>
-                  {claimStale && (
-                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-stale">
-                      Showing the last-known claim — the latest couldn&rsquo;t load.
-                    </div>
-                  )}
                   {/* §E — the verification triple, DERIVED server-side on every call. A stored
                       verdict is stale the moment a receipt is reversed, which is why it is not
                       cached here either. */}
@@ -390,14 +429,14 @@ export function CommercialScreen() {
                       )}
                     </div>
                   )}
-                </>
+                </>,
               ) : claimGuard()}
             </div>
           )}
 
           {tab === 'payments' && (
             <div data-testid="commercial-payments">
-              {claim ? (
+              {claim ? claimPanel(
                 <div style={rowCard} data-testid="commercial-payment-ledger">
                   <div style={{ fontWeight: 600 }}>Approvals and payments</div>
                   {/* `approvable` is DERIVED from `netPayable` server-side, and both arrive in the
@@ -417,14 +456,14 @@ export function CommercialScreen() {
                       <span style={num}>{a.amount}</span> approved · paid <span style={num}>{a.paid}</span>
                     </div>
                   ))}
-                </div>
+                </div>,
               ) : claimGuard()}
             </div>
           )}
 
           {tab === 'measurements' && (
             <div data-testid="commercial-measurements">
-              {claim ? (
+              {claim ? claimPanel(
                 Object.keys(claim.measurements).length === 0 ? (
                   // §D applies to LABOUR lines. A material line's evidence is accepted stock, which
                   // the verification triple already reports — so this says "does not apply" rather
@@ -445,7 +484,7 @@ export function CommercialScreen() {
                       </div>
                     ))}
                   </>
-                )
+                ),
               ) : claimGuard()}
             </div>
           )}

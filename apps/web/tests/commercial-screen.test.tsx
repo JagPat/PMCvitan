@@ -115,25 +115,111 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     fireEvent.click(r.getByTestId('commercial-tab-certification'));
     expect(r.getByTestId('verification-verdict')).toBeTruthy();
 
-    // The screen stays mounted and keeps `selectedBillId`; the store loses the claim AND its status.
-    // RED against the three-branch guard: `claim!.verification.verdict` throws on undefined.
-    // wrapped in `act` because this is a store update outside an event handler — without it React
-    // has not flushed the re-render by the time the assertion runs, and the test would pass on the
-    // PREVIOUS frame, which is the render that must not exist.
+    // A REAL project switch: the store data and module-read state are emptied AND
+    // `projectScopeGeneration` is bumped — `orgs`/auth do both together, and a test that omits the
+    // bump is not reproducing a switch, it is reproducing a state the app never reaches.
+    //
+    // Wrapped in `act` because this is a store update outside an event handler; without it React
+    // has not flushed the re-render when the assertion runs, so the test would pass on the PREVIOUS
+    // frame — the render that must not exist.
     act(() => {
       useStore.setState({
         ...emptyProjectData(),
         ...emptyModuleReadState(),
+        projectScopeGeneration: useStore.getState().projectScopeGeneration + 1,
         capabilities: ['commercial'],
         commercialView: bundle(),
         commercialLoad: 'ready',
       });
     });
 
+    // Codex F3 corrected what this should ASSERT. The first version accepted "Loading the claim…",
+    // which is not honest: nothing was loading and nothing would, so the tab was stuck with no
+    // Retry. A selection belongs to the scope it was made in, so after a switch there is simply no
+    // selection — and the panel says so.
     expect(
-      r.getByTestId('commercial-claim-loading'),
-      'a selected id with no entry and no status is honestly "we do not have it yet", not a crash',
+      r.getByTestId('commercial-claim-none'),
+      'a claim selected in the previous project is not a selection in this one',
     ).toBeTruthy();
+    expect(() => r.getByTestId('commercial-claim-loading')).toThrow();
+  });
+
+  it('the guard still renders a state if a claim vanishes WITHOUT a scope change', () => {
+    // Defence in depth, and the probe that keeps the guard's structural property honest: with the
+    // scope unchanged the selection stands, so a missing entry is the genuinely unknown case. The
+    // three-branch guard returned `null` here and the panel crashed
+    // (`Cannot read properties of null (reading 'verification')`); it now says so instead.
+    useStore.setState({
+      commercialClaims: { 'bill-1': claim() },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    expect(r.getByTestId('verification-verdict')).toBeTruthy();
+
+    act(() => { useStore.setState({ commercialClaims: {}, commercialClaimLoad: {} }); });
+    expect(r.getByTestId('commercial-claim-loading')).toBeTruthy();
+  });
+
+  it('F3: selecting again in the NEW scope works — the reset is not a permanent block', () => {
+    useStore.setState({
+      commercialClaims: { 'bill-1': claim() },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    act(() => { useStore.setState({ projectScopeGeneration: useStore.getState().projectScopeGeneration + 1 }); });
+
+    // the same claim, selected fresh in the new scope, is honoured
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    expect(r.getByTestId('verification-verdict').textContent).toBe('matched');
+  });
+
+  it('F2: a failed refresh warns on EVERY claim tab, not just Certification', () => {
+    useStore.setState({
+      commercialClaims: { 'bill-1': claim() },
+      commercialClaimLoad: { 'bill-1': 'error' }, // last-good kept, latest read failed
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+
+    for (const tab of ['certification', 'payments', 'measurements'] as const) {
+      fireEvent.click(r.getByTestId(`commercial-tab-${tab}`));
+      expect(
+        r.getByTestId('commercial-claim-stale'),
+        `${tab} renders a claim whose latest read failed without saying so`,
+      ).toBeTruthy();
+    }
+    // and Payments is the tab that matters most: `approvable` is what gets authorised
+    fireEvent.click(r.getByTestId('commercial-tab-payments'));
+    expect(r.getByTestId('payments-approvable')).toBeTruthy();
+    expect(r.getByTestId('commercial-claim-stale')).toBeTruthy();
+  });
+
+  it('F4: the selected row shows the LOADED claim\'s status, not the list\'s stale copy', () => {
+    // the list was fetched before a certification landed; the claim read is fresher
+    const stale = { ...claim().bill, status: 'verified' as const };
+    const fresh = claim(); // status: 'certified'
+    useStore.setState({
+      commercialBills: [stale],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': fresh },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    expect(r.getByTestId('commercial-claim-status-bill-1').textContent).toBe('verified');
+
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    expect(
+      r.getByTestId('commercial-claim-status-bill-1').textContent,
+      'the row said `verified` while the claim tabs said `certified` — one workflow, two answers',
+    ).toBe('certified');
   });
 
   it('a claim that failed to load offers Retry rather than an empty panel', () => {

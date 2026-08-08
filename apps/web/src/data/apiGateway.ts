@@ -56,7 +56,7 @@ import type {
   LabourPresenceDto,
   CommercialMoneyPositionDto,
   CommercialClaimDto,
-  VendorBillDto,
+  VendorBillListDto,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -934,8 +934,12 @@ export class ApiGateway {
   // from `netPayable`, so six requests can put two figures on one screen that were never true
   // together. The server folds all six in one repeatable-read transaction.
 
-  commercialBills(): Promise<VendorBillDto[]> {
-    return this.req<VendorBillDto[]>(`/projects/${this.projectId}/commercial/bills`);
+  // The SERVER's shape, not a convenient one: `CommercialBillService.list` returns the wrapper
+  // `VendorBillListDto` (`{ bills: [...] }`), like every other list route here. Typing this as a
+  // bare array made the store hold an object that `.map` throws on — and the store test's
+  // hand-written mock returned an array, so the mock agreed with the bug instead of the server.
+  commercialBills(): Promise<VendorBillListDto> {
+    return this.req<VendorBillListDto>(`/projects/${this.projectId}/commercial/bills`);
   }
 
   commercialClaim(billId: string): Promise<CommercialClaimDto> {

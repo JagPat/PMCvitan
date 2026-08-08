@@ -87,8 +87,10 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
     s()._setGateway(null);
   });
 
-  const gw = (over: Partial<Record<string, unknown>> = {}) => ({
-    commercialMoneyPosition: vi.fn().mockResolvedValue(bundle()),
+  // Typed for the same reason as the 7B-ii block below: an untyped stub can promise a shape the
+  // real gateway never returns, and then the test agrees with the bug instead of the server.
+  const gw = (over: Partial<ApiGateway> = {}): Partial<ApiGateway> => ({
+    commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
     ...over,
   });
 
@@ -422,13 +424,21 @@ describe('Task 7B-ii (§M) — the claim list and the per-claim lifecycle', () =
     s()._setGateway(null);
   });
 
-  const gw = (over: Partial<Record<string, unknown>> = {}) => ({
-    commercialMoneyPosition: vi.fn().mockResolvedValue(bundle()),
-    commercialBills: vi.fn().mockResolvedValue([{ id: 'bill-1', vendorBillNumber: 'V-1', status: 'certified', versions: [] }]),
-    commercialClaim: vi.fn().mockResolvedValue(claimDto()),
+  /**
+   * A TYPED gateway stub. `Partial<ApiGateway>` is the whole point: an untyped
+   * `vi.fn().mockResolvedValue(...)` let this file mock `commercialBills` as a bare ARRAY while the
+   * real route returns the wrapper `VendorBillListDto` — so the mock agreed with the bug instead of
+   * the server, the store stashed an object where the screen maps an array, and every test passed.
+   * Codex found it (P1). Typed, the compiler refuses a stub whose shape the gateway would never
+   * return, which closes the class rather than this one instance.
+   */
+  const gw = (over: Partial<ApiGateway> = {}): Partial<ApiGateway> => ({
+    commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    commercialBills: vi.fn<ApiGateway['commercialBills']>().mockResolvedValue({ bills: [claimDto().bill] }),
+    commercialClaim: vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto()),
     ...over,
   });
-  const pilot = (g: ReturnType<typeof gw>) => {
+  const pilot = (g: Partial<ApiGateway>) => {
     s()._setGateway(g as unknown as ApiGateway);
     useStore.setState({ capabilities: ['commercial'] });
   };
