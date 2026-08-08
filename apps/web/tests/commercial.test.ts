@@ -8,8 +8,10 @@ import { selectActionItems } from '@/store/selectors';
 import storeSource from '@/store/store.ts?raw';
 import gatewaySource from '@/data/apiGateway.ts?raw';
 import syncSource from '@/data/useApiSync.ts?raw';
+import contractsSource from '../../api/src/contracts.ts?raw';
+import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
-import { budgetCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto } from '@vitan/shared';
 
@@ -730,6 +732,12 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
   // methods typed from the gateway contract anyway (root D — derive the fixture, don't retype it).
   const writeGw = (over: Partial<ApiGateway> = {}): Partial<ApiGateway> => ({
     commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    // The M1 reconcile refreshes the claim LIST and every open claim too, not only the money
+    // position — so a stub missing them is a fixture that no longer models the gateway. Vitest
+    // surfaced it as unhandled errors rather than failures, which is exactly the shape that hides:
+    // green tests, a red run. (Root D: derive the fixture from the contract.)
+    commercialBills: vi.fn<ApiGateway['commercialBills']>().mockResolvedValue({ bills: [] }),
+    commercialClaim: vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto()),
     setCommercialBudget: vi.fn<ApiGateway['setCommercialBudget']>().mockResolvedValue(undefined),
     defineCostHead: vi.fn<ApiGateway['defineCostHead']>().mockResolvedValue(undefined),
     reattributeCommitment: vi.fn<ApiGateway['reattributeCommitment']>().mockResolvedValue(undefined),
@@ -876,5 +884,183 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     useStore.setState({ ...emptyProjectData(), ...emptyModuleReadState() });
     expect(s().commercialPending, "one project's disabled button survived into another").toEqual([]);
     held.resolve({});
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// Task 7B-iii-b (§D/§F) — the ENGINEER's six writes, on 7B-iii-a's lifecycle.
+//
+// The lifecycle itself is not re-probed: it is merged and cleared. What is new here is which
+// AUTHORITY each action reads, and the §F rule that three verbs share one constrained resource.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({ online: true, activeProjectId: 'p1', sessionToken: 't', role: 'engineer' });
+  });
+  const s = () => useStore.getState();
+  const held: Array<(v: unknown) => void> = [];
+  const deferred = () => {
+    let resolve!: (v: unknown) => void;
+    const promise = new Promise((r) => { resolve = r; });
+    held.push(resolve);
+    return { promise, resolve };
+  };
+  afterEach(async () => {
+    while (held.length) held.pop()?.({});
+    await vi.waitFor(() => { if (useStore.getState().outbox.length > 0) throw new Error('draining'); },
+      { timeout: 2000, interval: 5 }).catch(() => {});
+  });
+  const engGw = (over: Partial<ApiGateway> = {}): Partial<ApiGateway> => ({
+    commercialBills: vi.fn<ApiGateway['commercialBills']>().mockResolvedValue({ bills: [] }),
+    commercialClaim: vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto()),
+    takeMeasurement: vi.fn<ApiGateway['takeMeasurement']>().mockResolvedValue(undefined),
+    submitVendorBill: vi.fn<ApiGateway['submitVendorBill']>().mockResolvedValue(undefined),
+    rejectVendorBill: vi.fn<ApiGateway['rejectVendorBill']>().mockResolvedValue(undefined),
+    setCommercialBudget: vi.fn<ApiGateway['setCommercialBudget']>().mockResolvedValue(undefined),
+    commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    snapshot: vi.fn<ApiGateway['snapshot']>().mockResolvedValue({
+      project: { id: 'p1', name: 'P', short: 'P', descriptor: '', stage: '', siteCode: 'P', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+      decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+      drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+    } as never),
+    ...over,
+  });
+  const pilot = (g: Partial<ApiGateway>) => {
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['commercial'] });
+  };
+
+  it('an ENGINEER may lodge — `commercial.bill` is one of the two permissions admitting the role', () => {
+    const held = deferred();
+    pilot(engGw({ recordVendorBill: vi.fn().mockReturnValue(held.promise) }));
+    s().recordVendorBill({
+      vendorId: 'v-1', vendorBillNumber: 'V-3', documentDate: '2026-08-20',
+      lines: [{ poLineId: 'PL-1', quantity: '1', rate: '10.00' }],
+    });
+    expect(s().outbox, 'an engineer was refused a write their role DOES authorise').toHaveLength(1);
+    expect(s().commercialPending).toEqual([billCoalesceKey('v-1', 'V-3')]);
+  });
+
+  it('…and may NOT set a budget, which is pmc-only', () => {
+    pilot(engGw());
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    expect(s().outbox, 'an engineer queued a pmc-only write').toHaveLength(0);
+  });
+
+  it('§F: submit and reject are ONE constrained resource — a pending transition blocks both', async () => {
+    const gate = deferred();
+    pilot(engGw({ submitVendorBill: vi.fn().mockReturnValue(gate.promise) }));
+    s().submitVendorBill('bill-1');
+    expect(s().outbox).toHaveLength(1);
+
+    // The interference case, ACTUALLY ATTEMPTED. The first version of this probe only asserted
+    // that a pending key existed and never dispatched the second verb, so it passed with the
+    // per-verb defect restored — caught by mutation, and it is root L from PR #303 (a suppression
+    // probe must exercise the thing that must still be blocked, not merely observe state).
+    s().rejectVendorBill('bill-1', 'changed my mind');
+    expect(
+      s().outbox,
+      'a reject queued beside a pending submit for the SAME claim — the server applies whichever '
+      + 'lands first and terminally 4xx\'s the other, after the user was told both were saved',
+    ).toHaveLength(1);
+
+    // a DIFFERENT claim is untouched by that block
+    s().rejectVendorBill('bill-2', 'wrong vendor');
+    expect(s().outbox).toHaveLength(2);
+    gate.resolve({});
+  });
+
+  it('M1: a claim-changing write refreshes the CLAIM, not only the money position', async () => {
+    const money = vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle());
+    const bills = vi.fn<ApiGateway['commercialBills']>().mockResolvedValue({ bills: [claimDto().bill] });
+    const oneClaim = vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto());
+    pilot(engGw({
+      commercialMoneyPosition: money, commercialBills: bills, commercialClaim: oneClaim,
+      submitVendorBill: vi.fn<ApiGateway['submitVendorBill']>().mockResolvedValue(undefined),
+    }));
+    // a claim is open on screen — its STATUS is what the transition changes
+    await s().loadCommercialClaim('bill-1');
+    bills.mockClear(); oneClaim.mockClear();
+
+    s().submitVendorBill('bill-1');
+    await vi.waitFor(() => { if (s().outbox.length > 0) throw new Error('draining'); }, { timeout: 5000, interval: 5 });
+
+    // RED before: the reconcile reloaded ONLY the money position, so `commercialPending` cleared
+    // while the claim on screen was still pre-command — and the control it guards was re-enabled
+    // over truth that had not moved.
+    expect(bills, 'the claim LIST was not refreshed after a claim-changing write').toHaveBeenCalled();
+    expect(oneClaim, 'the OPEN claim was not refreshed — its status is what changed').toHaveBeenCalled();
+  });
+
+  it('O1: a LODGE key survives a claim-bundle read — the LIST is what carries a new claim', async () => {
+    // N1 partitioned the pending set two ways: money keys, and "claim-affecting" keys released by
+    // any claim read. Two is one too few. A lodge becomes visible in the claim LIST — which is also
+    // the list the lodge form's duplicate guard reads — so releasing it when a claim BUNDLE lands
+    // re-enables the button while the guard is still blind, and the second lodge is the server's
+    // duplicate-document 409 after the user was told it was saved.
+    const slowBills = deferred();
+    pilot(engGw({
+      recordVendorBill: vi.fn<ApiGateway['recordVendorBill']>().mockResolvedValue(undefined),
+      commercialBills: vi.fn().mockReturnValue(slowBills.promise),   // the LIST is SLOW
+      commercialClaim: vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto()),
+    }));
+    useStore.setState({ commercialClaimLoad: { 'bill-1': 'ready' } }); // a claim is open
+
+    s().recordVendorBill({
+      vendorId: 'v-9', vendorBillNumber: 'B-9', documentDate: '2026-08-20',
+      lines: [{ labourPoLineId: 'LPL-1', quantity: '1', rate: '10.00' }],
+    });
+    // wait on the STAMP, which is written only by a successful claim APPLY. Waiting on
+    // `commercialClaimLoad` was satisfied by this test's own setup, so the assertion ran before
+    // the read it is about had landed — and the probe passed under a mutation that reintroduces
+    // the defect. A probe's synchronisation is part of what it claims.
+    await vi.waitFor(() => { if (s().commercialClaimStamp['bill-1'] === undefined) throw new Error('claim not applied'); },
+      { timeout: 5000, interval: 5 });
+
+    expect(
+      s().commercialPending,
+      'the lodge key cleared on a CLAIM read, so the form re-armed while the claim LIST its '
+      + 'duplicate guard reads was still pre-command',
+    ).toContain(billCoalesceKey('v-9', 'B-9'));
+
+    slowBills.resolve({ bills: [] });
+    await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
+      { timeout: 5000, interval: 5 });
+  });
+
+  it('the labour-charge rule is ONE statement the SERVICE guards with', async () => {
+    const { claimLineMayCarryCharges } = await import('@vitan/shared');
+    expect(claimLineMayCarryCharges('material')).toBe(true);
+    expect(claimLineMayCarryCharges('labour')).toBe(false);
+    // The rule that matters is not that the constant exists but that the SERVER reads it. A labour
+    // purchase-order snapshot freezes neither tax nor freight; when the labour lodge form lands in
+    // its own unit it imports this same function, so the form cannot offer a charge the service
+    // rejects without the service changing too. Root M's mechanism, checked mechanically.
+    expect(billServiceSource).toContain('claimLineMayCarryCharges(kind)');
+    expect(billServiceSource, 'the service restated the rule instead of reading it')
+      .not.toMatch(/kind === 'labour' && \(taxAmount/u);
+  });
+
+  it('the §A value rules are the SHARED ones — no second opinion in the browser', async () => {
+    const { isMoneyString, isPositiveQuantity } = await import('@vitan/shared');
+    // the exact cases Codex J3 named, now answered by the same function the zod contract uses
+    expect(isMoneyString('100.123')).toBe(false);
+    expect(isMoneyString('abc')).toBe(false);
+    expect(isMoneyString('-5.00')).toBe(false);
+    expect(isMoneyString('100.5')).toBe(true);
+    // a measurement of zero measures nothing; six decimals are real person-shift precision
+    expect(isPositiveQuantity('0')).toBe(false);
+    expect(isPositiveQuantity('0.000001')).toBe(true);
+    expect(isPositiveQuantity('1.1234567')).toBe(false);
+  });
+
+  it('CLOSURE — the money and quantity rules exist ONCE, with no inline copy left behind', () => {
+    // J3's fix named `setBudgetSchema` and I stopped there, leaving four copies in the same file.
+    // This is the mechanical form of "the rule lives once": the literals must not reappear.
+    expect(contractsSource.includes(String.raw`/^\d+(\.\d{1,2})?$/u`), 'an inline money regex is back').toBe(false);
+    expect(contractsSource.includes(String.raw`/^\d+(\.\d{1,6})?$/u`), 'an inline quantity regex is back').toBe(false);
+    expect(contractsSource).toContain('MONEY_STRING');
+    expect(contractsSource).toContain('QUANTITY_STRING');
   });
 });

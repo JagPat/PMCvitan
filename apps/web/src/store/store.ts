@@ -66,13 +66,13 @@ import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, AmendVendorBillInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, isCommercialOpType, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -432,6 +432,11 @@ export interface AppActions {
     costHeadCode: string,
     reason: string,
   ) => void;
+  /** §D/§F writes (7B-iii-b) — the engineer's six, on the SAME lifecycle. */
+  recordVendorBill: (input: RecordVendorBillInput) => void;
+  submitVendorBill: (billId: string) => void;
+  amendVendorBill: (input: AmendVendorBillInput) => void;
+  rejectVendorBill: (billId: string, reason: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -644,6 +649,26 @@ export function checklistFrozen(
  *  with a queued submit op stays FROZEN as `queued` (this rebuilds the freeze after a
  *  reload); an in-flight `submitting` freeze is preserved until its promise resolves;
  *  anything else (a different checklist, a re-auth/switch, a dropped submit) idles. */
+/**
+ * §M — release the commercial coalesce keys THIS read makes visible, and retain every other.
+ *
+ * Rebuilt from the live outbox rather than simply deleted, so a transient-failed op (still queued)
+ * keeps its key and its button stays disabled, while a resolved op's key clears WITH the truth that
+ * read just applied. One function for all four reads: three hand-written copies of this rule was
+ * how `com:bill:` came to be released by two of them.
+ */
+function releaseCommercialKeys(s: { outbox: readonly unknown[]; commercialPending: string[] }, r: CommercialRead): void {
+  const live = s.outbox.flatMap((o) =>
+    isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
+      ? [(o as { coalesceKey: string }).coalesceKey]
+      : [],
+  );
+  s.commercialPending = [
+    ...s.commercialPending.filter((k) => !readClearsKey(k, r)),
+    ...live.filter((k) => readClearsKey(k, r)),
+  ];
+}
+
 function reconcileSubmission(s: AppState): void {
   const sub = s.submission;
   const c = s.checklist;
@@ -1542,6 +1567,13 @@ export const useStore = create<Store>()(
       setCommercialBudget: 'commercial.budget.manage',
       defineCostHead: 'commercial.manage',
       reattributeCommitment: 'commercial.attribute',
+      // 7B-iii-b — `commercial.measure` and `commercial.bill` are the ONLY two commercial
+      // permissions admitting `engineer`, so this map is doing real work here rather than
+      // restating "pmc": an engineer may measure and lodge, and may not certify or pay.
+      recordVendorBill: 'commercial.bill',
+      submitVendorBill: 'commercial.bill',
+      amendVendorBill: 'commercial.bill',
+      rejectVendorBill: 'commercial.bill',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
@@ -1553,8 +1585,10 @@ export const useStore = create<Store>()(
       const permission = COMMERCIAL_OP_PERMISSION[op.t as keyof typeof COMMERCIAL_OP_PERMISSION];
       if (permission && !(ROLE_POLICY[permission] as readonly string[]).includes(get().role)) return;
       const ck = op.coalesceKey;
-      const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
-      if (queued || get().commercialPending.includes(ck)) return;
+      // Conflict, not just equality — see `commercialWriteBlocked`. The §F verbs carry different
+      // keys for one claim, so exact-match coalescing let a reject queue behind a pending submit.
+      const queuedKeys = get().outbox.flatMap((o) => { const k = coalesceKeyOf(o); return k ? [k] : []; });
+      if (commercialWriteBlocked(ck, queuedKeys) || commercialWriteBlocked(ck, get().commercialPending)) return;
       set((s) => { s.commercialPending.push(ck); });
       runWriteAhead(op, label, okMsg);
     };
@@ -2692,11 +2726,11 @@ export const useStore = create<Store>()(
           // the live outbox (pending == still-queued). A key resolved by the flush clears HERE,
           // never in the gap where the pre-command figure still rendered; a transient-failed
           // op's key survives because its op is still queued. Labour round 8, inherited.
-          s.commercialPending = s.outbox.flatMap((o) =>
-            isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
-              ? [(o as { coalesceKey: string }).coalesceKey]
-              : [],
-          );
+          // Codex N1 — release only the keys THIS read makes visible; every other key is retained.
+          // The money read resolving says nothing about whether the claim register on screen is
+          // current, and it is the faster of the two; clearing a measurement's key on it reopened
+          // the very window M1 closed.
+          releaseCommercialKeys(s, { read: 'money' });
         });
       }).catch(() => set((s) => {
         // keep the last-good bundle and expose a Retry boundary. An OLDER failure never overwrites
@@ -2726,6 +2760,9 @@ export const useStore = create<Store>()(
           s.commercialBills = castDraft<CommercialBillRow[]>(bills);
           s.commercialBillsLoad = 'ready';
           s.commercialBillsStamp = ++commercialReadStamp;
+          // …and the list's own keys — a LODGE becomes visible here, and here only: this is the
+          // list the lodge form's duplicate guard reads.
+          releaseCommercialKeys(s, { read: 'bills' });
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialBillsLoad = 'error'; }));
     },
@@ -2755,6 +2792,10 @@ export const useStore = create<Store>()(
           s.commercialClaims[billId] = castDraft<CommercialClaimView>(claim);
           s.commercialClaimLoad[billId] = 'ready';
           s.commercialClaimStamp[billId] = ++commercialReadStamp;
+          // THIS claim's lifecycle transitions are visible now. A lodge is not (the list carries
+          // it), and neither is a measurement (its LINE's register carries it) — with two claims
+          // open, releasing those here is N1 one resource over.
+          releaseCommercialKeys(s, { read: 'claim', billId });
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialClaimLoad[billId] = 'error'; }));
     },
@@ -2785,6 +2826,34 @@ export const useStore = create<Store>()(
         },
         `Cost head ${code}`,
         'Cost head defined.',
+      );
+    },
+    recordVendorBill: (input) => {
+      dispatchCommercial(
+        { t: 'recordVendorBill', input, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billCoalesceKey(input.vendorId, input.vendorBillNumber) },
+        `Claim ${input.vendorBillNumber}`, 'Claim lodged.',
+      );
+    },
+    submitVendorBill: (billId) => {
+      dispatchCommercial(
+        { t: 'submitVendorBill', input: { billId }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'submit') },
+        `Submit ${billId}`, 'Claim submitted.',
+      );
+    },
+    amendVendorBill: (input) => {
+      dispatchCommercial(
+        { t: 'amendVendorBill', input, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(input.billId, 'amend') },
+        `Amend ${input.billId}`, 'Claim amended.',
+      );
+    },
+    rejectVendorBill: (billId, reason) => {
+      dispatchCommercial(
+        { t: 'rejectVendorBill', input: { billId, reason }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'reject') },
+        `Reject ${billId}`, 'Claim rejected.',
       );
     },
     reattributeCommitment: (line, costHeadCode, reason) => {
@@ -3818,6 +3887,18 @@ export const useStore = create<Store>()(
       if (commercialAttempted) {
         if (scopeStillCurrent(flushScope) && get().capabilities.includes('commercial')) {
           get().loadCommercial();
+          // Codex M1 — 7B-iii-a's ops changed the MONEY POSITION, so reloading it was the whole
+          // reconcile. 7B-iii-b's ops change a CLAIM: a measurement, a correction, a lifecycle
+          // transition. Reloading only the money left `loadCommercial()` clearing
+          // `commercialPending` while the register on screen was still pre-command and the form
+          // still filled — so a second Measure sent a FRESH idempotency key and appended the same
+          // measurement twice, overstating measured work. The labour round-8 gap, on the resources
+          // this unit actually touches: refresh the claim list and every open claim too.
+          get().loadCommercialBills();
+          for (const billId of new Set([
+            ...Object.keys(get().commercialClaims),
+            ...Object.keys(get().commercialClaimLoad),
+          ])) get().loadCommercialClaim(billId);
         }
       }
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };

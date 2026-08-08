@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { parseCivilDate } from './common/civil-date';
-import { DEDUCTION_TYPES, MONEY_STRING, SOD_RULES } from '@vitan/shared';
+import { DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SOD_RULES } from '@vitan/shared';
 
 export const sessionSchema = z.object({
   role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']),
@@ -1342,7 +1342,7 @@ export const takeMeasurementSchema = z
     quantity: z
       .string()
       .trim()
-      .regex(/^\d+(\.\d{1,6})?$/u, 'quantity must be a positive decimal with at most 6 places')
+      .regex(QUANTITY_STRING, 'quantity must be a positive decimal with at most 6 places')
       .refine((v) => Number(v) > 0, 'a measurement of zero measures nothing'),
     citedOutputId: z.string().min(1),
     // the SHARED civil-date schema, not a shape regex: `2026-02-31` is well-shaped and impossible,
@@ -1392,11 +1392,11 @@ export const vendorBillLineSchema = z
     labourPoLineId: z.string().min(1).optional(),
     quantity: z
       .string().trim()
-      .regex(/^\d+(\.\d{1,6})?$/u, 'quantity must be a positive decimal with at most 6 places')
+      .regex(QUANTITY_STRING, 'quantity must be a positive decimal with at most 6 places')
       .refine((v) => Number(v) > 0, 'a claim line for zero claims nothing'),
-    rate: z.string().trim().regex(/^\d+(\.\d{1,2})?$/u, 'rate must be a non-negative decimal with at most 2 places'),
-    taxAmount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/u, 'taxAmount must be a non-negative decimal with at most 2 places').optional(),
-    freightAmount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/u, 'freightAmount must be a non-negative decimal with at most 2 places').optional(),
+    rate: z.string().trim().regex(MONEY_STRING, 'rate must be a non-negative decimal with at most 2 places'),
+    taxAmount: z.string().trim().regex(MONEY_STRING, 'taxAmount must be a non-negative decimal with at most 2 places').optional(),
+    freightAmount: z.string().trim().regex(MONEY_STRING, 'freightAmount must be a non-negative decimal with at most 2 places').optional(),
   })
   .strict()
   .refine(

@@ -1,9 +1,10 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
-  BILL_STATUSES_NOT_LIVE, ROLE_POLICY, isLiveBillStatus,
+  BILL_STATUSES_NOT_LIVE, ROLE_POLICY, isLiveBillStatus, claimLineMayCarryCharges,
   type VendorBillDto, type VendorBillLineDto, type VendorBillListDto, type VendorBillStatus,
   type VendorBillVersionDto,
+  BILL_SUBMITTABLE_FROM, BILL_REJECTABLE_FROM,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
@@ -295,7 +296,7 @@ export class CommercialBillService {
   async submit(projectId: string, input: VendorBillStepInput, user: AuthUser, idempotencyKey?: string): Promise<VendorBillDto> {
     return this.transition(projectId, input.billId, user, idempotencyKey, {
       commandType: 'commercial.bill.submit',
-      from: ['draft'],
+      from: [...BILL_SUBMITTABLE_FROM],
       to: 'submitted',
       assertAuthority: (u) => this.assertBill(u),
       evaluateBounds: true,
@@ -331,7 +332,7 @@ export class CommercialBillService {
   async reject(projectId: string, input: RejectVendorBillInput, user: AuthUser, idempotencyKey?: string): Promise<VendorBillDto> {
     return this.transition(projectId, input.billId, user, idempotencyKey, {
       commandType: 'commercial.bill.reject',
-      from: ['draft', 'submitted', 'under-verification', 'disputed', 'verified'],
+      from: [...BILL_REJECTABLE_FROM],
       to: 'rejected',
       reason: input.reason,
       assertAuthority: (u) => this.assertBill(u),
@@ -698,7 +699,7 @@ export class CommercialBillService {
       const rate = new Prisma.Decimal(l.rate);
       const taxAmount = new Prisma.Decimal(l.taxAmount ?? '0');
       const freightAmount = new Prisma.Decimal(l.freightAmount ?? '0');
-      if (kind === 'labour' && (taxAmount.greaterThan(0) || freightAmount.greaterThan(0))) {
+      if (!claimLineMayCarryCharges(kind) && (taxAmount.greaterThan(0) || freightAmount.greaterThan(0))) {
         throw new ConflictException(
           'A labour claim line carries no tax or freight — the labour purchase-order snapshot freezes none, so there would be nothing to verify such a claim against',
         );

@@ -3,9 +3,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { isMoneyString, ROLE_POLICY } from '@vitan/shared';
+import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, claimLineMayCarryCharges, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -156,10 +156,18 @@ export function CommercialScreen() {
   const mayBudget = may('commercial.budget.manage');
   const mayManage = may('commercial.manage');
   const mayAttribute = may('commercial.attribute');
+  // The two commercial permissions that admit `engineer` — so unlike the three above, these
+  // controls ARE visible to an engineer, which is what makes reading the policy load-bearing
+  // rather than a formality (Codex J1).
+  const mayBill = may('commercial.bill');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
+  // 7B-iii-b — the engineer's writes.
+  const submitBill = useStore((s) => s.submitVendorBill);
+  const rejectBill = useStore((s) => s.rejectVendorBill);
+  const recordBill = useStore((s) => s.recordVendorBill);
   const claimStamp = useStore(useShallow((s) => s.commercialClaimStamp));
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
@@ -191,6 +199,89 @@ export function CommercialScreen() {
    * Keyed by attribution id, so only the row the user actually edited can submit, and the empty
    * default keeps every other row's button disabled.
    */
+  // Codex M2 — the LODGE form. The engineer's workflow bound measure/correct/submit/reject and
+  // never surfaced `recordVendorBill`, so on a project with no claim yet the Claims tab showed an
+  // empty state and no way out of it: a workflow that cannot create the thing it processes. One
+  // line is enough to lodge a draft; amendment (a full replacement line set) stays out of scope.
+  /**
+   * Codex round-3 P2 — a vendor's invoice can cover MORE THAN ONE purchase-order line, and the
+   * contract accepts up to 200. Lodging a singleton made the rest of that invoice unreachable: the
+   * document number is the frozen duplicate key, so the second line is refused as a duplicate
+   * claim, and amendment (a full replacement line set) is deliberately not surfaced here. One
+   * invoice line was enough to record a claim and not enough to record THAT claim.
+   *
+   * So the form collects the whole line set first. `lines` is the claim; the `lineKind`/id/qty/rate
+   * inputs are an entry row that appends to it.
+   */
+  // Round 4 (P2) — a vendor's material invoice carries TAX and FREIGHT, and the contract accepts
+  // both per line. Omitting them defaults each to zero server-side, so a claim with ₹900 tax and
+  // ₹250 freight was lodged, certified and paid at its base amount alone — the claim silently
+  // disagreeing with the document it represents. Optional (a labour line ordinarily has neither),
+  // validated by the SAME money rule when present.
+  type LodgeLine = { poLineId: string; qty: string; rate: string; tax: string; freight: string };
+  type LodgeDraft = { scope: string; vendorId: string; number: string; date: string } & LodgeLine
+    & { lines: LodgeLine[] };
+  const emptyLodge = (scope: string): LodgeDraft => ({
+    scope, vendorId: '', number: '', date: '',
+    poLineId: '', qty: '', rate: '', tax: '', freight: '', lines: [],
+  });
+  const [lodgeDraft, setLodgeDraft] = useState(emptyLodge(''));
+  const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : emptyLodge(scopeKey);
+  const setLodge = (next: Partial<typeof lodge>): void => setLodgeDraft({ ...lodge, scope: scopeKey, ...next });
+  // the ENTRY row is addable on its own terms; the CLAIM needs at least one added line
+  const optionalMoneyOk = (v: string): boolean => v.trim() === '' || isMoneyString(v);
+  // This unit lodges MATERIAL claims, whose evidence is ACCEPTED STOCK — a fact Phase 3 already
+  // ships, which is what makes the workflow complete here. A LABOUR claim's evidence is MEASURED
+  // work, so lodging one without the §D measurement controls submits it straight into dispute:
+  // that whole path travels with those controls rather than half-shipping here.
+  const chargesAllowed = claimLineMayCarryCharges('material');
+  const entryValid = lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate)
+    && optionalMoneyOk(lodge.tax) && optionalMoneyOk(lodge.freight);
+  const entryAsLine = (): LodgeLine => ({
+    poLineId: lodge.poLineId.trim(), qty: lodge.qty.trim(), rate: lodge.rate.trim(),
+    tax: lodge.tax.trim(), freight: lodge.freight.trim(),
+  });
+  const addLodgeLine = (): void => setLodge({
+    lines: [...lodge.lines, entryAsLine()],
+    poLineId: '', qty: '', rate: '', tax: '', freight: '',
+  });
+  /**
+   * Round 7 — what happens to a line the user has typed but not ADDED.
+   *
+   * Lodge looked only at `lodge.lines`, so filling `PL-2` and pressing Lodge instead of Add line
+   * silently dropped it — and the vendor's document number is frozen by the duplicate index the
+   * moment the claim is recorded, so that line had no later path into the invoice. Data visible on
+   * screen disappeared into a claim that did not contain it.
+   *
+   * The entry has three states and each needs an answer, so all three are stated rather than the
+   * one the finding named: EMPTY (nothing to lose), VALID (the user means it — fold it in, which is
+   * what pressing Lodge with a filled row plainly intends), and DIRTY-BUT-INVALID (refuse, and say
+   * why, because silently dropping it is the defect and silently sending it is worse).
+   */
+  const entryDirty = [lodge.poLineId, lodge.qty, lodge.rate, lodge.tax, lodge.freight]
+    .some((v) => v.trim() !== '');
+  const lodgeLines = entryValid ? [...lodge.lines, entryAsLine()] : lodge.lines;
+  // Codex N5 — the server's duplicate-document index refuses another claim for the same
+  // (vendor, normalized number) unless the existing one is `rejected` or `resolved`. A claim
+  // already ON SCREEN is enough to know that, so the form refuses rather than promising a write
+  // reconnect will discard.
+  const lodgeDuplicate = (bills ?? []).some((b) =>
+    b.vendorId === lodge.vendorId.trim()
+    && normalizedBillNumber(b.vendorBillNumber) === normalizedBillNumber(lodge.number)
+    && b.status !== 'rejected' && b.status !== 'resolved');
+  const lodgeValid = lodge.vendorId.trim() !== '' && lodge.number.trim() !== ''
+    && isRealCivilDate(lodge.date)                       // N4 — a real calendar day, not a shape
+    && lodgeLines.length > 0                             // round-3 P2 — the whole invoice, not a line
+    && !(entryDirty && !entryValid)                      // round 7 — never drop a line on screen
+    && !lodgeDuplicate;
+  const lodgePending = commercialPending.includes(billCoalesceKey(lodge.vendorId.trim(), lodge.number));
+
+  const [billDrafts, setBillDrafts] = useState<{ scope: string; byId: Record<string, string> }>({ scope: '', byId: {} });
+  const billScoped = billDrafts.scope === scopeKey ? billDrafts.byId : {};
+  const billReasonFor = (id: string): string => billScoped[id] ?? '';
+  const setBillReason = (id: string, reason: string): void =>
+    setBillDrafts({ scope: scopeKey, byId: { ...billScoped, [id]: reason } });
+
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
     { scope: '', byId: {} },
   );
@@ -331,6 +422,12 @@ export function CommercialScreen() {
   // The LINE is the constrained resource — §C keeps exactly one live attribution per line — so a
   // pending attribution disables the line whatever cost head it names (labour round 5).
   const attrPending = (lineId: string): boolean => commercialPending.includes(attributionCoalesceKey(lineId));
+  // §F — submit / amend / reject are three transitions on ONE claim, so a pending any-of-them
+  // disables all three. The claim is the constrained resource, not the verb (labour r5 / J2, third
+  // instance): keyed per verb, a queued reject could sit beside a pending submit and the server
+  // would terminally 4xx whichever lost, after the user was told both were saved.
+  const billTxPending = (billId: string): boolean =>
+    commercialPending.some((k) => isBillTransitionPending(k, billId));
   const input: CSSProperties = {
     border: '1px solid var(--hairline)', borderRadius: 8, padding: '7px 9px',
     fontSize: 12.5, fontFamily: 'inherit', background: 'var(--canvas)', color: 'var(--ink)', minWidth: 0,
@@ -680,6 +777,83 @@ export function CommercialScreen() {
               )}
               {v.show === 'content' && (
                 <>
+                  {mayBill && (
+                    <div style={rowCard} data-testid="commercial-lodge-form">
+                      <div style={{ fontWeight: 600, marginBottom: 8 }}>Lodge a vendor claim</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        <input value={lodge.vendorId} onChange={(e) => setLodge({ vendorId: e.target.value })} placeholder="Vendor id" data-testid="lodge-vendor" style={{ ...input, flex: '1 1 120px' }} />
+                        <input value={lodge.number} onChange={(e) => setLodge({ number: e.target.value })} placeholder="Their bill number" data-testid="lodge-number" style={{ ...input, flex: '1 1 130px' }} />
+                        <input value={lodge.date} onChange={(e) => setLodge({ date: e.target.value })} placeholder="Document date (YYYY-MM-DD)" data-testid="lodge-date" style={{ ...input, flex: '1 1 150px' }} />
+                        <input value={lodge.poLineId} onChange={(e) => setLodge({ poLineId: e.target.value })} placeholder="PO line id" data-testid="lodge-poline" style={{ ...input, flex: '1 1 120px' }} />
+                        <input value={lodge.qty} onChange={(e) => setLodge({ qty: e.target.value })} placeholder="Quantity" inputMode="decimal" data-testid="lodge-qty" style={{ ...input, flex: '1 1 100px' }} />
+                        <input value={lodge.rate} onChange={(e) => setLodge({ rate: e.target.value })} placeholder="Rate" inputMode="decimal" data-testid="lodge-rate" style={{ ...input, flex: '1 1 100px' }} />
+                        <input value={lodge.tax} onChange={(e) => setLodge({ tax: e.target.value })} disabled={!chargesAllowed} placeholder="Tax (optional)" inputMode="decimal" data-testid="lodge-tax" style={{ ...input, flex: '1 1 110px' }} />
+                        <input value={lodge.freight} onChange={(e) => setLodge({ freight: e.target.value })} disabled={!chargesAllowed} placeholder="Freight (optional)" inputMode="decimal" data-testid="lodge-freight" style={{ ...input, flex: '1 1 120px' }} />
+                        <Button variant="outline" disabled={!entryValid} data-testid="lodge-add-line" onClick={addLodgeLine}>
+                          Add line
+                        </Button>
+                        <Button
+                          variant="ink"
+                          data-testid="lodge-submit"
+                          disabled={!lodgeValid || lodgePending}
+                          onClick={() => recordBill({
+                            vendorId: lodge.vendorId.trim(),
+                            vendorBillNumber: lodge.number.trim(),
+                            documentDate: lodge.date.trim(),
+                            lines: lodgeLines.map((l) => ({
+                              poLineId: l.poLineId,
+                              quantity: l.qty,
+                              rate: l.rate,
+                              // omitted rather than sent as '0.00' when blank: the server's own
+                              // default is zero, and an explicit zero would claim the document says so
+                              ...(l.tax === '' ? {} : { taxAmount: l.tax }),
+                              ...(l.freight === '' ? {} : { freightAmount: l.freight }),
+                            })),
+                          })}
+                        >
+                          {lodgePending ? 'Lodging…' : 'Lodge claim'}
+                        </Button>
+                      </div>
+                      {lodge.lines.length > 0 && (
+                        <div style={{ marginTop: 8 }} data-testid="lodge-lines">
+                          {lodge.lines.map((l, i) => (
+                            <div key={`${l.poLineId}:${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+                              <span style={{ ...mono, flex: '1 1 auto' }} data-testid={`lodge-line-${i}`}>
+                                {l.poLineId} · {l.qty} × {l.rate}
+                                {l.tax !== '' && ` · tax ${l.tax}`}{l.freight !== '' && ` · freight ${l.freight}`}
+                              </span>
+                              <Button
+                                variant="ghost"
+                                data-testid={`lodge-line-remove-${i}`}
+                                onClick={() => setLodge({ lines: lodge.lines.filter((_, j) => j !== i) })}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {/* the §A rules, from the SAME functions the zod contract uses */}
+                      {((lodge.qty.trim() !== '' && !isPositiveQuantity(lodge.qty)) || (lodge.rate.trim() !== '' && !isMoneyString(lodge.rate))
+                        || (lodge.date.trim() !== '' && !isRealCivilDate(lodge.date))) && (
+                        <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="lodge-invalid">
+                          Quantity must be positive (≤6dp), rate a non-negative money value (≤2dp), and the
+                          document date a real calendar day (YYYY-MM-DD).
+                        </div>
+                      )}
+                      {entryDirty && !entryValid && (
+                        <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="lodge-entry-incomplete">
+                          Finish or clear the line you are editing — lodging now would leave it out of
+                          the claim, and the bill number is frozen once the claim is recorded.
+                        </div>
+                      )}
+                      {lodgeDuplicate && (
+                        <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="lodge-duplicate">
+                          A live claim for this vendor and bill number already exists — amend or reject it instead.
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {/* Codex H1 — a cached list whose latest refresh FAILED says so. Round 2 hoisted
                       exactly this warning for the CLAIM and left the LIST without one, so an open
                       Claims tab could render "No vendor claim has been recorded yet" after a failed
@@ -716,8 +890,8 @@ export function CommercialScreen() {
                   && (claimStamp[row.id] ?? 0) > billsStamp;
                 const b = claimFresher && claim ? claim.bill : row;
                 return (
+                  <div key={b.id}>
                   <button
-                    key={b.id}
                     onClick={() => selectClaim(b.id)}
                     data-testid={`commercial-claim-row-${b.id}`}
                     style={{
@@ -731,6 +905,43 @@ export function CommercialScreen() {
                     </div>
                     <div style={mono}>{b.id}</div>
                   </button>
+                  {/* §F lifecycle. Submit / reject are two of the three transitions on ONE claim,
+                      so `billTxPending` disables both together — the claim is the constrained
+                      resource, not the verb. (Amend carries a full line set and belongs with the
+                      claim-editing surface, not this row; it is wired in the store and gateway and
+                      is stated in the PR as not yet surfaced.) */}
+                  {mayBill && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      {/* Codex M3/M4 — offered only where the SERVER admits the transition. A
+                          control for an impossible transition is not cosmetic: the write-ahead
+                          outbox persists it and reports it saved, then reconnect drops it with a
+                          terminal 409. The admissible sets are the shared ones the service uses. */}
+                      <Button
+                        variant="ink"
+                        data-testid={`bill-submit-${b.id}`}
+                        disabled={!(BILL_SUBMITTABLE_FROM as readonly string[]).includes(b.status) || billTxPending(b.id)}
+                        onClick={() => submitBill(b.id)}
+                      >
+                        {billTxPending(b.id) ? 'Working…' : 'Submit'}
+                      </Button>
+                      <input
+                        value={billReasonFor(b.id)}
+                        onChange={(e) => setBillReason(b.id, e.target.value)}
+                        placeholder="Rejection reason"
+                        data-testid={`bill-reason-${b.id}`}
+                        style={{ ...input, flex: '2 1 160px' }}
+                      />
+                      <Button
+                        variant="ghost"
+                        data-testid={`bill-reject-${b.id}`}
+                        disabled={!(BILL_REJECTABLE_FROM as readonly string[]).includes(b.status) || !billReasonFor(b.id).trim() || billTxPending(b.id)}
+                        onClick={() => rejectBill(b.id, billReasonFor(b.id).trim())}
+                      >
+                        Reject
+                      </Button>
+                    </div>
+                  )}
+                  </div>
                 );
                   })}
                 </>

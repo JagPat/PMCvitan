@@ -66,6 +66,10 @@ const claim = (): CommercialClaimView => ({
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {
   beforeEach(() => {
     useStore.setState(getInitialState());
+    // The gateway lives in the store's CLOSURE, so `getInitialState()` does not clear it and a
+    // deliberately-minimal stub (J1's) leaked into every later test in this file. Harmless until a
+    // render dispatched a read that stub lacked; then the failure lands in an unrelated probe.
+    useStore.getState()._setGateway(null);
     useStore.setState({
       capabilities: ['commercial'],
       commercialView: bundle(),
@@ -530,6 +534,10 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
 describe('Task 7B-iii-a (§M) — the write controls', () => {
   beforeEach(() => {
     useStore.setState(getInitialState());
+    // The gateway lives in the store's CLOSURE, so `getInitialState()` does not clear it and a
+    // deliberately-minimal stub (J1's) leaked into every later test in this file. Harmless until a
+    // render dispatched a read that stub lacked; then the failure lands in an unrelated probe.
+    useStore.getState()._setGateway(null);
     useStore.setState({
       capabilities: ['commercial'],
       commercialView: { ...bundle(), costHeads: [{ code: 'CIVIL', name: 'Civil' }, { code: 'MEP', name: 'MEP' }] } as never,
@@ -658,4 +666,217 @@ describe('Task 7B-iii-a round 2 — Codex J1/J2/J3', () => {
     expect((r.getByTestId('budget-submit') as HTMLButtonElement).disabled).toBe(false);
     expect(() => r.getByTestId('budget-amount-invalid')).toThrow();
   });
+});
+
+describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
+  const claimWith = (status: string) => ({ ...claim(), bill: { ...claim().bill, status } });
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);   // the gateway lives in the store closure — see above
+    useStore.setState({
+      role: 'engineer', capabilities: ['commercial'],
+      commercialView: bundle() as never, commercialLoad: 'ready',
+      commercialBills: [claim().bill], commercialBillsLoad: 'ready',
+    });
+  });
+  afterEach(cleanup);
+
+  it('M2: an engineer can LODGE a claim — the workflow can create what it processes', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    // RED before: the Claims tab could only act on bills that already existed, so a project with
+    // no claim showed an empty state and no way out of it.
+    expect(r.getByTestId('commercial-lodge-form')).toBeTruthy();
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(true);
+    // a bill number NOT already on screen — the fixture's claim is v-1/V-1, and N5's guard
+    // correctly refuses a duplicate of it (asserted separately below)
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-2'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    // round-3 P2: a claim is the vendor's whole invoice, so lines are ADDED to a set. Round 7
+    // refined WHEN that set counts as non-empty: a VALID entry row folds into the payload, because
+    // pressing Lodge with a filled row plainly means "including this one". So the claim is
+    // lodgeable here — and Add line is for the SECOND and later lines.
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('N5: a duplicate of a LIVE claim already on screen is refused, not promised', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-9'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+    // the SAME claim under case and padding the server's index collapses — refused, with the
+    // reason shown rather than a silent disable
+    fireEvent.change(r.getByTestId('lodge-number'), { target: { value: ' v-1 ' } });
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('lodge-duplicate')).toBeTruthy();
+  });
+
+  it('N4: an impossible calendar date never reaches the outbox', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-9'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    // `2026-02-31` is well-SHAPED and impossible — a regex would pass it
+    for (const bad of ['abc', '2026-02-31', '2026-13-01']) {
+      fireEvent.change(r.getByTestId('lodge-date'), { target: { value: bad } });
+      expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled, bad).toBe(true);
+    }
+    fireEvent.change(r.getByTestId('lodge-date'), { target: { value: '2026-02-28' } });
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('P3: a material line carries the invoice\u2019s tax and freight', () => {
+    // RED before: lodge lines held only quantity and rate, so the server defaulted both to zero and
+    // the claim was certified and paid at its base amount — silently disagreeing with the document.
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-6'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '50'], ['lodge-rate', '100.00'],
+      ['lodge-tax', '900.00'], ['lodge-freight', '250.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    expect(recordVendorBill.mock.calls[0][0].lines[0]).toMatchObject({
+      poLineId: 'PL-1', quantity: '50', rate: '100.00', taxAmount: '900.00', freightAmount: '250.00',
+    });
+
+    // and a blank one is OMITTED rather than sent as an explicit zero the document never stated
+    for (const [id, v] of [['lodge-poline', 'PL-2'], ['lodge-qty', '1'], ['lodge-rate', '5.00'],
+      ['lodge-tax', ''], ['lodge-freight', '']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    const second = recordVendorBill.mock.calls[1][0].lines[1];
+    expect(second).not.toHaveProperty('taxAmount');
+    expect(second).not.toHaveProperty('freightAmount');
+  });
+
+  it('R1: a line typed but not ADDED is never dropped from the claim', () => {
+    // RED before: Lodge read only `lodge.lines`, so a filled entry row vanished — and the vendor's
+    // document number is frozen by the duplicate index the moment the claim is recorded, so that
+    // line had no later path into the invoice.
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-4'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+
+    // a second line typed and NOT added — pressing Lodge here plainly means "including this one"
+    for (const [id, v] of [['lodge-poline', 'PL-2'], ['lodge-qty', '3'], ['lodge-rate', '50.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    const sent = recordVendorBill.mock.calls[0][0].lines;
+    expect(sent, 'a line visible on screen was dropped from the claim it was typed into').toHaveLength(2);
+    expect(sent[1]).toMatchObject({ poLineId: 'PL-2', quantity: '3', rate: '50.00' });
+  });
+
+  it('R2: a DIRTY but incomplete entry refuses the lodge rather than being dropped', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-4'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+
+    // a half-typed line: neither droppable nor sendable, so the form says so
+    fireEvent.change(r.getByTestId('lodge-poline'), { target: { value: 'PL-2' } });
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('lodge-entry-incomplete')).toBeTruthy();
+
+    // clearing it returns the form to lodgeable — the empty entry loses nothing
+    fireEvent.change(r.getByTestId('lodge-poline'), { target: { value: '' } });
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('O4: a vendor invoice covering SEVERAL po lines is lodged whole', () => {
+    // RED before: the submit path always sent a singleton `lines` array. The vendor's document
+    // number is the frozen duplicate key and amendment is not surfaced, so every line after the
+    // first had no path into the claim — one line was enough to record a claim and not enough to
+    // record THAT claim.
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-8'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    // a SECOND line on the same invoice
+    for (const [id, v] of [['lodge-poline', 'PL-9'], ['lodge-qty', '3'], ['lodge-rate', '250.50']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    fireEvent.click(r.getByTestId('lodge-submit'));
+
+    expect(recordVendorBill).toHaveBeenCalledTimes(1);
+    const sent = recordVendorBill.mock.calls[0][0].lines;
+    expect(sent, 'the invoice was lodged one line at a time, and the rest were unreachable').toHaveLength(2);
+    expect(sent[0]).toMatchObject({ poLineId: 'PL-1', quantity: '2', rate: '100.00' });
+    expect(sent[1]).toMatchObject({ poLineId: 'PL-9', quantity: '3', rate: '250.50' });
+    // and a mistaken line can be taken back out before the claim is recorded
+    expect(r.getByTestId('lodge-line-1')).toBeTruthy();
+  });
+
+  it('M3/M4: a transition the server refuses is never offered', () => {
+    useStore.setState({ commercialBills: [claimWith('paid').bill] as never });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    const id = claim().bill.id;
+    // RED before: both were enabled for every status, so an impossible transition was persisted to
+    // the durable outbox and reported saved before a terminal 409 dropped it.
+    expect((r.getByTestId(`bill-submit-${id}`) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId(`bill-reason-${id}`), { target: { value: 'no' } });
+    expect((r.getByTestId(`bill-reject-${id}`) as HTMLButtonElement).disabled).toBe(true);
+
+    cleanup();
+    useStore.setState({ commercialBills: [claimWith('draft').bill] as never });
+    const d = render(<CommercialScreen />);
+    fireEvent.click(d.getByTestId('commercial-tab-claims'));
+    expect((d.getByTestId(`bill-submit-${id}`) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe('Task 7B-iii-b round 2 — the shared value rules (M5, M6, M7)', () => {
+  it('M5: a correction delta is validated with the SAME rule the contract uses', async () => {
+    const { isCorrectionDelta } = await import('@vitan/shared');
+    for (const bad of ['abc', '0', '0.0', '1.1234567', '']) expect(isCorrectionDelta(bad), bad).toBe(false);
+    for (const ok of ['-0.5', '2', '-1.000001']) expect(isCorrectionDelta(ok), ok).toBe(true);
+  });
+
+  it('M6: the bill coalesce key normalizes the way the SERVER duplicate index does', async () => {
+    const { billCoalesceKey } = await import('@/lib/commercialKeys');
+    // RED before (trim only): a case or INNER-whitespace difference produced different keys, so
+    // both entered the durable outbox for what the server treats as ONE live claim.
+    //
+    // The pairs are chosen against the server's ACTUAL rule — strip all whitespace, lowercase —
+    // rather than the review comment's illustration: `V-1` and `v 1` normalize to `v-1` and `v1`,
+    // which the server also treats as different claims, so asserting them equal would have pinned
+    // a behaviour the server does not have.
+    expect(billCoalesceKey('v-1', 'V-1')).toBe(billCoalesceKey('v-1', ' v-1 '));   // case + padding
+    expect(billCoalesceKey('v-1', 'V- 1')).toBe(billCoalesceKey('v-1', 'v-1'));    // inner whitespace
+    expect(billCoalesceKey('v-1', 'V-1')).not.toBe(billCoalesceKey('v-1', 'V-2')); // genuinely different
+  });
+
 });

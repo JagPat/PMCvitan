@@ -1,3 +1,5 @@
+import { normalizedBillNumber } from '@vitan/shared';
+
 /**
  * Phase 5 Task 7B-iii-a (§M) — the COMMERCIAL twin of `labourKeys.ts`, born carrying the
  * PR-#208 two-key split and the eleven rounds of corrections labour paid for it:
@@ -56,7 +58,13 @@ export const costHeadCoalesceKey = (code: string): string => `com:head:${code}`;
 export const attributionCoalesceKey = (lineId: string): string => `com:attr:${lineId}`;
 
 /** The §M commercial outbox op types shipped by this unit. */
-export const COMMERCIAL_OUTBOX_OP_TYPES = ['setCommercialBudget', 'defineCostHead', 'reattributeCommitment'] as const;
+export const COMMERCIAL_OUTBOX_OP_TYPES = [
+  'setCommercialBudget', 'defineCostHead', 'reattributeCommitment',
+  // 7B-iii-b — the engineer's writes join the SAME op-type set, so the hydration guard, the
+  // pending rebuild and the flush reconcile cover them without a second registry to keep in sync.
+  'recordVendorBill',
+  'submitVendorBill', 'amendVendorBill', 'rejectVendorBill',
+] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
   typeof t === 'string' && (COMMERCIAL_OUTBOX_OP_TYPES as readonly string[]).includes(t);
@@ -98,4 +106,87 @@ export function normalizeCommercialOutbox<T extends OutboxOpShape>(ops: readonly
     changed = true; // malformed — dropped, never replayed with a broken identity
   }
   return { ops: out, changed };
+}
+
+// ── Phase 5 Task 7B-iii-b (§D/§F) — the engineer's six writes ────────────────────────────────
+
+/** §F — the duplicate-claim key the SERVER freezes: one claim per (vendor, their bill number). */
+export const billCoalesceKey = (vendorId: string, vendorBillNumber: string): string =>
+  // Normalized the way the SERVER's live-duplicate index keys it, not merely trimmed: `V-1` and
+  // `v 1` are ONE live claim there, so coalescing on the raw string let both enter the durable
+  // outbox and promised to sync a claim the server would refuse (Codex M6).
+  `com:bill:${vendorId}:${normalizedBillNumber(vendorBillNumber)}`;
+
+/**
+ * §F — submit, amend and reject are three TRANSITIONS on one claim, and the claim is the
+ * constrained resource, not the verb.
+ *
+ * Keying per verb would let a pending submit sit beside a queued reject for the same bill: the
+ * server would apply whichever arrived first and terminally 4xx the other, after the user had been
+ * told both were saved. Labour round 5 is the same lesson about a one-slot demand slice, and J2 is
+ * the same lesson about one live attribution per PO line — this is its third instance, so the key
+ * names the BILL and `isBillTransitionPending` disables all three together.
+ */
+export const billTransitionCoalesceKey = (billId: string, verb: 'submit' | 'amend' | 'reject'): string =>
+  `com:billtx:${billId}:${verb}`;
+
+/** Whether ANY lifecycle transition is pending for this claim, whichever verb it is. */
+export const isBillTransitionPending = (key: string, billId: string): boolean =>
+  key.startsWith(`com:billtx:${billId}:`);
+
+/**
+ * Whether a commercial write must be refused because an EQUIVALENT or CONFLICTING one is pending.
+ *
+ * `dispatchCommercial` used exact key equality, which is right for most actions and wrong for the
+ * §F lifecycle: submit / amend / reject carry different keys, so a reject queued behind a pending
+ * submit for the SAME claim passed the check even though the screen's button was disabled. The
+ * screen hiding a control is not a guarantee — that is Codex J1's lesson from PR #302, and the
+ * durable outbox is the layer that has to hold, because an op it accepts has already been
+ * persisted and reported to the user as saved.
+ *
+ * So conflict, not just equality: exact match for everything, plus "any transition on this claim"
+ * for the §F verbs. One function, used by the store to REFUSE and by the screen to DISABLE, so the
+ * two cannot answer differently.
+ */
+export function commercialWriteBlocked(coalesceKey: string, pending: readonly string[]): boolean {
+  if (pending.includes(coalesceKey)) return true;
+  const tx = /^com:billtx:(.+):(?:submit|amend|reject)$/u.exec(coalesceKey);
+  if (tx) return pending.some((k) => isBillTransitionPending(k, tx[1]!));
+  return false;
+}
+
+/**
+ * WHICH READ makes a write visible — and therefore the only read allowed to release its key.
+ *
+ * N1 established the principle (a key must clear WITH the truth on screen, not before) and split
+ * the pending set two ways: money keys on the money read, "claim-affecting" keys on any claim
+ * read. Two claim reads is one too few, because "a claim read" is not one thing:
+ *
+ *  - a LODGE (`com:bill:`) becomes visible in the claim LIST — which is also the list the lodge
+ *    form's duplicate guard reads. Clearing it on a claim BUNDLE re-enabled the button while the
+ *    guard was still blind, so a second lodge entered the durable outbox for the server's
+ *    duplicate-document 409 to drop.
+ *  - a MEASUREMENT becomes visible in the register of the LINE it names — not in whichever claim
+ *    happened to reload first. With two claims open, the unrelated one clearing the key is N1
+ *    exactly, one resource over.
+ *
+ * So ownership is stated per read rather than per family, and the read carries what it actually
+ * landed. `com:billtx:` is deliberately owned by BOTH the list and that claim's own bundle: each
+ * carries the claim's status, and the screen already arbitrates between them by stamp.
+ */
+export type CommercialRead =
+  | { read: 'money' }
+  | { read: 'bills' }
+  | { read: 'claim'; billId: string };
+
+export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
+  switch (r.read) {
+    case 'money':
+      return coalesceKey.startsWith('com:budget:') || coalesceKey.startsWith('com:head:')
+        || coalesceKey.startsWith('com:attr:');
+    case 'bills':
+      return coalesceKey.startsWith('com:bill:') || coalesceKey.startsWith('com:billtx:');
+    case 'claim':
+      return isBillTransitionPending(coalesceKey, r.billId);
+  }
 }

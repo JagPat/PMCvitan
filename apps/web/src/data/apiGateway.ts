@@ -964,6 +964,34 @@ export class ApiGateway {
     return this.cmd('/commercial/attributions', input, idempotencyKey);
   }
 
+  // ── Phase 5 Task 7B-iii-b (§D/§F) — the engineer's six writes, on the SAME lifecycle 7B-iii-a
+  //    established. Nothing about the outbox, keys or reconcile is re-derived here. ──
+
+  /** §D — measure a signed-off activity's labour PO line, citing its work output as evidence. */
+  takeMeasurement(input: TakeMeasurementInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/measurements', input, idempotencyKey);
+  }
+  /** §D — correct a measurement by a SIGNED delta; the original row is never edited. */
+  correctMeasurement(input: CorrectMeasurementInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/measurements/corrections', input, idempotencyKey);
+  }
+  /** §F — record a vendor's claim as lodged (draft). */
+  recordVendorBill(input: RecordVendorBillInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/bills', input, idempotencyKey);
+  }
+  /** §F — submit a lodged claim for verification. */
+  submitVendorBill(input: VendorBillStepInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/bills/submit', input, idempotencyKey);
+  }
+  /** §F — amend a claim: a NEW immutable version, the prior one retained verbatim. */
+  amendVendorBill(input: AmendVendorBillInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/bills/amend', input, idempotencyKey);
+  }
+  /** §F — reject a claim with an attributable reason. */
+  rejectVendorBill(input: RejectVendorBillInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/bills/reject', input, idempotencyKey);
+  }
+
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command
   //    routed through the durable write-ahead outbox with the two-key split (see OutboxOp), so a
   //    lost/uncertain response replays the SAME command exactly once. ──
@@ -1252,6 +1280,49 @@ export interface ReattributeCommitmentInput {
   reason: string;
 }
 
+// ── Phase 5 Task 7B-iii-b (§D/§F) — the ENGINEER's commercial write inputs. Quantities and money
+//    are STRINGS end to end (§A), validated against the SHARED `@vitan/shared` rules so the form
+//    and the zod contract cannot disagree. ──
+export interface TakeMeasurementInput {
+  labourPoLineId: string;
+  activityId: string;
+  /** positive, ≤6dp — `isPositiveQuantity` */
+  quantity: string;
+  /** §D bounds a measurement by operational evidence: REQUIRED, never optional */
+  citedOutputId: string;
+  measuredOn?: string;
+  evidenceMediaId?: string;
+  reason?: string;
+}
+export interface CorrectMeasurementInput {
+  measurementId: string;
+  /** a SIGNED delta — a correction of zero corrects nothing */
+  quantity: string;
+  reason: string;
+}
+export interface VendorBillLineInput {
+  /** EXACTLY ONE of these two (the server's XOR refinement and the PG CHECK) */
+  poLineId?: string;
+  labourPoLineId?: string;
+  quantity: string;
+  rate: string;
+  taxAmount?: string;
+  freightAmount?: string;
+}
+export interface RecordVendorBillInput {
+  vendorId: string;
+  vendorBillNumber: string;
+  documentDate: string;
+  lines: VendorBillLineInput[];
+}
+export interface AmendVendorBillInput {
+  billId: string;
+  reason: string;
+  lines: VendorBillLineInput[];
+}
+export interface VendorBillStepInput { billId: string }
+export interface RejectVendorBillInput { billId: string; reason: string }
+
 export interface RecordLabourAttendanceInput {
   workerId: string;
   civilDate: string;
@@ -1343,6 +1414,13 @@ export type OutboxOp =
   | { t: 'setCommercialBudget'; input: SetCommercialBudgetInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'defineCostHead'; input: DefineCostHeadInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'reattributeCommitment'; input: ReattributeCommitmentInput; idempotencyKey: string; coalesceKey: string }
+  // Phase 5 Task 7B-iii-b (§D/§F) — the engineer's writes, same two-key split.
+  | { t: 'takeMeasurement'; input: TakeMeasurementInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'correctMeasurement'; input: CorrectMeasurementInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'recordVendorBill'; input: RecordVendorBillInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'submitVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'rejectVendorBill'; input: RejectVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
   // Task 4 evidence: metadata + clientKey ONLY — the bytes live in the durable
   // IndexedDB evidenceStore under (scope, projectId, clientKey) until confirmed.
@@ -1431,6 +1509,18 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.defineCostHead(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'reattributeCommitment':
       return gw.reattributeCommitment(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'takeMeasurement':
+      return gw.takeMeasurement(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'correctMeasurement':
+      return gw.correctMeasurement(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'recordVendorBill':
+      return gw.recordVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'submitVendorBill':
+      return gw.submitVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'amendVendorBill':
+      return gw.amendVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'rejectVendorBill':
+      return gw.rejectVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'releaseLabourAllocation':
       return gw.releaseLabourAllocation(op.allocationId, op.reason, op.idempotencyKey).then(() => gw.snapshot());
     case 'uploadMedia':
