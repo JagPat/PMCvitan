@@ -13,7 +13,7 @@ import billServiceSource from '../../api/src/commercial/commercial-bill.service.
 import type { ApiGateway } from '@/data/apiGateway';
 import { budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
-import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto } from '@vitan/shared';
+import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 
 /**
  * Phase 5 Task 7B-i (§M) — the pilot COMMERCIAL money-position hub: the capability-gated nav entry
@@ -394,6 +394,12 @@ describe('Task 7B-i round 2 — staleness, consistency, and the breach a PMC mus
  * wrong, which is the whole failure mode a contract type exists to prevent. `pnpm check`'s project
  * build caught it; the fixture is typed so the next mismatch fails here instead.
  */
+const register = (over: Partial<MeasurementRegisterDto> = {}): MeasurementRegisterDto => ({
+  labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
+  orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+  ...over,
+});
+
 const claimDto = (over: Partial<CommercialClaimView> = {}): CommercialClaimView => ({
   bill: {
     id: 'bill-1', vendorId: 'v-1', vendorBillNumber: 'V-1', status: 'certified',
@@ -919,6 +925,7 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     rejectVendorBill: vi.fn<ApiGateway['rejectVendorBill']>().mockResolvedValue(undefined),
     setCommercialBudget: vi.fn<ApiGateway['setCommercialBudget']>().mockResolvedValue(undefined),
     commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    commercialLineRegister: vi.fn<ApiGateway['commercialLineRegister']>().mockResolvedValue(register()),
     snapshot: vi.fn<ApiGateway['snapshot']>().mockResolvedValue({
       project: { id: 'p1', name: 'P', short: 'P', descriptor: '', stage: '', siteCode: 'P', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
@@ -1040,6 +1047,71 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     expect(billServiceSource).toContain('claimLineMayCarryCharges(kind)');
     expect(billServiceSource, 'the service restated the rule instead of reading it')
       .not.toMatch(/kind === 'labour' && \(taxAmount/u);
+  });
+
+  it('Q-a (gate): a read that could not have observed the write releases nothing', async () => {
+    // The whole of the fix, at the layer it lives in. `readClearsKey` is pure, so this is
+    // deterministic where a store-level interleaving is not — see the honest note on the probe
+    // below about which defence actually closes Codex's scenario today.
+    const { readClearsKey } = await import('@/lib/commercialKeys');
+    for (const key of ['com:meas:LPL-1:ACT-1', 'com:mcorr:m1:-1']) {
+      expect(
+        readClearsKey(key, { read: 'lineRegister', labourPoLineId: 'LPL-1', rowIds: ['m1'], observedWrite: false }),
+        `${key} was released by a read that started before the write settled`,
+      ).toBe(false);
+      expect(readClearsKey(key, { read: 'lineRegister', labourPoLineId: 'LPL-1', rowIds: ['m1'], observedWrite: true }))
+        .toBe(true);
+    }
+    // and a read of a DIFFERENT line never releases this line's key, observed or not
+    expect(readClearsKey('com:meas:LPL-1:ACT-1',
+      { read: 'lineRegister', labourPoLineId: 'LPL-2', rowIds: [], observedWrite: true })).toBe(false);
+  });
+
+  it('a superseded register read is dropped whole — value AND key release', async () => {
+    // HONEST SCOPE. Codex's Q-a scenario is a pre-write read releasing a key; in the store as it
+    // stands, latest-request ownership already closes it, because the reconcile issues its fresh
+    // read synchronously after the write settles (no `await` between the two), so any older read
+    // has been superseded before its continuation can run. This probe pins THAT defence. The
+    // causality gate above is the structural guarantee for the same property — kept because
+    // "an incidental ordering makes this unreachable" is a weaker thing to rely on than "a read
+    // that cannot have observed the write releases nothing", and a future reconcile change would
+    // silently remove the first without touching the second.
+    const stale = deferred();
+    const post = deferred();
+    let calls = 0;
+    const lineRead = vi.fn<ApiGateway['commercialLineRegister']>().mockImplementation(() => {
+      calls += 1;
+      // 1 = the refresh already in flight when the write is queued; 2 = the reconcile's own read,
+      // held so that ONLY the stale one has applied at the assertion.
+      return (calls === 1 ? stale.promise : post.promise) as Promise<MeasurementRegisterDto>;
+    });
+    pilot(engGw({ commercialLineRegister: lineRead }));
+
+    // (1) a refresh STARTS — it will resolve with the PRE-write register
+    const inFlight = s().loadCommercialLineRegister('LPL-1');
+    // (2) the write is queued and settles
+    s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '2', citedOutputId: 'OUT-1' });
+    await vi.waitFor(() => { if (s().outbox.length > 0) throw new Error('draining'); }, { timeout: 5000, interval: 5 });
+    await vi.waitFor(() => { if (calls < 2) throw new Error('reconcile has not read yet'); },
+      { timeout: 5000, interval: 5 });
+    // (3) only NOW does the older read land, and it lands FIRST
+    stale.resolve(register({ measured: '0' }));
+    await inFlight;
+
+    expect(
+      s().commercialPending,
+      'a read that could not have observed the write released its key, re-enabling Measure over a '
+      + 'pre-command register',
+    ).toContain('com:meas:LPL-1:ACT-1');
+    expect(s().commercialLineRegisters['LPL-1'], 'the stale VALUE was applied — latest-request '
+      + 'ownership should already have dropped it, and the causality gate is the SECOND line of '
+      + 'defence for the case where no newer read has started yet').toBeUndefined();
+
+    // the reconcile's own read STARTED after the settle, so it does release
+    post.resolve(register({ measured: '2' }));
+    await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
+      { timeout: 5000, interval: 5 });
+    expect(s().commercialLineRegisters['LPL-1']?.measured).toBe('2');
   });
 
   it('the §A value rules are the SHARED ones — no second opinion in the browser', async () => {

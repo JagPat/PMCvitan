@@ -1,12 +1,13 @@
-import { useEffect, useState, type CSSProperties, type JSX } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isBillTransitionPending } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, claimLineMayCarryCharges, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
-import type { CostHeadPositionDto } from '@vitan/shared';
+import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
+import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
+import { exceedsMeasurableCap, overWithdraws, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import styles from './responsive.module.css';
 
 /**
@@ -135,6 +136,11 @@ export function CommercialScreen() {
   const billsLoad = useStore((s) => s.commercialBillsLoad);
   const claims = useStore(useShallow((s) => s.commercialClaims));
   const claimLoad = useStore(useShallow((s) => s.commercialClaimLoad));
+  // §D — the per-LINE measurement registers. The claim bundle carries registers only for a LIVE
+  // version's lines, so this is what a measurement taken on a lodged DRAFT becomes visible in.
+  const lineRegisters = useStore(useShallow((s) => s.commercialLineRegisters));
+  const lineRegisterLoad = useStore(useShallow((s) => s.commercialLineRegisterLoad));
+  const loadLineRegister = useStore((s) => s.loadCommercialLineRegister);
   // Codex I2 — the ordering of the two reads' last SUCCESS, so "which is fresher" is looked up
   // rather than guessed. See the row-selection comment on the Claims tab.
   const billsStamp = useStore((s) => s.commercialBillsStamp);
@@ -159,12 +165,15 @@ export function CommercialScreen() {
   // The two commercial permissions that admit `engineer` — so unlike the three above, these
   // controls ARE visible to an engineer, which is what makes reading the policy load-bearing
   // rather than a formality (Codex J1).
+  const mayMeasure = may('commercial.measure');
   const mayBill = may('commercial.bill');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
   // 7B-iii-b — the engineer's writes.
+  const takeMeasurement = useStore((s) => s.takeMeasurement);
+  const correctMeasurement = useStore((s) => s.correctMeasurement);
   const submitBill = useStore((s) => s.submitVendorBill);
   const rejectBill = useStore((s) => s.rejectVendorBill);
   const recordBill = useStore((s) => s.recordVendorBill);
@@ -199,6 +208,20 @@ export function CommercialScreen() {
    * Keyed by attribution id, so only the row the user actually edited can submit, and the empty
    * default keeps every other row's button disabled.
    */
+  const [measureDrafts, setMeasureDrafts] = useState<{ scope: string; byId: Record<string, { qty: string; activityId: string; outputId: string }> }>(
+    { scope: '', byId: {} },
+  );
+  const measureScoped = measureDrafts.scope === scopeKey ? measureDrafts.byId : {};
+  const measureFormFor = (id: string) => measureScoped[id] ?? { qty: '', activityId: '', outputId: '' };
+  const setMeasureForm = (id: string, next: Partial<{ qty: string; activityId: string; outputId: string }>): void =>
+    setMeasureDrafts({ scope: scopeKey, byId: { ...measureScoped, [id]: { ...measureFormFor(id), ...next } } });
+  const [corrDrafts, setCorrDrafts] = useState<{ scope: string; byId: Record<string, { qty: string; reason: string }> }>(
+    { scope: '', byId: {} },
+  );
+  const corrScoped = corrDrafts.scope === scopeKey ? corrDrafts.byId : {};
+  const corrFormFor = (id: string) => corrScoped[id] ?? { qty: '', reason: '' };
+  const setCorrForm = (id: string, next: Partial<{ qty: string; reason: string }>): void =>
+    setCorrDrafts({ scope: scopeKey, byId: { ...corrScoped, [id]: { ...corrFormFor(id), ...next } } });
   // Codex M2 — the LODGE form. The engineer's workflow bound measure/correct/submit/reject and
   // never surfaced `recordVendorBill`, so on a project with no claim yet the Claims tab showed an
   // empty state and no way out of it: a workflow that cannot create the thing it processes. One
@@ -218,26 +241,31 @@ export function CommercialScreen() {
   // ₹250 freight was lodged, certified and paid at its base amount alone — the claim silently
   // disagreeing with the document it represents. Optional (a labour line ordinarily has neither),
   // validated by the SAME money rule when present.
-  type LodgeLine = { poLineId: string; qty: string; rate: string; tax: string; freight: string };
+  // Codex N2 — the server's XOR: a claim line names EXACTLY ONE kind of purchase-order line. This
+  // unit adds the LABOUR side, which is why the kind is now a choice: an engineer who has just
+  // measured `LPL-1` lodges the claim for it, and serializing that as `poLineId` sends the server
+  // down the material path to a not-found.
+  type LodgeLine = { lineKind: 'material' | 'labour'; poLineId: string; qty: string; rate: string; tax: string; freight: string };
   type LodgeDraft = { scope: string; vendorId: string; number: string; date: string } & LodgeLine
     & { lines: LodgeLine[] };
   const emptyLodge = (scope: string): LodgeDraft => ({
     scope, vendorId: '', number: '', date: '',
-    poLineId: '', qty: '', rate: '', tax: '', freight: '', lines: [],
+    lineKind: 'material', poLineId: '', qty: '', rate: '', tax: '', freight: '', lines: [],
   });
   const [lodgeDraft, setLodgeDraft] = useState(emptyLodge(''));
   const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : emptyLodge(scopeKey);
   const setLodge = (next: Partial<typeof lodge>): void => setLodgeDraft({ ...lodge, scope: scopeKey, ...next });
   // the ENTRY row is addable on its own terms; the CLAIM needs at least one added line
   const optionalMoneyOk = (v: string): boolean => v.trim() === '' || isMoneyString(v);
-  // This unit lodges MATERIAL claims, whose evidence is ACCEPTED STOCK — a fact Phase 3 already
-  // ships, which is what makes the workflow complete here. A LABOUR claim's evidence is MEASURED
-  // work, so lodging one without the §D measurement controls submits it straight into dispute:
-  // that whole path travels with those controls rather than half-shipping here.
-  const chargesAllowed = claimLineMayCarryCharges('material');
+  // Codex Q-b — a LABOUR purchase-order snapshot freezes neither tax nor freight, so the server
+  // refuses a labour claim line carrying either. The rule is the SAME function the service guards
+  // with, imported rather than restated, so the form cannot drift from it.
+  const chargesAllowed = claimLineMayCarryCharges(lodge.lineKind);
   const entryValid = lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate)
-    && optionalMoneyOk(lodge.tax) && optionalMoneyOk(lodge.freight);
+    && optionalMoneyOk(lodge.tax) && optionalMoneyOk(lodge.freight)
+    && (chargesAllowed || (lodge.tax.trim() === '' && lodge.freight.trim() === ''));
   const entryAsLine = (): LodgeLine => ({
+    lineKind: lodge.lineKind,
     poLineId: lodge.poLineId.trim(), qty: lodge.qty.trim(), rate: lodge.rate.trim(),
     tax: lodge.tax.trim(), freight: lodge.freight.trim(),
   });
@@ -372,6 +400,9 @@ export function CommercialScreen() {
     if (onMoneyTab) { void loadCommercial(); return; }
     void loadCommercialBills();
     if (selectedBillId) void loadCommercialClaim(selectedBillId);
+    // the §D registers are their own read, so Refresh has to say so — otherwise a line whose
+    // register failed is unreachable from the one control offered for exactly that situation
+    for (const id of measurableLineIds) void loadLineRegister(id);
   };
 
   const openTab = (next: Tab): void => { setTab(next); };
@@ -399,6 +430,32 @@ export function CommercialScreen() {
   const claimView = viewOf<CommercialClaimView>(claim, claimStatus, false);
 
   /**
+   * §D — the labour lines the selected claim's CURRENT version bills.
+   *
+   * The measurement register belongs to the LINE, not to the claim, which is why these come from
+   * the version rather than from `claim.measurements`: that map is built from the LIVE version's
+   * lines, and `draft` is not a live status. Round 2 (N3) used it to make the form reachable on a
+   * lodged draft; round 3 finishes the thought, because a form whose EFFECT is invisible is only
+   * half a control — the engineer measures, the bundle still reports nothing, and the natural
+   * response is to measure again.
+   */
+  const measurableLineIds = useMemo(() => {
+    const version = claim?.bill.versions.find((v) => v.live) ?? claim?.bill.versions.at(-1);
+    return [...new Set((version?.lines ?? [])
+      .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
+      .map((l) => l.labourPoLineId as string))].sort();
+  }, [claim]);
+  const lineKey = measurableLineIds.join(',');
+  useEffect(() => {
+    if (!onPilot) return;
+    // once per line: the reconcile refreshes them after a write, and `viewOf` reports the rest
+    for (const id of lineKey === '' ? [] : lineKey.split(',')) {
+      if (!(id in lineRegisterLoad)) void loadLineRegister(id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `lineKey` is the stable identity of `measurableLineIds`
+  }, [onPilot, lineKey, loadLineRegister]);
+
+  /**
    * Codex F2 — EVERY claim tab wears the same states, because they are properties of the CLAIM.
    *
    * The three tabs are views of ONE bundle; a banner on one of them is not a property of the thing
@@ -422,6 +479,10 @@ export function CommercialScreen() {
   // The LINE is the constrained resource — §C keeps exactly one live attribution per line — so a
   // pending attribution disables the line whatever cost head it names (labour round 5).
   const attrPending = (lineId: string): boolean => commercialPending.includes(attributionCoalesceKey(lineId));
+  const measurePending = (lineId: string, activityId: string): boolean =>
+    commercialPending.includes(measureCoalesceKey(lineId, activityId));
+  const correctionPending = (measurementId: string): boolean =>
+    commercialPending.some((k) => isCorrectionPendingFor(k, measurementId));
   // §F — submit / amend / reject are three transitions on ONE claim, so a pending any-of-them
   // disables all three. The claim is the constrained resource, not the verb (labour r5 / J2, third
   // instance): keyed per verb, a queued reject could sit beside a pending submit and the server
@@ -784,6 +845,10 @@ export function CommercialScreen() {
                         <input value={lodge.vendorId} onChange={(e) => setLodge({ vendorId: e.target.value })} placeholder="Vendor id" data-testid="lodge-vendor" style={{ ...input, flex: '1 1 120px' }} />
                         <input value={lodge.number} onChange={(e) => setLodge({ number: e.target.value })} placeholder="Their bill number" data-testid="lodge-number" style={{ ...input, flex: '1 1 130px' }} />
                         <input value={lodge.date} onChange={(e) => setLodge({ date: e.target.value })} placeholder="Document date (YYYY-MM-DD)" data-testid="lodge-date" style={{ ...input, flex: '1 1 150px' }} />
+                        <select value={lodge.lineKind} onChange={(e) => { const k = e.target.value as 'material' | 'labour'; setLodge(claimLineMayCarryCharges(k) ? { lineKind: k } : { lineKind: k, tax: '', freight: '' }); }} data-testid="lodge-linekind" style={{ ...input, flex: '0 1 110px' }}>
+                          <option value="material">Material line</option>
+                          <option value="labour">Labour line</option>
+                        </select>
                         <input value={lodge.poLineId} onChange={(e) => setLodge({ poLineId: e.target.value })} placeholder="PO line id" data-testid="lodge-poline" style={{ ...input, flex: '1 1 120px' }} />
                         <input value={lodge.qty} onChange={(e) => setLodge({ qty: e.target.value })} placeholder="Quantity" inputMode="decimal" data-testid="lodge-qty" style={{ ...input, flex: '1 1 100px' }} />
                         <input value={lodge.rate} onChange={(e) => setLodge({ rate: e.target.value })} placeholder="Rate" inputMode="decimal" data-testid="lodge-rate" style={{ ...input, flex: '1 1 100px' }} />
@@ -801,7 +866,7 @@ export function CommercialScreen() {
                             vendorBillNumber: lodge.number.trim(),
                             documentDate: lodge.date.trim(),
                             lines: lodgeLines.map((l) => ({
-                              poLineId: l.poLineId,
+                              ...(l.lineKind === 'labour' ? { labourPoLineId: l.poLineId } : { poLineId: l.poLineId }),
                               quantity: l.qty,
                               rate: l.rate,
                               // omitted rather than sent as '0.00' when blank: the server's own
@@ -819,7 +884,7 @@ export function CommercialScreen() {
                           {lodge.lines.map((l, i) => (
                             <div key={`${l.poLineId}:${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
                               <span style={{ ...mono, flex: '1 1 auto' }} data-testid={`lodge-line-${i}`}>
-                                {l.poLineId} · {l.qty} × {l.rate}
+                                {l.lineKind === 'labour' ? 'Labour' : 'Material'} · {l.poLineId} · {l.qty} × {l.rate}
                                 {l.tax !== '' && ` · tax ${l.tax}`}{l.freight !== '' && ` · freight ${l.freight}`}
                               </span>
                               <Button
@@ -1031,8 +1096,33 @@ export function CommercialScreen() {
 
           {tab === 'measurements' && (
             <div data-testid="commercial-measurements">
-              {claimPanel((claim) => (
-                Object.keys(claim.measurements).length === 0 ? (
+              {/* the claim is not read here any more — the loaded guard still is (round-4 P1: the
+                  register comes from the LINE, so this tab has exactly one source) */}
+              {claimPanel(() => (
+                (() => {
+                  // Codex N3 — `claim.measurements` is keyed from the LIVE version, and a newly
+                  // lodged claim is `draft`, so it has none. That made the workflow circular: the
+                  // engineer lodges a labour claim, the Measurements tab shows the material-only
+                  // empty state, the only control left is Submit — which disputes the claim for
+                  // missing measured evidence — and a disputed claim is still not live, so the form
+                  // never appears. Lodge → measure → submit was unreachable in exactly the order
+                  // this unit exists to support.
+                  //
+                  // So the ROWS come from the lines of the version on screen (`measurableLineIds`),
+                  // and each line's REGISTER comes from THAT LINE'S OWN READ — the claim bundle's
+                  // map is deliberately not a source here.
+                  //
+                  // Round 4 (P1) is why it is one source rather than two with a fallback. Round 3
+                  // released `com:meas:` on the line-register read while rendering the bundle's
+                  // copy, so on a LIVE claim the register read could win, clear the key, and
+                  // re-enable Measure over the stale bundle register — the exact defect being
+                  // fixed, with the two halves reading different things. The read that RELEASES a
+                  // key and the read that RENDERS its value have to be the same read; the simplest
+                  // way to guarantee that is to have only one. (Both are `registerIn` server-side,
+                  // so nothing is lost — a second copy was only ever a second opinion.)
+                  const measurable: Array<[string, MeasurementRegisterDto | null]> =
+                    measurableLineIds.map((id) => [id, lineRegisters[id] ?? null]);
+                  return measurable.length === 0 ? (
                   // §D applies to LABOUR lines. A material line's evidence is accepted stock, which
                   // the verification triple already reports — so this says "does not apply" rather
                   // than showing empty registers, which would read as "measured nothing".
@@ -1041,18 +1131,157 @@ export function CommercialScreen() {
                   </div>
                 ) : (
                   <>
-                    {Object.entries(claim.measurements).map(([lineId, register]) => (
+                    {measurable.map(([lineId, register]) => (
                       <div key={lineId} style={rowCard} data-testid={`commercial-measurement-${lineId}`}>
                         <div style={mono}>{lineId}</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
-                          <span style={muted}>Measured <span style={num}>{register.measured}</span></span>
-                          <span style={muted}>Ordered <span style={num}>{register.orderedPersonShiftQty}</span></span>
-                          <span style={muted}>Live authority <span style={num}>{register.liveAuthorityPersonShiftQty}</span></span>
-                        </div>
+                        {register ? (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
+                            <span style={muted}>Measured <span style={num}>{register.measured}</span></span>
+                            <span style={muted}>Ordered <span style={num}>{register.orderedPersonShiftQty}</span></span>
+                            <span style={muted}>Live authority <span style={num}>{register.liveAuthorityPersonShiftQty}</span></span>
+                          </div>
+                        ) : (
+                          // The register has not LANDED yet — which is a different statement from
+                          // "nothing is measured", and rendering zeros would make them look alike.
+                          <div style={{ ...muted, marginTop: 8 }} data-testid={`measurement-none-${lineId}`}>
+                            {lineRegisterLoad[lineId] === 'error' ? (
+                              <>
+                                {/* Round 4 (P2): a failed register read holds this line's
+                                    `com:meas:` key — only a SUCCESSFUL read releases it — so
+                                    without a way back the row stays disabled after connectivity
+                                    returns. Refresh reloads them too; this is the row-local one. */}
+                                This line’s measurement register is unavailable.{' '}
+                                <Button variant="ghost" data-testid={`measurement-retry-${lineId}`} onClick={() => void loadLineRegister(lineId)}>
+                                  Retry
+                                </Button>
+                              </>
+                            ) : 'Reading this line’s measurement register…'}
+                          </div>
+                        )}
+                        {/* §D — take a measurement. `citedOutputId` is REQUIRED by the contract, not
+                            optional: a measurement is bounded by operational evidence, and an
+                            optional citation is one a commercial actor can simply omit. The form
+                            therefore cannot submit without it. */}
+                        {mayMeasure && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                            <input
+                              value={measureFormFor(lineId).activityId}
+                              onChange={(e) => setMeasureForm(lineId, { activityId: e.target.value })}
+                              placeholder="Activity id"
+                              data-testid={`measure-activity-${lineId}`}
+                              style={{ ...input, flex: '1 1 130px' }}
+                            />
+                            <input
+                              value={measureFormFor(lineId).qty}
+                              onChange={(e) => setMeasureForm(lineId, { qty: e.target.value })}
+                              placeholder="Person-shifts"
+                              inputMode="decimal"
+                              data-testid={`measure-qty-${lineId}`}
+                              style={{ ...input, flex: '1 1 110px' }}
+                            />
+                            <input
+                              value={measureFormFor(lineId).outputId}
+                              onChange={(e) => setMeasureForm(lineId, { outputId: e.target.value })}
+                              placeholder="Cited work output"
+                              data-testid={`measure-output-${lineId}`}
+                              style={{ ...input, flex: '1 1 150px' }}
+                            />
+                            <Button
+                              variant="ink"
+                              data-testid={`measure-submit-${lineId}`}
+                              disabled={
+                                !measureFormFor(lineId).activityId.trim()
+                                || !isPositiveQuantity(measureFormFor(lineId).qty)
+                                || !measureFormFor(lineId).outputId.trim()
+                                || measurePending(lineId, measureFormFor(lineId).activityId.trim())
+                                // Codex Q-c — and never a quantity the register in front of the
+                                // user already rules out. Without the register there is nothing to
+                                // prove it against, so the control waits rather than guessing.
+                                || register === null
+                                || exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim())
+                              }
+                              onClick={() => {
+                                const f = measureFormFor(lineId);
+                                takeMeasurement({
+                                  labourPoLineId: lineId,
+                                  activityId: f.activityId.trim(),
+                                  quantity: f.qty.trim(),
+                                  citedOutputId: f.outputId.trim(),
+                                });
+                              }}
+                            >
+                              {measurePending(lineId, measureFormFor(lineId).activityId.trim()) ? 'Measuring…' : 'Measure'}
+                            </Button>
+                            {measureFormFor(lineId).qty.trim() !== '' && !isPositiveQuantity(measureFormFor(lineId).qty) && (
+                              <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`measure-qty-invalid-${lineId}`}>
+                                A measurement is a positive quantity with at most six decimals.
+                              </div>
+                            )}
+                            {register !== null && isPositiveQuantity(measureFormFor(lineId).qty)
+                              && exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim()) && (
+                              <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`measure-over-cap-${lineId}`}>
+                                Only {remainingMeasurable(register)} person-shifts remain measurable on this
+                                line — the tighter of its live order authority and the worked effort attributable to it.
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {/* §D — a correction is a SIGNED delta appended as a new row; the original
+                            is never edited, which is why the control sits on each row rather than
+                            offering to "edit" the register. */}
+                        {mayMeasure && (register?.rows ?? []).filter((r) => r.correctsId === null).map((row) => (
+                          <div key={row.id} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--hairline)' }}>
+                            <span style={{ ...mono, flex: '1 1 100%' }}>{row.id} · {row.quantity}</span>
+                            <input
+                              value={corrFormFor(row.id).qty}
+                              onChange={(e) => setCorrForm(row.id, { qty: e.target.value })}
+                              placeholder="Delta (e.g. -0.5)"
+                              data-testid={`correct-qty-${row.id}`}
+                              style={{ ...input, flex: '1 1 110px' }}
+                            />
+                            <input
+                              value={corrFormFor(row.id).reason}
+                              onChange={(e) => setCorrForm(row.id, { reason: e.target.value })}
+                              placeholder="Reason"
+                              data-testid={`correct-reason-${row.id}`}
+                              style={{ ...input, flex: '2 1 160px' }}
+                            />
+                            <Button
+                              variant="ghost"
+                              data-testid={`correct-submit-${row.id}`}
+                              disabled={
+                                !isCorrectionDelta(corrFormFor(row.id).qty) || !corrFormFor(row.id).reason.trim()
+                                || correctionPending(row.id)
+                                // Codex Q-d — the rows on screen prove when a withdrawal exceeds
+                                // what this measurement still has to give. The floor is the ROW's,
+                                // not the line's: the server bounds a correction by the row it
+                                // adjusts, so a positive line total does not make this legal.
+                                || (register !== null && overWithdraws(register, row.id, corrFormFor(row.id).qty.trim()))
+                              }
+                              onClick={() => correctMeasurement(row.id, corrFormFor(row.id).qty.trim(), corrFormFor(row.id).reason.trim())}
+                            >
+                              {correctionPending(row.id) ? 'Correcting…' : 'Correct'}
+                            </Button>
+                            {corrFormFor(row.id).qty.trim() !== '' && !isCorrectionDelta(corrFormFor(row.id).qty) && (
+                              <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`correct-qty-invalid-${row.id}`}>
+                                A correction is a NON-ZERO signed delta with at most six decimals.
+                              </div>
+                            )}
+                            {register !== null && isCorrectionDelta(corrFormFor(row.id).qty)
+                              && overWithdraws(register, row.id, corrFormFor(row.id).qty.trim()) && (
+                              <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`correct-over-withdraw-${row.id}`}>
+                                This measurement has {remainingWithdrawable(register, row.id)} person-shifts left to
+                                withdraw — correct the other rows on this line individually so each reduction names
+                                the work it walks back.
+                              </div>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </>
-                )
+                  );
+                })()
               ))}
             </div>
           )}

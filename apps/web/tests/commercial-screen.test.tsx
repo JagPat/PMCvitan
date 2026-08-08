@@ -809,6 +809,132 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
   });
 
+  const labourClaim = (status: string, registerOver: Record<string, unknown> = {}) => {
+    const c = claim();
+    useStore.setState({
+      commercialClaims: {
+        'bill-1': {
+          ...c, measurements: {},
+          bill: {
+            ...c.bill, status,
+            versions: [{
+              ...c.bill.versions[0]!, live: status === 'submitted',
+              lines: [{
+                id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
+                quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
+              }],
+            }],
+          },
+        } as never,
+      },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialClaimStamp: { 'bill-1': 2 },
+      commercialBillsStamp: 1,
+      commercialLineRegisters: {
+        'LPL-1': {
+          labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
+          orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+          ...registerOver,
+        },
+      } as never,
+      commercialLineRegisterLoad: { 'LPL-1': 'ready' },
+    });
+  };
+  const openMeasurements = () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    return r;
+  };
+
+  it('Q-c: a quantity the register already rules out never reaches the outbox', () => {
+    // measured 9 of a live authority of 10 — the screen holds enough to know 2 is refused, and the
+    // durable outbox would otherwise report it saved before the server dropped it.
+    labourClaim('draft', { measured: '9' });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
+    fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '2' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('measure-over-cap-LPL-1').textContent).toContain('1');
+    // exactly the remainder is allowed — the boundary is not off by one
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '1' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Q-c: the EFFORT cap binds when it is the tighter of the two', () => {
+    labourClaim('draft', { measured: '0', effort: '3', liveAuthorityPersonShiftQty: 10 });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
+    fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '4' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '3' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Q-d: a correction that would take its OWN row below zero is refused', () => {
+    labourClaim('draft', {
+      measured: '5',
+      rows: [
+        { id: 'm1', quantity: '1', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null },
+        { id: 'm2', quantity: '4', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-2', reason: null },
+      ],
+    });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'miscount' } });
+    // the LINE has 5 measured, so a line-level rule would allow -2; the row has 1, and the server's
+    // floor is the row's
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('correct-over-withdraw-m1').textContent).toContain('1');
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+    // and a POSITIVE delta is never blocked by a withdrawal floor
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '3' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Q-d: an earlier correction reduces what the row still has to give', () => {
+    labourClaim('draft', {
+      measured: '1',
+      rows: [
+        { id: 'm1', quantity: '3', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null },
+        { id: 'c1', quantity: '-2', correctsId: 'm1', activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: 'first' },
+      ],
+    });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'again' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled, '3 − 2 leaves 1').toBe(true);
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('N2/Q-b: a LABOUR claim line is lodged as `labourPoLineId` and carries no charges', () => {
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-7'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'LPL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00'], ['lodge-tax', '900.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
+    // Q-b — a labour PO snapshot freezes neither, so the switch CLEARS and disables them rather
+    // than carrying a value the server would refuse
+    expect((r.getByTestId('lodge-tax') as HTMLInputElement).value).toBe('');
+    expect((r.getByTestId('lodge-tax') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    // N2 — the server's XOR
+    const sent = recordVendorBill.mock.calls[0][0].lines[0];
+    expect(sent).toMatchObject({ labourPoLineId: 'LPL-1' });
+    expect(sent.poLineId).toBeUndefined();
+    expect(sent.taxAmount).toBeUndefined();
+  });
+
   it('O4: a vendor invoice covering SEVERAL po lines is lodged whole', () => {
     // RED before: the submit path always sent a singleton `lines` array. The vendor's document
     // number is the frozen duplicate key and amendment is not surfaced, so every line after the

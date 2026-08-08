@@ -58,6 +58,7 @@ import {
   type Role,
   type ScreenKey,
   type Worker,
+  type MeasurementRegisterDto,
   ROLE_POLICY,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
@@ -66,13 +67,13 @@ import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, AmendVendorBillInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -246,6 +247,9 @@ export interface AppState {
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaims: Record<string, CommercialClaimView>;
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
+  /** §D — per-LINE measurement registers, and the read a measurement becomes VISIBLE in. */
+  commercialLineRegisters: Record<string, MeasurementRegisterDto>;
+  commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
   /** Codex I2 — the ordering of the two reads' last SUCCESS; see `ModuleReadState`. */
   commercialBillsStamp: number;
   commercialClaimStamp: Record<string, number>;
@@ -423,6 +427,7 @@ export interface AppActions {
   loadCommercial: () => Promise<void>;
   loadCommercialBills: () => Promise<void>;
   loadCommercialClaim: (billId: string) => Promise<void>;
+  loadCommercialLineRegister: (labourPoLineId: string) => Promise<void>;
   /** §M writes (7B-iii-a). Each dispatches ONE server command through the durable write-ahead
    *  outbox under a fresh idempotency key, coalesced while pending on its deterministic key. */
   setCommercialBudget: (costHeadCode: string, amount: string, reason: string) => void;
@@ -433,6 +438,8 @@ export interface AppActions {
     reason: string,
   ) => void;
   /** §D/§F writes (7B-iii-b) — the engineer's six, on the SAME lifecycle. */
+  takeMeasurement: (input: TakeMeasurementInput) => void;
+  correctMeasurement: (measurementId: string, quantity: string, reason: string) => void;
   recordVendorBill: (input: RecordVendorBillInput) => void;
   submitVendorBill: (billId: string) => void;
   amendVendorBill: (input: AmendVendorBillInput) => void;
@@ -749,6 +756,8 @@ export function getInitialState(): AppState {
     commercialBillsLoad: 'idle',
     commercialClaims: {},
     commercialClaimLoad: {},
+    commercialLineRegisters: {},
+    commercialLineRegisterLoad: {},
     commercialBillsStamp: 0,
     commercialClaimStamp: {},
     commercialPending: [],
@@ -831,6 +840,15 @@ export const useStore = create<Store>()(
     // single token would let opening claim B cancel a still-useful load of claim A, and a slow A
     // returning after B would be dropped even though nothing newer asked for A.
     const commercialClaimSeq: Record<string, number> = {};
+    /** Per-LINE ownership for the §D register read, for the same reason as the per-claim one. */
+    const commercialLineSeq: Record<string, number> = {};
+    /**
+     * Codex Q-a — how many commercial writes have SETTLED. A read captures this at START; if it has
+     * moved by the time the read applies, a write settled while the read was in flight, so the read
+     * cannot be shown to have observed it and releases no keys. This is a causality question, and a
+     * per-line token cannot answer it: that token orders reads against each other only.
+     */
+    let commercialWritesSettled = 0;
     /** Codex I2 — ONE monotonic counter shared by the claim list and the claim bundle, so their
      *  successes are comparable. Two counters would order each read against itself and answer
      *  nothing about which of the two is fresher, which is the whole question. */
@@ -1570,6 +1588,8 @@ export const useStore = create<Store>()(
       // 7B-iii-b — `commercial.measure` and `commercial.bill` are the ONLY two commercial
       // permissions admitting `engineer`, so this map is doing real work here rather than
       // restating "pmc": an engineer may measure and lodge, and may not certify or pay.
+      takeMeasurement: 'commercial.measure',
+      correctMeasurement: 'commercial.measure',
       recordVendorBill: 'commercial.bill',
       submitVendorBill: 'commercial.bill',
       amendVendorBill: 'commercial.bill',
@@ -2800,6 +2820,40 @@ export const useStore = create<Store>()(
       }).catch(() => set((s) => { if (owns(s)) s.commercialClaimLoad[billId] = 'error'; }));
     },
 
+    /**
+     * §D — ONE labour PO line's measurement register, read from the line's own route.
+     *
+     * This is the read that makes a measurement VISIBLE. The claim bundle carries registers only
+     * for a LIVE version's lines and a lodged claim is `draft`, so without this a measurement is
+     * recorded by the server and shows nothing — an invitation to take it twice.
+     */
+    loadCommercialLineRegister: (labourPoLineId: string) => {
+      if (!gateway) return Promise.resolve();
+      if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      const seq = (commercialLineSeq[labourPoLineId] = (commercialLineSeq[labourPoLineId] ?? 0) + 1);
+      // Q-a: captured at START. If a write settles before this resolves, this read cannot be shown
+      // to have observed it, so it applies its VALUE but releases no keys.
+      const settledAtStart = commercialWritesSettled;
+      const owns = (st: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === commercialLineSeq[labourPoLineId]
+        && isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, scope);
+      set((st) => { st.commercialLineRegisterLoad[labourPoLineId] = 'loading'; });
+      return gateway.commercialLineRegister(labourPoLineId).then((register) => {
+        set((st) => {
+          if (!owns(st)) return;
+          st.commercialLineRegisters[labourPoLineId] = castDraft<MeasurementRegisterDto>(register);
+          st.commercialLineRegisterLoad[labourPoLineId] = 'ready';
+          releaseCommercialKeys(st, {
+            read: 'lineRegister',
+            labourPoLineId,
+            rowIds: register.rows.map((r) => r.id),
+            observedWrite: commercialWritesSettled === settledAtStart,
+          });
+        });
+      }).catch(() => set((st) => { if (owns(st)) st.commercialLineRegisterLoad[labourPoLineId] = 'error'; }));
+    },
+
     // ── §M WRITES (7B-iii-a) ────────────────────────────────────────────────────────────────
     // Each mints a FRESH idempotency key per deliberate action (exactly-once replay on a lost
     // response) and a DETERMINISTIC coalesce key (dedupe an equivalent action while pending).
@@ -2826,6 +2880,20 @@ export const useStore = create<Store>()(
         },
         `Cost head ${code}`,
         'Cost head defined.',
+      );
+    },
+    takeMeasurement: (input) => {
+      dispatchCommercial(
+        { t: 'takeMeasurement', input, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: measureCoalesceKey(input.labourPoLineId, input.activityId) },
+        `Measure ${input.labourPoLineId}`, 'Measurement recorded.',
+      );
+    },
+    correctMeasurement: (measurementId, quantity, reason) => {
+      dispatchCommercial(
+        { t: 'correctMeasurement', input: { measurementId, quantity, reason }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: correctionCoalesceKey(measurementId, quantity) },
+        `Correct ${measurementId}`, 'Correction recorded.',
       );
     },
     recordVendorBill: (input) => {
@@ -3767,14 +3835,14 @@ export const useStore = create<Store>()(
           const k = keyOf(ops[i]); if (k) succeededKeys.push(k);
           if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
           if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
-          if (com) commercialAttempted = true;
+          if (com) { commercialAttempted = true; commercialWritesSettled += 1; }
         } catch (err) {
           if (isTerminalOutboxError(err)) {
             dropped += 1; // server will never accept this one — discard and keep going
             const k = keyOf(ops[i]); if (k) droppedKeys.push(k);
             if (mat) { materialsAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedMaterialsCoalesceKeys.push(ck); }
             if (lab) { labourAttempted = true; const ck = coalesceKeyOf(ops[i]); if (ck) resolvedLabourCoalesceKeys.push(ck); }
-            if (com) commercialAttempted = true;
+            if (com) { commercialAttempted = true; commercialWritesSettled += 1; }
             continue;
           }
           stoppedAt = i; // transient — retry this op and the rest on the next reconnect
@@ -3899,6 +3967,13 @@ export const useStore = create<Store>()(
             ...Object.keys(get().commercialClaims),
             ...Object.keys(get().commercialClaimLoad),
           ])) get().loadCommercialClaim(billId);
+          // …and every LINE register on screen: that is the read a measurement becomes visible in,
+          // and — since Q-a — the only read that may release its key, because it starts here,
+          // AFTER the write settled.
+          for (const lineId of new Set([
+            ...Object.keys(get().commercialLineRegisters),
+            ...Object.keys(get().commercialLineRegisterLoad),
+          ])) get().loadCommercialLineRegister(lineId);
         }
       }
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };
