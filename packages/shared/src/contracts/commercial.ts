@@ -129,6 +129,10 @@ export const COMMERCIAL_QUERIES = [
   // is the rule `readBudget` already applies one level down. The four narrower reads above stay:
   // they answer narrower questions, and other surfaces ask them one at a time.
   'commercial.money-position',
+  // Phase 5 Task 7B-ii (§M) — ONE claim's whole lifecycle from one repeatable-read transaction.
+  // Same reason as `money-position` one page over: five separate reads of one claim can contradict
+  // each other, and each of those reads already takes a snapshot for that reason internally.
+  'commercial.claim',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -823,6 +827,40 @@ export interface CommercialMoneyPositionDto {
    *  rather than editing in place. A *current commitments* surface filters `supersededAt === null`;
    *  the history is carried so a reader can explain how a line got where it is. */
   attributions: CommitmentAttributionDto[];
+}
+
+/**
+ * Phase 5 Task 7B-ii (§M) — ONE CLAIM'S WHOLE LIFECYCLE, from one repeatable-read transaction.
+ *
+ * An accountant processing a vendor claim reads five things about it: the claim and its version
+ * history (§D/§F), the §E verification triple, the live §E certificate, the §H deduction ledger
+ * with its `NET_PAYABLE`, and the §G approvals and payments. Assembled from five HTTP reads, that
+ * page contradicts itself the moment anything commits between two of them — a payment landing
+ * between the deduction ledger and the payment ledger shows a net payable that disagrees with the
+ * paid total, and every number on screen was true once.
+ *
+ * Each of those reads ALREADY takes a repeatable-read snapshot for exactly this reason, one level
+ * down: `commercial.deductions` and `commercial.payments` both carry the comment explaining why
+ * their own folds must share one instant. This is that rule applied one layer up, the same move
+ * `commercial.money-position` made for the §B/§C/§J page.
+ *
+ * The narrower per-bill reads stay. They answer narrower questions and other surfaces ask them one
+ * at a time; this one exists because a LIFECYCLE page asks all of them at once.
+ */
+export interface CommercialClaimDto {
+  bill: VendorBillDto;
+  /** The §E triple, DERIVED on every call — a stored verdict is stale the moment a receipt is
+   *  reversed, which is why the standalone read derives it too. */
+  verification: VerificationDto;
+  /** The LIVE certificate, or null when none stands. Null rather than a 404: a claim before
+   *  certification is an ordinary state of this page, not a missing resource. */
+  certificate: CertificateDto | null;
+  deductions: BillDeductionLedgerDto;
+  payments: BillPaymentLedgerDto;
+  /** §D — the measurement register behind each LABOUR line this claim bills, keyed by the labour
+   *  PO line. Material lines carry no measurement (their evidence is accepted stock), so the map is
+   *  empty for a material-only claim rather than carrying empty registers. */
+  measurements: Record<string, MeasurementRegisterDto>;
 }
 
 export interface CashForecastReadDto extends CashForecastDto {

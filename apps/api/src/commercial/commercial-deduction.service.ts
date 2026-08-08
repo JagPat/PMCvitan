@@ -361,41 +361,57 @@ export class CommercialDeductionService {
   async readLedger(projectId: string, billId: string, user: AuthUser): Promise<BillDeductionLedgerDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
+    return this.prisma.$transaction(
+      (tx) => this.deductionLedgerIn(tx, projectId, billId),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
 
-    return this.prisma.$transaction(async (tx) => {
-      const billVendor = await tx.vendorBill.findFirst({
-        where: { projectId, id: billId }, select: { status: true, vendorId: true },
-      });
-      if (!billVendor) throw new NotFoundException('Vendor bill not found in this project');
-      const bill = billVendor;
-      const position = await this.deductions.positionFor(tx, projectId, billId);
-      const rows = position ? await this.ledgerRows(tx, projectId, position.certificateId) : [];
-      // Task 6C — the ceiling an `advance-recovery` is bounded by, read from the SAME snapshot as
-      // everything else here. An operator who can only learn the balance from a refusal is being
-      // asked to guess, and the refusal names it precisely because this read exists to agree with it.
-      const advance = await this.deductions.recoverableFor(tx, projectId, billVendor.vendorId);
-      return {
-        billId,
-        certificateId: position?.certificateId ?? null,
-        certifiedAmount: position?.certifiedAmount.toFixed(2) ?? null,
-        deductions: rows,
-        withheld: (position?.withheld ?? ZERO).toFixed(2),
-        netPayable: position?.netPayable.toFixed(2) ?? null,
-        // the STORED status — and as of Task 6B-i that IS the derived one. This comment used to
-        // say the derivation was still ahead of the writes and that reporting it here would claim
-        // a lifecycle the system did not yet run. Both writers now re-derive in the same
-        // transaction as the row they append, and the seal in `20270610000000` refuses any bill
-        // whose stored status disagrees with its folds, so reading the column is reading the
-        // derivation. (A workaround outlives its cause unless someone goes back and deletes it.)
-        billStatus: bill.status as VendorBillStatus,
-        advance: {
-          vendorId: billVendor.vendorId,
-          advanced: advance.advanced.toFixed(2),
-          recovered: advance.recovered.toFixed(2),
-          recoverable: advance.recoverable.toFixed(2),
-        },
-      };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  /**
+   * The §H ledger ON A GIVEN TRANSACTION — the ONE spelling, so the standalone
+   * `commercial.deductions` route and the §M claim bundle (Task 7B-ii) cannot drift about which
+   * certificate position the ledger hangs off or what the advance ceiling is read against.
+   *
+   * The ISOLATION stays with the caller, deliberately. This method's contract is "every figure
+   * below comes from the snapshot you hand me"; whether that snapshot is repeatable-read is the
+   * decision of whoever opened it, and the claim bundle opens a repeatable-read transaction
+   * spanning this ledger AND the payment ledger for exactly the reason each already opened one
+   * alone.
+   */
+  async deductionLedgerIn(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<BillDeductionLedgerDto> {
+    const billVendor = await tx.vendorBill.findFirst({
+      where: { projectId, id: billId }, select: { status: true, vendorId: true },
+    });
+    if (!billVendor) throw new NotFoundException('Vendor bill not found in this project');
+    const position = await this.deductions.positionFor(tx, projectId, billId);
+    const rows = position ? await this.ledgerRows(tx, projectId, position.certificateId) : [];
+    // Task 6C — the ceiling an `advance-recovery` is bounded by, read from the SAME snapshot as
+    // everything else here. An operator who can only learn the balance from a refusal is being
+    // asked to guess, and the refusal names it precisely because this read exists to agree with it.
+    const advance = await this.deductions.recoverableFor(tx, projectId, billVendor.vendorId);
+    return {
+      billId,
+      certificateId: position?.certificateId ?? null,
+      certifiedAmount: position?.certifiedAmount.toFixed(2) ?? null,
+      deductions: rows,
+      withheld: (position?.withheld ?? ZERO).toFixed(2),
+      netPayable: position?.netPayable.toFixed(2) ?? null,
+      // the STORED status — and as of Task 6B-i that IS the derived one. This comment used to
+      // say the derivation was still ahead of the writes and that reporting it here would claim
+      // a lifecycle the system did not yet run. Both writers now re-derive in the same
+      // transaction as the row they append, and the seal in `20270610000000` refuses any bill
+      // whose stored status disagrees with its folds, so reading the column is reading the
+      // derivation. (A workaround outlives its cause unless someone goes back and deletes it.)
+      billStatus: billVendor.status as VendorBillStatus,
+      advance: {
+        vendorId: billVendor.vendorId,
+        advanced: advance.advanced.toFixed(2),
+        recovered: advance.recovered.toFixed(2),
+        recoverable: advance.recoverable.toFixed(2),
+      },
+    };
   }
 
   private async ledgerRows(

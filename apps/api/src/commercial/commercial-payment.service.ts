@@ -506,41 +506,58 @@ export class CommercialPaymentService {
     // `billStatus: certified` — three numbers that were each true once and are not true together.
     // A repeatable-read snapshot makes the whole response one instant, which is what the deduction
     // ledger already does for the same reason.
-    return this.prisma.$transaction(async (tx) => {
-      const bill = await tx.vendorBill.findFirst({
-        where: { projectId, id: billId },
-        select: { id: true, status: true },
-      });
-      if (!bill) throw new NotFoundException('Vendor bill not found in this project');
+    return this.prisma.$transaction(
+      (tx) => this.paymentLedgerIn(tx, projectId, billId),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
 
-      const position = await this.deductions.positionFor(tx, projectId, billId);
-      const approvals = await tx.paymentApproval.findMany({
-        where: { projectId, billId },
-        orderBy: { approvedAt: 'asc' },
-        include: { payments: { orderBy: { paidAt: 'asc' }, include: PAYMENT_REVERSALS }, sodExceptions: true },
-      });
+  /**
+   * The §G ledger ON A GIVEN TRANSACTION — the ONE spelling, so the standalone
+   * `commercial.payments` route and the §M claim bundle (Task 7B-ii) cannot drift about which
+   * certificate the approved fold counts against or which rows `PAID` nets its reversals from.
+   *
+   * The ISOLATION stays with the caller for the reason above: this method's contract is that every
+   * figure comes from the snapshot it is handed, and the claim bundle's snapshot deliberately spans
+   * this ledger AND the deduction ledger — `approvable` is derived from the other's `netPayable`,
+   * so two snapshots would let them disagree about the same claim.
+   */
+  async paymentLedgerIn(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<BillPaymentLedgerDto> {
+    const bill = await tx.vendorBill.findFirst({
+      where: { projectId, id: billId },
+      select: { id: true, status: true },
+    });
+    if (!bill) throw new NotFoundException('Vendor bill not found in this project');
 
-      const rows: PaymentApprovalDto[] = approvals.map((a) => this.toApprovalDto(a));
+    const position = await this.deductions.positionFor(tx, projectId, billId);
+    const approvals = await tx.paymentApproval.findMany({
+      where: { projectId, billId },
+      orderBy: { approvedAt: 'asc' },
+      include: { payments: { orderBy: { paidAt: 'asc' }, include: PAYMENT_REVERSALS }, sodExceptions: true },
+    });
 
-      // The approved fold counts approvals against the LIVE certificate only — a superseded one is
-      // retained history, and summing it would compare an overstated total against the bound.
-      const approved = approvals
-        .filter((a) => position && a.certificateId === position.certificateId)
-        .reduce((t, a) => t.add(a.amount), ZERO);
-      // §0's `PAID(bill)` — Σ payments MINUS Σ payment reversals. Folded from the SAME rows the
-      // approvals carry so the ledger cannot report a total its own line items contradict.
-      const paid = approvals.reduce((t, a) => t.add(a.payments.reduce((s, p) => s.add(netOf(p)), ZERO)), ZERO);
+    const rows: PaymentApprovalDto[] = approvals.map((a) => this.toApprovalDto(a));
 
-      return {
-        billId,
-        certificateId: position?.certificateId ?? null,
-        approvals: rows,
-        approved: approved.toFixed(2),
-        paid: paid.toFixed(2),
-        approvable: position ? new Prisma.Decimal(position.netPayable).sub(approved).toFixed(2) : null,
-        billStatus: bill.status as VendorBillStatus,
-      };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    // The approved fold counts approvals against the LIVE certificate only — a superseded one is
+    // retained history, and summing it would compare an overstated total against the bound.
+    const approved = approvals
+      .filter((a) => position && a.certificateId === position.certificateId)
+      .reduce((t, a) => t.add(a.amount), ZERO);
+    // §0's `PAID(bill)` — Σ payments MINUS Σ payment reversals. Folded from the SAME rows the
+    // approvals carry so the ledger cannot report a total its own line items contradict.
+    const paid = approvals.reduce((t, a) => t.add(a.payments.reduce((s, p) => s.add(netOf(p)), ZERO)), ZERO);
+
+    return {
+      billId,
+      certificateId: position?.certificateId ?? null,
+      approvals: rows,
+      approved: approved.toFixed(2),
+      paid: paid.toFixed(2),
+      approvable: position ? new Prisma.Decimal(position.netPayable).sub(approved).toFixed(2) : null,
+      billStatus: bill.status as VendorBillStatus,
+    };
   }
 
   // ── folds and helpers ────────────────────────────────────────────────────────────────────────

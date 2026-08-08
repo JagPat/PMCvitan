@@ -394,26 +394,38 @@ export class CommercialMeasurementService {
   async read(projectId: string, labourPoLineId: string, user: AuthUser): Promise<MeasurementRegisterDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
-    return this.prisma.$transaction(async (tx) => {
-      const [rows, lines, effort] = await Promise.all([
-        tx.measurement.findMany({ where: { projectId, labourPoLineId }, orderBy: { takenAt: 'asc' } }),
-        this.labour.committedLinesFor(tx, projectId, [labourPoLineId]),
-        this.labour.effortForPoLines(tx, projectId, [labourPoLineId]),
-      ]);
-      const line = lines.get(labourPoLineId);
-      if (!line) throw new NotFoundException('Labour purchase-order line not found in this project');
-      return {
-        labourPoLineId,
-        rows: rows.map(serialize),
-        measured: rows.reduce((acc, r) => acc.add(r.quantity), ZERO).toString(),
-        effort: (effort.get(labourPoLineId) ?? ZERO).toString(),
-        orderedPersonShiftQty: line.personShiftQty,
-        // Codex round-4 P2 — the register must state the authority the line CURRENTLY carries, not
-        // only the quantity frozen at issue. The write path caps by `liveAuthority`, so reporting
-        // the frozen order alone published a cap that was not real.
-        liveAuthorityPersonShiftQty: line.liveAuthority,
-        defaulted: line.defaulted,
-      };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    return this.prisma.$transaction(
+      (tx) => this.registerIn(tx, projectId, labourPoLineId),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
+
+  /**
+   * The §D register for ONE labour PO line ON A GIVEN TRANSACTION — the ONE spelling, so the
+   * standalone `commercial.measurements` route and the §M claim bundle (Task 7B-ii) cannot drift
+   * about what `measured` folds or which authority it is reported against.
+   */
+  async registerIn(
+    tx: Prisma.TransactionClient, projectId: string, labourPoLineId: string,
+  ): Promise<MeasurementRegisterDto> {
+    const [rows, lines, effort] = await Promise.all([
+      tx.measurement.findMany({ where: { projectId, labourPoLineId }, orderBy: { takenAt: 'asc' } }),
+      this.labour.committedLinesFor(tx, projectId, [labourPoLineId]),
+      this.labour.effortForPoLines(tx, projectId, [labourPoLineId]),
+    ]);
+    const line = lines.get(labourPoLineId);
+    if (!line) throw new NotFoundException('Labour purchase-order line not found in this project');
+    return {
+      labourPoLineId,
+      rows: rows.map(serialize),
+      measured: rows.reduce((acc, r) => acc.add(r.quantity), ZERO).toString(),
+      effort: (effort.get(labourPoLineId) ?? ZERO).toString(),
+      orderedPersonShiftQty: line.personShiftQty,
+      // Codex round-4 P2 — the register must state the authority the line CURRENTLY carries, not
+      // only the quantity frozen at issue. The write path caps by `liveAuthority`, so reporting
+      // the frozen order alone published a cap that was not real.
+      liveAuthorityPersonShiftQty: line.liveAuthority,
+      defaulted: line.defaulted,
+    };
   }
 }

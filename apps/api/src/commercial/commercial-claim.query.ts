@@ -1,0 +1,119 @@
+import { ForbiddenException, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { ROLE_POLICY, type CommercialClaimDto, type MeasurementRegisterDto, type VendorBillDto } from '@vitan/shared';
+import { PrismaService } from '../prisma.service';
+import type { AuthUser } from '../common/auth';
+import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
+import { CommercialBillService } from './commercial-bill.service';
+import { CommercialVerificationService } from './commercial-verification.service';
+import { CommercialCertificationService } from './commercial-certification.service';
+import { CommercialDeductionService } from './commercial-deduction.service';
+import { CommercialPaymentService } from './commercial-payment.service';
+import { CommercialMeasurementService } from './commercial-measurement.service';
+
+/**
+ * Phase 5 Task 7B-ii (§M) — ONE CLAIM'S WHOLE LIFECYCLE, from one repeatable-read transaction.
+ *
+ * The §M hub's claim page is the accountant's workflow: the claim and its versions (§D/§F), the §E
+ * verification triple, the live §E certificate, the §H deduction ledger with its `NET_PAYABLE`, the
+ * §G approvals and payments, and the §D measurement register behind each labour line it bills.
+ *
+ * Assembled from six HTTP reads that page contradicts itself, and not hypothetically: `approvable`
+ * is derived from the deduction ledger's `netPayable`, so a release or a recovery committing
+ * between the two makes the screen state a payable and an approvable that were never true
+ * together. Every one of those reads ALREADY opens a repeatable-read snapshot for precisely this
+ * reason at its own level — `commercial.payments` carries the comment spelling it out. This class
+ * is that rule applied one layer up, which is the move `commercial.money-position` made for the
+ * §B/§C/§J page one tab over.
+ *
+ * WHY A SEPARATE CLASS. `CommercialBillService` owns the claim and would be the natural home, but
+ * the verification, certification and deduction services all inject IT — assembling here would
+ * close a Nest dependency cycle. This class is injected by nothing but the controller, so the graph
+ * stays acyclic, and it composes the `...In(tx, …)` helpers those services own rather than
+ * re-deriving anything: no fold, no predicate and no serializer is written twice.
+ */
+
+/**
+ * The labour PO lines whose §D register belongs to THIS claim, deduplicated and ordered.
+ *
+ * Exported and pure because the rule it encodes is the one this class got WRONG first: the source is
+ * the version the serializer marks `live`, not the highest-numbered one. Those differ —
+ * `live` is `supersededAt === null && isLiveBillStatus(status)`, so a DISPUTED or REJECTED claim has
+ * NO live version and its top version's lines sit in no fold. `versions.at(-1)` would present those
+ * registers as "what this claim measures", a stronger statement than the data supports.
+ *
+ * It is a separate function so that rule can be tested against a claim that actually HAS labour
+ * lines on a non-live version. The live-PG fixture for this suite bills material only, so the
+ * integration probe covering the same code path passes whichever version it picks — it would have
+ * ratified the bug. A pure function over the DTO tests the distinction itself.
+ */
+export function labourLinesOfLiveVersion(bill: VendorBillDto): string[] {
+  const live = bill.versions.find((v) => v.live);
+  return [...new Set(
+    (live?.lines ?? [])
+      .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
+      .map((l) => l.labourPoLineId as string),
+  )].sort();
+}
+
+@Injectable()
+export class CommercialClaimQuery {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly capabilities: CapabilitiesService,
+    private readonly bills: CommercialBillService,
+    private readonly verification: CommercialVerificationService,
+    private readonly certification: CommercialCertificationService,
+    private readonly deductions: CommercialDeductionService,
+    private readonly payments: CommercialPaymentService,
+    private readonly measurements: CommercialMeasurementService,
+  ) {}
+
+  private assertRead(user: AuthUser): void {
+    if (!(ROLE_POLICY['commercial.read'] as readonly string[]).includes(user.role)) {
+      throw new ForbiddenException('The commercial register is a pmc/engineer surface');
+    }
+  }
+
+  async readClaim(projectId: string, billId: string, user: AuthUser): Promise<CommercialClaimDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertRead(user);
+
+    return this.prisma.$transaction(async (tx) => {
+      // The bill FIRST: it is the one read that decides whether this claim exists at all, and every
+      // helper below would otherwise raise its own not-found with its own wording for the same
+      // missing row.
+      const bill = await this.bills.billIn(tx, projectId, billId);
+      const [verification, certificate, deductions, payments] = await Promise.all([
+        this.verification.verificationIn(tx, projectId, billId),
+        this.certification.liveCertificateIn(tx, projectId, billId),
+        this.deductions.deductionLedgerIn(tx, projectId, billId),
+        this.payments.paymentLedgerIn(tx, projectId, billId),
+      ]);
+
+      // §D — the measured evidence behind the LABOUR lines this claim CURRENTLY bills.
+      //
+      // The source is the version the serializer marks `live`, NOT the highest-numbered one. Those
+      // are different: `live` is `supersededAt === null && isLiveBillStatus(status)`, so a DISPUTED
+      // or REJECTED claim has no live version at all, and its top version's lines are in no fold.
+      // Reading `versions.at(-1)` would present those registers as "what this claim measures",
+      // which is a stronger statement than the data supports — and the flag exists precisely
+      // because liveness is not derivable from position. A claim with no live version therefore
+      // reports no measurements; its full version history is carried above for anyone
+      // investigating why it stopped being live.
+      //
+      // Material lines carry no measurement — their evidence is accepted stock, which the §E
+      // verification triple above already reports — so a material-only claim yields an empty map
+      // rather than a set of empty registers that would read as "measured nothing" instead of
+      // "measurement does not apply".
+      const labourLineIds = labourLinesOfLiveVersion(bill);
+      const registers = await Promise.all(
+        labourLineIds.map(async (id) => [id, await this.measurements.registerIn(tx, projectId, id)] as const),
+      );
+      const measurements: Record<string, MeasurementRegisterDto> = {};
+      for (const [id, register] of registers) measurements[id] = register;
+
+      return { bill, verification, certificate, deductions, payments, measurements };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
+}
