@@ -1,8 +1,13 @@
 # PR #300 convergence audit — 7B-ii-b, and the difference between a moment and a state
 
-Two finding-bearing heads (`79bbd66`, `01e577f`) trigger the convergence rule. Seven findings, one
-P1, no P0s. They fall into three roots: one recurrence this phase has now named five times, and two
-new ones — both of which are about *me being confident in writing*.
+Three finding-bearing heads (`79bbd66`, `01e577f`, `102252d`). **Eleven findings**, one P1, no P0s,
+across four roots: one recurrence this phase has now named five times, and three new ones — all
+three of which are about *me being confident in writing*.
+
+The third round is the one that changes the reading. Its four findings were not new ground: **three
+of them were defects in, or one step beside, the fixes I had just shipped.** A correction that is
+locally right and globally incomplete is the through-line of this PR, and §"Root F" below is the
+attempt to say why.
 
 ## Every finding, in one table
 
@@ -15,6 +20,10 @@ new ones — both of which are about *me being confident in writing*.
 | G1 | `01e577f` | P2 | A scope reset under an open Claims tab left the panel rendering **nothing** — no rows, no loading, no error, no empty state |
 | G2 | `01e577f` | P2 | The realtime ping never refreshed an already-open claim list, so a claim another user recorded stayed invisible until a page reload |
 | G3 | `01e577f` | P2 | The ping refreshed only claims with an *arrived* lifecycle, so one whose first read was in flight missed the invalidation and landed stale as `ready` |
+| H1 | `102252d` | P2 | A cached claim list whose refresh **failed** rendered "No vendor claim has been recorded yet" with no warning and no retry |
+| H2 | `102252d` | P2 | The whole claim workflow sat inside `{commercial && …}`, so a failed money-position read hid tabs whose own reads were fine |
+| H3 | `102252d` | P2 | G1's effect omitted `capabilities` — on the real switch path it fired once into a capability-gated no-op and never again, leaving the blank panel G1 was meant to fix |
+| H4 | `102252d` | P2 | F4's fix preferred the claim bundle *always*, so a **stale** claim overrode a freshly refreshed list row — the mirror of the bug it fixed |
 
 ## Root A (recurrence) — one fact in two places, allowed to drift
 
@@ -88,6 +97,51 @@ change — keyed the refresh set on results rather than intent, so the in-flight
 finished thinking about was the one I missed. Getting a hazard right once in one place is not the
 same as having internalised it.
 
+## Root F (new) — stating a principle is not applying it
+
+**H1 and H2**, and both are quotable against me because I wrote the principle down *in this PR* and
+then applied it to exactly the case in front of me.
+
+- **H1.** Round two's commit message says: *"Staleness is a property of the CLAIM, not of one tab, so
+  the banner is hoisted and every panel renders through it."* Correct — and the claim LIST, which has
+  the identical stale-while-revalidate shape one component over, got no banner at all. An open Claims
+  tab could render "No vendor claim has been recorded yet" after a failed refresh: not a stale
+  number, a **false statement about the world**, with no indication and no retry.
+- **H2.** The PR body argues at length that the claim workflow is independent of the money position —
+  *"nothing in it is derived from the money position, so a shared snapshot would buy no consistency"*
+  — and I proved it in the **loader** while rendering every tab inside `{commercial && …}`. So a
+  failed `/commercial/money-position` hid the entire claim workflow behind a headroom retry. The
+  independence was real one layer down and absent one layer up.
+
+The shape: *a principle articulated while fixing one instance gets applied to that instance only.*
+Writing it down feels like generalising. It is not; it is narrating.
+
+The defence is cheap and I did not do it: **when you state a principle, enumerate what it covers
+before you move on.** "Staleness belongs to the thing, not the tab" has two instances on this screen
+— claim and list. "This workflow is independent of that one" has two layers — load and render. Both
+lists are two items long and both took thirty seconds to write once asked.
+
+## Root E, second appearance — and both of round three's other findings
+
+**H3 and H4** are root E again, which is why it gets no new letter.
+
+- **H3.** Round two's fix replaced a one-shot trigger with a condition — the right move — and the
+  condition was **incomplete**. `loadCommercialBills()` is itself capability-gated, and a project
+  switch resets capabilities and the list *together*: the effect fired once into a no-op, and when
+  the shell later reported the new project's capability, neither watched dependency had changed. The
+  blank panel G1 existed to remove came straight back. Expressing a condition instead of an event is
+  half the work; the condition also has to name every term it depends on.
+- **H4.** F4 fixed "the row is older than the claim" by preferring the claim **always** — so after a
+  successful list refresh and a failed claim refresh, the claim is the older of the two and overrode
+  a fresher row. "Has a claim" was standing in for "the claim is fresher": a proxy for the real
+  condition, which is root E's exact definition.
+
+And one more instance of **root D**, caught during this round's own RED verification rather than by
+review: the first H3 probe used a stub that resolved unconditionally, so it counted a call the real
+capability-gated loader would have no-opped — and passed with the bug in place. The stub now records
+the capability state at call time. Third time on this PR that a stub which did not model the thing it
+stood for agreed with the defect.
+
 ## What carries forward
 
 1. **A fixture you type out encodes your belief; a fixture you derive encodes the contract.** Prefer
@@ -100,3 +154,8 @@ same as having internalised it.
    nothing; so does a grep with no positive twin. Both were on this PR.
 5. **Root A is not subtle and will recur again.** Its only reliable defence is a single source, not
    vigilance.
+6. **When you write a principle down, enumerate its instances before moving on.** Both root-F
+   findings had exactly two instances and I fixed one of each. (Root F.)
+7. **A fix is a new opportunity for the same class of bug.** Three of round three's four findings
+   were in or beside round two's fixes: an incomplete condition, an over-corrected preference, and a
+   principle applied once. Re-read a correction as if someone else wrote it.

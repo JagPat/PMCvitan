@@ -262,4 +262,109 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
     expect(r.getByTestId('commercial-claims-loading')).toBeTruthy();
   });
+
+  it('H1: a cached list whose refresh FAILED says so, with a retry', () => {
+    useStore.setState({ commercialBills: [], commercialBillsLoad: 'error' });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    // the empty-state copy is still there — that is the trap: "no claims yet" reads as fact
+    expect(r.getByTestId('commercial-claims-empty')).toBeTruthy();
+    expect(
+      r.getByTestId('commercial-claims-stale'),
+      '"No vendor claim has been recorded yet" after a failed refresh is a claim about the world',
+    ).toBeTruthy();
+    expect(r.getByTestId('commercial-claims-stale-retry')).toBeTruthy();
+  });
+
+  it('H2: the claim workflow works when the MONEY bundle failed', () => {
+    // money-position is down; /commercial/bills and /commercial/claims/:id are fine
+    useStore.setState({
+      commercialView: null,
+      commercialLoad: 'error',
+      commercialClaims: { 'bill-1': claim() },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    // the tabs exist at all — RED when everything sits inside `{commercial && …}`
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    expect(
+      r.getByTestId('verification-verdict').textContent,
+      'an accountant could not process a claim because the headroom read was down',
+    ).toBe('matched');
+    // …and the money tab still reports its own failure honestly
+    fireEvent.click(r.getByTestId('commercial-tab-position'));
+    expect(r.getByTestId('commercial-unavailable')).toBeTruthy();
+  });
+
+  it('H3: the list loads when the CAPABILITY arrives after the scope reset', () => {
+    // The stub RECORDS the capability state at call time, because the real
+    // `loadCommercialBills` is capability-gated and returns immediately when the project is
+    // off-pilot. A stub that resolves unconditionally cannot see this defect at all — it counts a
+    // call that would have done nothing, which is how the first version of this probe passed with
+    // the bug in place. (The convergence doc's root D, third appearance on this PR: a stub that
+    // does not model the thing it stands for agrees with the bug.)
+    const onPilotAtCall: boolean[] = [];
+    const loadCommercialBills = vi.fn().mockImplementation(() => {
+      onPilotAtCall.push(useStore.getState().capabilities.includes('commercial'));
+      return Promise.resolve();
+    });
+    useStore.setState({ loadCommercialBills } as never);
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    loadCommercialBills.mockClear();
+    onPilotAtCall.length = 0;
+
+    // the real project-switch path: capabilities AND the list reset together, so the effect fires
+    // once into a capability-gated no-op...
+    act(() => {
+      useStore.setState({
+        capabilities: [],
+        commercialBills: null,
+        commercialBillsLoad: 'idle',
+        projectScopeGeneration: useStore.getState().projectScopeGeneration + 1,
+      });
+    });
+    // ...and the shell then reports the new project's capability. RED when `onPilot` is missing from
+    // the condition and the deps: nothing changed that the effect watches, so it never fires again.
+    act(() => { useStore.setState({ capabilities: ['commercial'] }); });
+
+    expect(
+      onPilotAtCall.some((onPilot) => onPilot),
+      'every request for the list happened while the project was off-pilot, so the real loader would '
+      + 'have no-opped every time — the capability arrived and nothing asked again',
+    ).toBe(true);
+  });
+
+  it('H4: a STALE claim does not override a freshly refreshed row', () => {
+    // the list refreshed successfully to `paid`; the claim refresh failed, leaving `certified`
+    useStore.setState({
+      commercialBills: [{ ...claim().bill, status: 'paid' as const }],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': claim() },
+      commercialClaimLoad: { 'bill-1': 'error' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    expect(
+      r.getByTestId('commercial-claim-status-bill-1').textContent,
+      'the claim bundle is the OLDER read here — preferring it always is the mirror of the bug it fixed',
+    ).toBe('paid');
+  });
+
+  it('H4: a healthy claim still wins over a stale list row', () => {
+    // the guard must not swing the other way: this is the case the previous round fixed
+    useStore.setState({
+      commercialBills: [{ ...claim().bill, status: 'verified' as const }],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': claim() },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    expect(r.getByTestId('commercial-claim-status-bill-1').textContent).toBe('certified');
+  });
 });

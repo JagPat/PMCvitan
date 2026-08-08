@@ -47,6 +47,17 @@ const TABS: { key: Tab; label: string }[] = [
 /** The claim tabs are views of one selected claim; without one there is nothing to show. */
 const CLAIM_TABS: readonly Tab[] = ['certification', 'payments', 'measurements'];
 
+/**
+ * Codex H2 — the tabs that need the MONEY bundle, as opposed to the ones that need a claim.
+ *
+ * This PR argued in prose that the claim workflow is independent of the money position — "nothing
+ * in the claim list is derived from the money position" — and then rendered every tab inside
+ * `{commercial && …}`. So a failed `/commercial/money-position` hid the whole claim workflow behind
+ * a headroom retry, even though `/commercial/bills` and `/commercial/claims/:id` were fine. The
+ * principle was right and applied to exactly the layer I was looking at.
+ */
+const MONEY_TABS: readonly Tab[] = ['position', 'commitments', 'forecast'];
+
 const rowCard: CSSProperties = { border: '1px solid var(--hairline)', borderRadius: 11, padding: '11px 13px', marginTop: 10, background: 'var(--panel)' };
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--faint)' };
 const muted: CSSProperties = { fontSize: 12.5, color: 'var(--muted)' };
@@ -73,6 +84,7 @@ export function CommercialScreen() {
   const commercial = useStore(useShallow((s) => s.commercialView));
   const commercialLoad = useStore((s) => s.commercialLoad);
   const capabilitiesKnown = useStore((s) => s.capabilitiesKnown);
+  const capabilities = useStore(useShallow((s) => s.capabilities));
   const loadCommercial = useStore((s) => s.loadCommercial);
   const loadShell = useStore((s) => s.loadShell);
   const bills = useStore(useShallow((s) => s.commercialBills));
@@ -88,6 +100,7 @@ export function CommercialScreen() {
   const [selection, setSelection] = useState<{ scope: string; billId: string | null }>({ scope: '', billId: null });
   const selectedBillId = selection.scope === scopeKey ? selection.billId : null;
 
+  // The money bundle's own states, and they belong to the MONEY tabs only (Codex H2).
   const reading = (commercialLoad === 'idle' || commercialLoad === 'loading') && !commercial;
   const unavailable = commercialLoad === 'error' && !commercial;
   const stale = commercialLoad === 'error' && !!commercial;
@@ -123,9 +136,19 @@ export function CommercialScreen() {
   // whatever made it true. The one-shot trigger is deleted rather than supplemented — a second
   // trigger beside the first would leave the same class of gap for the next state change.
   const inClaimWorkflow = tab === 'claims' || CLAIM_TABS.includes(tab);
+  const onMoneyTab = MONEY_TABS.includes(tab);
+  // Codex H3 — the condition must name EVERY term it depends on. `loadCommercialBills()` is itself
+  // capability-gated, and a project switch resets capabilities to `[]` at the same moment it resets
+  // the list to `idle`: the effect fired, the loader no-opped, and when `loadShell()` later reported
+  // the new project's `commercial` capability neither dependency had changed — so it never fired
+  // again and the Claims tab rendered the same blank panel the previous round was meant to fix.
+  //
+  // Expressing a condition instead of an event (the previous round) is only half of it; the
+  // condition also has to be complete. `onPilot` is the missing term, in the guard AND the deps.
+  const onPilot = capabilities.includes('commercial');
   useEffect(() => {
-    if (inClaimWorkflow && billsLoad === 'idle') void loadCommercialBills();
-  }, [inClaimWorkflow, billsLoad, loadCommercialBills]);
+    if (inClaimWorkflow && onPilot && billsLoad === 'idle') void loadCommercialBills();
+  }, [inClaimWorkflow, onPilot, billsLoad, loadCommercialBills]);
 
   const openTab = (next: Tab): void => { setTab(next); };
   const selectClaim = (billId: string): void => {
@@ -219,7 +242,7 @@ export function CommercialScreen() {
         </Button>
       </div>
 
-      {stale && (
+      {stale && onMoneyTab && (
         <div data-testid="commercial-stale-warning" style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--amber-chip)', border: '1px solid var(--amber-border)', borderRadius: 11, padding: '9px 12px', marginTop: 14 }}>
           <WifiOff size={15} color="var(--amber-text)" style={{ flex: 'none' }} />
           <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--amber-text)' }}>Showing the last-known money picture — the latest couldn&rsquo;t load.</span>
@@ -229,10 +252,10 @@ export function CommercialScreen() {
         </div>
       )}
 
-      {reading && (
+      {reading && onMoneyTab && (
         <div data-testid="commercial-loading" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>Loading the money position…</div>
       )}
-      {unavailable && (
+      {unavailable && onMoneyTab && (
         <div data-testid="commercial-unavailable" style={{ marginTop: 40, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><WifiOff size={18} /> Commercial unavailable.</div>
           <div style={{ fontSize: 12.5, marginTop: 6 }}>Check your connection and access, then retry.</div>
@@ -244,10 +267,8 @@ export function CommercialScreen() {
         </div>
       )}
 
-      {commercial && (
-        <>
-          <div style={{ display: 'flex', gap: 6, marginTop: 16, flexWrap: 'wrap' }}>
-            {TABS.map((t) => (
+      <div style={{ display: 'flex', gap: 6, marginTop: 16, flexWrap: 'wrap' }}>
+          {TABS.map((t) => (
               <button
                 key={t.key}
                 onClick={() => openTab(t.key)}
@@ -264,7 +285,7 @@ export function CommercialScreen() {
             ))}
           </div>
 
-          {tab === 'position' && (
+      {tab === 'position' && commercial && (
             <div data-testid="commercial-position">
               {commercial.budget.openExceptions > 0 && (
                 <div data-testid="commercial-open-exceptions" style={{ ...rowCard, borderColor: '#E1BEB6' }}>
@@ -296,7 +317,7 @@ export function CommercialScreen() {
             </div>
           )}
 
-          {tab === 'commitments' && (
+      {tab === 'commitments' && commercial && (
             <div data-testid="commercial-commitments">
               {liveAttributions.length === 0 && (
                 <div data-testid="commercial-commitments-empty" style={{ ...rowCard, ...muted }}>
@@ -315,7 +336,7 @@ export function CommercialScreen() {
             </div>
           )}
 
-          {tab === 'forecast' && (
+      {tab === 'forecast' && commercial && (
             <div data-testid="commercial-forecast">
               {/* The projection's freshness, reported rather than implied. `refreshedAt: null` is the
                   LIVE fallback path — an honest "computed just now", never a stamped timestamp. */}
@@ -352,6 +373,19 @@ export function CommercialScreen() {
               {billsLoad === 'loading' && !bills && (
                 <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-loading">Loading claims…</div>
               )}
+              {/* Codex H1 — a cached list whose latest refresh FAILED says so. The previous round
+                  hoisted exactly this warning for the CLAIM and left the LIST without one, so an
+                  open Claims tab could render "No vendor claim has been recorded yet" after a failed
+                  refresh that would have shown the first claim another user recorded. Stating a
+                  principle for one of a symmetric pair is not applying it. */}
+              {billsLoad === 'error' && bills && (
+                <div style={{ ...rowCard, ...muted, borderColor: 'var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)' }} data-testid="commercial-claims-stale">
+                  Showing the last-known claim list — the latest couldn&rsquo;t load.{' '}
+                  <button onClick={() => void loadCommercialBills()} data-testid="commercial-claims-stale-retry" style={{ background: 'transparent', border: '1px solid var(--amber-border)', borderRadius: 7, padding: '3px 8px', fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, color: 'var(--amber-text)', cursor: 'pointer' }}>
+                    Retry
+                  </button>
+                </div>
+              )}
               {billsLoad === 'error' && !bills && (
                 <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-unavailable">
                   <div>Claims couldn&rsquo;t load.</div>
@@ -372,7 +406,13 @@ export function CommercialScreen() {
                 // while the Certification and Payments tabs — rendering `claim.bill.status` from
                 // the fresh bundle — said `certified`. One workflow contradicting itself about the
                 // same claim, on the same screen. The freshest read wins for the row it describes.
-                const b = row.id === selectedBillId && claim ? claim.bill : row;
+                // Codex H4 — prefer the claim bundle only while it is not KNOWN STALE. The previous
+                // round fixed "the row is older than the claim" by always preferring the claim,
+                // which is the same mistake mirrored: after a successful list refresh and a FAILED
+                // claim refresh, the claim is the older of the two and would override a fresher row.
+                // "Has a claim" was standing in for "the claim is fresher" — root E again.
+                const claimIsStale = row.id === selectedBillId && claimStatus === 'error';
+                const b = row.id === selectedBillId && claim && !claimIsStale ? claim.bill : row;
                 return (
                   <button
                     key={b.id}
@@ -500,8 +540,6 @@ export function CommercialScreen() {
               ) : claimGuard()}
             </div>
           )}
-        </>
-      )}
     </div>
   );
 }
