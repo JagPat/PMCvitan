@@ -507,3 +507,31 @@ test('a merged task must CLEAR work_item, or the runner re-enters the unit it ju
     'a merged flip with work_item cleared must hand off to next_task',
   );
 });
+
+// FINDING (#303 P1) — a STATUS-only HANDOFF PR must land in a state the runner can ADVANCE from.
+//
+// #303's diff was nothing but this document, recording 7B-iii-a merged and handing off to
+// 7B-iii-b — and it named ITSELF as `open_pr` with `task_state: in_review`, on the drift
+// shepherd's advice. `assessRunnerState` consumes any non-`none` `open_pr` before it reaches
+// `next_task`, so after the merge the runner would have gone looking for the status PR it had
+// just merged, and found nothing to shepherd.
+//
+// The decidable invariant underneath: `work_item: none` MEANS nothing is in progress, so the
+// runner must hand off to `next_task` rather than resolve a PR step. A work-item PR names its
+// work item, so this never fires on one.
+test('with no work item in progress, STATUS hands off to next_task rather than a PR', async () => {
+  const { now, maintenanceQueue } = await loadStatusDocument();
+  const workItem = (now.work_item ?? '').trim().toLowerCase();
+  if (!(workItem === '' || workItem === 'none')) return; // a named work item is in progress
+  if (!(now.next_task ?? '').trim()) return;             // nothing to hand off to
+  if ((now.blocking_directive ?? 'none').trim().toLowerCase() !== 'none') return; // a directive outranks
+
+  const verdict = assessRunnerState(now, maintenanceQueue);
+  assert.ok(verdict.nextStep, `docs/STATUS.md resolves no next step at all: ${verdict.reason}`);
+  assert.ok(
+    !verdict.nextStep.startsWith('pr:'),
+    `docs/STATUS.md records no work_item but resolves '${verdict.nextStep}' — a handoff that names `
+    + 'a PR sends the post-merge runner back to a PR instead of starting next_task. A STATUS-only '
+    + 'handoff lands as merged/open_pr: none.',
+  );
+});
