@@ -44,3 +44,38 @@ export function isQuantityString(value: string): boolean {
 export function isPositiveQuantity(value: string): boolean {
   return isQuantityString(value) && Number(value.trim()) > 0;
 }
+
+/**
+ * Phase 5 §D — a signed CORRECTION delta: nonzero, at most six decimals, sign permitted.
+ *
+ * `correctMeasurementSchema` accepts exactly this, and the form must too. Codex's finding on
+ * PR #304: `abc`, `0` and `1.1234567` all passed a non-blank check into the DURABLE outbox, so an
+ * offline user was told the correction was saved and reconnect dropped it as a terminal 400.
+ */
+export const CORRECTION_DELTA = /^-?\d+(\.\d{1,6})?$/u;
+
+export function isCorrectionDelta(value: string): boolean {
+  const v = value.trim();
+  return CORRECTION_DELTA.test(v) && Number(v) !== 0;
+}
+
+/**
+ * §F — the claim statuses each lifecycle transition ADMITS, mirroring the server's `from` lists.
+ *
+ * A control offered for a status the server refuses is not a cosmetic problem: the write-ahead
+ * outbox persists the op and reports it saved, then reconnect drops it with a terminal 409. These
+ * live here so the screen and `commercial-bill.service.ts` cannot disagree about what is possible.
+ */
+export const BILL_SUBMITTABLE_FROM = ['draft'] as const;
+export const BILL_REJECTABLE_FROM = ['draft', 'submitted', 'under-verification', 'disputed', 'verified'] as const;
+
+/**
+ * §F — the duplicate-claim key as the SERVER computes it: case- and whitespace-normalized.
+ *
+ * The stored text keeps the vendor's verbatim number (trimmed), but the live-duplicate index keys
+ * this normalized form — so `V-1` and `v 1` are ONE live claim. A client coalescing on the raw
+ * string lets both enter the outbox and promises to sync a claim the server will refuse.
+ */
+export function normalizedBillNumber(value: string): string {
+  return value.replace(/\s+/gu, '').toLowerCase();
+}

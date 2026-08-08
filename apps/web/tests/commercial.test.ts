@@ -731,6 +731,12 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
   // methods typed from the gateway contract anyway (root D — derive the fixture, don't retype it).
   const writeGw = (over: Partial<ApiGateway> = {}): Partial<ApiGateway> => ({
     commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    // The M1 reconcile refreshes the claim LIST and every open claim too, not only the money
+    // position — so a stub missing them is a fixture that no longer models the gateway. Vitest
+    // surfaced it as unhandled errors rather than failures, which is exactly the shape that hides:
+    // green tests, a red run. (Root D: derive the fixture from the contract.)
+    commercialBills: vi.fn<ApiGateway['commercialBills']>().mockResolvedValue({ bills: [] }),
+    commercialClaim: vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto()),
     setCommercialBudget: vi.fn<ApiGateway['setCommercialBudget']>().mockResolvedValue(undefined),
     defineCostHead: vi.fn<ApiGateway['defineCostHead']>().mockResolvedValue(undefined),
     reattributeCommitment: vi.fn<ApiGateway['reattributeCommitment']>().mockResolvedValue(undefined),
@@ -905,6 +911,8 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
       { timeout: 2000, interval: 5 }).catch(() => {});
   });
   const engGw = (over: Partial<ApiGateway> = {}): Partial<ApiGateway> => ({
+    commercialBills: vi.fn<ApiGateway['commercialBills']>().mockResolvedValue({ bills: [] }),
+    commercialClaim: vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto()),
     takeMeasurement: vi.fn<ApiGateway['takeMeasurement']>().mockResolvedValue(undefined),
     submitVendorBill: vi.fn<ApiGateway['submitVendorBill']>().mockResolvedValue(undefined),
     rejectVendorBill: vi.fn<ApiGateway['rejectVendorBill']>().mockResolvedValue(undefined),
@@ -957,6 +965,25 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     s().rejectVendorBill('bill-2', 'wrong vendor');
     expect(s().outbox).toHaveLength(2);
     gate.resolve({});
+  });
+
+  it('M1: a claim-changing write refreshes the CLAIM, not only the money position', async () => {
+    const money = vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle());
+    const bills = vi.fn<ApiGateway['commercialBills']>().mockResolvedValue({ bills: [claimDto().bill] });
+    const oneClaim = vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto());
+    pilot(engGw({ commercialMoneyPosition: money, commercialBills: bills, commercialClaim: oneClaim }));
+    // a claim is open on screen — its register is what the measurement changes
+    await s().loadCommercialClaim('bill-1');
+    bills.mockClear(); oneClaim.mockClear();
+
+    s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '2', citedOutputId: 'OUT-1' });
+    await vi.waitFor(() => { if (s().outbox.length > 0) throw new Error('draining'); }, { timeout: 5000, interval: 5 });
+
+    // RED before: the reconcile reloaded ONLY the money position, so `commercialPending` cleared
+    // while the register on screen was still pre-command and the form still filled — a second
+    // Measure then sent a fresh idempotency key and appended the same measurement twice.
+    expect(bills, 'the claim LIST was not refreshed after a claim-changing write').toHaveBeenCalled();
+    expect(oneClaim, 'the OPEN claim was not refreshed — its register is what changed').toHaveBeenCalled();
   });
 
   it('the §A value rules are the SHARED ones — no second opinion in the browser', async () => {

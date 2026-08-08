@@ -1,3 +1,5 @@
+import { normalizedBillNumber } from '@vitan/shared';
+
 /**
  * Phase 5 Task 7B-iii-a (§M) — the COMMERCIAL twin of `labourKeys.ts`, born carrying the
  * PR-#208 two-key split and the eleven rounds of corrections labour paid for it:
@@ -127,7 +129,10 @@ export const isCorrectionPendingFor = (key: string, measurementId: string): bool
 
 /** §F — the duplicate-claim key the SERVER freezes: one claim per (vendor, their bill number). */
 export const billCoalesceKey = (vendorId: string, vendorBillNumber: string): string =>
-  `com:bill:${vendorId}:${vendorBillNumber.trim()}`;
+  // Normalized the way the SERVER's live-duplicate index keys it, not merely trimmed: `V-1` and
+  // `v 1` are ONE live claim there, so coalescing on the raw string let both enter the durable
+  // outbox and promised to sync a claim the server would refuse (Codex M6).
+  `com:bill:${vendorId}:${normalizedBillNumber(vendorBillNumber)}`;
 
 /**
  * §F — submit, amend and reject are three TRANSITIONS on one claim, and the claim is the
@@ -164,5 +169,12 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   if (pending.includes(coalesceKey)) return true;
   const tx = /^com:billtx:(.+):(?:submit|amend|reject)$/u.exec(coalesceKey);
   if (tx) return pending.some((k) => isBillTransitionPending(k, tx[1]!));
+  // Codex M7 — the SAME conflict rule for corrections. `correctionCoalesceKey` deliberately carries
+  // the delta, so −1 and −2 against one measurement are different keys; the screen already treated
+  // any pending correction for that measurement as blocking, and the dispatcher did not. Two deltas
+  // could therefore both enter the outbox and double-withdraw the same evidence. A screen guard the
+  // durable layer does not share is J1's lesson unlearned.
+  const corr = /^com:mcorr:(.+):[^:]*$/u.exec(coalesceKey);
+  if (corr) return pending.some((k) => isCorrectionPendingFor(k, corr[1]!));
   return false;
 }

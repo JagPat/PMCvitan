@@ -3,9 +3,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, isCorrectionPendingFor, isBillTransitionPending } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { isMoneyString, isPositiveQuantity, ROLE_POLICY } from '@vitan/shared';
+import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, isCorrectionDelta, isMoneyString, isPositiveQuantity, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -170,6 +170,7 @@ export function CommercialScreen() {
   const correctMeasurement = useStore((s) => s.correctMeasurement);
   const submitBill = useStore((s) => s.submitVendorBill);
   const rejectBill = useStore((s) => s.rejectVendorBill);
+  const recordBill = useStore((s) => s.recordVendorBill);
   const claimStamp = useStore(useShallow((s) => s.commercialClaimStamp));
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
@@ -217,6 +218,19 @@ export function CommercialScreen() {
   const corrFormFor = (id: string) => corrScoped[id] ?? { qty: '', reason: '' };
   const setCorrForm = (id: string, next: Partial<{ qty: string; reason: string }>): void =>
     setCorrDrafts({ scope: scopeKey, byId: { ...corrScoped, [id]: { ...corrFormFor(id), ...next } } });
+  // Codex M2 — the LODGE form. The engineer's workflow bound measure/correct/submit/reject and
+  // never surfaced `recordVendorBill`, so on a project with no claim yet the Claims tab showed an
+  // empty state and no way out of it: a workflow that cannot create the thing it processes. One
+  // line is enough to lodge a draft; amendment (a full replacement line set) stays out of scope.
+  const [lodgeDraft, setLodgeDraft] = useState<{ scope: string; vendorId: string; number: string; date: string; poLineId: string; qty: string; rate: string }>(
+    { scope: '', vendorId: '', number: '', date: '', poLineId: '', qty: '', rate: '' },
+  );
+  const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : { scope: scopeKey, vendorId: '', number: '', date: '', poLineId: '', qty: '', rate: '' };
+  const setLodge = (next: Partial<typeof lodge>): void => setLodgeDraft({ ...lodge, scope: scopeKey, ...next });
+  const lodgeValid = lodge.vendorId.trim() !== '' && lodge.number.trim() !== '' && lodge.date.trim() !== ''
+    && lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate);
+  const lodgePending = commercialPending.includes(billCoalesceKey(lodge.vendorId.trim(), lodge.number));
+
   const [billDrafts, setBillDrafts] = useState<{ scope: string; byId: Record<string, string> }>({ scope: '', byId: {} });
   const billScoped = billDrafts.scope === scopeKey ? billDrafts.byId : {};
   const billReasonFor = (id: string): string => billScoped[id] ?? '';
@@ -722,6 +736,38 @@ export function CommercialScreen() {
               )}
               {v.show === 'content' && (
                 <>
+                  {mayBill && (
+                    <div style={rowCard} data-testid="commercial-lodge-form">
+                      <div style={{ fontWeight: 600, marginBottom: 8 }}>Lodge a vendor claim</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        <input value={lodge.vendorId} onChange={(e) => setLodge({ vendorId: e.target.value })} placeholder="Vendor id" data-testid="lodge-vendor" style={{ ...input, flex: '1 1 120px' }} />
+                        <input value={lodge.number} onChange={(e) => setLodge({ number: e.target.value })} placeholder="Their bill number" data-testid="lodge-number" style={{ ...input, flex: '1 1 130px' }} />
+                        <input value={lodge.date} onChange={(e) => setLodge({ date: e.target.value })} placeholder="Document date (YYYY-MM-DD)" data-testid="lodge-date" style={{ ...input, flex: '1 1 150px' }} />
+                        <input value={lodge.poLineId} onChange={(e) => setLodge({ poLineId: e.target.value })} placeholder="PO line id" data-testid="lodge-poline" style={{ ...input, flex: '1 1 120px' }} />
+                        <input value={lodge.qty} onChange={(e) => setLodge({ qty: e.target.value })} placeholder="Quantity" inputMode="decimal" data-testid="lodge-qty" style={{ ...input, flex: '1 1 100px' }} />
+                        <input value={lodge.rate} onChange={(e) => setLodge({ rate: e.target.value })} placeholder="Rate" inputMode="decimal" data-testid="lodge-rate" style={{ ...input, flex: '1 1 100px' }} />
+                        <Button
+                          variant="ink"
+                          data-testid="lodge-submit"
+                          disabled={!lodgeValid || lodgePending}
+                          onClick={() => recordBill({
+                            vendorId: lodge.vendorId.trim(),
+                            vendorBillNumber: lodge.number.trim(),
+                            documentDate: lodge.date.trim(),
+                            lines: [{ poLineId: lodge.poLineId.trim(), quantity: lodge.qty.trim(), rate: lodge.rate.trim() }],
+                          })}
+                        >
+                          {lodgePending ? 'Lodging…' : 'Lodge claim'}
+                        </Button>
+                      </div>
+                      {/* the §A rules, from the SAME functions the zod contract uses */}
+                      {((lodge.qty.trim() !== '' && !isPositiveQuantity(lodge.qty)) || (lodge.rate.trim() !== '' && !isMoneyString(lodge.rate))) && (
+                        <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="lodge-invalid">
+                          Quantity must be positive (≤6dp) and rate a non-negative money value (≤2dp).
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {/* Codex H1 — a cached list whose latest refresh FAILED says so. Round 2 hoisted
                       exactly this warning for the CLAIM and left the LIST without one, so an open
                       Claims tab could render "No vendor claim has been recorded yet" after a failed
@@ -780,10 +826,14 @@ export function CommercialScreen() {
                       is stated in the PR as not yet surfaced.) */}
                   {mayBill && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      {/* Codex M3/M4 — offered only where the SERVER admits the transition. A
+                          control for an impossible transition is not cosmetic: the write-ahead
+                          outbox persists it and reports it saved, then reconnect drops it with a
+                          terminal 409. The admissible sets are the shared ones the service uses. */}
                       <Button
                         variant="ink"
                         data-testid={`bill-submit-${b.id}`}
-                        disabled={billTxPending(b.id)}
+                        disabled={!(BILL_SUBMITTABLE_FROM as readonly string[]).includes(b.status) || billTxPending(b.id)}
                         onClick={() => submitBill(b.id)}
                       >
                         {billTxPending(b.id) ? 'Working…' : 'Submit'}
@@ -798,7 +848,7 @@ export function CommercialScreen() {
                       <Button
                         variant="ghost"
                         data-testid={`bill-reject-${b.id}`}
-                        disabled={!billReasonFor(b.id).trim() || billTxPending(b.id)}
+                        disabled={!(BILL_REJECTABLE_FROM as readonly string[]).includes(b.status) || !billReasonFor(b.id).trim() || billTxPending(b.id)}
                         onClick={() => rejectBill(b.id, billReasonFor(b.id).trim())}
                       >
                         Reject
@@ -992,11 +1042,16 @@ export function CommercialScreen() {
                             <Button
                               variant="ghost"
                               data-testid={`correct-submit-${row.id}`}
-                              disabled={!corrFormFor(row.id).qty.trim() || !corrFormFor(row.id).reason.trim() || correctionPending(row.id)}
+                              disabled={!isCorrectionDelta(corrFormFor(row.id).qty) || !corrFormFor(row.id).reason.trim() || correctionPending(row.id)}
                               onClick={() => correctMeasurement(row.id, corrFormFor(row.id).qty.trim(), corrFormFor(row.id).reason.trim())}
                             >
                               {correctionPending(row.id) ? 'Correcting…' : 'Correct'}
                             </Button>
+                            {corrFormFor(row.id).qty.trim() !== '' && !isCorrectionDelta(corrFormFor(row.id).qty) && (
+                              <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`correct-qty-invalid-${row.id}`}>
+                                A correction is a NON-ZERO signed delta with at most six decimals.
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>

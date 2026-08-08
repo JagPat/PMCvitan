@@ -3878,6 +3878,18 @@ export const useStore = create<Store>()(
       if (commercialAttempted) {
         if (scopeStillCurrent(flushScope) && get().capabilities.includes('commercial')) {
           get().loadCommercial();
+          // Codex M1 — 7B-iii-a's ops changed the MONEY POSITION, so reloading it was the whole
+          // reconcile. 7B-iii-b's ops change a CLAIM: a measurement, a correction, a lifecycle
+          // transition. Reloading only the money left `loadCommercial()` clearing
+          // `commercialPending` while the register on screen was still pre-command and the form
+          // still filled — so a second Measure sent a FRESH idempotency key and appended the same
+          // measurement twice, overstating measured work. The labour round-8 gap, on the resources
+          // this unit actually touches: refresh the claim list and every open claim too.
+          get().loadCommercialBills();
+          for (const billId of new Set([
+            ...Object.keys(get().commercialClaims),
+            ...Object.keys(get().commercialClaimLoad),
+          ])) get().loadCommercialClaim(billId);
         }
       }
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };

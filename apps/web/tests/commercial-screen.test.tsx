@@ -659,3 +659,79 @@ describe('Task 7B-iii-a round 2 — Codex J1/J2/J3', () => {
     expect(() => r.getByTestId('budget-amount-invalid')).toThrow();
   });
 });
+
+describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
+  const claimWith = (status: string) => ({ ...claim(), bill: { ...claim().bill, status } });
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({
+      role: 'engineer', capabilities: ['commercial'],
+      commercialView: bundle() as never, commercialLoad: 'ready',
+      commercialBills: [claim().bill], commercialBillsLoad: 'ready',
+    });
+  });
+  afterEach(cleanup);
+
+  it('M2: an engineer can LODGE a claim — the workflow can create what it processes', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    // RED before: the Claims tab could only act on bills that already existed, so a project with
+    // no claim showed an empty state and no way out of it.
+    expect(r.getByTestId('commercial-lodge-form')).toBeTruthy();
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(true);
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-1'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('M3/M4: a transition the server refuses is never offered', () => {
+    useStore.setState({ commercialBills: [claimWith('paid').bill] as never });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    const id = claim().bill.id;
+    // RED before: both were enabled for every status, so an impossible transition was persisted to
+    // the durable outbox and reported saved before a terminal 409 dropped it.
+    expect((r.getByTestId(`bill-submit-${id}`) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId(`bill-reason-${id}`), { target: { value: 'no' } });
+    expect((r.getByTestId(`bill-reject-${id}`) as HTMLButtonElement).disabled).toBe(true);
+
+    cleanup();
+    useStore.setState({ commercialBills: [claimWith('draft').bill] as never });
+    const d = render(<CommercialScreen />);
+    fireEvent.click(d.getByTestId('commercial-tab-claims'));
+    expect((d.getByTestId(`bill-submit-${id}`) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe('Task 7B-iii-b round 2 — the shared value rules (M5, M6, M7)', () => {
+  it('M5: a correction delta is validated with the SAME rule the contract uses', async () => {
+    const { isCorrectionDelta } = await import('@vitan/shared');
+    for (const bad of ['abc', '0', '0.0', '1.1234567', '']) expect(isCorrectionDelta(bad), bad).toBe(false);
+    for (const ok of ['-0.5', '2', '-1.000001']) expect(isCorrectionDelta(ok), ok).toBe(true);
+  });
+
+  it('M6: the bill coalesce key normalizes the way the SERVER duplicate index does', async () => {
+    const { billCoalesceKey } = await import('@/lib/commercialKeys');
+    // RED before (trim only): a case or INNER-whitespace difference produced different keys, so
+    // both entered the durable outbox for what the server treats as ONE live claim.
+    //
+    // The pairs are chosen against the server's ACTUAL rule — strip all whitespace, lowercase —
+    // rather than the review comment's illustration: `V-1` and `v 1` normalize to `v-1` and `v1`,
+    // which the server also treats as different claims, so asserting them equal would have pinned
+    // a behaviour the server does not have.
+    expect(billCoalesceKey('v-1', 'V-1')).toBe(billCoalesceKey('v-1', ' v-1 '));   // case + padding
+    expect(billCoalesceKey('v-1', 'V- 1')).toBe(billCoalesceKey('v-1', 'v-1'));    // inner whitespace
+    expect(billCoalesceKey('v-1', 'V-1')).not.toBe(billCoalesceKey('v-1', 'V-2')); // genuinely different
+  });
+
+  it('M7: the DISPATCHER blocks a conflicting correction, not just the screen', async () => {
+    const { commercialWriteBlocked, correctionCoalesceKey } = await import('@/lib/commercialKeys');
+    const pending = [correctionCoalesceKey('m1', '-1')];
+    // RED before: only bill transitions had conflict semantics, so −2 was accepted into the outbox
+    // beside a pending −1 and could double-withdraw the same measurement evidence.
+    expect(commercialWriteBlocked(correctionCoalesceKey('m1', '-2'), pending)).toBe(true);
+    expect(commercialWriteBlocked(correctionCoalesceKey('m2', '-2'), pending)).toBe(false);
+  });
+});
