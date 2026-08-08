@@ -180,22 +180,46 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
 }
 
 /**
- * Whether a coalesce key belongs to a write that changes a CLAIM (its register, lines or status)
- * rather than the money position.
+ * WHICH READ makes a write visible — and therefore the only read allowed to release its key.
  *
- * Codex N1: the M1 fix reloaded the claim list and open claims, but `loadCommercial()` still
- * rebuilt `commercialPending` from the now-empty outbox as soon as the MONEY read resolved — and
- * that read is the faster one. So the key cleared while the register on screen was still
- * pre-command, which is the exact window M1 was meant to close. The probe passed because it
- * asserted the reloads were CALLED, not that the key survived until they applied.
+ * N1 established the principle (a key must clear WITH the truth on screen, not before) and split
+ * the pending set two ways: money keys on the money read, "claim-affecting" keys on any claim
+ * read. Two claim reads is one too few, because "a claim read" is not one thing:
  *
- * Partitioning the pending set by what each write changes is what makes "clears WITH the truth on
- * screen" true for both families: money keys clear when the money applies, claim keys when the
- * claim does.
+ *  - a LODGE (`com:bill:`) becomes visible in the claim LIST — which is also the list the lodge
+ *    form's duplicate guard reads. Clearing it on a claim BUNDLE re-enabled the button while the
+ *    guard was still blind, so a second lodge entered the durable outbox for the server's
+ *    duplicate-document 409 to drop.
+ *  - a MEASUREMENT becomes visible in the register of the LINE it names — not in whichever claim
+ *    happened to reload first. With two claims open, the unrelated one clearing the key is N1
+ *    exactly, one resource over.
+ *
+ * So ownership is stated per read rather than per family, and the read carries what it actually
+ * landed. `com:billtx:` is deliberately owned by BOTH the list and that claim's own bundle: each
+ * carries the claim's status, and the screen already arbitrates between them by stamp.
  */
-export function isClaimAffectingKey(coalesceKey: string): boolean {
-  return coalesceKey.startsWith('com:meas:')
-    || coalesceKey.startsWith('com:mcorr:')
-    || coalesceKey.startsWith('com:bill:')
-    || coalesceKey.startsWith('com:billtx:');
+export type CommercialRead =
+  | { read: 'money' }
+  | { read: 'bills' }
+  | { read: 'claim'; billId: string }
+  | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] };
+
+export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
+  switch (r.read) {
+    case 'money':
+      return coalesceKey.startsWith('com:budget:') || coalesceKey.startsWith('com:head:')
+        || coalesceKey.startsWith('com:attr:');
+    case 'bills':
+      return coalesceKey.startsWith('com:bill:') || coalesceKey.startsWith('com:billtx:');
+    case 'claim':
+      return isBillTransitionPending(coalesceKey, r.billId);
+    case 'lineRegister': {
+      const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
+      if (meas) return meas[1] === r.labourPoLineId;
+      const corr = /^com:mcorr:(.+):[^:]*$/u.exec(coalesceKey);
+      // a correction is visible once the register it adjusts carries the row it names
+      if (corr) return r.rowIds.includes(corr[1]!);
+      return false;
+    }
+  }
 }

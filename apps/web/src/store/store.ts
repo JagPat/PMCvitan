@@ -58,6 +58,7 @@ import {
   type Role,
   type ScreenKey,
   type Worker,
+  type MeasurementRegisterDto,
   ROLE_POLICY,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
@@ -72,7 +73,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, isClaimAffectingKey, isCommercialOpType, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -246,6 +247,10 @@ export interface AppState {
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaims: Record<string, CommercialClaimView>;
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
+  /** §D — per-LINE measurement registers. The read a measurement becomes VISIBLE in: the claim
+   *  bundle carries registers only for a live version's lines, and the engineer measures first. */
+  commercialLineRegisters: Record<string, MeasurementRegisterDto>;
+  commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
   /** Codex I2 — the ordering of the two reads' last SUCCESS; see `ModuleReadState`. */
   commercialBillsStamp: number;
   commercialClaimStamp: Record<string, number>;
@@ -423,6 +428,7 @@ export interface AppActions {
   loadCommercial: () => Promise<void>;
   loadCommercialBills: () => Promise<void>;
   loadCommercialClaim: (billId: string) => Promise<void>;
+  loadCommercialLineRegister: (labourPoLineId: string) => Promise<void>;
   /** §M writes (7B-iii-a). Each dispatches ONE server command through the durable write-ahead
    *  outbox under a fresh idempotency key, coalesced while pending on its deterministic key. */
   setCommercialBudget: (costHeadCode: string, amount: string, reason: string) => void;
@@ -651,6 +657,26 @@ export function checklistFrozen(
  *  with a queued submit op stays FROZEN as `queued` (this rebuilds the freeze after a
  *  reload); an in-flight `submitting` freeze is preserved until its promise resolves;
  *  anything else (a different checklist, a re-auth/switch, a dropped submit) idles. */
+/**
+ * §M — release the commercial coalesce keys THIS read makes visible, and retain every other.
+ *
+ * Rebuilt from the live outbox rather than simply deleted, so a transient-failed op (still queued)
+ * keeps its key and its button stays disabled, while a resolved op's key clears WITH the truth that
+ * read just applied. One function for all four reads: three hand-written copies of this rule was
+ * how `com:bill:` came to be released by two of them.
+ */
+function releaseCommercialKeys(s: { outbox: readonly unknown[]; commercialPending: string[] }, r: CommercialRead): void {
+  const live = s.outbox.flatMap((o) =>
+    isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
+      ? [(o as { coalesceKey: string }).coalesceKey]
+      : [],
+  );
+  s.commercialPending = [
+    ...s.commercialPending.filter((k) => !readClearsKey(k, r)),
+    ...live.filter((k) => readClearsKey(k, r)),
+  ];
+}
+
 function reconcileSubmission(s: AppState): void {
   const sub = s.submission;
   const c = s.checklist;
@@ -731,6 +757,8 @@ export function getInitialState(): AppState {
     commercialBillsLoad: 'idle',
     commercialClaims: {},
     commercialClaimLoad: {},
+    commercialLineRegisters: {},
+    commercialLineRegisterLoad: {},
     commercialBillsStamp: 0,
     commercialClaimStamp: {},
     commercialPending: [],
@@ -813,6 +841,8 @@ export const useStore = create<Store>()(
     // single token would let opening claim B cancel a still-useful load of claim A, and a slow A
     // returning after B would be dropped even though nothing newer asked for A.
     const commercialClaimSeq: Record<string, number> = {};
+    /** Per-LINE ownership for the §D register read, for the same reason as the per-claim one. */
+    const commercialLineSeq: Record<string, number> = {};
     /** Codex I2 — ONE monotonic counter shared by the claim list and the claim bundle, so their
      *  successes are comparable. Two counters would order each read against itself and answer
      *  nothing about which of the two is fresher, which is the whole question. */
@@ -2710,20 +2740,11 @@ export const useStore = create<Store>()(
           // the live outbox (pending == still-queued). A key resolved by the flush clears HERE,
           // never in the gap where the pre-command figure still rendered; a transient-failed
           // op's key survives because its op is still queued. Labour round 8, inherited.
-          // Codex N1 — rebuild only the MONEY keys here, and RETAIN the claim ones. The money read
-          // resolving says nothing about whether the claim register on screen is current, and it is
-          // the faster of the two; clearing a measurement's key on it reopened the very window M1
-          // closed. Claim keys clear in `loadCommercialClaim`/`loadCommercialBills`, with their
-          // own truth.
-          const liveKeys = s.outbox.flatMap((o) =>
-            isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
-              ? [(o as { coalesceKey: string }).coalesceKey]
-              : [],
-          );
-          s.commercialPending = [
-            ...liveKeys.filter((k) => !isClaimAffectingKey(k)),
-            ...s.commercialPending.filter((k) => isClaimAffectingKey(k)),
-          ];
+          // Codex N1 — release only the keys THIS read makes visible; every other key is retained.
+          // The money read resolving says nothing about whether the claim register on screen is
+          // current, and it is the faster of the two; clearing a measurement's key on it reopened
+          // the very window M1 closed.
+          releaseCommercialKeys(s, { read: 'money' });
         });
       }).catch(() => set((s) => {
         // keep the last-good bundle and expose a Retry boundary. An OLDER failure never overwrites
@@ -2753,16 +2774,9 @@ export const useStore = create<Store>()(
           s.commercialBills = castDraft<CommercialBillRow[]>(bills);
           s.commercialBillsLoad = 'ready';
           s.commercialBillsStamp = ++commercialReadStamp;
-          // …and the list's own claim keys (lodge, lifecycle transitions) clear with the list.
-          const liveB = s.outbox.flatMap((o) =>
-            isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
-              ? [(o as { coalesceKey: string }).coalesceKey]
-              : [],
-          );
-          s.commercialPending = [
-            ...s.commercialPending.filter((k) => !k.startsWith('com:bill:') && !k.startsWith('com:billtx:')),
-            ...liveB.filter((k) => k.startsWith('com:bill:') || k.startsWith('com:billtx:')),
-          ];
+          // …and the list's own keys — a LODGE becomes visible here, and here only: this is the
+          // list the lodge form's duplicate guard reads.
+          releaseCommercialKeys(s, { read: 'bills' });
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialBillsLoad = 'error'; }));
     },
@@ -2792,18 +2806,43 @@ export const useStore = create<Store>()(
           s.commercialClaims[billId] = castDraft<CommercialClaimView>(claim);
           s.commercialClaimLoad[billId] = 'ready';
           s.commercialClaimStamp[billId] = ++commercialReadStamp;
-          // Codex N1 — the claim truth IS on screen now, so its keys clear here (and only here).
-          const live = s.outbox.flatMap((o) =>
-            isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
-              ? [(o as { coalesceKey: string }).coalesceKey]
-              : [],
-          );
-          s.commercialPending = [
-            ...s.commercialPending.filter((k) => !isClaimAffectingKey(k)),
-            ...live.filter((k) => isClaimAffectingKey(k)),
-          ];
+          // THIS claim's lifecycle transitions are visible now. A lodge is not (the list carries
+          // it), and neither is a measurement (its LINE's register carries it) — with two claims
+          // open, releasing those here is N1 one resource over.
+          releaseCommercialKeys(s, { read: 'claim', billId });
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialClaimLoad[billId] = 'error'; }));
+    },
+
+    /**
+     * §D — ONE labour PO line's measurement register, read from the line's own route.
+     *
+     * This is the read that makes a measurement VISIBLE. The claim bundle reports registers only
+     * for a live version's lines, and the engineer measures before the claim is live — so without
+     * this read, a measurement taken on a lodged draft is recorded by the server, shows nothing on
+     * screen, and invites being taken a second time.
+     */
+    loadCommercialLineRegister: (labourPoLineId: string) => {
+      if (!gateway) return Promise.resolve();
+      if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      const seq = (commercialLineSeq[labourPoLineId] = (commercialLineSeq[labourPoLineId] ?? 0) + 1);
+      const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === commercialLineSeq[labourPoLineId]
+        && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
+      set((s) => { s.commercialLineRegisterLoad[labourPoLineId] = 'loading'; });
+      return gateway.commercialLineRegister(labourPoLineId).then((register) => {
+        set((s) => {
+          if (!owns(s)) return;
+          s.commercialLineRegisters[labourPoLineId] = castDraft<MeasurementRegisterDto>(register);
+          s.commercialLineRegisterLoad[labourPoLineId] = 'ready';
+          releaseCommercialKeys(s, {
+            read: 'lineRegister',
+            labourPoLineId,
+            rowIds: register.rows.map((r) => r.id),
+          });
+        });
+      }).catch(() => set((s) => { if (owns(s)) s.commercialLineRegisterLoad[labourPoLineId] = 'error'; }));
     },
 
     // ── §M WRITES (7B-iii-a) ────────────────────────────────────────────────────────────────
@@ -3919,6 +3958,13 @@ export const useStore = create<Store>()(
             ...Object.keys(get().commercialClaims),
             ...Object.keys(get().commercialClaimLoad),
           ])) get().loadCommercialClaim(billId);
+          // …and every LINE register on screen. Round 3: this is the read a measurement becomes
+          // visible in, so reloading only the claim left the taken measurement invisible on a
+          // draft claim — and its key with no read that could release it.
+          for (const lineId of new Set([
+            ...Object.keys(get().commercialLineRegisters),
+            ...Object.keys(get().commercialLineRegisterLoad),
+          ])) get().loadCommercialLineRegister(lineId);
         }
       }
       return { ran: true, scopeMoved: false, succeededKeys, droppedKeys, pendingKeys };

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type JSX } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
@@ -135,6 +135,11 @@ export function CommercialScreen() {
   const billsLoad = useStore((s) => s.commercialBillsLoad);
   const claims = useStore(useShallow((s) => s.commercialClaims));
   const claimLoad = useStore(useShallow((s) => s.commercialClaimLoad));
+  // §D — the per-LINE measurement registers. The claim bundle carries registers only for a LIVE
+  // version's lines, so this is what a measurement taken on a lodged DRAFT becomes visible in.
+  const lineRegisters = useStore(useShallow((s) => s.commercialLineRegisters));
+  const lineRegisterLoad = useStore(useShallow((s) => s.commercialLineRegisterLoad));
+  const loadLineRegister = useStore((s) => s.loadCommercialLineRegister);
   // Codex I2 — the ordering of the two reads' last SUCCESS, so "which is fresher" is looked up
   // rather than guessed. See the row-selection comment on the Claims tab.
   const billsStamp = useStore((s) => s.commercialBillsStamp);
@@ -222,11 +227,34 @@ export function CommercialScreen() {
   // never surfaced `recordVendorBill`, so on a project with no claim yet the Claims tab showed an
   // empty state and no way out of it: a workflow that cannot create the thing it processes. One
   // line is enough to lodge a draft; amendment (a full replacement line set) stays out of scope.
-  const [lodgeDraft, setLodgeDraft] = useState<{ scope: string; vendorId: string; number: string; date: string; lineKind: 'material' | 'labour'; poLineId: string; qty: string; rate: string }>(
-    { scope: '', vendorId: '', number: '', date: '', lineKind: 'material', poLineId: '', qty: '', rate: '' },
-  );
-  const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : { scope: scopeKey, vendorId: '', number: '', date: '', lineKind: 'material' as const, poLineId: '', qty: '', rate: '' };
+  /**
+   * Codex round-3 P2 — a vendor's invoice can cover MORE THAN ONE purchase-order line, and the
+   * contract accepts up to 200. Lodging a singleton made the rest of that invoice unreachable: the
+   * document number is the frozen duplicate key, so the second line is refused as a duplicate
+   * claim, and amendment (a full replacement line set) is deliberately not surfaced here. One
+   * invoice line was enough to record a claim and not enough to record THAT claim.
+   *
+   * So the form collects the whole line set first. `lines` is the claim; the `lineKind`/id/qty/rate
+   * inputs are an entry row that appends to it.
+   */
+  type LodgeLine = { lineKind: 'material' | 'labour'; poLineId: string; qty: string; rate: string };
+  type LodgeDraft = { scope: string; vendorId: string; number: string; date: string } & LodgeLine
+    & { lines: LodgeLine[] };
+  const emptyLodge = (scope: string): LodgeDraft => ({
+    scope, vendorId: '', number: '', date: '',
+    lineKind: 'material', poLineId: '', qty: '', rate: '', lines: [],
+  });
+  const [lodgeDraft, setLodgeDraft] = useState(emptyLodge(''));
+  const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : emptyLodge(scopeKey);
   const setLodge = (next: Partial<typeof lodge>): void => setLodgeDraft({ ...lodge, scope: scopeKey, ...next });
+  // the ENTRY row is addable on its own terms; the CLAIM needs at least one added line
+  const entryValid = lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate);
+  const addLodgeLine = (): void => setLodge({
+    lines: [...lodge.lines, {
+      lineKind: lodge.lineKind, poLineId: lodge.poLineId.trim(), qty: lodge.qty.trim(), rate: lodge.rate.trim(),
+    }],
+    poLineId: '', qty: '', rate: '',
+  });
   // Codex N5 — the server's duplicate-document index refuses another claim for the same
   // (vendor, normalized number) unless the existing one is `rejected` or `resolved`. A claim
   // already ON SCREEN is enough to know that, so the form refuses rather than promising a write
@@ -237,7 +265,7 @@ export function CommercialScreen() {
     && b.status !== 'rejected' && b.status !== 'resolved');
   const lodgeValid = lodge.vendorId.trim() !== '' && lodge.number.trim() !== ''
     && isRealCivilDate(lodge.date)                       // N4 — a real calendar day, not a shape
-    && lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate)
+    && lodge.lines.length > 0                            // round-3 P2 — the whole invoice, not a line
     && !lodgeDuplicate;
   const lodgePending = commercialPending.includes(billCoalesceKey(lodge.vendorId.trim(), lodge.number));
 
@@ -362,6 +390,32 @@ export function CommercialScreen() {
   // going to fetch — `willLoad: false` — which `viewOf` answers with a retry rather than the
   // permanent "Loading the claim…" that was F3's finding.
   const claimView = viewOf<CommercialClaimView>(claim, claimStatus, false);
+
+  /**
+   * §D — the labour lines the selected claim's CURRENT version bills.
+   *
+   * The measurement register belongs to the LINE, not to the claim, which is why these come from
+   * the version rather than from `claim.measurements`: that map is built from the LIVE version's
+   * lines, and `draft` is not a live status. Round 2 (N3) used it to make the form reachable on a
+   * lodged draft; round 3 finishes the thought, because a form whose EFFECT is invisible is only
+   * half a control — the engineer measures, the bundle still reports nothing, and the natural
+   * response is to measure again.
+   */
+  const measurableLineIds = useMemo(() => {
+    const version = claim?.bill.versions.find((v) => v.live) ?? claim?.bill.versions.at(-1);
+    return [...new Set((version?.lines ?? [])
+      .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
+      .map((l) => l.labourPoLineId as string))].sort();
+  }, [claim]);
+  const lineKey = measurableLineIds.join(',');
+  useEffect(() => {
+    if (!onPilot) return;
+    // once per line: the reconcile refreshes them after a write, and `viewOf` reports the rest
+    for (const id of lineKey === '' ? [] : lineKey.split(',')) {
+      if (!(id in lineRegisterLoad)) void loadLineRegister(id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `lineKey` is the stable identity of `measurableLineIds`
+  }, [onPilot, lineKey, loadLineRegister]);
 
   /**
    * Codex F2 — EVERY claim tab wears the same states, because they are properties of the CLAIM.
@@ -764,6 +818,9 @@ export function CommercialScreen() {
                         <input value={lodge.poLineId} onChange={(e) => setLodge({ poLineId: e.target.value })} placeholder="PO line id" data-testid="lodge-poline" style={{ ...input, flex: '1 1 120px' }} />
                         <input value={lodge.qty} onChange={(e) => setLodge({ qty: e.target.value })} placeholder="Quantity" inputMode="decimal" data-testid="lodge-qty" style={{ ...input, flex: '1 1 100px' }} />
                         <input value={lodge.rate} onChange={(e) => setLodge({ rate: e.target.value })} placeholder="Rate" inputMode="decimal" data-testid="lodge-rate" style={{ ...input, flex: '1 1 100px' }} />
+                        <Button variant="outline" disabled={!entryValid} data-testid="lodge-add-line" onClick={addLodgeLine}>
+                          Add line
+                        </Button>
                         <Button
                           variant="ink"
                           data-testid="lodge-submit"
@@ -772,18 +829,34 @@ export function CommercialScreen() {
                             vendorId: lodge.vendorId.trim(),
                             vendorBillNumber: lodge.number.trim(),
                             documentDate: lodge.date.trim(),
-                            lines: [{
-                              ...(lodge.lineKind === 'labour'
-                                ? { labourPoLineId: lodge.poLineId.trim() }
-                                : { poLineId: lodge.poLineId.trim() }),
-                              quantity: lodge.qty.trim(),
-                              rate: lodge.rate.trim(),
-                            }],
+                            lines: lodge.lines.map((l) => ({
+                              ...(l.lineKind === 'labour' ? { labourPoLineId: l.poLineId } : { poLineId: l.poLineId }),
+                              quantity: l.qty,
+                              rate: l.rate,
+                            })),
                           })}
                         >
                           {lodgePending ? 'Lodging…' : 'Lodge claim'}
                         </Button>
                       </div>
+                      {lodge.lines.length > 0 && (
+                        <div style={{ marginTop: 8 }} data-testid="lodge-lines">
+                          {lodge.lines.map((l, i) => (
+                            <div key={`${l.poLineId}:${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
+                              <span style={{ ...mono, flex: '1 1 auto' }} data-testid={`lodge-line-${i}`}>
+                                {l.lineKind === 'labour' ? 'Labour' : 'Material'} · {l.poLineId} · {l.qty} × {l.rate}
+                              </span>
+                              <Button
+                                variant="ghost"
+                                data-testid={`lodge-line-remove-${i}`}
+                                onClick={() => setLodge({ lines: lodge.lines.filter((_, j) => j !== i) })}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {/* the §A rules, from the SAME functions the zod contract uses */}
                       {((lodge.qty.trim() !== '' && !isPositiveQuantity(lodge.qty)) || (lodge.rate.trim() !== '' && !isMoneyString(lodge.rate))
                         || (lodge.date.trim() !== '' && !isRealCivilDate(lodge.date))) && (
@@ -986,19 +1059,13 @@ export function CommercialScreen() {
                   // never appears. Lodge → measure → submit was unreachable in exactly the order
                   // this unit exists to support.
                   //
-                  // So the labour lines of the claim's CURRENT version supply the rows when the
-                  // register map has none: the measurement target is the line, and the line is
-                  // known from the version on screen whether or not it is live yet.
-                  const current = claim.bill.versions.find((v) => v.live) ?? claim.bill.versions.at(-1);
-                  const labourLineIds = [...new Set(
-                    (current?.lines ?? [])
-                      .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
-                      .map((l) => l.labourPoLineId as string),
-                  )].sort();
+                  // So the ROWS come from the lines of the version on screen (`measurableLineIds`),
+                  // and each line's REGISTER comes from the bundle when the claim is live, else from
+                  // that line's own read. Round 2 left the second half out: the form appeared on a
+                  // draft and its effect did not, so a measurement that had landed looked like one
+                  // that had not.
                   const measurable: Array<[string, MeasurementRegisterDto | null]> =
-                    Object.keys(claim.measurements).length > 0
-                      ? Object.entries(claim.measurements)
-                      : labourLineIds.map((id) => [id, null] as [string, null]);
+                    measurableLineIds.map((id) => [id, claim.measurements[id] ?? lineRegisters[id] ?? null]);
                   return measurable.length === 0 ? (
                   // §D applies to LABOUR lines. A material line's evidence is accepted stock, which
                   // the verification triple already reports — so this says "does not apply" rather
@@ -1018,11 +1085,12 @@ export function CommercialScreen() {
                             <span style={muted}>Live authority <span style={num}>{register.liveAuthorityPersonShiftQty}</span></span>
                           </div>
                         ) : (
-                          // No register yet — this line is claimed on a version that is not live.
-                          // Say so rather than rendering zeros, which would read as "measured
-                          // nothing" instead of "nothing is folded here yet".
+                          // The register has not LANDED yet — which is a different statement from
+                          // "nothing is measured", and rendering zeros would make them look alike.
                           <div style={{ ...muted, marginTop: 8 }} data-testid={`measurement-none-${lineId}`}>
-                            No measurement folded yet — this claim is not live.
+                            {lineRegisterLoad[lineId] === 'error'
+                              ? 'This line\u2019s measurement register is unavailable.'
+                              : 'Reading this line\u2019s measurement register\u2026'}
                           </div>
                         )}
                         {/* §D — take a measurement. `citedOutputId` is REQUIRED by the contract, not

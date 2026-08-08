@@ -1,7 +1,7 @@
 # PR #304 convergence audit — the write-ahead window, again
 
-Two finding-bearing heads (`d6d4f6e`, `9fa54c7`). **Twelve findings, five P1**, on a unit whose product
-surface is six buttons.
+Three finding-bearing heads (`d6d4f6e`, `9fa54c7`, `9d755f2`). **Sixteen findings, eight P1**, on a
+unit whose product surface is six buttons.
 
 Five of round 1's seven are ONE root — one PR #302 already named and I had already written down:
 *the form was written as though the server were the only guard.* Three of round 2's five are inside
@@ -69,6 +69,54 @@ unreachable, because measurement rows come from the live version and a draft has
 right and the workflow was circular. Unit-level correctness does not compose into a usable path, and
 no probe of an individual control would ever have said so.
 
+## Round 3 — four findings, three of which the review and I found independently
+
+| # | P | Found by | Finding |
+|---|---|---|---|
+| O1 | P1 | me | The pending partition was not a partition: a claim BUNDLE read released `com:bill:` (a lodge), whose visible truth is the claim LIST — the same list the lodge form's duplicate guard reads. Both protections dropped at once |
+| O2 | P1 | **both** | With two claims open, an UNRELATED claim's bundle released a `com:meas:` key. N1 exactly, one resource over |
+| O3 | P1 | **both** | N3's own fix surfaced a control whose EFFECT no read carries: the claim bundle reports registers only for a LIVE version, so a measurement taken on the lodged draft N3 made measurable stayed invisible |
+| O4 | P2 | Codex | The lodge path always sent a SINGLETON `lines` array. The vendor's document number is the frozen duplicate key and amendment is not surfaced, so every line after the first on a multi-line invoice had no path into the claim |
+
+O1–O3 came out of the standing re-read against this document's own carry-forwards while CI was
+still running. Codex then reported O2 and O3 independently, in the same terms — which is the useful
+part of the coincidence: the carry-forwards found what an independent reviewer found, so they are
+doing the work they were written to do. O1 it did not report and O4 I did not find.
+
+**O4 is root N a third time, and the cleanest example of it yet.** Lodging worked. Every probe of
+lodging passed. And a vendor invoice covering two purchase-order lines could not be recorded,
+because one line was enough to create a claim and not enough to record THAT claim — with the
+duplicate key frozen and amendment deliberately unsurfaced, the second line had nowhere to go. The
+form now collects the line SET, because the claim is the invoice, not a row of it.
+
+**O3 is the one worth reading.** Round 2's N3 finding was "the workflow is circular"; the fix made
+the measurement form reachable on a draft. Walking the same workflow ONE STEP FURTHER — the engineer
+presses Measure — the register still says nothing, because the bundle speaks only for a live
+version. So the round-2 fix moved the dead end rather than removing it, and the honest reading is
+that carry-forward 5 (*walk the workflow end to end*) was applied to the step the finding named and
+stopped there. A control is finished when its effect is visible, not when its form renders.
+
+The structural answer is the one the domain was already pointing at: a measurement register belongs
+to the LABOUR PO LINE, not to a claim. So the line's own route serves it, and the claim query is not
+asked to speak for a version it correctly refuses to speak for.
+
+**O1 and O2 are one root with N1**, and the shape is worth naming precisely. N1 split the pending set
+in two — money keys, claim keys — and "a claim read" turned out not to be one thing. Three reads
+serve this hub, and each write becomes visible in exactly one of them. Ownership is now stated per
+READ rather than per family, with the read carrying what it actually landed, and the three
+hand-written copies of the rebuild collapsed into one `releaseCommercialKeys` — three copies being
+how `com:bill:` came to be released by two different reads in the first place.
+
+### And a probe that passed for the wrong reason, caught by mutation
+
+O1's first version waited on `commercialClaimLoad['bill-1'] === 'ready'` — a condition its own setup
+had already satisfied. It asserted before the read it is about had landed, and it passed under the
+mutation that reintroduces the defect. Only the mutation run distinguished it from a real probe.
+
+That is the third time this session a probe has been green for a neighbouring reason, and the
+common thread is now clear enough to state: **the synchronisation is part of the claim.** A probe
+that waits on the wrong signal is not a weaker probe, it is a different one.
+
 ## Root N (new) — wiring is not shipping
 
 **M2.** `recordVendorBill` had a gateway method, an op type, a coalesce key, a store thunk, an
@@ -107,3 +155,15 @@ Taking a finding seriously means implementing what is true, not what is quoted.
    into an unreachable sequence; every unit-level probe passed. (Root N's sharper form.)
 6. **Verify a finding's example against the code, not just its claim.** M6 was a real defect with a
    wrong illustration; pinning the illustration would have encoded a behaviour the server lacks.
+7. **A control is finished when its EFFECT is visible, not when its form renders.** N3 made the
+   measurement form reachable on a draft; O3 is the next step of the same walk, where the effect
+   was not. (Root N, sharper still.)
+8. **"Clears with the truth on screen" needs to name WHICH truth.** Partitioning keys by write
+   family is not enough when several reads carry different parts of it — state ownership per read,
+   and have the read carry what it landed. (N1 → O1/O2.)
+9. **Enumerate the CARDINALITY too, not just the actions.** Root N asked whether each action has a
+   surface; O4 is the same question one level down — whether the surface handles the real shape of
+   the thing. One line was a surface for lodging and not a surface for an invoice.
+10. **A probe's synchronisation is part of its claim.** O1 waited on a condition its own setup had
+   satisfied, so it asserted before the read under test had landed — and passed under the mutation.
+   Mutation-run every probe, including the ones written to catch your own findings.

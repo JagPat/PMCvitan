@@ -10,9 +10,9 @@ import gatewaySource from '@/data/apiGateway.ts?raw';
 import syncSource from '@/data/useApiSync.ts?raw';
 import contractsSource from '../../api/src/contracts.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
-import { budgetCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
-import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto } from '@vitan/shared';
+import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 
 /**
  * Phase 5 Task 7B-i (§M) — the pilot COMMERCIAL money-position hub: the capability-gated nav entry
@@ -393,6 +393,12 @@ describe('Task 7B-i round 2 — staleness, consistency, and the breach a PMC mus
  * wrong, which is the whole failure mode a contract type exists to prevent. `pnpm check`'s project
  * build caught it; the fixture is typed so the next mismatch fails here instead.
  */
+const register = (over: Partial<MeasurementRegisterDto> = {}): MeasurementRegisterDto => ({
+  labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
+  orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+  ...over,
+});
+
 const claimDto = (over: Partial<CommercialClaimView> = {}): CommercialClaimView => ({
   bill: {
     id: 'bill-1', vendorId: 'v-1', vendorBillNumber: 'V-1', status: 'certified',
@@ -918,6 +924,7 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     rejectVendorBill: vi.fn<ApiGateway['rejectVendorBill']>().mockResolvedValue(undefined),
     setCommercialBudget: vi.fn<ApiGateway['setCommercialBudget']>().mockResolvedValue(undefined),
     commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    commercialLineRegister: vi.fn<ApiGateway['commercialLineRegister']>().mockResolvedValue(register()),
     snapshot: vi.fn<ApiGateway['snapshot']>().mockResolvedValue({
       project: { id: 'p1', name: 'P', short: 'P', descriptor: '', stage: '', siteCode: 'P', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
@@ -994,13 +1001,18 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     // not the call.
     let releaseClaim!: (v: unknown) => void;
     const slowClaim = new Promise((r) => { releaseClaim = r; });
+    // (round 3: "the claim read" here is the LINE REGISTER — the read a measurement is visible in)
     const money = vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle());
     pilot(engGw({
       commercialMoneyPosition: money,
-      commercialClaim: vi.fn().mockReturnValue(slowClaim),   // the SLOW read
-      commercialBills: vi.fn().mockReturnValue(new Promise(() => {})),
+      commercialLineRegister: vi.fn().mockReturnValue(slowClaim),   // the SLOW read (round 3: the
+      commercialClaim: vi.fn().mockReturnValue(new Promise(() => {})),  //  LINE register is what
+      commercialBills: vi.fn().mockReturnValue(new Promise(() => {})),  //  carries a measurement)
     }));
-    useStore.setState({ commercialClaimLoad: { 'bill-1': 'ready' } }); // a claim is open
+    useStore.setState({
+      commercialClaimLoad: { 'bill-1': 'ready' },              // a claim is open
+      commercialLineRegisterLoad: { 'LPL-1': 'ready' },        // and its line register is on screen
+    });
 
     s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '2', citedOutputId: 'OUT-1' });
     await vi.waitFor(() => { if (money.mock.calls.length === 0) throw new Error('money not read yet'); },
@@ -1015,7 +1027,71 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
       + 'measurement while the pre-command register was still on screen',
     ).toContain('com:meas:LPL-1:ACT-1');
 
-    releaseClaim(claimDto());
+    releaseClaim(register({ measured: '2' }));
+    await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
+      { timeout: 5000, interval: 5 });
+  });
+
+  it('O1: a LODGE key survives a claim-bundle read — the LIST is what carries a new claim', async () => {
+    // N1 partitioned the pending set two ways: money keys, and "claim-affecting" keys released by
+    // any claim read. Two is one too few. A lodge becomes visible in the claim LIST — which is also
+    // the list the lodge form's duplicate guard reads — so releasing it when a claim BUNDLE lands
+    // re-enables the button while the guard is still blind, and the second lodge is the server's
+    // duplicate-document 409 after the user was told it was saved.
+    const slowBills = deferred();
+    pilot(engGw({
+      recordVendorBill: vi.fn<ApiGateway['recordVendorBill']>().mockResolvedValue(undefined),
+      commercialBills: vi.fn().mockReturnValue(slowBills.promise),   // the LIST is SLOW
+      commercialClaim: vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto()),
+    }));
+    useStore.setState({ commercialClaimLoad: { 'bill-1': 'ready' } }); // a claim is open
+
+    s().recordVendorBill({
+      vendorId: 'v-9', vendorBillNumber: 'B-9', documentDate: '2026-08-20',
+      lines: [{ labourPoLineId: 'LPL-1', quantity: '1', rate: '10.00' }],
+    });
+    // wait on the STAMP, which is written only by a successful claim APPLY. Waiting on
+    // `commercialClaimLoad` was satisfied by this test's own setup, so the assertion ran before
+    // the read it is about had landed — and the probe passed under a mutation that reintroduces
+    // the defect. A probe's synchronisation is part of what it claims.
+    await vi.waitFor(() => { if (s().commercialClaimStamp['bill-1'] === undefined) throw new Error('claim not applied'); },
+      { timeout: 5000, interval: 5 });
+
+    expect(
+      s().commercialPending,
+      'the lodge key cleared on a CLAIM read, so the form re-armed while the claim LIST its '
+      + 'duplicate guard reads was still pre-command',
+    ).toContain(billCoalesceKey('v-9', 'B-9'));
+
+    slowBills.resolve({ bills: [] });
+    await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
+      { timeout: 5000, interval: 5 });
+  });
+
+  it('O2: a measurement key is released by its LINE register, not by an unrelated claim', async () => {
+    // Two claims open. The measurement names a LINE, and its effect is visible in that line's
+    // register — not in whichever claim happens to reload first. N1, one resource over.
+    const slowLine = deferred();
+    pilot(engGw({
+      commercialClaim: vi.fn<ApiGateway['commercialClaim']>().mockResolvedValue(claimDto()),
+      commercialLineRegister: vi.fn().mockReturnValue(slowLine.promise),   // the LINE read is SLOW
+    }));
+    useStore.setState({
+      commercialClaimLoad: { 'bill-1': 'ready', 'bill-2': 'ready' },
+      commercialLineRegisterLoad: { 'LPL-1': 'ready' },   // the register is on screen
+    });
+
+    s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '2', citedOutputId: 'OUT-1' });
+    await vi.waitFor(() => { if (s().commercialClaimStamp['bill-1'] === undefined) throw new Error('no claim yet'); },
+      { timeout: 5000, interval: 5 });
+
+    expect(
+      s().commercialPending,
+      'an UNRELATED claim reloading released the measurement key, so a second Measure could be '
+      + 'sent while the register on screen was still pre-command',
+    ).toContain('com:meas:LPL-1:ACT-1');
+
+    slowLine.resolve(register({ measured: '2' }));
     await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
       { timeout: 5000, interval: 5 });
   });

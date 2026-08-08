@@ -66,6 +66,10 @@ const claim = (): CommercialClaimView => ({
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {
   beforeEach(() => {
     useStore.setState(getInitialState());
+    // The gateway lives in the store's CLOSURE, so `getInitialState()` does not clear it and a
+    // deliberately-minimal stub (J1's) leaked into every later test in this file. Harmless until a
+    // render dispatched a read that stub lacked; then the failure lands in an unrelated probe.
+    useStore.getState()._setGateway(null);
     useStore.setState({
       capabilities: ['commercial'],
       commercialView: bundle(),
@@ -530,6 +534,10 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
 describe('Task 7B-iii-a (§M) — the write controls', () => {
   beforeEach(() => {
     useStore.setState(getInitialState());
+    // The gateway lives in the store's CLOSURE, so `getInitialState()` does not clear it and a
+    // deliberately-minimal stub (J1's) leaked into every later test in this file. Harmless until a
+    // render dispatched a read that stub lacked; then the failure lands in an unrelated probe.
+    useStore.getState()._setGateway(null);
     useStore.setState({
       capabilities: ['commercial'],
       commercialView: { ...bundle(), costHeads: [{ code: 'CIVIL', name: 'Civil' }, { code: 'MEP', name: 'MEP' }] } as never,
@@ -664,6 +672,7 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
   const claimWith = (status: string) => ({ ...claim(), bill: { ...claim().bill, status } });
   beforeEach(() => {
     useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);   // the gateway lives in the store closure — see above
     useStore.setState({
       role: 'engineer', capabilities: ['commercial'],
       commercialView: bundle() as never, commercialLoad: 'ready',
@@ -685,6 +694,10 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
       ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
       fireEvent.change(r.getByTestId(id), { target: { value: v } });
     }
+    // round-3 P2: a claim is the vendor's whole invoice, so a line is ADDED to the set and the
+    // claim is not lodgeable until at least one is
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled, 'lodgeable with no lines').toBe(true);
+    fireEvent.click(r.getByTestId('lodge-add-line'));
     expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -695,6 +708,7 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
       ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
       fireEvent.change(r.getByTestId(id), { target: { value: v } });
     }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
     expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
     // the SAME claim under case and padding the server's index collapses — refused, with the
     // reason shown rather than a silent disable
@@ -710,6 +724,7 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
       ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
       fireEvent.change(r.getByTestId(id), { target: { value: v } });
     }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
     // `2026-02-31` is well-SHAPED and impossible — a regex would pass it
     for (const bad of ['abc', '2026-02-31', '2026-13-01']) {
       fireEvent.change(r.getByTestId('lodge-date'), { target: { value: bad } });
@@ -757,6 +772,56 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect(r.getByTestId('measurement-none-LPL-1')).toBeTruthy();
   });
 
+  it('O3: a measurement TAKEN on a draft claim becomes visible — the line register is read', () => {
+    // Round 2 made the form reachable on a draft (N3) and stopped there. The claim bundle reports
+    // registers only for a LIVE version's lines, so the measurement the engineer had just taken
+    // was recorded by the server and showed nothing — and the natural response to a control that
+    // appears to have done nothing is to use it again. A control whose EFFECT no read carries is
+    // half a control.
+    const draft = claim();
+    const withLabourLine = {
+      ...draft,
+      measurements: {},
+      bill: {
+        ...draft.bill,
+        status: 'draft' as const,
+        versions: [{
+          ...draft.bill.versions[0]!,
+          live: false,
+          lines: [{
+            id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
+            quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
+          }],
+        }],
+      },
+    };
+    useStore.setState({
+      commercialClaims: { 'bill-1': withLabourLine as never },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialClaimStamp: { 'bill-1': 2 },
+      commercialBillsStamp: 1,
+      // the LINE's own register — the read that carries a measurement taken before the claim is live
+      commercialLineRegisters: {
+        'LPL-1': {
+          labourPoLineId: 'LPL-1', rows: [], measured: '2', effort: '10',
+          orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+        },
+      } as never,
+      commercialLineRegisterLoad: { 'LPL-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+
+    const row = r.getByTestId('commercial-measurement-LPL-1');
+    expect(
+      row.textContent,
+      'the measurement the engineer had just taken was invisible on the draft claim it was taken for',
+    ).toContain('2');
+    expect(r.queryByTestId('measurement-none-LPL-1'), 'a landed register still reported as absent').toBeNull();
+  });
+
   it('N2: a LABOUR line is lodged as `labourPoLineId`, not as a material line', () => {
     const recordVendorBill = vi.fn();
     act(() => { useStore.setState({ recordVendorBill } as never); });
@@ -767,6 +832,7 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
       fireEvent.change(r.getByTestId(id), { target: { value: v } });
     }
     fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
+    fireEvent.click(r.getByTestId('lodge-add-line'));
     fireEvent.click(r.getByTestId('lodge-submit'));
     // RED before: every entry serialized as `poLineId`, so an engineer who had just measured a
     // LABOUR line could not lodge its claim — the server resolved it down the material path.
@@ -774,6 +840,37 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
       lines: [expect.objectContaining({ labourPoLineId: 'LPL-1' })],
     }));
     expect(recordVendorBill.mock.calls[0][0].lines[0].poLineId).toBeUndefined();
+  });
+
+  it('O4: a vendor invoice covering SEVERAL po lines is lodged whole', () => {
+    // RED before: the submit path always sent a singleton `lines` array. The vendor's document
+    // number is the frozen duplicate key and amendment is not surfaced, so every line after the
+    // first had no path into the claim — one line was enough to record a claim and not enough to
+    // record THAT claim.
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-8'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    // a SECOND line on the same invoice, of the other kind
+    fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
+    for (const [id, v] of [['lodge-poline', 'LPL-9'], ['lodge-qty', '3'], ['lodge-rate', '250.50']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    fireEvent.click(r.getByTestId('lodge-submit'));
+
+    expect(recordVendorBill).toHaveBeenCalledTimes(1);
+    const sent = recordVendorBill.mock.calls[0][0].lines;
+    expect(sent, 'the invoice was lodged one line at a time, and the rest were unreachable').toHaveLength(2);
+    expect(sent[0]).toMatchObject({ poLineId: 'PL-1', quantity: '2', rate: '100.00' });
+    expect(sent[1]).toMatchObject({ labourPoLineId: 'LPL-9', quantity: '3', rate: '250.50' });
+    // and a mistaken line can be taken back out before the claim is recorded
+    expect(r.getByTestId('lodge-line-1')).toBeTruthy();
   });
 
   it('M3/M4: a transition the server refuses is never offered', () => {
