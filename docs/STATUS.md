@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 7
-task_state: in_review
+task_state: merged
 work_item: none
 reviewed_merge: 1ec2f85
-open_pr: 303
+open_pr: none
 next_task: phase-5-task-7b-iii-b
 blocking_directive: none
 updated: 2026-08-08
@@ -157,6 +157,22 @@ Review Stops" section of the phase plan.
 - `in_review` — PR open as a draft, waiting on a Codex review or on a fix for
   review findings
 - `ready` — PR marked ready for review; the merge is queued behind CI
+### A STATUS-only HANDOFF PR records the state AFTER its own merge
+
+A PR whose entire diff is this file is not a work item — it IS the handoff, and the
+runner reads it only once it has merged. So it must land in the handoff shape
+(`task_state: merged`, `work_item: none`, `open_pr: none`), never recording ITSELF as
+the open PR: `assessRunnerState` consumes any non-`none` `open_pr` before it reaches
+`next_task`, so a handoff naming its own number sends the post-merge runner back to a
+PR that no longer exists instead of starting the next unit.
+
+This is the one case where the hourly drift shepherd's advice is wrong, and it asked
+for exactly that on PR #303. The shepherd compares `main` against live PRs, and while a
+handoff PR is open `main` IS stale — unavoidably, because the fix is the thing in
+flight. Transient drift for the minutes a handoff is open is the correct trade against
+a loop that cannot advance afterwards. `open_pr` names the PR to shepherd for a
+WORK-ITEM PR, which is what CLAUDE.md's rule is about.
+
 - `merged` — squash-merged to `main` and deployed. **CLEAR `work_item` in the
   same flip.** `assessRunnerState` consults `work_item` BEFORE `next_task`, so a
   merge record that still names the finished unit sends the runner straight back
