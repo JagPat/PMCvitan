@@ -218,29 +218,28 @@ export function CommercialScreen() {
   // ₹250 freight was lodged, certified and paid at its base amount alone — the claim silently
   // disagreeing with the document it represents. Optional (a labour line ordinarily has neither),
   // validated by the SAME money rule when present.
-  type LodgeLine = { lineKind: 'material' | 'labour'; poLineId: string; qty: string; rate: string; tax: string; freight: string };
+  type LodgeLine = { poLineId: string; qty: string; rate: string; tax: string; freight: string };
   type LodgeDraft = { scope: string; vendorId: string; number: string; date: string } & LodgeLine
     & { lines: LodgeLine[] };
   const emptyLodge = (scope: string): LodgeDraft => ({
     scope, vendorId: '', number: '', date: '',
-    lineKind: 'material', poLineId: '', qty: '', rate: '', tax: '', freight: '', lines: [],
+    poLineId: '', qty: '', rate: '', tax: '', freight: '', lines: [],
   });
   const [lodgeDraft, setLodgeDraft] = useState(emptyLodge(''));
   const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : emptyLodge(scopeKey);
   const setLodge = (next: Partial<typeof lodge>): void => setLodgeDraft({ ...lodge, scope: scopeKey, ...next });
   // the ENTRY row is addable on its own terms; the CLAIM needs at least one added line
   const optionalMoneyOk = (v: string): boolean => v.trim() === '' || isMoneyString(v);
-  // Round 5 — a LABOUR purchase-order snapshot freezes neither tax nor freight, so the server
-  // refuses a labour claim line carrying either. Offering the fields anyway put a claim into the
-  // durable outbox for a terminal 409 after the user was told it was saved. The rule is the SAME
-  // function the service guards with, so the two cannot drift.
-  const chargesAllowed = claimLineMayCarryCharges(lodge.lineKind);
+  // This unit lodges MATERIAL claims, whose evidence is ACCEPTED STOCK — a fact Phase 3 already
+  // ships, which is what makes the workflow complete here. A LABOUR claim's evidence is MEASURED
+  // work, so lodging one without the §D measurement controls submits it straight into dispute:
+  // that whole path travels with those controls rather than half-shipping here.
+  const chargesAllowed = claimLineMayCarryCharges('material');
   const entryValid = lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate)
-    && optionalMoneyOk(lodge.tax) && optionalMoneyOk(lodge.freight)
-    && (chargesAllowed || (lodge.tax.trim() === '' && lodge.freight.trim() === ''));
+    && optionalMoneyOk(lodge.tax) && optionalMoneyOk(lodge.freight);
   const addLodgeLine = (): void => setLodge({
     lines: [...lodge.lines, {
-      lineKind: lodge.lineKind, poLineId: lodge.poLineId.trim(), qty: lodge.qty.trim(), rate: lodge.rate.trim(),
+      poLineId: lodge.poLineId.trim(), qty: lodge.qty.trim(), rate: lodge.rate.trim(),
       tax: lodge.tax.trim(), freight: lodge.freight.trim(),
     }],
     poLineId: '', qty: '', rate: '', tax: '', freight: '',
@@ -767,19 +766,11 @@ export function CommercialScreen() {
                         <input value={lodge.vendorId} onChange={(e) => setLodge({ vendorId: e.target.value })} placeholder="Vendor id" data-testid="lodge-vendor" style={{ ...input, flex: '1 1 120px' }} />
                         <input value={lodge.number} onChange={(e) => setLodge({ number: e.target.value })} placeholder="Their bill number" data-testid="lodge-number" style={{ ...input, flex: '1 1 130px' }} />
                         <input value={lodge.date} onChange={(e) => setLodge({ date: e.target.value })} placeholder="Document date (YYYY-MM-DD)" data-testid="lodge-date" style={{ ...input, flex: '1 1 150px' }} />
-                        {/* Codex N2 — the server's XOR: a claim line names EXACTLY ONE kind of PO
-                            line. Serializing every entry as `poLineId` meant an engineer who had
-                            just measured a LABOUR line could not lodge its claim — the server
-                            resolved it down the material path and refused. */}
-                        <select value={lodge.lineKind} onChange={(e) => { const k = e.target.value as 'material' | 'labour'; setLodge(claimLineMayCarryCharges(k) ? { lineKind: k } : { lineKind: k, tax: '', freight: '' }); }} data-testid="lodge-linekind" style={{ ...input, flex: '0 1 110px' }}>
-                          <option value="material">Material line</option>
-                          <option value="labour">Labour line</option>
-                        </select>
                         <input value={lodge.poLineId} onChange={(e) => setLodge({ poLineId: e.target.value })} placeholder="PO line id" data-testid="lodge-poline" style={{ ...input, flex: '1 1 120px' }} />
                         <input value={lodge.qty} onChange={(e) => setLodge({ qty: e.target.value })} placeholder="Quantity" inputMode="decimal" data-testid="lodge-qty" style={{ ...input, flex: '1 1 100px' }} />
                         <input value={lodge.rate} onChange={(e) => setLodge({ rate: e.target.value })} placeholder="Rate" inputMode="decimal" data-testid="lodge-rate" style={{ ...input, flex: '1 1 100px' }} />
-                        <input value={lodge.tax} onChange={(e) => setLodge({ tax: e.target.value })} disabled={!chargesAllowed} placeholder={chargesAllowed ? 'Tax (optional)' : 'Tax — n/a on labour'} inputMode="decimal" data-testid="lodge-tax" style={{ ...input, flex: '1 1 110px' }} />
-                        <input value={lodge.freight} onChange={(e) => setLodge({ freight: e.target.value })} disabled={!chargesAllowed} placeholder={chargesAllowed ? 'Freight (optional)' : 'Freight — n/a on labour'} inputMode="decimal" data-testid="lodge-freight" style={{ ...input, flex: '1 1 120px' }} />
+                        <input value={lodge.tax} onChange={(e) => setLodge({ tax: e.target.value })} disabled={!chargesAllowed} placeholder="Tax (optional)" inputMode="decimal" data-testid="lodge-tax" style={{ ...input, flex: '1 1 110px' }} />
+                        <input value={lodge.freight} onChange={(e) => setLodge({ freight: e.target.value })} disabled={!chargesAllowed} placeholder="Freight (optional)" inputMode="decimal" data-testid="lodge-freight" style={{ ...input, flex: '1 1 120px' }} />
                         <Button variant="outline" disabled={!entryValid} data-testid="lodge-add-line" onClick={addLodgeLine}>
                           Add line
                         </Button>
@@ -792,7 +783,7 @@ export function CommercialScreen() {
                             vendorBillNumber: lodge.number.trim(),
                             documentDate: lodge.date.trim(),
                             lines: lodge.lines.map((l) => ({
-                              ...(l.lineKind === 'labour' ? { labourPoLineId: l.poLineId } : { poLineId: l.poLineId }),
+                              poLineId: l.poLineId,
                               quantity: l.qty,
                               rate: l.rate,
                               // omitted rather than sent as '0.00' when blank: the server's own
@@ -810,7 +801,7 @@ export function CommercialScreen() {
                           {lodge.lines.map((l, i) => (
                             <div key={`${l.poLineId}:${i}`} style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 4 }}>
                               <span style={{ ...mono, flex: '1 1 auto' }} data-testid={`lodge-line-${i}`}>
-                                {l.lineKind === 'labour' ? 'Labour' : 'Material'} · {l.poLineId} · {l.qty} × {l.rate}
+                                {l.poLineId} · {l.qty} × {l.rate}
                                 {l.tax !== '' && ` · tax ${l.tax}`}{l.freight !== '' && ` · freight ${l.freight}`}
                               </span>
                               <Button

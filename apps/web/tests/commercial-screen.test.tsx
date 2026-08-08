@@ -764,46 +764,6 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect(second).not.toHaveProperty('freightAmount');
   });
 
-  it('N2: a LABOUR line is lodged as `labourPoLineId`, not as a material line', () => {
-    const recordVendorBill = vi.fn();
-    act(() => { useStore.setState({ recordVendorBill } as never); });
-    const r = render(<CommercialScreen />);
-    fireEvent.click(r.getByTestId('commercial-tab-claims'));
-    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-7'], ['lodge-date', '2026-08-08'],
-      ['lodge-poline', 'LPL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
-      fireEvent.change(r.getByTestId(id), { target: { value: v } });
-    }
-    fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
-    fireEvent.click(r.getByTestId('lodge-add-line'));
-    fireEvent.click(r.getByTestId('lodge-submit'));
-    // RED before: every entry serialized as `poLineId`, so an engineer who had just measured a
-    // LABOUR line could not lodge its claim — the server resolved it down the material path.
-    expect(recordVendorBill).toHaveBeenCalledWith(expect.objectContaining({
-      lines: [expect.objectContaining({ labourPoLineId: 'LPL-1' })],
-    }));
-    expect(recordVendorBill.mock.calls[0][0].lines[0].poLineId).toBeUndefined();
-  });
-
-  it('Q1: a LABOUR line carries no tax or freight — the server refuses one that does', () => {
-    // A labour purchase-order snapshot freezes neither, so `resolveLines` rejects a labour claim
-    // line with either. RED before: the fields stayed live when the kind was switched, so the
-    // entry could be added and lodged, and the durable outbox reported saved before the 409.
-    const r = render(<CommercialScreen />);
-    fireEvent.click(r.getByTestId('commercial-tab-claims'));
-    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-5'], ['lodge-date', '2026-08-08'],
-      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00'], ['lodge-tax', '900.00']] as const) {
-      fireEvent.change(r.getByTestId(id), { target: { value: v } });
-    }
-    expect((r.getByTestId('lodge-add-line') as HTMLButtonElement).disabled, 'a material line with tax was refused').toBe(false);
-
-    fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
-    // switching CLEARS them rather than carrying a value the entry would then silently refuse
-    expect((r.getByTestId('lodge-tax') as HTMLInputElement).value).toBe('');
-    expect((r.getByTestId('lodge-tax') as HTMLInputElement).disabled).toBe(true);
-    expect((r.getByTestId('lodge-freight') as HTMLInputElement).disabled).toBe(true);
-    expect((r.getByTestId('lodge-add-line') as HTMLButtonElement).disabled, 'a cleared labour line was refused').toBe(false);
-  });
-
   it('O4: a vendor invoice covering SEVERAL po lines is lodged whole', () => {
     // RED before: the submit path always sent a singleton `lines` array. The vendor's document
     // number is the frozen duplicate key and amendment is not surfaced, so every line after the
@@ -818,9 +778,8 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
       fireEvent.change(r.getByTestId(id), { target: { value: v } });
     }
     fireEvent.click(r.getByTestId('lodge-add-line'));
-    // a SECOND line on the same invoice, of the other kind
-    fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
-    for (const [id, v] of [['lodge-poline', 'LPL-9'], ['lodge-qty', '3'], ['lodge-rate', '250.50']] as const) {
+    // a SECOND line on the same invoice
+    for (const [id, v] of [['lodge-poline', 'PL-9'], ['lodge-qty', '3'], ['lodge-rate', '250.50']] as const) {
       fireEvent.change(r.getByTestId(id), { target: { value: v } });
     }
     fireEvent.click(r.getByTestId('lodge-add-line'));
@@ -830,7 +789,7 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     const sent = recordVendorBill.mock.calls[0][0].lines;
     expect(sent, 'the invoice was lodged one line at a time, and the rest were unreachable').toHaveLength(2);
     expect(sent[0]).toMatchObject({ poLineId: 'PL-1', quantity: '2', rate: '100.00' });
-    expect(sent[1]).toMatchObject({ labourPoLineId: 'LPL-9', quantity: '3', rate: '250.50' });
+    expect(sent[1]).toMatchObject({ poLineId: 'PL-9', quantity: '3', rate: '250.50' });
     // and a mistaken line can be taken back out before the claim is recorded
     expect(r.getByTestId('lodge-line-1')).toBeTruthy();
   });

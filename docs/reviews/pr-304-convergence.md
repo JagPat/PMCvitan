@@ -177,9 +177,39 @@ half's context was cold. **Q-a is the clearest evidence:** it is a causality bug
 that has no counterpart on the §F side, arriving in round 5 of a unit whose §F half was already
 settled.
 
-So PR #304 is now the **§F half alone** — lodge, submit, reject, and the value rules — with Q-b
-fixed. The §D half moves to its own unit with Q-a, Q-c and Q-d unfixed and named, where it gets a
-review budget that has not already been spent.
+So PR #304 became the §F half — and **that seam was wrong too**, which round 6 caught in one
+finding.
+
+### Round 6 — the split seam itself was the defect
+
+A §F-only unit lets an engineer lodge a LABOUR claim and submit it, with no way to measure. The
+server's evidence for a labour line is `measuredForPoLines`, so it evaluates the claim against zero
+and disputes it. Lodging a labour claim was a dead end — root N again, this time created BY the
+split rather than found in it.
+
+The dependency is the thing I should have looked for. **A labour claim's evidence is MEASURED work;
+a material claim's evidence is ACCEPTED STOCK, which Phase 3 already ships.** So §D and §F are not
+separable — the labour claim path *contains* §D — and the real seam runs along the evidence axis:
+
+| Unit | Workflow | Evidence |
+|---|---|---|
+| 7B-iii-b (this) | lodge a MATERIAL claim → submit → reject | accepted stock (Phase 3, already shipped) |
+| 7B-iii-e | measure → correct → lodge a LABOUR claim → submit | measured work (§D, in the same unit) |
+
+Each half is now a complete path with no control that leads nowhere. The lodge form here is
+material-only; an engineer with a labour PO line simply has no entry point yet, which is a
+*missing* control rather than a dead-ended one. That distinction is the whole of it: **the absence
+of a control is honest, a control that leads nowhere is not.**
+
+The §D/labour half carries Q-a, Q-c, Q-d and the labour-specific lodge findings (N2, Q-b) unfixed
+and named, where it gets a review budget that has not already been spent.
+
+### Two wrong splits, and what they have in common
+
+The first split cut by *module section* (§D vs §F) because that is how the code is organised. The
+second cuts by *what the user is trying to finish*, which is what a workflow is. Splitting along the
+lines the source happens to be filed under will separate things that depend on each other, and the
+dependency will not announce itself — nothing fails to compile when you ship half a workflow.
 
 The honest note: this split was available at scoping time. "The engineer's six writes" is not one
 workflow, it is two, and counting writes instead of workflows is what hid that. **Scope by the
@@ -244,6 +274,12 @@ Taking a finding seriously means implementing what is true, not what is quoted.
    review. Five rounds alternated between them, each fixing one half with the other's context cold.
 14. **When the round's findings sort cleanly into two buckets, that is the split telling you where
    it is.** Rounds 3–5 each did; the tally above only made it legible in retrospect.
+14a. **Split along the DEPENDENCY, not along the module sections.** §D-vs-§F is how the code is
+   filed; measured-evidence-vs-accepted-evidence is how the workflows actually divide. A split by
+   filing separates things that need each other, and nothing fails to compile to tell you.
+14b. **After splitting, walk each half end to end on its own.** The test is not "is this half
+   coherent code" but "can a user finish something with only this". The absence of a control is
+   honest; a control that leads nowhere is not.
 15. **A read's token orders reads against each other and says nothing about causality.** Knowing a
    read is the NEWEST is not knowing it observed the write. (Q-a — carried into the §D unit.)
 16. **A probe's synchronisation is part of its claim.** O1 waited on a condition its own setup had

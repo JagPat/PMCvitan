@@ -9,6 +9,7 @@ import storeSource from '@/store/store.ts?raw';
 import gatewaySource from '@/data/apiGateway.ts?raw';
 import syncSource from '@/data/useApiSync.ts?raw';
 import contractsSource from '../../api/src/contracts.ts?raw';
+import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
 import { budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
@@ -1026,6 +1027,19 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     slowBills.resolve({ bills: [] });
     await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
       { timeout: 5000, interval: 5 });
+  });
+
+  it('the labour-charge rule is ONE statement the SERVICE guards with', async () => {
+    const { claimLineMayCarryCharges } = await import('@vitan/shared');
+    expect(claimLineMayCarryCharges('material')).toBe(true);
+    expect(claimLineMayCarryCharges('labour')).toBe(false);
+    // The rule that matters is not that the constant exists but that the SERVER reads it. A labour
+    // purchase-order snapshot freezes neither tax nor freight; when the labour lodge form lands in
+    // its own unit it imports this same function, so the form cannot offer a charge the service
+    // rejects without the service changing too. Root M's mechanism, checked mechanically.
+    expect(billServiceSource).toContain('claimLineMayCarryCharges(kind)');
+    expect(billServiceSource, 'the service restated the rule instead of reading it')
+      .not.toMatch(/kind === 'labour' && \(taxAmount/u);
   });
 
   it('the §A value rules are the SHARED ones — no second opinion in the browser', async () => {
