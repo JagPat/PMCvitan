@@ -79,6 +79,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.deductions': "Get('commercial/bills/:billId/deductions')",
     'commercial.payments': "Get('commercial/bills/:billId/payments')",
     'commercial.cash-forecast': "Get('commercial/cash-forecast')",
+    'commercial.money-position': "Get('commercial/money-position')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -108,6 +109,31 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     // and the manifest agrees with the shared contract, so there is ONE declaration, not two
     expect([...commercialManifest.commands].sort()).toEqual([...COMMERCIAL_COMMANDS].sort());
     expect([...commercialManifest.queries].sort()).toEqual([...COMMERCIAL_QUERIES].sort());
+  });
+
+  /**
+   * …AND THE REVERSE (Codex round 4, 7B-i). The test above walks the DECLARED set and checks each
+   * has a route — so an UNDECLARED route is invisible to it. That is exactly how
+   * `commercial/money-position` reached the web gateway while `COMMERCIAL_QUERIES` still enumerated
+   * only the older reads: the manifest promised less than the controller served, which is the
+   * stale-manifest class this contract exists to prevent, arriving from the direction it was not
+   * looking.
+   *
+   * So the CONTROLLER is the source here and the manifest is the derived check: every commercial
+   * GET must be declared. Root A's answer once more — make the source the checker — applied to the
+   * one direction the original pin left open.
+   */
+  it('every GET the commercial controller serves is a DECLARED query', () => {
+    const controller = readFileSync(join(HERE, 'commercial.controller.ts'), 'utf8');
+    const served = [...controller.matchAll(/@Get\('([^']+)'\)/gu)].map((m) => `Get('${m[1]}')`);
+    expect(served.length, 'no GET routes were extracted — this pin would scan nothing').toBeGreaterThan(5);
+    const declaredRoutes = new Set(Object.values(querySite));
+    const undeclared = served.filter((r) => !declaredRoutes.has(r));
+    expect(
+      undeclared,
+      `the commercial controller serves these reads and no COMMERCIAL_QUERIES entry declares them, so `
+      + `every registry and contract consumer believes they do not exist: ${undeclared.join(', ')}`,
+    ).toEqual([]);
   });
 
   /**

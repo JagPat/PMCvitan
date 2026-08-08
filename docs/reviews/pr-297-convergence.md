@@ -108,6 +108,31 @@ heads: **changing a declaration is itself becoming a new consumer — of everyth
 that declaration now obliges.** Root B does not only apply to code you did not
 write.
 
+### Round 4 — root A's other direction, and a state machine that would have skipped its own fix
+
+**The manifest pin only looked one way.** `commercial/money-position` reached the
+web gateway while `COMMERCIAL_QUERIES` still enumerated only the older reads,
+because the contract test walks the DECLARED set and checks each has a route — so
+an UNDECLARED route is invisible to it. The manifest promised less than the
+controller served: the stale-manifest class this contract exists to prevent,
+arriving from the direction it was not looking. The fix is root A's answer once
+more, applied to the open direction: the CONTROLLER is the source, every
+commercial `@Get` must be declared. Mutation-tested — removing the entry now
+fails BOTH pins.
+
+Writing that pin immediately earned its keep: it exposed a duplicate key I had
+left in the query-site map two edits earlier, which the first mutation attempt
+silently survived.
+
+**And the Now block would have skipped the unit it had just scheduled.**
+`next_task` still pointed at `phase-5-task-7b-ii` while the table added in the
+same diff said 7B-i-a "must land before 7B-ii". `assessRunnerState` resolves
+`next_task` after a merge clears `work_item`/`open_pr`, so the runner would have
+started the claim-lifecycle unit and left the staleness gap open beneath it. Two
+statements about order in one file, disagreeing — the same shape as the
+`open_pr`/`work_item` defects PR #296 spent three heads on, and a reminder that
+scheduling a unit in prose is not scheduling it.
+
 ## The self-inflicted ones, recorded because two are process
 
 **A runtime cycle from a pure function.** Importing `serializeAttribution` from

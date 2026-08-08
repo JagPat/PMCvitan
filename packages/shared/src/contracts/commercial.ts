@@ -123,6 +123,12 @@ export const COMMERCIAL_QUERIES = [
   // every project, and can tolerate one commit of lag. What they cannot tolerate is a fold across
   // four modules per project per page-load.
   'commercial.cash-forecast',
+  // Phase 5 Task 7B-i (§M) — the money POSITION: budget, forecast, heads and the attribution
+  // register from ONE repeatable-read transaction. It exists because a page assembled from four
+  // separate reads can contradict itself (a re-attribution committing between two of them), which
+  // is the rule `readBudget` already applies one level down. The four narrower reads above stay:
+  // they answer narrower questions, and other surfaces ask them one at a time.
+  'commercial.money-position',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
