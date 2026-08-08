@@ -904,15 +904,13 @@ a non-pilot project it rebuilds to an empty forecast set), and `commercial.cash-
 Task 7A — the commercial pilot's recompute-only §J money projection; on a non-pilot project it
 rebuilds to an empty head set).
 
-**`commercial.cash-forecast` deserves a specific note, because it is the only projection whose own
-module emits no domain events.** Its foreign inputs (the PO lifecycle, acceptance, measurement)
-arrive as events like every other projection's, but commercial's own writes — certifying,
-approving, paying, withholding, recovering an advance — refresh it WRITE-THROUGH inside their own
-transaction. The practical consequence for an operator is that a stale cash forecast cannot be
-diagnosed by looking for an undelivered event: there is none. If the money page disagrees with
-`GET …/commercial/budget` (which is always folded live), rebuild this consumer — the diagnostic
-compares the stored row against the canonical recompute and reports `corrupt`, which is exactly
-the signal a missing refresh produces.
+`commercial.cash-forecast` behaves exactly like the other seven, and it is worth saying so because
+an earlier draft of Task 7A did not. Commercial's own money movements — certifying, approving,
+paying, withholding, recovering an advance — announce themselves with `commercial.money_moved`, a
+WEIGHTLESS event (no socket invalidation, no push) that exists solely for its outbox delivery. So a
+stale cash forecast is diagnosed the ordinary way: the generation's `appliedPosition` lags the
+project's stream head, the read falls back to the live compute rather than serving it, and the
+operator diagnostic compares the stored row against the canonical recompute.
 
 This step MUST complete (gated by step 4) **before**
 enabling all module-query reads on the web deployment (`VITE_*_READ=moduleQuery`) and before
@@ -946,8 +944,9 @@ No migration can repair it: the fold spans procurement, inventory, labour and fo
 none of which is expressible in SQL. The sweep is idempotent (one open exception per head is a
 partial unique, and a healthy database is a no-op), attributable (the invocation is audited and every
 row carries `raisedBy = 'fold_correction'`), and complete (every cost head of every commercial-enabled
-project, derived from the capability rows). It also refreshes each project's cash forecast, because
-the §B evaluation it runs does.
+project, derived from the capability rows). It also ANNOUNCES every project it moves — the §B
+evaluation it runs appends `commercial.money_moved` in the same transaction — so the §J cash-forecast
+projection folds the repaired figures on the next relay pass, exactly as it folds an ordinary write.
 
 `--operator` is a **user id**, not an email: the exception rows carry a real `raisedById` foreign key,
 so an unresolvable operator fails before any work rather than half-way through the sweep.

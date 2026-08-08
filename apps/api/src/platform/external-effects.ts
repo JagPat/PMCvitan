@@ -127,6 +127,15 @@ export const EXTERNAL_EFFECTS = {
   'activity.labour_blocked': { eventType: 'activity.labour_blocked', invalidate: true, push: null },
   'activity.labour_unblocked': { eventType: 'activity.labour_unblocked', invalidate: true, push: null },
   'activity_output.recorded': { eventType: 'activity_output.recorded', invalidate: true, push: null },
+  // ── commercial (Phase 5 Task 7A, §J) ───────────────────────────────────────────────────────
+  // WEIGHTLESS by design — `invalidate: false, push: null`. Commercial's Task-1 justification for
+  // emitting nothing was "no external effect AND no consumer"; the first half is unchanged and this
+  // entry keeps it literally true. The event exists for its DURABLE OUTBOX DELIVERY, which
+  // `emitEvent` materializes inside the writer's own transaction, so the §J cash-forecast projection
+  // observes every commercial money movement the way the other seven projections observe theirs.
+  // Nothing is sent to any client: no socket invalidation, no push. The commercial screens (Task 7B)
+  // refresh from their own reads.
+  'commercial.money_moved': { eventType: 'commercial.money_moved', invalidate: false, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────

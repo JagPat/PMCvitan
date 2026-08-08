@@ -19,7 +19,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialStatusService } from './commercial-status.service';
-import { refreshCashForecast } from './cash-forecast.projection';
+import { announceMoneyMoved } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import type { ApprovePaymentInput, RecordPaymentInput, ReversePaymentInput } from '../contracts';
@@ -228,9 +228,7 @@ export class CommercialPaymentService {
         // exception on the heads this claim touches. Codex round 2 (P2): the fold was taught to
         // subtract `APPROVED` and the write was not made a mover, so a head whose exposure this
         // approval had already healed kept reporting a breach nobody could clear.
-        await this.bills.evaluateHeadsForBill(
-          tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId, 'payment_approval',
-        );
+        await this.bills.evaluateHeadsForBill(tx, projectId, actor, input.billId, 'payment_approval');
 
         // §F — an approval MOVES `APPROVED`, so the derived status is re-read from the folds in
         // this same transaction, under the bill lock taken above. One derivation, every mover.
@@ -343,21 +341,22 @@ export class CommercialPaymentService {
         // all derived here rather than written by hand at four sites.
         await this.status.reDerive(tx, projectId, approval.billId, bill.status as VendorBillStatus);
 
-        // §J (Task 7A) — the §J REFRESH is a SEPARATE obligation from §B's raise-or-clear, and this
-        // is the one place the two come apart.
+        // §J (Task 7A) — the §J ANNOUNCEMENT is a SEPARATE obligation from §B's raise-or-clear, and
+        // this is the one place the two come apart.
         //
         // Paying moves no HEADROOM (the identity above), so `FOLD_INPUTS` exempts it from the
         // evaluator and there is deliberately no `evaluateHeadsForBill` here. But it very much
         // moves a §J BUCKET — `approved` falls and `paid` rises — and the cash-forecast projection
-        // stores those buckets. Task 7A hung the refresh off `evaluate`, which is right for every
-        // mover that can breach a budget and WRONG for exactly the partition-only ones: without
-        // this call the stored forecast keeps reporting money as authorised-and-unpaid forever
-        // after it left the bank, and no event exists that a consumer could have missed.
+        // stores those buckets. Task 7A hung the announcement off `evaluate`, which is right for
+        // every mover that can breach a budget and WRONG for exactly the partition-only ones:
+        // without this call the stored forecast keeps reporting money as authorised-and-unpaid
+        // forever after it left the bank.
         //
-        // The pin in `commercial.contract.test.ts` reads: every `FOLD_INPUTS` writer refreshes the
-        // forecast, through an evaluator or directly. A partition-only row is exempt from §B, never
-        // from §J.
-        await refreshCashForecast(tx, projectId);
+        // The pin in `commercial.contract.test.ts` reads: every `FOLD_INPUTS` writer announces,
+        // through an evaluator or directly. A partition-only row is exempt from §B, never from §J.
+        await announceMoneyMoved(tx, projectId, actor, {
+          costHeadCodes: await this.bills.headsForBill(tx, projectId, approval.billId), reason: 'payment',
+        });
 
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.record',
@@ -454,21 +453,22 @@ export class CommercialPaymentService {
         // rather than by six services agreeing.
         await this.status.reDerive(tx, projectId, payment.billId, bill.status as VendorBillStatus);
 
-        // §J (Task 7A) — the §J REFRESH is a SEPARATE obligation from §B's raise-or-clear, and this
-        // is the one place the two come apart.
+        // §J (Task 7A) — the §J ANNOUNCEMENT is a SEPARATE obligation from §B's raise-or-clear, and
+        // this is the one place the two come apart.
         //
         // Paying moves no HEADROOM (the identity above), so `FOLD_INPUTS` exempts it from the
         // evaluator and there is deliberately no `evaluateHeadsForBill` here. But it very much
         // moves a §J BUCKET — `approved` falls and `paid` rises — and the cash-forecast projection
-        // stores those buckets. Task 7A hung the refresh off `evaluate`, which is right for every
-        // mover that can breach a budget and WRONG for exactly the partition-only ones: without
-        // this call the stored forecast keeps reporting money as authorised-and-unpaid forever
-        // after it left the bank, and no event exists that a consumer could have missed.
+        // stores those buckets. Task 7A hung the announcement off `evaluate`, which is right for
+        // every mover that can breach a budget and WRONG for exactly the partition-only ones:
+        // without this call the stored forecast keeps reporting money as authorised-and-unpaid
+        // forever after it left the bank.
         //
-        // The pin in `commercial.contract.test.ts` reads: every `FOLD_INPUTS` writer refreshes the
-        // forecast, through an evaluator or directly. A partition-only row is exempt from §B, never
-        // from §J.
-        await refreshCashForecast(tx, projectId);
+        // The pin in `commercial.contract.test.ts` reads: every `FOLD_INPUTS` writer announces,
+        // through an evaluator or directly. A partition-only row is exempt from §B, never from §J.
+        await announceMoneyMoved(tx, projectId, actor, {
+          costHeadCodes: await this.bills.headsForBill(tx, projectId, payment.billId), reason: 'payment_reversal',
+        });
 
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.payment.reverse',

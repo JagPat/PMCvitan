@@ -12,7 +12,7 @@ import {
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
-import { resolveActor } from '../common/actor';
+import { resolveActor, type Actor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CommercialStatusService } from './commercial-status.service';
@@ -164,7 +164,7 @@ export class CommercialDeductionService {
           },
         });
 
-        await this.evaluateHeadroom(tx, projectId, input.billId, actor.actorId, user.role, 'deduction');
+        await this.evaluateHeadroom(tx, projectId, input.billId, actor, 'deduction');
         // §F — a withholding LOWERS `NET_PAYABLE`, so it can carry a bill FORWARD: withhold the
         // whole remaining payable on an approved-and-paid claim and `NET_PAYABLE = PAID` makes it
         // `paid`, with no cash moving. The first arm means nothing remains payable, not that money
@@ -307,7 +307,7 @@ export class CommercialDeductionService {
           },
         });
 
-        await this.evaluateHeadroom(tx, projectId, deduction.billId, actor.actorId, user.role, 'deduction_release');
+        await this.evaluateHeadroom(tx, projectId, deduction.billId, actor, 'deduction_release');
         // §F — THE BACKWARD CASE, and the reason the CAS has no forward-only guard. A release
         // RAISES `NET_PAYABLE`, so a bill that legitimately reached `paid` returns to `certified`:
         // certify ₹100, withhold ₹10, approve and pay ₹90 → `NET_PAYABLE = PAID = ₹90` → `paid`;
@@ -347,10 +347,10 @@ export class CommercialDeductionService {
    * no legal row can leave, because the rows that would leave it are Task 6's as well.
    */
   private async evaluateHeadroom(
-    tx: Prisma.TransactionClient, projectId: string, billId: string, actorId: string, role: string,
+    tx: Prisma.TransactionClient, projectId: string, billId: string, actor: Actor,
     raisedBy: 'deduction' | 'deduction_release',
   ): Promise<void> {
-    await this.billService.evaluateHeadsForBill(tx, projectId, { actorId, role }, billId, raisedBy);
+    await this.billService.evaluateHeadsForBill(tx, projectId, actor, billId, raisedBy);
   }
 
   // ── the read ─────────────────────────────────────────────────────────────────────────────────

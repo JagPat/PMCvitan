@@ -55,44 +55,69 @@ folding four modules on every page load.
 4. **The EIGHTH rebuildable projection** (`commercial.cash-forecast`),
    recompute-only, deriving NO domain events. A rebuild emits zero events and zero
    notifications. `live == projection == rebuild` holds by construction because
-   every path — the ordered consumer, the write-through refresh, the read, and the
-   operator rebuild diagnostic — calls `computeCashForecastDto`.
+   every path — the ordered consumer, the rebuild seed, the read, and the operator
+   rebuild diagnostic — calls `computeCashForecastDto`.
 
 5. **The `commercial.cash-forecast` read**, capability-gated, serving the
    projection when its generation is servable and falling back to the LIVE compute
    otherwise. `refreshedAt` is the projection's row timestamp and is NULL on the
    live path — a live answer is honestly undated rather than stamped `now`.
 
-## The two refresh paths, and why this projection has them
+6. **Commercial announces its money movements** (`commercial.money_moved`), which
+   is round 4's correction and is described in its own section below.
 
-Every other projection in this codebase refreshes purely from the outbox, because
-every fact it derives from is announced by a domain event. This one cannot, and
-the reason is a **declared architectural decision rather than an oversight**:
-`commercial.producesEvents` is `[]`, justified in the manifest since Task 1 as "an
-internal accounting fact with no external effect and no consumer". Certifying,
-approving, paying, withholding and recovering an advance are the largest movers of
-the §J buckets, and none of them emits anything.
+## Commercial's ONE event, and why the write-through path is gone
 
-Giving commercial an event family was considered and **put to JagPat rather than
-chosen silently**, because it reverses a declared manifest decision, adds ~8 events
-to the sealed external-effect catalog, and grows this unit past its review budget
-on its own. The chosen design is write-through plus foreign events.
+The first four heads of this unit refreshed the forecast WRITE-THROUGH, on the
+strength of `commercial.producesEvents: []` — justified in the manifest since Task
+1 as *"an internal accounting fact with no external effect and no consumer"*.
 
-So the refresh is chosen by WHO OWNS the fact that moved:
+That produced **six review findings from one place** across four rounds: an
+overwrite race, a discovery race, a false `corrupt` verdict, an unlocked repair
+sweep, a refresh obligation hung on the wrong predicate, and finally a genuine
+lock-order inversion between the rebuild's activation barrier and the relay.
 
-- **Foreign facts** — the PO lifecycle, acceptance, measurement, delivery and
-  capacity commitments, stock movements — already emit canonical events, and the
-  ordered `db` consumer refreshes on them exactly as the other seven do.
-- **Commercial facts** refresh WRITE-THROUGH, in the same transaction as the write.
+They were not six defects. `docs/reviews/pr-295-convergence.md` names the one:
 
-**Two refresh paths is a real hazard — it is precisely how a projection acquires
-two opinions.** What makes it safe here is that neither path computes anything.
-Both call `computeCashForecastDto`. PROBE 36 exercises that directly rather than
-leaving it to this paragraph.
+> The platform's projection machinery assumes **every input to a projection is
+> announced by a domain event.** Seven projections satisfied it, so it was never
+> written down.
+
+Three mechanisms rest on it, and each breaks silently without it — `diagnose`
+freezes its window by locking `ProjectEventStream` (which only stops writers that
+emit); a rebuild's catch-up repairs the seed's blind spot by REPLAYING EVENTS
+(which repairs nothing when there are none); staleness is otherwise invisible.
+
+**The Task-1 justification had two grounds, and only one of them stopped being
+true.** *No external effect* still holds. *No consumer* stopped holding the moment
+§J stored a forecast. So round 4 makes the declaration match reality rather than
+building a fifth lock to defend it:
+
+- commercial emits ONE event, `commercial.money_moved`, from the same DERIVED seam
+  (`evaluate`) plus the three seams that write a forecast input without moving
+  headroom;
+- the catalog entry is **weightless** — `invalidate: false, push: null` — so
+  nothing is sent to any client, no command gains an `ExternalEffectDispatcher`,
+  and commercial's services stay at **zero dispatch sites** (the cross-module
+  tripwire pins this). The event exists for the durable `OutboxDelivery` that
+  `emitEvent` materializes in the writer's own transaction, and nothing else;
+- the write-through path, the per-(project, consumer) advisory lock,
+  `cashForecastLockKey`, `lockCashForecast`, the `Rebuildable.lockFor` hook and its
+  `diagnose` plumbing are all **deleted**. `refreshCashForecast` takes a REQUIRED
+  `generationId`, computes and upserts, and takes no lock at all.
+
+This projection is now ordinary. Every mechanism above works for the same reason
+it works for the other seven.
+
+**CLOSURE E** (`module-registry.test.ts`) changed shape with it. Its first version
+demanded a compensating `lockFor` from an event-less owner; it now requires that
+every rebuildable projection's owning module ANNOUNCES its facts, and says in its
+own failure message that this is necessary rather than sufficient. Both sides
+derived; mutation-tested RED against the round-3 tree.
 
 ## Where the seams are, and why they are DERIVED
 
-The write-through seam is **not a list of writers**. It is
+The announcement seam is **not a list of writers**. It is
 `CommercialBudgetService.evaluate`, and that is a derivation:
 
 > §B headroom is `BUDGET − Σ(the six §J exposure buckets)`. So *"this write moved
@@ -103,23 +128,19 @@ Every money writer already calls `evaluate`; CLOSURE 2 (`FOLD_INPUTS`) fails the
 build if one does not. So a writer cannot satisfy §B and forget §J: there is one
 call site and one rule.
 
-There is exactly ONE other seam, `commercial.costHead.define`, and it exists
-because defining or renaming a cost head changes what the forecast SAYS while
-moving no money at all — §B's evaluation would never fire for it.
+Three other seams exist and each is there for a stated reason rather than by
+enumeration: `commercial.costHead.define` and §L activation write `CostHead` rows
+without moving money, and the two partition-only payment writes move a bucket
+without moving the total.
 
-**CLOSURE C** pins that there is no third. It extracts the `tx.<model>` reads from
-the compute path's own method bodies and requires every model to be CLASSIFIED
-against the write path that refreshes it. A model added to the compute without a
-classification fails; a classification whose named site no longer calls
-`refreshCashForecast` fails; a classification for a model the compute no longer
-reads fails. All three arms were mutation-tested RED before this was committed.
-
-This matters more here than for any previous projection, and the reason is worth
-stating plainly: **a commercial write that forgets to refresh emits no event that
-could have been missed.** There is nothing for a consumer to notice. The only
-things standing between "a writer forgot" and "the money page is wrong for a week"
-are this closure and the operator diagnostic — which is why the RUNBOOK now says
-so under step 3.
+**CLOSURE C** pins that there is no fifth. It extracts the `tx.<model>` reads from
+the compute path's own method bodies, requires every model to be CLASSIFIED
+against the write path that announces it, and then SCANS every commercial file for
+a write to a classified model — a classification naming a method is a claim about
+one site, and the obligation is about all of them. A model added to the compute
+without a classification fails; a classification whose named site no longer
+announces fails; a classification for a model the compute no longer reads fails.
+All three arms were mutation-tested RED before this was committed.
 
 ### The seam was ALMOST right, and the gap was found by a probe rather than a review
 
@@ -127,16 +148,17 @@ so under step 3.
 the way it is wrong is instructive: *"moved headroom"* and *"moved a §J bucket"* are
 **almost** the same predicate, and they come apart at exactly the `partitionOnly` rows.
 Paying moves `approved` into `paid` without moving the total, so it is rightly exempt from
-§B's evaluator — and was therefore silently exempt from §J's refresh too.
+§B's evaluator — and was therefore silently exempt from §J too.
 
 The consequence would have been a stored forecast reporting money as authorised-and-unpaid
-forever after it left the bank, with **no event a consumer could have missed**. That is the
-exact failure mode the RUNBOOK note above describes, arriving inside the unit that wrote the
-note.
+forever after it left the bank — and at the time, with **no event a consumer could have
+missed**. That is the exact failure mode the RUNBOOK note above describes, arriving inside
+the unit that wrote the note, and it is one of the six that round 4 traced to a single
+cause.
 
 The fix keeps the derivation and moves the obligation to the whole of the table it was
-already using: `payments.record` and `payments.reverse` refresh directly, and CLOSURE 2 now
-pins that **every** `FOLD_INPUTS` writer refreshes — through an evaluator or directly —
+already using: `payments.record` and `payments.reverse` announce directly, and CLOSURE 2 now
+pins that **every** `FOLD_INPUTS` writer announces — through an evaluator or directly —
 rather than only the non-exempt ones. A partition-only row is exempt from §B, never from §J.
 Mutation-tested RED at both writers; PROBE 39 proves it at runtime.
 
@@ -187,18 +209,23 @@ corrected for it the round before. The meta-lesson recorded there is **fix the
 class, not the member**, and a sixth instance was not worth the fold it would have
 saved.
 
-## Refreshing `building` generations, not only `active` ones
+## `building` generations — how round 4 made the question go away
 
-The write-through refresh targets every LIVE generation of the project — `active`
-AND `building`, scoped to that project.
+Rounds 1–3 spent three heads on this: a commercial write landing between a
+rebuild's canonical seed and its activation barrier emitted nothing for the
+catch-up phase to apply, so the rebuild would activate a generation holding a
+pre-write money picture — **the repair making the projection worse**, which is the
+one thing a repair must never do. The successive fixes were a row lock, then an
+advisory lock with discovery under it, then a total order over that lock and the
+stream row.
 
-Both halves are load-bearing. A rebuild runs a `building` generation alongside the
-serving one; a commercial write landing between the canonical seed and the
-activation barrier emits nothing for the catch-up phase to apply, so refreshing
-only the `active` generation would activate a generation holding a pre-write money
-picture — **the rebuild making the projection worse**, which is the one thing a
-repair must never do. And generations are per (consumer, project), so an unscoped
-query would write this project's money into other projects' rows.
+With the announcement, the window closes itself. A commercial write allocates a
+stream position, so it is either **before** the seed (visible to its compute) or
+**after** it (position > `seededThrough`, replayed by catch-up — which is what
+catch-up is for). `refreshCashForecast` writes exactly ONE generation, the one its
+caller is responsible for, and takes no lock; the seed's `seededThrough` is read
+BEFORE the compute so it can only under-state what the seeded row contains, never
+over-state it.
 
 ## Codex round 1 — five findings on head `484cb5f`, all fixed forward
 
@@ -277,6 +304,8 @@ The fix replaces the row lock with a per-(project, consumer) **advisory lock tak
 statement**, with the target set discovered under it. Every writer reaches `refreshCashForecast`,
 including the rebuild seed, so whichever side goes second discovers the other's committed generation
 and computes with its money visible. One lock, always first — no acquisition order exists to invert.
+*(Superseded by round 4: with the announcement, a write is either before the seed or replayed by
+catch-up, and the lock is gone.)*
 
 **Round-2 F2 (P2) — the operator diagnosis raced the write-through.** `diagnose` holds the project's
 `ProjectEventStream` row, which freezes event emission — and for seven of the eight projections that
@@ -284,6 +313,8 @@ IS the whole write path. Commercial's writers emit nothing, so a payment could c
 stored read and the canonical recompute and be reported as `corrupt`, blaming the very write that
 made the row current. `Rebuildable` gains an optional `lockFor` hook; cash-forecast supplies the same
 advisory lock, and the other seven are untouched because they do not need it.
+*(Superseded by round 4: commercial's writers emit, so the stream lock reaches them and the `lockFor`
+hook is deleted.)*
 
 **Round-2 F3 (P2) — the sweep took no readiness lock.** `commercial:reevaluate` is a headroom mover
 like any other, and §B's rule is that every one of them locks first. Without it the fold is torn: the
@@ -316,16 +347,17 @@ blocked, and something always does.**
 
 It now drives `ProjectionRebuilder.rebuild` directly — allocate → seed → catch-up → barrier, with no
 diagnosis anywhere — so the only thing that can wait on the lock is the seed's own refresh. Verified
-RED (`barrier timeout: nothing ever blocked`) with the lock removed.
+RED (`barrier timeout: nothing ever blocked`) with the lock removed. *(Round 4 retired this probe
+with the lock it tested; PROBE 41 now asserts the property the lock stood in for.)*
 
 ### Convergence
 
-Two finding-bearing heads triggered the convergence protocol. The architectural
-audit is `docs/reviews/pr-295-convergence.md`; it names **Root B** — the platform's
-unstated precondition that every projection input is announced by a domain event —
-as the single fact behind findings 5, 6, 7, 8 and the partition-only gap, and adds
-**CLOSURE E** so the next event-less module that adds a projection is stopped at
-the desk rather than three review rounds later.
+Two finding-bearing heads triggered the convergence protocol, and rounds 3 and 4
+kept it open. The architectural audit is `docs/reviews/pr-295-convergence.md`; it
+names **Root B** — the platform's unstated precondition that every projection
+input is announced by a domain event — as the single fact behind findings 5, 6, 7,
+8, 11, 13 and the partition-only gap, and **CLOSURE E** now enforces the
+precondition itself rather than a compensating lock.
 
 ## Codex round 3 — two findings on head `ce015a1`
 
@@ -337,20 +369,38 @@ waits for the advisory lock; a concurrent PO issue takes the advisory lock throu
 `evaluate` and then calls `emitEvent`, which waits for the stream row. Opposite
 sequences on the same pair, resolved by PostgreSQL killing one of them.
 
-The fix is a TOTAL ORDER rather than a rule callers must remember —
-`lockProjectReadiness < ProjectEventStream < cash-forecast advisory` — achieved by
-taking the stream row inside `refreshCashForecast`, before the advisory lock. Every
-holder of the advisory lock then already holds the stream row and cannot be waiting
-for it, whatever the caller does next. This is Root B again: the hazard exists only
-because this projection's writers do not emit, so only here does a transaction hold a
-projection lock while reaching for a stream position.
+Round 3's fix built a total order over the locks it could see —
+`lockProjectReadiness < ProjectEventStream < cash-forecast advisory`. Round 4 found
+the one it could not.
 
 **Round-3 F2 (P2) — operator identity.** The sweep validated `--operator` by reading
 the orgs-owned `User` table directly, in a CLI file the boundary analyzer cannot see.
 `OrgsParticipant.resolveUserIdentity` exists so "whether a disabled or merged account
 still resolves" changes once rather than per module, and the §L activation path beside
 it already routes through it. The stakes are durable — this sweep stamps `raisedById`
-on append-only observations.
+on append-only observations. **Closed; not reopened by round 4.**
+
+## Codex round 4 — one finding on head `93a9217`, and the end of the class
+
+**Round-4 F1 (P1) — the round-3 order was still cyclic, against the RELAY.**
+`OutboxRelay.dispatchProjection` locks the ACTIVE `ProjectionGeneration` row
+`FOR UPDATE` and **then** invokes the projection handler, which round 3 had just
+taught to take the stream row. The activation barrier holds the STREAM row and then
+locks that same generation row (`replayInto` → `applyEvent`). So:
+
+```
+relay:   ProjectionGeneration → (handler) → ProjectEventStream
+barrier: ProjectEventStream   →              ProjectionGeneration
+```
+
+A genuine cycle. PostgreSQL resolves it by killing the operator's rebuild or a live
+delivery.
+
+Three heads of lock ordering, three findings. **At that point the lock ordering is
+not the defect; it is the cost of the declaration underneath it.** The correction is
+described in *"Commercial's ONE event"* above: commercial announces, the write-through
+path and every lock this projection owned are deleted, and findings 3, 5, 6, 7, 8, 11
+and 13 close together on the mechanism that already closes them for the other seven.
 
 ## The probes
 
@@ -361,32 +411,34 @@ on append-only observations.
 | 33 | §J | headroom goes NEGATIVE on over-commitment; RED against `BUDGET − COMMITTED`, which reports ₹100 of room for a fully-accepted order |
 | 34 | §J | the partition survives tax and freight — the plan's 5t |
 | 35 | §J/§G | `live == projection == rebuild`, and a rebuild emits ZERO events + ZERO notifications |
-| 36 | §J | the WRITE-THROUGH and CONSUMER paths agree — commercial-only writes store the right money with the relay never drained, and draining changes nothing |
-| 37 | §J | defining AND renaming a cost head refreshes the forecast — the second seam |
+| 36 | §J | a COMMERCIAL-only write is ANNOUNCED — the event exists on the stream, its dispatching delivery was materialized in the writer's transaction, and the ordinary relay folds it to `live == projection` |
+| 37 | §J | defining AND renaming a cost head announces the move — the second seam |
 | 38 | §J/§D | the read falls back to LIVE for an absent generation (honestly dated `null`), serves the projection once one exists, and 404s off-pilot |
-| 39 | §J | a PARTITION-ONLY write refreshes the forecast too — paying and reversing move the stored `paid`/`approved` with nothing drained, because nothing was emitted |
+| 39 | §J | a PARTITION-ONLY write announces too — paying and reversing move the stored `paid`/`approved` through the relay like any other fact |
 | 40 | §B/§J | the operator sweep REOPENS a breach the §J completion re-created, labels it `fold_correction`, is idempotent on a second run, and CLEARS again once the budget is corrected |
-| 41 | §J | the rebuild SEED serializes on the forecast advisory lock — a holder BLOCKS it (`pg_blocking_pids`, condition-based) and it completes on release |
-| 42 | §0b | the forecast lock is taken AFTER the stream row, so the total order holds — a transaction holding the stream row is never blocked by a forecast-lock holder (RED: without it the write never waits at all) |
-| CLOSURE E | §G | a rebuildable projection whose owning module declares `producesEvents: []` MUST supply `lockFor` — both sides derived, both directions non-vacuous, mutation-tested RED |
+| 41 | §J/root B | an announced write leaves the generation's checkpoint BEHIND the stream head, so `readServableGeneration` refuses it and the read falls back live — staleness has a signal at all (RED: without the announcement `applied == head` and the generation stays servable) |
+| 42 | §0b | the forecast handler takes NO lock, so the RELAY's order (generation → handler) and the BARRIER's (stream → generation) cannot close a cycle — two sessions, the real handler between them (RED: restoring the round-3 stream-row acquisition produces a real `40P01`) |
+| CLOSURE E | §G | every rebuildable projection's owning module ANNOUNCES its facts — both sides derived, stated as necessary-not-sufficient, mutation-tested RED against the round-3 tree |
 | CLOSURE D | §J | every forecast event type is catalog-declared AND resolves to `dispatch`; the labour family is present by name; an unrelated event stays a no-op |
 
-Probes 36 and 37 were verified RED with the two `refreshCashForecast` calls
-removed, so neither is passing on the consumer path by accident. Probe 39 was RED
-before `payments.record`/`reverse` refreshed at all, and the CLOSURE 2 pin behind
-it was mutation-tested RED at both writers.
+Probes 41 and 42 were verified RED against the mechanism they test, not a proxy
+for it: 41 with the announcement removed from `evaluate` (`expected 8 to be greater
+than 8` — the stream head never moved), 42 with round 3's stream-row acquisition
+restored to `refreshCashForecast` (`deadlock detected`, a real `40P01` between the
+two sessions). Probe 39 was RED before `payments.record`/`reverse` announced at
+all, and the CLOSURE 2 pin behind it was mutation-tested RED at both writers.
 
 ## Gates
 
-- `pnpm check` **EXIT 0** — web 543/543, API 751/751, build clean.
-- The Task-6/7A money-fold suite **44/44** on live PostgreSQL.
-- Full integration suite on a pristine migrated database: **84 files / 1,014 tests**,
+- `pnpm check` **EXIT 0** — web 543/543, API 775/775, build clean.
+- The Task-6/7A money-fold suite **48/48** on live PostgreSQL.
+- Full integration suite on a pristine migrated database: **84 files / 1,016 tests**,
   zero failures.
 - `upgrade-proof.sh` **PASSED** — `CashForecastProjection` arrives ROW-FREE over
   the legacy fixture with its `(generationId, projectId)` unique installed, and
   every prior Phase-1..Phase-5 rejection survives.
-- `phase5-t6b-production-runner-proof.sh` — run by hand (CI structurally cannot),
-  because this unit adds a migration.
+- `phase5-t6b-production-runner-proof.sh` **PASSED** — run by hand (CI structurally
+  cannot), because this unit adds a migration.
 - `test:e2e:api:allmodules` and `:outbox` — attributed to CI. This container's
   pre-baked Playwright browser is `chromium_headless_shell-1194` against a
   Playwright pinned to `-1228`, so every local browser test fails at launch; a gate
@@ -394,7 +446,10 @@ it was mutation-tested RED at both writers.
 - Tripwires advanced in the same commits: the init delivery-count pin 36 → 40 (the
   cash forecast is the TENTH ordered consumer), `MODEL_OWNER` +1, the commercial
   manifest's owned/read-encapsulated sets, the query-site table, the RUNBOOK
-  seven → eight, and 31 TRUNCATE lists.
+  seven → eight, and 31 TRUNCATE lists. Round 4 adds `commercial.money_moved` to the
+  shared event catalog, the external-effect catalog and `commercial.producesEvents`;
+  commercial's dispatch-site count is UNCHANGED at zero, because the entry is
+  weightless.
 
 ## Invariant matrix
 

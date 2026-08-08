@@ -43,7 +43,7 @@ export class OutboxBootstrap implements OnModuleInit {
     private readonly labourCoverage: LabourCoverageService,
     // Phase 5 Task 7A — the cash-forecast projection recompute routes through the commercial budget
     // query (which is where every §J bucket is already defined); boot binds it once for the
-    // consumer, the write-through refresh and the operator rebuild diagnostic.
+    // consumer and the operator rebuild diagnostic.
     private readonly commercialBudget: CommercialBudgetQuery,
   ) {}
 
@@ -89,10 +89,10 @@ export class OutboxBootstrap implements OnModuleInit {
     bindLabourReadinessDeps({ coverage: this.labourCoverage });
     registerConsumer(makeLabourReadinessProjectionConsumer());
     // Phase 5 Task 7A — the EIGHTH rebuildable projection: the per-project CASH FORECAST (§J),
-    // recompute-only. Its ordered consumer covers the FOREIGN facts that move a bucket (the PO
-    // lifecycle, acceptance, measurement); commercial's own writes refresh write-through, because
-    // `commercial.producesEvents` is `[]` by declared design. Both paths call the one compute
-    // function, so the binding below serves the consumer, the write-through and the rebuild alike.
+    // recompute-only. Its ordered consumer covers every fact that moves a bucket: the FOREIGN ones
+    // (the PO lifecycle, acceptance, measurement) and commercial's OWN, which announce themselves
+    // with the weightless `commercial.money_moved`. One path, one compute function — the binding
+    // below serves the consumer and the rebuild alike.
     bindCashForecastDeps({ budget: this.commercialBudget });
     registerConsumer(makeCashForecastProjectionConsumer());
     // PR B — persist each consumer's contract BEFORE the relay starts, so the (consumer,

@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import type { Actor } from '../common/actor';
+import type { EventActor } from '../common/actor';
 import type { DomainEventType } from '@vitan/shared';
 import { materializeDeliveries, type DispatchIntent as PersistedDispatchIntent, type EmittedEventMeta } from './outbox/registry';
 import { buildDispatchIntent, type ExternalEffectKey, type DispatchInput } from './external-effects';
@@ -23,9 +23,11 @@ export type EventDb = Prisma.TransactionClient;
 export interface EmitInput {
   /** The project (site) the event belongs to; also the ordering scope. */
   projectId: string;
-  /** Who acted — the resolved {@link Actor} from the audit kernel (Task 3). A `human` carries a
-   *  real `actorId`; a `system` actor's id becomes the named `systemActor`. */
-  actor: Actor;
+  /** Who acted — the id + kind of the resolved `Actor` from the audit kernel (Task 3). A `human`
+   *  carries a real `actorId`; a `system` actor's id becomes the named `systemActor`. Typed as the
+   *  {@link EventActor} subset because those are the only two fields written here; a full `Actor`
+   *  satisfies it structurally. */
+  actor: EventActor;
   /** One of the shared catalog types (`decision.approved`, `activity.started`, …). */
   eventType: DomainEventType;
   entityType: string;

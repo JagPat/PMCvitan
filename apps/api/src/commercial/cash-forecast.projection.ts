@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client';
 import type { CashForecastDto, CostHeadPositionDto, DomainEventType } from '@vitan/shared';
 import type { DeliveryPlan, EmittedEventMeta, OutboxConsumer } from '../platform/outbox/registry';
+import type { EventActor } from '../common/actor';
+import { emitEvent } from '../platform/events';
 import type { CommercialBudgetQuery } from './commercial-budget.query';
 
 const ZERO = new Prisma.Decimal(0);
@@ -10,42 +12,37 @@ const ZERO = new Prisma.Decimal(0);
  * (`commercial.cash-forecast`, plan §J).
  *
  * RECOMPUTE-ONLY, deriving NO domain events. A rebuild replay emits zero events and zero
- * notifications, exactly like the six projections before it.
+ * notifications, exactly like the seven projections before it.
  *
  * ══════════════════════════════════════════════════════════════════════════════════════════════
- * TWO REFRESH PATHS, ONE COMPUTE FUNCTION — and why that is not a compromise
+ * AN ORDINARY PROJECTION — and how it stopped being an extraordinary one
  * ══════════════════════════════════════════════════════════════════════════════════════════════
  *
- * Every other projection refreshes purely from the outbox, because every fact it derives from is
- * announced by a domain event. This one cannot, and the reason is a DECLARED architectural
- * decision rather than an oversight: `commercial.producesEvents` is `[]`, justified in the
- * manifest as "an internal accounting fact with no external effect and no consumer". Certifying,
- * approving, paying, withholding and recovering an advance are the biggest movers of the §J
- * buckets, and none of them emits anything.
+ * The first four heads of this unit refreshed the forecast WRITE-THROUGH: commercial declared
+ * `producesEvents: []`, so its own money movements announced nothing, and the projection was
+ * updated inside the writer's transaction instead. That produced six review findings from one
+ * place — an overwrite race, a discovery race, a false `corrupt` verdict, an unlocked repair
+ * sweep, a refresh obligation hung on the wrong predicate, and finally a genuine lock-order
+ * inversion between the rebuild's activation barrier and a live purchase order.
  *
- * So the refresh has two paths and they are chosen by WHO OWNS the fact that moved:
+ * They were not six defects. They were one, and the convergence audit names it:
  *
- *   - FOREIGN facts — acceptance, the PO lifecycle, measurement — already emit canonical events,
- *     and this ordered `db` consumer refreshes on them exactly as the other projections do.
- *   - COMMERCIAL facts refresh WRITE-THROUGH, inside the same transaction as the write, at a seam
- *     that already exists and is DERIVED rather than listed: `CommercialBudgetService.evaluate`.
- *     §B headroom is `BUDGET − Σ(the six §J exposure buckets)`, so "this write moved headroom" and
- *     "this write moved a §J bucket" are the SAME predicate. Every money writer already calls
- *     `evaluate` — the `FOLD_INPUTS` closure fails the build if one does not — so a writer cannot
- *     satisfy §B and forget §J. One further seam exists, `commercial.costHead.define`, because
- *     defining or renaming a head changes what the forecast SAYS while moving no money at all; it
- *     is the ONLY exception and CLOSURE C pins that there is no third.
+ *   > The platform's projection machinery assumes EVERY INPUT TO A PROJECTION IS ANNOUNCED BY A
+ *   > DOMAIN EVENT. Seven projections satisfied it, so it was never written down.
  *
- * **What makes the two paths safe is that neither computes anything.** Both call
- * `computeCashForecastDto`, which is also what the operator rebuild diagnoses against and what the
- * read serves. `live == projection == rebuild` therefore holds BY CONSTRUCTION rather than by two
- * code paths agreeing — the same property the material and labour readiness projections have, and
- * the reason they were correct. A probe asserts it directly rather than leaving it to this comment.
+ * Three mechanisms rest on that assumption, and each breaks silently without it: `diagnose` freezes
+ * its comparison window by locking `ProjectEventStream`, which only stops writers that emit; a
+ * rebuild's catch-up repairs whatever the seed missed by REPLAYING EVENTS, which repairs nothing
+ * when there are none; and a stale projection is normally visible as an undelivered delivery.
  *
- * The alternative — giving commercial an event family — was considered and put to JagPat rather
- * than chosen silently: it reverses a declared manifest decision, adds ~8 events to the sealed
- * external-effect catalog, and grows this unit past its review budget on its own. The write-through
- * seam costs one call at each of the writers that already re-evaluate.
+ * So the repair is not a fifth lock. Commercial now emits ONE weightless event — `money_moved` —
+ * and this file is an ordinary consumer-only projection: the refresh has ONE path, takes NO lock of
+ * its own, and writes exactly the generation the relay or the rebuilder hands it. Every mechanism
+ * above works for the reason it works for the other seven.
+ *
+ * `computeCashForecastDto` is what the consumer refreshes with, what the operator rebuild diagnoses
+ * against, and what the live read falls back to, so `live == projection == rebuild` holds BY
+ * CONSTRUCTION rather than by two code paths agreeing. A probe asserts it directly.
  *
  * The projection feeds UI and forecast ONLY. No command authority reads it, so a lagging generation
  * can never change a decision — §B's over-budget exception is raised from the LIVE fold in the
@@ -55,33 +52,57 @@ const ZERO = new Prisma.Decimal(0);
 export const CASH_FORECAST_PROJECTION = 'commercial.cash-forecast';
 
 /**
- * The per-(project, consumer) serialization key for this projection's stored row.
+ * Commercial's ONE domain event, and the whole of `commercialManifest.producesEvents`.
  *
- * Exported because THREE callers must take the SAME lock rather than three that merely look alike:
- * `refreshCashForecast` (which every writer reaches, including the rebuild seed), and the operator
- * `diagnose`, which compares stored against canonical and would otherwise race a write-through
- * refresh into a false `corrupt` verdict. The prefix is written once, here, for the reason
- * `readinessLockKey` is: the day it changes, two callers must not silently stop serializing.
+ * It lives HERE, beside `FORECAST_EVENT_TYPES` and the consumer that recognises it, because the
+ * emitter and the listener agreeing on a string is precisely the kind of agreement this phase has
+ * watched fail — Codex F1 was the labour PO family spelled `labour_po.*` against a catalog that
+ * declares `labour.po.*`, and the whole generation stayed servable while silently dropping every
+ * labour commitment. One constant, read by both sides, cannot drift from itself.
  */
-export function cashForecastLockKey(projectId: string): string {
-  return 'cash-forecast:' + projectId;
-}
+export const COMMERCIAL_MONEY_EVENT = 'commercial.money_moved' as const;
 
 /**
- * Take that lock. The operator diagnostic calls this through the projection registry's `lockFor`
- * hook so the stored-vs-canonical comparison sees ONE consistent instant.
+ * Announce that commercial money moved on this project, inside the writer's own transaction.
  *
- * Every OTHER projection is safe without it: their inputs arrive as events, and `diagnose` already
- * holds the project's stream-allocation row, which freezes event emission. This projection's
- * commercial writers emit nothing, so that lock does not reach them — a payment can commit between
- * the stored read and the canonical recompute and be reported as corruption by the very write that
- * made the row current.
+ * This is the SINGLE emit seam, and it is DERIVED rather than listed. §B headroom is
+ * `BUDGET − Σ(the six §J exposure buckets)`, so "this write moved headroom" and "this write moved a
+ * §J bucket" are the SAME predicate — which is why the seam is `CommercialBudgetService.evaluate`,
+ * a call every money writer already makes (`FOLD_INPUTS` fails the build if one does not). Three
+ * further callers exist and each is there for a stated reason rather than by enumeration:
+ * `commercial.costHead.define` and §L activation write `CostHead` rows without moving money, and
+ * the two partition-only payment writes move a bucket without moving the total.
+ *
+ * WEIGHTLESS: the catalog entry declares `invalidate: false, push: null`, so nothing is sent to any
+ * client and the emitting command needs no `ExternalEffectDispatcher`. What the event is FOR is the
+ * durable `OutboxDelivery` that `emitEvent` materializes in this same transaction — the announcement
+ * the §J projection folds, the operator diagnostic freezes against, and a rebuild's catch-up
+ * replays. Committing the money and the announcement together is the property that makes all three
+ * work; a write-through refresh looked equivalent and was not.
+ *
+ * The returned meta is deliberately DISCARDED by every caller. A weightless intent has nothing for
+ * the post-commit dispatcher to send, so commercial services keep `events: []` and stay at zero
+ * dispatch sites — which the cross-module tripwire pins.
  */
-export async function lockCashForecast(tx: Prisma.TransactionClient, projectId: string): Promise<void> {
-  // The caller (`diagnose`) already holds the stream row, which is the required order —
-  // `ProjectEventStream` BEFORE the cash-forecast advisory lock. Taking it again here would be a
-  // harmless no-op; not taking it keeps this function honest about what it does.
-  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${cashForecastLockKey(projectId)}, 0))`);
+export async function announceMoneyMoved(
+  tx: Prisma.TransactionClient,
+  projectId: string,
+  actor: EventActor,
+  moved: { readonly costHeadCodes: readonly string[]; readonly reason: string },
+): Promise<EmittedEventMeta> {
+  return emitEvent(tx, {
+    projectId,
+    actor,
+    eventType: COMMERCIAL_MONEY_EVENT,
+    entityType: 'Project',
+    entityId: projectId,
+    // WHICH heads and WHY — the same two facts §B stamps on a `BudgetException`. A replayed event
+    // is recomputed from canonical state rather than from this payload, so it is explanation for a
+    // person reading the stream, never an input to the fold.
+    payload: { costHeadCodes: [...moved.costHeadCodes], reason: moved.reason },
+    effectKey: COMMERCIAL_MONEY_EVENT,
+    dispatch: {},
+  });
 }
 
 let boundDeps: { budget: CommercialBudgetQuery } | null = null;
@@ -98,8 +119,8 @@ function deps(): { budget: CommercialBudgetQuery } {
 /**
  * The CANONICAL per-project cash forecast (§J), recomputed on the given transaction.
  *
- * The ONE source shared by the consumer refresh, the write-through refresh, the
- * `commercial.cash-forecast` read and the operator rebuild diagnostic.
+ * The ONE source shared by the consumer refresh, the rebuild seed, the `commercial.cash-forecast`
+ * read and the operator rebuild diagnostic.
  *
  * `budget` is reported ALONGSIDE headroom and is NEVER an addend: §J is explicit that it is the
  * CEILING the six exposure buckets are measured against, and two earlier revisions of that section
@@ -147,106 +168,46 @@ export async function computeCashForecastDto(
 }
 
 /**
- * Store the project's forecast row. Exported because BOTH refresh paths call it — the ordered
- * consumer below for foreign events, and the commercial writers write-through for their own facts.
+ * Store the project's forecast row into ONE generation — the one the caller is responsible for.
  *
- * WITHOUT a `generationId` (the write-through path) this refreshes every LIVE generation of THIS
- * project, and both halves of that are load-bearing:
+ * There is exactly one refresh path now, and `generationId` is REQUIRED rather than discovered.
+ * That is the whole of what the event repair bought, so it is worth naming what disappeared:
  *
- *   - every LIVE generation, not just the serving one, because a rebuild runs a `building`
- *     generation alongside the `active` one. A commercial write lands in the window between the
- *     rebuild's canonical seed and its activation barrier, emits NOTHING for the catch-up phase to
- *     apply, and would therefore activate a generation holding a pre-write money picture — the
- *     rebuild making the projection WORSE, which is the one thing a repair must never do.
- *     `retired` generations are excluded: nothing serves them and nothing will.
- *   - this project's, because generations are per (consumer, project). An unscoped query would
- *     write this project's money into every other project's generation row for this consumer.
- *
- * A project with no generation yet stores nothing and that is correct: the read falls back to the
- * live compute until the relay establishes one, which is the same warm-up every projection has.
+ *   - no generation DISCOVERY, so no race with a `building` generation appearing mid-write. The
+ *     rebuilder seeds its own generation and hands the id in; the relay locks the ACTIVE generation
+ *     and hands that id in. Nothing else writes here.
+ *   - no LOCK of any kind. The relay already holds the target generation row `FOR UPDATE`; the
+ *     rebuilder is the single writer of a `building` generation and holds it too. A projection that
+ *     takes no lock cannot invert one.
+ *   - no window between a seed and an activation for a silent commercial write to slip through: a
+ *     commercial write now allocates a stream position, so it is either before the seed (visible to
+ *     it) or after it (replayed by catch-up, which is what catch-up is for).
  */
 export async function refreshCashForecast(
-  tx: Prisma.TransactionClient, projectId: string, generationId?: string,
+  tx: Prisma.TransactionClient, projectId: string, generationId: string,
 ): Promise<void> {
-  // LOCK FIRST, THEN DISCOVER, THEN COMPUTE, THEN WRITE. That order is the correctness argument,
-  // and round 2 corrected round 1's version of it.
-  //
-  // Round 1 (Codex F5) took the target generation rows `FOR UPDATE` — but only the rows it had
-  // ALREADY FOUND, and it found them before locking anything. That closes the overwrite race and
-  // leaves a second one open, because the rebuilder allocates its `building` generation in its OWN
-  // transaction, separate from the seed:
-  //
-  //   1. a payment transaction reads the generation set — only `active` exists yet
-  //   2. the rebuild allocates a `building` generation and COMMITS that allocation
-  //   3. the rebuild seeds it from canonical, still seeing the pre-payment money
-  //   4. the payment refreshes only the id it captured at step 1, then commits
-  //
-  // Nothing is left to repair the building generation: the payment emitted no event, so catch-up
-  // has nothing to replay, and a generation holding pre-payment money is ACTIVATED. Locking rows
-  // cannot prevent a row from appearing.
-  //
-  // So the lock is a per-(project, consumer) ADVISORY lock, and the target set is discovered UNDER
-  // it. Every writer of this projection — the ordered consumer, the write-through, and the rebuild
-  // seed, which reaches this same function — takes it, so whichever side goes second discovers the
-  // other's committed generation and computes with its money visible.
-  //
-  // ── AND THE STREAM ROW COMES FIRST (Codex round-3, P1) ────────────────────────────────────────
-  //
-  // Round 2 called this "one lock, always first, so no acquisition order exists to invert". That
-  // was true of the two cash-forecast callers and false of the system: the real ordering graph
-  // includes `ProjectEventStream`, which `emitEvent` locks to allocate a position and the rebuild's
-  // activation barrier holds while it replays the tail.
-  //
-  //   - the BARRIER holds the stream row, then replays a forecast-relevant tail event, whose
-  //     handler lands here and waits for the advisory lock;
-  //   - a concurrent PO issue takes the advisory lock through `evaluate`, then calls `emitEvent`
-  //     and waits for the stream row.
-  //
-  // Stream→advisory against advisory→stream is a deadlock, and PostgreSQL resolves it by killing
-  // one of them — either the operator's rebuild or a live purchase order.
-  //
-  // The fix is a TOTAL ORDER rather than a rule callers must remember:
-  //
-  //     lockProjectReadiness  <  ProjectEventStream  <  cash-forecast advisory
-  //
-  // Taking the stream row HERE, before the advisory lock, makes every holder of the advisory lock
-  // already hold the stream row — so no caller can arrive at them in the other sequence, whatever
-  // it does afterwards. A project with no stream row yet locks nothing, which is correct: no
-  // position has ever been allocated, so there is nothing to order against, and the advisory lock
-  // still serializes the forecast writers.
-  //
-  // The cost is that a commercial write now serializes with event allocation for its project. That
-  // is the same coarse, human-scale granularity `lockProjectReadiness` already chose, and most of
-  // these writers hold that lock anyway.
-  await tx.$queryRaw`SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = ${projectId} FOR UPDATE`;
-  await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${cashForecastLockKey(projectId)}, 0))`);
-
-  const targets = generationId
-    ? [generationId]
-    : (await tx.projectionGeneration.findMany({
-        where: { consumer: CASH_FORECAST_PROJECTION, projectId, status: { in: ['active', 'building'] } },
-        select: { id: true },
-      })).map((g) => g.id);
-  if (targets.length === 0) return; // no generation yet — the read falls back live, correctly
-
   const dto = (await computeCashForecastDto(tx, projectId)) as unknown as Prisma.InputJsonValue;
-  for (const id of targets) {
-    await tx.cashForecastProjection.upsert({
-      where: { generationId_projectId: { generationId: id, projectId } },
-      create: { generationId: id, projectId, dto },
-      update: { dto },
-    });
-  }
+  await tx.cashForecastProjection.upsert({
+    where: { generationId_projectId: { generationId, projectId } },
+    create: { generationId, projectId, dto },
+    update: { dto },
+  });
 }
 
 /**
- * The FOREIGN events that move a §J bucket. Commercial's own writes are absent by construction —
- * it emits nothing — and they refresh write-through instead.
+ * Every event that moves a §J bucket — commercial's own and the foreign ones alike.
  *
- * Each of these changes a term the fold reads: a PO's lifecycle moves `COMMITTED`, an acceptance
- * or a measurement moves the received side, and a stock reversal moves it back.
+ * Each changes a term the fold reads: a PO's lifecycle moves `COMMITTED`, an acceptance or a
+ * measurement moves the received side, a stock reversal moves it back, and `commercial.money_moved`
+ * announces certification, approval, payment, reversal, withholding, advance recovery, a budget
+ * revision, a re-attribution and a cost-head definition — every act that changes what commercial's
+ * own tables say.
  */
 export const FORECAST_EVENT_TYPES: readonly DomainEventType[] = [
+  // Phase 5 Task 7A — commercial's ONE event, by CONSTANT rather than by a second spelling of the
+  // string. Before it existed these buckets were refreshed write-through from inside each writer's
+  // transaction; see the header for why that was wrong.
+  COMMERCIAL_MONEY_EVENT,
   'po.issued', 'po.amended', 'po.cancelled', 'po.closed_short',
   // Codex F1 (P1). These four were written `labour_po.*` — a plausible name that does not exist.
   // The canonical family is `labour.po.*`, and the consequence of the typo was worse than a missed
@@ -279,6 +240,11 @@ export function makeCashForecastProjectionConsumer(): OutboxConsumer {
     deliveryFor,
     projection: {
       rebuildSeed: async (tx, target) => {
+        // The head is read BEFORE the compute, and the order is the correctness argument. Under
+        // READ COMMITTED each statement takes a fresh snapshot, so the compute reflects at least
+        // everything the aggregate saw: `seededThrough` can only UNDER-state what the seeded row
+        // contains, never over-state it. Under-stating costs one idempotent replay in catch-up;
+        // over-stating would silently skip a real event, which is the direction that loses money.
         const max = await tx.domainEvent.aggregate({
           where: { projectId: target.projectId }, _max: { streamPosition: true },
         });

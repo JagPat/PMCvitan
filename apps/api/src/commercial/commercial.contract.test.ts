@@ -570,28 +570,27 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    * §J's REFRESH is a SEPARATE obligation from §B's raise-or-clear, and Task 7A learned the
    * difference the hard way.
    *
-   * 7A hung the cash-forecast write-through off `CommercialBudgetService.evaluate`, on the
-   * derivation that "moved headroom" and "moved a §J bucket" are the same predicate. They are
-   * ALMOST the same, and the gap is exactly the partition-only rows: paying and reversing move a
-   * bucket without moving the total, so they are rightly exempt from the evaluator — and were
-   * therefore silently exempt from the refresh too. The stored forecast would have gone on
-   * reporting money as authorised-and-unpaid forever after it left the bank, with NO event a
-   * consumer could have missed, which is the failure mode CLOSURE C exists for.
+   * 7A hung the §J announcement off `CommercialBudgetService.evaluate`, on the derivation that
+   * "moved headroom" and "moved a §J bucket" are the same predicate. They are ALMOST the same, and
+   * the gap is exactly the partition-only rows: paying and reversing move a bucket without moving
+   * the total, so they are rightly exempt from the evaluator — and were therefore silently exempt
+   * from §J too. The stored forecast would have gone on reporting money as authorised-and-unpaid
+   * forever after it left the bank.
    *
    * So the obligation is pinned over the WHOLE table rather than the non-exempt part of it: every
-   * writer refreshes, through an evaluator (which refreshes at its end) or directly.
+   * writer announces, through an evaluator (which announces at its end) or directly.
    */
   for (const input of FOLD_INPUTS) {
     for (const writer of input.writers) {
-      it(`${writer.file.split('/').pop()}#${writer.method} refreshes the §J forecast — it writes ${input.owner}.${input.field}`, () => {
+      it(`${writer.file.split('/').pop()}#${writer.method} announces the §J move — it writes ${input.owner}.${input.field}`, () => {
         const src = readFileSync(join(SRC, writer.file), 'utf8');
         const start = src.indexOf(`async ${writer.method}(`);
         expect(start, `${writer.file}#${writer.method} not found — FOLD_INPUTS drifted from the code`).toBeGreaterThan(-1);
         const next = src.indexOf('\n  async ', start + 1);
         const body = src.slice(start, next === -1 ? undefined : next);
         expect(
-          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.evaluateHeadroom\(|refreshCashForecast\(/u.test(body),
-          `${writer.file}#${writer.method} writes ${input.field} — a §J bucket — but neither evaluates nor calls refreshCashForecast, so the stored cash forecast keeps a figure this write already changed. Commercial emits no events, so nothing downstream can notice`,
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.evaluateHeadroom\(|announceMoneyMoved\(/u.test(body),
+          `${writer.file}#${writer.method} writes ${input.field} — a §J bucket — but neither evaluates nor calls announceMoneyMoved, so nothing announces the move and the stored cash forecast keeps a figure this write already changed`,
         ).toBe(true);
       });
     }
@@ -1116,29 +1115,30 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     ).toBe(false);
   });
 
-  // ── CLOSURE C (Task 7A) — §J's refresh seams are DERIVED from what the forecast READS ─────────
+  // ── CLOSURE C (Task 7A) — §J's announcement seams are DERIVED from what the forecast READS ────
   //
   // Root A once more, at the substrate Task 7A introduces. The cash-forecast projection is stored,
-  // so it can go stale — and unlike every other projection in this codebase, a commercial write
-  // that forgets to refresh it emits NO EVENT that could have been missed. There is nothing for a
-  // consumer to notice. The only thing standing between "a writer forgot" and "the money page is
-  // wrong for a week" is this closure and the operator diagnostic.
+  // so it can go stale, and it goes stale exactly when a commercial write moves a bucket without
+  // ANNOUNCING it: the platform's whole staleness machinery — the ordered cursor, the diagnostic's
+  // frozen window, the rebuild's catch-up — is driven by events, so a silent write is invisible to
+  // all three. CLOSURE E states that precondition at the platform; this is the module's half of
+  // it, and the half that is actually sufficient.
   //
   // So the seams are not listed, they are DERIVED: the forecast is exactly what
   // `serializedPositionsFor` + `positionsFor` read, this test extracts the `tx.<model>` reads from
   // those two method bodies, and every model must be CLASSIFIED against the write path that
-  // refreshes it. Two classifications exist and adding a third is meant to be uncomfortable:
+  // announces it. Two classifications exist and adding a third is meant to be uncomfortable:
   //
   //   'evaluate'  — the model is a §B headroom input, so every writer of it already calls
   //                 `CommercialBudgetService.evaluate` (CLOSURE 2 fails the build otherwise) and
-  //                 `evaluate` refreshes the forecast at its end. §B headroom IS
-  //                 `BUDGET − Σ(the six §J buckets)`, so this is one predicate, not two lists.
+  //                 `evaluate` announces at its end. §B headroom IS `BUDGET − Σ(the six §J
+  //                 buckets)`, so this is one predicate, not two lists.
   //   'costHead'  — the model changes what the forecast SAYS while moving no money:
   //                 `commercial.costHead.define` adds an all-zero row or renames one.
   //
   // A model added to the compute path without a classification fails here. A classification whose
-  // named site no longer calls `refreshCashForecast` fails here too.
-  it('§J: every model the cash forecast reads has a write path that refreshes the projection', () => {
+  // named site no longer announces fails here too.
+  it('§J: every model the cash forecast reads has a write path that announces the move', () => {
     const querySrc = readFileSync(join(HERE, 'commercial-budget.query.ts'), 'utf8');
     const methodBody = (name: string): string => {
       const start = querySrc.indexOf(`async ${name}(`);
@@ -1159,29 +1159,29 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
 
     // The classification. `commitmentAttribution` is `evaluate`-covered because a re-attribution is
     // itself a headroom mover on BOTH the source and the target head (CLOSURE 3 pins the label).
-    const REFRESHED_BY: Record<string, 'evaluate' | 'costHead'> = {
+    const ANNOUNCED_BY: Record<string, 'evaluate' | 'costHead'> = {
       costHead: 'costHead',
       budgetLine: 'evaluate',
       budgetException: 'evaluate',
       commitmentAttribution: 'evaluate',
     };
-    const unclassified = readModels.filter((m) => !(m in REFRESHED_BY));
+    const unclassified = readModels.filter((m) => !(m in ANNOUNCED_BY));
     expect(
       unclassified,
-      `the cash forecast reads these models and nothing says which write path refreshes the projection when they change. A stored forecast that no writer refreshes is a money page that silently goes stale — and commercial emits no events, so no consumer can catch it either. Classify each as 'evaluate' (a §B headroom input) or name its own seam: ${unclassified.join(', ')}`,
+      `the cash forecast reads these models and nothing says which write path ANNOUNCES a change to them. A stored forecast whose input moved unannounced is a money page that silently goes stale, and no cursor, diagnostic or rebuild can catch it. Classify each as 'evaluate' (a §B headroom input) or name its own seam: ${unclassified.join(', ')}`,
     ).toEqual([]);
     // and the reverse: a classification for a model the compute no longer reads is dead weight that
     // would let a real gap hide behind a green test
-    const stale = Object.keys(REFRESHED_BY).filter((m) => !readModels.includes(m));
-    expect(stale, `these models are classified as refreshed but the cash forecast no longer reads them: ${stale.join(', ')}`).toEqual([]);
+    const stale = Object.keys(ANNOUNCED_BY).filter((m) => !readModels.includes(m));
+    expect(stale, `these models are classified as announced but the cash forecast no longer reads them: ${stale.join(', ')}`).toEqual([]);
 
     // …and each named seam ACTUALLY refreshes. A classification is a claim about code, so it is
     // exercised rather than trusted.
     const budgetSvc = readFileSync(join(HERE, 'commercial-budget.service.ts'), 'utf8');
     const evaluateBody = budgetSvc.slice(budgetSvc.indexOf('  async evaluate('));
     expect(
-      evaluateBody.slice(0, evaluateBody.indexOf('\n  }')).includes('refreshCashForecast(tx, projectId)'),
-      "`CommercialBudgetService.evaluate` no longer refreshes the cash forecast, so every model classified 'evaluate' above has no refresh at all",
+      evaluateBody.slice(0, evaluateBody.indexOf('\n  }')).includes('announceMoneyMoved(tx, projectId, actor'),
+      "`CommercialBudgetService.evaluate` no longer announces the move, so every model classified 'evaluate' above has no announcement at all",
     ).toBe(true);
 
     // THE WRITER SITES ARE DERIVED, NOT TRUSTED (Codex F4). The first spelling of this closure
@@ -1192,20 +1192,20 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     //
     // A classification naming a method is a claim about one site; the obligation is about ALL of
     // them. So every commercial file is scanned for a WRITE to a classified model, and each writing
-    // file must refresh — through `refreshCashForecast` or an evaluator that does.
+    // file must announce — through `announceMoneyMoved` or an evaluator that does.
     const commercialFiles = readdirSync(HERE).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
-    const REFRESHERS = /refreshCashForecast\(|this\.evaluate\(|evaluateHeadsForBill\(|this\.budget\.evaluate\(/u;
+    const ANNOUNCERS = /announceMoneyMoved\(|this\.evaluate\(|evaluateHeadsForBill\(|this\.budget\.evaluate\(/u;
     const writeSites: string[] = [];
     for (const file of commercialFiles) {
       const src = readFileSync(join(HERE, file), 'utf8');
       const writes = [...src.matchAll(/\btx\.(\w+)\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\b/gu)]
         .map((m) => m[1]!)
-        .filter((model) => model in REFRESHED_BY);
+        .filter((model) => model in ANNOUNCED_BY);
       if (writes.length === 0) continue;
       writeSites.push(file);
       expect(
-        REFRESHERS.test(src),
-        `${file} writes ${[...new Set(writes)].join('/')} — a model the cash forecast READS — but never refreshes the projection, directly or through an evaluator. Commercial emits no events, so a stale forecast here is invisible to every consumer`,
+        ANNOUNCERS.test(src),
+        `${file} writes ${[...new Set(writes)].join('/')} — a model the cash forecast READS — but never announces the move, directly or through an evaluator. An unannounced write is invisible to the ordered cursor, to the operator diagnostic and to a rebuild's catch-up alike`,
       ).toBe(true);
     }
     expect(

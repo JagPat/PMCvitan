@@ -82,11 +82,23 @@ export const commercialManifest: ModuleManifest = {
   // the legacy `User.role` column — the cleared Phase-4 T3 precedent (Membership/Project/
   // OrgMembership are orgs-owned, so the owner answers the membership question). Cycle-exempt.
   workflowParticipants: ['inventory', 'activities', 'procurement', 'labour', 'orgs'],
-  // Task 1 emits NO domain event. An attribution is an internal accounting fact with no external
-  // effect and no consumer — the budget-vs-committed exception that reacts to it is Task 2's
-  // Inbox action, raised from the fold. Attributability is the actor FK + reason + the
-  // append-only seal, and `recordAudit` carries it onto the project's audit trail.
-  producesEvents: [],
+  // Task 1 declared NO domain event, on two grounds: an accounting fact has no external effect,
+  // and it has no consumer. Attributability was the actor FK + reason + the append-only seal, with
+  // `recordAudit` carrying it onto the project's audit trail — all of which still holds.
+  //
+  // Phase 5 Task 7A (§J) makes the SECOND ground false, and this is the honest consequence rather
+  // than machinery built to keep a stale declaration true. The stored cash forecast is a consumer
+  // of every commercial money movement, and the platform's projection machinery assumes — in three
+  // separate places — that a projection's inputs are announced by events: `diagnose` freezes the
+  // window by locking `ProjectEventStream`, a rebuild's catch-up repairs the seed's blind spot by
+  // REPLAYING EVENTS, and staleness is normally visible as an undelivered delivery. A projection
+  // fed by silent write-through has none of those, which is what four review rounds of compensating
+  // locks were paying for.
+  //
+  // The FIRST ground is preserved literally: `commercial.money_moved` is WEIGHTLESS in the
+  // external-effect catalog (`invalidate: false, push: null`), so commercial still sends nothing to
+  // any client. The event exists for its durable outbox delivery and nothing else.
+  producesEvents: ['commercial.money_moved'],
   // Nothing to fold: commercial derives its truth from rows it owns plus the owning modules'
   // read contracts, never from a foreign event payload.
   consumesEvents: [],

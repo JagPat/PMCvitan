@@ -361,7 +361,7 @@ export class CommercialVerificationService {
         // sets, so it is a headroom mover like every other bill transition. `disputed` leaves the
         // live fold, and leaving the register unevaluated lets the budget READ drop the exposure
         // while the exception stays open — two surfaces built from the same fold disagreeing.
-        await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);
+        await this.billService.evaluateHeadsForBill(tx, projectId, actor, input.billId);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.verify', entity: 'VendorBill', entityId: input.billId,
         });

@@ -9,7 +9,6 @@ import { CommercialPaymentQuery } from './commercial-payment.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import { InventoryQuery } from '../inventory/inventory.query';
-import { bindCashForecastDeps } from './cash-forecast.projection';
 import { recordAudit } from '../platform/audit';
 import { systemActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -46,8 +45,9 @@ import { OrgsParticipant } from '../orgs/orgs.participant';
  *   - COMPLETE. It sweeps every cost head of every commercial-enabled project, derived from the
  *     capability rows rather than from a list an operator has to assemble.
  *
- * It also refreshes the §J cash forecast for every project it touches, because `evaluate` does —
- * which is the other half of what a post-7A deploy needs.
+ * It also ANNOUNCES every project it moves (`commercial.money_moved`, appended by `evaluate` in the
+ * same transaction), so the §J cash-forecast projection folds the repaired figures exactly as it
+ * folds an ordinary write — which is the other half of what a post-7A deploy needs.
  */
 
 function parseFlags(argv: string[]): Record<string, string> {
@@ -72,8 +72,6 @@ export function buildBudgetService(prisma: PrismaService): CommercialBudgetServi
     deductions,
     new CommercialPaymentQuery(deductions),
   );
-  // the refresh inside `evaluate` needs these bound, exactly as boot and the rebuild CLI do
-  bindCashForecastDeps({ budget: query });
   return new CommercialBudgetService(prisma, new CapabilitiesService(prisma), query);
 }
 
@@ -129,7 +127,13 @@ export async function reevaluateAll(
         where: { projectId, clearedAt: null }, select: { id: true },
       })).map((e) => e.id));
 
-      await budget.evaluate(tx, projectId, operator.userId, heads.map((h) => h.code), 'fold_correction');
+      // `actorKind: 'system'` — this is an operator process, and the `commercial.money_moved`
+      // envelope `evaluate` appends records the distinction. The id is the RESOLVED user, so the
+      // exception rows and the event point at the same real identity.
+      await budget.evaluate(
+        tx, projectId, { actorId: operator.userId, actorKind: 'system' },
+        heads.map((h) => h.code), 'fold_correction',
+      );
 
       const idsAfter = new Set((await tx.budgetException.findMany({
         where: { projectId, clearedAt: null }, select: { id: true },

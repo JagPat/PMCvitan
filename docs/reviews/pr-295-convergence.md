@@ -21,6 +21,7 @@ another isolated patch. This is that audit.
 | — | CI | `1bf577f` | — | Two operator-rebuild coverage lists, one named `ALL_FIVE` holding seven entries |
 | 11 | Codex | `ce015a1` | P1 | The advisory lock inverted against `ProjectEventStream` — barrier and PO issue take the pair in opposite order |
 | 12 | Codex | `ce015a1` | P2 | The sweep read the orgs-owned `User` table directly to validate `--operator` |
+| 13 | Codex | `93a9217` | P1 | The round-3 order was still cyclic against the RELAY: `dispatchProjection` locks the active `ProjectionGeneration` and then calls the handler, which took the stream row; the barrier takes them the other way round |
 | — | self | in-branch | — | Paying was exempt from §J's refresh; `APPROVED` was misclassified as a headroom mover; PROBE 41 asserted a proxy; PROBE 42's first comment claimed a 40P01 the test does not show |
 
 ## Root A — a hand-written list standing in for a derived set
@@ -93,17 +94,18 @@ Finding 3 is Root B's sibling in a different dimension: the DI container binds
 `bindCashForecastDeps` at boot, so every caller inside it works. A CLI that builds
 its own graph is outside that guarantee, and nothing said so.
 
-**The mechanical closure — CLOSURE E** (`module-registry.test.ts`). The
-precondition is now EXPLICIT and checked: a rebuildable projection whose owning
-module declares `producesEvents: []` must supply `lockFor`, which is the
-declaration that it serializes its own writers. Both sides are derived — the
-projection set from `REBUILDABLE_PROJECTIONS`, the emitting-ness from the owning
-manifest — and the test asserts both that the event-less set is non-empty (so it
-cannot pass by seeing nothing) and that the event-driven set is non-empty (so it
-is discriminating rather than a blanket demand). Mutation-tested RED.
+**The mechanical closure — CLOSURE E** (`module-registry.test.ts`), and round 4
+corrected its SHAPE. Its first version demanded a compensating lock (`lockFor`)
+from an event-less owner. That accommodated a false declaration instead of
+requiring the declaration to be true, and round 4 is the bill for it — see below.
+It now states the precondition itself: **every rebuildable projection's owning
+module must announce its facts.** Both sides derived — the projection set from
+`REBUILDABLE_PROJECTIONS`, the emitting-ness from the owning manifest — and the
+message says plainly that this is NECESSARY, not sufficient: the sufficient half
+is per-module (CLOSURE C for §J). Mutation-tested RED against the round-3 tree.
 
-The next event-less module that adds a projection is stopped at the desk, not
-three review rounds later.
+The next module that adds a projection without announcing its facts is stopped at
+the desk, not four review rounds later.
 
 ### Round 3 confirmed Root B, from the outside
 
@@ -141,6 +143,54 @@ boundary analyzer cannot see. `OrgsParticipant.resolveUserIdentity` exists so th
 changes once rather than per module, and the §L activation path beside it already
 routes through it. The stakes are durable: this sweep stamps `raisedById` on
 append-only observations.
+
+### Round 4 ended it — the root, not the fifth lock
+
+Round 4 found ONE P1, and it is round 3's fix being wrong in the same way round
+2's was. Round 3 built a total order over the two locks it could see — readiness,
+stream, advisory. The order it could not see is the RELAY's:
+
+- `dispatchProjection` locks the ACTIVE `ProjectionGeneration` row `FOR UPDATE`
+  and **then** invokes the handler, which took the stream row;
+- the activation barrier holds the STREAM row and then locks that same generation
+  row (`replayInto` → `applyEvent`).
+
+`generation → stream` against `stream → generation` — a real cycle, resolved by
+PostgreSQL killing the operator's rebuild or a live delivery.
+
+Three heads of lock-ordering, three findings. At that point the lock ordering is
+not the defect; **it is the cost of the false declaration underneath it.**
+`producesEvents: []` was justified on TWO grounds — *no external effect* and *no
+consumer*. The first is still true. The second stopped being true the moment §J
+added a stored forecast, and every mechanism in findings 5–8 and 11 and 13 was
+machinery built to make a projection work without the announcement the platform
+assumes it has.
+
+So round 4 does not add a lock. It makes the declaration true:
+
+- commercial emits ONE event, `commercial.money_moved`, from the seam already
+  derived in Root A's answer (`evaluate`) plus the three seams that write a
+  forecast input without moving headroom;
+- the catalog entry is **weightless** (`invalidate: false, push: null`), so the
+  first ground — *no external effect* — stays literally true, no client is sent
+  anything, and commercial's services stay at zero dispatch sites;
+- and the write-through path, the advisory lock, `cashForecastLockKey`,
+  `lockCashForecast`, the `Rebuildable.lockFor` hook and its `diagnose` plumbing
+  are all **deleted**. `refreshCashForecast` takes a required `generationId`,
+  computes, upserts, and takes no lock at all — a projection that holds no lock
+  cannot invert one.
+
+Findings 5, 6, 7, 8, 11 and 13 are closed by the same three lines, and each is
+closed by the mechanism that closes it for the other seven projections rather
+than by a bespoke one: the seed's blind spot is repaired by catch-up because
+there is now an event to replay; `diagnose`'s stream lock reaches commercial
+writers because they emit; staleness is a lagging checkpoint. Finding 3 goes with
+them — no command path computes the forecast any more, so a CLI that builds its
+own graph cannot be missing a binding it does not need.
+
+**The general lesson, and it is the sharper form of "fix the class, not the
+member":** when a repair keeps needing another repair of the same kind, the thing
+to change is the declaration the repairs are defending, not the repairs.
 
 ## Root C — an artefact that claims more than it does
 
@@ -184,6 +234,19 @@ The rule this leaves: a concurrency probe must name WHICH statement waits, and b
 run against a build with the mechanism removed. Asserting a wait is not asserting
 the mechanism.
 
+Round 4 rewrote both concurrency probes against the new mechanism, and the rule
+above is what shaped them. PROBE 42 no longer asserts that something blocked: it
+plays the RELAY (lock the active generation, then run the REAL handler) and the
+BARRIER (hold the stream row, then reach for that same generation row) as two
+sessions on two clients, with the relay signalling the instant it holds the
+generation row so the barrier arrives while the handler is running. At `93a9217`
+that is a 40P01 one side dies of; with the handler's locks deleted both commit.
+Verified RED by restoring the stream-row acquisition to `refreshCashForecast` —
+the mechanism removed, not a proxy for it. PROBE 41 stopped being a lock probe
+altogether and asserts the property the lock was standing in for: an announced
+write leaves the generation's checkpoint BEHIND the stream head, so the read
+falls back live and staleness has a signal at all.
+
 ## One finding that was the code being right
 
 PROBE 20 of the Task-6A suite failed when §J's partition completed, and the
@@ -204,7 +267,12 @@ exception on the strength of my own arithmetic is what went wrong twice in Task 
 1. **Root A is not closed by another per-substrate closure.** The durable form is
    making the source the checker — a type, a scan, a registry read — not a second
    list to compare against the first.
-2. **Root B has a name now, and CLOSURE E enforces it.** "Every projection input
-   is announced by an event" was true for seven and is a precondition, not a law.
-3. **A concurrency probe is not evidence until it has been run RED.** Three for
-   three this phase.
+2. **Root B has a name now, and CLOSURE E enforces it as a REQUIREMENT rather
+   than as a compensating hook.** "Every projection input is announced by an
+   event" was true for seven, and is a precondition of three separate platform
+   mechanisms. A module that owns a projection announces its facts.
+3. **When successive repairs are all of one kind, the declaration underneath them
+   is the defect.** Three heads of lock ordering were paying for
+   `producesEvents: []` being half-true. One weightless event deleted all of it.
+4. **A concurrency probe is not evidence until it has been run RED.** Four for
+   four this phase.

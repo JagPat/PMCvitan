@@ -9,14 +9,12 @@ import {
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
-import { resolveActor } from '../common/actor';
+import { resolveActor, type EventActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialBudgetQuery } from './commercial-budget.query';
-import {
-  CASH_FORECAST_PROJECTION, computeCashForecastDto, refreshCashForecast,
-} from './cash-forecast.projection';
+import { announceMoneyMoved, CASH_FORECAST_PROJECTION, computeCashForecastDto } from './cash-forecast.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import type { SetBudgetInput } from '../contracts';
 
@@ -250,7 +248,7 @@ export class CommercialBudgetService {
         // moved headroom. Revising a live ₹100 budget down to ₹50 against a ₹90 attributed PO
         // produces −₹40 with NO commitment write anywhere; a commitment-triggered exception would
         // never fire and the practice would learn nothing.
-        await this.evaluate(tx, projectId, actor.actorId, [input.costHeadCode], 'budget_revision');
+        await this.evaluate(tx, projectId, actor, [input.costHeadCode], 'budget_revision');
         return { resultRef: next.id, events: [] };
       },
     });
@@ -270,29 +268,33 @@ export class CommercialBudgetService {
    * returns to non-negative headroom has its open row cleared.
    *
    * ─────────────────────────────────────────────────────────────────────────────────────────────
-   * Phase 5 Task 7A — this is ALSO §J's write-through refresh seam, and that is a derivation
-   * rather than a convenience.
+   * Phase 5 Task 7A — this is ALSO §J's ANNOUNCEMENT seam, and that is a derivation rather than a
+   * convenience.
    *
    * §B headroom is `BUDGET − Σ(the six §J exposure buckets)`. So "this write moved headroom" and
    * "this write moved a §J bucket" are THE SAME PREDICATE — not two lists that happen to agree
    * today. Every writer already discharges the first obligation (the `FOLD_INPUTS` closure in
-   * `commercial.contract.test.ts` fails the build if one does not), so hanging the forecast refresh
-   * here means a writer cannot satisfy §B and forget §J: there is one call site and one rule.
+   * `commercial.contract.test.ts` fails the build if one does not), so emitting here means a writer
+   * cannot satisfy §B and forget §J: there is one call site and one rule.
    *
-   * The alternative was a list of writers that refresh. This phase has now found the same defect —
-   * a hand-written list standing in for a derived set — five separate times, most recently inside
-   * the very file corrected for it the round before. A sixth is not worth the performance saved.
+   * The alternative was a list of writers that announce. This phase has now found the same defect —
+   * a hand-written list standing in for a derived set — eight separate times, most recently inside
+   * the very file corrected for it the round before.
    *
-   * The refresh is skipped for an EMPTY head set for the same reason the exception evaluation is:
-   * nothing that any bucket is computed from moved, so recomputing would produce the stored row.
+   * The announcement is skipped for an EMPTY head set for the same reason the exception evaluation
+   * is: nothing that any bucket is computed from moved, so a recompute would produce the stored row.
    */
   async evaluate(
     tx: Prisma.TransactionClient,
     projectId: string,
-    actorId: string,
+    // Task 7A — the event envelope needs the actor's KIND as well as their id, so this takes the
+    // `EventActor` subset rather than the bare id it took while the refresh was a silent
+    // write-through. `raisedById` on the exception rows is unchanged: still `actor.actorId`.
+    actor: EventActor,
     costHeadCodes: readonly string[],
     raisedBy: HeadroomMover,
   ): Promise<void> {
+    const actorId = actor.actorId;
     const heads = [...new Set(costHeadCodes)].filter((c) => c.length > 0);
     if (heads.length === 0) return;
     const positions = await this.budget.positionsFor(tx, projectId, heads);
@@ -334,8 +336,9 @@ export class CommercialBudgetService {
         });
       }
     }
-    // §J — the write-through refresh, LAST, so it sees the exception rows this call just wrote
-    // (they are part of the projected position) as well as the money that moved.
-    await refreshCashForecast(tx, projectId);
+    // §J — announce, LAST, in this same transaction. The event and the money commit together, so a
+    // consumer can never observe one without the other, and the projection is refreshed from the
+    // committed state rather than from a figure computed mid-write.
+    await announceMoneyMoved(tx, projectId, actor, { costHeadCodes: heads, reason: raisedBy });
   }
 }

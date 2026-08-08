@@ -875,7 +875,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
     await t.prisma.$transaction(async (tx) => {
       await bills.disputeClaimsBeyondEvidence(
         tx, projectId, 'labour', line.poLineId, new Prisma.Decimal(0), 'order-not-live: supplier reneged',
-        { actorId: f.memberUser.id, role: 'pmc' },
+        { actorId: f.memberUser.id, actorKind: 'human' },
       );
       await tx.$executeRawUnsafe(
         `UPDATE "LabourPurchaseOrderVersion" SET "status"='cancelled', "cancelledAt"=now(), "cancelReason"='supplier reneged' WHERE "id"=$1`,
@@ -1358,7 +1358,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
           });
         }),
         projectId, 'material', line.poLineId, new Prisma.Decimal('80'),
-        'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, role: 'pmc' },
+        'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, actorKind: 'human' },
       ));
 
       // the concurrent rejection already removed 40, so the fold is 60 and there is NOTHING left to
@@ -1492,7 +1492,7 @@ describe('Phase 5 Task 4 — §F vendor bill + §G bounds 1–2 (live PG)', () =
         }, pmc(projectId));
       }),
       projectId, 'material', line.poLineId, new Prisma.Decimal('80'),
-      'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, role: 'pmc' },
+      'qty-over-accepted: evidence withdrawn', { actorId: f.memberUser.id, actorKind: 'human' },
     ));
 
     // 70 ≤ 80 — the corrected claim is valid and must be left alone

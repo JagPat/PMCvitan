@@ -30,7 +30,9 @@ import { CommercialDeductionQuery } from '../../src/commercial/commercial-deduct
 import { derivedBillStatus } from '../../src/commercial/commercial-status';
 import { CommercialService } from '../../src/commercial/commercial.service';
 import { reevaluateAll } from '../../src/commercial/commercial-reevaluate.cli';
-import { CASH_FORECAST_PROJECTION, computeCashForecastDto, lockCashForecast } from '../../src/commercial/cash-forecast.projection';
+import {
+  CASH_FORECAST_PROJECTION, COMMERCIAL_MONEY_EVENT, computeCashForecastDto, makeCashForecastProjectionConsumer,
+} from '../../src/commercial/cash-forecast.projection';
 import { readServableGeneration } from '../../src/platform/projections/generation';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { ProjectionRebuildOperations } from '../../src/platform/projections/rebuild-operations';
@@ -1910,8 +1912,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     });
     return row?.dto ?? null;
   };
-  /** The active generation's stored row REGARDLESS of servability — so a write-through refresh can
-   *  be observed on a generation the relay has not caught up on. */
+  /** The active generation's stored row REGARDLESS of servability — so a refresh can be observed
+   *  on a generation independently of whether the read would serve it. */
   const storedRowAnyGen = async (projectId: string) => {
     const gen = await t.prisma.projectionGeneration.findFirst({
       where: { consumer: CASH_FORECAST_PROJECTION, projectId, status: 'active' }, select: { id: true },
@@ -1944,7 +1946,18 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
       if (rows[0]?.waiting === true) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error(`barrier timeout: nothing ever blocked on the forecast lock held by backend ${holderPid}`);
+    throw new Error(`barrier timeout: nothing ever blocked on the row held by backend ${holderPid}`);
+  };
+
+  /** The project's committed stream head, and the active generation's checkpoint against it — the
+   *  staleness signal an announced write produces and a silent one never could. */
+  const generationLag = async (projectId: string) => {
+    const stream = await t.prisma.projectEventStream.findUnique({ where: { projectId }, select: { nextPosition: true } });
+    const gen = await t.prisma.projectionGeneration.findFirst({
+      where: { consumer: CASH_FORECAST_PROJECTION, projectId, status: 'active' },
+      select: { id: true, appliedPosition: true },
+    });
+    return { head: (stream!.nextPosition - 1n), applied: gen?.appliedPosition ?? null, generationId: gen?.id ?? null };
   };
 
   it('PROBE 35 (§J/§G): live == projection == rebuild, and a rebuild emits ZERO events + ZERO notifications', async () => {
@@ -1971,11 +1984,16 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     expect(await storedForecast(projectId)).toEqual(live);
   });
 
-  it('PROBE 36 (§J): the WRITE-THROUGH path and the CONSUMER path agree — the two-seam risk', async () => {
-    // This projection is the only one whose own module emits no events, so commercial's writes
-    // refresh in-transaction while foreign facts refresh through the ordered consumer. Two paths
-    // is a real hazard: it is exactly how a projection acquires two opinions. The reason it is
-    // safe is that NEITHER computes anything — both call `computeCashForecastDto`.
+  it('PROBE 36 (§J/root B): a COMMERCIAL-only write is announced, and the ONE consumer path folds it', async () => {
+    // The round-4 repair, end to end. Certifying and approving move §J buckets and touch no
+    // foreign table, so before `commercial.money_moved` existed nothing was emitted and the stored
+    // row could only be kept current by a write-through refresh inside each writer's transaction.
+    // Now the write ANNOUNCES and the ordinary ordered consumer folds it — one path, one compute
+    // function, and the same machinery the other seven projections use.
+    //
+    // RED at `93a9217` in the direction that matters: with the announcement removed the relay has
+    // nothing to deliver, so `drainRelay()` below leaves the stored row exactly as the foreign half
+    // left it and `certifiedPayable` stays 0.
     const projectId = await freshProject();
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
     // The FOREIGN half establishes the generation: issuing and accepting a PO emits canonical
@@ -1986,32 +2004,38 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     await drainRelay();
     expect((await storedRowAnyGen(projectId))!.totals.receivedNotBilled, 'the consumer path stored the accepted value').toBe('100.00');
 
-    // Now COMMERCIAL-only writes, with the relay deliberately NOT drained afterwards. Nothing is
-    // emitted for it to drain — that is the whole point — so if the write-through seam were
-    // missing the stored row would still hold the pre-certification picture.
+    // Now COMMERCIAL-only writes. Nothing outside commercial moves, so the ONLY thing that can
+    // reach the projection is commercial's own announcement.
     const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
     await certification.certify(projectId, { billId }, pmc(projectId));
-    const beforeApproval = await storedRowAnyGen(projectId);
-    expect(beforeApproval!.totals.certifiedPayable, 'certification is a commercial write with no event — write-through is the ONLY thing that could have stored this').toBe('100.00');
-    expect(beforeApproval!.totals.receivedNotBilled, 'and the claim moved the money OUT of the received bucket').toBe('0.00');
-
     await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+
+    // the announcement is a REAL event on the project's stream, with a durable delivery for this
+    // consumer — not a side effect that happened to update a row
+    const announced = await t.prisma.domainEvent.findMany({
+      where: { projectId, eventType: COMMERCIAL_MONEY_EVENT }, orderBy: { streamPosition: 'asc' },
+    });
+    expect(announced.length, 'certification and approval each announced that commercial money moved').toBeGreaterThanOrEqual(2);
+    expect(
+      await t.prisma.outboxDelivery.count({
+        where: { consumer: CASH_FORECAST_PROJECTION, projectId, streamPosition: { in: announced.map((e) => e.streamPosition) }, deliveryAction: 'dispatch' },
+      }),
+      'each announcement materialized a dispatching delivery for the forecast consumer, in the writer\'s own transaction',
+    ).toBe(announced.length);
+
+    await drainRelay();
     const afterApproval = await storedRowAnyGen(projectId);
     expect(afterApproval!.totals.certifiedPayable, '§J — `NET_PAYABLE − APPROVED`').toBe('0.00');
     expect(afterApproval!.totals.approved).toBe('100.00');
-    // …and it equals what the LIVE compute says, with no relay involvement at all
+    expect(afterApproval!.totals.receivedNotBilled, 'and the claim moved the money OUT of the received bucket').toBe('0.00');
+    // ONE compute function, so the folded row IS the live answer rather than a second opinion
     expect(afterApproval).toEqual(await liveForecast(projectId));
-
-    // now the CONSUMER path, on the same project: draining changes nothing, because the two paths
-    // store the same answer. A consumer that recomputed differently would show up here.
-    await drainRelay();
-    expect(await storedRowAnyGen(projectId)).toEqual(afterApproval);
   });
 
-  it('PROBE 37 (§J): defining or RENAMING a cost head refreshes the forecast — the second seam', async () => {
+  it('PROBE 37 (§J): defining or RENAMING a cost head announces the move — the second seam', async () => {
     // The one write that changes what the forecast SAYS while moving no money at all, so §B's
     // evaluation would never fire for it. CLOSURE C pins that this seam exists; this proves it
-    // works. RED without the `refreshCashForecast` call in `defineCostHead`.
+    // works. RED without the `announceMoneyMoved` call in `defineCostHead`.
     const projectId = await freshProject();
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
     await issuedMaterialLine(projectId, { qty: '100' }); // emits events, so a generation exists
@@ -2019,28 +2043,29 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     expect((await storedRowAnyGen(projectId))!.heads.map((h) => h.costHeadCode)).toEqual(['CIVIL', 'MEP']);
 
     await commercial.defineCostHead(projectId, { code: 'FINISHES', name: 'Finishing works' }, pmc(projectId));
+    await drainRelay();
     const added = await storedRowAnyGen(projectId);
     expect(added!.heads.map((h) => h.costHeadCode), 'a new head APPEARS as an all-zero row').toEqual(['CIVIL', 'FINISHES', 'MEP']);
     expect(added!.heads.find((h) => h.costHeadCode === 'FINISHES')!.exposure).toBe('0.00');
 
     await commercial.defineCostHead(projectId, { code: 'FINISHES', name: 'Finishes & fit-out' }, pmc(projectId));
+    await drainRelay();
     const renamed = await storedRowAnyGen(projectId);
     expect(renamed!.heads.find((h) => h.costHeadCode === 'FINISHES')!.costHeadName).toBe('Finishes & fit-out');
     expect(renamed, 'and the whole picture still equals the live compute').toEqual(await liveForecast(projectId));
   });
 
-  it('PROBE 39 (§J): a PARTITION-ONLY write refreshes the forecast too — the seam that nearly got away', async () => {
+  it('PROBE 39 (§J): a PARTITION-ONLY write announces too — the seam that nearly got away', async () => {
     // THE ONE 7A GOT WRONG FIRST, and it is worth stating plainly rather than burying.
     //
-    // 7A hung the write-through refresh off `CommercialBudgetService.evaluate`, on the derivation
-    // that "moved headroom" and "moved a §J bucket" are the same predicate. They are ALMOST the
-    // same, and the gap is exactly the partition-only writers: paying moves `approved` into `paid`
+    // 7A hung the §J obligation off `CommercialBudgetService.evaluate`, on the derivation that
+    // "moved headroom" and "moved a §J bucket" are the same predicate. They are ALMOST the same,
+    // and the gap is exactly the partition-only writers: paying moves `approved` into `paid`
     // without moving the total, so it is rightly exempt from §B's evaluator — and was therefore
-    // silently exempt from §J's refresh as well.
+    // silently exempt from §J as well.
     //
     // The stored forecast would have gone on reporting money as authorised-and-unpaid forever
-    // after it left the bank. No event exists that a consumer could have missed, so nothing
-    // downstream would ever have noticed. RED before `payments.record`/`reverse` refresh.
+    // after it left the bank. RED before `payments.record`/`reverse` announce.
     const projectId = await freshProject();
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
     const line = await issuedMaterialLine(projectId, { qty: '100' });
@@ -2050,11 +2075,13 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
     await certification.certify(projectId, { billId }, pmc(projectId));
     const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
-    expect((await storedRowAnyGen(projectId))!.totals.approved, 'approving evaluates, so its refresh was never in doubt').toBe('100.00');
+    await drainRelay();
+    expect((await storedRowAnyGen(projectId))!.totals.approved, 'approving evaluates, so its announcement was never in doubt').toBe('100.00');
 
-    // …and now the write that does NOT evaluate. Nothing is drained afterwards, because nothing
-    // was emitted: the refresh is the only thing that can move this row.
+    // …and now the write that does NOT evaluate. Its own `commercial.money_moved` is the only
+    // thing that can move this row.
     await payments.record(projectId, { approvalId: approval.id, amount: '40', method: 'neft' }, pmc(projectId));
+    await drainRelay();
     const paid = await storedRowAnyGen(projectId);
     expect(paid!.totals.paid, 'cash left the bank and the stored forecast must say so').toBe('40.00');
     expect(paid!.totals.approved, '§J — `APPROVED − PAID`').toBe('60.00');
@@ -2063,6 +2090,7 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     // the reversal is the other partition-only writer, and runs the identity backwards
     const payment = (await payments.ledger(projectId, billId, pmc(projectId))).approvals[0]!.payments[0]!;
     await payments.reverse(projectId, { paymentId: payment.id, amount: '40', reason: 'wrong account' }, pmc(projectId));
+    await drainRelay();
     const reversed = await storedRowAnyGen(projectId);
     expect(reversed!.totals.paid, '§0 — `PAID` is Σ payments MINUS Σ reversals').toBe('0.00');
     expect(reversed!.totals.approved).toBe('100.00');
@@ -2139,110 +2167,112 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     expect((audits.at(-1)!.payload as { reason?: string }).reason).toBe('test sweep both directions');
   });
 
-  it('PROBE 41 (§J): the rebuild SEED serializes on the forecast lock — discovery cannot outrun a new generation', async () => {
-    // Codex round-2 (P1). Round 1 locked the target generation rows it had ALREADY FOUND. That
-    // closes the overwrite race and leaves a second one open, because the rebuilder allocates its
-    // `building` generation in its OWN transaction: a row can APPEAR between a writer's discovery
-    // and its commit, and locking rows cannot prevent a row from appearing. The write would then
-    // refresh only the id it captured, the seed would have run on pre-write money, and the stale
-    // generation would ACTIVATE with no event for catch-up to replay.
+  it('PROBE 41 (§J/root B): an announced write LAGS the generation, so staleness has a signal', async () => {
+    // ROOT B, stated as a runtime property rather than as prose.
     //
-    // The fix is a per-(project, consumer) advisory lock taken as the FIRST statement, with the
-    // target set discovered under it — and the rebuild seed reaches the same function, so it takes
-    // the same lock. This proves that serialization exists: a session holding the lock BLOCKS the
-    // seed, and the seed completes once it is released. RED at `f345d2c`, where the seed took no
-    // lock a holder could contend with and the rebuild ran straight through.
+    // The platform detects a stale projection ONE way: the active generation's checkpoint falls
+    // behind the project's committed stream head, `readServableGeneration` refuses to serve it, and
+    // the read falls back to the canonical compute. That mechanism is driven entirely by events —
+    // so while commercial announced nothing, a commercial write left the checkpoint EQUAL to the
+    // head and the generation stayed "servable" no matter what the row actually held. Six findings
+    // came out of that one fact.
+    //
+    // RED at `93a9217`: with the write-through refresh and no announcement, `applied` still equals
+    // `head` after the certify below, `readServableGeneration` returns a generation, and nothing in
+    // the system can tell a current row from a forgotten one.
     const projectId = await freshProject();
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100000', reason: 'pilot budget' }, pmc(projectId));
-    await issuedMaterialLine(projectId, { qty: '1' });
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
     await drainRelay();
+    const caughtUp = await generationLag(projectId);
+    expect(caughtUp.applied, 'the fixture starts CAUGHT UP, or "it lags" below proves nothing').toBe(caughtUp.head);
+    expect(await readServableGeneration(t.prisma, CASH_FORECAST_PROJECTION, projectId)).not.toBeNull();
 
-    const holder = new PrismaClient();
-    try {
-      let release!: () => void;
-      const held = new Promise<void>((r) => { release = r; });
-      let holderPid = 0;
-      const holding = holder.$transaction(async (tx) => {
-        holderPid = (await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid;
-        await lockCashForecast(tx as never, projectId);
-        await held;
-      }, { timeout: 30_000 });
-      while (holderPid === 0) await new Promise((r) => setTimeout(r, 20));
+    // a COMMERCIAL-only write, undrained
+    const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
+    await certification.certify(projectId, { billId }, pmc(projectId));
 
-      // The RAW rebuilder, deliberately, not the operator `ops.run` wrapper.
-      //
-      // The first spelling of this probe used `ops.run`, and it PASSED against a build with the
-      // advisory lock removed from `refreshCashForecast` — because `ops.run` diagnoses first, and
-      // diagnosis takes the same lock through the `lockFor` hook that round-2 F2 added. The barrier
-      // was satisfied by a DIFFERENT mechanism than the one under test, which is the third time this
-      // phase a probe has asserted a proxy (6B-ii's PROBE 19(b), 6C's PROBE 24). `rebuild()` runs
-      // allocate → seed → catch-up → barrier with no diagnosis anywhere, so the ONLY thing that can
-      // wait on this lock is the seed's own refresh.
-      const rebuild = t.app.get(ProjectionRebuilder).rebuild(CASH_FORECAST_PROJECTION, projectId);
-      await waitUntilBlockedBy(holderPid);
-      release();
-      await holding;
-      await rebuild;
-    } finally {
-      await holder.$disconnect();
-    }
+    const lagging = await generationLag(projectId);
+    expect(lagging.head, 'the certification allocated a stream position — it ANNOUNCED').toBeGreaterThan(caughtUp.head);
+    expect(lagging.applied, 'and the generation is now visibly behind it').toBeLessThan(lagging.head);
+    expect(
+      await readServableGeneration(t.prisma, CASH_FORECAST_PROJECTION, projectId),
+      'a lagging generation is never served as authoritative — the read falls back to the live compute',
+    ).toBeNull();
+    const readWhileLagging = await budget.readCashForecast(projectId, pmc(projectId));
+    expect(readWhileLagging.refreshedAt, 'the LIVE fallback reports no projection timestamp — it did not come from a stored row').toBeNull();
+    expect(readWhileLagging.totals.certifiedPayable, 'and the fallback is the FRESHER answer, never a different one').toBe('100.00');
+
+    // …and the ordinary relay closes it, with no projection-specific machinery involved
+    await drainRelay();
+    const settled = await generationLag(projectId);
+    expect(settled.applied).toBe(settled.head);
     expect(await storedForecast(projectId)).toEqual(await liveForecast(projectId));
   });
 
-  it('PROBE 42 (§0b): the forecast lock is taken AFTER the stream row — no order to invert', async () => {
-    // Codex round-3 (P1). Round 2 called the advisory lock "one lock, always first, so no
-    // acquisition order exists to invert". That was true of the two cash-forecast callers and FALSE
-    // of the system: the real ordering graph includes `ProjectEventStream`, which `emitEvent` locks
-    // to allocate a position and the rebuild's activation barrier HOLDS while it replays the tail.
+  it('PROBE 42 (§0b): the forecast handler takes NO lock, so the relay and the barrier cannot deadlock', async () => {
+    // Codex round-4 (P1), reproduced deterministically with the two REAL lock acquisitions the two
+    // real machines make, and the REAL projection handler between them.
     //
-    //   barrier: stream → (replay a forecast event) → advisory
-    //   PO issue: advisory (via `evaluate`) → stream (via `emitEvent`)
+    // Round 3 fixed round 2's inversion by taking `ProjectEventStream` inside the forecast refresh,
+    // before the advisory lock — a total order for the two locks it could see. The order it could
+    // not see is the relay's: `dispatchProjection` locks the ACTIVE `ProjectionGeneration` row
+    // FOR UPDATE and THEN invokes the handler, while the rebuild's activation barrier holds the
+    // STREAM row and then locks that same generation row (`replayInto` → `applyEvent`). So:
     //
-    // Opposite sequences on the same pair. PostgreSQL resolves that by killing one — the operator's
-    // rebuild, or a live purchase order.
+    //   relay:   ProjectionGeneration → (handler) → ProjectEventStream
+    //   barrier: ProjectEventStream   →              ProjectionGeneration
     //
-    // The fix is a TOTAL ORDER (`readiness < stream < forecast`) rather than a rule callers must
-    // remember, and this asserts the property that makes it total: a transaction that holds the
-    // STREAM row can still acquire the forecast lock, because every holder of the forecast lock
-    // already holds the stream row and therefore cannot be waiting for it.
+    // A genuine cycle, and PostgreSQL resolves it by killing the operator's rebuild or a live
+    // delivery. The round-4 repair deletes the handler's locks entirely — commercial announces, so
+    // the projection needs no serialization of its own — and the cycle has no edge left to close.
     //
-    // RED at `ce015a1`, and the OBSERVED failure is worth stating precisely rather than assumed:
-    // with the stream lock removed the commercial write does not wait at all, so the barrier times
-    // out (`nothing ever blocked`). That is the property this probe exists for — a write that can
-    // hold the forecast lock WITHOUT holding the stream row is exactly the participant that closes
-    // the cycle. The deadlock itself needs a third party (the barrier mid-replay) and is therefore
-    // not what a two-session probe can show; what it CAN show is that the edge which makes the
-    // graph cyclic is gone. Claiming a 40P01 here would be claiming more than the test proves.
+    // Session B plays the RELAY (generation row, then the handler); session A plays the BARRIER
+    // (stream row, then the generation row). B signals as soon as it holds the generation row, so
+    // A reaches for it while B is inside the handler: at `93a9217` the handler waits on A's stream
+    // row and A waits on B's generation row — a 40P01 one of them dies of. Verified RED by
+    // restoring the stream-row acquisition to `refreshCashForecast`.
     const projectId = await freshProject();
     await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100000', reason: 'pilot budget' }, pmc(projectId));
     await issuedMaterialLine(projectId, { qty: '1' });
     await drainRelay();
+    const { generationId } = await generationLag(projectId);
+    expect(generationId, 'no active generation to contend over — the probe would prove nothing').toBeTruthy();
 
-    const holder = new PrismaClient();
+    const barrier = new PrismaClient();
+    const relay = new PrismaClient();
     try {
-      // session A: hold the STREAM row, exactly as the activation barrier does
-      let release!: () => void;
-      const held = new Promise<void>((r) => { release = r; });
-      let holderPid = 0;
-      const holding = holder.$transaction(async (tx) => {
-        holderPid = (await tx.$queryRawUnsafe<Array<{ pid: number }>>('SELECT pg_backend_pid() AS pid'))[0]!.pid;
-        await tx.$queryRawUnsafe('SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = $1 FOR UPDATE', projectId);
-        await held;
-      }, { timeout: 30_000 });
-      while (holderPid === 0) await new Promise((r) => setTimeout(r, 20));
+      let generationHeld!: () => void;
+      const heldByRelay = new Promise<void>((r) => { generationHeld = r; });
 
-      // session B: a commercial write. It must WAIT for the stream row (the ordering that makes the
-      // graph acyclic) rather than seizing the forecast lock and then waiting — which is what
-      // produced the cycle.
-      const write = budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '90000', reason: 'revised' }, pmc(projectId));
-      await waitUntilBlockedBy(holderPid);
-      release();
-      await holding;
-      await write; // completes cleanly — never aborted with a deadlock
+      // B — the relay: lock the active generation exactly as `lockActiveGeneration` does, announce
+      // that it is held, then run the REAL cash-forecast handler on this transaction.
+      const relaySide = relay.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe('SELECT "id" FROM "ProjectionGeneration" WHERE "id" = $1 FOR UPDATE', generationId);
+        generationHeld();
+        await makeCashForecastProjectionConsumer().handle({
+          delivery: { id: '(probe)', consumer: CASH_FORECAST_PROJECTION, projectId, streamPosition: 0n, payload: null },
+          meta: { projectId } as never,
+          senderMode: 'outbox',
+          tx: tx as never,
+          projection: { generationId: generationId!, generation: 1, projectId },
+        } as never);
+      }, { timeout: 30_000 });
+
+      // A — the activation barrier: hold the stream row, then reach for the same generation row.
+      const barrierSide = barrier.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe('SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = $1 FOR UPDATE', projectId);
+        await heldByRelay;
+        await tx.$queryRawUnsafe('SELECT "id" FROM "ProjectionGeneration" WHERE "id" = $1 FOR UPDATE', generationId);
+      }, { timeout: 30_000 });
+
+      // neither side is a deadlock victim, and the handler completed inside the relay's transaction
+      await expect(Promise.all([relaySide, barrierSide])).resolves.toBeDefined();
     } finally {
-      await holder.$disconnect();
+      await barrier.$disconnect();
+      await relay.$disconnect();
     }
-    expect((await positionOf(projectId)).budget, 'the revision committed rather than being killed as a deadlock victim').toBe('90000.00');
     expect(await storedForecast(projectId)).toEqual(await liveForecast(projectId));
   });
 
