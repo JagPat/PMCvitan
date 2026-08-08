@@ -126,14 +126,26 @@ export function detectStatusDriftAcrossHeads({
   const defaultBranchDrift = detectStatusDrift(defaultBranchNow, openPullRequests);
   if (!defaultBranchDrift.drift) return defaultBranchDrift;
 
-  const correctingHead = (headStatuses ?? []).find(
-    (entry) => entry?.now
-      && (!detectStatusDrift(entry.now, openPullRequests).drift
-        // …OR the head records the HANDOFF shape, which `detectStatusDrift` cannot help but call
-        // drift (`open_pr: none` beside its own live PR) even though it is the correct landing
-        // state. Without this the shepherd advises the handoff PR to name itself.
-        || isHandoffShape(entry.now)),
-  );
+  const correctingHead = (headStatuses ?? []).find((entry) => {
+    if (!entry?.now) return false;
+    if (!detectStatusDrift(entry.now, openPullRequests).drift) return true;
+    // …OR the head records the HANDOFF shape, which `detectStatusDrift` cannot help but call drift
+    // (`open_pr: none` beside its own live PR) even though it is the correct landing state.
+    //
+    // But a handoff head may only excuse drift attributable to ITS OWN PR. The first version of
+    // this branch tested `isHandoffShape` alone, so with a handoff PR and a real WORK-ITEM PR both
+    // open, the handoff was found first, `drift: false` was returned, and the work-item PR's
+    // genuine `open_pr` drift went unreported — the loop then ran with STATUS not naming the PR it
+    // had to shepherd. Silencing one broken loop by opening another is not a fix.
+    //
+    // So: exclude this head's own PR from the live set and re-ask. Nothing else open can be in
+    // drift against it, or the head is not a correction — it is one of the things that is wrong.
+    if (!isHandoffShape(entry.now)) return false;
+    const others = (openPullRequests ?? []).filter(
+      (pullRequest) => String(pullRequest.number) !== String(entry.number),
+    );
+    return !detectStatusDrift(entry.now, others).drift;
+  });
   if (correctingHead) {
     // Suppressing the SHEPHERD is not a claim that the record is right — it only
     // says a correction is already in flight, so posting a drift comment would be

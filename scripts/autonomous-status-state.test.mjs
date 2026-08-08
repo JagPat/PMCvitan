@@ -521,9 +521,14 @@ test('a merged task must CLEAR work_item, or the runner re-enters the unit it ju
 // work item, so this never fires on one.
 test('with no work item in progress, STATUS hands off to next_task rather than a PR', async () => {
   const { now, maintenanceQueue } = await loadStatusDocument();
-  const workItem = (now.work_item ?? '').trim().toLowerCase();
-  if (!(workItem === '' || workItem === 'none')) return; // a named work item is in progress
-  if (!(now.next_task ?? '').trim()) return;             // nothing to hand off to
+  const { isHandoffShape } = await import('./runner-continuation.mjs');
+  // Guard on the SHARED predicate, not a looser restatement of it. The first version tested
+  // `work_item: none` plus a non-empty `next_task`, which is also true of a perfectly valid
+  // in-progress state (`task_state: in_progress`, `open_pr: 304`) for a unit that does not use a
+  // split work-item slug — so this live-file assertion would have failed CI on a correct STATUS
+  // and blocked the loop until someone weakened the test or invented a work item. One predicate,
+  // two call sites, no room to disagree.
+  if (!isHandoffShape(now)) return;
   if ((now.blocking_directive ?? 'none').trim().toLowerCase() !== 'none') return; // a directive outranks
 
   const verdict = assessRunnerState(now, maintenanceQueue);
@@ -588,4 +593,48 @@ test('the drift shepherd still reports a WORK-ITEM PR open against open_pr: none
   });
   assert.ok(body, 'a work-item PR whose head still records open_pr: none is real drift');
   assert.match(body, /open_pr/u);
+});
+
+// FINDING (#303 P2, round 3a) — the handoff suppression must not mask ANOTHER PR's real drift.
+//
+// Round 2's `isHandoffShape` branch suppressed drift whenever ANY open head had the handoff shape.
+// With a handoff PR and a genuine work-item PR both open, the handoff was found first and the
+// work-item PR's real `open_pr` drift went unreported — so the loop would run with STATUS not
+// naming the PR it had to shepherd. My own symmetry probe passed because it had only ONE open PR:
+// it tested the direction, not the interference.
+test('a handoff head does not mask a CONCURRENT work-item PR drift', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const body = buildDriftHandoff({
+    statusNow: {
+      phase: '5', task: '7', task_state: 'in_progress', work_item: 'phase-5-task-7b-iii-a',
+      open_pr: '302', next_task: 'phase-5-task-7b-iii-b', blocking_directive: 'none',
+    },
+    openPullRequests: [
+      { number: 303, headRefName: 'claude/phase5-status-7biii-a', isDraft: false },
+      { number: 310, headRefName: 'claude/phase5-task7b-iii-b', isDraft: true },
+    ],
+    headStatuses: [
+      // the handoff, correctly recording the landing state…
+      { number: 303, now: { phase: '5', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'phase-5-task-7b-iii-b', blocking_directive: 'none' } },
+      // …and a REAL work-item PR whose head still records open_pr: none, which IS drift
+      { number: 310, now: { phase: '5', task_state: 'in_progress', work_item: 'phase-5-task-7b-iii-b', open_pr: 'none', next_task: 'phase-5-task-7b-iii-c', blocking_directive: 'none' } },
+    ],
+  });
+  assert.ok(body, 'the handoff head silenced a concurrent work-item PR\'s genuine open_pr drift');
+});
+
+// FINDING (#303 P2, round 3b) — the live-file guard must be the SHARED predicate.
+// `task_state: in_progress` with `work_item: none` and an open PR is a legitimate state for a unit
+// that does not use a split work-item slug; the looser guard would have failed CI on it.
+test('a valid in-progress state is not mistaken for a handoff', async () => {
+  const { isHandoffShape } = await import('./runner-continuation.mjs');
+  assert.equal(
+    isHandoffShape({ task_state: 'in_progress', work_item: 'none', open_pr: '304', next_task: 'phase-5-task-9' }),
+    false,
+    'a work-item PR in progress would have tripped the handoff assertion and blocked the loop',
+  );
+  assert.equal(
+    isHandoffShape({ task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'phase-5-task-9' }),
+    true,
+  );
 });
