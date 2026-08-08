@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { CommercialScreen } from '@/screens/CommercialScreen';
@@ -230,5 +230,36 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     fireEvent.click(r.getByTestId('commercial-tab-payments'));
     expect(r.getByTestId('commercial-claim-unavailable')).toBeTruthy();
     expect(r.getByTestId('commercial-claim-retry')).toBeTruthy();
+  });
+
+  it('G1: a scope change while Claims is showing RELOADS the list, not renders nothing', () => {
+    const loadCommercialBills = vi.fn().mockResolvedValue(undefined);
+    useStore.setState({ loadCommercialBills } as never);
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    expect(r.getByTestId('commercial-claim-row-bill-1')).toBeTruthy();
+
+    // the scope teardown: the list goes back to null/idle while Claims is STILL the active tab and
+    // no click follows. RED against the click-handler version: no load fires and the panel renders
+    // nothing at all — `(bills ?? []).map` over null, with every other branch false.
+    act(() => {
+      useStore.setState({
+        commercialBills: null,
+        commercialBillsLoad: 'idle',
+        projectScopeGeneration: useStore.getState().projectScopeGeneration + 1,
+      });
+    });
+
+    expect(
+      loadCommercialBills,
+      'the list emptied under an open Claims tab and nothing asked for it again',
+    ).toHaveBeenCalled();
+  });
+
+  it('G1: the panel is never blank — an emptied list shows a state while it reloads', () => {
+    useStore.setState({ commercialBills: null, commercialBillsLoad: 'loading' });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    expect(r.getByTestId('commercial-claims-loading')).toBeTruthy();
   });
 });

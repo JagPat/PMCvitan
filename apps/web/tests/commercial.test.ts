@@ -566,19 +566,38 @@ describe('Task 7B-ii (§M) — the claim list and the per-claim lifecycle', () =
     expect(s().commercialClaims['bill-1'], 'another project was on screen by the time this landed').toBeUndefined();
   });
 
+  it('G2/G3: the realtime refresh keys on INTENT and on an opened list, not on results', () => {
+    // Codex G2 — the list is refreshed once it has been opened. "A ping is not evidence anyone is
+    // looking at it" was true before the tab is opened and false after; a list already on screen
+    // silently missed a claim another user recorded until a full page reload.
+    expect(syncSource).toContain("commercialBillsLoad !== 'idle'");
+    expect(syncSource).toContain('loadCommercialBills()');
+
+    // Codex G3 — the claim refresh set is the UNION of arrived lifecycles and in-flight/failed
+    // intent. Keying on `commercialClaims` alone missed a claim whose first read was still in
+    // flight: the ping lands before the response, no key exists yet, and the stale response then
+    // lands as `ready` with an out-of-date `approvable`.
+    expect(syncSource).toContain('commercialClaimLoad');
+    expect(syncSource).toContain('loadCommercialClaim(billId)');
+    // …and the negative twin over the SAME text: the old results-only key is gone, so this cannot
+    // pass while the union is still keyed on the map of arrived claims alone.
+    expect(
+      syncSource.includes('Object.keys(useStore.getState().commercialClaims)'),
+      'the refresh still keys on arrived results only — an in-flight claim misses the invalidation',
+    ).toBe(false);
+  });
+
   it('the realtime ping refreshes an OPEN claim, and only the ones already opened', () => {
     // Root B from the 7B-i convergence audit, applied before it bit: becoming a new consumer of the
     // realtime refresh is the signal to re-check what that refresh owes. A payment committed by
     // another client now invalidates (7B-i-a), so the ping fires — and an accountant with a claim
     // open must not be left acting on a stale approvable balance.
     expect(syncSource).toContain('loadCommercialClaim(billId)');
-    expect(syncSource).toContain('Object.keys(useStore.getState().commercialClaims)');
-    // …and the negative twin over the SAME text: the LIST is not refreshed on a ping, because a
-    // ping is not evidence anyone opened that tab.
-    expect(
-      syncSource.includes('loadCommercialBills()'),
-      'the claim list is loaded on demand; refreshing it on every ping fetches a tab nobody opened',
-    ).toBe(false);
+    expect(syncSource).toContain('commercialClaims');
+    // The list IS refreshed now, but only once opened — Codex G2 reversed the original judgement
+    // and the assertion above it. What stays true is the narrower claim: the refresh is CONDITIONAL,
+    // never unconditional, so a ping still does not fetch a tab nobody has opened.
+    expect(syncSource).toContain("commercialBillsLoad !== 'idle'");
   });
 
   it('the claim bundle is ONE request — the six per-bill reads are not assembled client-side', () => {

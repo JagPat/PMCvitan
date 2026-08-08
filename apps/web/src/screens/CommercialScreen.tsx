@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type JSX } from 'react';
+import { useEffect, useState, type CSSProperties, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
@@ -109,13 +109,25 @@ export function CommercialScreen() {
     ?? positions.find((p) => p.costHeadCode === code)?.costHeadName
     ?? code;
 
-  // Task 7B-ii — the claim list is fetched when the user first asks for it rather than on hub open:
-  // it answers a different question from the money position, and paying for it up front would make
-  // every PMC checking headroom wait on a list only an accountant opens.
-  const openTab = (next: Tab): void => {
-    setTab(next);
-    if ((next === 'claims' || CLAIM_TABS.includes(next)) && billsLoad === 'idle') void loadCommercialBills();
-  };
+  // Task 7B-ii — the claim list is fetched when the user is in the claim workflow rather than on
+  // hub open: it answers a different question from the money position, and paying for it up front
+  // would make every PMC checking headroom wait on a list only an accountant opens.
+  //
+  // Codex G1 — DECLARATIVE, not a click handler. The first version loaded on the tab CLICK when the
+  // list was `idle`, which treats "the user opened Claims" as a moment. It is a STATE: a project
+  // switch resets the list to `null`/`idle` while the Claims tab is still showing, and no click
+  // follows, so the panel rendered nothing at all — no rows, no loading, no error, no empty state,
+  // because `(bills ?? []).map` over null renders nothing and every other branch was false.
+  //
+  // Expressed as a condition instead, the load re-fires whenever the condition becomes true again,
+  // whatever made it true. The one-shot trigger is deleted rather than supplemented — a second
+  // trigger beside the first would leave the same class of gap for the next state change.
+  const inClaimWorkflow = tab === 'claims' || CLAIM_TABS.includes(tab);
+  useEffect(() => {
+    if (inClaimWorkflow && billsLoad === 'idle') void loadCommercialBills();
+  }, [inClaimWorkflow, billsLoad, loadCommercialBills]);
+
+  const openTab = (next: Tab): void => { setTab(next); };
   const selectClaim = (billId: string): void => {
     setSelection({ scope: scopeKey, billId });
     // Always re-read on selection. The lifecycle is what someone is about to ACT on — a certified
