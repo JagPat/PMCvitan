@@ -9,7 +9,8 @@ import {
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
-import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
+import { hashRequest, type CommandScope } from '../platform/commands';
+import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor, type EventActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -95,6 +96,7 @@ export type HeadroomMover =
 export class CommercialBudgetService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly commands: CommercialCommandRunner,
     private readonly capabilities: CapabilitiesService,
     private readonly budget: CommercialBudgetQuery,
   ) {}
@@ -246,7 +248,7 @@ export class CommercialBudgetService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const amount = new Prisma.Decimal(input.amount);
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.budget.set', idempotencyKey, requestHash: hashRequest(input),
       run: async (tx) => {
         // The budget is one of the three headroom-moving writes, so it serializes with the PO

@@ -3,7 +3,8 @@ import { ROLE_POLICY, type CommitmentAttributionDto, type CostHeadDto } from '@v
 import type { DefineCostHeadInput, ReattributeInput } from '../contracts';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
-import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
+import { hashRequest, type CommandScope } from '../platform/commands';
+import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
@@ -30,6 +31,7 @@ import { announceMoneyMoved } from './cash-forecast.projection';
 export class CommercialService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly commands: CommercialCommandRunner,
     private readonly capabilities: CapabilitiesService,
     private readonly participant: CommercialParticipant,
   ) {}
@@ -68,7 +70,7 @@ export class CommercialService {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertManage(user);
     const actor = await resolveActor(this.prisma, user);
-    await executeCommand(this.prisma, {
+    await this.commands.run({
       scope: this.scope(projectId), actor, commandType: 'commercial.costHead.define',
       idempotencyKey, requestHash: hashRequest(input),
       run: async (tx) => {
@@ -120,7 +122,7 @@ export class CommercialService {
     const target: AttributionTarget = input.poLineId
       ? { poLineId: input.poLineId }
       : { labourPoLineId: input.labourPoLineId! };
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope: this.scope(projectId), actor, commandType: 'commercial.attribution.reattribute',
       idempotencyKey, requestHash: hashRequest(input),
       run: async (tx) => {

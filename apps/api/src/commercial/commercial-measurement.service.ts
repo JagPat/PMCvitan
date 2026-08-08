@@ -3,7 +3,8 @@ import { Prisma } from '@prisma/client';
 import { ROLE_POLICY, type MeasurementDto, type MeasurementRegisterDto } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
-import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
+import { hashRequest, type CommandScope } from '../platform/commands';
+import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -61,6 +62,7 @@ function serialize(m: MeasurementRow): MeasurementDto {
 export class CommercialMeasurementService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly commands: CommercialCommandRunner,
     private readonly capabilities: CapabilitiesService,
     private readonly activities: ActivityParticipant,
     private readonly labour: LabourRequirementQuery,
@@ -219,7 +221,7 @@ export class CommercialMeasurementService {
     const measuredOn = fromIsoCivilDate(measuredOnIso);
     if (!measuredOn) throw new ConflictException(`"${measuredOnIso}" is not a civil date`);
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType, idempotencyKey, requestHash: hashRequest(input),
       // §C rule ii — every fact records the command that produced it, and `sourceCommandId` is a
       // NOT NULL composite FK. An unkeyed call therefore reserves a SERVER one-shot command (the

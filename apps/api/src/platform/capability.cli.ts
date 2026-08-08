@@ -16,6 +16,9 @@ import { LabourRequirementParticipant } from '../labour/labour.participant';
 import { ProcurementParticipant } from '../procurement/procurement.participant';
 import { RequirementsQueryService } from '../activities/requirements.query';
 import { CommercialBillService } from '../commercial/commercial-bill.service';
+import { CommercialCommandRunner } from '../commercial/commercial-command.runner';
+import { ExternalEffectDispatcher } from './outbox/external-effect-dispatcher';
+import { OutboxRelay } from './outbox/relay.service';
 import { CommercialBillQuery } from '../commercial/commercial-bill.query';
 import { CommercialPaymentQuery } from '../commercial/commercial-payment.query';
 import { CommercialDeductionQuery } from '../commercial/commercial-deduction.query';
@@ -84,7 +87,13 @@ async function main(): Promise<void> {
       // (`commercial.money_moved`) instead of computing, so no command path computes the forecast
       // at all — only the outbox relay and the operator rebuilder do, and each binds at its own
       // boot. A CLI cannot be missing a binding that no command needs.
-      const budgetService = new CommercialBudgetService(prisma, capabilitiesService, budgetQuery);
+      // Task 7B-i-a — the command runner every commercial service now routes through, built REAL
+      // here for the reason stated below about the participant's collaborators: activation drives
+      // `participant.attribute` on its own transaction and never issues a command through it, but a
+      // CLI that hands a service a different collaborator than the container does is how a code
+      // path stops being the path that was tested. `OutboxRelay` schedules nothing until `start()`.
+      const commandRunner = new CommercialCommandRunner(prisma, new ExternalEffectDispatcher(prisma, new OutboxRelay(prisma)));
+      const budgetService = new CommercialBudgetService(prisma, commandRunner, capabilitiesService, budgetQuery);
       const activation = new CommercialActivationService(
         prisma,
         // Phase 5 Task 4 — the participant now also carries the vendor-claim withdrawal guards,
@@ -97,7 +106,7 @@ async function main(): Promise<void> {
           budgetService,
           new InventoryQuery(prisma),
           new CommercialBillService(
-            prisma, capabilitiesService, new ProcurementParticipant(new RequirementsQueryService()),
+            prisma, commandRunner, capabilitiesService, new ProcurementParticipant(new RequirementsQueryService()),
             new LabourRequirementParticipant(), new InventoryQuery(prisma),
             new CommercialBillQuery(), new CommercialMeasurementQuery(), budgetService,
           ),

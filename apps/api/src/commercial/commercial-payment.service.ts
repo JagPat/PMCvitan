@@ -12,7 +12,8 @@ import {
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
-import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
+import { hashRequest, type CommandScope } from '../platform/commands';
+import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -94,6 +95,7 @@ interface ApprovalRow {
 export class CommercialPaymentService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly commands: CommercialCommandRunner,
     private readonly capabilities: CapabilitiesService,
     // §H's fold decides what is payable at all. Own module, one owner: bound 4 asks the same
     // question the deduction ledger answers, rather than growing a second copy of it here.
@@ -152,7 +154,7 @@ export class CommercialPaymentService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const amount = this.parseAmount(input.amount);
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.payment.approve', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
@@ -258,7 +260,7 @@ export class CommercialPaymentService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const amount = this.parseAmount(input.amount);
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.payment.record', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
@@ -401,7 +403,7 @@ export class CommercialPaymentService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const amount = this.parseAmount(input.amount);
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.payment.reverse', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {

@@ -6,7 +6,8 @@ import {
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
-import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
+import { hashRequest, type CommandScope } from '../platform/commands';
+import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -67,6 +68,7 @@ type LineTriple = {
 export class CommercialVerificationService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly commands: CommercialCommandRunner,
     private readonly capabilities: CapabilitiesService,
     private readonly procurement: ProcurementParticipant,
     private readonly labour: LabourRequirementParticipant,
@@ -318,7 +320,7 @@ export class CommercialVerificationService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     let verdict: VerificationDto | null = null;
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.bill.verify', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {

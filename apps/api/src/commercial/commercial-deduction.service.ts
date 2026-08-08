@@ -11,7 +11,8 @@ import {
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
-import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
+import { hashRequest, type CommandScope } from '../platform/commands';
+import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor, type Actor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
@@ -56,6 +57,7 @@ const ZERO = new Prisma.Decimal(0);
 export class CommercialDeductionService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly commands: CommercialCommandRunner,
     private readonly capabilities: CapabilitiesService,
     private readonly deductions: CommercialDeductionQuery,
     // §B's mover rule — a withholding lowers §J's `certified-payable`, so it moves headroom and
@@ -120,7 +122,7 @@ export class CommercialDeductionService {
       throw new BadRequestException(`A ${type} deduction must carry a reason — it is a judgement, and one nobody can read is not one`);
     }
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.deduction.record', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
@@ -209,7 +211,7 @@ export class CommercialDeductionService {
     const scope: CommandScope = { scopeKind: 'project', projectId };
     const amount = this.parseAmount(input.amount);
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.advance.pay', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {
@@ -268,7 +270,7 @@ export class CommercialDeductionService {
       throw new BadRequestException('A release must carry a reason — it returns withheld money, and an unexplained release is indistinguishable from a mistake');
     }
 
-    const outcome = await executeCommand(this.prisma, {
+    const outcome = await this.commands.run({
       scope, actor, commandType: 'commercial.deduction.release', idempotencyKey, requestHash: hashRequest(input),
       synthesizeKeyWhenAbsent: true,
       run: async (tx, ctx) => {

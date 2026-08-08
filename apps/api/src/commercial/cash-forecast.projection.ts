@@ -73,16 +73,21 @@ export const COMMERCIAL_MONEY_EVENT = 'commercial.money_moved' as const;
  * `commercial.costHead.define` and §L activation write `CostHead` rows without moving money, and
  * the two partition-only payment writes move a bucket without moving the total.
  *
- * WEIGHTLESS: the catalog entry declares `invalidate: false, push: null`, so nothing is sent to any
- * client and the emitting command needs no `ExternalEffectDispatcher`. What the event is FOR is the
- * durable `OutboxDelivery` that `emitEvent` materializes in this same transaction — the announcement
- * the §J projection folds, the operator diagnostic freezes against, and a rebuild's catch-up
- * replays. Committing the money and the announcement together is the property that makes all three
- * work; a write-through refresh looked equivalent and was not.
+ * What the event is FOR, first: the durable `OutboxDelivery` that `emitEvent` materializes in this
+ * same transaction — the announcement the §J projection folds, the operator diagnostic freezes
+ * against, and a rebuild's catch-up replays. Committing the money and the announcement together is
+ * the property that makes all three work; a write-through refresh looked equivalent and was not.
  *
- * The returned meta is deliberately DISCARDED by every caller. A weightless intent has nothing for
- * the post-commit dispatcher to send, so commercial services keep `events: []` and stay at zero
- * dispatch sites — which the cross-module tripwire pins.
+ * INVALIDATES (Task 7B-i-a): the catalog entry declares `invalidate: true, push: null`, so every
+ * open tab on this project re-reads and none of them is notified. 7A shipped it weightless on the
+ * grounds that nothing external consumed it, which was true until 7B-i built the Commercial hub —
+ * whose refresh rides exactly that socket `changed` ping. Money moving is a state change, not news.
+ *
+ * The returned meta is still DISCARDED by every caller, and now that is a property rather than an
+ * omission: `executeCommand` collects what a command emitted (see `platform/events.ts`), so the
+ * announcement reaches the post-commit dispatcher without any of the call frames between here and
+ * the command body having to know it exists. That matters because those frames belong to
+ * procurement, labour and inventory as often as to commercial.
  */
 export async function announceMoneyMoved(
   tx: Prisma.TransactionClient,

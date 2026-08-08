@@ -139,22 +139,26 @@ export const EXTERNAL_EFFECTS = {
   // commercial-only write (a budget revision, certification, payment, deduction) refreshes the
   // projection and tells no open tab.
   //
-  // Flipping this flag alone does NOT fix that, and shipping it flipped would be worse than leaving
-  // it: with `invalidate: true` the event carries an external effect that no commercial command
-  // sends. Every commercial service returns `events: []` and injects no `ExternalEffectDispatcher`,
-  // and in the DEFAULT `legacy` sender mode `OutboxRelay.claimExternalRecovery()` deliberately
-  // leaves fresh external deliveries alone for the lease window because the immediate dispatcher is
-  // expected to have sent them — so the invalidation would arrive late, and never at all under
-  // `OUTBOX_RELAY_AUTOSTART=false`.
+  // 7B-i-a is the unit that made flipping it correct, and the reason it took its own unit is worth
+  // keeping: the flag alone would have declared an external effect that NO commercial command sent.
+  // Commercial's single emit seam is `CommercialBudgetService.evaluate`, several call frames below
+  // every command body, so no service could return its meta — and in the DEFAULT `legacy` sender
+  // mode `OutboxRelay.claimExternalRecovery()` deliberately leaves fresh external deliveries alone
+  // for the lease window, because the immediate dispatcher is expected to have sent them. The
+  // invalidation would have arrived late, and under `OUTBOX_RELAY_AUTOSTART=false` never.
   //
-  // Making it invalidate therefore means wiring post-commit dispatch through ~15 command sites in
-  // 10 services (and `evaluate` returning its meta). That is a platform-wiring unit, not a line in
-  // a read-hub PR, and it is scheduled as such in `docs/STATUS.md`. `commercial.contract.test.ts`
-  // pins the two together: the flag and the wiring move in ONE change or neither.
+  // What made it right was not threading that meta through ~15 call sites in four modules but
+  // deriving the set: `emitEvent` records each emission against its transaction and
+  // `executeCommand` reads it back, so a command dispatches what it EMITTED rather than what it
+  // remembered to return (see `platform/events.ts`). Commercial's own commands then join the same
+  // post-commit dispatch rule every other module already follows, and procurement, labour and
+  // inventory needed no edit at all — their existing dispatch now carries the money event in the
+  // SAME batch, which is also what dedupes the socket ping to one.
   //
-  // Until then the hub refreshes on every FOREIGN money event (PO issue, acceptance, measurement —
-  // all of which invalidate) and on Refresh. What it misses is another user's commercial-only write.
-  'commercial.money_moved': { eventType: 'commercial.money_moved', invalidate: false, push: null },
+  // NO push: money moving is a state change every open tab must re-read, not a notification.
+  // `commercial.contract.test.ts` §M pins the flag and the dispatch together, so neither half can
+  // be reverted alone.
+  'commercial.money_moved': { eventType: 'commercial.money_moved', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────
