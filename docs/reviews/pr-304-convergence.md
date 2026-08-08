@@ -1,7 +1,13 @@
 # PR #304 convergence audit — the write-ahead window, again
 
-Four finding-bearing heads (`d6d4f6e`, `9fa54c7`, `9d755f2`, `bed5a1f`). **Nineteen findings, nine
-P1**, on a unit whose product surface is six buttons.
+Five finding-bearing heads (`d6d4f6e`, `9fa54c7`, `9d755f2`, `bed5a1f`, `6726b2c`). **Twenty-three
+findings, ten P1**, on a unit whose product surface is six buttons.
+
+**This audit ends by splitting the unit, which is the conclusion it should have reached earlier.**
+The review lifecycle reports 5 finding-bearing heads against a limit of 5, and the finding pattern
+had been saying the same thing for three rounds: every round's defect was inside the previous
+round's fix, and the fixes kept alternating between two workflows that share files and share
+nothing else.
 
 Five of round 1's seven are ONE root — one PR #302 already named and I had already written down:
 *the form was written as though the server were the only guard.* Three of round 2's five are inside
@@ -149,6 +155,36 @@ amounts were wrong: a claim for ₹5,000 of material plus ₹900 tax and ₹250 
 Nothing refused it, because the server's default for an omitted amount is zero and zero is a legal
 amount. The quietest defects in this PR have all been the ones where every layer said yes.
 
+## Round 5 — four findings, and the decision to split
+
+| # | P | Finding | Half |
+|---|---|---|---|
+| Q-a | P1 | A line-register read that STARTED BEFORE the write committed could still release the measurement key. The per-line token orders reads against each other; it says nothing about whether a read observed the write | §D |
+| Q-b | P2 | Tax/freight stayed live when the entry was switched to a labour line, and the server refuses a labour claim line carrying either | §F |
+| Q-c | P2 | The measure form validated shape only, while the register on screen already proved the quantity exceeded the line's remaining authority | §D |
+| Q-d | P2 | A negative correction larger than the row's remaining net contribution was queued, though the rows on screen prove the server's floor refuses it | §D |
+
+Three of the four are §D. One is §F. That is the split, and it is visible in the whole history:
+
+| Half | Findings |
+|---|---|
+| §D — measure a labour PO line | M1, M5, M7, N1, N3, O2, O3, P1, P2, Q-a, Q-c, Q-d |
+| §F — lodge and progress a claim | M2, M3, M4, M6, N2, N4, N5, O1, O4, P3, Q-b |
+
+Two workflows, two independent chains of reasoning, one PR. They shared files and a key namespace
+and nothing a reviewer holds in their head at once — so each round I fixed one half while the other
+half's context was cold. **Q-a is the clearest evidence:** it is a causality bug about read ordering
+that has no counterpart on the §F side, arriving in round 5 of a unit whose §F half was already
+settled.
+
+So PR #304 is now the **§F half alone** — lodge, submit, reject, and the value rules — with Q-b
+fixed. The §D half moves to its own unit with Q-a, Q-c and Q-d unfixed and named, where it gets a
+review budget that has not already been spent.
+
+The honest note: this split was available at scoping time. "The engineer's six writes" is not one
+workflow, it is two, and counting writes instead of workflows is what hid that. **Scope by the
+question a reviewer has to answer, not by the actor who performs the actions.**
+
 ## Root N (new) — wiring is not shipping
 
 **M2.** `recordVendorBill` had a gateway method, an op type, a coalesce key, a store thunk, an
@@ -203,6 +239,13 @@ Taking a finding seriously means implementing what is true, not what is quoted.
    now holds a control; without a way back that is a permanent disable, not a safe default. (P2.)
 12. **A default is not a confirmation.** An omitted amount defaulting to zero looks identical to a
    document that says zero, and no layer will object. (P3.)
-13. **A probe's synchronisation is part of its claim.** O1 waited on a condition its own setup had
+13. **Scope by the question a reviewer has to answer, not by the actor performing the actions.**
+   One actor's six writes were two workflows; sharing a screen and a key namespace is not sharing a
+   review. Five rounds alternated between them, each fixing one half with the other's context cold.
+14. **When the round's findings sort cleanly into two buckets, that is the split telling you where
+   it is.** Rounds 3–5 each did; the tally above only made it legible in retrospect.
+15. **A read's token orders reads against each other and says nothing about causality.** Knowing a
+   read is the NEWEST is not knowing it observed the write. (Q-a — carried into the §D unit.)
+16. **A probe's synchronisation is part of its claim.** O1 waited on a condition its own setup had
    satisfied, so it asserted before the read under test had landed — and passed under the mutation.
    Mutation-run every probe, including the ones written to catch your own findings.

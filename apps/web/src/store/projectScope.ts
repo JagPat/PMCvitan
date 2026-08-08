@@ -14,7 +14,6 @@ import type {
   ProjectNode,
   Review,
   ReservationPlan,
-  MeasurementRegisterDto,
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -88,11 +87,6 @@ export interface ProjectDataState {
   commercialView: CommercialView | null;
   commercialBills: CommercialBillRow[] | null;
   commercialClaims: Record<string, CommercialClaimView>;
-  /** §D — one labour PO line's measurement register, keyed by line id. The claim bundle reports
-   *  registers only for a LIVE version's lines, and a lodged claim is `draft`, so this is the only
-   *  read that shows the engineer the measurement they just took. Project-owned: a line id is
-   *  project-contained. */
-  commercialLineRegisters: Record<string, MeasurementRegisterDto>;
   /** Codex round 13 — the ORIGINAL allocate input per retained coalesce key. The key alone (round
    *  11's parser) loses `capacityCommitmentId`, so in the success→reload gap a resolved
    *  supplier-backed draw stopped reserving its commitment and a second same-slice worker was
@@ -146,7 +140,6 @@ export function emptyProjectData(): ProjectDataState {
     // is project-contained, so carrying either across a switch would render another site's money.
     commercialBills: null,
     commercialClaims: {},
-    commercialLineRegisters: {},
     labourPendingInputs: {},
     labourOnboardPending: {},
     labourBindPending: {},
@@ -186,8 +179,6 @@ export interface ModuleReadState {
   // scope being left, so nothing in it can be valid in the next one.
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
-  /** §D — the per-LINE register read's status, keyed by labour PO line id. */
-  commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
   /**
    * Codex I2 — WHEN each of these two reads last SUCCEEDED, on one monotonic counter.
    *
@@ -221,7 +212,6 @@ export function emptyModuleReadState(): ModuleReadState {
     commercialLoad: 'idle',
     commercialBillsLoad: 'idle',
     commercialClaimLoad: {},
-    commercialLineRegisterLoad: {},
     commercialBillsStamp: 0,
     commercialClaimStamp: {},
   };

@@ -62,7 +62,7 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   'setCommercialBudget', 'defineCostHead', 'reattributeCommitment',
   // 7B-iii-b — the engineer's writes join the SAME op-type set, so the hydration guard, the
   // pending rebuild and the flush reconcile cover them without a second registry to keep in sync.
-  'takeMeasurement', 'correctMeasurement', 'recordVendorBill',
+  'recordVendorBill',
   'submitVendorBill', 'amendVendorBill', 'rejectVendorBill',
 ] as const;
 
@@ -110,23 +110,6 @@ export function normalizeCommercialOutbox<T extends OutboxOpShape>(ops: readonly
 
 // ── Phase 5 Task 7B-iii-b (§D/§F) — the engineer's six writes ────────────────────────────────
 
-/** §D — one measurement per (labour PO line, activity) in flight. The pair IS the target. */
-export const measureCoalesceKey = (labourPoLineId: string, activityId: string): string =>
-  `com:meas:${labourPoLineId}:${activityId}`;
-
-/**
- * §D — a correction is a SIGNED delta, so the value is part of the identity: −50 and +20 against
- * the same measurement are two different corrections, not a retry of one. The pending TEST below
- * is prefix-matched, so editing the delta mid-flight does not re-arm the button (labour r7 — the
- * same split `budgetCoalesceKey` uses).
- */
-export const correctionCoalesceKey = (measurementId: string, quantity: string): string =>
-  `com:mcorr:${measurementId}:${quantity}`;
-
-/** Whether ANY correction of this measurement is pending, at any delta. */
-export const isCorrectionPendingFor = (key: string, measurementId: string): boolean =>
-  key.startsWith(`com:mcorr:${measurementId}:`);
-
 /** §F — the duplicate-claim key the SERVER freezes: one claim per (vendor, their bill number). */
 export const billCoalesceKey = (vendorId: string, vendorBillNumber: string): string =>
   // Normalized the way the SERVER's live-duplicate index keys it, not merely trimmed: `V-1` and
@@ -169,13 +152,6 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   if (pending.includes(coalesceKey)) return true;
   const tx = /^com:billtx:(.+):(?:submit|amend|reject)$/u.exec(coalesceKey);
   if (tx) return pending.some((k) => isBillTransitionPending(k, tx[1]!));
-  // Codex M7 — the SAME conflict rule for corrections. `correctionCoalesceKey` deliberately carries
-  // the delta, so −1 and −2 against one measurement are different keys; the screen already treated
-  // any pending correction for that measurement as blocking, and the dispatcher did not. Two deltas
-  // could therefore both enter the outbox and double-withdraw the same evidence. A screen guard the
-  // durable layer does not share is J1's lesson unlearned.
-  const corr = /^com:mcorr:(.+):[^:]*$/u.exec(coalesceKey);
-  if (corr) return pending.some((k) => isCorrectionPendingFor(k, corr[1]!));
   return false;
 }
 
@@ -201,8 +177,7 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
 export type CommercialRead =
   | { read: 'money' }
   | { read: 'bills' }
-  | { read: 'claim'; billId: string }
-  | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] };
+  | { read: 'claim'; billId: string };
 
 export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
   switch (r.read) {
@@ -213,13 +188,5 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
       return coalesceKey.startsWith('com:bill:') || coalesceKey.startsWith('com:billtx:');
     case 'claim':
       return isBillTransitionPending(coalesceKey, r.billId);
-    case 'lineRegister': {
-      const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
-      if (meas) return meas[1] === r.labourPoLineId;
-      const corr = /^com:mcorr:(.+):[^:]*$/u.exec(coalesceKey);
-      // a correction is visible once the register it adjusts carries the row it names
-      if (corr) return r.rowIds.includes(corr[1]!);
-      return false;
-    }
   }
 }

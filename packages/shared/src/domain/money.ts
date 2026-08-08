@@ -100,3 +100,15 @@ export function isRealCivilDate(value: string): boolean {
     return false;
   }
 }
+
+/**
+ * §F — which claim-line kinds may carry tax and freight.
+ *
+ * A LABOUR purchase-order snapshot freezes neither, so a labour claim line naming either has
+ * nothing to be verified against and the server refuses it. Stated here rather than in two places
+ * so the form cannot offer a charge the service will reject: root M's mechanism, the same one
+ * `BILL_SUBMITTABLE_FROM` uses — the SERVICE reads this for its own guard.
+ */
+export function claimLineMayCarryCharges(kind: 'material' | 'labour'): boolean {
+  return kind === 'material';
+}

@@ -734,182 +734,6 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('N3: a newly lodged DRAFT labour claim can be measured — the flow is not circular', () => {
-    // `claim.measurements` is keyed from the LIVE version, and a draft has none. RED before: the
-    // Measurements tab showed the material-only empty state, so the only control was Submit, which
-    // disputes the claim for missing measured evidence — and a disputed claim is still not live.
-    // Lodge → measure → submit was unreachable in exactly the order this unit exists to support.
-    const draft = claim();
-    const withLabourLine = {
-      ...draft,
-      measurements: {},
-      bill: {
-        ...draft.bill,
-        status: 'draft' as const,
-        versions: [{
-          ...draft.bill.versions[0]!,
-          live: false,
-          lines: [{
-            id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
-            quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
-          }],
-        }],
-      },
-    };
-    useStore.setState({
-      commercialClaims: { 'bill-1': withLabourLine as never },
-      commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 },
-      commercialBillsStamp: 1,
-    });
-    const r = render(<CommercialScreen />);
-    fireEvent.click(r.getByTestId('commercial-tab-claims'));
-    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
-    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
-
-    expect(r.getByTestId('measure-qty-LPL-1'), 'a draft labour claim offered no way to measure it').toBeTruthy();
-    // and it does NOT fabricate a register: nothing is folded there yet, and saying so beats zeros
-    expect(r.getByTestId('measurement-none-LPL-1')).toBeTruthy();
-  });
-
-  it('O3: a measurement TAKEN on a draft claim becomes visible — the line register is read', () => {
-    // Round 2 made the form reachable on a draft (N3) and stopped there. The claim bundle reports
-    // registers only for a LIVE version's lines, so the measurement the engineer had just taken
-    // was recorded by the server and showed nothing — and the natural response to a control that
-    // appears to have done nothing is to use it again. A control whose EFFECT no read carries is
-    // half a control.
-    const draft = claim();
-    const withLabourLine = {
-      ...draft,
-      measurements: {},
-      bill: {
-        ...draft.bill,
-        status: 'draft' as const,
-        versions: [{
-          ...draft.bill.versions[0]!,
-          live: false,
-          lines: [{
-            id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
-            quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
-          }],
-        }],
-      },
-    };
-    useStore.setState({
-      commercialClaims: { 'bill-1': withLabourLine as never },
-      commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 },
-      commercialBillsStamp: 1,
-      // the LINE's own register — the read that carries a measurement taken before the claim is live
-      commercialLineRegisters: {
-        'LPL-1': {
-          labourPoLineId: 'LPL-1', rows: [], measured: '2', effort: '10',
-          orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
-        },
-      } as never,
-      commercialLineRegisterLoad: { 'LPL-1': 'ready' },
-    });
-    const r = render(<CommercialScreen />);
-    fireEvent.click(r.getByTestId('commercial-tab-claims'));
-    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
-    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
-
-    const row = r.getByTestId('commercial-measurement-LPL-1');
-    expect(
-      row.textContent,
-      'the measurement the engineer had just taken was invisible on the draft claim it was taken for',
-    ).toContain('2');
-    expect(r.queryByTestId('measurement-none-LPL-1'), 'a landed register still reported as absent').toBeNull();
-  });
-
-  it('P1: a LIVE claim renders the LINE register — the read that releases the key', () => {
-    // Round 3 released `com:meas:` on the line-register read and rendered the claim BUNDLE's copy.
-    // On a live claim the bundle map is populated, so the register read could land, clear the key,
-    // and re-enable Measure over the stale bundle register — the defect being fixed, with the
-    // releasing read and the rendering read looking at different things.
-    const live = claim();
-    useStore.setState({
-      commercialClaims: {
-        'bill-1': {
-          ...live,
-          measurements: {
-            'LPL-1': {
-              labourPoLineId: 'LPL-1', rows: [], measured: '7', effort: '10',   // STALE bundle copy
-              orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
-            },
-          },
-          bill: {
-            ...live.bill,
-            versions: [{
-              ...live.bill.versions[0]!,
-              lines: [{
-                id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
-                quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
-              }],
-            }],
-          },
-        } as never,
-      },
-      commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 },
-      commercialBillsStamp: 1,
-      commercialLineRegisters: {
-        'LPL-1': {
-          labourPoLineId: 'LPL-1', rows: [], measured: '9', effort: '10',       // the FRESH register
-          orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
-        },
-      } as never,
-      commercialLineRegisterLoad: { 'LPL-1': 'ready' },
-    });
-    const r = render(<CommercialScreen />);
-    fireEvent.click(r.getByTestId('commercial-tab-claims'));
-    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
-    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
-
-    const row = r.getByTestId('commercial-measurement-LPL-1').textContent ?? '';
-    expect(row, 'the stale bundle register was rendered beside a key released by the LINE read').toContain('9');
-    expect(row).not.toContain('7');
-  });
-
-  it('P2: a failed line-register read is recoverable, not a permanently disabled row', () => {
-    // Only a SUCCESSFUL register read releases that line's `com:meas:` key, so a transient failure
-    // with no way back leaves the row disabled after connectivity returns.
-    const loadCommercialLineRegister = vi.fn();
-    const draft = claim();
-    act(() => {
-      useStore.setState({
-        loadCommercialLineRegister,
-        commercialClaims: {
-          'bill-1': {
-            ...draft, measurements: {},
-            bill: {
-              ...draft.bill, status: 'draft' as const,
-              versions: [{
-                ...draft.bill.versions[0]!, live: false,
-                lines: [{
-                  id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
-                  quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
-                }],
-              }],
-            },
-          } as never,
-        },
-        commercialClaimLoad: { 'bill-1': 'ready' },
-        commercialClaimStamp: { 'bill-1': 2 },
-        commercialBillsStamp: 1,
-        commercialLineRegisterLoad: { 'LPL-1': 'error' },
-      } as never);
-    });
-    const r = render(<CommercialScreen />);
-    fireEvent.click(r.getByTestId('commercial-tab-claims'));
-    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
-    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
-
-    loadCommercialLineRegister.mockClear();
-    fireEvent.click(r.getByTestId('measurement-retry-LPL-1'));
-    expect(loadCommercialLineRegister, 'a failed register read offered no way back').toHaveBeenCalledWith('LPL-1');
-  });
-
   it('P3: a material line carries the invoice\u2019s tax and freight', () => {
     // RED before: lodge lines held only quantity and rate, so the server defaulted both to zero and
     // the claim was certified and paid at its base amount — silently disagreeing with the document.
@@ -958,6 +782,26 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
       lines: [expect.objectContaining({ labourPoLineId: 'LPL-1' })],
     }));
     expect(recordVendorBill.mock.calls[0][0].lines[0].poLineId).toBeUndefined();
+  });
+
+  it('Q1: a LABOUR line carries no tax or freight — the server refuses one that does', () => {
+    // A labour purchase-order snapshot freezes neither, so `resolveLines` rejects a labour claim
+    // line with either. RED before: the fields stayed live when the kind was switched, so the
+    // entry could be added and lodged, and the durable outbox reported saved before the 409.
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-5'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00'], ['lodge-tax', '900.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    expect((r.getByTestId('lodge-add-line') as HTMLButtonElement).disabled, 'a material line with tax was refused').toBe(false);
+
+    fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
+    // switching CLEARS them rather than carrying a value the entry would then silently refuse
+    expect((r.getByTestId('lodge-tax') as HTMLInputElement).value).toBe('');
+    expect((r.getByTestId('lodge-tax') as HTMLInputElement).disabled).toBe(true);
+    expect((r.getByTestId('lodge-freight') as HTMLInputElement).disabled).toBe(true);
+    expect((r.getByTestId('lodge-add-line') as HTMLButtonElement).disabled, 'a cleared labour line was refused').toBe(false);
   });
 
   it('O4: a vendor invoice covering SEVERAL po lines is lodged whole', () => {
@@ -1031,12 +875,4 @@ describe('Task 7B-iii-b round 2 — the shared value rules (M5, M6, M7)', () => 
     expect(billCoalesceKey('v-1', 'V-1')).not.toBe(billCoalesceKey('v-1', 'V-2')); // genuinely different
   });
 
-  it('M7: the DISPATCHER blocks a conflicting correction, not just the screen', async () => {
-    const { commercialWriteBlocked, correctionCoalesceKey } = await import('@/lib/commercialKeys');
-    const pending = [correctionCoalesceKey('m1', '-1')];
-    // RED before: only bill transitions had conflict semantics, so −2 was accepted into the outbox
-    // beside a pending −1 and could double-withdraw the same measurement evidence.
-    expect(commercialWriteBlocked(correctionCoalesceKey('m1', '-2'), pending)).toBe(true);
-    expect(commercialWriteBlocked(correctionCoalesceKey('m2', '-2'), pending)).toBe(false);
-  });
 });
