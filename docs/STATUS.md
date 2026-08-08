@@ -190,7 +190,20 @@ gate as feature work. Work them top-down, one focused PR per item:
    otherwise-identical case is accepted. Sweep `apps/api/scripts/upgrade-proof.sh`
    back through Phases 1–4 for assertions whose fixture rows do not exist, or
    whose target is in a state that makes a different rule fire. One PR.
-4. `e2e-flake-burndown` — the documented flake families the review packets
+4. `drift-shepherd-advice-for-a-merged-handoff` — the drift shepherd's remedy
+   text is unconditional (`buildDriftHandoff` in `scripts/runner-continuation.mjs`:
+   "Update `open_pr` to `<n>` … and shepherd the open PR"), and for ONE state it
+   is wrong: a between-work handoff whose live PR is the STATUS flip itself
+   (`task_state: merged`, `work_item: none`). Recording `open_pr` there makes
+   `assessRunnerState` resolve to that PR after it merges, because open_pr is
+   consulted BEFORE next_task — the P2 Codex found on PR #296. The DANGER is
+   already closed: the live-STATUS guard in `autonomous-status-state.test.mjs`
+   fails the build on that shape, so the bad advice can no longer land. What
+   remains is that the two automations still say opposite things to whoever
+   reads them next. Make the remedy state-aware (when every live autonomous PR's
+   head declares a merged between-work Now block, tell the reader to clear
+   `open_pr` and advance via `next_task`), with a test for both branches. One PR.
+5. `e2e-flake-burndown` — the documented flake families the review packets
    record honestly (`daily-log-lost-response` visibility, the
    timing-sensitive `pillar-chain` inspection steps,
    `inspections-module-query`, `project-scope` browser history). Convert
