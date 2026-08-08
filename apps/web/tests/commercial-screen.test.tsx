@@ -580,3 +580,82 @@ describe('Task 7B-iii-a (§M) — the write controls', () => {
     expect((r.getByTestId('budget-submit') as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe('Task 7B-iii-a round 2 — Codex J1/J2/J3', () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({
+      role: 'pmc',
+      capabilities: ['commercial'],
+      commercialView: {
+        ...bundle(),
+        costHeads: [{ code: 'CIVIL', name: 'Civil' }, { code: 'MEP', name: 'MEP' }],
+        attributions: [
+          { id: 'A1', poLineId: 'PL-1', labourPoLineId: null, costHeadCode: 'CIVIL', reason: 'initial', createdAt: '', createdById: 'u', supersededAt: null, supersededById: null, supersedeReason: null },
+          { id: 'A2', poLineId: 'PL-2', labourPoLineId: null, costHeadCode: 'CIVIL', reason: 'initial', createdAt: '', createdById: 'u', supersededAt: null, supersededById: null, supersedeReason: null },
+        ],
+      } as never,
+      commercialLoad: 'ready',
+    });
+  });
+  afterEach(cleanup);
+
+  it('J1: an ENGINEER sees the hub but none of the write controls', () => {
+    // `commercial.read` is pmc+engineer; all three writes are pmc. The outbox is WRITE-AHEAD, so
+    // an engineer offline was told "saved, will sync" and the op was discarded on reconnect.
+    useStore.setState({ role: 'engineer' });
+    const r = render(<CommercialScreen />);
+    expect(r.getByTestId('commercial-position'), 'the hub itself is readable by an engineer').toBeTruthy();
+    expect(() => r.getByTestId('commercial-budget-form')).toThrow();
+    expect(() => r.getByTestId('commercial-costhead-form')).toThrow();
+    fireEvent.click(r.getByTestId('commercial-tab-commitments'));
+    expect(() => r.getByTestId('attr-submit-A1')).toThrow();
+  });
+
+  it('J1: the store REFUSES an unauthorised write even if a control is bypassed', () => {
+    // A GATEWAY is required or this passes for the wrong reason: `dispatchCommercial` returns at
+    // `if (!gateway …)` before the authority check is ever reached, so the probe would be green
+    // with the guard deleted. Caught by mutation — the first version did exactly that.
+    useStore.getState()._setGateway({
+      setCommercialBudget: vi.fn().mockResolvedValue({}),
+      snapshot: vi.fn().mockResolvedValue({}),
+    } as never);
+    useStore.setState({ role: 'engineer', online: false });
+    useStore.getState().setCommercialBudget('CIVIL', '100.00', 'v1');
+    expect(useStore.getState().outbox, 'an op was queued without the authority to run it').toHaveLength(0);
+    expect(useStore.getState().commercialPending).toEqual([]);
+  });
+
+  it('J2: editing one attribution row does NOT arm another row with its values', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-commitments'));
+    fireEvent.change(r.getByTestId('attr-head-A1'), { target: { value: 'MEP' } });
+    fireEvent.change(r.getByTestId('attr-reason-A1'), { target: { value: 'miscoded' } });
+
+    expect((r.getByTestId('attr-submit-A1') as HTMLButtonElement).disabled).toBe(false);
+    // RED with one component-wide draft: B's button is enabled carrying A's head and reason, so a
+    // click re-attributes the WRONG commitment to a head nobody chose for it.
+    expect(
+      (r.getByTestId('attr-submit-A2') as HTMLButtonElement).disabled,
+      "another line's button was armed with this line's values",
+    ).toBe(true);
+    expect((r.getByTestId('attr-head-A2') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('J3: a malformed amount never reaches the durable outbox', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.change(r.getByTestId('budget-head'), { target: { value: 'CIVIL' } });
+    fireEvent.change(r.getByTestId('budget-reason'), { target: { value: 'v1' } });
+    for (const bad of ['100.123', 'abc', '-5.00', '1e3']) {
+      fireEvent.change(r.getByTestId('budget-amount'), { target: { value: bad } });
+      expect(
+        (r.getByTestId('budget-submit') as HTMLButtonElement).disabled,
+        `"${bad}" would have been queued, then discarded on reconnect with a 400`,
+      ).toBe(true);
+      expect(r.getByTestId('budget-amount-invalid')).toBeTruthy();
+    }
+    fireEvent.change(r.getByTestId('budget-amount'), { target: { value: '100.5' } });
+    expect((r.getByTestId('budget-submit') as HTMLButtonElement).disabled).toBe(false);
+    expect(() => r.getByTestId('budget-amount-invalid')).toThrow();
+  });
+});

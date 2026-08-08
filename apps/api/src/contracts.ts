@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { parseCivilDate } from './common/civil-date';
-import { DEDUCTION_TYPES, SOD_RULES } from '@vitan/shared';
+import { DEDUCTION_TYPES, MONEY_STRING, SOD_RULES } from '@vitan/shared';
 
 export const sessionSchema = z.object({
   role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']),
@@ -1320,7 +1320,8 @@ export const setBudgetSchema = z
   .object({
     costHeadCode: commercialNonBlank('costHeadCode', 64),
     // a money STRING, parsed to Decimal server-side — never a float (§A)
-    amount: z.string().trim().regex(/^\d+(\.\d{1,2})?$/u, 'amount must be a non-negative money value with at most 2 decimals'),
+    // §A — the shared money-string rule, so the browser form and this contract cannot drift
+    amount: z.string().trim().regex(MONEY_STRING, 'amount must be a non-negative money value with at most 2 decimals'),
     reason: commercialNonBlank('reason', 500),
   })
   .strict();

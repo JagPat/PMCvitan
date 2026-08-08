@@ -58,6 +58,7 @@ import {
   type Role,
   type ScreenKey,
   type Worker,
+  ROLE_POLICY,
 } from '@vitan/shared';
 import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
@@ -1535,8 +1536,22 @@ export const useStore = create<Store>()(
     //    instance of the SAME two-key lifecycle, cloned from labour (the corrected one) rather
     //    than from materials. No-op off the commercial pilot. ──
     const isCommercialOp = (op: OutboxOp): boolean => isCommercialOpType(op.t);
+    /** The permission each §M write requires, so the AUTHORITY check below reads the policy the
+     *  server enforces rather than a copy of its answer (Codex J1). */
+    const COMMERCIAL_OP_PERMISSION = {
+      setCommercialBudget: 'commercial.budget.manage',
+      defineCostHead: 'commercial.manage',
+      reattributeCommitment: 'commercial.attribute',
+    } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
+      // Codex J1, defence in depth. The screen hides a control the role may not use, but the
+      // outbox is DURABLE and this dispatcher is reachable without it — and an op queued without
+      // authority is not merely refused, it is refused AFTER the user was told it was saved. The
+      // capability is already guarded one line up; authority is the same kind of precondition and
+      // was the missing half.
+      const permission = COMMERCIAL_OP_PERMISSION[op.t as keyof typeof COMMERCIAL_OP_PERMISSION];
+      if (permission && !(ROLE_POLICY[permission] as readonly string[]).includes(get().role)) return;
       const ck = op.coalesceKey;
       const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
       if (queued || get().commercialPending.includes(ck)) return;

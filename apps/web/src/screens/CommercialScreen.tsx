@@ -5,6 +5,7 @@ import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
+import { isMoneyString, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -138,6 +139,23 @@ export function CommercialScreen() {
   // rather than guessed. See the row-selection comment on the Claims tab.
   const billsStamp = useStore((s) => s.commercialBillsStamp);
   // Task 7B-iii-a — the §M writes and their disable-while-pending set.
+  const role = useStore((s) => s.role);
+  /**
+   * Codex J1 — the hub is READABLE by pmc AND engineer (`commercial.read`), but all three writes
+   * are `pmc`. An engineer saw the forms, and because the outbox is WRITE-AHEAD the op is
+   * persisted before it is sent: offline they were told "saved, will sync" and the command was
+   * then discarded on reconnect with a 403. Being told a budget was set that never could be is
+   * worse than not seeing the control.
+   *
+   * Read from `ROLE_POLICY` rather than testing `role === 'pmc'`. All three are pmc-only today,
+   * and hardcoding that would be a second copy of the policy that a future widening would leave
+   * behind — the recurrence this phase has named six times. The policy is the source; this asks it.
+   */
+  const may = (permission: keyof typeof ROLE_POLICY): boolean =>
+    (ROLE_POLICY[permission] as readonly string[]).includes(role);
+  const mayBudget = may('commercial.budget.manage');
+  const mayManage = may('commercial.manage');
+  const mayAttribute = may('commercial.attribute');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
@@ -161,9 +179,25 @@ export function CommercialScreen() {
   const [headDraft, setHeadDraft] = useState<{ scope: string; code: string; name: string }>({ scope: '', code: '', name: '' });
   const headForm = headDraft.scope === scopeKey ? headDraft : { scope: scopeKey, code: '', name: '' };
   const setHeadForm = (next: Partial<typeof headForm>): void => setHeadDraft({ ...headForm, scope: scopeKey, ...next });
-  const [attrDraft, setAttrDraft] = useState<{ scope: string; head: string; reason: string }>({ scope: '', head: '', reason: '' });
-  const attrForm = attrDraft.scope === scopeKey ? attrDraft : { scope: scopeKey, head: '', reason: '' };
-  const setAttrForm = (next: Partial<typeof attrForm>): void => setAttrDraft({ ...attrForm, scope: scopeKey, ...next });
+  /**
+   * Codex J2 — the attribution draft is PER ROW, and the first version was not.
+   *
+   * One component-wide `attrForm` meant choosing a destination head and reason on line A also
+   * enabled line B's submit button carrying A's values — invisible on B, because B's own select
+   * showed them too. Clicking the wrong row then re-attributed the wrong commitment to a head
+   * nobody chose for it. On a screen whose whole job is stating where money sits, that is the
+   * worst kind of defect: silent, plausible, and about someone else's line.
+   *
+   * Keyed by attribution id, so only the row the user actually edited can submit, and the empty
+   * default keeps every other row's button disabled.
+   */
+  const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
+    { scope: '', byId: {} },
+  );
+  const attrScoped = attrDrafts.scope === scopeKey ? attrDrafts.byId : {};
+  const attrFormFor = (id: string): { head: string; reason: string } => attrScoped[id] ?? { head: '', reason: '' };
+  const setAttrForm = (id: string, next: Partial<{ head: string; reason: string }>): void =>
+    setAttrDrafts({ scope: scopeKey, byId: { ...attrScoped, [id]: { ...attrFormFor(id), ...next } } });
   const selectedBillId = selection.scope === scopeKey ? selection.billId : null;
 
   // Declared here because THREE things now depend on it: the money view below, the claim-list
@@ -410,6 +444,7 @@ export function CommercialScreen() {
               {/* Task 7B-iii-a — the §B budget write. ONE command for v1 and every revision: the
                   server supersedes the live row and inserts the next version atomically, so the
                   form does not distinguish "create" from "revise" either. */}
+              {mayBudget && (
               <div style={rowCard} data-testid="commercial-budget-form">
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>Set a budget</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -444,18 +479,28 @@ export function CommercialScreen() {
                   <Button
                     variant="ink"
                     data-testid="budget-submit"
-                    disabled={!form.head || !form.amount.trim() || !form.reason.trim() || budgetPending(form.head)}
+                    disabled={!form.head || !isMoneyString(form.amount) || !form.reason.trim() || budgetPending(form.head)}
                     onClick={() => { setBudget(form.head, form.amount.trim(), form.reason.trim()); }}
                   >
                     {budgetPending(form.head) ? 'Setting…' : 'Set budget'}
                   </Button>
                 </div>
+                {/* Codex J3 — the amount is checked against the SAME rule the server contract
+                    uses, before the op reaches the durable outbox. The message is shown rather
+                    than only disabling, so a rejected figure explains itself. */}
+                {form.amount.trim() !== '' && !isMoneyString(form.amount) && (
+                  <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="budget-amount-invalid">
+                    Enter a non-negative amount with at most two decimals.
+                  </div>
+                )}
               </div>
+              )}
 
               {/* §C — the cost-head taxonomy every budget and attribution hangs off. It is on the
                   hub rather than left to an operator because without at least one head the Budget
                   tab cannot do anything at all on a freshly enabled pilot project, and
                   `commercial.manage` is a `pmc` permission like the other two. */}
+              {mayManage && (
               <div style={rowCard} data-testid="commercial-costhead-form">
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>Define a cost head</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -483,6 +528,7 @@ export function CommercialScreen() {
                   </Button>
                 </div>
               </div>
+              )}
 
               {commercial.budget.openExceptions > 0 && (
                 <div data-testid="commercial-open-exceptions" style={{ ...rowCard, borderColor: '#E1BEB6' }}>
@@ -537,10 +583,11 @@ export function CommercialScreen() {
                   {/* Re-attribute this line. An ATOMIC REPLACEMENT, never a revocation — §C has no
                       "revoke" precisely because it would drop a live vendor obligation out of every
                       budget while no other head picked the payable up. */}
+                  {mayAttribute && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
                     <select
-                      value={attrForm.head}
-                      onChange={(e) => setAttrForm({ head: e.target.value })}
+                      value={attrFormFor(a.id).head}
+                      onChange={(e) => setAttrForm(a.id, { head: e.target.value })}
                       data-testid={`attr-head-${a.id}`}
                       style={{ ...input, flex: '1 1 140px' }}
                     >
@@ -550,8 +597,8 @@ export function CommercialScreen() {
                         .map((h) => <option key={h.code} value={h.code}>{h.code} — {h.name}</option>)}
                     </select>
                     <input
-                      value={attrForm.reason}
-                      onChange={(e) => setAttrForm({ reason: e.target.value })}
+                      value={attrFormFor(a.id).reason}
+                      onChange={(e) => setAttrForm(a.id, { reason: e.target.value })}
                       placeholder="Reason"
                       data-testid={`attr-reason-${a.id}`}
                       style={{ ...input, flex: '2 1 180px' }}
@@ -559,18 +606,19 @@ export function CommercialScreen() {
                     <Button
                       variant="ink"
                       data-testid={`attr-submit-${a.id}`}
-                      disabled={!attrForm.head || !attrForm.reason.trim() || pending}
+                      disabled={!attrFormFor(a.id).head || !attrFormFor(a.id).reason.trim() || pending}
                       onClick={() => {
                         reattribute(
                           a.poLineId ? { poLineId: a.poLineId } : { labourPoLineId: a.labourPoLineId as string },
-                          attrForm.head,
-                          attrForm.reason.trim(),
+                          attrFormFor(a.id).head,
+                          attrFormFor(a.id).reason.trim(),
                         );
                       }}
                     >
                       {pending ? 'Moving…' : 'Re-attribute'}
                     </Button>
                   </div>
+                  )}
                 </div>
                 );
               })}
