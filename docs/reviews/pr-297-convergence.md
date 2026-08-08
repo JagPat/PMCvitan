@@ -79,6 +79,35 @@ firsts produced a finding. That is not a coincidence; it is the root stated as a
 prediction, and it is the thing to carry into 7B-ii and 7B-iii, which are the
 first clients of the claim-lifecycle reads and of the commercial write path.
 
+### Round 3 confirmed root B — against me, one head later
+
+The audit above was written on `ca185b0` and predicted the next failure. Codex
+found it on that same head.
+
+I fixed finding 4 by flipping `commercial.money_moved` to `invalidate: true`.
+That changed the declaration — and I did not then re-check what the NEW
+declaration requires of its producers. It requires post-commit dispatch: every
+commercial service returns `events: []` and injects no `ExternalEffectDispatcher`,
+and in the DEFAULT `legacy` sender mode `OutboxRelay.claimExternalRecovery()`
+deliberately holds fresh external deliveries for the lease window because the
+immediate dispatcher is expected to have sent them. So a flipped flag alone
+delivers the invalidation late, and never under `OUTBOX_RELAY_AUTOSTART=false`.
+
+**A half-wired external effect is worse than a weightless one.** The flag went
+back, and the wiring — `evaluate` returning its meta, ~15 command sites across 10
+services threading it, ten dispatcher injections, the tripwires — is scheduled as
+its own unit in `docs/STATUS.md`, ahead of 7B-ii.
+
+What closes the trap is not the revert but the pin: `commercial.contract.test.ts`
+now asserts the flag and the wiring **together**, mutation-tested in both
+directions — flipping the flag with no dispatcher fails, and adding a dispatcher
+while the flag is weightless fails. Neither half can land alone again.
+
+The lesson is the audit's own root, and I am the third instance of it in three
+heads: **changing a declaration is itself becoming a new consumer — of everything
+that declaration now obliges.** Root B does not only apply to code you did not
+write.
+
 ## The self-inflicted ones, recorded because two are process
 
 **A runtime cycle from a pure function.** Importing `serializeAttribution` from
@@ -111,3 +140,6 @@ down: the answer was already in the room.
    needed one request.
 4. **A negative assertion needs a positive twin over the same text.** Second
    consecutive PR.
+5. **Changing a declaration makes you its newest consumer.** Root B applied to
+   my own edit, one head after I wrote it down. A flag that describes an external
+   effect is a contract with the producers, not a switch.

@@ -1265,27 +1265,43 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
   });
 
   /**
-   * §M (Task 7B-i, Codex round 2) — `commercial.money_moved` MUST INVALIDATE.
+   * §M (Task 7B-i, Codex round 3) — THE FLAG AND THE WIRING MOVE TOGETHER, OR NEITHER MOVES.
    *
-   * 7A made the event weightless (`invalidate: false`) to keep Task 1's "no external effect" ground
-   * literally true, and said in as many words that "the commercial screens (Task 7B) refresh from
-   * their own reads". 7B-i built those screens, and their only refresh trigger IS the socket
-   * `changed` ping — which `makeSocketConsumer` dispatches only when the persisted intent
-   * invalidates. A weightless event therefore refreshed the §J projection and told no open
-   * Commercial tab, so another user's budget revision, certification, payment or deduction left a
-   * PMC reading stale money until they pressed Refresh by hand.
+   * Round 2 found that the §M hub's refresh rides the socket `changed` ping, which
+   * `makeSocketConsumer` dispatches only on `invalidate` — so a weightless `commercial.money_moved`
+   * leaves an open Commercial tab stale after a commercial-only write. I flipped the flag.
    *
-   * Both halves are pinned, because each is load-bearing in a different direction: it invalidates
-   * (or the hub goes stale), and it still does NOT push (money moving is a page that must be
-   * current, not a notification every commercial write sends to someone's phone).
+   * Round 3 found what flipping it alone actually does: the event then carries an external effect
+   * that NO commercial command sends. Every commercial service returns `events: []` and injects no
+   * `ExternalEffectDispatcher`, and in the DEFAULT `legacy` sender mode
+   * `OutboxRelay.claimExternalRecovery()` deliberately leaves fresh external deliveries alone for
+   * the lease window because the immediate dispatcher is expected to have sent them. So the
+   * invalidation arrives late — and under `OUTBOX_RELAY_AUTOSTART=false`, never.
+   *
+   * A half-wired external effect is worse than a weightless one, so the flag went back and the
+   * wiring is scheduled as its own unit (~15 command sites across 10 services, plus `evaluate`
+   * returning its meta). What closes the trap is this pin: the two facts are asserted TOGETHER, so
+   * the next person to flip the flag fails here until the dispatch exists, and the person who wires
+   * the dispatch fails here until they flip the flag.
    */
-  it('§M: `commercial.money_moved` invalidates the live snapshot, and still never pushes', () => {
+  it('§M: commercial\'s event weight and its post-commit dispatch wiring agree', () => {
     const entry = EXTERNAL_EFFECTS['commercial.money_moved'];
+    const services = readdirSync(HERE).filter((f) => f.endsWith('.service.ts'));
+    expect(services.length, 'no commercial services found — this pin would compare nothing').toBeGreaterThan(5);
+    const dispatching = services.filter((f) => /dispatchCommitted\s*\(/u.test(readFileSync(join(HERE, f), 'utf8')));
+
     expect(
-      entry.invalidate,
-      'the socket consumer dispatches only on `invalidate`, and the Commercial hub has no other '
-      + 'refresh trigger — a weightless money event leaves every open tab stale',
+      entry.invalidate === dispatching.length > 0,
+      entry.invalidate
+        ? 'commercial.money_moved INVALIDATES but no commercial service dispatches it after commit. '
+          + 'In the default `legacy` sender mode the immediate dispatcher is the sender, and the relay '
+          + 'deliberately holds fresh external deliveries for the lease window — so the invalidation '
+          + `arrives late or never. Wire dispatch into the emitting commands (${services.length} services), `
+          + 'or put the flag back.'
+        : `commercial.money_moved is WEIGHTLESS but ${dispatching.join(', ')} dispatches after commit — `
+          + 'a dispatch with nothing to send. Flip the catalog entry in the same change.',
     ).toBe(true);
+
     expect(entry.push, 'money moving is not a notification').toBeNull();
     expect(entry.eventType).toBe('commercial.money_moved');
   });

@@ -127,25 +127,34 @@ export const EXTERNAL_EFFECTS = {
   'activity.labour_blocked': { eventType: 'activity.labour_blocked', invalidate: true, push: null },
   'activity.labour_unblocked': { eventType: 'activity.labour_unblocked', invalidate: true, push: null },
   'activity_output.recorded': { eventType: 'activity_output.recorded', invalidate: true, push: null },
-  // ── commercial (Phase 5 Task 7A, §J; widened by 7B-i) ──────────────────────────────────────
+  // ── commercial (Phase 5 Task 7A, §J) ───────────────────────────────────────────────────────
   //
-  // Task 1 declared `producesEvents: []` on TWO grounds — "no external effect" AND "no consumer".
-  // Task 7A's round-4 correction retired the second: the §J cash forecast is a consumer, so the
-  // event was born, and it was made WEIGHTLESS (`invalidate: false, push: null`) to keep the first
-  // ground literally true. That comment said, in as many words, that "the commercial screens
-  // (Task 7B) refresh from their own reads".
+  // WEIGHTLESS — `invalidate: false, push: null` — and the reason is now a scheduled obligation
+  // rather than a claim, because 7B-i tried to change it and found out what that costs.
   //
-  // 7B-i built those screens and Codex found the flaw in that sentence: their own reads are driven
-  // by the socket `changed` ping, and the socket consumer dispatches ONLY on `invalidate` (see
-  // `makeSocketConsumer`). A weightless event therefore refreshes the projection and tells no open
-  // Commercial tab about it — another user's budget revision, certification, payment or deduction
-  // leaves a PMC reading last hour's money until they press Refresh by hand.
+  // Task 1 declared `producesEvents: []` on two grounds: "no external effect" AND "no consumer".
+  // 7A's round-4 correction retired the second (the §J projection is a consumer) and kept the first
+  // by making the event weightless. 7B-i then built the Commercial hub, whose refresh rides the
+  // socket `changed` ping — which `makeSocketConsumer` dispatches ONLY on `invalidate`. So a
+  // commercial-only write (a budget revision, certification, payment, deduction) refreshes the
+  // projection and tells no open tab.
   //
-  // So the FIRST ground has now fallen too, and this is the honest consequence rather than a
-  // client-side poll built to work around a declaration that stopped being true. The same move
-  // round 4 made, for the same reason: when the justification's grounds go, change the declaration.
-  // `push` stays null — money moving is not a notification, it is a page that must be current.
-  'commercial.money_moved': { eventType: 'commercial.money_moved', invalidate: true, push: null },
+  // Flipping this flag alone does NOT fix that, and shipping it flipped would be worse than leaving
+  // it: with `invalidate: true` the event carries an external effect that no commercial command
+  // sends. Every commercial service returns `events: []` and injects no `ExternalEffectDispatcher`,
+  // and in the DEFAULT `legacy` sender mode `OutboxRelay.claimExternalRecovery()` deliberately
+  // leaves fresh external deliveries alone for the lease window because the immediate dispatcher is
+  // expected to have sent them — so the invalidation would arrive late, and never at all under
+  // `OUTBOX_RELAY_AUTOSTART=false`.
+  //
+  // Making it invalidate therefore means wiring post-commit dispatch through ~15 command sites in
+  // 10 services (and `evaluate` returning its meta). That is a platform-wiring unit, not a line in
+  // a read-hub PR, and it is scheduled as such in `docs/STATUS.md`. `commercial.contract.test.ts`
+  // pins the two together: the flag and the wiring move in ONE change or neither.
+  //
+  // Until then the hub refreshes on every FOREIGN money event (PO issue, acceptance, measurement —
+  // all of which invalidate) and on Refresh. What it misses is another user's commercial-only write.
+  'commercial.money_moved': { eventType: 'commercial.money_moved', invalidate: false, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────
