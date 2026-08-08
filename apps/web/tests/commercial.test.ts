@@ -986,6 +986,40 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     expect(oneClaim, 'the OPEN claim was not refreshed — its register is what changed').toHaveBeenCalled();
   });
 
+  it('N1: a measurement key survives a FAST money read until the CLAIM read applies', async () => {
+    // The M1 probe asserted the claim reloads were CALLED. This asserts the property they exist
+    // for — and that is the difference the finding turned on: the money read is the faster of the
+    // two, and `loadCommercial()` rebuilt the whole pending set from the now-empty outbox, so the
+    // key cleared while the register on screen was still pre-command. Root L: probe the property,
+    // not the call.
+    let releaseClaim!: (v: unknown) => void;
+    const slowClaim = new Promise((r) => { releaseClaim = r; });
+    const money = vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle());
+    pilot(engGw({
+      commercialMoneyPosition: money,
+      commercialClaim: vi.fn().mockReturnValue(slowClaim),   // the SLOW read
+      commercialBills: vi.fn().mockReturnValue(new Promise(() => {})),
+    }));
+    useStore.setState({ commercialClaimLoad: { 'bill-1': 'ready' } }); // a claim is open
+
+    s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '2', citedOutputId: 'OUT-1' });
+    await vi.waitFor(() => { if (money.mock.calls.length === 0) throw new Error('money not read yet'); },
+      { timeout: 5000, interval: 5 });
+    await vi.waitFor(() => { if (s().commercialLoad !== 'ready') throw new Error('money not applied'); },
+      { timeout: 5000, interval: 5 });
+
+    // the money has APPLIED and the claim has NOT — the key must still be held
+    expect(
+      s().commercialPending,
+      'the measurement key cleared on the money read, so a second Measure could append the same '
+      + 'measurement while the pre-command register was still on screen',
+    ).toContain('com:meas:LPL-1:ACT-1');
+
+    releaseClaim(claimDto());
+    await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
+      { timeout: 5000, interval: 5 });
+  });
+
   it('the §A value rules are the SHARED ones — no second opinion in the browser', async () => {
     const { isMoneyString, isPositiveQuantity } = await import('@vitan/shared');
     // the exact cases Codex J3 named, now answered by the same function the zod contract uses

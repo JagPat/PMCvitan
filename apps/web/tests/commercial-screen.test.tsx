@@ -679,11 +679,101 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     // no claim showed an empty state and no way out of it.
     expect(r.getByTestId('commercial-lodge-form')).toBeTruthy();
     expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(true);
-    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-1'], ['lodge-date', '2026-08-08'],
+    // a bill number NOT already on screen — the fixture's claim is v-1/V-1, and N5's guard
+    // correctly refuses a duplicate of it (asserted separately below)
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-2'], ['lodge-date', '2026-08-08'],
       ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
       fireEvent.change(r.getByTestId(id), { target: { value: v } });
     }
     expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('N5: a duplicate of a LIVE claim already on screen is refused, not promised', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-9'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+    // the SAME claim under case and padding the server's index collapses — refused, with the
+    // reason shown rather than a silent disable
+    fireEvent.change(r.getByTestId('lodge-number'), { target: { value: ' v-1 ' } });
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('lodge-duplicate')).toBeTruthy();
+  });
+
+  it('N4: an impossible calendar date never reaches the outbox', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-9'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    // `2026-02-31` is well-SHAPED and impossible — a regex would pass it
+    for (const bad of ['abc', '2026-02-31', '2026-13-01']) {
+      fireEvent.change(r.getByTestId('lodge-date'), { target: { value: bad } });
+      expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled, bad).toBe(true);
+    }
+    fireEvent.change(r.getByTestId('lodge-date'), { target: { value: '2026-02-28' } });
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('N3: a newly lodged DRAFT labour claim can be measured — the flow is not circular', () => {
+    // `claim.measurements` is keyed from the LIVE version, and a draft has none. RED before: the
+    // Measurements tab showed the material-only empty state, so the only control was Submit, which
+    // disputes the claim for missing measured evidence — and a disputed claim is still not live.
+    // Lodge → measure → submit was unreachable in exactly the order this unit exists to support.
+    const draft = claim();
+    const withLabourLine = {
+      ...draft,
+      measurements: {},
+      bill: {
+        ...draft.bill,
+        status: 'draft' as const,
+        versions: [{
+          ...draft.bill.versions[0]!,
+          live: false,
+          lines: [{
+            id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
+            quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
+          }],
+        }],
+      },
+    };
+    useStore.setState({
+      commercialClaims: { 'bill-1': withLabourLine as never },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialClaimStamp: { 'bill-1': 2 },
+      commercialBillsStamp: 1,
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+
+    expect(r.getByTestId('measure-qty-LPL-1'), 'a draft labour claim offered no way to measure it').toBeTruthy();
+    // and it does NOT fabricate a register: nothing is folded there yet, and saying so beats zeros
+    expect(r.getByTestId('measurement-none-LPL-1')).toBeTruthy();
+  });
+
+  it('N2: a LABOUR line is lodged as `labourPoLineId`, not as a material line', () => {
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-7'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'LPL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    // RED before: every entry serialized as `poLineId`, so an engineer who had just measured a
+    // LABOUR line could not lodge its claim — the server resolved it down the material path.
+    expect(recordVendorBill).toHaveBeenCalledWith(expect.objectContaining({
+      lines: [expect.objectContaining({ labourPoLineId: 'LPL-1' })],
+    }));
+    expect(recordVendorBill.mock.calls[0][0].lines[0].poLineId).toBeUndefined();
   });
 
   it('M3/M4: a transition the server refuses is never offered', () => {

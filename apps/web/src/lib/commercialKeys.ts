@@ -178,3 +178,24 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   if (corr) return pending.some((k) => isCorrectionPendingFor(k, corr[1]!));
   return false;
 }
+
+/**
+ * Whether a coalesce key belongs to a write that changes a CLAIM (its register, lines or status)
+ * rather than the money position.
+ *
+ * Codex N1: the M1 fix reloaded the claim list and open claims, but `loadCommercial()` still
+ * rebuilt `commercialPending` from the now-empty outbox as soon as the MONEY read resolved — and
+ * that read is the faster one. So the key cleared while the register on screen was still
+ * pre-command, which is the exact window M1 was meant to close. The probe passed because it
+ * asserted the reloads were CALLED, not that the key survived until they applied.
+ *
+ * Partitioning the pending set by what each write changes is what makes "clears WITH the truth on
+ * screen" true for both families: money keys clear when the money applies, claim keys when the
+ * claim does.
+ */
+export function isClaimAffectingKey(coalesceKey: string): boolean {
+  return coalesceKey.startsWith('com:meas:')
+    || coalesceKey.startsWith('com:mcorr:')
+    || coalesceKey.startsWith('com:bill:')
+    || coalesceKey.startsWith('com:billtx:');
+}

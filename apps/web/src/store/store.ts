@@ -72,7 +72,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, isCommercialOpType, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, isClaimAffectingKey, isCommercialOpType, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -2710,11 +2710,20 @@ export const useStore = create<Store>()(
           // the live outbox (pending == still-queued). A key resolved by the flush clears HERE,
           // never in the gap where the pre-command figure still rendered; a transient-failed
           // op's key survives because its op is still queued. Labour round 8, inherited.
-          s.commercialPending = s.outbox.flatMap((o) =>
+          // Codex N1 — rebuild only the MONEY keys here, and RETAIN the claim ones. The money read
+          // resolving says nothing about whether the claim register on screen is current, and it is
+          // the faster of the two; clearing a measurement's key on it reopened the very window M1
+          // closed. Claim keys clear in `loadCommercialClaim`/`loadCommercialBills`, with their
+          // own truth.
+          const liveKeys = s.outbox.flatMap((o) =>
             isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
               ? [(o as { coalesceKey: string }).coalesceKey]
               : [],
           );
+          s.commercialPending = [
+            ...liveKeys.filter((k) => !isClaimAffectingKey(k)),
+            ...s.commercialPending.filter((k) => isClaimAffectingKey(k)),
+          ];
         });
       }).catch(() => set((s) => {
         // keep the last-good bundle and expose a Retry boundary. An OLDER failure never overwrites
@@ -2744,6 +2753,16 @@ export const useStore = create<Store>()(
           s.commercialBills = castDraft<CommercialBillRow[]>(bills);
           s.commercialBillsLoad = 'ready';
           s.commercialBillsStamp = ++commercialReadStamp;
+          // …and the list's own claim keys (lodge, lifecycle transitions) clear with the list.
+          const liveB = s.outbox.flatMap((o) =>
+            isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
+              ? [(o as { coalesceKey: string }).coalesceKey]
+              : [],
+          );
+          s.commercialPending = [
+            ...s.commercialPending.filter((k) => !k.startsWith('com:bill:') && !k.startsWith('com:billtx:')),
+            ...liveB.filter((k) => k.startsWith('com:bill:') || k.startsWith('com:billtx:')),
+          ];
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialBillsLoad = 'error'; }));
     },
@@ -2773,6 +2792,16 @@ export const useStore = create<Store>()(
           s.commercialClaims[billId] = castDraft<CommercialClaimView>(claim);
           s.commercialClaimLoad[billId] = 'ready';
           s.commercialClaimStamp[billId] = ++commercialReadStamp;
+          // Codex N1 — the claim truth IS on screen now, so its keys clear here (and only here).
+          const live = s.outbox.flatMap((o) =>
+            isCommercialOpType((o as { t?: unknown }).t) && typeof (o as { coalesceKey?: unknown }).coalesceKey === 'string'
+              ? [(o as { coalesceKey: string }).coalesceKey]
+              : [],
+          );
+          s.commercialPending = [
+            ...s.commercialPending.filter((k) => !isClaimAffectingKey(k)),
+            ...live.filter((k) => isClaimAffectingKey(k)),
+          ];
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialClaimLoad[billId] = 'error'; }));
     },

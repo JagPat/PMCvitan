@@ -1,3 +1,5 @@
+import { parseCivilDate } from '../lib/dates';
+
 /**
  * Phase 5 (§A) — the ONE money-string rule, shared by the server contract and every client form.
  *
@@ -78,4 +80,23 @@ export const BILL_REJECTABLE_FROM = ['draft', 'submitted', 'under-verification',
  */
 export function normalizedBillNumber(value: string): string {
   return value.replace(/\s+/gu, '').toLowerCase();
+}
+
+/**
+ * §0b — a real ISO civil date, by the SAME authority `isoCivilDateSchema` uses.
+ *
+ * Codex N4: the lodge form treated any non-blank string as a date, so `2026-02-31` and `abc`
+ * enabled the button, entered the durable outbox, and were reported as saved before reconnect
+ * dropped them with a terminal 400. A shape regex is not enough — `2026-02-31` is well-shaped and
+ * impossible — so this defers to `parseCivilDate`, exactly as the contract does.
+ */
+export function isRealCivilDate(value: string): boolean {
+  const v = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(v)) return false;
+  try {
+    parseCivilDate(v);
+    return true;
+  } catch {
+    return false;
+  }
 }

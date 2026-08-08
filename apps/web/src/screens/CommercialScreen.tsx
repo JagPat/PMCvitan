@@ -5,8 +5,8 @@ import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, isCorrectionDelta, isMoneyString, isPositiveQuantity, ROLE_POLICY } from '@vitan/shared';
-import type { CostHeadPositionDto } from '@vitan/shared';
+import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
+import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 /**
@@ -222,13 +222,23 @@ export function CommercialScreen() {
   // never surfaced `recordVendorBill`, so on a project with no claim yet the Claims tab showed an
   // empty state and no way out of it: a workflow that cannot create the thing it processes. One
   // line is enough to lodge a draft; amendment (a full replacement line set) stays out of scope.
-  const [lodgeDraft, setLodgeDraft] = useState<{ scope: string; vendorId: string; number: string; date: string; poLineId: string; qty: string; rate: string }>(
-    { scope: '', vendorId: '', number: '', date: '', poLineId: '', qty: '', rate: '' },
+  const [lodgeDraft, setLodgeDraft] = useState<{ scope: string; vendorId: string; number: string; date: string; lineKind: 'material' | 'labour'; poLineId: string; qty: string; rate: string }>(
+    { scope: '', vendorId: '', number: '', date: '', lineKind: 'material', poLineId: '', qty: '', rate: '' },
   );
-  const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : { scope: scopeKey, vendorId: '', number: '', date: '', poLineId: '', qty: '', rate: '' };
+  const lodge = lodgeDraft.scope === scopeKey ? lodgeDraft : { scope: scopeKey, vendorId: '', number: '', date: '', lineKind: 'material' as const, poLineId: '', qty: '', rate: '' };
   const setLodge = (next: Partial<typeof lodge>): void => setLodgeDraft({ ...lodge, scope: scopeKey, ...next });
-  const lodgeValid = lodge.vendorId.trim() !== '' && lodge.number.trim() !== '' && lodge.date.trim() !== ''
-    && lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate);
+  // Codex N5 — the server's duplicate-document index refuses another claim for the same
+  // (vendor, normalized number) unless the existing one is `rejected` or `resolved`. A claim
+  // already ON SCREEN is enough to know that, so the form refuses rather than promising a write
+  // reconnect will discard.
+  const lodgeDuplicate = (bills ?? []).some((b) =>
+    b.vendorId === lodge.vendorId.trim()
+    && normalizedBillNumber(b.vendorBillNumber) === normalizedBillNumber(lodge.number)
+    && b.status !== 'rejected' && b.status !== 'resolved');
+  const lodgeValid = lodge.vendorId.trim() !== '' && lodge.number.trim() !== ''
+    && isRealCivilDate(lodge.date)                       // N4 — a real calendar day, not a shape
+    && lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate)
+    && !lodgeDuplicate;
   const lodgePending = commercialPending.includes(billCoalesceKey(lodge.vendorId.trim(), lodge.number));
 
   const [billDrafts, setBillDrafts] = useState<{ scope: string; byId: Record<string, string> }>({ scope: '', byId: {} });
@@ -743,6 +753,14 @@ export function CommercialScreen() {
                         <input value={lodge.vendorId} onChange={(e) => setLodge({ vendorId: e.target.value })} placeholder="Vendor id" data-testid="lodge-vendor" style={{ ...input, flex: '1 1 120px' }} />
                         <input value={lodge.number} onChange={(e) => setLodge({ number: e.target.value })} placeholder="Their bill number" data-testid="lodge-number" style={{ ...input, flex: '1 1 130px' }} />
                         <input value={lodge.date} onChange={(e) => setLodge({ date: e.target.value })} placeholder="Document date (YYYY-MM-DD)" data-testid="lodge-date" style={{ ...input, flex: '1 1 150px' }} />
+                        {/* Codex N2 — the server's XOR: a claim line names EXACTLY ONE kind of PO
+                            line. Serializing every entry as `poLineId` meant an engineer who had
+                            just measured a LABOUR line could not lodge its claim — the server
+                            resolved it down the material path and refused. */}
+                        <select value={lodge.lineKind} onChange={(e) => setLodge({ lineKind: e.target.value as 'material' | 'labour' })} data-testid="lodge-linekind" style={{ ...input, flex: '0 1 110px' }}>
+                          <option value="material">Material line</option>
+                          <option value="labour">Labour line</option>
+                        </select>
                         <input value={lodge.poLineId} onChange={(e) => setLodge({ poLineId: e.target.value })} placeholder="PO line id" data-testid="lodge-poline" style={{ ...input, flex: '1 1 120px' }} />
                         <input value={lodge.qty} onChange={(e) => setLodge({ qty: e.target.value })} placeholder="Quantity" inputMode="decimal" data-testid="lodge-qty" style={{ ...input, flex: '1 1 100px' }} />
                         <input value={lodge.rate} onChange={(e) => setLodge({ rate: e.target.value })} placeholder="Rate" inputMode="decimal" data-testid="lodge-rate" style={{ ...input, flex: '1 1 100px' }} />
@@ -754,16 +772,29 @@ export function CommercialScreen() {
                             vendorId: lodge.vendorId.trim(),
                             vendorBillNumber: lodge.number.trim(),
                             documentDate: lodge.date.trim(),
-                            lines: [{ poLineId: lodge.poLineId.trim(), quantity: lodge.qty.trim(), rate: lodge.rate.trim() }],
+                            lines: [{
+                              ...(lodge.lineKind === 'labour'
+                                ? { labourPoLineId: lodge.poLineId.trim() }
+                                : { poLineId: lodge.poLineId.trim() }),
+                              quantity: lodge.qty.trim(),
+                              rate: lodge.rate.trim(),
+                            }],
                           })}
                         >
                           {lodgePending ? 'Lodging…' : 'Lodge claim'}
                         </Button>
                       </div>
                       {/* the §A rules, from the SAME functions the zod contract uses */}
-                      {((lodge.qty.trim() !== '' && !isPositiveQuantity(lodge.qty)) || (lodge.rate.trim() !== '' && !isMoneyString(lodge.rate))) && (
+                      {((lodge.qty.trim() !== '' && !isPositiveQuantity(lodge.qty)) || (lodge.rate.trim() !== '' && !isMoneyString(lodge.rate))
+                        || (lodge.date.trim() !== '' && !isRealCivilDate(lodge.date))) && (
                         <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="lodge-invalid">
-                          Quantity must be positive (≤6dp) and rate a non-negative money value (≤2dp).
+                          Quantity must be positive (≤6dp), rate a non-negative money value (≤2dp), and the
+                          document date a real calendar day (YYYY-MM-DD).
+                        </div>
+                      )}
+                      {lodgeDuplicate && (
+                        <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="lodge-duplicate">
+                          A live claim for this vendor and bill number already exists — amend or reject it instead.
                         </div>
                       )}
                     </div>
@@ -946,7 +977,29 @@ export function CommercialScreen() {
           {tab === 'measurements' && (
             <div data-testid="commercial-measurements">
               {claimPanel((claim) => (
-                Object.keys(claim.measurements).length === 0 ? (
+                (() => {
+                  // Codex N3 — `claim.measurements` is keyed from the LIVE version, and a newly
+                  // lodged claim is `draft`, so it has none. That made the workflow circular: the
+                  // engineer lodges a labour claim, the Measurements tab shows the material-only
+                  // empty state, the only control left is Submit — which disputes the claim for
+                  // missing measured evidence — and a disputed claim is still not live, so the form
+                  // never appears. Lodge → measure → submit was unreachable in exactly the order
+                  // this unit exists to support.
+                  //
+                  // So the labour lines of the claim's CURRENT version supply the rows when the
+                  // register map has none: the measurement target is the line, and the line is
+                  // known from the version on screen whether or not it is live yet.
+                  const current = claim.bill.versions.find((v) => v.live) ?? claim.bill.versions.at(-1);
+                  const labourLineIds = [...new Set(
+                    (current?.lines ?? [])
+                      .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
+                      .map((l) => l.labourPoLineId as string),
+                  )].sort();
+                  const measurable: Array<[string, MeasurementRegisterDto | null]> =
+                    Object.keys(claim.measurements).length > 0
+                      ? Object.entries(claim.measurements)
+                      : labourLineIds.map((id) => [id, null] as [string, null]);
+                  return measurable.length === 0 ? (
                   // §D applies to LABOUR lines. A material line's evidence is accepted stock, which
                   // the verification triple already reports — so this says "does not apply" rather
                   // than showing empty registers, which would read as "measured nothing".
@@ -955,14 +1008,23 @@ export function CommercialScreen() {
                   </div>
                 ) : (
                   <>
-                    {Object.entries(claim.measurements).map(([lineId, register]) => (
+                    {measurable.map(([lineId, register]) => (
                       <div key={lineId} style={rowCard} data-testid={`commercial-measurement-${lineId}`}>
                         <div style={mono}>{lineId}</div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
-                          <span style={muted}>Measured <span style={num}>{register.measured}</span></span>
-                          <span style={muted}>Ordered <span style={num}>{register.orderedPersonShiftQty}</span></span>
-                          <span style={muted}>Live authority <span style={num}>{register.liveAuthorityPersonShiftQty}</span></span>
-                        </div>
+                        {register ? (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
+                            <span style={muted}>Measured <span style={num}>{register.measured}</span></span>
+                            <span style={muted}>Ordered <span style={num}>{register.orderedPersonShiftQty}</span></span>
+                            <span style={muted}>Live authority <span style={num}>{register.liveAuthorityPersonShiftQty}</span></span>
+                          </div>
+                        ) : (
+                          // No register yet — this line is claimed on a version that is not live.
+                          // Say so rather than rendering zeros, which would read as "measured
+                          // nothing" instead of "nothing is folded here yet".
+                          <div style={{ ...muted, marginTop: 8 }} data-testid={`measurement-none-${lineId}`}>
+                            No measurement folded yet — this claim is not live.
+                          </div>
+                        )}
                         {/* §D — take a measurement. `citedOutputId` is REQUIRED by the contract, not
                             optional: a measurement is bounded by operational evidence, and an
                             optional citation is one a commercial actor can simply omit. The form
@@ -1022,7 +1084,7 @@ export function CommercialScreen() {
                         {/* §D — a correction is a SIGNED delta appended as a new row; the original
                             is never edited, which is why the control sits on each row rather than
                             offering to "edit" the register. */}
-                        {mayMeasure && register.rows.filter((r) => r.correctsId === null).map((row) => (
+                        {mayMeasure && (register?.rows ?? []).filter((r) => r.correctsId === null).map((row) => (
                           <div key={row.id} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--hairline)' }}>
                             <span style={{ ...mono, flex: '1 1 100%' }}>{row.id} · {row.quantity}</span>
                             <input
@@ -1057,7 +1119,8 @@ export function CommercialScreen() {
                       </div>
                     ))}
                   </>
-                )
+                  );
+                })()
               ))}
             </div>
           )}

@@ -1,8 +1,11 @@
 # PR #304 convergence audit — the write-ahead window, again
 
-Two finding-bearing heads (`d6d4f6e` and this correction's predecessor lineage). **Seven findings,
-two P1.** Five of the seven are one root, and it is a root PR #302 already named and I already wrote
-down: *the form was written as though the server were the only guard.*
+Two finding-bearing heads (`d6d4f6e`, `9fa54c7`). **Twelve findings, five P1**, on a unit whose product
+surface is six buttons.
+
+Five of round 1's seven are ONE root — one PR #302 already named and I had already written down:
+*the form was written as though the server were the only guard.* Three of round 2's five are inside
+round 1's own fixes.
 
 That is the uncomfortable part. #302's audit says it in as many words. Then this PR put five new
 controls in front of a durable, write-ahead outbox that accepts what the server will refuse.
@@ -44,6 +47,28 @@ had conflict semantics for bill transitions and exact-equality for everything el
 disabled a second correction and the dispatcher accepted it. A screen guard the durable layer does
 not share is J1's lesson unlearned in the same file that learned it.
 
+## Round 2 — five more, and three of them are inside round 1's fixes
+
+| # | P | Finding |
+|---|---|---|
+| N1 | P1 | M1's reconcile reloaded the claim, but `loadCommercial()` still rebuilt the WHOLE pending set from the empty outbox on the FASTER money read — so the key cleared before the register did, reopening the window M1 closed |
+| N2 | P1 | M2's lodge form serialized every line as `poLineId`, so a labour claim could not be lodged at all |
+| N3 | P1 | The measurement form rendered only from `claim.measurements`, which is keyed off the LIVE version — so a newly lodged draft could never be measured, and Submit disputes it for missing evidence, and a disputed claim is still not live |
+| N4 | P2 | The lodge form accepted any non-blank document date; `2026-02-31` is well-shaped and impossible |
+| N5 | P2 | Lodging a duplicate of a live claim already ON SCREEN was offered, then refused by the server's duplicate index |
+
+**N1 is root L again, and this time about my own probe.** The M1 probe asserted the claim reloads
+were CALLED. The finding is about WHEN the key clears — a property those calls exist to produce, and
+one the probe never touched. A call is not an outcome, and the review found the gap between them.
+The pending set is now partitioned by what each write changes: money keys clear when the money
+applies, claim keys when the claim does.
+
+**N3 is the most interesting of the five**, because nothing in it is a wrong line of code. Lodging
+works, measuring works, submitting works — and the sequence *lodge → measure → submit* is
+unreachable, because measurement rows come from the live version and a draft has none. Each part was
+right and the workflow was circular. Unit-level correctness does not compose into a usable path, and
+no probe of an individual control would ever have said so.
+
 ## Root N (new) — wiring is not shipping
 
 **M2.** `recordVendorBill` had a gateway method, an op type, a coalesce key, a store thunk, an
@@ -76,5 +101,9 @@ Taking a finding seriously means implementing what is true, not what is quoted.
    where the promise is made. (M7, and J1 before it.)
 3. **Enumerate the actions against surfaces before claiming a workflow ships.** Declaring one
    deliberate omission does not audit the others — it disguises them. (Root N.)
-4. **Verify a finding's example against the code, not just its claim.** M6 was a real defect with a
+4. **A call is not an outcome.** Probing that a refresh was DISPATCHED says nothing about when the
+   thing it refreshes becomes visible — which is the only part a user experiences. (N1, root L.)
+5. **Walk the workflow end to end, not control by control.** N3 was three correct controls composing
+   into an unreachable sequence; every unit-level probe passed. (Root N's sharper form.)
+6. **Verify a finding's example against the code, not just its claim.** M6 was a real defect with a
    wrong illustration; pinning the illustration would have encoded a behaviour the server lacks.
