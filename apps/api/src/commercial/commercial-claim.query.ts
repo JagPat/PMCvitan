@@ -32,30 +32,6 @@ import { CommercialMeasurementService } from './commercial-measurement.service';
  * stays acyclic, and it composes the `...In(tx, …)` helpers those services own rather than
  * re-deriving anything: no fold, no predicate and no serializer is written twice.
  */
-
-/**
- * The labour PO lines whose §D register belongs to THIS claim, deduplicated and ordered.
- *
- * Exported and pure because the rule it encodes is the one this class got WRONG first: the source is
- * the version the serializer marks `live`, not the highest-numbered one. Those differ —
- * `live` is `supersededAt === null && isLiveBillStatus(status)`, so a DISPUTED or REJECTED claim has
- * NO live version and its top version's lines sit in no fold. `versions.at(-1)` would present those
- * registers as "what this claim measures", a stronger statement than the data supports.
- *
- * It is a separate function so that rule can be tested against a claim that actually HAS labour
- * lines on a non-live version. The live-PG fixture for this suite bills material only, so the
- * integration probe covering the same code path passes whichever version it picks — it would have
- * ratified the bug. A pure function over the DTO tests the distinction itself.
- */
-export function labourLinesOfLiveVersion(bill: VendorBillDto): string[] {
-  const live = bill.versions.find((v) => v.live);
-  return [...new Set(
-    (live?.lines ?? [])
-      .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
-      .map((l) => l.labourPoLineId as string),
-  )].sort();
-}
-
 @Injectable()
 export class CommercialClaimQuery {
   constructor(
@@ -116,4 +92,27 @@ export class CommercialClaimQuery {
       return { bill, verification, certificate, deductions, payments, measurements };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
+}
+
+/**
+ * The labour PO lines whose §D register belongs to THIS claim, deduplicated and ordered.
+ *
+ * Exported and pure because the rule it encodes is the one this class got WRONG first: the source is
+ * the version the serializer marks `live`, not the highest-numbered one. Those differ —
+ * `live` is `supersededAt === null && isLiveBillStatus(status)`, so a DISPUTED or REJECTED claim has
+ * NO live version and its top version's lines sit in no fold. `versions.at(-1)` would present those
+ * registers as "what this claim measures", a stronger statement than the data supports.
+ *
+ * It is a separate function so that rule can be tested against a claim that actually HAS labour
+ * lines on a non-live version. The live-PG fixture for this suite bills material only, so the
+ * integration probe covering the same code path passes whichever version it picks — it would have
+ * ratified the bug. A pure function over the DTO tests the distinction itself.
+ */
+export function labourLinesOfLiveVersion(bill: VendorBillDto): string[] {
+  const live = bill.versions.find((v) => v.live);
+  return [...new Set(
+    (live?.lines ?? [])
+      .filter((l) => l.type === 'labour' && l.labourPoLineId !== null)
+      .map((l) => l.labourPoLineId as string),
+  )].sort();
 }

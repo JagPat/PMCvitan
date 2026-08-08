@@ -55,6 +55,8 @@ import type {
   LabourCapacityDto,
   LabourPresenceDto,
   CommercialMoneyPositionDto,
+  CommercialClaimDto,
+  VendorBillDto,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -918,6 +920,26 @@ export class ApiGateway {
    *  other. One request, one instant. */
   commercialMoneyPosition(): Promise<CommercialMoneyPositionDto> {
     return this.req<CommercialMoneyPositionDto>(`/projects/${this.projectId}/commercial/money-position`);
+  }
+
+  // ── Phase 5 Task 7B-ii (§M) — the CLAIM-LIFECYCLE reads ────────────────────────────────────
+  //
+  // Two reads, and deliberately not folded into `money-position`. That bundle exists because its
+  // four figures are MUTUALLY DERIVED — a re-attribution moves an obligation between the budget and
+  // the register, so reading them at two instants renders a position that never existed. Nothing in
+  // the claim list is derived from the money position or vice versa, so a bundle spanning them
+  // would buy no consistency and would make opening the hub pay for a tab nobody opened yet.
+  //
+  // The CLAIM read is a bundle for exactly the reason `money-position` is: `approvable` is derived
+  // from `netPayable`, so six requests can put two figures on one screen that were never true
+  // together. The server folds all six in one repeatable-read transaction.
+
+  commercialBills(): Promise<VendorBillDto[]> {
+    return this.req<VendorBillDto[]>(`/projects/${this.projectId}/commercial/bills`);
+  }
+
+  commercialClaim(billId: string): Promise<CommercialClaimDto> {
+    return this.req<CommercialClaimDto>(`/projects/${this.projectId}/commercial/claims/${encodeURIComponent(billId)}`);
   }
 
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command

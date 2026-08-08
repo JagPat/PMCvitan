@@ -56,6 +56,15 @@ export function useApiSync(): void {
       // client's budget revision, PO issue, certification or payment would leave the money position
       // and the cash forecast stale until someone pressed Refresh. Same discipline: no-op off-pilot.
       void useStore.getState().loadCommercial();
+      // Task 7B-ii — and the CLAIM an accountant currently has open. Refreshed by what has ALREADY
+      // been opened rather than by fetching every claim: `commercialClaims` holds exactly the
+      // lifecycles someone looked at, and a payment landing from another client is precisely the
+      // change that must not leave an approvable balance stale on the screen it will be acted on.
+      // The claim LIST is deliberately not refreshed here — it is loaded on demand when its tab is
+      // first opened, and a ping is not evidence anyone is looking at it.
+      for (const billId of Object.keys(useStore.getState().commercialClaims)) {
+        void useStore.getState().loadCommercialClaim(billId);
+      }
     };
 
     (async () => {

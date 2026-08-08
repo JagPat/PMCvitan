@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
+import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
 import { enabledScreensFor, SCREEN_CAPABILITY } from '@/lib/screens';
 // The store's and sync hook's own source text, via Vite's `?raw` loader — the same mechanism
 // `snapshot-ordering.test.ts` and `snapshot-shape.test.ts` already use for their source tripwires.
@@ -8,7 +9,7 @@ import storeSource from '@/store/store.ts?raw';
 import gatewaySource from '@/data/apiGateway.ts?raw';
 import syncSource from '@/data/useApiSync.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
-import type { CommercialView } from '@/store/commercial';
+import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto } from '@vitan/shared';
 
 /**
@@ -369,5 +370,219 @@ describe('Task 7B-i round 2 — staleness, consistency, and the breach a PMC mus
     // and a role without `commercial.read` never sees it even with a bundle in state
     useStore.setState({ role: 'contractor', commercialView: bundle({ budget: budgetDto([position({ headroom: '-1.00' })], 1) }) });
     expect(selectActionItems(s()).some((i) => i.key === 'commercial-over-budget')).toBe(false);
+  });
+});
+
+// ── Task 7B-ii (§M) — the CLAIM lifecycle reads ────────────────────────────────────────────────
+
+/**
+ * A TYPED fixture. The first draft of this was `as any` over invented field names, and the screen
+ * compiled against fields `VerificationDto` does not have — the test passed while the component was
+ * wrong, which is the whole failure mode a contract type exists to prevent. `pnpm check`'s project
+ * build caught it; the fixture is typed so the next mismatch fails here instead.
+ */
+const claimDto = (over: Partial<CommercialClaimView> = {}): CommercialClaimView => ({
+  bill: {
+    id: 'bill-1', vendorId: 'v-1', vendorBillNumber: 'V-1', status: 'certified',
+    documentDate: '2026-08-20', statusChangedAt: '2026-08-21T00:00:00.000Z',
+    statusReason: null, disputeReason: null,
+    createdAt: '2026-08-20T00:00:00.000Z', createdById: 'u-1',
+    versions: [{
+      id: 'ver-1', version: 1, supersedesVersion: null, claimedAmount: '100.00', lines: [],
+      createdAt: '2026-08-20T00:00:00.000Z', createdById: 'u-1',
+      supersededAt: null, supersededById: null, supersedeReason: null, live: true,
+    }],
+  },
+  verification: {
+    billId: 'bill-1', versionId: 'ver-1', verdict: 'matched', lines: [], exceptions: [],
+    billStatus: 'certified',
+  },
+  certificate: {
+    id: 'cert-1', billId: 'bill-1', versionId: 'ver-1', certifiedAmount: '100.00',
+    certifiedAt: '2026-08-21T00:00:00.000Z', certifiedById: 'u-1',
+    supersededAt: null, supersededById: null, supersedeReason: null, sodException: null,
+    acceptanceConsumption: [], measurementConsumption: [],
+  },
+  deductions: {
+    billId: 'bill-1', certificateId: 'cert-1', certifiedAmount: '100.00', deductions: [],
+    withheld: '10.00', netPayable: '90.00', billStatus: 'certified',
+    advance: { vendorId: 'v-1', advanced: '0.00', recovered: '0.00', recoverable: '0.00' },
+  },
+  payments: {
+    billId: 'bill-1', certificateId: 'cert-1', approvals: [],
+    approved: '0.00', paid: '0.00', approvable: '90.00', billStatus: 'certified',
+  },
+  measurements: {},
+  ...over,
+});
+
+describe('Task 7B-ii (§M) — the claim list and the per-claim lifecycle', () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    s()._setGateway(null);
+  });
+
+  const gw = (over: Partial<Record<string, unknown>> = {}) => ({
+    commercialMoneyPosition: vi.fn().mockResolvedValue(bundle()),
+    commercialBills: vi.fn().mockResolvedValue([{ id: 'bill-1', vendorBillNumber: 'V-1', status: 'certified', versions: [] }]),
+    commercialClaim: vi.fn().mockResolvedValue(claimDto()),
+    ...over,
+  });
+  const pilot = (g: ReturnType<typeof gw>) => {
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['commercial'] });
+  };
+
+  it('both claim reads are INERT off-pilot', async () => {
+    const g = gw();
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: [] });
+    void s().loadCommercialBills();
+    void s().loadCommercialClaim('bill-1');
+    await flush();
+    expect(g.commercialBills).not.toHaveBeenCalled();
+    expect(g.commercialClaim).not.toHaveBeenCalled();
+    expect(s().commercialBillsLoad).toBe('idle');
+    expect(s().commercialClaimLoad).toEqual({});
+  });
+
+  it('loads the claim list and one claim, and keeps their load states separate', async () => {
+    const g = gw();
+    pilot(g);
+    await s().loadCommercialBills();
+    await s().loadCommercialClaim('bill-1');
+    expect(s().commercialBills).toHaveLength(1);
+    expect(s().commercialBillsLoad).toBe('ready');
+    expect(s().commercialClaims['bill-1'].payments.approvable).toBe('90.00');
+    expect(s().commercialClaimLoad['bill-1']).toBe('ready');
+  });
+
+  it('a failing claim does not poison the list, and vice versa', async () => {
+    const g = gw({ commercialClaim: vi.fn().mockRejectedValue(new Error('nope')) });
+    pilot(g);
+    await s().loadCommercialBills();
+    await s().loadCommercialClaim('bill-1');
+    expect(s().commercialBillsLoad, 'the list loaded fine and must not inherit the claim failure').toBe('ready');
+    expect(s().commercialClaimLoad['bill-1']).toBe('error');
+    expect(s().commercialClaims['bill-1']).toBeUndefined();
+  });
+
+  it('the per-claim token is PER CLAIM — a slow claim A is not cancelled by opening claim B', async () => {
+    let resolveA: (v: unknown) => void = () => {};
+    const g = gw({
+      commercialClaim: vi.fn().mockImplementation((id: string) => (id === 'bill-A'
+        ? new Promise((r) => { resolveA = r; })
+        : Promise.resolve(claimDto({ bill: { ...claimDto().bill, id: 'bill-B', vendorBillNumber: 'V-B' } })))),
+    });
+    pilot(g);
+
+    const a = s().loadCommercialClaim('bill-A');
+    await s().loadCommercialClaim('bill-B');
+    expect(s().commercialClaimLoad['bill-B']).toBe('ready');
+
+    // A finishes LAST and must still land: nothing newer asked for A. A single shared token would
+    // have dropped it here, leaving claim A stuck on 'loading' forever.
+    resolveA(claimDto({ bill: { ...claimDto().bill, id: 'bill-A', vendorBillNumber: 'V-A' } }));
+    await a;
+    expect(s().commercialClaimLoad['bill-A'], 'a slow claim that nothing superseded must still land').toBe('ready');
+    expect(s().commercialClaims['bill-A'].bill.vendorBillNumber).toBe('V-A');
+  });
+
+  it('an OLDER load of the SAME claim never overwrites a newer one', async () => {
+    let resolveFirst: (v: unknown) => void = () => {};
+    let call = 0;
+    const g = gw({
+      commercialClaim: vi.fn().mockImplementation(() => {
+        call += 1;
+        return call === 1
+          ? new Promise((r) => { resolveFirst = r; })
+          : Promise.resolve(claimDto({ payments: { ...claimDto().payments, approvable: '50.00' } }));
+      }),
+    });
+    pilot(g);
+
+    const first = s().loadCommercialClaim('bill-1');
+    await s().loadCommercialClaim('bill-1');
+    expect(s().commercialClaims['bill-1'].payments.approvable).toBe('50.00');
+
+    resolveFirst(claimDto()); // the STALE 90.00 answer, arriving late
+    await first;
+    expect(
+      s().commercialClaims['bill-1'].payments.approvable,
+      'a slow earlier read overwrote a newer one — the figure an accountant is about to act on',
+    ).toBe('50.00');
+  });
+
+  it('an older FAILURE never flips a newer success to error', async () => {
+    let rejectFirst: (e: unknown) => void = () => {};
+    let call = 0;
+    const g = gw({
+      commercialClaim: vi.fn().mockImplementation(() => {
+        call += 1;
+        return call === 1 ? new Promise((_r, rej) => { rejectFirst = rej; }) : Promise.resolve(claimDto());
+      }),
+    });
+    pilot(g);
+    const first = s().loadCommercialClaim('bill-1');
+    await s().loadCommercialClaim('bill-1');
+    rejectFirst(new Error('stale'));
+    await first;
+    expect(s().commercialClaimLoad['bill-1']).toBe('ready');
+  });
+
+  it('a project switch tears down the claim list AND every opened claim', async () => {
+    const g = gw();
+    pilot(g);
+    await s().loadCommercialBills();
+    await s().loadCommercialClaim('bill-1');
+    expect(s().commercialClaims['bill-1']).toBeDefined();
+
+    // a claim id is project-contained: carrying either across a switch renders another site's money
+    useStore.setState({ ...emptyProjectData(), ...emptyModuleReadState() });
+    expect(s().commercialBills).toBeNull();
+    expect(s().commercialClaims).toEqual({});
+    expect(s().commercialBillsLoad).toBe('idle');
+    expect(s().commercialClaimLoad).toEqual({});
+  });
+
+  it('a claim read that resolves after a project switch is DROPPED', async () => {
+    let resolve: (v: unknown) => void = () => {};
+    const g = gw({ commercialClaim: vi.fn().mockImplementation(() => new Promise((r) => { resolve = r; })) });
+    pilot(g);
+    const pending = s().loadCommercialClaim('bill-1');
+    useStore.setState({ projectScopeGeneration: s().projectScopeGeneration + 1 });
+    resolve(claimDto());
+    await pending;
+    expect(s().commercialClaims['bill-1'], 'another project was on screen by the time this landed').toBeUndefined();
+  });
+
+  it('the realtime ping refreshes an OPEN claim, and only the ones already opened', () => {
+    // Root B from the 7B-i convergence audit, applied before it bit: becoming a new consumer of the
+    // realtime refresh is the signal to re-check what that refresh owes. A payment committed by
+    // another client now invalidates (7B-i-a), so the ping fires — and an accountant with a claim
+    // open must not be left acting on a stale approvable balance.
+    expect(syncSource).toContain('loadCommercialClaim(billId)');
+    expect(syncSource).toContain('Object.keys(useStore.getState().commercialClaims)');
+    // …and the negative twin over the SAME text: the LIST is not refreshed on a ping, because a
+    // ping is not evidence anyone opened that tab.
+    expect(
+      syncSource.includes('loadCommercialBills()'),
+      'the claim list is loaded on demand; refreshing it on every ping fetches a tab nobody opened',
+    ).toBe(false);
+  });
+
+  it('the claim bundle is ONE request — the six per-bill reads are not assembled client-side', () => {
+    // The defect this whole read exists to remove: `approvable` is derived from `netPayable`, so a
+    // client stitching six responses can render two figures that were never true together. A
+    // gateway method per sub-read would be that stitching, so the tripwire is that they do not exist.
+    for (const forbidden of ['commercialVerification(', 'commercialCertificate(', 'commercialDeductions(', 'commercialPayments(']) {
+      expect(
+        gatewaySource.includes(forbidden),
+        `${forbidden} exists — a claim page built from per-part reads can contradict itself`,
+      ).toBe(false);
+    }
+    expect(gatewaySource).toContain('commercial/claims/');
+    // …and the positive twin, so this can never pass by scanning nothing.
+    expect(storeSource).toContain('gateway.commercialClaim(billId)');
   });
 });

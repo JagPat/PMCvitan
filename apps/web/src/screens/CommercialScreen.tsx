@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, type CSSProperties, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
@@ -31,12 +31,21 @@ import styles from './responsive.module.css';
  * that is not a bucket — `exposure` — is likewise served, not summed.
  */
 
-type Tab = 'position' | 'commitments' | 'forecast';
+type Tab = 'position' | 'commitments' | 'forecast' | 'claims' | 'certification' | 'payments' | 'measurements';
 const TABS: { key: Tab; label: string }[] = [
   { key: 'position', label: 'Budget' },
   { key: 'commitments', label: 'Commitments' },
   { key: 'forecast', label: 'Cash forecast' },
+  // Task 7B-ii — the CLAIM workflow. Four tabs, one selected claim: `Claims` picks it and the
+  // other three are views of the SAME server bundle, so they cannot disagree with each other.
+  { key: 'claims', label: 'Claims' },
+  { key: 'certification', label: 'Certification' },
+  { key: 'payments', label: 'Payments' },
+  { key: 'measurements', label: 'Measurements' },
 ];
+
+/** The claim tabs are views of one selected claim; without one there is nothing to show. */
+const CLAIM_TABS: readonly Tab[] = ['certification', 'payments', 'measurements'];
 
 const rowCard: CSSProperties = { border: '1px solid var(--hairline)', borderRadius: 11, padding: '11px 13px', marginTop: 10, background: 'var(--panel)' };
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--faint)' };
@@ -66,7 +75,14 @@ export function CommercialScreen() {
   const capabilitiesKnown = useStore((s) => s.capabilitiesKnown);
   const loadCommercial = useStore((s) => s.loadCommercial);
   const loadShell = useStore((s) => s.loadShell);
+  const bills = useStore(useShallow((s) => s.commercialBills));
+  const billsLoad = useStore((s) => s.commercialBillsLoad);
+  const claims = useStore(useShallow((s) => s.commercialClaims));
+  const claimLoad = useStore(useShallow((s) => s.commercialClaimLoad));
+  const loadCommercialBills = useStore((s) => s.loadCommercialBills);
+  const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
   const [tab, setTab] = useState<Tab>('position');
+  const [selectedBillId, setSelectedBillId] = useState<string | null>(null);
 
   const reading = (commercialLoad === 'idle' || commercialLoad === 'loading') && !commercial;
   const unavailable = commercialLoad === 'error' && !commercial;
@@ -88,6 +104,60 @@ export function CommercialScreen() {
     commercial?.costHeads.find((h) => h.code === code)?.name
     ?? positions.find((p) => p.costHeadCode === code)?.costHeadName
     ?? code;
+
+  // Task 7B-ii — the claim list is fetched when the user first asks for it rather than on hub open:
+  // it answers a different question from the money position, and paying for it up front would make
+  // every PMC checking headroom wait on a list only an accountant opens.
+  const openTab = (next: Tab): void => {
+    setTab(next);
+    if ((next === 'claims' || CLAIM_TABS.includes(next)) && billsLoad === 'idle') void loadCommercialBills();
+  };
+  const selectClaim = (billId: string): void => {
+    setSelectedBillId(billId);
+    // Always re-read on selection. The lifecycle is what someone is about to ACT on — a certified
+    // amount or an approvable balance held from an earlier visit is the one number that must not be
+    // stale here, and the per-claim token makes a slow earlier read unable to overwrite this one.
+    void loadCommercialClaim(billId);
+  };
+  const claim = selectedBillId ? claims[selectedBillId] ?? null : null;
+  const claimStatus = selectedBillId ? claimLoad[selectedBillId] ?? null : null;
+  // A distinct `claimReading` is deliberately absent: 'loading' and the torn-down case (a selected
+  // id whose store entry went away with the project) are the SAME answer — we don't have it yet —
+  // so the guard's fallback covers both, and a separate flag would only invite the four-state
+  // enumeration whose missing fourth branch was the crash.
+  const claimStale = claimStatus === 'error' && !!claim;
+  const claimUnavailable = claimStatus === 'error' && !claim;
+
+  /**
+   * The state to render when there is no claim to render. Returns null ONLY when `claim` is
+   * non-null, which is what lets every panel below drop its non-null assertions.
+   *
+   * The last branch is the one that matters and the one the first draft missed: `selectedBillId` is
+   * COMPONENT state while the claim map is STORE state, and a project switch tears the store down
+   * without unmounting this screen. That leaves a selected id with no entry and no status — neither
+   * loading nor error — which a three-branch guard answered with `null`, so the panel dereferenced
+   * an undefined claim and the hub crashed on a plain project switch.
+   */
+  const claimGuard = (): JSX.Element | null => {
+    if (claim) return null;
+    if (!selectedBillId) {
+      return <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-none">Choose a claim on the Claims tab.</div>;
+    }
+    if (claimUnavailable) {
+      return (
+        <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-unavailable">
+          <div>This claim couldn&rsquo;t load.</div>
+          <div style={{ marginTop: 10 }}>
+            <Button variant="ink" onClick={() => selectClaim(selectedBillId)} data-testid="commercial-claim-retry">
+              <RefreshCw size={14} /> Retry
+            </Button>
+          </div>
+        </div>
+      );
+    }
+    // 'loading', or the torn-down case above: both are honestly "we don't have it yet".
+    return <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-loading">Loading the claim…</div>;
+  };
 
   return (
     <div className={styles.screen}>
@@ -133,7 +203,7 @@ export function CommercialScreen() {
             {TABS.map((t) => (
               <button
                 key={t.key}
-                onClick={() => setTab(t.key)}
+                onClick={() => openTab(t.key)}
                 data-testid={`commercial-tab-${t.key}`}
                 style={{
                   border: '1px solid var(--hairline)', borderRadius: 8, padding: '6px 11px', cursor: 'pointer',
@@ -227,6 +297,156 @@ export function CommercialScreen() {
                   <span style={muted}>Headroom <span style={num} data-testid="forecast-headroom">{commercial.cashForecast.totals.headroom}</span></span>
                 </div>
               </div>
+            </div>
+          )}
+
+          {tab === 'claims' && (
+            <div data-testid="commercial-claims">
+              {billsLoad === 'loading' && !bills && (
+                <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-loading">Loading claims…</div>
+              )}
+              {billsLoad === 'error' && !bills && (
+                <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-unavailable">
+                  <div>Claims couldn&rsquo;t load.</div>
+                  <div style={{ marginTop: 10 }}>
+                    <Button variant="ink" onClick={() => void loadCommercialBills()} data-testid="commercial-claims-retry">
+                      <RefreshCw size={14} /> Retry
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {bills?.length === 0 && (
+                <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-empty">No vendor claim has been recorded yet.</div>
+              )}
+              {(bills ?? []).map((b) => (
+                <button
+                  key={b.id}
+                  onClick={() => selectClaim(b.id)}
+                  data-testid={`commercial-claim-row-${b.id}`}
+                  style={{
+                    ...rowCard, display: 'block', width: '100%', textAlign: 'left', cursor: 'pointer',
+                    borderColor: b.id === selectedBillId ? 'var(--ink)' : 'var(--hairline)',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
+                    <div style={{ fontWeight: 600 }}>{b.vendorBillNumber}</div>
+                    <span style={mono} data-testid={`commercial-claim-status-${b.id}`}>{b.status}</span>
+                  </div>
+                  <div style={mono}>{b.id}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {tab === 'certification' && (
+            <div data-testid="commercial-certification">
+              {claim ? (
+                <>
+                  {claimStale && (
+                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-claim-stale">
+                      Showing the last-known claim — the latest couldn&rsquo;t load.
+                    </div>
+                  )}
+                  {/* §E — the verification triple, DERIVED server-side on every call. A stored
+                      verdict is stale the moment a receipt is reversed, which is why it is not
+                      cached here either. */}
+                  <div style={rowCard} data-testid="commercial-verification">
+                    <div style={{ fontWeight: 600 }}>Verification</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
+                      <span style={muted}>Verdict <span style={num} data-testid="verification-verdict">{claim.verification.verdict}</span></span>
+                      {/* §E is explicit that the VERDICT and the claim's STATUS answer different
+                          questions — a claim disputed for its evidence and then re-evidenced reads
+                          `matched` with a `disputed` status, true on both counts. Rendering only one
+                          of them would let a reader mistake it for the other. */}
+                      <span style={muted}>Claim status <span style={num} data-testid="verification-bill-status">{claim.verification.billStatus}</span></span>
+                    </div>
+                    {claim.verification.exceptions.length > 0 && (
+                      <div style={{ ...muted, marginTop: 6 }} data-testid="verification-exceptions">
+                        {claim.verification.exceptions.join(', ')}
+                      </div>
+                    )}
+                  </div>
+                  {claim.certificate === null ? (
+                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-certificate-none">
+                      Not certified yet. A claim before certification is an ordinary state, not an error.
+                    </div>
+                  ) : (
+                    <div style={rowCard} data-testid="commercial-certificate">
+                      <div style={{ fontWeight: 600 }}>Certificate</div>
+                      <div style={mono}>{claim.certificate.id}</div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
+                        <span style={muted}>Certified <span style={num} data-testid="certificate-amount">{claim.certificate.certifiedAmount}</span></span>
+                        <span style={muted}>Withheld <span style={num} data-testid="certificate-withheld">{claim.deductions.withheld}</span></span>
+                        <span style={muted}>Net payable <span style={num} data-testid="certificate-net-payable">{money(claim.deductions.netPayable)}</span></span>
+                      </div>
+                      {claim.deductions.deductions.length > 0 && (
+                        <div style={{ marginTop: 8 }} data-testid="commercial-deductions">
+                          {claim.deductions.deductions.map((d) => (
+                            <div key={d.id} style={{ ...muted, marginTop: 4 }} data-testid={`commercial-deduction-${d.id}`}>
+                              {d.type} <span style={num}>{d.amount}</span>{d.reason ? ` — ${d.reason}` : ''}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : claimGuard()}
+            </div>
+          )}
+
+          {tab === 'payments' && (
+            <div data-testid="commercial-payments">
+              {claim ? (
+                <div style={rowCard} data-testid="commercial-payment-ledger">
+                  <div style={{ fontWeight: 600 }}>Approvals and payments</div>
+                  {/* `approvable` is DERIVED from `netPayable` server-side, and both arrive in the
+                      same repeatable-read snapshot — which is why they are rendered together here
+                      rather than on the tab that happens to own each one. */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
+                    <span style={muted}>Approved <span style={num} data-testid="payments-approved">{claim.payments.approved}</span></span>
+                    <span style={muted}>Paid <span style={num} data-testid="payments-paid">{claim.payments.paid}</span></span>
+                    <span style={muted}>Approvable <span style={num} data-testid="payments-approvable">{money(claim.payments.approvable)}</span></span>
+                    <span style={muted}>Status <span style={num} data-testid="payments-bill-status">{claim.payments.billStatus}</span></span>
+                  </div>
+                  {claim.payments.approvals.length === 0 && (
+                    <div style={{ ...muted, marginTop: 8 }} data-testid="commercial-approvals-empty">Nothing authorised yet.</div>
+                  )}
+                  {claim.payments.approvals.map((a) => (
+                    <div key={a.id} style={{ ...muted, marginTop: 6 }} data-testid={`commercial-approval-${a.id}`}>
+                      <span style={num}>{a.amount}</span> approved · paid <span style={num}>{a.paid}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : claimGuard()}
+            </div>
+          )}
+
+          {tab === 'measurements' && (
+            <div data-testid="commercial-measurements">
+              {claim ? (
+                Object.keys(claim.measurements).length === 0 ? (
+                  // §D applies to LABOUR lines. A material line's evidence is accepted stock, which
+                  // the verification triple already reports — so this says "does not apply" rather
+                  // than showing empty registers, which would read as "measured nothing".
+                  <div style={{ ...rowCard, ...muted }} data-testid="commercial-measurements-empty">
+                    This claim bills no labour lines — material evidence is accepted stock, shown under Certification.
+                  </div>
+                ) : (
+                  <>
+                    {Object.entries(claim.measurements).map(([lineId, register]) => (
+                      <div key={lineId} style={rowCard} data-testid={`commercial-measurement-${lineId}`}>
+                        <div style={mono}>{lineId}</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 8 }}>
+                          <span style={muted}>Measured <span style={num}>{register.measured}</span></span>
+                          <span style={muted}>Ordered <span style={num}>{register.orderedPersonShiftQty}</span></span>
+                          <span style={muted}>Live authority <span style={num}>{register.liveAuthorityPersonShiftQty}</span></span>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )
+              ) : claimGuard()}
             </div>
           )}
         </>
