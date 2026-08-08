@@ -491,7 +491,12 @@ test('a probe deferral must name the task that will settle it', () => {
   // split-unit ids `docs/STATUS.md` actually uses. Lettered units have existed since Task 5A, so
   // `phase-5-task-6b` was rejected before any finer id was coined: a deferral trailer naming the
   // unit under review could never parse, which is the opposite of what the vocabulary is for.
-  for (const value of ['phase-5-task-1', 'phase-6-planning', 'phase-5-task-6b', 'phase-5-task-6b-i']) {
+  // `phase-5-task-7b-ii-b` is the third level, and it is not hypothetical: 7B-ii-a and 7B-ii-b
+  // are merged, independently-cleared units, and STATUS carried that id before this test did.
+  for (const value of [
+    'phase-5-task-1', 'phase-6-planning', 'phase-5-task-6b', 'phase-5-task-6b-i',
+    'phase-5-task-7b-ii-b', 'phase-5-task-7b-iii-a',
+  ]) {
     const real = assessConvergence({
       comments: [],
       reviews,
@@ -717,6 +722,23 @@ test('the deferral is the trailer only; the ledger is the reviewer\'s to judge',
     }),
     [5],
   );
+  // FINDING (#301) — the BETWEEN-WORK shape is where an unparseable `next_task` becomes fatal,
+  // and it is the shape every merge flip passes through. With `merged` + `work_item: none`,
+  // `phaseHasOpenWork` is false, so `next_task` is the ONLY source of an eligible phase: a
+  // split-unit id the vocabulary uses but the regex rejected collapsed this to `[]`, which the
+  // contract above reads as "nothing is open" — refusing a deferral that names a REAL upcoming
+  // stop. RED before the third-level suffix: returns [] for both ids below.
+  //
+  // These are not invented shapes. `phase-5-task-7b-ii-b` names a merged, cleared unit and sat
+  // in STATUS as `work_item`, where `in_progress` masked the mismatch.
+  for (const nextTask of ['phase-5-task-7b-iii-a', 'phase-5-task-7b-ii-b']) {
+    assert.deepEqual(
+      deferralPhases({ phase: '5', task_state: 'merged', work_item: 'none', next_task: nextTask }),
+      [5],
+      `${nextTask} must keep its phase eligible between work items`,
+    );
+  }
+
   // an open work item keeps the current phase eligible whatever the state word is
   assert.deepEqual(
     deferralPhases({ phase: '4', task_state: 'complete', work_item: 'P4T7 follow-up' }),

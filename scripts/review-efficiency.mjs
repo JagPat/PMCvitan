@@ -272,7 +272,22 @@ const DEFERRAL_TRAILER = 'review-deferred-to-probes';
 // 5A (`5A`/`5B`/`5C`, then `6A`/`6B`), so `phase-5-task-6b` was already rejected before any
 // finer-grained id existed — a deferral trailer naming the unit actually under review could never
 // parse. The roman suffix admits the second level the 6B split introduced (`6b-i`, `6b-ii`).
-const TASK_REFERENCE = /^phase-(?<phase>\d+)-(?:task-\d+[a-z]?(?:-[iv]+)?|planning)$/iu;
+//
+// THIRD LEVEL, and the same lesson a third time. The 7B-ii split coined `7B-ii-a`/`7B-ii-b` —
+// both now merged and independently cleared — so a lettered unit below a roman one is not a
+// hypothetical shape, it is the vocabulary `docs/STATUS.md` has been writing since PR #299.
+// `phase-5-task-7b-ii-b` sat in STATUS as `work_item` and never parsed; the mismatch stayed
+// LATENT only because that entry coincided with `task_state: in_progress`, which makes
+// `phaseHasOpenWork` supply the phase from `phase:` and the unparseable id irrelevant.
+//
+// It stops being latent in the BETWEEN-WORK shape (`task_state: merged`, `work_item: none`),
+// where `next_task` is the ONLY source of an eligible phase: an unparseable id there collapses
+// `deferralPhases` to `[]`, which the contract below reads as "no phase has an open review stop"
+// — so a correctly-formed deferral naming a REAL upcoming stop is refused, and a scheduled
+// review stop fails closed. The vocabulary is extended rather than the STATUS id blunted,
+// because naming the parent split when the next unit is `7b-iii-a` would trade a parse error
+// for a wrong answer.
+const TASK_REFERENCE = /^phase-(?<phase>\d+)-(?:task-\d+[a-z]?(?:-[iv]+)?(?:-[a-z])?|planning)$/iu;
 
 // A shape-valid value can still name a review stop that does not exist:
 // `phase-999-task-999` parses and schedules nothing. The PHASE is checkable against
