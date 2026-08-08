@@ -535,3 +535,57 @@ test('with no work item in progress, STATUS hands off to next_task rather than a
     + 'handoff lands as merged/open_pr: none.',
   );
 });
+
+// FINDING (#303 P1, round 2) — FIX THE SHEPHERD, NOT ONLY THE RESOLVER.
+//
+// Round 1 pinned `assessRunnerState` and left `buildDriftHandoff` untouched, so the regression
+// went green while the path that PRODUCED the bad advice could repeat it. That is the wrong layer:
+// the shepherd is what told the author to name the handoff PR as `open_pr`, and PR #303 took the
+// advice. A probe that exercises the fixed layer instead of the causing layer proves nothing about
+// the loop.
+//
+// Cause: a handoff head correctly records `open_pr: none` while its OWN PR is still open, which
+// `detectStatusDrift` cannot help but read as drift — so the "correction already in flight"
+// suppression never recognised it.
+test('the drift shepherd stays quiet when a HANDOFF head already carries the fix', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const staleDefaultBranch = {
+    phase: '5', task: '7', task_state: 'in_progress',
+    work_item: 'phase-5-task-7b-iii-a', open_pr: '302',
+    next_task: 'phase-5-task-7b-iii-b', blocking_directive: 'none',
+  };
+  const handoffHead = {
+    phase: '5', task: '7', task_state: 'merged', work_item: 'none',
+    open_pr: 'none', next_task: 'phase-5-task-7b-iii-b', blocking_directive: 'none',
+  };
+  const body = buildDriftHandoff({
+    statusNow: staleDefaultBranch,
+    openPullRequests: [{ number: 303, headRefName: 'claude/phase5-status-7biii-a', isDraft: true }],
+    headStatuses: [{ number: 303, now: handoffHead }],
+  });
+  assert.equal(
+    body, null,
+    'the shepherd advised changing `open_pr` while the handoff head already recorded the landing '
+    + 'state — the advice that sends the post-merge runner back to a merged status PR',
+  );
+});
+
+// …and the SYMMETRIC half, which the suppression must not swallow: a genuine work-item PR open
+// while STATUS records `open_pr: none` is real drift and must still be reported. That is the
+// defect that failed PR #302's first head, and a fix which silenced it too would trade one broken
+// loop for another.
+test('the drift shepherd still reports a WORK-ITEM PR open against open_pr: none', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const workItemHead = {
+    phase: '5', task: '7', task_state: 'in_progress',
+    work_item: 'phase-5-task-7b-iii-b', open_pr: 'none',
+    next_task: 'phase-5-task-7b-iii-c', blocking_directive: 'none',
+  };
+  const body = buildDriftHandoff({
+    statusNow: { ...workItemHead, open_pr: '302' },
+    openPullRequests: [{ number: 310, headRefName: 'claude/phase5-task7b-iii-b', isDraft: true }],
+    headStatuses: [{ number: 310, now: workItemHead }],
+  });
+  assert.ok(body, 'a work-item PR whose head still records open_pr: none is real drift');
+  assert.match(body, /open_pr/u);
+});

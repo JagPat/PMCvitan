@@ -83,6 +83,36 @@ export function openPrIsLive(statusNow, openPullRequests) {
   );
 }
 
+/**
+ * The HANDOFF shape: nothing in progress, the last unit merged, and a next task named.
+ *
+ * A STATUS-only handoff PR is not a work item — it IS the handoff, and the runner reads it only
+ * once it has merged, at which point no PR exists. So it correctly records `open_pr: none` while
+ * its own PR is still open, and `detectStatusDrift` reads exactly that as drift.
+ *
+ * That made the "correction already in flight" suppression below unable to recognise the one head
+ * carrying the fix, so the shepherd advised setting `open_pr` to the handoff PR's own number —
+ * which `assessRunnerState` consumes before `next_task`, sending the post-merge runner back to a
+ * PR that no longer exists. PR #303 got that advice and took it.
+ *
+ * A work-item PR is not affected: it NAMES its work item, so this predicate is false for it and a
+ * `open_pr: none` beside a live work-item PR is still reported as the drift it is (which is what
+ * caught PR #302's first head).
+ */
+export function isHandoffShape(now) {
+  const workItem = String(now?.work_item ?? '').trim().toLowerCase();
+  const state = String(now?.task_state ?? '').trim().toLowerCase();
+  const openPr = String(now?.open_pr ?? '').trim().toLowerCase();
+  const nextTask = String(now?.next_task ?? '').trim();
+  return (
+    (workItem === '' || workItem === 'none')
+    && TERMINAL_HANDOFF_STATES.has(state)
+    && (openPr === '' || openPr === 'none')
+    && nextTask !== ''
+  );
+}
+const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cleared']);
+
 // Drift is a property of the STATUS that will exist on the default branch, but a
 // correction already in flight on an open PR head is NOT drift — the default
 // branch legitimately lags until that PR merges. Consult EVERY open head, not
@@ -97,7 +127,12 @@ export function detectStatusDriftAcrossHeads({
   if (!defaultBranchDrift.drift) return defaultBranchDrift;
 
   const correctingHead = (headStatuses ?? []).find(
-    (entry) => entry?.now && !detectStatusDrift(entry.now, openPullRequests).drift,
+    (entry) => entry?.now
+      && (!detectStatusDrift(entry.now, openPullRequests).drift
+        // …OR the head records the HANDOFF shape, which `detectStatusDrift` cannot help but call
+        // drift (`open_pr: none` beside its own live PR) even though it is the correct landing
+        // state. Without this the shepherd advises the handoff PR to name itself.
+        || isHandoffShape(entry.now)),
   );
   if (correctingHead) {
     // Suppressing the SHEPHERD is not a claim that the record is right — it only
