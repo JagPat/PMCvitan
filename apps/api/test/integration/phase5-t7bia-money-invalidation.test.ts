@@ -264,7 +264,13 @@ describe('Phase 5 Task 7B-i-a — commercial money invalidation + the emission r
     // dispatch too. RED with the flag flipped but no drain: `pending`, swept minutes later.
     const rows = await moneyDeliveries(projectId, 'commitment');
     expect(rows.length, 'issuing an attributed PO moved headroom').toBeGreaterThan(0);
-    for (const r of rows) expect(r.status, 'the money delivery was left for the relay').toBe('succeeded');
+    for (const r of rows) {
+      // both halves, not just the timeliness one: a WEIGHTLESS event's socket row is written as a
+      // recorded `noop` that is already `succeeded`, so asserting the status alone would stay green
+      // with the flag reverted and prove nothing.
+      expect(r.deliveryAction, 'commercial.money_moved must be a real external effect').toBe('dispatch');
+      expect(r.status, 'the money delivery was left for the relay').toBe('succeeded');
+    }
 
     // …and ONE ping for the project, not one per invalidating event. That dedup only works because
     // both events are in the same `dispatchCommitted` batch, which is the drain's doing.

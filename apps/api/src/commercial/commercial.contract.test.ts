@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, DOMAIN_EVENT_TYPES, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
-import { FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
+import { COMMERCIAL_MONEY_EVENT, FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
+import { CommercialCommandRunner } from './commercial-command.runner';
+import type { EmittedEventMeta } from '../platform/outbox/registry';
 import { EXTERNAL_EFFECTS } from '../platform/external-effects';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
@@ -1316,13 +1318,29 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
    * dispatch. A new commercial command cannot route around it, and a command added to an
    * already-dispatching service cannot forget a line, because there is no line to forget.
    */
-  it('§M: commercial\'s event weight and its post-commit dispatch wiring agree', () => {
+  it('§M: commercial\'s event weight and its post-commit dispatch wiring agree', async () => {
     const entry = EXTERNAL_EFFECTS['commercial.money_moved'];
     const services = readdirSync(HERE).filter((f) => f.endsWith('.service.ts'));
     expect(services.length, 'no commercial services found — this pin would compare nothing').toBeGreaterThan(5);
-    const runner = readFileSync(join(HERE, 'commercial-command.runner.ts'), 'utf8');
-    // The wiring exists iff the ONE place that dispatches actually dispatches.
-    const wired = /dispatchCommitted\s*\(/u.test(runner);
+
+    // "Wired" is RUN, not read. A source scan for `dispatchCommitted(` matched this file's own doc
+    // comment, so deleting the call left the pin green — prose satisfying a scan, which is the
+    // failure mode a pin exists to prevent. Driving the runner with a fake dispatcher asserts the
+    // behaviour instead. (That the events REACH the runner from a seam below `run` is the platform
+    // registry's job and is proven live in `phase5-t7bia-money-invalidation.test.ts` probe 1.)
+    const sent: EmittedEventMeta[][] = [];
+    const runner = new CommercialCommandRunner(
+      { $transaction: (cb: (tx: unknown) => unknown) => cb({}) } as never,
+      { dispatchCommitted: async (evs: EmittedEventMeta[]) => { sent.push(evs); } } as never,
+    );
+    const emitted = { eventId: 'ev-money', eventType: COMMERCIAL_MONEY_EVENT } as EmittedEventMeta;
+    await runner.run({
+      scope: { scopeKind: 'project', projectId: 'p1' },
+      actor: { actorId: 'u1', actorName: 'x', actorRole: 'pmc', actorKind: 'human' },
+      commandType: 'commercial.probe', requestHash: 'h',
+      run: async () => ({ resultRef: 'r', events: [emitted] }),
+    });
+    const wired = sent.length === 1 && sent[0]!.some((e) => e.eventId === 'ev-money');
 
     expect(
       entry.invalidate === wired,
