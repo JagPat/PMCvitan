@@ -211,7 +211,15 @@ describe('DrawingsService.issue', () => {
     const { svc, draws, dispatcher } = make();
     await svc.issue('ambli', drawUser, { ...base, publish: true });
     expect(draws[0].publishedAt).not.toBeNull();
-    expect(dispatchedIntents(dispatcher)[0]).toMatchObject({ effectKey: 'drawing.issued', invalidate: true, push: { body: expect.stringContaining('A-201 Rev A'), roles: ['engineer', 'contractor'] } });
+    // Phase 5 Task 7B-i-a — the batch now also carries `drawing.recipients_frozen`, which
+    // `freezeRecipients` has always emitted from BELOW the command body and whose meta the command
+    // therefore never returned. It is weightless (`invalidate: false`, no push), so nothing about
+    // what reaches a person changed; what changed is that the command reports what it emitted.
+    // Asserted exactly, and in emit order, so a future event appearing here has to be classified.
+    expect(dispatchedIntents(dispatcher)).toEqual([
+      { effectKey: 'drawing.recipients_frozen', invalidate: false, coverageVersion: expect.any(String) },
+      { effectKey: 'drawing.issued', invalidate: true, push: { body: expect.stringContaining('A-201 Rev A'), roles: ['engineer', 'contractor'] }, coverageVersion: expect.any(String) },
+    ]);
   });
 
   it('publish() flips a draft drawing live and notifies; re-publishing conflicts', async () => {
@@ -222,7 +230,12 @@ describe('DrawingsService.issue', () => {
 
     await svc.publish('ambli', id, drawUser);
     expect(draws[0].publishedAt).not.toBeNull();
-    expect(dispatchedIntents(dispatcher)[0]).toMatchObject({ effectKey: 'drawing.published', invalidate: true, push: { body: expect.stringContaining('A-201'), roles: ['engineer', 'contractor'] } });
+    // as above: the freeze that publishing performs is now reported alongside the publish, and is
+    // weightless, so exactly one intent in this batch reaches a person.
+    expect(dispatchedIntents(dispatcher)).toEqual([
+      { effectKey: 'drawing.recipients_frozen', invalidate: false, coverageVersion: expect.any(String) },
+      { effectKey: 'drawing.published', invalidate: true, push: { body: expect.stringContaining('A-201'), roles: ['engineer', 'contractor'] }, coverageVersion: expect.any(String) },
+    ]);
 
     await expect(svc.publish('ambli', id, drawUser)).rejects.toBeInstanceOf(ConflictException);
   });
