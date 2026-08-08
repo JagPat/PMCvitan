@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
-import { enabledScreensFor } from '@/lib/screens';
+import { enabledScreensFor, SCREEN_CAPABILITY } from '@/lib/screens';
+// The store's and sync hook's own source text, via Vite's `?raw` loader — the same mechanism
+// `snapshot-ordering.test.ts` and `snapshot-shape.test.ts` already use for their source tripwires.
+import storeSource from '@/store/store.ts?raw';
+import syncSource from '@/data/useApiSync.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
 import type { CommercialView } from '@/store/commercial';
 import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto } from '@vitan/shared';
@@ -218,11 +222,96 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
     expect(s().commercialLoad).toBe('ready');
   });
 
+  // Codex F3 — a RE-ATTRIBUTION supersedes the old row and inserts its successor (§C: there is no
+  // "revoke", which would drop a live obligation out of every budget), so the register carries both.
+  // Rendering both as current commitments double-counts the line — the head it LEFT and the head it
+  // moved TO — which misstates the money position this hub exists to state.
+  it('only LIVE attributions are current commitments — superseded history is not double-counted', () => {
+    const superseded = {
+      id: 'A1', poLineId: 'PL-1', labourPoLineId: null, costHeadCode: 'CIVIL', reason: 'initial',
+      createdAt: '2026-08-01T00:00:00.000Z', createdById: 'u1',
+      supersededAt: '2026-08-02T00:00:00.000Z', supersededById: 'u1', supersedeReason: 'miscoded',
+    };
+    const live = { ...superseded, id: 'A2', costHeadCode: 'MEP', reason: 'reclassified', supersededAt: null, supersededById: null, supersedeReason: null };
+    const view = bundle({ attributions: [superseded, live] });
+    const current = view.attributions.filter((a) => a.supersededAt === null);
+    expect(current.map((a) => a.id), 'the superseded row rendered as a current commitment').toEqual(['A2']);
+    // and the SAME PO line is counted once, not twice
+    expect(new Set(current.map((a) => a.poLineId)).size).toBe(1);
+  });
+
   it('the bundle is PROJECT-OWNED — a scope teardown clears it', () => {
     useStore.setState({ commercialView: bundle(), commercialLoad: 'ready' });
     expect(s().commercialView).not.toBeNull();
     useStore.setState(getInitialState());
     expect(s().commercialView, 'one project\'s money survived into another project\'s hub').toBeNull();
     expect(s().commercialLoad).toBe('idle');
+  });
+});
+
+/**
+ * CLOSURE (Codex round 1, 7B-i) — A CAPABILITY-GATED HUB IS WIRED INTO EVERY INTEGRATION POINT.
+ *
+ * All three round-1 findings were one shape: the new hub was added to SOME of the places the other
+ * two hubs live and not all of them. Realtime refresh was missed (another user's payment left the
+ * money stale until someone pressed Refresh), and the shell-failure transition was missed (a cold
+ * bookmarked `/commercial` whose shell request fails renders a permanent "loading" with no Retry,
+ * because `loadCommercial` is an inert no-op while capabilities are unknown).
+ *
+ * That is this phase's most-repeated root — a hand-written set standing in for a derived one — and
+ * the durable form of the fix is to DERIVE the set. `SCREEN_CAPABILITY` already names every
+ * capability-gated hub; this scans the wiring sites and requires each hub's loader at each one.
+ * A fourth pilot hub is caught here, at the desk, rather than by a reviewer three findings later.
+ *
+ * Mutation-tested in both directions: removing any one wiring fails, and the derivation is asserted
+ * non-empty and to actually contain the three hubs, so it cannot pass by scanning nothing.
+ */
+describe('CLOSURE (7B-i) — every capability-gated hub is wired into every integration point', () => {
+  /** The loader each capability-gated screen owns, derived from the gate rather than listed. */
+  const loaders = Object.entries(SCREEN_CAPABILITY).map(([screen, capability]) => ({
+    screen,
+    capability: capability!,
+    // `materials` → `loadMaterials`, `labour` → `loadLabour`, `commercial` → `loadCommercial`
+    loader: `load${capability![0]!.toUpperCase()}${capability!.slice(1)}`,
+  }));
+
+  it('the derivation sees every pilot hub (it cannot pass by scanning nothing)', () => {
+    expect(loaders.length).toBeGreaterThanOrEqual(3);
+    expect(loaders.map((l) => l.loader).sort()).toEqual(['loadCommercial', 'loadLabour', 'loadMaterials']);
+  });
+
+  it('each hub refreshes on the realtime `changed` ping — module-query data is never in the snapshot', () => {
+    const sync = syncSource;
+    for (const { loader, screen } of loaders) {
+      expect(
+        sync.includes(`${loader}()`),
+        `${screen}: useApiSync's refresh does not call ${loader}(). Its bundle is greenfield module-query data — never in ApiSnapshot — so another client's write leaves this hub stale until a manual refresh.`,
+      ).toBe(true);
+    }
+  });
+
+  it('each hub is loaded once the shell REPORTS its capability', () => {
+    const store = storeSource;
+    for (const { loader, capability, screen } of loaders) {
+      expect(
+        new RegExp(`capabilities\\.includes\\('${capability}'\\)[\\s\\S]{0,200}${loader}\\(\\)`, 'u').test(store),
+        `${screen}: the shell success path does not load ${loader}() when it reports '${capability}'.`,
+      ).toBe(true);
+    }
+  });
+
+  it("each hub's load state flips to `error` when the SHELL fails, so a deep link shows Retry", () => {
+    const store = storeSource;
+    // the one block that surfaces a swallowed shell failure through the hubs' own states
+    const start = store.indexOf('if (s.materialsLoad === ');
+    expect(start, 'the shell-failure transition block was not found — this closure would scan nothing').toBeGreaterThan(-1);
+    const block = store.slice(start, start + 1200);
+    for (const { capability, screen } of loaders) {
+      const state = `${capability}Load`;
+      expect(
+        block.includes(`if (s.${state} === 'idle') s.${state} = 'error';`),
+        `${screen}: a failed shell leaves ${state} at 'idle' forever, so the hub renders a permanent "loading" with no Retry — ${capability === 'commercial' ? 'exactly the round-1 finding' : 'the defect this transition exists to prevent'}.`,
+      ).toBe(true);
+    }
   });
 });

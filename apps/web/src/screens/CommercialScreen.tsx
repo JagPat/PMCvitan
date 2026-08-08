@@ -77,6 +77,13 @@ export function CommercialScreen() {
   const retry = (): void => { if (capabilitiesKnown) { void loadCommercial(); } else { loadShell(); } };
 
   const positions = commercial?.budget.positions ?? [];
+  // Codex F3 — `commercial/attributions` returns the WHOLE register, superseded history included,
+  // because a re-attribution supersedes the old row and inserts its successor rather than editing
+  // in place (§C: there is no "revoke", which would drop a live obligation out of every budget).
+  // Rendering all of it as current commitments double-counts a re-attributed line — the CIVIL row
+  // it left AND the MEP row it moved to — which misstates the very money position this hub exists
+  // to state. Only the LIVE rows are current commitments; the history is not this tab's subject.
+  const liveAttributions = (commercial?.attributions ?? []).filter((a) => a.supersededAt === null);
   const headName = (code: string): string =>
     commercial?.costHeads.find((h) => h.code === code)?.name
     ?? positions.find((p) => p.costHeadCode === code)?.costHeadName
@@ -174,12 +181,12 @@ export function CommercialScreen() {
 
           {tab === 'commitments' && (
             <div data-testid="commercial-commitments">
-              {commercial.attributions.length === 0 && (
+              {liveAttributions.length === 0 && (
                 <div data-testid="commercial-commitments-empty" style={{ ...rowCard, ...muted }}>
                   No purchase-order line is attributed to a cost head yet.
                 </div>
               )}
-              {commercial.attributions.map((a) => (
+              {liveAttributions.map((a) => (
                 <div key={a.id} style={rowCard} data-testid={`commercial-attribution-${a.id}`}>
                   <div style={{ fontWeight: 600 }}>{headName(a.costHeadCode)}</div>
                   <div style={mono}>

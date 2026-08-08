@@ -52,6 +52,10 @@ export function useApiSync(): void {
       // snapshot), so another client's allocation/muster/revision would leave `labourView` and the
       // Labour/Inbox badges stale without this. Same discipline as materials: a no-op off-pilot.
       useStore.getState().loadLabour();
+      // Phase 5 Task 7B-i (Codex F1) — the Commercial bundle is module-query-only too, so another
+      // client's budget revision, PO issue, certification or payment would leave the money position
+      // and the cash forecast stale until someone pressed Refresh. Same discipline: no-op off-pilot.
+      void useStore.getState().loadCommercial();
     };
 
     (async () => {

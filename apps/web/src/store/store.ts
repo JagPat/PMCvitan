@@ -2413,6 +2413,11 @@ export const useStore = create<Store>()(
           if (isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope) && !s.capabilitiesKnown) {
             if (s.materialsLoad === 'idle') s.materialsLoad = 'error';
             if (s.labourLoad === 'idle') s.labourLoad = 'error';
+            // Codex F2 (7B-i) — the third hub needs the same transition, or a cold bookmarked
+            // `/commercial` load whose shell request fails renders a permanent "loading" with no
+            // Retry: `capabilitiesKnown` stays false, so `loadCommercial()` is an inert no-op and
+            // nothing else can move `commercialLoad` off 'idle'.
+            if (s.commercialLoad === 'idle') s.commercialLoad = 'error';
           }
         });
       });
