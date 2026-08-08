@@ -694,9 +694,10 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
       ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
       fireEvent.change(r.getByTestId(id), { target: { value: v } });
     }
-    // round-3 P2: a claim is the vendor's whole invoice, so a line is ADDED to the set and the
-    // claim is not lodgeable until at least one is
-    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled, 'lodgeable with no lines').toBe(true);
+    // round-3 P2: a claim is the vendor's whole invoice, so lines are ADDED to a set. Round 7
+    // refined WHEN that set counts as non-empty: a VALID entry row folds into the payload, because
+    // pressing Lodge with a filled row plainly means "including this one". So the claim is
+    // lodgeable here — and Add line is for the SECOND and later lines.
     fireEvent.click(r.getByTestId('lodge-add-line'));
     expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
   });
@@ -762,6 +763,50 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     const second = recordVendorBill.mock.calls[1][0].lines[1];
     expect(second).not.toHaveProperty('taxAmount');
     expect(second).not.toHaveProperty('freightAmount');
+  });
+
+  it('R1: a line typed but not ADDED is never dropped from the claim', () => {
+    // RED before: Lodge read only `lodge.lines`, so a filled entry row vanished — and the vendor's
+    // document number is frozen by the duplicate index the moment the claim is recorded, so that
+    // line had no later path into the invoice.
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-4'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+
+    // a second line typed and NOT added — pressing Lodge here plainly means "including this one"
+    for (const [id, v] of [['lodge-poline', 'PL-2'], ['lodge-qty', '3'], ['lodge-rate', '50.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    const sent = recordVendorBill.mock.calls[0][0].lines;
+    expect(sent, 'a line visible on screen was dropped from the claim it was typed into').toHaveLength(2);
+    expect(sent[1]).toMatchObject({ poLineId: 'PL-2', quantity: '3', rate: '50.00' });
+  });
+
+  it('R2: a DIRTY but incomplete entry refuses the lodge rather than being dropped', () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-4'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'PL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+
+    // a half-typed line: neither droppable nor sendable, so the form says so
+    fireEvent.change(r.getByTestId('lodge-poline'), { target: { value: 'PL-2' } });
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('lodge-entry-incomplete')).toBeTruthy();
+
+    // clearing it returns the form to lodgeable — the empty entry loses nothing
+    fireEvent.change(r.getByTestId('lodge-poline'), { target: { value: '' } });
+    expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('O4: a vendor invoice covering SEVERAL po lines is lodged whole', () => {

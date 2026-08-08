@@ -237,13 +237,30 @@ export function CommercialScreen() {
   const chargesAllowed = claimLineMayCarryCharges('material');
   const entryValid = lodge.poLineId.trim() !== '' && isPositiveQuantity(lodge.qty) && isMoneyString(lodge.rate)
     && optionalMoneyOk(lodge.tax) && optionalMoneyOk(lodge.freight);
+  const entryAsLine = (): LodgeLine => ({
+    poLineId: lodge.poLineId.trim(), qty: lodge.qty.trim(), rate: lodge.rate.trim(),
+    tax: lodge.tax.trim(), freight: lodge.freight.trim(),
+  });
   const addLodgeLine = (): void => setLodge({
-    lines: [...lodge.lines, {
-      poLineId: lodge.poLineId.trim(), qty: lodge.qty.trim(), rate: lodge.rate.trim(),
-      tax: lodge.tax.trim(), freight: lodge.freight.trim(),
-    }],
+    lines: [...lodge.lines, entryAsLine()],
     poLineId: '', qty: '', rate: '', tax: '', freight: '',
   });
+  /**
+   * Round 7 — what happens to a line the user has typed but not ADDED.
+   *
+   * Lodge looked only at `lodge.lines`, so filling `PL-2` and pressing Lodge instead of Add line
+   * silently dropped it — and the vendor's document number is frozen by the duplicate index the
+   * moment the claim is recorded, so that line had no later path into the invoice. Data visible on
+   * screen disappeared into a claim that did not contain it.
+   *
+   * The entry has three states and each needs an answer, so all three are stated rather than the
+   * one the finding named: EMPTY (nothing to lose), VALID (the user means it — fold it in, which is
+   * what pressing Lodge with a filled row plainly intends), and DIRTY-BUT-INVALID (refuse, and say
+   * why, because silently dropping it is the defect and silently sending it is worse).
+   */
+  const entryDirty = [lodge.poLineId, lodge.qty, lodge.rate, lodge.tax, lodge.freight]
+    .some((v) => v.trim() !== '');
+  const lodgeLines = entryValid ? [...lodge.lines, entryAsLine()] : lodge.lines;
   // Codex N5 — the server's duplicate-document index refuses another claim for the same
   // (vendor, normalized number) unless the existing one is `rejected` or `resolved`. A claim
   // already ON SCREEN is enough to know that, so the form refuses rather than promising a write
@@ -254,7 +271,8 @@ export function CommercialScreen() {
     && b.status !== 'rejected' && b.status !== 'resolved');
   const lodgeValid = lodge.vendorId.trim() !== '' && lodge.number.trim() !== ''
     && isRealCivilDate(lodge.date)                       // N4 — a real calendar day, not a shape
-    && lodge.lines.length > 0                            // round-3 P2 — the whole invoice, not a line
+    && lodgeLines.length > 0                             // round-3 P2 — the whole invoice, not a line
+    && !(entryDirty && !entryValid)                      // round 7 — never drop a line on screen
     && !lodgeDuplicate;
   const lodgePending = commercialPending.includes(billCoalesceKey(lodge.vendorId.trim(), lodge.number));
 
@@ -782,7 +800,7 @@ export function CommercialScreen() {
                             vendorId: lodge.vendorId.trim(),
                             vendorBillNumber: lodge.number.trim(),
                             documentDate: lodge.date.trim(),
-                            lines: lodge.lines.map((l) => ({
+                            lines: lodgeLines.map((l) => ({
                               poLineId: l.poLineId,
                               quantity: l.qty,
                               rate: l.rate,
@@ -821,6 +839,12 @@ export function CommercialScreen() {
                         <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="lodge-invalid">
                           Quantity must be positive (≤6dp), rate a non-negative money value (≤2dp), and the
                           document date a real calendar day (YYYY-MM-DD).
+                        </div>
+                      )}
+                      {entryDirty && !entryValid && (
+                        <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid="lodge-entry-incomplete">
+                          Finish or clear the line you are editing — lodging now would leave it out of
+                          the claim, and the bill number is frozen once the claim is recorded.
                         </div>
                       )}
                       {lodgeDuplicate && (

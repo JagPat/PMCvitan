@@ -1,7 +1,7 @@
 # PR #304 convergence audit — the write-ahead window, again
 
-Five finding-bearing heads (`d6d4f6e`, `9fa54c7`, `9d755f2`, `bed5a1f`, `6726b2c`). **Twenty-three
-findings, ten P1**, on a unit whose product surface is six buttons.
+Seven finding-bearing heads. **Twenty-five findings, ten P1**, on a unit whose product surface
+started as six buttons and is now three.
 
 **This audit ends by splitting the unit, which is the conclusion it should have reached earlier.**
 The review lifecycle reports 5 finding-bearing heads against a limit of 5, and the finding pattern
@@ -204,6 +204,20 @@ of a control is honest, a control that leads nowhere is not.**
 The §D/labour half carries Q-a, Q-c, Q-d and the labour-specific lodge findings (N2, Q-b) unfixed
 and named, where it gets a review budget that has not already been spent.
 
+### Round 7 — the multi-line form's own edge
+
+One P2, and it is inside O4's fix. The form kept a `lines` array and Lodge read only that, so a line
+TYPED but not ADDED was silently dropped — and the vendor's document number is frozen by the
+duplicate index the moment the claim is recorded, so that line had no later path into the invoice.
+Data visible on screen disappeared into a claim that did not contain it.
+
+The finding offered two remedies (disable while dirty, or fold the entry in). Neither alone is
+right, because the entry has THREE states and each needs a different answer: **empty** (nothing to
+lose), **valid** (fold it in — pressing Lodge with a filled row plainly means "including this one"),
+and **dirty-but-invalid** (refuse and say why: silently dropping it is the defect, and silently
+sending it is worse). Stating all three is the same move as `viewOf` — exhaustiveness as structure
+rather than as a case you remembered.
+
 ### Two wrong splits, and what they have in common
 
 The first split cut by *module section* (§D vs §F) because that is how the code is organised. The
@@ -282,6 +296,9 @@ Taking a finding seriously means implementing what is true, not what is quoted.
    honest; a control that leads nowhere is not.
 15. **A read's token orders reads against each other and says nothing about causality.** Knowing a
    read is the NEWEST is not knowing it observed the write. (Q-a — carried into the §D unit.)
-16. **A probe's synchronisation is part of its claim.** O1 waited on a condition its own setup had
+16. **A form that accumulates has an entry state as well as a collection.** Reading only the
+   collection drops what is on screen; the entry's three states each need an answer, and naming
+   them beats picking the one a finding mentioned. (Round 7.)
+17. **A probe's synchronisation is part of its claim.** O1 waited on a condition its own setup had
    satisfied, so it asserted before the read under test had landed — and passed under the mutation.
    Mutation-run every probe, including the ones written to catch your own findings.
