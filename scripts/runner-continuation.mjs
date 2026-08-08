@@ -42,58 +42,6 @@ export function formatOpenPullRequestList(openPullRequests) {
     .join(', ');
 }
 
-/**
- * A PR that is OPEN but is nobody's work item.
- *
- * `open_pr` answers "which PR is this task's work item", and every other part of
- * this module reads it as "is there a live autonomous PR" — the two coincide for a
- * task PR and come apart for exactly one shape: the STATUS-ONLY HANDOFF flip, a PR
- * whose whole content is recording that the previous unit merged and naming the
- * next one.
- *
- * That divergence produced three defects on PR #296 alone (see
- * `docs/reviews/pr-296-convergence.md`): `assessRunnerState` resolving to the
- * merged docs PR, the drift shepherd advising the state that causes it, and the
- * post-merge continuation drift-correcting `open_pr: none` BACK to that PR while
- * labelling the correct `next_task` as stale — leaving the loop waiting on a PR
- * that had already merged.
- *
- * The predicate is SELF-DESCRIBING rather than a new convention: a head whose own
- * Now block says the task is `merged`, names no `work_item`, and records
- * `open_pr: none` is announcing that it is a handoff and not a work item. All
- * three fields already have to be correct for the runner to function, so nothing
- * new can drift. A head that is unreadable (`now: null`) is NOT handoff-only —
- * unknown means it counts, which keeps the failure direction conservative.
- */
-export function isHandoffOnlyHead(headStatus) {
-  const now = headStatus?.now;
-  if (!now) return false;
-  return (
-    String(now.task_state ?? '').trim().toLowerCase() === 'merged' &&
-    isNone(String(now.work_item ?? '').trim()) &&
-    isNone(String(now.open_pr ?? '').trim())
-  );
-}
-
-/**
- * The open PRs that are actually WORK ITEMS — every open autonomous PR except the
- * handoff-only ones. This is the set `open_pr` is supposed to describe, and the
- * set the drift decision and the shepherd instruction must both be computed from.
- *
- * The DISPLAYED list is deliberately not filtered: a reader is told every PR that
- * is open, because hiding one would be its own kind of lie.
- */
-export function workItemPullRequests({ openPullRequests = [], headStatuses = [] }) {
-  const handoffOnly = new Set(
-    (headStatuses ?? [])
-      .filter((entry) => isHandoffOnlyHead(entry))
-      .map((entry) => String(entry.number)),
-  );
-  return (openPullRequests ?? []).filter(
-    (pullRequest) => !handoffOnly.has(String(pullRequest.number)),
-  );
-}
-
 export function detectStatusDrift(statusNow, openPullRequests) {
   const openPrField = String(statusNow?.open_pr ?? '').trim();
   const liveNumbers = new Set(
@@ -145,14 +93,11 @@ export function detectStatusDriftAcrossHeads({
   headStatuses = [],
   openPullRequests = [],
 }) {
-  // A handoff-only PR is open but is not a work item, so it must not force
-  // `open_pr` to name it — see `isHandoffOnlyHead`.
-  const workItems = workItemPullRequests({ openPullRequests, headStatuses });
-  const defaultBranchDrift = detectStatusDrift(defaultBranchNow, workItems);
+  const defaultBranchDrift = detectStatusDrift(defaultBranchNow, openPullRequests);
   if (!defaultBranchDrift.drift) return defaultBranchDrift;
 
   const correctingHead = (headStatuses ?? []).find(
-    (entry) => entry?.now && !detectStatusDrift(entry.now, workItems).drift,
+    (entry) => entry?.now && !detectStatusDrift(entry.now, openPullRequests).drift,
   );
   if (correctingHead) {
     // Suppressing the SHEPHERD is not a claim that the record is right — it only
@@ -179,11 +124,8 @@ export function detectStatusDriftAcrossHeads({
 // The live GitHub PR set is the ONLY authority on whether something exists to
 // shepherd. STATUS disagreeing with it is reported as drift; it is never a
 // reason to instruct the runner to open a competing branch.
-export function shouldShepherdOpenPullRequests({ openPullRequests = [], headStatuses = [] }) {
-  // "Shepherd the open PR instead of opening a competing branch" is right about a
-  // work item and wrong about a handoff flip: after that flip merges there is
-  // nothing to shepherd, and the instruction parks the loop on a finished PR.
-  return workItemPullRequests({ openPullRequests, headStatuses }).length > 0;
+export function shouldShepherdOpenPullRequests({ openPullRequests = [] }) {
+  return openPullRequests.length > 0;
 }
 
 // The next step must never be assessed from a record the drift detector has just
@@ -261,7 +203,7 @@ export function buildPostMergeContinuation({
     );
   }
 
-  const shouldShepherd = shouldShepherdOpenPullRequests({ openPullRequests, headStatuses });
+  const shouldShepherd = shouldShepherdOpenPullRequests({ openPullRequests });
   const openPrField = String(statusNow?.open_pr ?? '').trim();
 
   lines.push('');
