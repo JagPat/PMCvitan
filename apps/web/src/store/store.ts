@@ -66,13 +66,13 @@ import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
-import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput } from '@/data/apiGateway';
+import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, TakeMeasurementInput, RecordVendorBillInput, AmendVendorBillInput } from '@/data/apiGateway';
 import { resolveMediaUrl, replayOutboxOp, isTerminalOutboxError, newIdempotencyKey, PROJECT_ID, API_BASE, activitiesReadMode, decisionsReadMode, dailyLogReadMode, drawingsReadMode, inspectionsReadMode, type ModuleActivities, type ModuleDecisions, type ModuleDailyLog, type ModuleDrawings, type ModuleInspections } from '@/data/apiGateway';
 import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvidence } from '@/data/evidenceStore';
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, isCommercialOpType, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, isCommercialOpType, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -432,6 +432,13 @@ export interface AppActions {
     costHeadCode: string,
     reason: string,
   ) => void;
+  /** §D/§F writes (7B-iii-b) — the engineer's six, on the SAME lifecycle. */
+  takeMeasurement: (input: TakeMeasurementInput) => void;
+  correctMeasurement: (measurementId: string, quantity: string, reason: string) => void;
+  recordVendorBill: (input: RecordVendorBillInput) => void;
+  submitVendorBill: (billId: string) => void;
+  amendVendorBill: (input: AmendVendorBillInput) => void;
+  rejectVendorBill: (billId: string, reason: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -1542,6 +1549,15 @@ export const useStore = create<Store>()(
       setCommercialBudget: 'commercial.budget.manage',
       defineCostHead: 'commercial.manage',
       reattributeCommitment: 'commercial.attribute',
+      // 7B-iii-b — `commercial.measure` and `commercial.bill` are the ONLY two commercial
+      // permissions admitting `engineer`, so this map is doing real work here rather than
+      // restating "pmc": an engineer may measure and lodge, and may not certify or pay.
+      takeMeasurement: 'commercial.measure',
+      correctMeasurement: 'commercial.measure',
+      recordVendorBill: 'commercial.bill',
+      submitVendorBill: 'commercial.bill',
+      amendVendorBill: 'commercial.bill',
+      rejectVendorBill: 'commercial.bill',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
@@ -1553,8 +1569,10 @@ export const useStore = create<Store>()(
       const permission = COMMERCIAL_OP_PERMISSION[op.t as keyof typeof COMMERCIAL_OP_PERMISSION];
       if (permission && !(ROLE_POLICY[permission] as readonly string[]).includes(get().role)) return;
       const ck = op.coalesceKey;
-      const queued = get().outbox.some((o) => coalesceKeyOf(o) === ck);
-      if (queued || get().commercialPending.includes(ck)) return;
+      // Conflict, not just equality — see `commercialWriteBlocked`. The §F verbs carry different
+      // keys for one claim, so exact-match coalescing let a reject queue behind a pending submit.
+      const queuedKeys = get().outbox.flatMap((o) => { const k = coalesceKeyOf(o); return k ? [k] : []; });
+      if (commercialWriteBlocked(ck, queuedKeys) || commercialWriteBlocked(ck, get().commercialPending)) return;
       set((s) => { s.commercialPending.push(ck); });
       runWriteAhead(op, label, okMsg);
     };
@@ -2785,6 +2803,48 @@ export const useStore = create<Store>()(
         },
         `Cost head ${code}`,
         'Cost head defined.',
+      );
+    },
+    takeMeasurement: (input) => {
+      dispatchCommercial(
+        { t: 'takeMeasurement', input, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: measureCoalesceKey(input.labourPoLineId, input.activityId) },
+        `Measure ${input.labourPoLineId}`, 'Measurement recorded.',
+      );
+    },
+    correctMeasurement: (measurementId, quantity, reason) => {
+      dispatchCommercial(
+        { t: 'correctMeasurement', input: { measurementId, quantity, reason }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: correctionCoalesceKey(measurementId, quantity) },
+        `Correct ${measurementId}`, 'Correction recorded.',
+      );
+    },
+    recordVendorBill: (input) => {
+      dispatchCommercial(
+        { t: 'recordVendorBill', input, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billCoalesceKey(input.vendorId, input.vendorBillNumber) },
+        `Claim ${input.vendorBillNumber}`, 'Claim lodged.',
+      );
+    },
+    submitVendorBill: (billId) => {
+      dispatchCommercial(
+        { t: 'submitVendorBill', input: { billId }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'submit') },
+        `Submit ${billId}`, 'Claim submitted.',
+      );
+    },
+    amendVendorBill: (input) => {
+      dispatchCommercial(
+        { t: 'amendVendorBill', input, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(input.billId, 'amend') },
+        `Amend ${input.billId}`, 'Claim amended.',
+      );
+    },
+    rejectVendorBill: (billId, reason) => {
+      dispatchCommercial(
+        { t: 'rejectVendorBill', input: { billId, reason }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'reject') },
+        `Reject ${billId}`, 'Claim rejected.',
       );
     },
     reattributeCommitment: (line, costHeadCode, reason) => {

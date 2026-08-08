@@ -18,3 +18,29 @@ export const MONEY_STRING = /^\d+(\.\d{1,2})?$/u;
 export function isMoneyString(value: string): boolean {
   return MONEY_STRING.test(value.trim());
 }
+
+/**
+ * Phase 5 §D/§F — a QUANTITY: strictly positive, at most six decimal places.
+ *
+ * Extracted alongside `MONEY_STRING` and for the same reason, one round later. Codex's J3 finding
+ * on PR #302 named `setBudgetSchema`, I extracted the money rule for that ONE call site, and wrote
+ * "the rule now lives ONCE" in the commit message while four copies of it sat in the same file I
+ * was editing — three more money fields (`rate`, `taxAmount`, `freightAmount`) and two quantity
+ * fields. Fixing the instance a finding names and not its class is the convergence audits' root F,
+ * and it matters concretely here: 7B-iii-b's forms need every one of those five fields, so leaving
+ * the copies would have the browser agreeing with the server by luck.
+ *
+ * The positivity rule is SEPARATE from the shape, because the two differ by field: a measurement
+ * or claim line of zero is refused, while a money amount of zero is ordinary.
+ */
+export const QUANTITY_STRING = /^\d+(\.\d{1,6})?$/u;
+
+/** Whether `value` is a non-negative quantity with at most six decimals, trimmed. */
+export function isQuantityString(value: string): boolean {
+  return QUANTITY_STRING.test(value.trim());
+}
+
+/** Whether `value` is a quantity AND strictly positive — "a claim line for zero claims nothing". */
+export function isPositiveQuantity(value: string): boolean {
+  return isQuantityString(value) && Number(value.trim()) > 0;
+}

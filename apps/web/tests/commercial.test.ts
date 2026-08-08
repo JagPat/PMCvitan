@@ -8,6 +8,7 @@ import { selectActionItems } from '@/store/selectors';
 import storeSource from '@/store/store.ts?raw';
 import gatewaySource from '@/data/apiGateway.ts?raw';
 import syncSource from '@/data/useApiSync.ts?raw';
+import contractsSource from '../../api/src/contracts.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
 import { budgetCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
@@ -876,5 +877,107 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     useStore.setState({ ...emptyProjectData(), ...emptyModuleReadState() });
     expect(s().commercialPending, "one project's disabled button survived into another").toEqual([]);
     held.resolve({});
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// Task 7B-iii-b (§D/§F) — the ENGINEER's six writes, on 7B-iii-a's lifecycle.
+//
+// The lifecycle itself is not re-probed: it is merged and cleared. What is new here is which
+// AUTHORITY each action reads, and the §F rule that three verbs share one constrained resource.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({ online: true, activeProjectId: 'p1', sessionToken: 't', role: 'engineer' });
+  });
+  const s = () => useStore.getState();
+  const held: Array<(v: unknown) => void> = [];
+  const deferred = () => {
+    let resolve!: (v: unknown) => void;
+    const promise = new Promise((r) => { resolve = r; });
+    held.push(resolve);
+    return { promise, resolve };
+  };
+  afterEach(async () => {
+    while (held.length) held.pop()?.({});
+    await vi.waitFor(() => { if (useStore.getState().outbox.length > 0) throw new Error('draining'); },
+      { timeout: 2000, interval: 5 }).catch(() => {});
+  });
+  const engGw = (over: Partial<ApiGateway> = {}): Partial<ApiGateway> => ({
+    takeMeasurement: vi.fn<ApiGateway['takeMeasurement']>().mockResolvedValue(undefined),
+    submitVendorBill: vi.fn<ApiGateway['submitVendorBill']>().mockResolvedValue(undefined),
+    rejectVendorBill: vi.fn<ApiGateway['rejectVendorBill']>().mockResolvedValue(undefined),
+    setCommercialBudget: vi.fn<ApiGateway['setCommercialBudget']>().mockResolvedValue(undefined),
+    commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    snapshot: vi.fn<ApiGateway['snapshot']>().mockResolvedValue({
+      project: { id: 'p1', name: 'P', short: 'P', descriptor: '', stage: '', siteCode: 'P', location: '', projStart: '', projEnd: '', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+      decisions: [], activities: [], placedInspections: [], checklist: null, reviews: [], review: null, reinspectionCreated: false,
+      drawings: [], phases: [], dailyLog: null, notifications: [], companies: [], nodes: [], photos: [], materials: [],
+    } as never),
+    ...over,
+  });
+  const pilot = (g: Partial<ApiGateway>) => {
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['commercial'] });
+  };
+
+  it('an ENGINEER may measure and lodge — the two permissions that admit the role', () => {
+    const held1 = deferred();
+    pilot(engGw({ takeMeasurement: vi.fn().mockReturnValue(held1.promise) }));
+    s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '2', citedOutputId: 'OUT-1' });
+    expect(s().outbox, 'an engineer was refused a write their role DOES authorise').toHaveLength(1);
+    expect(s().commercialPending).toEqual(['com:meas:LPL-1:ACT-1']);
+  });
+
+  it('…and may NOT set a budget, which is pmc-only', () => {
+    pilot(engGw());
+    s().setCommercialBudget('CIVIL', '100.00', 'v1');
+    expect(s().outbox, 'an engineer queued a pmc-only write').toHaveLength(0);
+  });
+
+  it('§F: submit and reject are ONE constrained resource — a pending transition blocks both', async () => {
+    const gate = deferred();
+    pilot(engGw({ submitVendorBill: vi.fn().mockReturnValue(gate.promise) }));
+    s().submitVendorBill('bill-1');
+    expect(s().outbox).toHaveLength(1);
+
+    // The interference case, ACTUALLY ATTEMPTED. The first version of this probe only asserted
+    // that a pending key existed and never dispatched the second verb, so it passed with the
+    // per-verb defect restored — caught by mutation, and it is root L from PR #303 (a suppression
+    // probe must exercise the thing that must still be blocked, not merely observe state).
+    s().rejectVendorBill('bill-1', 'changed my mind');
+    expect(
+      s().outbox,
+      'a reject queued beside a pending submit for the SAME claim — the server applies whichever '
+      + 'lands first and terminally 4xx\'s the other, after the user was told both were saved',
+    ).toHaveLength(1);
+
+    // a DIFFERENT claim is untouched by that block
+    s().rejectVendorBill('bill-2', 'wrong vendor');
+    expect(s().outbox).toHaveLength(2);
+    gate.resolve({});
+  });
+
+  it('the §A value rules are the SHARED ones — no second opinion in the browser', async () => {
+    const { isMoneyString, isPositiveQuantity } = await import('@vitan/shared');
+    // the exact cases Codex J3 named, now answered by the same function the zod contract uses
+    expect(isMoneyString('100.123')).toBe(false);
+    expect(isMoneyString('abc')).toBe(false);
+    expect(isMoneyString('-5.00')).toBe(false);
+    expect(isMoneyString('100.5')).toBe(true);
+    // a measurement of zero measures nothing; six decimals are real person-shift precision
+    expect(isPositiveQuantity('0')).toBe(false);
+    expect(isPositiveQuantity('0.000001')).toBe(true);
+    expect(isPositiveQuantity('1.1234567')).toBe(false);
+  });
+
+  it('CLOSURE — the money and quantity rules exist ONCE, with no inline copy left behind', () => {
+    // J3's fix named `setBudgetSchema` and I stopped there, leaving four copies in the same file.
+    // This is the mechanical form of "the rule lives once": the literals must not reappear.
+    expect(contractsSource.includes(String.raw`/^\d+(\.\d{1,2})?$/u`), 'an inline money regex is back').toBe(false);
+    expect(contractsSource.includes(String.raw`/^\d+(\.\d{1,6})?$/u`), 'an inline quantity regex is back').toBe(false);
+    expect(contractsSource).toContain('MONEY_STRING');
+    expect(contractsSource).toContain('QUANTITY_STRING');
   });
 });

@@ -3,9 +3,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, isCorrectionPendingFor, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { isMoneyString, ROLE_POLICY } from '@vitan/shared';
+import { isMoneyString, isPositiveQuantity, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto } from '@vitan/shared';
 import styles from './responsive.module.css';
 
@@ -156,10 +156,20 @@ export function CommercialScreen() {
   const mayBudget = may('commercial.budget.manage');
   const mayManage = may('commercial.manage');
   const mayAttribute = may('commercial.attribute');
+  // The two commercial permissions that admit `engineer` — so unlike the three above, these
+  // controls ARE visible to an engineer, which is what makes reading the policy load-bearing
+  // rather than a formality (Codex J1).
+  const mayMeasure = may('commercial.measure');
+  const mayBill = may('commercial.bill');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
+  // 7B-iii-b — the engineer's writes.
+  const takeMeasurement = useStore((s) => s.takeMeasurement);
+  const correctMeasurement = useStore((s) => s.correctMeasurement);
+  const submitBill = useStore((s) => s.submitVendorBill);
+  const rejectBill = useStore((s) => s.rejectVendorBill);
   const claimStamp = useStore(useShallow((s) => s.commercialClaimStamp));
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
@@ -191,6 +201,28 @@ export function CommercialScreen() {
    * Keyed by attribution id, so only the row the user actually edited can submit, and the empty
    * default keeps every other row's button disabled.
    */
+  // Per-register and per-measurement drafts, keyed by id — J2's discipline applied before it can
+  // bite: a component-wide draft would arm one register's button with another's quantity.
+  const [measureDrafts, setMeasureDrafts] = useState<{ scope: string; byId: Record<string, { qty: string; activityId: string; outputId: string }> }>(
+    { scope: '', byId: {} },
+  );
+  const measureScoped = measureDrafts.scope === scopeKey ? measureDrafts.byId : {};
+  const measureFormFor = (id: string) => measureScoped[id] ?? { qty: '', activityId: '', outputId: '' };
+  const setMeasureForm = (id: string, next: Partial<{ qty: string; activityId: string; outputId: string }>): void =>
+    setMeasureDrafts({ scope: scopeKey, byId: { ...measureScoped, [id]: { ...measureFormFor(id), ...next } } });
+  const [corrDrafts, setCorrDrafts] = useState<{ scope: string; byId: Record<string, { qty: string; reason: string }> }>(
+    { scope: '', byId: {} },
+  );
+  const corrScoped = corrDrafts.scope === scopeKey ? corrDrafts.byId : {};
+  const corrFormFor = (id: string) => corrScoped[id] ?? { qty: '', reason: '' };
+  const setCorrForm = (id: string, next: Partial<{ qty: string; reason: string }>): void =>
+    setCorrDrafts({ scope: scopeKey, byId: { ...corrScoped, [id]: { ...corrFormFor(id), ...next } } });
+  const [billDrafts, setBillDrafts] = useState<{ scope: string; byId: Record<string, string> }>({ scope: '', byId: {} });
+  const billScoped = billDrafts.scope === scopeKey ? billDrafts.byId : {};
+  const billReasonFor = (id: string): string => billScoped[id] ?? '';
+  const setBillReason = (id: string, reason: string): void =>
+    setBillDrafts({ scope: scopeKey, byId: { ...billScoped, [id]: reason } });
+
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
     { scope: '', byId: {} },
   );
@@ -331,6 +363,16 @@ export function CommercialScreen() {
   // The LINE is the constrained resource — §C keeps exactly one live attribution per line — so a
   // pending attribution disables the line whatever cost head it names (labour round 5).
   const attrPending = (lineId: string): boolean => commercialPending.includes(attributionCoalesceKey(lineId));
+  const measurePending = (lineId: string, activityId: string): boolean =>
+    commercialPending.includes(measureCoalesceKey(lineId, activityId));
+  const correctionPending = (measurementId: string): boolean =>
+    commercialPending.some((k) => isCorrectionPendingFor(k, measurementId));
+  // §F — submit / amend / reject are three transitions on ONE claim, so a pending any-of-them
+  // disables all three. The claim is the constrained resource, not the verb (labour r5 / J2, third
+  // instance): keyed per verb, a queued reject could sit beside a pending submit and the server
+  // would terminally 4xx whichever lost, after the user was told both were saved.
+  const billTxPending = (billId: string): boolean =>
+    commercialPending.some((k) => isBillTransitionPending(k, billId));
   const input: CSSProperties = {
     border: '1px solid var(--hairline)', borderRadius: 8, padding: '7px 9px',
     fontSize: 12.5, fontFamily: 'inherit', background: 'var(--canvas)', color: 'var(--ink)', minWidth: 0,
@@ -716,8 +758,8 @@ export function CommercialScreen() {
                   && (claimStamp[row.id] ?? 0) > billsStamp;
                 const b = claimFresher && claim ? claim.bill : row;
                 return (
+                  <div key={b.id}>
                   <button
-                    key={b.id}
                     onClick={() => selectClaim(b.id)}
                     data-testid={`commercial-claim-row-${b.id}`}
                     style={{
@@ -731,6 +773,39 @@ export function CommercialScreen() {
                     </div>
                     <div style={mono}>{b.id}</div>
                   </button>
+                  {/* §F lifecycle. Submit / reject are two of the three transitions on ONE claim,
+                      so `billTxPending` disables both together — the claim is the constrained
+                      resource, not the verb. (Amend carries a full line set and belongs with the
+                      claim-editing surface, not this row; it is wired in the store and gateway and
+                      is stated in the PR as not yet surfaced.) */}
+                  {mayBill && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      <Button
+                        variant="ink"
+                        data-testid={`bill-submit-${b.id}`}
+                        disabled={billTxPending(b.id)}
+                        onClick={() => submitBill(b.id)}
+                      >
+                        {billTxPending(b.id) ? 'Working…' : 'Submit'}
+                      </Button>
+                      <input
+                        value={billReasonFor(b.id)}
+                        onChange={(e) => setBillReason(b.id, e.target.value)}
+                        placeholder="Rejection reason"
+                        data-testid={`bill-reason-${b.id}`}
+                        style={{ ...input, flex: '2 1 160px' }}
+                      />
+                      <Button
+                        variant="ghost"
+                        data-testid={`bill-reject-${b.id}`}
+                        disabled={!billReasonFor(b.id).trim() || billTxPending(b.id)}
+                        onClick={() => rejectBill(b.id, billReasonFor(b.id).trim())}
+                      >
+                        Reject
+                      </Button>
+                    </div>
+                  )}
+                  </div>
                 );
                   })}
                 </>
@@ -838,6 +913,92 @@ export function CommercialScreen() {
                           <span style={muted}>Ordered <span style={num}>{register.orderedPersonShiftQty}</span></span>
                           <span style={muted}>Live authority <span style={num}>{register.liveAuthorityPersonShiftQty}</span></span>
                         </div>
+                        {/* §D — take a measurement. `citedOutputId` is REQUIRED by the contract, not
+                            optional: a measurement is bounded by operational evidence, and an
+                            optional citation is one a commercial actor can simply omit. The form
+                            therefore cannot submit without it. */}
+                        {mayMeasure && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                            <input
+                              value={measureFormFor(lineId).activityId}
+                              onChange={(e) => setMeasureForm(lineId, { activityId: e.target.value })}
+                              placeholder="Activity id"
+                              data-testid={`measure-activity-${lineId}`}
+                              style={{ ...input, flex: '1 1 130px' }}
+                            />
+                            <input
+                              value={measureFormFor(lineId).qty}
+                              onChange={(e) => setMeasureForm(lineId, { qty: e.target.value })}
+                              placeholder="Person-shifts"
+                              inputMode="decimal"
+                              data-testid={`measure-qty-${lineId}`}
+                              style={{ ...input, flex: '1 1 110px' }}
+                            />
+                            <input
+                              value={measureFormFor(lineId).outputId}
+                              onChange={(e) => setMeasureForm(lineId, { outputId: e.target.value })}
+                              placeholder="Cited work output"
+                              data-testid={`measure-output-${lineId}`}
+                              style={{ ...input, flex: '1 1 150px' }}
+                            />
+                            <Button
+                              variant="ink"
+                              data-testid={`measure-submit-${lineId}`}
+                              disabled={
+                                !measureFormFor(lineId).activityId.trim()
+                                || !isPositiveQuantity(measureFormFor(lineId).qty)
+                                || !measureFormFor(lineId).outputId.trim()
+                                || measurePending(lineId, measureFormFor(lineId).activityId.trim())
+                              }
+                              onClick={() => {
+                                const f = measureFormFor(lineId);
+                                takeMeasurement({
+                                  labourPoLineId: lineId,
+                                  activityId: f.activityId.trim(),
+                                  quantity: f.qty.trim(),
+                                  citedOutputId: f.outputId.trim(),
+                                });
+                              }}
+                            >
+                              {measurePending(lineId, measureFormFor(lineId).activityId.trim()) ? 'Measuring…' : 'Measure'}
+                            </Button>
+                            {measureFormFor(lineId).qty.trim() !== '' && !isPositiveQuantity(measureFormFor(lineId).qty) && (
+                              <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`measure-qty-invalid-${lineId}`}>
+                                A measurement is a positive quantity with at most six decimals.
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {/* §D — a correction is a SIGNED delta appended as a new row; the original
+                            is never edited, which is why the control sits on each row rather than
+                            offering to "edit" the register. */}
+                        {mayMeasure && register.rows.filter((r) => r.correctsId === null).map((row) => (
+                          <div key={row.id} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--hairline)' }}>
+                            <span style={{ ...mono, flex: '1 1 100%' }}>{row.id} · {row.quantity}</span>
+                            <input
+                              value={corrFormFor(row.id).qty}
+                              onChange={(e) => setCorrForm(row.id, { qty: e.target.value })}
+                              placeholder="Delta (e.g. -0.5)"
+                              data-testid={`correct-qty-${row.id}`}
+                              style={{ ...input, flex: '1 1 110px' }}
+                            />
+                            <input
+                              value={corrFormFor(row.id).reason}
+                              onChange={(e) => setCorrForm(row.id, { reason: e.target.value })}
+                              placeholder="Reason"
+                              data-testid={`correct-reason-${row.id}`}
+                              style={{ ...input, flex: '2 1 160px' }}
+                            />
+                            <Button
+                              variant="ghost"
+                              data-testid={`correct-submit-${row.id}`}
+                              disabled={!corrFormFor(row.id).qty.trim() || !corrFormFor(row.id).reason.trim() || correctionPending(row.id)}
+                              onClick={() => correctMeasurement(row.id, corrFormFor(row.id).qty.trim(), corrFormFor(row.id).reason.trim())}
+                            >
+                              {correctionPending(row.id) ? 'Correcting…' : 'Correct'}
+                            </Button>
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </>

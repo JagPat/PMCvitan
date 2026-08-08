@@ -56,7 +56,13 @@ export const costHeadCoalesceKey = (code: string): string => `com:head:${code}`;
 export const attributionCoalesceKey = (lineId: string): string => `com:attr:${lineId}`;
 
 /** The §M commercial outbox op types shipped by this unit. */
-export const COMMERCIAL_OUTBOX_OP_TYPES = ['setCommercialBudget', 'defineCostHead', 'reattributeCommitment'] as const;
+export const COMMERCIAL_OUTBOX_OP_TYPES = [
+  'setCommercialBudget', 'defineCostHead', 'reattributeCommitment',
+  // 7B-iii-b — the engineer's writes join the SAME op-type set, so the hydration guard, the
+  // pending rebuild and the flush reconcile cover them without a second registry to keep in sync.
+  'takeMeasurement', 'correctMeasurement', 'recordVendorBill',
+  'submitVendorBill', 'amendVendorBill', 'rejectVendorBill',
+] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
   typeof t === 'string' && (COMMERCIAL_OUTBOX_OP_TYPES as readonly string[]).includes(t);
@@ -98,4 +104,65 @@ export function normalizeCommercialOutbox<T extends OutboxOpShape>(ops: readonly
     changed = true; // malformed — dropped, never replayed with a broken identity
   }
   return { ops: out, changed };
+}
+
+// ── Phase 5 Task 7B-iii-b (§D/§F) — the engineer's six writes ────────────────────────────────
+
+/** §D — one measurement per (labour PO line, activity) in flight. The pair IS the target. */
+export const measureCoalesceKey = (labourPoLineId: string, activityId: string): string =>
+  `com:meas:${labourPoLineId}:${activityId}`;
+
+/**
+ * §D — a correction is a SIGNED delta, so the value is part of the identity: −50 and +20 against
+ * the same measurement are two different corrections, not a retry of one. The pending TEST below
+ * is prefix-matched, so editing the delta mid-flight does not re-arm the button (labour r7 — the
+ * same split `budgetCoalesceKey` uses).
+ */
+export const correctionCoalesceKey = (measurementId: string, quantity: string): string =>
+  `com:mcorr:${measurementId}:${quantity}`;
+
+/** Whether ANY correction of this measurement is pending, at any delta. */
+export const isCorrectionPendingFor = (key: string, measurementId: string): boolean =>
+  key.startsWith(`com:mcorr:${measurementId}:`);
+
+/** §F — the duplicate-claim key the SERVER freezes: one claim per (vendor, their bill number). */
+export const billCoalesceKey = (vendorId: string, vendorBillNumber: string): string =>
+  `com:bill:${vendorId}:${vendorBillNumber.trim()}`;
+
+/**
+ * §F — submit, amend and reject are three TRANSITIONS on one claim, and the claim is the
+ * constrained resource, not the verb.
+ *
+ * Keying per verb would let a pending submit sit beside a queued reject for the same bill: the
+ * server would apply whichever arrived first and terminally 4xx the other, after the user had been
+ * told both were saved. Labour round 5 is the same lesson about a one-slot demand slice, and J2 is
+ * the same lesson about one live attribution per PO line — this is its third instance, so the key
+ * names the BILL and `isBillTransitionPending` disables all three together.
+ */
+export const billTransitionCoalesceKey = (billId: string, verb: 'submit' | 'amend' | 'reject'): string =>
+  `com:billtx:${billId}:${verb}`;
+
+/** Whether ANY lifecycle transition is pending for this claim, whichever verb it is. */
+export const isBillTransitionPending = (key: string, billId: string): boolean =>
+  key.startsWith(`com:billtx:${billId}:`);
+
+/**
+ * Whether a commercial write must be refused because an EQUIVALENT or CONFLICTING one is pending.
+ *
+ * `dispatchCommercial` used exact key equality, which is right for most actions and wrong for the
+ * §F lifecycle: submit / amend / reject carry different keys, so a reject queued behind a pending
+ * submit for the SAME claim passed the check even though the screen's button was disabled. The
+ * screen hiding a control is not a guarantee — that is Codex J1's lesson from PR #302, and the
+ * durable outbox is the layer that has to hold, because an op it accepts has already been
+ * persisted and reported to the user as saved.
+ *
+ * So conflict, not just equality: exact match for everything, plus "any transition on this claim"
+ * for the §F verbs. One function, used by the store to REFUSE and by the screen to DISABLE, so the
+ * two cannot answer differently.
+ */
+export function commercialWriteBlocked(coalesceKey: string, pending: readonly string[]): boolean {
+  if (pending.includes(coalesceKey)) return true;
+  const tx = /^com:billtx:(.+):(?:submit|amend|reject)$/u.exec(coalesceKey);
+  if (tx) return pending.some((k) => isBillTransitionPending(k, tx[1]!));
+  return false;
 }
