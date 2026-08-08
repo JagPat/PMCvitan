@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, DOMAIN_EVENT_TYPES, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
 import { FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
+import { EXTERNAL_EFFECTS } from '../platform/external-effects';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
 import { DERIVED_BILL_STATUSES, isDerivedBillStatus } from './commercial-status';
@@ -1261,6 +1262,32 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       consumer.deliveryFor({ eventType: 'decision.created' } as never),
       'an unrelated event dispatches — the forecast would recompute on every event in the system',
     ).toEqual({ action: 'noop' });
+  });
+
+  /**
+   * §M (Task 7B-i, Codex round 2) — `commercial.money_moved` MUST INVALIDATE.
+   *
+   * 7A made the event weightless (`invalidate: false`) to keep Task 1's "no external effect" ground
+   * literally true, and said in as many words that "the commercial screens (Task 7B) refresh from
+   * their own reads". 7B-i built those screens, and their only refresh trigger IS the socket
+   * `changed` ping — which `makeSocketConsumer` dispatches only when the persisted intent
+   * invalidates. A weightless event therefore refreshed the §J projection and told no open
+   * Commercial tab, so another user's budget revision, certification, payment or deduction left a
+   * PMC reading stale money until they pressed Refresh by hand.
+   *
+   * Both halves are pinned, because each is load-bearing in a different direction: it invalidates
+   * (or the hub goes stale), and it still does NOT push (money moving is a page that must be
+   * current, not a notification every commercial write sends to someone's phone).
+   */
+  it('§M: `commercial.money_moved` invalidates the live snapshot, and still never pushes', () => {
+    const entry = EXTERNAL_EFFECTS['commercial.money_moved'];
+    expect(
+      entry.invalidate,
+      'the socket consumer dispatches only on `invalidate`, and the Commercial hub has no other '
+      + 'refresh trigger — a weightless money event leaves every open tab stale',
+    ).toBe(true);
+    expect(entry.push, 'money moving is not a notification').toBeNull();
+    expect(entry.eventType).toBe('commercial.money_moved');
   });
 
   it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {

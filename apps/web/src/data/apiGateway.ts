@@ -54,10 +54,7 @@ import type {
   LabourCommitmentsDto,
   LabourCapacityDto,
   LabourPresenceDto,
-  CommercialBudgetDto,
-  CashForecastReadDto,
-  CostHeadDto,
-  CommitmentAttributionDto,
+  CommercialMoneyPositionDto,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -912,25 +909,15 @@ export class ApiGateway {
   //    the project has the `commercial` capability. All four are READS: nothing here can refuse a
   //    purchase order, and no command authority consults them. ──
 
-  /** §B/§J — per-head budget, outstanding COMMITTED, the §J buckets, headroom, open exceptions.
-   *  The LIVE fold, always current: this is the surface a projection can never contradict,
-   *  because both go through the one serializer. */
-  commercialBudget(): Promise<CommercialBudgetDto> {
-    return this.req<CommercialBudgetDto>(`/projects/${this.projectId}/commercial/budget`);
-  }
-  /** §J (Task 7A) — the project cash forecast from the eighth rebuildable projection, with the
-   *  standard servable-generation check and LIVE fallback. `refreshedAt` is null on the fallback
-   *  path, and the hub says so rather than implying a freshness it does not have. */
-  commercialCashForecast(): Promise<CashForecastReadDto> {
-    return this.req<CashForecastReadDto>(`/projects/${this.projectId}/commercial/cash-forecast`);
-  }
-  /** §C — the cost-head catalog. */
-  commercialCostHeads(): Promise<CostHeadDto[]> {
-    return this.req<CostHeadDto[]>(`/projects/${this.projectId}/commercial/cost-heads`);
-  }
-  /** §C — the live attribution register: which head carries which purchase-order line. */
-  commercialAttributions(): Promise<CommitmentAttributionDto[]> {
-    return this.req<CommitmentAttributionDto[]>(`/projects/${this.projectId}/commercial/attributions`);
+  /** §M — the MONEY POSITION from ONE server snapshot: budget, cash forecast, cost heads and the
+   *  attribution register, folded in a single repeatable-read transaction.
+   *
+   *  Codex round 2 (7B-i): the first spelling fetched these as FOUR requests, and a page assembled
+   *  from four database moments can contradict itself — a re-attribution committing between two of
+   *  them shows the obligation under one head in the budget while the register still names the
+   *  other. One request, one instant. */
+  commercialMoneyPosition(): Promise<CommercialMoneyPositionDto> {
+    return this.req<CommercialMoneyPositionDto>(`/projects/${this.projectId}/commercial/money-position`);
   }
 
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command

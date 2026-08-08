@@ -329,6 +329,37 @@ export function selectActionItems(s: AppState): ActionItem[] {
     }
   }
 
+  // Phase 5 Task 7B-i (§B/§25, Codex round 2) — an OVER-BUDGET cost head produces an Inbox action.
+  //
+  // `CommercialBudgetDto.openExceptions` is documented in the contract as "the Inbox action count
+  // (§B)", and until this the Commercial hub was the only place it appeared: a PMC with no other
+  // work landed on For You reading "all caught up" while a live breach stood in the register. §B's
+  // whole design is that the exception is a durable OBSERVATION raised in the writer's transaction
+  // precisely so it cannot be missed — leaving it off the home queue defeats the mechanism.
+  //
+  // RED, not amber: unlike a material or labour shortfall, there is no inbound commitment that
+  // resolves this on its own. Money already committed exceeds money already authorised, and it stays
+  // that way until a person revises the budget or re-attributes the obligation.
+  if ((s.role === 'pmc' || s.role === 'engineer') && s.commercialView) {
+    const breaches = s.commercialView.budget.openExceptions;
+    if (breaches > 0) {
+      // name the WORST head, so the item says which money rather than only how many
+      const worst = s.commercialView.budget.positions
+        .filter((p) => p.headroom !== null && p.headroom.trimStart().startsWith('-'))
+        .sort((a, b) => Number(a.headroom) - Number(b.headroom))[0];
+      items.push({
+        key: 'commercial-over-budget',
+        title: `${breaches} cost head${plural(breaches)} over budget`,
+        detail: worst
+          ? `${worst.costHeadName} is over by ${worst.headroom!.replace('-', '')} — committed money exceeds the authorised budget.`
+          : 'Committed money exceeds the authorised budget.',
+        screen: 'commercial',
+        cta: 'Open commercial',
+        tone: 'red',
+      });
+    }
+  }
+
   // Phase 4 Task 6 (§J) — labour SHORTFALLS produce the twin Inbox action: one item when any
   // activity's labour FORECAST is at-risk/blocked (the server's `labour.readiness` verdicts —
   // never derived in the browser), red when anything is blocked outright, amber when every

@@ -127,15 +127,25 @@ export const EXTERNAL_EFFECTS = {
   'activity.labour_blocked': { eventType: 'activity.labour_blocked', invalidate: true, push: null },
   'activity.labour_unblocked': { eventType: 'activity.labour_unblocked', invalidate: true, push: null },
   'activity_output.recorded': { eventType: 'activity_output.recorded', invalidate: true, push: null },
-  // ── commercial (Phase 5 Task 7A, §J) ───────────────────────────────────────────────────────
-  // WEIGHTLESS by design — `invalidate: false, push: null`. Commercial's Task-1 justification for
-  // emitting nothing was "no external effect AND no consumer"; the first half is unchanged and this
-  // entry keeps it literally true. The event exists for its DURABLE OUTBOX DELIVERY, which
-  // `emitEvent` materializes inside the writer's own transaction, so the §J cash-forecast projection
-  // observes every commercial money movement the way the other seven projections observe theirs.
-  // Nothing is sent to any client: no socket invalidation, no push. The commercial screens (Task 7B)
-  // refresh from their own reads.
-  'commercial.money_moved': { eventType: 'commercial.money_moved', invalidate: false, push: null },
+  // ── commercial (Phase 5 Task 7A, §J; widened by 7B-i) ──────────────────────────────────────
+  //
+  // Task 1 declared `producesEvents: []` on TWO grounds — "no external effect" AND "no consumer".
+  // Task 7A's round-4 correction retired the second: the §J cash forecast is a consumer, so the
+  // event was born, and it was made WEIGHTLESS (`invalidate: false, push: null`) to keep the first
+  // ground literally true. That comment said, in as many words, that "the commercial screens
+  // (Task 7B) refresh from their own reads".
+  //
+  // 7B-i built those screens and Codex found the flaw in that sentence: their own reads are driven
+  // by the socket `changed` ping, and the socket consumer dispatches ONLY on `invalidate` (see
+  // `makeSocketConsumer`). A weightless event therefore refreshes the projection and tells no open
+  // Commercial tab about it — another user's budget revision, certification, payment or deduction
+  // leaves a PMC reading last hour's money until they press Refresh by hand.
+  //
+  // So the FIRST ground has now fallen too, and this is the honest consequence rather than a
+  // client-side poll built to work around a declaration that stopped being true. The same move
+  // round 4 made, for the same reason: when the justification's grounds go, change the declaration.
+  // `push` stays null — money moving is not a notification, it is a page that must be current.
+  'commercial.money_moved': { eventType: 'commercial.money_moved', invalidate: true, push: null },
   'phase.created': { eventType: 'phase.created', invalidate: true, push: null },
   'phase.removed': { eventType: 'phase.removed', invalidate: true, push: null },
   // ── inspections ────────────────────────────────────────────────────────────────────────────

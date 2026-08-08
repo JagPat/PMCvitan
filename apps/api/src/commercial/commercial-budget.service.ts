@@ -5,6 +5,7 @@ import {
   type CashForecastDto,
   type CashForecastReadDto,
   type CommercialBudgetDto,
+  type CommercialMoneyPositionDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
@@ -14,6 +15,7 @@ import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { CommercialBudgetQuery } from './commercial-budget.query';
+import { serializeAttribution } from './commercial.serialize';
 import { announceMoneyMoved, CASH_FORECAST_PROJECTION, computeCashForecastDto } from './cash-forecast.projection';
 import { readServableGeneration } from '../platform/projections/generation';
 import type { SetBudgetInput } from '../contracts';
@@ -157,27 +159,75 @@ export class CommercialBudgetService {
    * path rather than `now()`: a surface that cannot distinguish "computed this instant" from
    * "projected at 14:02" would let a stale-looking timestamp be manufactured by the fallback.
    */
-  async readCashForecast(projectId: string, user: AuthUser): Promise<CashForecastReadDto> {
+  /**
+   * Phase 5 Task 7B-i (§M, Codex round 2) — the MONEY POSITION, from ONE snapshot.
+   *
+   * The hub's first spelling fetched budget, forecast, heads and attributions as four separate HTTP
+   * requests, and a page assembled from four database moments can contradict itself: a
+   * re-attribution committing between two of them shows the line's obligation under MEP in the
+   * budget while the attribution register still names CIVIL, or the reverse. That is an impossible
+   * money position, and nobody reading it can tell it is impossible.
+   *
+   * This is the SAME rule `readBudget` already learned one level down — Codex made that fold
+   * repeatable-read because "a PO issue committing between the fold and the exception read returns
+   * healthy headroom alongside the freshly opened exception for that same head — a page that
+   * contradicts itself and that nobody can reconcile against the register". Four reads over one
+   * page is that defect with a wider window.
+   *
+   * So the four are folded in ONE repeatable-read transaction. The isolation level is load-bearing
+   * rather than decorative: under READ COMMITTED each STATEMENT takes its own snapshot, which is
+   * precisely the hazard.
+   *
+   * The forecast is read INSIDE it too, through the same servable-generation check and live
+   * fallback, so `refreshedAt` still tells the truth about which path answered.
+   */
+  async readMoneyPosition(projectId: string, user: AuthUser): Promise<CommercialMoneyPositionDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertRead(user);
 
-    const projected = await this.prisma.$transaction(async (tx) => {
-      const gen = await readServableGeneration(tx, CASH_FORECAST_PROJECTION, projectId);
-      if (!gen) return null;
+    return this.prisma.$transaction(async (tx) => {
+      const { heads, openExceptions } = await this.budget.serializedPositionsFor(tx, projectId);
+      const forecast = await this.cashForecastIn(tx, projectId);
+      const costHeads = await tx.costHead.findMany({ where: { projectId }, orderBy: { code: 'asc' } });
+      const attributions = await tx.commitmentAttribution.findMany({
+        where: { projectId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
+      return {
+        budget: { positions: heads, openExceptions },
+        cashForecast: forecast,
+        costHeads: costHeads.map((row) => ({
+          code: row.code, name: row.name, definedAt: row.definedAt.toISOString(), definedById: row.definedById,
+        })),
+        attributions: attributions.map(serializeAttribution),
+      };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
+
+  /**
+   * The servable-generation read with its LIVE fallback, ON A GIVEN TRANSACTION — the ONE spelling,
+   * so the standalone `commercial.cash-forecast` route and the §M money-position bundle cannot
+   * drift about which generation is servable or when `refreshedAt` is honestly null.
+   */
+  private async cashForecastIn(tx: Prisma.TransactionClient, projectId: string): Promise<CashForecastReadDto> {
+    const gen = await readServableGeneration(tx, CASH_FORECAST_PROJECTION, projectId);
+    if (gen) {
       const row = await tx.cashForecastProjection.findUnique({
         where: { generationId_projectId: { generationId: gen.id, projectId } },
         select: { dto: true, updatedAt: true },
       });
       // a caught-up generation with NO row yet is not authoritative empty money — fall back
-      return row ? { dto: row.dto as unknown as CashForecastDto, refreshedAt: row.updatedAt } : null;
-    });
-    if (projected) return { ...projected.dto, refreshedAt: projected.refreshedAt.toISOString() };
+      if (row) return { ...(row.dto as unknown as CashForecastDto), refreshedAt: row.updatedAt.toISOString() };
+    }
+    return { ...(await computeCashForecastDto(tx, projectId)), refreshedAt: null };
+  }
 
-    const live = await this.prisma.$transaction(
-      (tx) => computeCashForecastDto(tx, projectId),
+  async readCashForecast(projectId: string, user: AuthUser): Promise<CashForecastReadDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertRead(user);
+    return this.prisma.$transaction(
+      (tx) => this.cashForecastIn(tx, projectId),
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
-    return { ...live, refreshedAt: null };
   }
 
   /**

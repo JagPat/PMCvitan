@@ -3,7 +3,9 @@ import { useStore, getInitialState } from '@/store/store';
 import { enabledScreensFor, SCREEN_CAPABILITY } from '@/lib/screens';
 // The store's and sync hook's own source text, via Vite's `?raw` loader — the same mechanism
 // `snapshot-ordering.test.ts` and `snapshot-shape.test.ts` already use for their source tripwires.
+import { selectActionItems } from '@/store/selectors';
 import storeSource from '@/store/store.ts?raw';
+import gatewaySource from '@/data/apiGateway.ts?raw';
 import syncSource from '@/data/useApiSync.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
 import type { CommercialView } from '@/store/commercial';
@@ -85,10 +87,7 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
   });
 
   const gw = (over: Partial<Record<string, unknown>> = {}) => ({
-    commercialBudget: vi.fn().mockResolvedValue(budgetDto([position()])),
-    commercialCashForecast: vi.fn().mockResolvedValue(forecast()),
-    commercialCostHeads: vi.fn().mockResolvedValue([]),
-    commercialAttributions: vi.fn().mockResolvedValue([]),
+    commercialMoneyPosition: vi.fn().mockResolvedValue(bundle()),
     ...over,
   });
 
@@ -98,7 +97,7 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
     useStore.setState({ capabilities: [] });
     void s().loadCommercial();
     await flush();
-    expect(g.commercialBudget).not.toHaveBeenCalled();
+    expect(g.commercialMoneyPosition).not.toHaveBeenCalled();
     expect(s().commercialView).toBeNull();
     expect(s().commercialLoad).toBe('idle');
   });
@@ -109,10 +108,8 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
     useStore.setState({ capabilities: ['commercial'] });
     void s().loadCommercial();
     await flush();
-    expect(g.commercialBudget).toHaveBeenCalledTimes(1);
-    expect(g.commercialCashForecast).toHaveBeenCalledTimes(1);
-    expect(g.commercialCostHeads).toHaveBeenCalledTimes(1);
-    expect(g.commercialAttributions).toHaveBeenCalledTimes(1);
+    // Codex round 2 — ONE request, so the four facts cannot come from four database moments
+    expect(g.commercialMoneyPosition).toHaveBeenCalledTimes(1);
     expect(s().commercialLoad).toBe('ready');
     expect(s().commercialView?.budget.positions).toHaveLength(1);
     expect(s().commercialView?.cashForecast.totals.headroom).toBe('900.00');
@@ -126,7 +123,7 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
     await flush();
     expect(s().commercialLoad).toBe('ready');
 
-    s()._setGateway(gw({ commercialBudget: vi.fn().mockRejectedValue(new Error('offline')) }) as unknown as ApiGateway);
+    s()._setGateway(gw({ commercialMoneyPosition: vi.fn().mockRejectedValue(new Error('offline')) }) as unknown as ApiGateway);
     void s().loadCommercial();
     await flush();
     expect(s().commercialLoad).toBe('error');
@@ -146,21 +143,21 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
   // older failure flipped a ready hub to its error boundary).
 
   it('an OLDER success resolving late never overwrites a NEWER bundle', async () => {
-    let releaseOld!: (v: CommercialBudgetDto) => void;
-    const oldBudget = new Promise<CommercialBudgetDto>((r) => { releaseOld = r; });
-    s()._setGateway(gw({ commercialBudget: vi.fn().mockReturnValue(oldBudget) }) as unknown as ApiGateway);
+    let releaseOld!: (v: CommercialView) => void;
+    const oldBundle = new Promise<CommercialView>((r) => { releaseOld = r; });
+    s()._setGateway(gw({ commercialMoneyPosition: vi.fn().mockReturnValue(oldBundle) }) as unknown as ApiGateway);
     useStore.setState({ capabilities: ['commercial'] });
     void s().loadCommercial(); // request 1 — in flight, will resolve LAST
 
     // request 2 supersedes it and lands first, with DIFFERENT money
     s()._setGateway(gw({
-      commercialBudget: vi.fn().mockResolvedValue(budgetDto([position({ headroom: '42.00', exposure: '958.00' })])),
+      commercialMoneyPosition: vi.fn().mockResolvedValue(bundle({ budget: budgetDto([position({ headroom: '42.00', exposure: '958.00' })]) })),
     }) as unknown as ApiGateway);
     void s().loadCommercial();
     await flush();
     expect(s().commercialView?.budget.positions[0]!.headroom).toBe('42.00');
 
-    releaseOld(budgetDto([position({ headroom: '900.00' })]));
+    releaseOld(bundle({ budget: budgetDto([position({ headroom: '900.00' })]) }));
     await flush();
     expect(
       s().commercialView?.budget.positions[0]!.headroom,
@@ -171,8 +168,8 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
 
   it('an OLDER failure resolving late never flips a NEWER ready hub to `error`', async () => {
     let failOld!: (e: Error) => void;
-    const oldBudget = new Promise<CommercialBudgetDto>((_, reject) => { failOld = reject; });
-    s()._setGateway(gw({ commercialBudget: vi.fn().mockReturnValue(oldBudget) }) as unknown as ApiGateway);
+    const oldBundle = new Promise<CommercialView>((_, reject) => { failOld = reject; });
+    s()._setGateway(gw({ commercialMoneyPosition: vi.fn().mockReturnValue(oldBundle) }) as unknown as ApiGateway);
     useStore.setState({ capabilities: ['commercial'] });
     void s().loadCommercial(); // request 1 — will REJECT last
 
@@ -191,15 +188,15 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
   });
 
   it('a reply for a SUPERSEDED project scope is dropped', async () => {
-    let release!: (v: CommercialBudgetDto) => void;
-    const held = new Promise<CommercialBudgetDto>((r) => { release = r; });
-    s()._setGateway(gw({ commercialBudget: vi.fn().mockReturnValue(held) }) as unknown as ApiGateway);
+    let release!: (v: CommercialView) => void;
+    const held = new Promise<CommercialView>((r) => { release = r; });
+    s()._setGateway(gw({ commercialMoneyPosition: vi.fn().mockReturnValue(held) }) as unknown as ApiGateway);
     useStore.setState({ capabilities: ['commercial'] });
     void s().loadCommercial();
 
     // the project scope moves on beneath the in-flight request
     useStore.setState({ projectScopeGeneration: s().projectScopeGeneration + 1 });
-    release(budgetDto([position({ headroom: '1.00' })]));
+    release(bundle({ budget: budgetDto([position({ headroom: '1.00' })]) }));
     await flush();
     expect(s().commercialView, 'another project\'s money landed on this project\'s hub').toBeNull();
   });
@@ -211,13 +208,13 @@ describe('Task 7B-i (§M) — loadCommercial: bundle, honest states, capability 
     await flush();
     expect(s().commercialLoad).toBe('ready');
 
-    let release!: (v: CommercialBudgetDto) => void;
-    const held = new Promise<CommercialBudgetDto>((r) => { release = r; });
-    s()._setGateway(gw({ commercialBudget: vi.fn().mockReturnValue(held) }) as unknown as ApiGateway);
+    let release!: (v: CommercialView) => void;
+    const held = new Promise<CommercialView>((r) => { release = r; });
+    s()._setGateway(gw({ commercialMoneyPosition: vi.fn().mockReturnValue(held) }) as unknown as ApiGateway);
     void s().loadCommercial();
     await flush();
     expect(s().commercialLoad, 'a refresh blanked the money already on screen').toBe('ready');
-    release(budgetDto([position()]));
+    release(bundle());
     await flush();
     expect(s().commercialLoad).toBe('ready');
   });
@@ -313,5 +310,64 @@ describe('CLOSURE (7B-i) — every capability-gated hub is wired into every inte
         `${screen}: a failed shell leaves ${state} at 'idle' forever, so the hub renders a permanent "loading" with no Retry — ${capability === 'commercial' ? 'exactly the round-1 finding' : 'the defect this transition exists to prevent'}.`,
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * Codex round 2 — the three findings, each asserted where it actually bites.
+ */
+describe('Task 7B-i round 2 — staleness, consistency, and the breach a PMC must not miss', () => {
+  beforeEach(() => useStore.setState(getInitialState()));
+
+  // F1 is asserted on the API side, where the catalog lives — `commercial.contract.test.ts`
+  // pins that `commercial.money_moved` invalidates, because a web test reaching across the
+  // workspace into `apps/api` would couple the two packages to make one assertion.
+
+  // F2. Four HTTP reads assemble a page from four database moments. Proven by construction now:
+  // the loader makes exactly ONE call, so there is no window to interleave.
+  it('F2: the money position is ONE request — four moments cannot be mixed into one page', async () => {
+    const g = { commercialMoneyPosition: vi.fn().mockResolvedValue(bundle()) };
+    s()._setGateway(g as unknown as ApiGateway);
+    useStore.setState({ capabilities: ['commercial'] });
+    await s().loadCommercial();
+    expect(g.commercialMoneyPosition).toHaveBeenCalledTimes(1);
+    // the gateway exposes no per-fact commercial read the hub could accidentally reach for
+    for (const gone of ['commercialBudget', 'commercialCashForecast', 'commercialCostHeads', 'commercialAttributions']) {
+      expect(
+        gatewaySource.includes(`  ${gone}(`),
+        `${gone}() is back on the gateway — the money position must come from one snapshot`,
+      ).toBe(false);
+    }
+  });
+
+  // F3. `openExceptions` is documented in the contract as "the Inbox action count (§B)", and the hub
+  // was the only place it appeared: a PMC with no other work saw "all caught up" over a live breach.
+  it('F3: an over-budget head raises a RED Inbox action naming the worst head', () => {
+    useStore.setState({
+      role: 'pmc',
+      commercialView: bundle({
+        budget: budgetDto([
+          position({ costHeadCode: 'CIVIL', costHeadName: 'Civil works', headroom: '-50.00' }),
+          position({ costHeadCode: 'MEP', costHeadName: 'MEP', headroom: '-500.00' }),
+        ], 2),
+      }),
+    });
+    const item = selectActionItems(s()).find((i) => i.key === 'commercial-over-budget');
+    expect(item, 'a live over-budget exception is invisible from For You').toBeTruthy();
+    expect(item!.title).toContain('2 cost heads over budget');
+    expect(item!.detail, 'the item names the WORST head, not merely a count').toContain('MEP');
+    expect(item!.detail).toContain('500.00');
+    expect(item!.tone, 'a breach has no inbound commitment that resolves it — it is red, not amber').toBe('red');
+    expect(item!.screen).toBe('commercial');
+  });
+
+  it('F3: no breach, no action — and off-pilot there is no bundle to raise one from', () => {
+    useStore.setState({ role: 'pmc', commercialView: bundle({ budget: budgetDto([position()], 0) }) });
+    expect(selectActionItems(s()).some((i) => i.key === 'commercial-over-budget')).toBe(false);
+    useStore.setState({ role: 'pmc', commercialView: null });
+    expect(selectActionItems(s()).some((i) => i.key === 'commercial-over-budget')).toBe(false);
+    // and a role without `commercial.read` never sees it even with a bundle in state
+    useStore.setState({ role: 'contractor', commercialView: bundle({ budget: budgetDto([position({ headroom: '-1.00' })], 1) }) });
+    expect(selectActionItems(s()).some((i) => i.key === 'commercial-over-budget')).toBe(false);
   });
 });

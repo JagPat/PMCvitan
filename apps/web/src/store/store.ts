@@ -2607,16 +2607,15 @@ export const useStore = create<Store>()(
       // stale-while-revalidate: a refresh over a ready hub keeps the last-good money on screen
       // rather than blanking it, which is the difference between "loading" and "we lost your data".
       if (get().commercialLoad !== 'ready') set((s) => { s.commercialLoad = 'loading'; });
-      return Promise.all([
-        gateway.commercialBudget(),
-        gateway.commercialCashForecast(),
-        gateway.commercialCostHeads(),
-        gateway.commercialAttributions(),
-      ]).then(([budget, cashForecast, costHeads, attributions]) => {
+      // Codex round 2 — ONE request, not four. Four reads assemble a page from four database
+      // moments, and a re-attribution committing between two of them renders an impossible money
+      // position (the obligation under MEP in the budget, the register still naming CIVIL). The
+      // server folds all four in one repeatable-read transaction.
+      return gateway.commercialMoneyPosition().then((position) => {
         set((s) => {
           if (!owns(s)) return; // dropped after a switch/re-auth OR superseded by a newer load
-          // castDraft: these are `readonly` server snapshots stored as-is, never mutated.
-          s.commercialView = castDraft<CommercialView>({ budget, cashForecast, costHeads, attributions });
+          // castDraft: this is a `readonly` server snapshot stored as-is, never mutated.
+          s.commercialView = castDraft<CommercialView>(position);
           s.commercialLoad = 'ready';
         });
       }).catch(() => set((s) => {
