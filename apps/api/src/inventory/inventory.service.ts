@@ -317,7 +317,7 @@ export class InventoryService {
   ): Promise<void> {
     if (!(await this.commercialParticipant.isActive(tx, projectId))) return;
     await this.commercialParticipant.evaluateForTarget(
-      tx, projectId, { actorId: actor.actorId, role }, { poLineId }, raisedBy,
+      tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role }, { poLineId }, raisedBy,
     );
   }
 
@@ -685,7 +685,7 @@ export class InventoryService {
         // moves quarantine and `receivedQty`, which no §G bound reads.
         if (target.type === 'acceptance') {
           await this.commercialParticipant.assertAcceptanceReversible(
-            tx, projectId, lot.poLineId, { actorId: actor.actorId, role: user.role },
+            tx, projectId, lot.poLineId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
           );
         }
         if (target.type === 'acceptance' || target.type === 'receipt' || target.type === 'rejection') {

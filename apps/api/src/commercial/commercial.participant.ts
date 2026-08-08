@@ -1,6 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ROLE_POLICY } from '@vitan/shared';
+import type { ActorKind } from '../common/actor';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { InventoryQuery } from '../inventory/inventory.query';
 import { CommercialBudgetService, type HeadroomMover } from './commercial-budget.service';
@@ -10,6 +11,10 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 /** The acting identity a lifecycle site passes in; the participant never re-derives it. */
 export interface AttributionActor {
   readonly actorId: string;
+  /** Phase 5 Task 7A — a headroom move now ANNOUNCES itself (`commercial.money_moved`), and the
+   *  event envelope records whether the actor is a person or a named system process. Every caller
+   *  already holds a full `Actor`; this asks for the one field it was dropping. */
+  readonly actorKind: ActorKind;
   readonly role: string;
 }
 
@@ -87,7 +92,7 @@ export class CommercialParticipant {
     heads: readonly string[],
     raisedBy: HeadroomMover,
   ): Promise<void> {
-    await this.budget.evaluate(tx, projectId, actor.actorId, heads, raisedBy);
+    await this.budget.evaluate(tx, projectId, actor, heads, raisedBy);
   }
 
   /**

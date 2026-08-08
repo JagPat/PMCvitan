@@ -191,6 +191,22 @@ export const DOMAIN_EVENT_TYPES = [
   'membership.role_changed',
   'membership.discipline_changed',
   'membership.removed',
+  // Phase 5 Task 7A (§J) — the ONE commercial-owned event, and the whole of commercial's
+  // `producesEvents`.
+  //
+  // Task 1 declared `producesEvents: []` on two grounds: an accounting fact has NO EXTERNAL EFFECT,
+  // and it has NO CONSUMER. The first is still true and this event is weightless in the catalog
+  // accordingly. The second stopped being true the moment §J added a stored cash forecast: the
+  // forecast IS a consumer of every commercial money movement, and a projection whose inputs are
+  // not announced cannot be diagnosed, cannot be rebuilt by replay, and cannot be observed to be
+  // stale. So commercial announces that its money moved, and the eighth projection folds it exactly
+  // as the other seven fold theirs.
+  //
+  // ONE event rather than a business family: what the forecast needs to know is that the fold's
+  // answer changed for a project, and the acts themselves (certified, approved, paid, withheld,
+  // recovered) are already canonical rows with audit attribution. The payload carries which cost
+  // heads moved and the §B label for what moved them.
+  'commercial.money_moved',
 ] as const;
 
 export type DomainEventType = (typeof DOMAIN_EVENT_TYPES)[number];

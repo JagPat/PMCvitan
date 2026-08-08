@@ -155,6 +155,14 @@ export class CommercialController {
     return this.budget.readBudget(projectId, user);
   }
 
+  /** §J (Task 7A) — the project's CASH FORECAST: the seven buckets per head and rolled up, served
+   *  from the eighth rebuildable projection with the standard live fallback. A read, not a gate. */
+  @Get('commercial/cash-forecast')
+  @RolesFor('commercial.read')
+  readCashForecast(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    return this.budget.readCashForecast(projectId, user);
+  }
+
   @Get('commercial/cost-heads')
   @RolesFor('commercial.read')
   listCostHeads(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {

@@ -474,6 +474,27 @@ model LabourReadinessProjection {
   @@unique([generationId, projectId])
 }
 
+// Phase 5 Task 7A — the EIGHTH rebuildable projection: the per-project CASH FORECAST (§J).
+// Recompute-only: every refresh re-derives all seven buckets from canonical facts through the ONE
+// shared `computeCashForecastDto`, so live == projection == rebuild by construction. Storing a
+// derived money picture produces NO domain event (§G), and no command authority reads this row —
+// §B's over-budget exception is raised from the LIVE fold inside the writer's own transaction.
+//
+// Unlike the six and seventh projections this one has TWO refresh paths, because commercial's
+// manifest declares `producesEvents: []`: foreign facts (the PO lifecycle, acceptance) arrive as
+// events and refresh through the ordered consumer, while commercial's own writes refresh
+// write-through in their own transaction. Both call the same compute function, so neither path
+// can produce a number the other would not.
+model CashForecastProjection {
+  id           String   @id @default(uuid())
+  generationId String
+  projectId    String
+  dto          Json // CashForecastDto — { heads: CostHeadPositionDto[], totals }, worst-headroom-first
+  updatedAt    DateTime @updatedAt
+
+  @@unique([generationId, projectId])
+}
+
 // Phase 2 Task 10 (Module 3) correction — the INSPECTION-OWNED evidence link. Item-level photo evidence
 // was formerly read off the Media table by the inspections serializer (a cross-module read the projection
 // could not observe when a photo was uploaded/removed). Each row is an inspection-owned link from an

@@ -8,7 +8,7 @@ import {
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { executeCommand, hashRequest, type CommandScope } from '../platform/commands';
-import { resolveActor } from '../common/actor';
+import { resolveActor, type EventActor } from '../common/actor';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { fromIsoCivilDate, toIsoCivilDate } from '../common/civil-date';
@@ -180,7 +180,7 @@ export class CommercialBillService {
     poLineId: string,
     evidence: Prisma.Decimal,
     reason: string,
-    actor: { actorId: string; role: string },
+    actor: EventActor,
   ): Promise<string[]> {
     const refold = async () => (await this.bills.billedQtyFor(tx, projectId, kind, [poLineId])).get(poLineId) ?? ZERO;
     let billed = await refold();
@@ -438,7 +438,7 @@ export class CommercialBillService {
         }
         // §B — an amendment replaces the live claim, so BOTH the retired and the new lines' heads
         // are re-evaluated: the union of the set captured before the swap and the set written by it.
-        await this.evaluateClaimHeads(tx, projectId, { actorId: actor.actorId, role: user.role }, [...retired, ...lines]);
+        await this.evaluateClaimHeads(tx, projectId, actor, [...retired, ...lines]);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.amend', entity: 'VendorBill', entityId: bill.id,
         });
@@ -506,7 +506,7 @@ export class CommercialBillService {
         }
         // §B — the claim entered or left the live fold, so the heads it touches are re-evaluated
         // in THIS transaction (Codex round-3)
-        await this.evaluateClaimHeads(tx, projectId, { actorId: actor.actorId, role: user.role }, await this.claimTargets(tx, projectId, billId));
+        await this.evaluateClaimHeads(tx, projectId, actor, await this.claimTargets(tx, projectId, billId));
         await recordAudit(tx, { projectId, actor, action: opts.commandType, entity: 'VendorBill', entityId: billId });
         return { resultRef: billId, events: [] };
       },
@@ -559,10 +559,31 @@ export class CommercialBillService {
   private async evaluateClaimHeads(
     tx: Prisma.TransactionClient,
     projectId: string,
-    actor: { actorId: string; role: string },
+    actor: EventActor,
     lines: ReadonlyArray<{ kind: 'material' | 'labour'; poLineId: string }>,
     raisedBy: HeadroomMover = 'claim',
   ): Promise<void> {
+    const heads = await this.headsOf(tx, projectId, lines);
+    if (heads.length > 0) {
+      await this.budget.evaluate(tx, projectId, actor, heads, raisedBy);
+    }
+  }
+
+  /**
+   * The cost heads a set of claimed PO lines carries — ONE derivation, two callers.
+   *
+   * `evaluateClaimHeads` above uses it to decide what §B re-evaluates. Phase 5 Task 7A's
+   * partition-only payment writes use it through {@link headsForBill} to say WHICH heads their
+   * `commercial.money_moved` announcement moved: paying is exempt from §B (it moves no total) and
+   * is NOT exempt from §J (it moves `approved` down and `paid` up), so it needs the head names
+   * without the evaluation. Extracting it keeps those two facts derived from one query rather than
+   * from two that agree today.
+   */
+  private async headsOf(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    lines: ReadonlyArray<{ kind: 'material' | 'labour'; poLineId: string }>,
+  ): Promise<string[]> {
     const seen = new Set<string>();
     const heads = new Set<string>();
     for (const l of lines) {
@@ -582,9 +603,13 @@ export class CommercialBillService {
       // an UNATTRIBUTED line carries no head to evaluate — nothing a budget can measure moved
       if (active) heads.add(active.costHeadCode);
     }
-    if (heads.size > 0) {
-      await this.budget.evaluate(tx, projectId, actor.actorId, [...heads], raisedBy);
-    }
+    return [...heads];
+  }
+
+  /** §J — the heads one bill's CURRENT claim carries, WITHOUT evaluating: what a partition-only
+   *  payment write names in its `commercial.money_moved` announcement. */
+  async headsForBill(tx: Prisma.TransactionClient, projectId: string, billId: string): Promise<string[]> {
+    return this.headsOf(tx, projectId, await this.claimTargets(tx, projectId, billId));
   }
 
   /**
@@ -595,7 +620,7 @@ export class CommercialBillService {
   async evaluateHeadsForBill(
     tx: Prisma.TransactionClient,
     projectId: string,
-    actor: { actorId: string; role: string },
+    actor: EventActor,
     billId: string,
     // Codex P2 — the caller says WHAT MOVED. A deduction and a release both move `certified-payable`
     // without touching the claim, and an exception they open labelled `claim` sends a PMC hunting

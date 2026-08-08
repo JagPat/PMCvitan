@@ -327,7 +327,7 @@ export class CommercialCertificationService {
         // from what the fold reads (`FOLD_INPUTS`), and a term that can move exposure the day a
         // partial certificate or a §H deduction lands must discharge the obligation now, while
         // the person adding that term is not the one who has to remember.
-        await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);
+        await this.billService.evaluateHeadsForBill(tx, projectId, actor, input.billId);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.bill.certify', entity: 'BillCertificate', entityId: certificate.id,
         });
@@ -611,7 +611,7 @@ export class CommercialCertificationService {
         await this.status.reDerive(tx, projectId, input.billId, 'verified');
         // §B — the twin of `certify`'s evaluation: superseding puts the money back into
         // `awaiting-certification`, so the same mover obligation applies in the same transaction.
-        await this.billService.evaluateHeadsForBill(tx, projectId, { actorId: actor.actorId, role: user.role }, input.billId);
+        await this.billService.evaluateHeadsForBill(tx, projectId, actor, input.billId);
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.certificate.supersede', entity: 'BillCertificate', entityId: live.id,
         });

@@ -72,11 +72,19 @@ async function main(): Promise<void> {
       };
       // the activation path constructs its own graph (no Nest container in a CLI)
       const capabilitiesService = new CapabilitiesService(prisma);
-      const budgetService = new CommercialBudgetService(
-        prisma,
-        capabilitiesService,
-        new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma), new CommercialMeasurementQuery(), new CommercialBillQuery(), new CommercialDeductionQuery(new CommercialBillQuery()), new CommercialPaymentQuery(new CommercialDeductionQuery(new CommercialBillQuery()))),
-      );
+      const budgetQuery = new CommercialBudgetQuery(new ProcurementQuery(prisma), new LabourRequirementQuery(prisma), new InventoryQuery(prisma), new CommercialMeasurementQuery(), new CommercialBillQuery(), new CommercialDeductionQuery(new CommercialBillQuery()), new CommercialPaymentQuery(new CommercialDeductionQuery(new CommercialBillQuery())));
+      // Phase 5 Task 7A (Codex F3, P1) — this CLI once had to bind the cash-forecast projection's
+      // deps, because `evaluate` COMPUTED the forecast write-through and a CLI that builds its own
+      // graph outside the Nest container never got boot's binding: §L activation on a project with
+      // live PO lines threw `cash-forecast projection deps not bound` before the capability row
+      // could commit, making the documented activation path unusable for exactly the projects §L
+      // exists for.
+      //
+      // The round-4 repair removes the need rather than the symptom. `evaluate` now ANNOUNCES
+      // (`commercial.money_moved`) instead of computing, so no command path computes the forecast
+      // at all — only the outbox relay and the operator rebuilder do, and each binds at its own
+      // boot. A CLI cannot be missing a binding that no command needs.
+      const budgetService = new CommercialBudgetService(prisma, capabilitiesService, budgetQuery);
       const activation = new CommercialActivationService(
         prisma,
         // Phase 5 Task 4 — the participant now also carries the vendor-claim withdrawal guards,

@@ -51,4 +51,53 @@ export class CommercialPaymentQuery {
       },
     );
   }
+
+  /**
+   * Task 7A (§J) — the PAID term, per PO line, so the last two buckets can be what §J says they
+   * are: `approved` is `APPROVED − PAID` and `paid` is `PAID`.
+   *
+   * §J calls `paid` "the only raw fold, because paid cash is where the money stops" — every other
+   * bucket subtracts the one downstream of it, and this one has nothing downstream. That is why it
+   * is the only term here with no subtraction of its own.
+   *
+   * **`PAID` is bill-scoped while `APPROVED` is live-certificate scoped** (§0), and the asymmetry
+   * survives the attribution rather than being flattened by it. An approval dies with the
+   * certificate that carried it; cash that left does not. So this walks the LIVE claim lines to
+   * decide which cost heads a bill touches — the shared attribution — and then folds payments over
+   * the BILL rather than over its live certificate.
+   *
+   * That distinction is load-bearing for the partition. Superseding a certificate takes its
+   * approvals out of `APPROVED`, so a bill with ₹100 paid against a superseded certificate has
+   * `APPROVED = 0` and `PAID = 100`. Scoping `paid` to the live certificate would drop that ₹100
+   * out of every bucket — cash gone from the practice and absent from its own forecast — and §0's
+   * rule that supersession never appends a payment reversal is exactly the statement that this
+   * cannot be corrected by pretending the money came back.
+   */
+  async paidAmountFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: 'material' | 'labour',
+    poLineIds: readonly string[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    return this.deductions.attributeBillScopedTotal(
+      tx, projectId, kind, poLineIds,
+      async (billIds) => {
+        const [paid, reversed] = await Promise.all([
+          tx.payment.groupBy({
+            by: ['billId'], where: { projectId, billId: { in: billIds } }, _sum: { amount: true },
+          }),
+          // §0's `PAID` is Σ payments MINUS Σ payment reversals (Task 6B-ii), and the §J bucket is
+          // that fold — not a second definition of it. A forecast that ignored reversals would
+          // report recovered cash as still spent.
+          tx.paymentReversal.groupBy({
+            by: ['billId'], where: { projectId, billId: { in: billIds } }, _sum: { amount: true },
+          }),
+        ]);
+        const out = new Map<string, Prisma.Decimal>();
+        for (const r of paid) out.set(r.billId, r._sum.amount ?? ZERO);
+        for (const r of reversed) out.set(r.billId, (out.get(r.billId) ?? ZERO).sub(r._sum.amount ?? ZERO));
+        return out;
+      },
+    );
+  }
 }

@@ -894,13 +894,25 @@ seal — the new build serves traffic while the operator steps below run.
 pnpm --filter api projection:rebuild --operator <you@example.com> --reason "<release>: repair pre-correction generations"
 ```
 
-No `--project` and no `--consumer` flag: every project is rebuilt for **ALL SEVEN production
+No `--project` and no `--consumer` flag: every project is rebuilt for **ALL EIGHT production
 projection consumers** — `decisions.inbox`, `daily-log.inbox`, `drawings.inbox`,
 `inspections.inbox`, `activities.schedule`, `activities.material-readiness` (Phase 3 Task 6 —
 the pilot's recompute-only UI material-readiness projection; on a non-pilot project it rebuilds to
-an empty verdict set), and `labour.readiness` (Phase 4 Task 4 — the labour-pilot's recompute-only
+an empty verdict set), `labour.readiness` (Phase 4 Task 4 — the labour-pilot's recompute-only
 forecast projection, its requirements folded from the consumed `requirement.*` event payloads; on
-a non-pilot project it rebuilds to an empty forecast set). This step MUST complete (gated by step 4) **before**
+a non-pilot project it rebuilds to an empty forecast set), and `commercial.cash-forecast` (Phase 5
+Task 7A — the commercial pilot's recompute-only §J money projection; on a non-pilot project it
+rebuilds to an empty head set).
+
+`commercial.cash-forecast` behaves exactly like the other seven, and it is worth saying so because
+an earlier draft of Task 7A did not. Commercial's own money movements — certifying, approving,
+paying, withholding, recovering an advance — announce themselves with `commercial.money_moved`, a
+WEIGHTLESS event (no socket invalidation, no push) that exists solely for its outbox delivery. So a
+stale cash forecast is diagnosed the ordinary way: the generation's `appliedPosition` lags the
+project's stream head, the read falls back to the live compute rather than serving it, and the
+operator diagnostic compares the stored row against the canonical recompute.
+
+This step MUST complete (gated by step 4) **before**
 enabling all module-query reads on the web deployment (`VITE_*_READ=moduleQuery`) and before
 switching to outbox sender mode (step 7): a database upgraded from a pre-#183 build can carry a
 legacy `decisions.inbox` generation that is active and caught-up but holds only a SUBSET of the
@@ -909,6 +921,35 @@ the next decision event on that project) repairs it. The run audits the invocati
 and records a per-(project, consumer) outcome row, so an interrupted run is attributable and safely
 re-runnable (idempotent: each run builds a fresh generation from canonical and swaps behind the
 activation barrier — reads keep serving throughout).
+
+## 3b. Re-evaluate the commercial budget register (Phase 5 Task 7A upgrade ONLY)
+
+```
+pnpm --filter api commercial:reevaluate --operator <userId> --reason "<release>: §J partition completed"
+```
+
+**Required exactly once, on the deploy that first carries Task 7A**, and harmless on every deploy
+after it. Task 7A completes §J's bucket partition, and completing it CHANGES THE ANSWER for data
+that already exists: exposure gains `approved` (= `APPROVED − PAID`) and `paid` (= `PAID`), which
+together add back exactly the `APPROVED` that `certified-payable` subtracts.
+
+That is the correct reading — money a practice has authorised is money it still owes — but the
+`BudgetException` register is an append-only observation written by whichever write moved headroom,
+and **no write moved**. A head with budget 50, a 100 certificate and a 60 approval was breached, had
+its exception cleared by the pre-7A code when the approval "healed" it, and now reads
+`headroom = -50` with nothing open. The budget READ recomputes headroom live so the number is right;
+the Inbox counts the register, so it misses the breach until some unrelated write touches that head.
+
+No migration can repair it: the fold spans procurement, inventory, labour and four commercial folds,
+none of which is expressible in SQL. The sweep is idempotent (one open exception per head is a
+partial unique, and a healthy database is a no-op), attributable (the invocation is audited and every
+row carries `raisedBy = 'fold_correction'`), and complete (every cost head of every commercial-enabled
+project, derived from the capability rows). It also ANNOUNCES every project it moves — the §B
+evaluation it runs appends `commercial.money_moved` in the same transaction — so the §J cash-forecast
+projection folds the repaired figures on the next relay pass, exactly as it folds an ordinary write.
+
+`--operator` is a **user id**, not an email: the exception rows carry a real `raisedById` foreign key,
+so an unresolvable operator fails before any work rather than half-way through the sweep.
 
 ## 4. Inspect the diagnostics
 
@@ -954,7 +995,7 @@ unexpected build is deployed — go back to step 2).
 - `pnpm --filter api outbox:status` — `dead: 0`, `blocked: 0`, `oldestPendingSeconds` low/falling
   (the relay is the sole external sender now and must be draining).
 - `pnpm --filter api projection:rebuild --operator <you> --reason "post-cutover readiness check" --project <spot-check id>`
-  on a spot-check project — covers all seven consumers; expect `corruptBefore: 0` and `after.state`
+  on a spot-check project — covers all eight consumers; expect `corruptBefore: 0` and `after.state`
   of `current-match` (or `lagging` that clears on the next status check). The run is idempotent and
   non-disruptive.
 

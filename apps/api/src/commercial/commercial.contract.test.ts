@@ -2,8 +2,9 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
+import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, DOMAIN_EVENT_TYPES, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
+import { FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
 import { AUTHORITY_GUARDS } from './commercial.authority-guards';
 import { dtoRaisedByLabels, writerRaisedByLabels } from './commercial.raisedby-sets';
 import { DERIVED_BILL_STATUSES, isDerivedBillStatus } from './commercial-status';
@@ -76,6 +77,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.certificate': "Get('commercial/bills/:billId/certificate')",
     'commercial.deductions': "Get('commercial/bills/:billId/deductions')",
     'commercial.payments': "Get('commercial/bills/:billId/payments')",
+    'commercial.cash-forecast': "Get('commercial/cash-forecast')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {
@@ -374,6 +376,23 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
      *  finding names leaves its siblings, and `BILLED_AMOUNT` was exactly such a sibling — read by
      *  this fold since Task 4 with no row here, because nothing derived the bill-side set. */
     readVia?: string;
+    /**
+     * PARTITION-ONLY: the fold reads this term to SPLIT an existing exposure across two buckets,
+     * and it provably cannot move the total. Task 7A introduced the first one and the reason is an
+     * identity rather than a judgement — §J defines `approved` as `APPROVED − PAID` and `paid` as
+     * `PAID`, so the two sum to `APPROVED` for every value of `PAID`. Paying money changes WHICH
+     * bucket holds the exposure and not how much there is, exactly as certification does when it
+     * moves money from `awaiting-certification` to `certified-payable`.
+     *
+     * A row marked this way is exempt from the writer/evaluator pin below — and ONLY from that.
+     * It must still be declared, so the "no fold is read without a row" half still catches it, and
+     * `why` must state the identity that makes the exemption true rather than asserting the
+     * exemption. **The identity is also PROVEN at runtime** (`phase5-t7a-cash-forecast.test.ts`,
+     * the partition probe): paying moves the buckets and leaves `exposure` and `headroom`
+     * untouched. A claim like this one is the shape that goes stale silently, so it is not left as
+     * a comment.
+     */
+    partitionOnly?: true;
     writers: Array<{ file: string; method: string }>;
   }> = [
     {
@@ -444,9 +463,28 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       ],
     },
     {
-      field: 'APPROVED', owner: 'commercial', readVia: 'approvedAmountFor',
-      why: '§J defines `certified-payable` as `NET_PAYABLE − APPROVED`, so authorising a payment lowers exposure and can CLEAR an open over-budget exception — a headroom mover with no procurement or certification write anywhere',
+      field: 'APPROVED', owner: 'commercial', readVia: 'approvedAmountFor', partitionOnly: true,
+      // Task 7A RECLASSIFIED this row, and the reclassification was a TEST FAILURE rather than a
+      // judgement. Task 6A wrote it as a headroom mover — "authorising a payment lowers exposure
+      // and can CLEAR an open over-budget exception" — and that was TRUE while `approved` was not
+      // yet a bucket: subtracting `APPROVED` from `certified-payable` with nowhere for it to go
+      // genuinely lowered the total. Task 7A added the bucket §J always specified, and PROBE 20 of
+      // the 6A suite failed on the spot, because an approval no longer heals anything.
+      //
+      // That is the correct behaviour and the old row was the incomplete one: money a practice has
+      // authorised is money it still owes. §B's `payment_approval` label STAYS wired for the same
+      // reason `measurement` does — the closure's rule is mechanical, and carving out an exception
+      // on the strength of my own arithmetic is what went wrong twice in Task 2.
+      why: '§J defines `certified-payable` as `NET_PAYABLE − APPROVED` and `approved` as `APPROVED − PAID`, and those two sum to `NET_PAYABLE − PAID` identically — so authorising moves exposure BETWEEN buckets and can never move the total. An approval cannot clear an over-budget exception, because authorising money does not unspend it',
       writers: [{ file: 'commercial/commercial-payment.service.ts', method: 'approve' }],
+    },
+    {
+      field: 'PAID', owner: 'commercial', readVia: 'paidAmountFor', partitionOnly: true,
+      why: '§J splits `APPROVED` into `approved` (= `APPROVED − PAID`) and `paid` (= `PAID`), and those two sum to `APPROVED` identically — so paying moves exposure BETWEEN buckets and can never move the total. `payments.record` and `payments.reverse` are therefore not headroom movers, and making them evaluate would append a raise-or-clear observation labelled against a write that moved no headroom, which is the label drift §B round 4 removed',
+      writers: [
+        { file: 'commercial/commercial-payment.service.ts', method: 'record' },
+        { file: 'commercial/commercial-payment.service.ts', method: 'reverse' },
+      ],
     },
     {
       field: 'BUDGET', owner: 'commercial',
@@ -512,7 +550,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     }
   });
 
-  for (const input of FOLD_INPUTS) {
+  for (const input of FOLD_INPUTS.filter((i) => !i.partitionOnly)) {
     for (const writer of input.writers) {
       it(`${writer.file.split('/').pop()}#${writer.method} evaluates — it writes ${input.owner}.${input.field}`, () => {
         const src = readFileSync(join(SRC, writer.file), 'utf8');
@@ -527,6 +565,63 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       });
     }
   }
+
+  /**
+   * §J's REFRESH is a SEPARATE obligation from §B's raise-or-clear, and Task 7A learned the
+   * difference the hard way.
+   *
+   * 7A hung the §J announcement off `CommercialBudgetService.evaluate`, on the derivation that
+   * "moved headroom" and "moved a §J bucket" are the same predicate. They are ALMOST the same, and
+   * the gap is exactly the partition-only rows: paying and reversing move a bucket without moving
+   * the total, so they are rightly exempt from the evaluator — and were therefore silently exempt
+   * from §J too. The stored forecast would have gone on reporting money as authorised-and-unpaid
+   * forever after it left the bank.
+   *
+   * So the obligation is pinned over the WHOLE table rather than the non-exempt part of it: every
+   * writer announces, through an evaluator (which announces at its end) or directly.
+   */
+  for (const input of FOLD_INPUTS) {
+    for (const writer of input.writers) {
+      it(`${writer.file.split('/').pop()}#${writer.method} announces the §J move — it writes ${input.owner}.${input.field}`, () => {
+        const src = readFileSync(join(SRC, writer.file), 'utf8');
+        const start = src.indexOf(`async ${writer.method}(`);
+        expect(start, `${writer.file}#${writer.method} not found — FOLD_INPUTS drifted from the code`).toBeGreaterThan(-1);
+        const next = src.indexOf('\n  async ', start + 1);
+        const body = src.slice(start, next === -1 ? undefined : next);
+        expect(
+          /evaluateBudgetForLine\(|this\.evaluate\(|this\.evaluateHeads\(|evaluateForTarget\(|evaluateClaimHeads\(|evaluateHeadsForBill\(|this\.evaluateHeadroom\(|announceMoneyMoved\(/u.test(body),
+          `${writer.file}#${writer.method} writes ${input.field} — a §J bucket — but neither evaluates nor calls announceMoneyMoved, so nothing announces the move and the stored cash forecast keeps a figure this write already changed`,
+        ).toBe(true);
+      });
+    }
+  }
+
+  /**
+   * The partition-only EXEMPTION is itself constrained, or it becomes a way to opt out of §B.
+   *
+   * Two things it may not do: name a writer that does not exist (which would hide a drifted method
+   * behind the exemption), and assert the exemption without stating the identity that earns it.
+   * What it may not do at all is stand alone — the runtime partition probe is what proves the
+   * identity holds, and this only proves the DECLARATION is honest.
+   */
+  it('a partition-only fold input names real writers and states the identity that exempts it', () => {
+    const exempt = FOLD_INPUTS.filter((i) => i.partitionOnly);
+    expect(exempt.length, 'no partition-only row exists — this pin would pass vacuously').toBeGreaterThan(0);
+    for (const input of exempt) {
+      expect(input.readVia, `${input.field} is partition-only but names no fold method`).toBeTruthy();
+      expect(
+        /sum to|sums to|identically/u.test(input.why),
+        `${input.field} claims the partition-only exemption without stating the identity that earns it — "these two sum to X for every value of Y" is the claim, and anything vaguer is an assertion that the writers need not evaluate`,
+      ).toBe(true);
+      for (const writer of input.writers) {
+        const src = readFileSync(join(SRC, writer.file), 'utf8');
+        expect(
+          src.includes(`async ${writer.method}(`),
+          `${writer.file}#${writer.method} does not exist — a partition-only row must still name real writers, or the exemption hides a drift`,
+        ).toBe(true);
+      }
+    }
+  });
 
   /**
    * A multi-mutation act evaluates ONCE, at the end. Evaluating between an amend's three steps
@@ -1018,6 +1113,154 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
       netsReversals('SELECT COALESCE(SUM(p."amount"), 0) FROM "Payment" p;'),
       'the netting detector reports a reversal term in a body that has none',
     ).toBe(false);
+  });
+
+  // ── CLOSURE C (Task 7A) — §J's announcement seams are DERIVED from what the forecast READS ────
+  //
+  // Root A once more, at the substrate Task 7A introduces. The cash-forecast projection is stored,
+  // so it can go stale, and it goes stale exactly when a commercial write moves a bucket without
+  // ANNOUNCING it: the platform's whole staleness machinery — the ordered cursor, the diagnostic's
+  // frozen window, the rebuild's catch-up — is driven by events, so a silent write is invisible to
+  // all three. CLOSURE E states that precondition at the platform; this is the module's half of
+  // it, and the half that is actually sufficient.
+  //
+  // So the seams are not listed, they are DERIVED: the forecast is exactly what
+  // `serializedPositionsFor` + `positionsFor` read, this test extracts the `tx.<model>` reads from
+  // those two method bodies, and every model must be CLASSIFIED against the write path that
+  // announces it. Two classifications exist and adding a third is meant to be uncomfortable:
+  //
+  //   'evaluate'  — the model is a §B headroom input, so every writer of it already calls
+  //                 `CommercialBudgetService.evaluate` (CLOSURE 2 fails the build otherwise) and
+  //                 `evaluate` announces at its end. §B headroom IS `BUDGET − Σ(the six §J
+  //                 buckets)`, so this is one predicate, not two lists.
+  //   'costHead'  — the model changes what the forecast SAYS while moving no money:
+  //                 `commercial.costHead.define` adds an all-zero row or renames one.
+  //
+  // A model added to the compute path without a classification fails here. A classification whose
+  // named site no longer announces fails here too.
+  it('§J: every model the cash forecast reads has a write path that announces the move', () => {
+    const querySrc = readFileSync(join(HERE, 'commercial-budget.query.ts'), 'utf8');
+    const methodBody = (name: string): string => {
+      const start = querySrc.indexOf(`async ${name}(`);
+      if (start < 0) return '';
+      // brace-count from the FIRST `{` fails here — that brace belongs to the RETURN TYPE, not the
+      // body. The bodies are class methods at two-space indent, so their closer is unambiguous.
+      const end = querySrc.indexOf('\n  }', start);
+      return end < 0 ? '' : querySrc.slice(start, end + 4);
+    };
+    const surface = methodBody('serializedPositionsFor') + methodBody('positionsFor');
+    expect(
+      surface.length,
+      'the compute surface extracted to nothing — this closure would pass vacuously over an empty string',
+    ).toBeGreaterThan(1500);
+
+    const readModels = [...new Set([...surface.matchAll(/\btx\.(\w+)\.(?:findMany|findFirst|findUnique|aggregate|groupBy|count)\b/gu)].map((m) => m[1]!))].sort();
+    expect(readModels, 'no `tx.<model>` read was extracted from the compute surface').not.toEqual([]);
+
+    // The classification. `commitmentAttribution` is `evaluate`-covered because a re-attribution is
+    // itself a headroom mover on BOTH the source and the target head (CLOSURE 3 pins the label).
+    const ANNOUNCED_BY: Record<string, 'evaluate' | 'costHead'> = {
+      costHead: 'costHead',
+      budgetLine: 'evaluate',
+      budgetException: 'evaluate',
+      commitmentAttribution: 'evaluate',
+    };
+    const unclassified = readModels.filter((m) => !(m in ANNOUNCED_BY));
+    expect(
+      unclassified,
+      `the cash forecast reads these models and nothing says which write path ANNOUNCES a change to them. A stored forecast whose input moved unannounced is a money page that silently goes stale, and no cursor, diagnostic or rebuild can catch it. Classify each as 'evaluate' (a §B headroom input) or name its own seam: ${unclassified.join(', ')}`,
+    ).toEqual([]);
+    // and the reverse: a classification for a model the compute no longer reads is dead weight that
+    // would let a real gap hide behind a green test
+    const stale = Object.keys(ANNOUNCED_BY).filter((m) => !readModels.includes(m));
+    expect(stale, `these models are classified as announced but the cash forecast no longer reads them: ${stale.join(', ')}`).toEqual([]);
+
+    // …and each named seam ACTUALLY refreshes. A classification is a claim about code, so it is
+    // exercised rather than trusted.
+    const budgetSvc = readFileSync(join(HERE, 'commercial-budget.service.ts'), 'utf8');
+    const evaluateBody = budgetSvc.slice(budgetSvc.indexOf('  async evaluate('));
+    expect(
+      evaluateBody.slice(0, evaluateBody.indexOf('\n  }')).includes('announceMoneyMoved(tx, projectId, actor'),
+      "`CommercialBudgetService.evaluate` no longer announces the move, so every model classified 'evaluate' above has no announcement at all",
+    ).toBe(true);
+
+    // THE WRITER SITES ARE DERIVED, NOT TRUSTED (Codex F4). The first spelling of this closure
+    // classified `costHead` as "refreshed by `commercial.costHead.define`" and checked that ONE
+    // method — so `CommercialActivationService.activate`, which upserts `CostHead` rows itself and
+    // can return without ever reaching `evaluate`, satisfied a green test while leaving the stored
+    // forecast holding an empty head list.
+    //
+    // A classification naming a method is a claim about one site; the obligation is about ALL of
+    // them. So every commercial file is scanned for a WRITE to a classified model, and each writing
+    // file must announce — through `announceMoneyMoved` or an evaluator that does.
+    const commercialFiles = readdirSync(HERE).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
+    const ANNOUNCERS = /announceMoneyMoved\(|this\.evaluate\(|evaluateHeadsForBill\(|this\.budget\.evaluate\(/u;
+    const writeSites: string[] = [];
+    for (const file of commercialFiles) {
+      const src = readFileSync(join(HERE, file), 'utf8');
+      const writes = [...src.matchAll(/\btx\.(\w+)\.(?:create|createMany|update|updateMany|upsert|delete|deleteMany)\b/gu)]
+        .map((m) => m[1]!)
+        .filter((model) => model in ANNOUNCED_BY);
+      if (writes.length === 0) continue;
+      writeSites.push(file);
+      expect(
+        ANNOUNCERS.test(src),
+        `${file} writes ${[...new Set(writes)].join('/')} — a model the cash forecast READS — but never announces the move, directly or through an evaluator. An unannounced write is invisible to the ordered cursor, to the operator diagnostic and to a rebuild's catch-up alike`,
+      ).toBe(true);
+    }
+    expect(
+      writeSites.length,
+      'no commercial file was found writing a classified model — the writer-site derivation is matching nothing, so it proves nothing',
+    ).toBeGreaterThan(1);
+    // the two seams this unit names must both be among them, so the scan cannot be passing by
+    // having quietly stopped seeing the files it is about
+    for (const named of ['commercial.service.ts', 'commercial-activation.service.ts']) {
+      expect(writeSites, `${named} no longer registers as a writer of a classified model`).toContain(named);
+    }
+
+    // the extraction is MUTATION-TESTED, because a regex that matches nothing would make every
+    // assertion above vacuously true
+    const probe = 'await tx.someNewFact.findMany({ where: { projectId } });';
+    expect(
+      [...probe.matchAll(/\btx\.(\w+)\.(?:findMany|findFirst|findUnique|aggregate|groupBy|count)\b/gu)].map((m) => m[1]),
+      'the model extraction does not recognise an ordinary `tx.<model>.findMany` read',
+    ).toEqual(['someNewFact']);
+  });
+
+  /**
+   * CLOSURE D (Task 7A, Codex F1) — the forecast's event set is the CATALOG's, not a plausible one.
+   *
+   * `FORECAST_EVENTS` spelled the labour PO family `labour_po.issued` etc.; the catalog declares
+   * `labour.po.issued`. Both read as reasonable, and the consequence was worse than a missed
+   * refresh: an unrecognised type produces a NO-OP delivery, and a no-op STILL advances the ordered
+   * cursor to the stream head. So the generation stayed SERVABLE while silently omitting every
+   * labour commitment, and `readCashForecast` served it as authoritative rather than falling back
+   * to the live compute — a money page confidently short by every labour order on the project.
+   *
+   * The durable fix is the TYPE: the array is `readonly DomainEventType[]`, so a name the catalog
+   * does not declare cannot be written there at all. This pins the BEHAVIOUR the type cannot — that
+   * each declared type actually resolves to `dispatch` — plus the four names by hand, because a
+   * future edit could keep the set well-typed while dropping the family that was wrong.
+   */
+  it('§J: every forecast event type is catalog-declared AND actually dispatches', () => {
+    const consumer = makeCashForecastProjectionConsumer();
+    expect(FORECAST_EVENT_TYPES.length, 'the forecast event set is empty — this closure would pass vacuously').toBeGreaterThan(10);
+    for (const eventType of FORECAST_EVENT_TYPES) {
+      expect(DOMAIN_EVENT_TYPES as readonly string[], `${eventType} is not a declared domain event, so it can never dispatch`).toContain(eventType);
+      expect(
+        consumer.deliveryFor({ eventType } as never),
+        `${eventType} resolves to a NO-OP delivery — which still advances the ordered cursor, so the generation stays SERVABLE while omitting whatever this event moved`,
+      ).toEqual({ action: 'dispatch' });
+    }
+    // the family that was wrong, by name, so a well-typed set that quietly dropped it still fails
+    for (const eventType of ['labour.po.issued', 'labour.po.amended', 'labour.po.cancelled', 'labour.po.closed_short']) {
+      expect(FORECAST_EVENT_TYPES as readonly string[], `${eventType} left the forecast set — labour commitments would stop reaching the stored money`).toContain(eventType);
+    }
+    // …and the detector is not vacuous: an event the set does NOT carry must be a no-op
+    expect(
+      consumer.deliveryFor({ eventType: 'decision.created' } as never),
+      'an unrelated event dispatches — the forecast would recompute on every event in the system',
+    ).toEqual({ action: 'noop' });
   });
 
   it('§F: the derived payment family IS the shared past-certification set, not a copy of it', () => {

@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { ROLE_POLICY, type CommercialActivationPlan } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import { recordAudit } from '../platform/audit';
+import { announceMoneyMoved } from './cash-forecast.projection';
 import { systemActor } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { LabourRequirementQuery } from '../labour/labour.query';
@@ -78,7 +79,10 @@ export class CommercialActivationService {
     }
     for (const candidate of ROLE_POLICY['commercial.attribute'] as readonly string[]) {
       if (await this.orgs.hasProjectRoleStanding(tx, projectId, user.id, [candidate], { forUpdate: true })) {
-        return { actorId: user.id, role: candidate };
+        // Task 7A — `actorKind: 'system'`: §L activation is an operator process, not a signed-in
+        // request, and the `commercial.money_moved` envelope this identity ends up on records the
+        // distinction. The `actorId` is the RESOLVED user, so attribution stays a real identity.
+        return { actorId: user.id, actorKind: 'system', role: candidate };
       }
     }
     throw new ForbiddenException(
@@ -178,6 +182,22 @@ export class CommercialActivationService {
         where: { projectId_capability: { projectId, capability: COMMERCIAL_CAPABILITY } },
         create: { projectId, capability: COMMERCIAL_CAPABILITY, enabledById: actor.actorId },
         update: {},
+      });
+      // §J (Task 7A, Codex F4) — activation is the THIRD announcement seam, and it hid behind the
+      // second one. `commercial.costHead.define` was named as the only non-`evaluate` site, but this
+      // method upserts `CostHead` rows directly too — and when the plan carries no live PO lines it
+      // never reaches `participant.attribute`, so `evaluate` never runs either. A project that
+      // already had a servable forecast row from FOREIGN events (a PO issued before commercial was
+      // enabled) would go on being served the old empty head list.
+      //
+      // CLOSURE C now DERIVES the writer sites of every classified model rather than trusting the
+      // classification's prose, which is what would have caught this at the desk.
+      //
+      // The actor is the RESOLVED operator — the same durable identity the cost heads, attributions
+      // and capability row above are attributed to, carrying `actorKind: 'system'` because §L
+      // activation is an operator process rather than a signed-in request.
+      await announceMoneyMoved(tx, projectId, actor, {
+        costHeadCodes: plan.costHeads.map((h) => h.code), reason: 'activation',
       });
       await recordAudit(tx, {
         projectId,

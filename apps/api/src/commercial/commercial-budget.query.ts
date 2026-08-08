@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { BudgetExceptionDto, CostHeadPositionDto } from '@vitan/shared';
 import { LabourRequirementQuery } from '../labour/labour.query';
 import { ProcurementQuery } from '../procurement/procurement.query';
 import { InventoryQuery } from '../inventory/inventory.query';
@@ -50,6 +51,15 @@ export interface CostHeadPosition {
    *  supplies it — the same way `MEASURED` and `BILLED_AMOUNT` arrived here — so this term is the
    *  full definition evaluated against the facts that exist, not a placeholder for it. */
   certifiedPayable: Prisma.Decimal;
+  /** §J `approved` — `APPROVED − PAID`, the money authorised to leave that has not left yet.
+   *  Task 7A. Naming it after `APPROVED(bill)` would double-count every partial payment: a ₹100
+   *  approved bill with ₹40 paid would report ₹140 across this bucket and `paid` for one ₹100
+   *  payable. Every §J bucket subtracts the one downstream of it, and this is no exception. */
+  approved: Prisma.Decimal;
+  /** §J `paid` — `PAID(bill)`, Σ payments less Σ payment reversals (§0). Task 7A, and §J calls it
+   *  "the only raw fold, because paid cash is where the money stops": every other bucket subtracts
+   *  its successor, and this one has no successor to subtract. */
+  paid: Prisma.Decimal;
   /** `Σ exposure` — the buckets that measure against the budget, rounded to the money scale.
    *  Carried explicitly so the exception row's `headroom = budget - exposure` CHECK holds by
    *  construction rather than by a caller re-deriving the same subtraction. */
@@ -135,6 +145,7 @@ export class CommercialBudgetQuery {
       billedMaterial, billedLabour, certifiedMaterial, certifiedLabour,
       withheldMaterial, withheldLabour,
       approvedMaterial, approvedLabour,
+      paidMaterial, paidLabour,
     ] = await Promise.all([
       this.procurement.committedLinesFor(tx, projectId, materialIds),
       this.labour.committedLinesFor(tx, projectId, labourIds),
@@ -165,6 +176,10 @@ export class CommercialBudgetQuery {
       // subtraction shows a practice money it has already authorised.
       this.payments.approvedAmountFor(tx, projectId, 'material', materialIds),
       this.payments.approvedAmountFor(tx, projectId, 'labour', labourIds),
+      // §J unit 7A — the last term. `approved` is `APPROVED − PAID` and `paid` is `PAID`, so both
+      // final buckets need this one fold and neither is a raw set.
+      this.payments.paidAmountFor(tx, projectId, 'material', materialIds),
+      this.payments.paidAmountFor(tx, projectId, 'labour', labourIds),
     ]);
 
     for (const code of heads) {
@@ -172,6 +187,8 @@ export class CommercialBudgetQuery {
       let receivedNotBilled = ZERO;
       let awaitingCertification = ZERO;
       let certifiedPayable = ZERO;
+      let approvedNotPaid = ZERO;
+      let paidBucket = ZERO;
       for (const a of attributions) {
         if (a.costHeadCode !== code) continue;
         if (a.poLineId) {
@@ -226,6 +243,7 @@ export class CommercialBudgetQuery {
           const certified = certifiedMaterial.get(a.poLineId) ?? ZERO;
           const withheld = withheldMaterial.get(a.poLineId) ?? ZERO;
           const approved = approvedMaterial.get(a.poLineId) ?? ZERO;
+          const paid = paidMaterial.get(a.poLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(receivedValue.sub(billed), ZERO));
           awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
           // §H — withheld money is NOT payable, so it leaves this bucket. The clamp is belt-and-
@@ -233,6 +251,11 @@ export class CommercialBudgetQuery {
           // service and at PostgreSQL, so a withholding can never exceed the certificate it is
           // taken from and this subtraction cannot go negative through any legal path.
           certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld).sub(approved), ZERO));
+          // §J unit 7A — the last two residuals. §G bound 5 caps `PAID` at `APPROVED`, so the
+          // subtraction cannot go negative through any legal path; the clamp is belt-and-braces of
+          // the same kind as the one above it.
+          approvedNotPaid = approvedNotPaid.add(Prisma.Decimal.max(approved.sub(paid), ZERO));
+          paidBucket = paidBucket.add(paid);
         } else if (a.labourPoLineId) {
           const line = labourLines.get(a.labourPoLineId);
           if (!line || !line.live) continue;
@@ -256,15 +279,18 @@ export class CommercialBudgetQuery {
           const certified = certifiedLabour.get(a.labourPoLineId) ?? ZERO;
           const withheld = withheldLabour.get(a.labourPoLineId) ?? ZERO;
           const approved = approvedLabour.get(a.labourPoLineId) ?? ZERO;
+          const paid = paidLabour.get(a.labourPoLineId) ?? ZERO;
           receivedNotBilled = receivedNotBilled.add(Prisma.Decimal.max(consumed.sub(billed), ZERO));
           awaitingCertification = awaitingCertification.add(Prisma.Decimal.max(billed.sub(certified), ZERO));
           certifiedPayable = certifiedPayable.add(Prisma.Decimal.max(certified.sub(withheld).sub(approved), ZERO));
+          approvedNotPaid = approvedNotPaid.add(Prisma.Decimal.max(approved.sub(paid), ZERO));
+          paidBucket = paidBucket.add(paid);
         }
       }
       const budget = budgetOf.get(code) ?? null;
       // §J — budget is the CEILING the exposure buckets are measured against, never a bucket
-      // itself. Headroom subtracts every exposure bucket that EXISTS at this task; 5C and Task 6
-      // add the approved/paid residuals as their facts arrive.
+      // itself. Task 7A completes the set: all SIX exposure buckets now exist, so headroom is
+      // `BUDGET − Σ(the six)` in full rather than over whichever subset had shipped.
       //
       // Note that adding `awaitingCertification` does NOT move headroom on its own: the money it
       // holds came OUT of received-not-billed. That is the point — §J's buckets partition, so a
@@ -276,7 +302,10 @@ export class CommercialBudgetQuery {
       // rounded figure — not from separately rounded buckets, whose two half-paisa errors could
       // add to a phantom cent of breach. The displayed buckets are rounded for reporting; the
       // DECISION is made on `exposure`.
-      const exposure = money(committed.add(receivedNotBilled).add(awaitingCertification).add(certifiedPayable));
+      const exposure = money(
+        committed.add(receivedNotBilled).add(awaitingCertification).add(certifiedPayable)
+          .add(approvedNotPaid).add(paidBucket),
+      );
       out.set(code, {
         costHeadCode: code,
         budget,
@@ -284,11 +313,74 @@ export class CommercialBudgetQuery {
         receivedNotBilled: money(receivedNotBilled),
         awaitingCertification: money(awaitingCertification),
         certifiedPayable: money(certifiedPayable),
+        approved: money(approvedNotPaid),
+        paid: money(paidBucket),
         exposure,
         headroom: budget === null ? null : budget.sub(exposure),
       });
     }
     return out;
+  }
+
+  /**
+   * Phase 5 Task 7A — the SERIALIZED position rows, worst headroom first.
+   *
+   * This exists as ONE function because it now has TWO consumers: the live `commercial.budget`
+   * read, and §J's cash-forecast projection. §J's seven bucket definitions are subtle enough that
+   * two of them were corrected in OPPOSITE directions across plan revisions, so a second mapping
+   * site is a second place for a definition to drift to — and the drift would be invisible,
+   * because both surfaces would go on returning plausible money. The projection cannot disagree
+   * with the live read about what a bucket means, because it does not know: it asks this.
+   *
+   * Sorted worst-first: breaches at the top, then thinning headroom, then unbudgeted heads. That
+   * is the order the practice needs to act in, and it makes the top of the list the same set the
+   * Inbox action counts.
+   */
+  async serializedPositionsFor(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+  ): Promise<{ heads: CostHeadPositionDto[]; openExceptions: number }> {
+    const catalog = await tx.costHead.findMany({
+      where: { projectId }, select: { code: true, name: true }, orderBy: { code: 'asc' },
+    });
+    const codes = catalog.map((h) => h.code);
+    const [folded, liveVersions, exceptions] = await Promise.all([
+      this.positionsFor(tx, projectId, codes),
+      tx.budgetLine.findMany({
+        where: { projectId, supersededAt: null },
+        select: { costHeadCode: true, version: true },
+      }),
+      tx.budgetException.findMany({ where: { projectId, clearedAt: null }, orderBy: { raisedAt: 'asc' } }),
+    ]);
+    const nameOf = new Map(catalog.map((h) => [h.code, h.name]));
+    const versionOf = new Map(liveVersions.map((v) => [v.costHeadCode, v.version]));
+    const exceptionOf = new Map(exceptions.map((e) => [e.costHeadCode, serializeBudgetException(e)]));
+
+    const heads: CostHeadPositionDto[] = [...folded.values()].map((p) => ({
+      costHeadCode: p.costHeadCode,
+      costHeadName: nameOf.get(p.costHeadCode) ?? p.costHeadCode,
+      budget: p.budget?.toFixed(2) ?? null,
+      budgetVersion: versionOf.get(p.costHeadCode) ?? null,
+      committed: p.committed.toFixed(2),
+      receivedNotBilled: p.receivedNotBilled.toFixed(2),
+      awaitingCertification: p.awaitingCertification.toFixed(2),
+      certifiedPayable: p.certifiedPayable.toFixed(2),
+      approved: p.approved.toFixed(2),
+      paid: p.paid.toFixed(2),
+      exposure: p.exposure.toFixed(2),
+      headroom: p.headroom?.toFixed(2) ?? null,
+      exception: exceptionOf.get(p.costHeadCode) ?? null,
+    }));
+    heads.sort((a, b) => {
+      // unbudgeted heads have no headroom to rank and sort last, by code
+      if (a.headroom === null || b.headroom === null) {
+        if (a.headroom === b.headroom) return a.costHeadCode.localeCompare(b.costHeadCode);
+        return a.headroom === null ? 1 : -1;
+      }
+      const cmp = new Prisma.Decimal(a.headroom).comparedTo(new Prisma.Decimal(b.headroom));
+      return cmp !== 0 ? cmp : a.costHeadCode.localeCompare(b.costHeadCode);
+    });
+    return { heads, openExceptions: exceptions.length };
   }
 
   /** `BUDGET(costHead)` — the LIVE version's amount, or null when the head is unbudgeted. */
@@ -299,4 +391,27 @@ export class CommercialBudgetQuery {
     });
     return row?.amount ?? null;
   }
+}
+
+/**
+ * The OPEN over-budget exception, serialized. It lives beside `serializedPositionsFor` because
+ * that is now its only caller — Task 7A moved the position mapping here so the live read and §J's
+ * projection cannot hold two different opinions about a bucket, and this travelled with it.
+ */
+function serializeBudgetException(r: {
+  id: string; costHeadCode: string; headroom: Prisma.Decimal; budget: Prisma.Decimal; exposure: Prisma.Decimal;
+  raisedBy: string; raisedAt: Date; raisedById: string; clearedAt: Date | null;
+}): BudgetExceptionDto {
+  return {
+    id: r.id,
+    costHeadCode: r.costHeadCode,
+    headroom: r.headroom.toFixed(2),
+    budget: r.budget.toFixed(2),
+    exposure: r.exposure.toFixed(2),
+    // the DB CHECK pins the same value set, so the cast reflects a constraint, not a hope
+    raisedBy: r.raisedBy as BudgetExceptionDto['raisedBy'],
+    raisedAt: r.raisedAt.toISOString(),
+    raisedById: r.raisedById,
+    clearedAt: r.clearedAt?.toISOString() ?? null,
+  };
 }

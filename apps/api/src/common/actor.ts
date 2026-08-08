@@ -22,6 +22,17 @@ export interface Actor {
   actorKind: ActorKind;
 }
 
+/**
+ * The attribution a DomainEvent envelope records: who, and whether they are a person.
+ *
+ * `emitEvent` reads exactly these two fields — the display name and the role belong to the audit
+ * trail, which resolves them itself. Naming the subset lets a deep seam (Phase 5 Task 7A's
+ * `CommercialBudgetService.evaluate`, reached through eight callers) announce an event without
+ * every one of them threading a full {@link Actor} it does not otherwise need. An `Actor`
+ * structurally satisfies this, so no existing caller changes.
+ */
+export type EventActor = Pick<Actor, 'actorId' | 'actorKind'>;
+
 /** The caller's REAL identity for attribution (Phase 1): id + display name + role, plus the
  *  actor KIND (Phase 2 Task 3) — a human sign-in always resolves `actorKind: 'human'` with a
  *  real user id. A role label alone is not attribution — every lifecycle write carries all four. */

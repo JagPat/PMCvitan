@@ -3,7 +3,7 @@ import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
-import { ProjectionRebuildOperations } from '../../src/platform/projections/rebuild-operations';
+import { ProjectionRebuildOperations, REBUILDABLE_PROJECTIONS } from '../../src/platform/projections/rebuild-operations';
 import { DrawingsService } from '../../src/drawings/drawings.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { serializeDecision } from '../../src/decisions/decision-serialize';
@@ -14,6 +14,7 @@ import { INSPECTIONS_PROJECTION } from '../../src/inspections/inspections.projec
 import { ACTIVITIES_PROJECTION } from '../../src/activities/activities.projection';
 import { MATERIAL_READINESS_PROJECTION } from '../../src/activities/material-readiness.projection';
 import { LABOUR_READINESS_PROJECTION } from '../../src/labour/labour-readiness.projection';
+import { CASH_FORECAST_PROJECTION } from '../../src/commercial/cash-forecast.projection';
 import type { AuthUser } from '../../src/common/auth';
 import { Prisma } from '@prisma/client';
 
@@ -37,14 +38,28 @@ import { Prisma } from '@prisma/client';
  *     1-of-3 subset) and shown SERVED as `source: 'projection'` — the reproduce step;
  *  2. the row-SET diagnostic calls it 'corrupt' (a served contradiction — decisionId, status,
  *     publishedAt as ISO, authorId AND dto compared over the COMPLETE ordered row set);
- *  3. the DEFAULT operator run — no `--consumer` — covers ALL FIVE production projections and
+ *  3. the DEFAULT operator run — no `--consumer` — covers EVERY production projection and
  *     repairs it WITHOUT any decision event, leaving live == projection == rebuild;
  *  4. the invocation and every per-consumer outcome are audited;
  *  5. every diagnostic state of the decisions adapter is covered: zero-decision, complete,
  *     partial, lagging and corrupt.
  */
 
-const ALL_FIVE = [DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION, ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION, LABOUR_READINESS_PROJECTION];
+// The default operator run's expected coverage, DERIVED from the registry rather than listed.
+//
+// The name this constant used to carry — `ALL_FIVE`, holding seven entries — is the whole argument.
+// The assertion is about COMPLETENESS: "the default run skips no projection". A hand-kept copy
+// answers a different question, "does the run cover the ones I remembered", and that question stays
+// green while a new projection goes unrebuilt on every production upgrade. It went stale twice
+// before Phase 5 Task 7A found it a third time. `pr-289-convergence.md` root A: fix the class.
+//
+// The registry is pinned by name below so "derived" cannot decay into "whatever is registered".
+const EXPECTED_DEFAULT_RUN = Object.keys(REBUILDABLE_PROJECTIONS);
+const KNOWN_PROJECTIONS = [
+  DECISIONS_PROJECTION, DAILY_LOG_PROJECTION, DRAWINGS_PROJECTION, INSPECTIONS_PROJECTION,
+  ACTIVITIES_PROJECTION, MATERIAL_READINESS_PROJECTION, LABOUR_READINESS_PROJECTION,
+  CASH_FORECAST_PROJECTION,
+];
 
 describe('P1 correction — legacy partial decisions.inbox generation upgrade path (live PG)', () => {
   let t: TestApp;
@@ -206,7 +221,10 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     // repairs the partial generation WITHOUT any decision event being emitted.
     const report = await ops.run({ operatorIdentity: OPERATOR, reason: 'production upgrade rebuild', projectId });
     expect(report.ok).toBe(true);
-    expect([...report.consumers].sort()).toEqual([...ALL_FIVE].sort());
+    expect([...report.consumers].sort()).toEqual([...EXPECTED_DEFAULT_RUN].sort());
+    for (const known of KNOWN_PROJECTIONS) {
+      expect(EXPECTED_DEFAULT_RUN, `${known} left REBUILDABLE_PROJECTIONS — the default operator run would silently stop covering it`).toContain(known);
+    }
     expect(report.corruptAfter).toBe(0);
     expect(report.failures).toBe(0);
     const decisionsAttempt = report.results.find((r) => r.consumer === DECISIONS_PROJECTION)!;
@@ -226,7 +244,7 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     expect(audits[0]!.action).toBe('projection.rebuild');
     expect(audits[0]!.reason).toBe('production upgrade rebuild');
     const outcomes = audits.filter((a) => a.action === 'projection.rebuild.result');
-    expect(outcomes.map((o) => o.consumer).sort()).toEqual([...ALL_FIVE].sort());
+    expect(outcomes.map((o) => o.consumer).sort()).toEqual([...EXPECTED_DEFAULT_RUN].sort());
     const decisionsOutcome = outcomes.find((o) => o.consumer === DECISIONS_PROJECTION)!;
     expect(decisionsOutcome.reason).toMatch(/^ok: generation \d+ current-match \(before: corrupt\)$/);
     expect(decisionsOutcome.priorError).toBeNull();

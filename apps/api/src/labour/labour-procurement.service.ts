@@ -183,7 +183,7 @@ export class LabourProcurementService {
       );
     }
     await this.commercial.attribute(
-      tx, projectId, { actorId: actor.actorId, role: user.role },
+      tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
       lines.map((l) => ({ target: { labourPoLineId: l.id }, costHeadCode: map.get(l.id)!, reason })),
     );
   }
@@ -210,7 +210,7 @@ export class LabourProcurementService {
     // Codex round 3 (P2): keyed by REQUISITION LINE — the identity the caller supplies. The
     // replacement PO-line ids are generated in THIS transaction, so a caller could never name them.
     const map = new Map((costHeads ?? []).map((c) => [c.requisitionLineId, c.costHeadCode]));
-    const identity = { actorId: actor.actorId, role: user.role };
+    const identity = { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role };
 
     const carried = new Set<string>();
     const replaced: { from: { labourPoLineId: string }; to: { labourPoLineId: string }; costHeadCode?: string; reason: string }[] = [];
@@ -260,7 +260,7 @@ export class LabourProcurementService {
   ): Promise<void> {
     if (!(await this.commercial.isActive(tx, projectId))) return;
     await this.commercial.evaluateForTarget(
-      tx, projectId, { actorId: actor.actorId, role }, { labourPoLineId }, 'commitment',
+      tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role }, { labourPoLineId }, 'commitment',
     );
   }
 
@@ -1028,7 +1028,7 @@ export class LabourProcurementService {
         // §C — a cancelled version is no longer live, so its attributions are released.
         if (await this.commercial.isActive(tx, projectId)) {
           await this.commercial.releaseAttribution(
-            tx, projectId, { actorId: actor.actorId, role: user.role },
+            tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
             current.lines.map((l) => ({ labourPoLineId: l.id })), input.reason,
           );
         }
@@ -1083,7 +1083,7 @@ export class LabourProcurementService {
         // `COMMITTED` re-reads the reduced obligation with attributable evidence behind the change.
         if (await this.commercial.isActive(tx, projectId)) {
           await this.commercial.replaceAttribution(
-            tx, projectId, { actorId: actor.actorId, role: user.role },
+            tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
             current.lines.map((l) => ({ from: { labourPoLineId: l.id }, to: { labourPoLineId: l.id }, reason: input.reason })),
           );
         }

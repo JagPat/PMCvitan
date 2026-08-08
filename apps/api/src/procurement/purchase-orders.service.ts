@@ -161,7 +161,7 @@ export class PurchaseOrdersService {
       );
     }
     await this.commercial.attribute(
-      tx, projectId, { actorId: actor.actorId, role: user.role },
+      tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
       lines.map((l) => ({ target: { poLineId: l.id }, costHeadCode: map.get(l.id)!, reason })),
     );
   }
@@ -192,7 +192,7 @@ export class PurchaseOrdersService {
     // Codex round 3 (P2): keyed by REQUISITION LINE — the identity the caller supplies. The
     // replacement PO-line ids are generated in THIS transaction, so a caller could never name them.
     const map = new Map((costHeads ?? []).map((c) => [c.requisitionLineId, c.costHeadCode]));
-    const identity = { actorId: actor.actorId, role: user.role };
+    const identity = { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role };
 
     const carried = new Set<string>();
     const fresh: { poLineId: string; costHeadCode: string }[] = [];
@@ -526,7 +526,7 @@ export class PurchaseOrdersService {
         // ONE site where superseding without a replacement is correct: the obligation is gone.
         if (await this.commercial.isActive(tx, projectId)) {
           await this.commercial.releaseAttribution(
-            tx, projectId, { actorId: actor.actorId, role: user.role },
+            tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
             current.lines.map((l) => ({ poLineId: l.id })), input.reason,
           );
         }
@@ -566,7 +566,7 @@ export class PurchaseOrdersService {
         // change is attributable evidence rather than a stamp-free row behind a moved amount.
         if (await this.commercial.isActive(tx, projectId)) {
           await this.commercial.replaceAttribution(
-            tx, projectId, { actorId: actor.actorId, role: user.role },
+            tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role },
             current.lines.map((l) => ({ from: { poLineId: l.id }, to: { poLineId: l.id }, reason: input.reason })),
           );
         }

@@ -8,6 +8,7 @@ import { INSPECTIONS_PROJECTION } from '../../inspections/inspections.projection
 import { ACTIVITIES_PROJECTION } from '../../activities/activities.projection';
 import { MATERIAL_READINESS_PROJECTION, computeMaterialReadingsDto } from '../../activities/material-readiness.projection';
 import { LABOUR_READINESS_PROJECTION, computeLabourReadinessDto } from '../../labour/labour-readiness.projection';
+import { CASH_FORECAST_PROJECTION, computeCashForecastDto } from '../../commercial/cash-forecast.projection';
 import { computeDrawingsBase } from '../../drawings/drawings-serialize';
 import { computeDailyLogSlice } from '../../daily-log/daily-log-serialize';
 import { computeInspectionsBase } from '../../inspections/inspections-serialize';
@@ -151,6 +152,20 @@ export const REBUILDABLE_PROJECTIONS: Record<string, Rebuildable> = {
       (await tx.labourReadinessProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
     canonical: (tx, projectId) => computeLabourReadinessDto(tx, projectId),
   },
+  // Phase 5 Task 7A — the EIGHTH projection: the per-project CASH FORECAST (§J). Its stored money
+  // picture is compared against the CANONICAL recompute through the SAME `computeCashForecastDto`
+  // both refresh paths use, so live == projection == rebuild and an operator diagnosis reports
+  // drift exactly as it does for the other seven.
+  //
+  // Four heads of this unit gave it a WRITE-THROUGH refresh path and its own advisory lock, on the
+  // strength of `commercial.producesEvents: []`. The round-4 repair made commercial emit
+  // `commercial.money_moved` instead, so the stream lock below freezes ITS writers exactly as it
+  // freezes the other seven's, and no per-projection lock hook exists any more.
+  [CASH_FORECAST_PROJECTION]: {
+    stored: async (tx, generationId, projectId) =>
+      (await tx.cashForecastProjection.findUnique({ where: { generationId_projectId: { generationId, projectId } }, select: { dto: true } }))?.dto ?? null,
+    canonical: (tx, projectId) => computeCashForecastDto(tx, projectId),
+  },
 };
 
 /** Key-order-independent deep equality (the dto round-trips through jsonb, which keeps no order). */
@@ -184,6 +199,9 @@ export class ProjectionRebuildOperations {
     return this.prisma.$transaction(async (tx) => {
       // Freeze event allocation for this project (emitEvent locks this row FOR UPDATE to assign
       // stream positions). A project with no stream row has no events — nothing can race either.
+      // Every projection's inputs are announced by an event, so this ONE lock covers every writer
+      // of every projection — the precondition CLOSURE E now states and checks, and the reason no
+      // per-projection lock hook exists here.
       await tx.$queryRaw`SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = ${projectId} FOR UPDATE`;
       const stream = await tx.projectEventStream.findUnique({ where: { projectId }, select: { nextPosition: true } });
       const head = stream ? stream.nextPosition - 1n : -1n;

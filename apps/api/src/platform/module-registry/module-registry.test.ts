@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { DOMAIN_EVENT_TYPES, validateRegistry, type ModuleManifest } from '@vitan/shared';
 import { MODULE_MANIFESTS, KNOWN_ROLES, validateModuleRegistry, enabledModuleIds, moduleModelOwnership } from './registry';
+import { REBUILDABLE_PROJECTIONS } from '../projections/rebuild-operations';
+import { CASH_FORECAST_PROJECTION } from '../../commercial/cash-forecast.projection';
 
 /**
  * Phase 2 Task 7 — the module registry validates. This is the SAME check
@@ -238,5 +240,70 @@ describe('Phase 2 Task 7 — module registry', () => {
     expect(codes.has('shared-model')).toBe(true); // 'decision' owned by both decisions and x
     expect(codes.has('cycle')).toBe(true); // x -> y -> x
     expect(codes.has('unknown-permission')).toBe(true); // role 'nope'
+  });
+
+  /**
+   * CLOSURE E (PR #295 convergence, root B) — A PROJECTION'S OWNER MUST EMIT.
+   *
+   * The platform's projection machinery carries an UNSTATED PRECONDITION: that every input to a
+   * projection is announced by a domain event. Seven projections satisfied it, so it was never
+   * written down — and three separate mechanisms quietly assumed it:
+   *
+   *   - `diagnose` locks the project's `ProjectEventStream` row and calls the window frozen. It is
+   *     frozen only against writers that emit.
+   *   - the rebuild's catch-up phase repairs anything the seed missed — by REPLAYING EVENTS. With
+   *     no events, "catch-up will fix it" is false and every window between seed and activation
+   *     becomes permanent.
+   *   - a stale projection is normally detectable as an undelivered delivery. With none, staleness
+   *     has no signal at all.
+   *
+   * Phase 5 Task 7A added the first projection that broke the precondition, and SIX findings across
+   * four review rounds followed from that one place — an overwrite race, a discovery race, a false
+   * `corrupt` verdict, an unlocked repair sweep, a refresh obligation hung on the wrong predicate,
+   * and finally a real lock-order inversion between the rebuild's activation barrier and a live
+   * purchase order.
+   *
+   * The first version of this closure demanded a COMPENSATING LOCK (`lockFor`) from an event-less
+   * owner. That was the wrong shape: it made the platform accommodate a false declaration instead
+   * of requiring the declaration to be true, and the round-4 finding is exactly what compensating
+   * machinery costs. So the closure now states the precondition itself — the owning module must
+   * ANNOUNCE its facts — and `commercial` satisfies it with one weightless event rather than four
+   * heads of locking.
+   *
+   * NECESSARY, NOT SUFFICIENT, and the message says so: this proves the owner emits SOMETHING, not
+   * that every input to the projection is announced. The sufficient half is per-module and lives
+   * with the module — for §J it is CLOSURE C in `commercial.contract.test.ts`, which derives the
+   * forecast's read surface and requires every writer of every model in it to announce.
+   *
+   * Derived on both sides: the projection set from `REBUILDABLE_PROJECTIONS`, the emitting-ness
+   * from the owning manifest. RED against the round-3 tree, where `commercial.producesEvents` was
+   * `[]` while `commercial.cash-forecast` sat in the registry.
+   */
+  it('every rebuildable projection is owned by a module that ANNOUNCES its facts', () => {
+    const ownerOf = (consumer: string): ModuleManifest => {
+      const id = consumer.slice(0, consumer.indexOf('.'));
+      const owner = MODULE_MANIFESTS.find((m) => m.id === id);
+      if (!owner) throw new Error(`${consumer} has no owning module '${id}' — the naming convention this derivation reads has changed`);
+      return owner;
+    };
+    const consumers = Object.keys(REBUILDABLE_PROJECTIONS);
+    expect(consumers.length, 'no rebuildable projections found — this closure would pass vacuously').toBeGreaterThan(5);
+    // the projection this closure was written for must be among them, so a registry that quietly
+    // stopped listing it cannot make the rule pass by having nothing to check
+    expect(consumers, 'the §J cash forecast left the rebuildable registry').toContain(CASH_FORECAST_PROJECTION);
+
+    const silent = consumers.filter((c) => ownerOf(c).producesEvents.length === 0);
+    expect(
+      silent,
+      `these projections are owned by a module with producesEvents: []. The platform assumes every projection input is announced by an event — diagnose freezes the window by locking ProjectEventStream (which only stops writers that emit), a rebuild's catch-up repairs the seed's blind spot by REPLAYING EVENTS (which repairs nothing when there are none), and staleness is otherwise invisible. Make the owner announce its facts; do not build a lock that compensates for the silence: ${silent.join(', ')}`,
+    ).toEqual([]);
+
+    // …and the derivation is not vacuous in the other direction either: `producesEvents` must be
+    // reachable and non-empty for a real module, so a manifest shape change that made every read
+    // return `[]`-or-undefined would fail above rather than pass silently here.
+    expect(
+      ownerOf(CASH_FORECAST_PROJECTION).producesEvents,
+      'commercial no longer announces `commercial.money_moved` — the §J projection has no input signal',
+    ).toContain('commercial.money_moved');
   });
 });

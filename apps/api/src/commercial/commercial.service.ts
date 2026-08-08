@@ -9,6 +9,7 @@ import { recordAudit } from '../platform/audit';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CommercialParticipant, type AttributionTarget } from './commercial.participant';
+import { announceMoneyMoved } from './cash-forecast.projection';
 
 /**
  * Phase 5 Task 1 — the COMMERCIAL service (plan §C/§L).
@@ -82,6 +83,15 @@ export class CommercialService {
           projectId, actor, action: 'commercial.costHead.define',
           entity: 'CostHead', entityId: `${projectId}:${input.code}`,
         });
+        // §J (Task 7A) — the SECOND announcement seam, and the only one that is not
+        // `CommercialBudgetService.evaluate`. It exists because this command moves no money and
+        // still changes what the forecast says: a new head APPEARS as an all-zero row, and the
+        // `update` arm above RENAMES an existing one. Neither is a headroom mover, so §B's
+        // evaluation would never fire and the projection would sit one head (or one name) behind
+        // the live read until something unrelated moved. CLOSURE C in `commercial.contract.test.ts`
+        // derives the compute path's read surface and pins that `CostHead` is covered HERE — so this
+        // call cannot be deleted, and a third input model cannot be added without being classified.
+        await announceMoneyMoved(tx, projectId, actor, { costHeadCodes: [input.code], reason: 'cost_head' });
         return { resultRef: `${projectId}:${input.code}`, events: [] };
       },
     });
@@ -141,7 +151,7 @@ export class CommercialService {
         }
         // The participant enforces `commercial.attribute` — the SAME check the `pos.issue` path
         // gets, because the authority follows the WRITE, not the route (§C, probe 5ar).
-        await this.participant.replaceAttribution(tx, projectId, { actorId: actor.actorId, role: user.role }, [
+        await this.participant.replaceAttribution(tx, projectId, { actorId: actor.actorId, actorKind: actor.actorKind, role: user.role }, [
           { from: target, to: target, costHeadCode: input.costHeadCode, reason: input.reason },
         // the label is DERIVED: this route names a NEW head for the same line, so the participant
         // sees `active.costHeadCode !== code` and records `reattribution` on both heads. Naming it

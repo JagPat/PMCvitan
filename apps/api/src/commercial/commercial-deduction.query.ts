@@ -183,6 +183,49 @@ export class CommercialDeductionQuery {
   }
 
   /**
+   * The same walk, with the total scoped to the BILL rather than to its live certificate.
+   *
+   * Task 7A needed it, and the asymmetry is §0's rather than a convenience. `APPROVED` is
+   * live-certificate scoped because an approval authorises a particular certified amount and dies
+   * with the certificate that carried it; `PAID` is BILL scoped because cash that left the practice
+   * does not come back when a document is corrected. §0 says so explicitly — supersession never
+   * appends a payment reversal.
+   *
+   * So the ATTRIBUTION is shared (a live claim line's share of its version, the one rule this
+   * module states once) and only the SET being folded differs. Writing a second walk would put the
+   * attribution rule at a third site, which is exactly what the sibling above exists to prevent.
+   */
+  async attributeBillScopedTotal(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: 'material' | 'labour',
+    poLineIds: readonly string[],
+    totalPerBill: (billIds: string[]) => Promise<Map<string, Prisma.Decimal>>,
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const out = new Map<string, Prisma.Decimal>();
+    for (const id of poLineIds) out.set(id, ZERO);
+    if (poLineIds.length === 0) return out;
+
+    const lines = await this.bills.liveLineSharesFor(tx, projectId, kind, poLineIds);
+    if (lines.length === 0) return out;
+
+    const versions = await tx.vendorBillVersion.findMany({
+      where: { projectId, id: { in: [...new Set(lines.map((l) => l.versionId))] } },
+      select: { id: true, billId: true },
+    });
+    if (versions.length === 0) return out;
+
+    const totals = await totalPerBill([...new Set(versions.map((v) => v.billId))]);
+    const byVersion = new Map(versions.map((v) => [v.id, totals.get(v.billId) ?? ZERO]));
+    return attributeByLineShare(
+      lines,
+      byVersion,
+      await this.bills.versionTotals(tx, projectId, [...byVersion.keys()]),
+      out,
+    );
+  }
+
+  /**
    * The withholdings on one certificate that still have money held against them (§H).
    *
    * This is what makes a certificate uncorrectable in place: superseding it would drop a retained

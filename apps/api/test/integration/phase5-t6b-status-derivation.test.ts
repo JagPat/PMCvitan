@@ -24,10 +24,19 @@ import { CommercialPaymentService } from '../../src/commercial/commercial-paymen
 import { OrgsParticipant } from '../../src/orgs/orgs.participant';
 import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
-import type { CostHeadPositionDto } from '@vitan/shared';
+import type { CashForecastDto, CostHeadPositionDto } from '@vitan/shared';
 import type { CreateRequirementInput } from '../../src/contracts';
 import { CommercialDeductionQuery } from '../../src/commercial/commercial-deduction.query';
 import { derivedBillStatus } from '../../src/commercial/commercial-status';
+import { CommercialService } from '../../src/commercial/commercial.service';
+import { reevaluateAll } from '../../src/commercial/commercial-reevaluate.cli';
+import {
+  CASH_FORECAST_PROJECTION, COMMERCIAL_MONEY_EVENT, computeCashForecastDto, makeCashForecastProjectionConsumer,
+} from '../../src/commercial/cash-forecast.projection';
+import { readServableGeneration } from '../../src/platform/projections/generation';
+import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
+import { ProjectionRebuildOperations } from '../../src/platform/projections/rebuild-operations';
+import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 
 /**
  * Phase 5 Task 6B-i — §F's DERIVED payment status, proven live against PostgreSQL.
@@ -38,7 +47,7 @@ import { derivedBillStatus } from '../../src/commercial/commercial-status';
  * 10 in particular was three findings that each refused VALID work, so the acceptances here carry
  * as much weight as the refusals.
  */
-describe('Phase 5 Task 6 — the §F/§H money folds: derivation, reversal, advance recovery (live PG)', () => {
+describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () => {
   let t: TestApp;
   let f: TwoProjectFixture;
   let requirements: RequirementsService;
@@ -59,10 +68,13 @@ describe('Phase 5 Task 6 — the §F/§H money folds: derivation, reversal, adva
   let deductions: CommercialDeductionService;
   let payments: CommercialPaymentService;
   let capabilities: CapabilitiesService;
+  let commercial: CommercialService;
+  let relay: OutboxRelay;
+  let ops: ProjectionRebuildOperations;
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -89,6 +101,9 @@ describe('Phase 5 Task 6 — the §F/§H money folds: derivation, reversal, adva
     deductions = t.app.get(CommercialDeductionService);
     payments = t.app.get(CommercialPaymentService);
     capabilities = t.app.get(CapabilitiesService);
+    commercial = t.app.get(CommercialService);
+    relay = t.app.get(OutboxRelay);
+    ops = new ProjectionRebuildOperations(t.prisma, t.app.get(ProjectionRebuilder));
   });
   afterAll(async () => {
     await t?.prisma.$executeRawUnsafe(TRUNCATE);
@@ -225,8 +240,8 @@ describe('Phase 5 Task 6 — the §F/§H money folds: derivation, reversal, adva
 
 
   /** certify a ₹100 claim on CIVIL and hand back the bill — every probe below starts here. */
-  const certifiedClaim = async (projectId: string, qty = '100'): Promise<string> => {
-    const line = await issuedMaterialLine(projectId, { qty });
+  const certifiedClaim = async (projectId: string, qty = '100', costHeadCode = 'CIVIL'): Promise<string> => {
+    const line = await issuedMaterialLine(projectId, { qty, costHeadCode });
     await acceptOnLine(projectId, line, qty);
     const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: qty }]);
     await certification.certify(projectId, { billId }, pmc(projectId));
@@ -1737,5 +1752,554 @@ describe('Phase 5 Task 6 — the §F/§H money folds: derivation, reversal, adva
     expect(await t.prisma.vendorAdvance.count({ where: { projectId, vendorId } })).toBe(1);
     // the fold saw ONE advance, not two — a replay that appended would silently double the ceiling
     expect((await advancePositionOf(projectId, billId)).advanced).toBe('100.00');
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // Task 7A — the §J cash forecast: SIX exposure buckets that partition, and a budget that does not
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+
+  /** every §J bucket for one cost head, as the read reports them. */
+  const bucketsOf = async (projectId: string, code = 'CIVIL') => {
+    const p = await positionOf(projectId, code);
+    return {
+      budget: p.budget, committed: p.committed, receivedNotBilled: p.receivedNotBilled,
+      awaitingCertification: p.awaitingCertification, certifiedPayable: p.certifiedPayable,
+      approved: p.approved, paid: p.paid, exposure: p.exposure, headroom: p.headroom,
+    };
+  };
+  /** the SIX exposure buckets, summed exactly — `budget` is NOT one of them (§J). */
+  const sumSix = (b: Awaited<ReturnType<typeof bucketsOf>>): string =>
+    [b.committed, b.receivedNotBilled, b.awaitingCertification, b.certifiedPayable, b.approved, b.paid]
+      .reduce((t, v) => t.add(new Prisma.Decimal(v)), new Prisma.Decimal(0))
+      .toFixed(2);
+
+  it('PROBE 31 (§J): PAYING moves money BETWEEN buckets and never moves the total', async () => {
+    // THE IDENTITY `commercial.contract.test.ts` CITES BY NAME.
+    //
+    // `FOLD_INPUTS` classifies `PAID` as partition-only — exempt from §B's raise-or-clear pin —
+    // because §J defines `approved` as `APPROVED − PAID` and `paid` as `PAID`, so the two sum to
+    // `APPROVED` for every value of `PAID`. That is an identity, not a judgement, and an identity
+    // asserted in a comment is the shape this module keeps finding defects in. So it is exercised.
+    //
+    // If it were false, `payments.record` would be a headroom mover with no evaluator, and a
+    // practice would watch its budget breach or heal every time it settled an invoice it had
+    // already authorised.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
+    const billId = await certifiedClaim(projectId);
+    const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+
+    const beforePay = await bucketsOf(projectId);
+    expect(beforePay.approved, 'authorised and not yet gone').toBe('100.00');
+    expect(beforePay.paid).toBe('0.00');
+
+    await payments.record(projectId, { approvalId: approval.id, amount: '40', method: 'neft' }, pmc(projectId));
+    const afterPay = await bucketsOf(projectId);
+
+    // the buckets MOVED …
+    expect(afterPay.approved, '`APPROVED − PAID`').toBe('60.00');
+    expect(afterPay.paid, 'the only raw fold').toBe('40.00');
+    // …and the total did NOT. This is the identity.
+    expect(afterPay.exposure, 'paying settled WHO HOLDS the exposure, not how much there is').toBe(beforePay.exposure);
+    expect(afterPay.headroom).toBe(beforePay.headroom);
+    // …and never ₹140 across the two, which is the §J failure a raw `APPROVED` bucket would cause
+    expect(new Prisma.Decimal(afterPay.approved).add(new Prisma.Decimal(afterPay.paid)).toFixed(2)).toBe('100.00');
+
+    // a REVERSAL runs the same identity backwards — it is the other writer the partition-only row
+    // names, so leaving it unprobed would exempt half the classification
+    const payment = (await payments.ledger(projectId, billId, pmc(projectId))).approvals[0]!.payments[0]!;
+    await payments.reverse(projectId, { paymentId: payment.id, amount: '40', reason: 'wrong account' }, pmc(projectId));
+    const afterReverse = await bucketsOf(projectId);
+    expect(afterReverse.approved).toBe('100.00');
+    expect(afterReverse.paid, '§0 — `PAID` is Σ payments MINUS Σ reversals').toBe('0.00');
+    expect(afterReverse.exposure, 'recovering cash moves no headroom either').toBe(beforePay.exposure);
+  });
+
+  it('PROBE 32 (§J): the SIX exposure buckets partition, and `budget` is authority — the plan’s 5o/5bm', async () => {
+    // §J's central claim, and the one an earlier spelling of probe 5o got wrong in two ways at
+    // once: it summed SEVEN buckets and stated an inequality where the invariant is an equality.
+    // `budget` is the CEILING the six are measured against, never a seventh addend.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100', reason: 'pilot budget' }, pmc(projectId));
+
+    // a ₹100 order fully accepted and unbilled: the money is in `received-not-billed` and NOWHERE
+    // else — `committed` is OUTSTANDING, so a fully-accepted order has nothing outstanding
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const accepted = await bucketsOf(projectId);
+    expect(accepted.committed, 'a fully accepted order is no longer an outstanding obligation').toBe('0.00');
+    expect(accepted.receivedNotBilled).toBe('100.00');
+    expect(sumSix(accepted), 'the six sum to exactly the exposure').toBe(accepted.exposure);
+    expect(accepted.exposure).toBe('100.00');
+    expect(accepted.headroom, 'ceiling ₹100 less ₹100 of exposure').toBe('0.00');
+
+    // …and the partition holds as the money walks the chain. Each step moves it ONE bucket along
+    // and leaves the total alone — that is what "residual" means.
+    const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
+    const billed = await bucketsOf(projectId);
+    expect(billed.receivedNotBilled, 'the claim moved it out').toBe('0.00');
+    expect(billed.awaitingCertification).toBe('100.00');
+    expect(sumSix(billed)).toBe(billed.exposure);
+    expect(billed.exposure, 'claiming changed WHERE the exposure sits, not how much').toBe('100.00');
+
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    const certified = await bucketsOf(projectId);
+    expect(certified.awaitingCertification).toBe('0.00');
+    expect(certified.certifiedPayable).toBe('100.00');
+    expect(sumSix(certified)).toBe(certified.exposure);
+    expect(certified.exposure).toBe('100.00');
+
+    await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    const approved = await bucketsOf(projectId);
+    expect(approved.certifiedPayable, '§J — `NET_PAYABLE − APPROVED`').toBe('0.00');
+    expect(approved.approved).toBe('100.00');
+    expect(sumSix(approved)).toBe(approved.exposure);
+    expect(approved.exposure).toBe('100.00');
+    expect(approved.headroom, 'and the headroom never moved through any of it').toBe('0.00');
+  });
+
+  it('PROBE 33 (§J): headroom goes NEGATIVE on over-commitment — it is a signal, not an error', async () => {
+    // 5bm's second half. RED against `BUDGET − COMMITTED`, which reports ₹100 of headroom for a
+    // fully-accepted order because `COMMITTED` is already zero — the exact reading that would tell
+    // a practice it has money it has already spent.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100', reason: 'pilot budget' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '150' });
+    await acceptOnLine(projectId, line, '150');
+
+    const over = await bucketsOf(projectId);
+    expect(over.committed, 'fully accepted — nothing outstanding').toBe('0.00');
+    expect(over.receivedNotBilled).toBe('150.00');
+    expect(over.exposure).toBe('150.00');
+    expect(over.headroom, 'the over-commitment signal §B fires on, not an error to clamp away').toBe('-50.00');
+    expect(sumSix(over)).toBe(over.exposure);
+  });
+
+  it('PROBE 34 (§J): the partition survives tax and freight — the plan’s 5t', async () => {
+    // §J is explicit that the two sides of `received-not-billed` must be the same KIND of money.
+    // `BILLED_AMOUNT` includes claimed tax and freight, so pricing the received side at
+    // quantity × rate makes a fully-accepted line with tax and freight report a NEGATIVE bucket
+    // once billed, and leaves real exposure outside headroom before billing even though
+    // `COMMITTED` is already zero. This asserts the fold reads landed money on both sides.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '10000', reason: 'pilot budget' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+
+    const b = await bucketsOf(projectId);
+    expect(b.committed, '5t — a fully accepted line leaves ₹0 outstanding, never the tax and freight remainder').toBe('0.00');
+    expect(sumSix(b), 'and the six still partition').toBe(b.exposure);
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // Task 7A — the EIGHTH rebuildable projection (§J/§G): live == projection == rebuild
+  // ══════════════════════════════════════════════════════════════════════════════════════════════
+  //
+  // The standing projection contract, plus ONE probe this projection needs and the seven before it
+  // did not: it has TWO refresh paths (an ordered consumer for foreign events, write-through for
+  // commercial's own writes, because `commercial.producesEvents` is `[]`), so "the two paths agree"
+  // is a real question rather than a tautology. It is only true because both call
+  // `computeCashForecastDto` — which is exactly the kind of claim that is true when written and
+  // quietly false two units later.
+
+  const drainRelay = async (): Promise<void> => { for (let i = 0; i < 8; i++) await relay.runOnce(); };
+  const liveForecast = (projectId: string) => t.prisma.$transaction((tx) => computeCashForecastDto(tx, projectId));
+  const storedForecast = async (projectId: string) => {
+    const gen = await readServableGeneration(t.prisma, CASH_FORECAST_PROJECTION, projectId);
+    if (!gen) return null;
+    const row = await t.prisma.cashForecastProjection.findUnique({
+      where: { generationId_projectId: { generationId: gen.id, projectId } }, select: { dto: true },
+    });
+    return row?.dto ?? null;
+  };
+  /** The active generation's stored row REGARDLESS of servability — so a refresh can be observed
+   *  on a generation independently of whether the read would serve it. */
+  const storedRowAnyGen = async (projectId: string) => {
+    const gen = await t.prisma.projectionGeneration.findFirst({
+      where: { consumer: CASH_FORECAST_PROJECTION, projectId, status: 'active' }, select: { id: true },
+    });
+    if (!gen) return null;
+    const row = await t.prisma.cashForecastProjection.findUnique({
+      where: { generationId_projectId: { generationId: gen.id, projectId } }, select: { dto: true },
+    });
+    return (row?.dto ?? null) as unknown as CashForecastDto | null;
+  };
+  const rebuildForecast = () => ops.run({ operatorIdentity: 'op', reason: 'test rebuild', consumers: [CASH_FORECAST_PROJECTION] });
+
+  /**
+   * Block until SOME backend is waiting on a lock held by `holderPid`.
+   *
+   * `pg_blocking_pids` asks the exact question — is anything waiting for THIS session — rather than
+   * matching query text, which this file's shared database makes unreliable: a sibling suite's
+   * statement can match a pattern just as well as the one under test. The waiter's own pid is not
+   * knowable here (the rebuild runs on the app's pooled client and picks a connection itself), so
+   * the assertion is scoped by the HOLDER, which is unambiguous. The condition gates progress; the
+   * interval is only the observation cadence.
+   */
+  const waitUntilBlockedBy = async (holderPid: number): Promise<void> => {
+    for (let i = 0; i < 300; i++) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ waiting: boolean }>>(
+        `SELECT EXISTS (SELECT 1 FROM pg_stat_activity a
+                         WHERE a.pid <> $1::int AND $1::int = ANY(pg_blocking_pids(a.pid))) AS waiting`,
+        holderPid,
+      );
+      if (rows[0]?.waiting === true) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`barrier timeout: nothing ever blocked on the row held by backend ${holderPid}`);
+  };
+
+  /** The project's committed stream head, and the active generation's checkpoint against it — the
+   *  staleness signal an announced write produces and a silent one never could. */
+  const generationLag = async (projectId: string) => {
+    const stream = await t.prisma.projectEventStream.findUnique({ where: { projectId }, select: { nextPosition: true } });
+    const gen = await t.prisma.projectionGeneration.findFirst({
+      where: { consumer: CASH_FORECAST_PROJECTION, projectId, status: 'active' },
+      select: { id: true, appliedPosition: true },
+    });
+    return { head: (stream!.nextPosition - 1n), applied: gen?.appliedPosition ?? null, generationId: gen?.id ?? null };
+  };
+
+  it('PROBE 35 (§J/§G): live == projection == rebuild, and a rebuild emits ZERO events + ZERO notifications', async () => {
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
+    const billId = await certifiedClaim(projectId);
+    const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    await payments.record(projectId, { approvalId: approval.id, amount: '40', method: 'neft' }, pmc(projectId));
+    await drainRelay();
+
+    const live = await liveForecast(projectId);
+    expect(live.totals.paid, 'the fixture actually moved money — otherwise this compares two zeroes').toBe('40.00');
+    expect(await storedForecast(projectId)).toEqual(live);
+
+    const eventsBefore = await t.prisma.domainEvent.count({ where: { projectId } });
+    const notifsBefore = await t.prisma.notification.count({ where: { projectId } });
+    const report = await rebuildForecast();
+    expect(report.ok).toBe(true);
+    expect(report.corruptAfter).toBe(0);
+    expect(report.failures).toBe(0);
+    // recompute-only (§G): a rebuild replay derives NO canonical event and NO notification
+    expect(await t.prisma.domainEvent.count({ where: { projectId } })).toBe(eventsBefore);
+    expect(await t.prisma.notification.count({ where: { projectId } })).toBe(notifsBefore);
+    expect(await storedForecast(projectId)).toEqual(live);
+  });
+
+  it('PROBE 36 (§J/root B): a COMMERCIAL-only write is announced, and the ONE consumer path folds it', async () => {
+    // The round-4 repair, end to end. Certifying and approving move §J buckets and touch no
+    // foreign table, so before `commercial.money_moved` existed nothing was emitted and the stored
+    // row could only be kept current by a write-through refresh inside each writer's transaction.
+    // Now the write ANNOUNCES and the ordinary ordered consumer folds it — one path, one compute
+    // function, and the same machinery the other seven projections use.
+    //
+    // RED at `93a9217` in the direction that matters: with the announcement removed the relay has
+    // nothing to deliver, so `drainRelay()` below leaves the stored row exactly as the foreign half
+    // left it and `certifiedPayable` stays 0.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
+    // The FOREIGN half establishes the generation: issuing and accepting a PO emits canonical
+    // events, so the ordered consumer runs and the project acquires an active generation. (A
+    // project with no events never gets one, and the read correctly falls back to live — probe 38.)
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    await drainRelay();
+    expect((await storedRowAnyGen(projectId))!.totals.receivedNotBilled, 'the consumer path stored the accepted value').toBe('100.00');
+
+    // Now COMMERCIAL-only writes. Nothing outside commercial moves, so the ONLY thing that can
+    // reach the projection is commercial's own announcement.
+    const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+
+    // the announcement is a REAL event on the project's stream, with a durable delivery for this
+    // consumer — not a side effect that happened to update a row
+    const announced = await t.prisma.domainEvent.findMany({
+      where: { projectId, eventType: COMMERCIAL_MONEY_EVENT }, orderBy: { streamPosition: 'asc' },
+    });
+    expect(announced.length, 'certification and approval each announced that commercial money moved').toBeGreaterThanOrEqual(2);
+    expect(
+      await t.prisma.outboxDelivery.count({
+        where: { consumer: CASH_FORECAST_PROJECTION, projectId, streamPosition: { in: announced.map((e) => e.streamPosition) }, deliveryAction: 'dispatch' },
+      }),
+      'each announcement materialized a dispatching delivery for the forecast consumer, in the writer\'s own transaction',
+    ).toBe(announced.length);
+
+    await drainRelay();
+    const afterApproval = await storedRowAnyGen(projectId);
+    expect(afterApproval!.totals.certifiedPayable, '§J — `NET_PAYABLE − APPROVED`').toBe('0.00');
+    expect(afterApproval!.totals.approved).toBe('100.00');
+    expect(afterApproval!.totals.receivedNotBilled, 'and the claim moved the money OUT of the received bucket').toBe('0.00');
+    // ONE compute function, so the folded row IS the live answer rather than a second opinion
+    expect(afterApproval).toEqual(await liveForecast(projectId));
+  });
+
+  it('PROBE 37 (§J): defining or RENAMING a cost head announces the move — the second seam', async () => {
+    // The one write that changes what the forecast SAYS while moving no money at all, so §B's
+    // evaluation would never fire for it. CLOSURE C pins that this seam exists; this proves it
+    // works. RED without the `announceMoneyMoved` call in `defineCostHead`.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
+    await issuedMaterialLine(projectId, { qty: '100' }); // emits events, so a generation exists
+    await drainRelay();
+    expect((await storedRowAnyGen(projectId))!.heads.map((h) => h.costHeadCode)).toEqual(['CIVIL', 'MEP']);
+
+    await commercial.defineCostHead(projectId, { code: 'FINISHES', name: 'Finishing works' }, pmc(projectId));
+    await drainRelay();
+    const added = await storedRowAnyGen(projectId);
+    expect(added!.heads.map((h) => h.costHeadCode), 'a new head APPEARS as an all-zero row').toEqual(['CIVIL', 'FINISHES', 'MEP']);
+    expect(added!.heads.find((h) => h.costHeadCode === 'FINISHES')!.exposure).toBe('0.00');
+
+    await commercial.defineCostHead(projectId, { code: 'FINISHES', name: 'Finishes & fit-out' }, pmc(projectId));
+    await drainRelay();
+    const renamed = await storedRowAnyGen(projectId);
+    expect(renamed!.heads.find((h) => h.costHeadCode === 'FINISHES')!.costHeadName).toBe('Finishes & fit-out');
+    expect(renamed, 'and the whole picture still equals the live compute').toEqual(await liveForecast(projectId));
+  });
+
+  it('PROBE 39 (§J): a PARTITION-ONLY write announces too — the seam that nearly got away', async () => {
+    // THE ONE 7A GOT WRONG FIRST, and it is worth stating plainly rather than burying.
+    //
+    // 7A hung the §J obligation off `CommercialBudgetService.evaluate`, on the derivation that
+    // "moved headroom" and "moved a §J bucket" are the same predicate. They are ALMOST the same,
+    // and the gap is exactly the partition-only writers: paying moves `approved` into `paid`
+    // without moving the total, so it is rightly exempt from §B's evaluator — and was therefore
+    // silently exempt from §J as well.
+    //
+    // The stored forecast would have gone on reporting money as authorised-and-unpaid forever
+    // after it left the bank. RED before `payments.record`/`reverse` announce.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    await drainRelay(); // the FOREIGN half establishes the generation
+
+    const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
+    await certification.certify(projectId, { billId }, pmc(projectId));
+    const approval = await payments.approve(projectId, { billId, amount: '100' }, approver(projectId));
+    await drainRelay();
+    expect((await storedRowAnyGen(projectId))!.totals.approved, 'approving evaluates, so its announcement was never in doubt').toBe('100.00');
+
+    // …and now the write that does NOT evaluate. Its own `commercial.money_moved` is the only
+    // thing that can move this row.
+    await payments.record(projectId, { approvalId: approval.id, amount: '40', method: 'neft' }, pmc(projectId));
+    await drainRelay();
+    const paid = await storedRowAnyGen(projectId);
+    expect(paid!.totals.paid, 'cash left the bank and the stored forecast must say so').toBe('40.00');
+    expect(paid!.totals.approved, '§J — `APPROVED − PAID`').toBe('60.00');
+    expect(paid, 'and the whole stored picture still equals the live compute').toEqual(await liveForecast(projectId));
+
+    // the reversal is the other partition-only writer, and runs the identity backwards
+    const payment = (await payments.ledger(projectId, billId, pmc(projectId))).approvals[0]!.payments[0]!;
+    await payments.reverse(projectId, { paymentId: payment.id, amount: '40', reason: 'wrong account' }, pmc(projectId));
+    await drainRelay();
+    const reversed = await storedRowAnyGen(projectId);
+    expect(reversed!.totals.paid, '§0 — `PAID` is Σ payments MINUS Σ reversals').toBe('0.00');
+    expect(reversed!.totals.approved).toBe('100.00');
+    expect(reversed).toEqual(await liveForecast(projectId));
+  });
+
+  it('PROBE 40 (§B/§J): the operator sweep REOPENS a breach the §J completion re-created', async () => {
+    // Codex F2 (P1) — the UPGRADE path, and the one finding of the five that is about data rather
+    // than code. Completing §J's partition raises exposure on every head carrying an approval, so a
+    // breach that 6A's code CLEARED when the approval "healed" it is live again — with no open row,
+    // because no write moved. The Inbox misses it until something unrelated touches that head.
+    //
+    // The post-upgrade state is reproduced exactly: breach, approve, then CLEAR the row the way 6A
+    // would have. Then the sweep, which must reopen it and label it for what actually moved.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '50.00', reason: 'thin plan' }, pmc(projectId));
+    const billId = await certifiedClaim(projectId);
+    await payments.approve(projectId, { billId, amount: '60.00' }, approver(projectId));
+
+    // …the 6A-shaped legacy row: cleared while the head is (under 7A) still breached
+    await t.prisma.budgetException.updateMany({ where: { projectId, costHeadCode: 'CIVIL', clearedAt: null }, data: { clearedAt: new Date() } });
+    const stale = await positionOf(projectId);
+    expect(stale.headroom, 'the head IS over budget').toBe('-50.00');
+    expect(stale.exception, 'and the register says nothing — exactly the post-upgrade gap').toBeNull();
+    expect((await budget.readBudget(projectId, pmc(projectId))).openExceptions, 'so the Inbox counts zero').toBe(0);
+
+    const report = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep' });
+    expect(report.raised, 'the sweep reopened exactly the breach the completion re-created').toBeGreaterThanOrEqual(1);
+
+    const repaired = await positionOf(projectId);
+    expect(repaired.exception, 'the breach is observable again').not.toBeNull();
+    expect(repaired.exception!.raisedBy, '`raisedBy` says what MOVED — the definition of exposure, not a site write').toBe('fold_correction');
+    expect(repaired.exception!.headroom).toBe('-50.00');
+
+    // IDEMPOTENT: a second run raises nothing further (one open row per head is a partial unique)
+    const second = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep again' });
+    expect(second.raised).toBe(0);
+    expect((await t.prisma.budgetException.findMany({ where: { projectId, costHeadCode: 'CIVIL', clearedAt: null } })), 'never two open rows on one head').toHaveLength(1);
+
+    // …and correcting the budget clears the breach WITHOUT the sweep, because §B's rule is that the
+    // write which moves headroom raises-or-clears in its own transaction. The sweep exists for the
+    // one case no write covers — a fold whose DEFINITION changed — so finding nothing to do here is
+    // the correct result, not a missing capability.
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '500.00', reason: 'plan corrected' }, pmc(projectId));
+    expect((await positionOf(projectId)).exception, '`setBudget` cleared it in its own transaction — that is §B, not the sweep').toBeNull();
+    const healed = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep after correction' });
+    expect(healed.raised, 'and the sweep is a no-op over an already-consistent register').toBe(0);
+    expect(healed.cleared).toBe(0);
+
+    // Codex round-2 (P2) — RAISES AND CLEARS ARE COUNTED SEPARATELY. A project that reopens one
+    // stale breach while clearing another leaves the OPEN TOTAL unchanged, so net before/after
+    // counting reports `raised: 0, cleared: 0` while two durable rows moved. MEP is set up to
+    // breach and CIVIL to heal, in one sweep.
+    await budget.setBudget(projectId, { costHeadCode: 'MEP', amount: '1.00', reason: 'thin' }, pmc(projectId));
+    const mepBill = await certifiedClaim(projectId, '100', 'MEP');
+    await payments.approve(projectId, { billId: mepBill, amount: '100.00' }, approver(projectId));
+    // CIVIL is healthy and MEP now breaches; force the register into the OPPOSITE of the truth so
+    // one sweep must do both
+    await t.prisma.budgetException.updateMany({ where: { projectId, costHeadCode: 'MEP', clearedAt: null }, data: { clearedAt: new Date() } });
+    await t.prisma.budgetException.create({
+      data: { projectId, costHeadCode: 'CIVIL', headroom: new Prisma.Decimal('-1'), budget: new Prisma.Decimal('500'), exposure: new Prisma.Decimal('501'), raisedBy: 'fold_correction', raisedById: f.memberUser.id },
+    });
+    const openBefore = await t.prisma.budgetException.count({ where: { projectId, clearedAt: null } });
+    const both = await reevaluateAll(t.prisma, budget, { userId: f.memberUser.id, reason: 'test sweep both directions' });
+    expect(await t.prisma.budgetException.count({ where: { projectId, clearedAt: null } }), 'the OPEN TOTAL is unchanged — which is exactly why a net count reports nothing').toBe(openBefore);
+    expect(both.raised, 'MEP reopened').toBe(1);
+    expect(both.cleared, 'CIVIL closed').toBe(1);
+
+    // Codex round-2 (P2) — the REASON is persisted. A required flag that is discarded is a required
+    // flag that lies about being required: months later nothing distinguishes the mandated §J
+    // upgrade repair from an accidental rerun.
+    const audits = await t.prisma.auditLog.findMany({ where: { projectId, action: 'commercial.reevaluate' }, orderBy: { at: 'asc' } });
+    expect(audits.length, 'every sweep of a project records one').toBeGreaterThanOrEqual(1);
+    expect((audits.at(-1)!.payload as { reason?: string }).reason).toBe('test sweep both directions');
+  });
+
+  it('PROBE 41 (§J/root B): an announced write LAGS the generation, so staleness has a signal', async () => {
+    // ROOT B, stated as a runtime property rather than as prose.
+    //
+    // The platform detects a stale projection ONE way: the active generation's checkpoint falls
+    // behind the project's committed stream head, `readServableGeneration` refuses to serve it, and
+    // the read falls back to the canonical compute. That mechanism is driven entirely by events —
+    // so while commercial announced nothing, a commercial write left the checkpoint EQUAL to the
+    // head and the generation stayed "servable" no matter what the row actually held. Six findings
+    // came out of that one fact.
+    //
+    // RED at `93a9217`: with the write-through refresh and no announcement, `applied` still equals
+    // `head` after the certify below, `readServableGeneration` returns a generation, and nothing in
+    // the system can tell a current row from a forgotten one.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100000', reason: 'pilot budget' }, pmc(projectId));
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    await drainRelay();
+    const caughtUp = await generationLag(projectId);
+    expect(caughtUp.applied, 'the fixture starts CAUGHT UP, or "it lags" below proves nothing').toBe(caughtUp.head);
+    expect(await readServableGeneration(t.prisma, CASH_FORECAST_PROJECTION, projectId)).not.toBeNull();
+
+    // a COMMERCIAL-only write, undrained
+    const billId = await verifiedClaim(projectId, line.vendorId, [{ poLineId: line.poLineId, quantity: '100' }]);
+    await certification.certify(projectId, { billId }, pmc(projectId));
+
+    const lagging = await generationLag(projectId);
+    expect(lagging.head, 'the certification allocated a stream position — it ANNOUNCED').toBeGreaterThan(caughtUp.head);
+    expect(lagging.applied, 'and the generation is now visibly behind it').toBeLessThan(lagging.head);
+    expect(
+      await readServableGeneration(t.prisma, CASH_FORECAST_PROJECTION, projectId),
+      'a lagging generation is never served as authoritative — the read falls back to the live compute',
+    ).toBeNull();
+    const readWhileLagging = await budget.readCashForecast(projectId, pmc(projectId));
+    expect(readWhileLagging.refreshedAt, 'the LIVE fallback reports no projection timestamp — it did not come from a stored row').toBeNull();
+    expect(readWhileLagging.totals.certifiedPayable, 'and the fallback is the FRESHER answer, never a different one').toBe('100.00');
+
+    // …and the ordinary relay closes it, with no projection-specific machinery involved
+    await drainRelay();
+    const settled = await generationLag(projectId);
+    expect(settled.applied).toBe(settled.head);
+    expect(await storedForecast(projectId)).toEqual(await liveForecast(projectId));
+  });
+
+  it('PROBE 42 (§0b): the forecast handler takes NO lock, so the relay and the barrier cannot deadlock', async () => {
+    // Codex round-4 (P1), reproduced deterministically with the two REAL lock acquisitions the two
+    // real machines make, and the REAL projection handler between them.
+    //
+    // Round 3 fixed round 2's inversion by taking `ProjectEventStream` inside the forecast refresh,
+    // before the advisory lock — a total order for the two locks it could see. The order it could
+    // not see is the relay's: `dispatchProjection` locks the ACTIVE `ProjectionGeneration` row
+    // FOR UPDATE and THEN invokes the handler, while the rebuild's activation barrier holds the
+    // STREAM row and then locks that same generation row (`replayInto` → `applyEvent`). So:
+    //
+    //   relay:   ProjectionGeneration → (handler) → ProjectEventStream
+    //   barrier: ProjectEventStream   →              ProjectionGeneration
+    //
+    // A genuine cycle, and PostgreSQL resolves it by killing the operator's rebuild or a live
+    // delivery. The round-4 repair deletes the handler's locks entirely — commercial announces, so
+    // the projection needs no serialization of its own — and the cycle has no edge left to close.
+    //
+    // Session B plays the RELAY (generation row, then the handler); session A plays the BARRIER
+    // (stream row, then the generation row). B signals as soon as it holds the generation row, so
+    // A reaches for it while B is inside the handler: at `93a9217` the handler waits on A's stream
+    // row and A waits on B's generation row — a 40P01 one of them dies of. Verified RED by
+    // restoring the stream-row acquisition to `refreshCashForecast`.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '100000', reason: 'pilot budget' }, pmc(projectId));
+    await issuedMaterialLine(projectId, { qty: '1' });
+    await drainRelay();
+    const { generationId } = await generationLag(projectId);
+    expect(generationId, 'no active generation to contend over — the probe would prove nothing').toBeTruthy();
+
+    const barrier = new PrismaClient();
+    const relay = new PrismaClient();
+    try {
+      let generationHeld!: () => void;
+      const heldByRelay = new Promise<void>((r) => { generationHeld = r; });
+
+      // B — the relay: lock the active generation exactly as `lockActiveGeneration` does, announce
+      // that it is held, then run the REAL cash-forecast handler on this transaction.
+      const relaySide = relay.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe('SELECT "id" FROM "ProjectionGeneration" WHERE "id" = $1 FOR UPDATE', generationId);
+        generationHeld();
+        await makeCashForecastProjectionConsumer().handle({
+          delivery: { id: '(probe)', consumer: CASH_FORECAST_PROJECTION, projectId, streamPosition: 0n, payload: null },
+          meta: { projectId } as never,
+          senderMode: 'outbox',
+          tx: tx as never,
+          projection: { generationId: generationId!, generation: 1, projectId },
+        } as never);
+      }, { timeout: 30_000 });
+
+      // A — the activation barrier: hold the stream row, then reach for the same generation row.
+      const barrierSide = barrier.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe('SELECT "projectId" FROM "ProjectEventStream" WHERE "projectId" = $1 FOR UPDATE', projectId);
+        await heldByRelay;
+        await tx.$queryRawUnsafe('SELECT "id" FROM "ProjectionGeneration" WHERE "id" = $1 FOR UPDATE', generationId);
+      }, { timeout: 30_000 });
+
+      // neither side is a deadlock victim, and the handler completed inside the relay's transaction
+      await expect(Promise.all([relaySide, barrierSide])).resolves.toBeDefined();
+    } finally {
+      await barrier.$disconnect();
+      await relay.$disconnect();
+    }
+    expect(await storedForecast(projectId)).toEqual(await liveForecast(projectId));
+  });
+
+  it('PROBE 38 (§J): the read falls back to LIVE rather than serving a stale or absent generation', async () => {
+    // The standing read discipline. A lagging generation is never served as authoritative — the
+    // caller gets the canonical compute instead, through the SAME function, so a fallback is a
+    // fresher answer and never a different one.
+    const projectId = await freshProject();
+    await budget.setBudget(projectId, { costHeadCode: 'CIVIL', amount: '1000', reason: 'pilot budget' }, pmc(projectId));
+
+    // Real money on the project, and the relay deliberately NOT drained: the events exist but no
+    // generation does yet, because the relay is what establishes one. So the read MUST compute live
+    // rather than report an absent projection as an empty money picture.
+    await issuedMaterialLine(projectId, { qty: '100' });
+    const cold = await budget.readCashForecast(projectId, pmc(projectId));
+    expect(cold.refreshedAt, 'a live answer is honestly dated null, never stamped `now`').toBeNull();
+    expect(cold.totals.budget).toBe('1000.00');
+    expect(cold.totals.committed, 'and it is REAL money, not an empty page that would match anything').toBe('100.00');
+
+    await drainRelay();
+    const warm = await budget.readCashForecast(projectId, pmc(projectId));
+    expect(warm.refreshedAt, 'once a servable generation holds a row, the read says how old it is').not.toBeNull();
+    const { refreshedAt: _a, ...warmBody } = warm;
+    const { refreshedAt: _b, ...coldBody } = cold;
+    expect(warmBody, 'projection and live are the same money — one is merely dated').toEqual(coldBody);
+
+    // …and §D: the read is capability-gated like every other commercial surface.
+    await expect(budget.readCashForecast(f.projectB.id, pmc(f.projectB.id))).rejects.toMatchObject({ status: 404 });
   });
 });

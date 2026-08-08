@@ -103,6 +103,7 @@ const MODEL_OWNER: Record<string, string> = {
   payment: 'commercial',
   paymentReversal: 'commercial',
   vendorAdvance: 'commercial',
+  cashForecastProjection: 'commercial',
   certifiedAcceptanceConsumption: 'commercial',
   certifiedMeasurementConsumption: 'commercial',
   activityWorkOutput: 'activities',

@@ -115,6 +115,14 @@ export const COMMERCIAL_QUERIES = [
   // totals. FOLDS on every call: §G bounds 4–5 are computed from the rows, so a stored total
   // would be a second answer to a question the ledger already answers.
   'commercial.payments',
+  // Phase 5 Task 7A — §J's cash forecast, served from the EIGHTH rebuildable projection. This is
+  // the only commercial read that is PROJECTED rather than folded on call, and the reason is the
+  // shape of the question: `commercial.budget` answers "what is this head's position right now"
+  // for a page a user is looking at, while the forecast answers "what does this project owe" for
+  // the Inbox, the dashboard and the portfolio roll-up — surfaces that ask on every load, for
+  // every project, and can tolerate one commit of lag. What they cannot tolerate is a fold across
+  // four modules per project per page-load.
+  'commercial.cash-forecast',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -171,6 +179,14 @@ export interface CostHeadPositionDto {
    *  `awaitingCertification` rather than adding to the total, so a surface still reporting a
    *  certified claim as awaiting certification is saying the act has not happened after it has. */
   certifiedPayable: string;
+  /** §J `approved` — `APPROVED − PAID`, authorised and not yet gone. Task 7A. */
+  approved: string;
+  /** §J `paid` — `PAID`, the only raw fold, because paid cash is where the money stops. Task 7A. */
+  paid: string;
+  /** §J — `Σ` of the SIX exposure buckets. Reported so a reader can check the partition without
+   *  re-adding them, and so `headroom = budget − exposure` is visibly one subtraction rather than
+   *  six the caller has to trust. `budget` is authority and is NEVER an addend here. */
+  exposure: string;
   /** `BUDGET − Σ exposure`, NEGATIVE when over-committed; null when unbudgeted */
   headroom: string | null;
   /** the OPEN over-budget exception on this head, if one stands right now */
@@ -191,7 +207,11 @@ export interface BudgetExceptionDto {
   /** Task 6A — `payment_approval` joins the union because the DB CHECK now admits it. A label a
    *  client is told is impossible, and which the server can still return, is a client that
    *  mishandles the first real one it sees. */
-  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim' | 'deduction' | 'deduction_release' | 'payment_approval';
+  /** Task 7A — `fold_correction` joins the union: completing §J's partition RAISED exposure on
+   *  every head carrying an approval, so the operator re-evaluation sweep that repairs the register
+   *  after that upgrade needs a label describing what actually moved. A label a client is told is
+   *  impossible, and which the server can still return, is a client that mishandles the first one. */
+  raisedBy: 'commitment' | 'budget_revision' | 'reattribution' | 'acceptance' | 'receipt_progress' | 'measurement' | 'claim' | 'deduction' | 'deduction_release' | 'payment_approval' | 'fold_correction';
   raisedAt: string;
   raisedById: string;
   clearedAt: string | null;
@@ -733,6 +753,58 @@ export interface BillPaymentLedgerDto {
    *  reversal rows that make it correct, so this reports what IS rather than what a partial
    *  derivation would guess — exactly as the deduction ledger does. */
   billStatus: VendorBillStatus;
+}
+
+/**
+ * §J — the project-wide cash forecast, the EIGHTH rebuildable projection's stored shape.
+ *
+ * `heads` is the SAME `CostHeadPositionDto` the live `commercial.budget` read serves, produced by
+ * the same serializer. That is deliberate and load-bearing: §J's seven bucket definitions are
+ * subtle enough that two of them were corrected in opposite directions across plan revisions, so
+ * there must be exactly ONE place a bucket is defined. A parallel row shape here would be a second
+ * place for a definition to drift to, and the drift would be invisible — both surfaces would keep
+ * returning plausible money.
+ */
+export interface CashForecastDto {
+  /** every cost head's position, worst headroom first — identical to `commercial.budget` */
+  heads: CostHeadPositionDto[];
+  /** the project roll-up */
+  totals: CashForecastTotalsDto;
+}
+
+/**
+ * Project totals. The SIX exposure buckets sum; `budget` sums SEPARATELY.
+ *
+ * §J is explicit that budget is the CEILING the six are measured against and never a seventh
+ * addend, so `exposure` here is the sum of the six and `headroom` is `budget − exposure` — one
+ * subtraction, visibly, rather than seven terms a reader has to trust.
+ *
+ * A head with NO budget contributes nothing to `budget` and its exposure still counts. That is the
+ * honest reading rather than a convenience: unbudgeted spend is exposure nobody authorised, not
+ * exposure that does not exist, and netting it away would make a project that has budgeted nothing
+ * report perfect headroom.
+ */
+export interface CashForecastTotalsDto {
+  /** Σ `BUDGET` over BUDGETED heads — authority, never an addend of `exposure` */
+  budget: string;
+  committed: string;
+  receivedNotBilled: string;
+  awaitingCertification: string;
+  certifiedPayable: string;
+  approved: string;
+  paid: string;
+  /** Σ of the six above — the money the project is exposed to */
+  exposure: string;
+  /** `budget − exposure`, NEGATIVE when the project is over-committed in aggregate */
+  headroom: string;
+}
+
+/** The `commercial.cash-forecast` read: the projected forecast plus how stale it is. */
+export interface CashForecastReadDto extends CashForecastDto {
+  /** when the serving generation last recomputed this project's row, or null if it never has.
+   *  Reported because §J's consumer is ordered and asynchronous for foreign facts: a surface that
+   *  cannot say how old its money figure is cannot be argued with. */
+  refreshedAt: string | null;
 }
 
 // §F's `deriveBillStatus` is NOT here. It reads three folds and two of them — `APPROVED` and
