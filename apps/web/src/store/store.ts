@@ -449,6 +449,9 @@ export interface AppActions {
   submitVendorBill: (billId: string) => void;
   amendVendorBill: (input: AmendVendorBillInput) => void;
   rejectVendorBill: (billId: string, reason: string) => void;
+  /** §E/§F writes (7B-iii-c-i) — the verification chain, on the SAME claim lifecycle. */
+  beginVerification: (billId: string) => void;
+  verifyVendorBill: (billId: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -1626,6 +1629,11 @@ export const useStore = create<Store>()(
       submitVendorBill: 'commercial.bill',
       amendVendorBill: 'commercial.bill',
       rejectVendorBill: 'commercial.bill',
+      // 7B-iii-c-i — `commercial.verify` is pmc-only, and that separation is the point: the
+      // engineer who lodged the claim may not be the one who verifies it. The map is what makes
+      // the durable dispatcher refuse it, not just the screen that hides the button.
+      beginVerification: 'commercial.verify',
+      verifyVendorBill: 'commercial.verify',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
@@ -2769,6 +2777,9 @@ export const useStore = create<Store>()(
       // place: every consumer already gates blanking on the value (`… && !commercial`), so the
       // guard bought no protection and cost the one thing only the status can say — that a read is
       // in flight right now. Set it honestly and let the value carry the last-good picture.
+      // Q-a, hoisted: captured at START, so a read that began before a write settled applies its
+      // value and releases nothing.
+      const settledAtStart = commercialWritesSettled;
       set((s) => { s.commercialLoad = 'loading'; });
       // Codex round 2 — ONE request, not four. Four reads assemble a page from four database
       // moments, and a re-attribution committing between two of them renders an impossible money
@@ -2788,7 +2799,7 @@ export const useStore = create<Store>()(
           // The money read resolving says nothing about whether the claim register on screen is
           // current, and it is the faster of the two; clearing a measurement's key on it reopened
           // the very window M1 closed.
-          releaseCommercialKeys(s, { read: 'money' });
+          releaseCommercialKeys(s, { read: 'money', observedWrite: commercialWritesSettled === settledAtStart });
         });
       }).catch(() => set((s) => {
         // keep the last-good bundle and expose a Retry boundary. An OLDER failure never overwrites
@@ -2809,6 +2820,7 @@ export const useStore = create<Store>()(
       const seq = ++commercialBillsSeq;
       const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
         seq === commercialBillsSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
+      const settledAtStart = commercialWritesSettled; // Q-a, hoisted — see `CommercialRead`
       set((s) => { s.commercialBillsLoad = 'loading'; }); // honest status; the value survives (I2)
       // UNWRAP: the route returns the wrapper `VendorBillListDto`, like every other list route.
       // Storing the envelope would put an object where the screen maps an array.
@@ -2819,7 +2831,7 @@ export const useStore = create<Store>()(
           s.commercialBillsLoad = 'ready';
           // …and the list's own keys — a LODGE becomes visible here, and here only: this is the
           // list the lodge form's duplicate guard reads.
-          releaseCommercialKeys(s, { read: 'bills' });
+          releaseCommercialKeys(s, { read: 'bills', observedWrite: commercialWritesSettled === settledAtStart });
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialBillsLoad = 'error'; }));
     },
@@ -2842,6 +2854,7 @@ export const useStore = create<Store>()(
       // before; the status goes to 'loading' because that is what is true. Holding it at 'ready'
       // through a refresh made a lifecycle an accountant is about to authorise money against
       // indistinguishable from one a completed current read had just confirmed.
+      const settledAtStart = commercialWritesSettled; // Q-a, hoisted — see `CommercialRead`
       set((s) => { s.commercialClaimLoad[billId] = 'loading'; });
       return gateway.commercialClaim(billId).then((claim) => {
         set((s) => {
@@ -2851,7 +2864,7 @@ export const useStore = create<Store>()(
           // THIS claim's lifecycle transitions are visible now. A lodge is not (the list carries
           // it), and neither is a measurement (its LINE's register carries it) — with two claims
           // open, releasing those here is N1 one resource over.
-          releaseCommercialKeys(s, { read: 'claim', billId });
+          releaseCommercialKeys(s, { read: 'claim', billId, observedWrite: commercialWritesSettled === settledAtStart });
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialClaimLoad[billId] = 'error'; }));
     },
@@ -2868,9 +2881,7 @@ export const useStore = create<Store>()(
       if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
       const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
       const seq = (commercialLineSeq[labourPoLineId] = (commercialLineSeq[labourPoLineId] ?? 0) + 1);
-      // Q-a: captured at START. If a write settles before this resolves, this read cannot be shown
-      // to have observed it, so it applies its VALUE but releases no keys.
-      const settledAtStart = commercialWritesSettled;
+      const settledAtStart = commercialWritesSettled; // Q-a, hoisted — see `CommercialRead`
       const owns = (st: { activeProjectId: string; projectScopeGeneration: number }) =>
         seq === commercialLineSeq[labourPoLineId]
         && isCurrentProjectScope(st.activeProjectId, st.projectScopeGeneration, scope);
@@ -2964,6 +2975,20 @@ export const useStore = create<Store>()(
         { t: 'rejectVendorBill', input: { billId, reason }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'reject') },
         `Reject ${billId}`, 'Claim rejected.',
+      );
+    },
+    beginVerification: (billId) => {
+      dispatchCommercial(
+        { t: 'beginVerification', input: { billId }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'begin-verification') },
+        `Verify ${billId}`, 'Verification opened.',
+      );
+    },
+    verifyVendorBill: (billId) => {
+      dispatchCommercial(
+        { t: 'verifyVendorBill', input: { billId }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'verify') },
+        `Verify ${billId}`, 'Verification recorded.',
       );
     },
     reattributeCommitment: (line, costHeadCode, reason) => {

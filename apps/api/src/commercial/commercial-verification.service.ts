@@ -1,7 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import {
-  ROLE_POLICY, isLiveBillStatus,
+  ROLE_POLICY, isLiveBillStatus, BILL_VERIFY_FROM,
   type VendorBillStatus, type VerificationDto, type VerificationExceptionKind, type VerificationLineDto,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
@@ -326,7 +326,7 @@ export class CommercialVerificationService {
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const bill = await this.lockBill(tx, projectId, input.billId);
-        if (bill.status !== 'under-verification') {
+        if (!(BILL_VERIFY_FROM as readonly string[]).includes(bill.status)) {
           throw new ConflictException(
             `A ${bill.status} claim cannot be verified — verification applies to a claim under verification`,
           );

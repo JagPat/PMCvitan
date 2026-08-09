@@ -72,6 +72,17 @@ export const BILL_SUBMITTABLE_FROM = ['draft'] as const;
 export const BILL_REJECTABLE_FROM = ['draft', 'submitted', 'under-verification', 'disputed', 'verified'] as const;
 
 /**
+ * §F — the two verification transitions, stated ONCE for the same reason as the pair above.
+ *
+ * Both were inline `from:` literals in the services. A form restating them is the J3 pattern that
+ * has now cost three PRs: the screen offers a transition, the server refuses it, and the
+ * write-ahead outbox has already said "saved". Shared and READ BY THE SERVICE, the screen cannot
+ * offer one the service does not admit without the service changing too.
+ */
+export const BILL_BEGIN_VERIFICATION_FROM = ['submitted'] as const;
+export const BILL_VERIFY_FROM = ['under-verification'] as const;
+
+/**
  * §F — the duplicate-claim key as the SERVER computes it: case- and whitespace-normalized.
  *
  * The stored text keeps the vendor's verbatim number (trimmed), but the live-duplicate index keys

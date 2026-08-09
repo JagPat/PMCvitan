@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable, NotFoundException } 
 import { Prisma } from '@prisma/client';
 import {
   BILL_STATUSES_NOT_LIVE, ROLE_POLICY, isLiveBillStatus, claimLineMayCarryCharges,
+  BILL_BEGIN_VERIFICATION_FROM,
   type VendorBillDto, type VendorBillLineDto, type VendorBillListDto, type VendorBillStatus,
   type VendorBillVersionDto,
   BILL_SUBMITTABLE_FROM, BILL_REJECTABLE_FROM,
@@ -311,7 +312,7 @@ export class CommercialBillService {
   async beginVerification(projectId: string, input: VendorBillStepInput, user: AuthUser, idempotencyKey?: string): Promise<VendorBillDto> {
     return this.transition(projectId, input.billId, user, idempotencyKey, {
       commandType: 'commercial.bill.beginVerification',
-      from: ['submitted'],
+      from: [...BILL_BEGIN_VERIFICATION_FROM],
       to: 'under-verification',
       assertAuthority: (u) => this.assertVerify(u),
       evaluateBounds: false,
