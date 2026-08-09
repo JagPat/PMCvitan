@@ -415,6 +415,20 @@ export class CommercialMeasurementService {
     ]);
     const line = lines.get(labourPoLineId);
     if (!line) throw new NotFoundException('Labour purchase-order line not found in this project');
+    // The row-level certificate floor `assertNoCertifiedMeasurement` enforces, reported so a
+    // reader can apply it. GLOBAL by construction — any live certificate, on any claim — which is
+    // exactly why a client holding one claim could not derive it and a client holding none could
+    // not see it. Same `supersededAt: null` liveness the floor itself asks for, so the two cannot
+    // disagree about which certificates count.
+    const frozen = rows.length === 0 ? [] : await tx.certifiedMeasurementConsumption.findMany({
+      where: {
+        projectId,
+        measurementId: { in: rows.map((r) => r.id) },
+        certificate: { is: { supersededAt: null } },
+      },
+      select: { measurementId: true, consumedQty: true },
+      orderBy: [{ measurementId: 'asc' }, { certificateId: 'asc' }],
+    });
     return {
       labourPoLineId,
       rows: rows.map(serialize),
@@ -426,6 +440,8 @@ export class CommercialMeasurementService {
       // the frozen order alone published a cap that was not real.
       liveAuthorityPersonShiftQty: line.liveAuthority,
       defaulted: line.defaulted,
+      lineLive: line.live,
+      certifiedConsumption: frozen.map((f) => ({ rowId: f.measurementId, consumedQty: f.consumedQty.toString() })),
     };
   }
 }

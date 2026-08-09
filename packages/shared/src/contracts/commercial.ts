@@ -300,6 +300,24 @@ export interface MeasurementRegisterDto {
   liveAuthorityPersonShiftQty: number;
   /** whether this line's supplier commitment was defaulted (why the live authority can be `0`) */
   defaulted: boolean;
+  /**
+   * Whether the purchase-order version this line belongs to is LIVE.
+   *
+   * `append` refuses every POSITIVE row when it is not — a cancelled or superseded version orders
+   * nothing — and no quantity on this DTO expresses that, so a reader could only guess. Carried
+   * because a surface that offers a measurement the write path will refuse is a promise the
+   * write-ahead outbox has to break.
+   */
+  lineLive: boolean;
+  /**
+   * What LIVE certificates have frozen against this line's measurement rows, GLOBALLY.
+   *
+   * The row-level floor `assertNoCertifiedMeasurement` enforces: an original row may not be taken
+   * below what a live certificate consumes from it. It is global — any live certificate, on any
+   * claim — so a reader holding one claim cannot compute it, and one holding none cannot see it at
+   * all. Carried here so the floor is exact rather than a lower bound.
+   */
+  certifiedConsumption: CertifiedConsumptionDto[];
 }
 
 /**

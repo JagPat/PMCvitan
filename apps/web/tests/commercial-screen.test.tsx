@@ -87,7 +87,10 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
   };
 
   it('with no claim selected, each claim tab asks for one instead of rendering blanks', () => {
-    for (const tab of ['certification', 'payments', 'measurements'] as const) {
+    // 'measurements' is NOT in this set from round 3 on: a labour PO line's register is not a
+    // property of a claim, and gating it on one made measuring — the workflow's FIRST step —
+    // require lodging a claim, its last.
+    for (const tab of ['certification', 'payments'] as const) {
       const r = openClaimTab(tab);
       expect(r.getByTestId('commercial-claim-none')).toBeTruthy();
       cleanup();
@@ -189,6 +192,134 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     expect(r.getByTestId('verification-verdict').textContent).toBe('matched');
   });
 
+  it('R4-2: Refresh on Measurements reloads the bundle the LINE LIST comes from', () => {
+    // RED before: Refresh reloaded the claim reads and the registers it already knew about, and
+    // never the money bundle that supplies the lines — so a failed or stale bundle could not be
+    // recovered from the one control offered for exactly that, and a newly attributed line never
+    // appeared.
+    const loaders = stubLoaders();
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    fireEvent.click(r.getByTestId('commercial-refresh'));
+    expect(loaders.loadCommercial, 'the line list could not recover from its own Refresh').toHaveBeenCalled();
+  });
+
+  it('S1: a held LIST response cannot regress a bill the claim already reports certified', () => {
+    // The interleaving completion order gets wrong: a LIST request starts while bill-1 is
+    // `verified`; certification commits; a CLAIM request starts and returns `certified`; then the
+    // held list response lands LAST carrying `verified`. Its completion is later, so a counter over
+    // completions calls it fresher — and the row regresses, offering the transitions of a claim
+    // that has already been certified.
+    //
+    // `statusChangedAt` is the moment the SERVER stamped on the transition, so the comparison is
+    // about the bill rather than about the requests.
+    useStore.setState({
+      commercialBills: [{ ...claim().bill, status: 'verified' as const, statusChangedAt: '2026-08-21T00:00:00.000Z' }],
+      commercialBillsLoad: 'ready',   // …and this read COMPLETED last
+      commercialClaims: {
+        'bill-1': { ...claim(), bill: { ...claim().bill, status: 'certified' as const, statusChangedAt: '2026-08-21T09:00:00.000Z' } },
+      },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    expect(
+      r.getByTestId('commercial-claim-status-bill-1').textContent,
+      'a response that merely COMPLETED later regressed the bill to a superseded status',
+    ).toBe('certified');
+  });
+
+  it('S2: a failed line-source read is reported as unavailable, not as an empty project', () => {
+    // RED before: `measurableLineIds` reads the money bundle's attributions, whose
+    // loading/unavailable boundaries were gated by `onMoneyTab` — so a bundle that never arrived
+    // rendered "No labour purchase-order lines are attributed on this project yet", which is a
+    // claim about the PROJECT made from a read that failed.
+    useStore.setState({ commercialView: null, commercialLoad: 'error' });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    expect(
+      r.queryByTestId('commercial-measurements-empty'),
+      'a failed read was reported as a fact about the project',
+    ).toBeNull();
+    expect(r.getByTestId('commercial-measurements-unavailable')).toBeTruthy();
+    expect(r.getByTestId('commercial-measurements-retry')).toBeTruthy();
+  });
+
+  it('S3: a CACHED line source whose refresh failed is stale, not an empty project', () => {
+    // The cached half of S2, which S2 did not cover: `viewOf` reports staleness ON content, so a
+    // cached bundle with a failed latest read is `{ show: 'content', stale: true }` — and reading
+    // only `show` let the empty-project statement stand over a read that failed. The failed read
+    // is exactly the one that would have carried a newly attributed line.
+    useStore.setState({
+      commercialView: { ...bundle(), attributions: [] } as never,   // cached, and EMPTY
+      commercialLoad: 'error',                                       // the latest refresh failed
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    expect(
+      r.queryByTestId('commercial-measurements-empty'),
+      'an unrefreshable cached bundle was presented as current project truth',
+    ).toBeNull();
+    expect(r.getByTestId('commercial-measurements-stale')).toBeTruthy();
+    expect(r.getByTestId('commercial-measurements-retry')).toBeTruthy();
+  });
+
+  it('S4: equal timestamps with DIFFERING status are ambiguous, never a tie broken toward the claim', () => {
+    // `statusChangedAt` is `new Date()` at millisecond precision, not a lifecycle version, so two
+    // DIFFERENT transitions can share a stamp. The causal sequence: the claim read succeeds at
+    // `certified` stamped T; approval commits in the same millisecond T; a list read that STARTS
+    // after that claim success returns `approved-for-payment`, also stamped T. A `>=` tie broken
+    // toward the claim regresses the row to `certified` and offers its transitions.
+    const t = '2026-08-21T09:00:00.000Z';
+    useStore.setState({
+      commercialBills: [{ ...claim().bill, status: 'approved-for-payment' as const, statusChangedAt: t }],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': { ...claim(), bill: { ...claim().bill, status: 'certified' as const, statusChangedAt: t } } },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+
+    expect(
+      r.getByTestId('commercial-claim-status-bill-1').textContent,
+      'an undecidable pair was decided toward the copy that can be older',
+    ).not.toBe('certified');
+    // and it says the two disagree rather than picking silently…
+    expect(r.getByTestId('commercial-claim-ambiguous-bill-1')).toBeTruthy();
+    // …and refuses to ACT on a status it cannot establish
+    expect((r.getByTestId('bill-reject-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('R3-1: the Measurements tab needs no claim — the line is the subject', () => {
+    // RED before: `claimPanel` rendered "Choose a claim", so on a project with no claim yet the
+    // engineer could not measure at all and had to lodge a draft first just to select its lines.
+    useStore.setState({
+      commercialView: {
+        ...bundle(),
+        attributions: [{
+          id: 'att-1', poLineId: null, labourPoLineId: 'LPL-1', costHeadCode: 'CIVIL',
+          reason: 'r', createdAt: '2026-08-01T00:00:00.000Z', createdById: 'u-1',
+          supersededAt: null, supersededById: null, supersedeReason: null,
+        }],
+      } as never,
+      commercialLineRegisters: {
+        'LPL-1': {
+          labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
+          orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+          lineLive: true, certifiedConsumption: [],
+        },
+      } as never,
+      commercialLineRegisterLoad: { 'LPL-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    expect(r.queryByTestId('commercial-claim-none'), 'measuring still demanded a claim').toBeNull();
+    expect(r.getByTestId('commercial-measurement-LPL-1')).toBeTruthy();
+    expect(r.getByTestId('measure-qty-LPL-1')).toBeTruthy();
+  });
+
   it('F2: a failed refresh warns on EVERY claim tab, not just Certification', () => {
     useStore.setState({
       commercialClaims: { 'bill-1': claim() },
@@ -198,7 +329,9 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
     fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
 
-    for (const tab of ['certification', 'payments', 'measurements'] as const) {
+    // 'measurements' left this set in round 3 — it renders a LINE's register, so a stale CLAIM
+    // read is not a property of what it shows. Its own staleness is reported per line register.
+    for (const tab of ['certification', 'payments'] as const) {
       fireEvent.click(r.getByTestId(`commercial-tab-${tab}`));
       expect(
         r.getByTestId('commercial-claim-stale'),
@@ -217,15 +350,16 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     // used to infer "fresher" from the claim's mere presence (F4) and then from its not having
     // errored (H4); it now reads the ordering of the two successes, so the precondition this test
     // has always described is stated as data rather than implied by a proxy.
-    const stale = { ...claim().bill, status: 'verified' as const };
-    const fresh = claim(); // status: 'certified'
+    // "fresher" is stated as DATA: the claim copy carries the later transition moment. Round 6
+    // sharpened why that matters — equal stamps with differing statuses are ambiguous, not a tie
+    // to be broken, so a probe that means "the claim is newer" has to say so.
+    const stale = { ...claim().bill, status: 'verified' as const, statusChangedAt: '2026-08-21T00:00:00.000Z' };
+    const fresh = { ...claim(), bill: { ...claim().bill, statusChangedAt: '2026-08-21T09:00:00.000Z' } }; // 'certified'
     useStore.setState({
       commercialBills: [stale],
       commercialBillsLoad: 'ready',
-      commercialBillsStamp: 1,
       commercialClaims: { 'bill-1': fresh },
       commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 }, // the claim read succeeded AFTER the list read
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -356,12 +490,11 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
   it('H4: a STALE claim does not override a freshly refreshed row', () => {
     // the list refreshed successfully to `paid`; the claim refresh failed, leaving `certified`
     useStore.setState({
-      commercialBills: [{ ...claim().bill, status: 'paid' as const }],
+      // the list carries the LATER domain moment — `paid` was stamped after `certified`
+      commercialBills: [{ ...claim().bill, status: 'paid' as const, statusChangedAt: '2026-08-22T00:00:00.000Z' }],
       commercialBillsLoad: 'ready',
-      commercialBillsStamp: 2, // the list's success is the LATER of the two
-      commercialClaims: { 'bill-1': claim() },
+      commercialClaims: { 'bill-1': { ...claim(), bill: { ...claim().bill, statusChangedAt: '2026-08-21T00:00:00.000Z' } } },
       commercialClaimLoad: { 'bill-1': 'error' },
-      commercialClaimStamp: { 'bill-1': 1 },
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -373,14 +506,13 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
   });
 
   it('H4: a healthy claim still wins over a stale list row', () => {
-    // the guard must not swing the other way: this is the case the previous round fixed
+    // the guard must not swing the other way: this is the case the previous round fixed. The
+    // claim's later transition moment is what makes it the newer copy — stated, not assumed.
     useStore.setState({
-      commercialBills: [{ ...claim().bill, status: 'verified' as const }],
+      commercialBills: [{ ...claim().bill, status: 'verified' as const, statusChangedAt: '2026-08-21T00:00:00.000Z' }],
       commercialBillsLoad: 'ready',
-      commercialBillsStamp: 1,
-      commercialClaims: { 'bill-1': claim() },
+      commercialClaims: { 'bill-1': { ...claim(), bill: { ...claim().bill, statusChangedAt: '2026-08-21T09:00:00.000Z' } } },
       commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 },
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -408,8 +540,6 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     useStore.setState({
       commercialClaims: { 'bill-1': claim() },
       commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 },
-      commercialBillsStamp: 1,
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -457,12 +587,10 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     // The concrete case: a joint refresh in which the LIST comes back first with `paid` while the
     // claim bundle held from an earlier visit still says `certified` and its own read is in flight.
     useStore.setState({
-      commercialBills: [{ ...claim().bill, status: 'paid' as const }],
+      commercialBills: [{ ...claim().bill, status: 'paid' as const, statusChangedAt: '2026-08-22T00:00:00.000Z' }],
       commercialBillsLoad: 'ready',
-      commercialBillsStamp: 2, // the list's success is the later one
-      commercialClaims: { 'bill-1': claim() },
+      commercialClaims: { 'bill-1': { ...claim(), bill: { ...claim().bill, statusChangedAt: '2026-08-21T00:00:00.000Z' } } },
       commercialClaimLoad: { 'bill-1': 'loading' },
-      commercialClaimStamp: { 'bill-1': 1 },
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -807,6 +935,227 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     // clearing it returns the form to lodgeable — the empty entry loses nothing
     fireEvent.change(r.getByTestId('lodge-poline'), { target: { value: '' } });
     expect((r.getByTestId('lodge-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  const labourClaim = (status: string, registerOver: Record<string, unknown> = {}) => {
+    const c = claim();
+    useStore.setState({
+      // the line is listed because it is an ATTRIBUTED live commitment — which is how the tab
+      // finds lines with no claim selected at all
+      commercialView: {
+        ...bundle(),
+        attributions: [{
+          id: 'att-1', poLineId: null, labourPoLineId: 'LPL-1', costHeadCode: 'CIVIL',
+          reason: 'r', createdAt: '2026-08-01T00:00:00.000Z', createdById: 'u-1',
+          supersededAt: null, supersededById: null, supersedeReason: null,
+        }],
+      } as never,
+      commercialClaims: {
+        'bill-1': {
+          ...c, measurements: {},
+          bill: {
+            ...c.bill, status,
+            versions: [{
+              ...c.bill.versions[0]!, live: status === 'submitted',
+              lines: [{
+                id: 'ln-1', type: 'labour' as const, poLineId: null, labourPoLineId: 'LPL-1',
+                quantity: '2', rate: '100.00', taxAmount: '0.00', freightAmount: '0.00', amount: '200.00',
+              }],
+            }],
+          },
+        } as never,
+      },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialLineRegisters: {
+        'LPL-1': {
+          labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
+          orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+          lineLive: true, certifiedConsumption: [],
+          ...registerOver,
+        },
+      } as never,
+      commercialLineRegisterLoad: { 'LPL-1': 'ready' },
+    });
+  };
+  const openMeasurements = () => {
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    return r;
+  };
+
+  it('Q-c: a quantity the register already rules out never reaches the outbox', () => {
+    // measured 9 of a live authority of 10 — the screen holds enough to know 2 is refused, and the
+    // durable outbox would otherwise report it saved before the server dropped it.
+    labourClaim('draft', { measured: '9' });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
+    fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '2' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('measure-over-cap-LPL-1').textContent).toContain('1');
+    // exactly the remainder is allowed — the boundary is not off by one
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '1' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Q-c: the line-AGGREGATE effort is deliberately NOT a cap', () => {
+    // The server bounds a measurement by effort SCOPED TO THE ACTIVITY being measured, and
+    // `MeasurementRegisterDto.effort` is `EFFORT(poLine)` — the line aggregate. Using it would
+    // enable a quantity the server refuses whenever the effort sits on a different activity, and
+    // it can never refuse one the server allows (activity-scoped ≤ aggregate). So it is not a cap
+    // and is not pretended to be one: the order authority is exact and does the work it can, and
+    // the message no longer claims a bound the screen does not enforce.
+    labourClaim('draft', { measured: '0', effort: '3', liveAuthorityPersonShiftQty: 10 });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
+    fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '4' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(false);
+    // the AUTHORITY still binds, exactly
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '11' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('measure-over-cap-LPL-1').textContent).not.toContain('effort');
+  });
+  it('Q-d: a correction that would take its OWN row below zero is refused', () => {
+    labourClaim('draft', {
+      measured: '5',
+      rows: [
+        { id: 'm1', quantity: '1', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null },
+        { id: 'm2', quantity: '4', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-2', reason: null },
+      ],
+    });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'miscount' } });
+    // the LINE has 5 measured, so a line-level rule would allow -2; the row has 1, and the server's
+    // floor is the row's
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('correct-over-withdraw-m1').textContent).toContain('1');
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+    // and a POSITIVE delta is never blocked by a withdrawal floor
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '3' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('Q-d: an earlier correction reduces what the row still has to give', () => {
+    labourClaim('draft', {
+      measured: '1',
+      rows: [
+        { id: 'm1', quantity: '3', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null },
+        { id: 'c1', quantity: '-2', correctsId: 'm1', activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: 'first' },
+      ],
+    });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'again' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled, '3 − 2 leaves 1').toBe(true);
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R2-1: a POSITIVE correction is measured work, and the line cap binds it', () => {
+    // The server treats a positive correction as another measurement and re-checks the same caps.
+    // `overWithdraws` returned false for every non-negative delta, so at the authority ceiling a
+    // +1 was queued and reported saved before reconnect dropped it.
+    labourClaim('draft', {
+      measured: '10', liveAuthorityPersonShiftQty: 10,
+      rows: [{ id: 'm1', quantity: '10', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null }],
+    });
+    const r = openMeasurements();
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'more' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(true);
+    // and a WITHDRAWAL is still fine at the ceiling — the two directions have different bounds
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R2-2: the certificate floor is the REGISTER\u2019s global fact, not the open claim\u2019s', () => {
+    // Round 5 — the floor `assertNoCertifiedMeasurement` enforces is global: ANY live certificate,
+    // on ANY claim. Derived from the selected claim it was a lower bound that went silently empty
+    // whenever the certifying claim was not the one open — including when none is. The register
+    // now carries it, so the guard is exact and needs no claim at all.
+    labourClaim('draft', {
+      measured: '2',
+      rows: [{ id: 'm1', quantity: '2', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null }],
+      certifiedConsumption: [{ rowId: 'm1', consumedQty: '1' }],
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));   // NO claim selected
+
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'miscount' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled, '2 recorded − 1 certified leaves 1').toBe(true);
+    expect(r.getByTestId('correct-over-withdraw-m1').textContent).toContain('certificate');
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R2-3: a line whose ORDER is dead takes no positive write, and still takes a withdrawal', () => {
+    // `append` refuses every positive row when the purchase-order version is not live, and no
+    // QUANTITY on the register says so — a dead line can still report authority. Round 5 carries
+    // the flag, because a cap expressed only in numbers cannot express "this orders nothing".
+    labourClaim('draft', {
+      measured: '2', lineLive: false,
+      rows: [{ id: 'm1', quantity: '2', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null }],
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    expect(r.getByTestId('measurement-dead-LPL-1')).toBeTruthy();
+
+    fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
+    fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '1' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
+
+    // a positive CORRECTION is measured work too, so it is refused for the same reason…
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'more' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(true);
+    // …while WITHDRAWING recorded work stays available: reducing evidence is always permitted, and
+    // it is the operator's path out of a line that should never have been measured
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('R2-4: a register whose refresh FAILED is stale, and stale numbers do not authorise writes', () => {
+    labourClaim('draft', { measured: '0', liveAuthorityPersonShiftQty: 10 });
+    useStore.setState({ commercialLineRegisterLoad: { 'LPL-1': 'error' } });
+    const r = openMeasurements();
+    // the figures are still SHOWN — they are the last known truth — but they are labelled, given a
+    // retry, and no longer enable a command another measurer may have just invalidated
+    expect(r.getByTestId('measurement-stale-LPL-1')).toBeTruthy();
+    expect(r.getByTestId('measurement-retry-LPL-1')).toBeTruthy();
+    fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
+    fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '1' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('N2/Q-b: a LABOUR claim line is lodged as `labourPoLineId` and carries no charges', () => {
+    const recordVendorBill = vi.fn();
+    act(() => { useStore.setState({ recordVendorBill } as never); });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    for (const [id, v] of [['lodge-vendor', 'v-1'], ['lodge-number', 'V-7'], ['lodge-date', '2026-08-08'],
+      ['lodge-poline', 'LPL-1'], ['lodge-qty', '2'], ['lodge-rate', '100.00'], ['lodge-tax', '900.00']] as const) {
+      fireEvent.change(r.getByTestId(id), { target: { value: v } });
+    }
+    fireEvent.change(r.getByTestId('lodge-linekind'), { target: { value: 'labour' } });
+    // Q-b — a labour PO snapshot freezes neither, so the switch CLEARS and disables them rather
+    // than carrying a value the server would refuse
+    expect((r.getByTestId('lodge-tax') as HTMLInputElement).value).toBe('');
+    expect((r.getByTestId('lodge-tax') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(r.getByTestId('lodge-add-line'));
+    fireEvent.click(r.getByTestId('lodge-submit'));
+    // N2 — the server's XOR
+    const sent = recordVendorBill.mock.calls[0][0].lines[0];
+    expect(sent).toMatchObject({ labourPoLineId: 'LPL-1' });
+    expect(sent.poLineId).toBeUndefined();
+    expect(sent.taxAmount).toBeUndefined();
   });
 
   it('O4: a vendor invoice covering SEVERAL po lines is lodged whole', () => {

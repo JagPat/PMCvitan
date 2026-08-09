@@ -1,0 +1,209 @@
+# PR #306 convergence audit — the pre-check that kept guessing
+
+Five finding-bearing heads (`ee4edb1`, `b488260`, `5d20519`, `2ffff00`, …). **Fifteen findings, all
+P2**, on a unit whose product surface is two buttons and a form.
+
+Not one is a wrong calculation. Every one is the same shape: **a client-side guard that
+approximates a server rule instead of matching it, in front of a write-ahead outbox that has
+already told the user "saved".**
+
+## Every finding, in one table
+
+| # | Round | Finding |
+|---|---|---|
+| 1 | 1 | Positive corrections were uncapped — the server treats one as another measurement and re-checks the same caps |
+| 2 | 1 | The pending check was `(line, activity)` while the CAP is the line's, so a second activity queued against a remainder the first had claimed |
+| 3 | 1 | The withdrawal floor ignored a live certificate's frozen `measurementConsumption` |
+| 4 | 1 | A cached register whose LATEST refresh failed still authorised writes |
+| 5 | 1 | The effort cap used `EFFORT(poLine)` — the line aggregate — while the server scopes effort to the ACTIVITY |
+| 6 | 2 | Positive **corrections** were still absent from the pending-quantity map, so a queued +5 and a queued measurement of 5 both passed against one remaining 5 |
+| 7 | 2 | Cached registers were never refreshed on the realtime `changed` path — the money bundle, the claim list and the claims all were |
+| 8 | 2 | The certificate floor read only the SELECTED claim's certificate; the server refuses against any live one |
+| 9 | 2 | **The Measurements tab sat inside `claimPanel`, so the advertised workflow's FIRST step required its LAST** |
+| 10 | 3 | The cap RESERVATION was rebuilt from the live outbox on every read, so a money read landing after the op left the outbox dropped it while the KEY was still retained |
+| 11 | 3 | Refresh on the Measurements tab reloaded the registers and the claim reads, but not the money bundle the LINE LIST is derived from |
+| 12 | 4 | Hydration rebuilt the pending KEYS from localStorage and not their reservations, breaking round 4's shared lifecycle at the one moment it is reconstructed |
+| 13 | 4 | A line whose purchase-order version is dead still offered positive writes — `append` refuses them all, and no QUANTITY on the register can say so |
+| 14 | 4 | The certificate floor was still the selected claim's, so a stale or absent claim silently emptied it |
+| 15 | 5 | (JagPat) Row freshness was arbitrated by a counter over read COMPLETIONS, so a held list response landing last regressed a certified bill to `verified` |
+| 16 | 5 | (JagPat) A failed money-bundle read rendered "no labour lines are attributed on this project yet" — a claim about the PROJECT, made from a read that never arrived |
+| 17 | 6 | (JagPat) Finding 16 fixed only the `commercialView === null` half; a CACHED bundle whose latest refresh failed still presented the empty-project statement as current truth |
+| 18 | 6 | (JagPat) `statusChangedAt` is `new Date()` at ms precision, not a lifecycle version, so the `>=` tie-break imposed a total order on data that has none and could still regress a status |
+
+## Root: sound, incomplete, and approximate are three different things
+
+The rule I reached in round 2 and had to sharpen twice:
+
+> A pre-check should refuse only what the data on screen **proves** is refused. Where it cannot
+> prove anything, it should be **absent** — not approximate.
+
+The three cases look alike in code and are not alike at all:
+
+- **Sound and complete** — the order authority. `measured + queued + qty ≤ liveAuthority` is exact
+  arithmetic on numbers the server itself published. Keep it.
+- **Sound but incomplete** — the certificate floor (finding 8). It sees the selected claim's
+  certificate, and global consumption is ≥ that, so every refusal it makes is a real one. It misses
+  cases; it never invents one. Keep it, and *say* it is a lower bound.
+- **Approximate** — the aggregate effort cap (finding 5). `EFFORT(poLine) ≥ effort(line, activity)`,
+  so "qty ≤ aggregate" proves *nothing* about the rule the server applies. It could only ever be
+  too permissive. **Deleted**, not tightened, and the probe now pins its absence.
+
+The distinction is worth the words because the instinct in review is to make every guard stricter.
+Two of these three needed the opposite: one needed keeping while admitting what it does not cover,
+and one needed removing outright.
+
+## Finding 9 is the important one, and it is a repeat
+
+The Measurements tab rendered `claimPanel(…)`, so with no claim selected it said "Choose a claim".
+The unit is advertised as **measure → correct → lodge → submit**, and measuring — the first step —
+required a claim, the last. An engineer on a project with no claim had to create a commercial
+document before they could record an operational fact.
+
+This is the third time in this PR family that scoping §D under a claim has produced a defect:
+PR #304's N3 (a draft claim's register map is empty), its O3 (the measurement's effect was
+invisible), and now this. Each time I fixed the instance. The instance was never the problem:
+**a measurement is a fact about a labour PO line, and the tab was scoped to the wrong noun.**
+
+It is fixed at the noun now. The lines come from the project's live labour commitments, a selected
+claim's own lines are unioned in, and `measurements` has left `CLAIM_TABS` — because a claim tab is
+one whose content *is* a property of the selected claim, and this never was.
+
+The uncomfortable part: PR #304's audit carries the carry-forward *"walk the workflow end to end,
+not control by control"*, written after N3. I then shipped a unit whose first step was unreachable
+and described the order it could not perform. Writing a lesson down is not the same as running it,
+and the check that would have caught this is mechanical: **open the app with an empty project and
+try to perform step 1.**
+
+## Round 4 — two structures, two rules, one disagreement
+
+Finding 10 is the sharpest instance of this PR's whole theme, and it is inside round 3's own fix.
+I introduced a per-line quantity map to make the cap subtract queued work, and rebuilt it from the
+live outbox on **every** read — while the KEYS were released per read, by the one read that carries
+their effect. Two structures with two lifecycles: a money read landing first dropped the
+reservation and left the key, so the screen freed authority it had not yet been told about.
+
+The fix is not a third rule. The reservation is now keyed BY the coalesce key and pruned to the
+surviving key set, so its lifecycle *is* the key's by construction. **Two structures with two rules
+will disagree; one structure keyed by the other cannot.**
+
+Finding 11 is the same shape as finding 7 one layer up: the line list moved to the money bundle in
+round 3, and Refresh — the one control offered when a read fails — reloaded everything except the
+thing the list is derived FROM. **When a surface changes where its data comes from, its recovery
+path has to move with it.**
+
+## Round 5 — the finding was the CONTRACT, three rounds running
+
+Findings 13 and 14 are the third and fourth costumes of one thing, and I should have named it in
+round 2:
+
+| Round | Costume | What the client lacked |
+|---|---|---|
+| 2 (finding 5) | the effort cap | effort scoped to the ACTIVITY |
+| 2 (finding 8) | the certificate floor | consumption from ANY live certificate |
+| 4 (finding 13) | line liveness | whether the order behind the line is live |
+| 4 (finding 14) | the certificate floor again | the same global fact, from a stale claim |
+
+**`MeasurementRegisterDto` did not carry what the write path is bounded by.** Every guard built
+against it could therefore be sound-but-incomplete at best, and I kept answering that with more
+client-side reasoning: delete the term (round 2), label the bound (round 3), re-derive it from the
+claim (round 4). Three rounds of working around a contract gap cost more than closing it.
+
+Round 5 closes it. The register now carries `lineLive` and the GLOBAL `certifiedConsumption`, both
+computed where the write path computes them — `line.live` from the same `committedLinesFor` the
+cap uses, and the consumption from the same `supersededAt: null` filter
+`assertNoCertifiedMeasurement` asks for, so the read and the guard cannot disagree about which
+certificates count. The claim stops being a source for either, which also retires finding 14's
+staleness: one read, one fact, no second opinion.
+
+That the reviewer described the floor as row-level and global was worth checking rather than
+assuming — the aggregate `certifiedBilledQtyFor` in the measurement service looks line-level, and
+the row-level rule lives in the participant. Both exist; the row-level one is the one a correction
+hits. Reading it settled what to carry.
+
+## Round 6 — two supplemental findings, and both are mine
+
+**Finding 15 retires a mechanism I inherited and defended.** The row showing a bill's status picked
+between the list copy and the claim copy using `commercialBillsStamp`/`commercialClaimStamp` — a
+monotonic counter over read COMPLETIONS, introduced as I2 with the comment *"All three were proxies
+for one question — WHICH READ IS NEWER — that the store now answers with a fact."* It is a fact
+about the requests, and the question is about the bill. A list request that starts before a
+certification and lands after it completes later while describing an earlier moment, so the row
+regressed to `verified` and offered a certified claim's superseded transitions.
+
+`statusChangedAt` is the moment the server stamped on the transition itself, so comparing it asks
+about the BILL. The stamps are removed rather than left unused: they exist for exactly this
+decision, and a superseded answer labelled "the fact" is the kind of thing a later reader trusts.
+
+**Finding 16 is the third move I failed to make in round 3.** Moving the line source to the money
+bundle needed three things to move with it: the READ (done), the RECOVERY path (finding 11, done in
+round 4), and the HONESTY — the loading/unavailable/stale boundaries, still gated by `onMoneyTab`.
+So a bundle that never arrived was reported as a fact about the project. `viewOf` existed for
+exactly this and was not applied to the new source.
+
+Together they sharpen carry-forward 8: moving a data source is not one edit but three.
+
+## Round 7 — half a finding, and an order that does not exist
+
+**Finding 17 is finding 16 fixed at the instance rather than the class.** `viewOf` reports staleness
+ON content — `{ show: 'content', stale: true }` is a cached bundle whose latest read failed — and I
+handled only `show !== 'content'`. So the null case was covered and the cached case, which is the
+common one in a running app, was not. My own probe (S2) tested exactly the half I had fixed.
+
+That is root F from PR #304 in its plainest form: *stating a principle is not applying it;
+enumerate the instances.* The instances here were the three states `viewOf` was built to express,
+and I read one field of the three.
+
+**Finding 18 says the ordering primitive does not exist.** `statusChangedAt` is written by
+`new Date()` at millisecond precision, so two DIFFERENT transitions can share a stamp: certify at
+T, approve at T, and a claim read taken between them ties with a list read taken after. My `>=`
+broke that tie toward the claim copy — the one that can be older — and regressed the row.
+
+The fix is to stop deciding. Equal stamp + SAME status is not a tie (the copies agree); equal stamp
++ DIFFERING status is undecidable from what the reads carry, so the row shows the list copy, says
+the two disagree, and disables that bill's transitions until a canonical read resolves it. A fresh
+pair converges, because the ambiguity is a property of reading at two times rather than of the
+timestamps.
+
+**The durable fix is a monotonic per-bill lifecycle version from the server**, and it is named here
+rather than smuggled into the end of an over-budget unit: it is a schema change, and refusing to
+decide is sound without it. This is a stated deferral, not the silent approximation round 5 was
+about — the difference is that this one never displays or acts on a copy it cannot establish.
+
+## What carries forward
+
+1. **Sound ≠ complete ≠ approximate.** Keep the sound-but-incomplete guard and label it; delete the
+   approximate one. Only "never enables what the data rules out" is non-negotiable.
+2. **A guard's resource is the thing the SERVER constrains**, not the thing the key names. The line
+   holds the authority; the key names a `(line, activity)` action. (Findings 2, 6.)
+3. **Every write that spends a resource must be counted against it** — including the ones that
+   spend it in an unexpected direction, like a positive "correction". (Finding 6.)
+4. **A number the caps are computed from must be on every refresh path.** The register was the one
+   read the realtime path forgot, and it is the only one the caps use. (Finding 7.)
+5. **Scope the surface to the noun the domain owns.** Three findings across two PRs came from
+   putting a labour-PO-line fact under a claim. Fixing the instances never fixed the noun.
+   (Finding 9.)
+6. **To test "can a user finish this", start from an empty project and do step 1.** No unit-level
+   probe will tell you the first step needs the last one to exist.
+7. **Derived state must be keyed by the thing whose lifecycle it shares.** A parallel map with its
+   own rebuild rule will diverge from the set it mirrors, at exactly the moment the two are read
+   together. (Finding 10.)
+8. **Move the recovery path when you move the data source.** Refresh has to reload what a surface
+   is derived FROM, not only the things that surface names. (Findings 7, 11.)
+9. **When the same gap arrives in a second costume, fix the CONTRACT.** Deleting the term, labelling
+   the bound and re-deriving it from a neighbour are all ways of not noticing that the read does not
+   carry what the write is bounded by. Three rounds; one field each would have ended it.
+   (Findings 5, 8, 13, 14.)
+10. **Order by the DOMAIN moment, not by when a response arrived.** A counter over completions is a
+   fact about the requests; a status timestamp is a fact about the thing. When they disagree the
+   counter is the one that regresses state. (Finding 15.)
+11. **Moving a data source is three moves: the read, the recovery path, and the honest states.** Two
+   rounds found the second and third separately. (Findings 11, 16.)
+12. **Fixing the case the probe reaches is not fixing the finding.** `viewOf` has three states and
+   I read one field of it; the null half was covered and the cached half — the common one — was
+   not. (Finding 17.)
+13. **Do not impose a total order on data that has none.** A wall-clock stamp orders transitions
+   only when they differ; equal-stamp-different-status is undecidable, and breaking the tie is
+   choosing to be wrong half the time. Refusing to decide, and saying so, is available. (Finding 18.)
+14. **A lifecycle has to hold where state is REBUILT, not only where it is maintained.** Hydration
+   is the moment every in-memory invariant is reconstructed from bytes, and it is the easiest place
+   for a pairing to come apart. (Finding 12.)

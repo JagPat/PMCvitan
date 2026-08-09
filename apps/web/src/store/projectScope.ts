@@ -14,6 +14,7 @@ import type {
   ProjectNode,
   Review,
   ReservationPlan,
+  MeasurementRegisterDto,
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -87,6 +88,13 @@ export interface ProjectDataState {
   commercialView: CommercialView | null;
   commercialBills: CommercialBillRow[] | null;
   commercialClaims: Record<string, CommercialClaimView>;
+  /** §D — the cap reservation each pending write holds, keyed by its COALESCE KEY so the
+   *  reservation and the key share one lifecycle. */
+  commercialPendingQty: Record<string, { lineId: string; qty: string }>;
+  /** §D — one labour PO line's measurement register, keyed by line id. The claim bundle reports
+   *  registers only for a LIVE version's lines, and a lodged claim is `draft`, so this is the read
+   *  a measurement becomes VISIBLE in. Project-owned: a line id is project-contained. */
+  commercialLineRegisters: Record<string, MeasurementRegisterDto>;
   /** Codex round 13 — the ORIGINAL allocate input per retained coalesce key. The key alone (round
    *  11's parser) loses `capacityCommitmentId`, so in the success→reload gap a resolved
    *  supplier-backed draw stopped reserving its commitment and a second same-slice worker was
@@ -140,6 +148,8 @@ export function emptyProjectData(): ProjectDataState {
     // is project-contained, so carrying either across a switch would render another site's money.
     commercialBills: null,
     commercialClaims: {},
+    commercialPendingQty: {},
+    commercialLineRegisters: {},
     labourPendingInputs: {},
     labourOnboardPending: {},
     labourBindPending: {},
@@ -179,21 +189,8 @@ export interface ModuleReadState {
   // scope being left, so nothing in it can be valid in the next one.
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
-  /**
-   * Codex I2 — WHEN each of these two reads last SUCCEEDED, on one monotonic counter.
-   *
-   * The claim list and the claim bundle both carry a bill's `status`, and three rounds of this PR
-   * have now guessed which of the two is fresher from a proxy: "has a claim" (F4), then "has a
-   * claim that did not error" (H4). A proxy for freshness goes wrong the moment the two reads move
-   * independently — which is the normal case, since they have separate tokens and separate
-   * failures. Recording the ordering makes the question decidable instead of heuristic, so the
-   * screen compares two facts rather than standing something else in for them.
-   *
-   * A counter, not a clock: it needs to order two events in one tab, which is exactly what a
-   * monotonic integer does, without a wall clock's determinism problems in tests.
-   */
-  commercialBillsStamp: number;
-  commercialClaimStamp: Record<string, number>;
+  /** §D — the per-LINE register read's status, keyed by labour PO line id. */
+  commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
 }
 export function emptyModuleReadState(): ModuleReadState {
   return {
@@ -212,8 +209,7 @@ export function emptyModuleReadState(): ModuleReadState {
     commercialLoad: 'idle',
     commercialBillsLoad: 'idle',
     commercialClaimLoad: {},
-    commercialBillsStamp: 0,
-    commercialClaimStamp: {},
+    commercialLineRegisterLoad: {},
   };
 }
 

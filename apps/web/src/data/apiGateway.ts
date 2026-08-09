@@ -56,6 +56,7 @@ import type {
   LabourPresenceDto,
   CommercialMoneyPositionDto,
   CommercialClaimDto,
+  MeasurementRegisterDto,
   VendorBillListDto,
 } from '@vitan/shared';
 
@@ -946,6 +947,26 @@ export class ApiGateway {
     return this.req<CommercialClaimDto>(`/projects/${this.projectId}/commercial/claims/${encodeURIComponent(billId)}`);
   }
 
+  /**
+   * §D — ONE labour PO line's measurement register, from the line's own route.
+   *
+   * The claim bundle carries registers only for the lines of a LIVE version, and `draft` is not a
+   * live status — deliberately, since a disputed or rejected claim's top version is in no fold and
+   * presenting its registers would overstate what the claim measures. But the engineer measures
+   * BEFORE the claim is live: that is the order §D describes and the order this unit exists to
+   * support. Read against the bundle alone, a measurement taken on a lodged draft is recorded by
+   * the server and invisible on screen, which is an invitation to take it twice.
+   *
+   * The register belongs to the LINE, not to any claim, so it is read from the line — the same
+   * `registerIn` the bundle composes, without asking the claim query to say something about a
+   * version it correctly refuses to speak for.
+   */
+  commercialLineRegister(labourPoLineId: string): Promise<MeasurementRegisterDto> {
+    return this.req<MeasurementRegisterDto>(
+      `/projects/${this.projectId}/commercial/labour-po-lines/${encodeURIComponent(labourPoLineId)}/measurements`,
+    );
+  }
+
   // ── Phase 5 Task 7B-iii-a (§M) — the COMMERCIAL write commands. Each is ONE server command
   //    routed through the durable write-ahead outbox with the two-key split (see OutboxOp), so a
   //    lost or uncertain response replays the SAME command exactly once. ──
@@ -1416,7 +1437,9 @@ export type OutboxOp =
   | { t: 'reattributeCommitment'; input: ReattributeCommitmentInput; idempotencyKey: string; coalesceKey: string }
   // Phase 5 Task 7B-iii-b (§D/§F) — the engineer's writes, same two-key split.
   | { t: 'takeMeasurement'; input: TakeMeasurementInput; idempotencyKey: string; coalesceKey: string }
-  | { t: 'correctMeasurement'; input: CorrectMeasurementInput; idempotencyKey: string; coalesceKey: string }
+  // `labourPoLineId` is CLIENT-side only — never sent. The server's contract takes the
+  // measurement id alone; the cap needs the line a positive correction spends authority on.
+  | { t: 'correctMeasurement'; input: CorrectMeasurementInput; labourPoLineId: string; idempotencyKey: string; coalesceKey: string }
   | { t: 'recordVendorBill'; input: RecordVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'submitVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
