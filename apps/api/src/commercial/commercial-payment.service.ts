@@ -23,8 +23,8 @@ import { CommercialStatusService } from './commercial-status.service';
 import { announceMoneyMoved } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import { resolveSodGrant as resolveGrantForRule } from './commercial-sod';
-import type { ApprovePaymentInput, RecordPaymentInput, ReversePaymentInput } from '../contracts';
+import { assertReviewedRevision, resolveSodGrant as resolveGrantForRule } from './commercial-sod';
+import type { ApprovePaymentCommand, RecordPaymentInput, ReversePaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -147,7 +147,7 @@ export class CommercialPaymentService {
    * history, and the bound would then measure against a certification that no longer stands.
    */
   async approve(
-    projectId: string, input: ApprovePaymentInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: ApprovePaymentCommand, user: AuthUser, idempotencyKey?: string,
   ): Promise<PaymentApprovalDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertApprove(user);
@@ -161,6 +161,9 @@ export class CommercialPaymentService {
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const bill = await this.lockBill(tx, projectId, input.billId);
+        // the claim REVISION this approver read — compared under the lock before it is recorded,
+        // so a queued approval cannot be written as having reviewed a passage it never saw
+        assertReviewedRevision(input.lifecycleVersion, bill.lifecycleVersion);
 
         // §H's own fold, under the lock. It answers both "is anything payable" and "how much".
         const position = await this.deductions.positionFor(tx, projectId, input.billId);
@@ -206,7 +209,7 @@ export class CommercialPaymentService {
             // the claim REVISION this authorisation was made against, read under the bill lock —
             // the §I consume seal matches it against the grant's, so an authority and the act it
             // excuses cannot name two different passages of the same claim
-            reviewedLifecycleVersion: bill.lifecycleVersion,
+            reviewedLifecycleVersion: input.lifecycleVersion ?? bill.lifecycleVersion,
             amount, approvedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });

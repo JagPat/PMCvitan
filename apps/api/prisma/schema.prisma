@@ -3624,6 +3624,14 @@ model SodGrant {
   /// attests to nothing, and inventing a version for it would invent the evidence.
   reviewedLifecycleVersion Int?
 
+  /// §I — a grant this release can no longer JUDGE, retired rather than left to block every
+  /// deploy. Rows written before the reviewed-state columns existed carry no evidence of what
+  /// their approver saw; retiring them is attributable disposal (retained, marked, named in the
+  /// runbook), where an abort was an instruction nobody could carry out and deleting them would
+  /// be the silent revocation the abort existed to prevent. One-way, like consumption.
+  retiredAt     DateTime?
+  retiredReason String?
+
   grantedAt       DateTime @default(now())
   sourceCommandId String
 

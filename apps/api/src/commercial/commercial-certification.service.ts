@@ -18,7 +18,7 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
-import { resolveSodGrant, type SodGrantResolution } from './commercial-sod';
+import { assertReviewedRevision, resolveSodGrant, type SodGrantResolution } from './commercial-sod';
 import type { CertifyBillCommand, GrantSodExceptionCommand, SupersedeCertificateCommand } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -203,6 +203,10 @@ export class CommercialCertificationService {
 
         // 3 — the BILL, and every side re-read under it
         const bill = await this.lockBill(tx, projectId, input.billId);
+        // Codex round 4 — the certifier's own pin. A certificate can be issued and superseded so
+        // the SAME version reads `verified` again, so the version pin alone would let a queued
+        // certification be recorded against a passage of the claim its certifier never saw.
+        assertReviewedRevision(input.lifecycleVersion, bill.lifecycleVersion);
         if (!(BILL_CERTIFY_FROM as readonly string[]).includes(bill.status)) {
           throw new ConflictException(
             `A ${bill.status} claim cannot be certified — certification applies to a VERIFIED claim, because the §E verdict is what makes it safe`,
@@ -271,7 +275,7 @@ export class CommercialCertificationService {
             // above. The §I consume seal requires the authority and the act to name the same
             // passage of the claim, and by COMMIT this insert has already advanced the counter —
             // so what the seal compares has to be a fact each row carries.
-            reviewedLifecycleVersion: bill.lifecycleVersion,
+            reviewedLifecycleVersion: input.lifecycleVersion ?? bill.lifecycleVersion,
             certifiedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
@@ -831,11 +835,7 @@ export class CommercialCertificationService {
         // Codex round 3: comparing version and status and then recording the database's CURRENT
         // revision made the recorded evidence the server's, not the approver's — an authorisation
         // queued at revision 1 would be written as if its approver had reviewed revision 3.
-        if (input.lifecycleVersion !== undefined && input.lifecycleVersion !== reviewed.lifecycleVersion) {
-          throw new ConflictException(
-            'This claim has moved on since you read it — money on it has changed, so the authorisation would apply to a claim you have not reviewed. Reload and authorise again.',
-          );
-        }
+        assertReviewedRevision(input.lifecycleVersion, reviewed.lifecycleVersion);
         // 7B-iii-h — the EXCUSED actor must be able to perform the act at all. A grant naming
         // someone without standing for it is an authority that can never be exercised: it is
         // recorded, displayed, and the named actor is still refused by a different rule when they

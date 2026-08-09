@@ -318,3 +318,36 @@ reviewed *state* and not the lifecycle version, because at COMMIT the act being 
 already moved the claim on. The division is the one this phase has used throughout — the seal
 states what is invariant, the service states what is fresh — and PROBE 27 is where the
 freshness rule is proven.
+
+---
+
+## Correction round 4 — the enumeration, done
+
+Five P1s (a sixth posted comment re-states round 3's, already closed at the seal). Full audit:
+`docs/reviews/pr-312-convergence.md`, which now carries the artifact-by-guard table this unit
+should have had from round 1.
+
+| # | Finding | Fix |
+|---|---|---|
+| R4-4 (P1) | the act's recorded revision is **self-authored**, so the consume seal proved only that a writer agreed with itself | a BEFORE INSERT check against the claim's actual revision — ahead of the act's own AFTER-trigger bump, by a plain read that takes no lock |
+| R4-3 (P1) + the `PaymentApproval` twin this enumeration found | the act columns were outside their tables' append-only freezes | one new trigger per act table covering both the freeze and the truth check — a SEPARATE trigger, not a `CREATE OR REPLACE` of two cleared functions, exactly as 6A chose for the same reason |
+| R4-5 (P1) + the DELETE guard this enumeration found | the revision row's counter was guarded, its IDENTITY and EXISTENCE were not — either route resets the claim to `COALESCE(…, 0)` and revives every authorisation pinned there | identity frozen, deletion refused |
+| R4-2 (P1) | the abort could **never** be cleared: once the guards are installed a legacy grant can be neither filled, consumed nor deleted, so "re-issue and redeploy" never terminates | the abort becomes an attributable **retirement** — retained, stamped, reasoned, runbooked |
+| R4-6 (P1) + the `approve` pin this enumeration found | `certify` and `approve` recorded the database's current revision as the one their actor reviewed | both pin it at the HTTP boundary and compare under the bill lock, through **one** shared `assertReviewedRevision` the grant command also uses |
+
+**R4-2 resolves a direct tension with round 3's R3-3** — install the guards first, versus the
+guards making the repair impossible — and the resolution is that an abort was the wrong instrument
+for a fact this release cannot judge. Retiring it is not the silent revocation the abort existed
+to prevent: silent would be deleting it, or inventing a reviewed state for it.
+
+### Round-4 evidence
+
+| Probe | Reproduced RED at `1024c4b` |
+|---|---|
+| PROBE 31 — an act cannot claim a revision it was not performed at, nor rewrite it after | the forged approval **committed**; the certificate column **was rewritable** |
+| PROBE 32 — the revision row cannot be moved or removed | both **succeeded**, resetting the claim to 0 |
+| h5 — legacy grants are retired, attributably, and a replacement is then issuable | the migration **aborted** instead, and the second pass aborted again |
+| h11 — every guard is installed before legacy authority is touched | — (ordering pin, retargeted to the retirement) |
+
+**Gates:** `pnpm check` EXIT 0 (web 685/685, API 781/781); the four affected suites green;
+`upgrade-proof.sh` PASSED; migration applies from scratch on a clean database.

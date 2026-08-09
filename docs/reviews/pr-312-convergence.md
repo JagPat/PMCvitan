@@ -197,3 +197,43 @@ The division stays what it has been all phase — **the seal states what is inva
 service states what is fresh** — and the service is where the recycling defence lives, with
 PROBE 27 proving it against live PostgreSQL and a mutation proving the version term is what
 makes it pass.
+
+---
+
+## Round 4 — the enumeration I kept not doing
+
+Five P1s (one of the six posted comments is a re-post of round 3's, already fixed at line 281).
+Four heads, seventeen findings, and root A's "checkable form" — *enumerate every guard that
+already surrounds the artifact* — has been sitting in this document unused since round 2. So it
+is done here, as a table, before any code.
+
+Every artifact this unit introduces, and every guard that must answer for it. **✗ = gap on head
+`1024c4b`**; the four unmarked by Codex are ones this enumeration found.
+
+| Artifact | Frozen | True-at-write | Identity | Live-scope | Boundary pin | Resolver | Reset/ownership |
+|---|---|---|---|---|---|---|---|
+| `SodGrant.reviewedStatus` | ✓ | n/a | n/a | ✓ | ✓ grant | ✓ | n/a |
+| `SodGrant.reviewedLifecycleVersion` | ✓ | n/a | n/a | ✓ | ✓ grant | ✓ | n/a |
+| `VendorBillRevision` | ✓ forward-only | n/a | **✗ R4-5** + **✗ DELETE guard (mine)** | PK ✓ | n/a | n/a | ✓ |
+| `BillCertificate.reviewedLifecycleVersion` | **✗ R4-3** | **✗ R4-4** | n/a | n/a | **✗ R4-6 certify** | n/a | n/a |
+| `PaymentApproval.reviewedLifecycleVersion` | **✗ mine** | **✗ R4-4** | n/a | n/a | **✗ mine, approve** | n/a | n/a |
+| legacy NULL grants | n/a | n/a | n/a | n/a | n/a | ✓ unusable | **✗ R4-2 retirement** |
+
+Nine gaps. Five Codex named; four this table found — which is the point of writing it, and the
+reason the previous three rounds each shipped one level short.
+
+**R4-4 is the deepest and it invalidates round 3's premise.** The consume seal compared the
+grant's revision to the ACT's, and I argued that was "two frozen columns, no inference". It is two
+**self-authored** columns: a bypass writer inserts the certificate with whatever revision matches
+the stale grant. The seal proved the writer agrees with itself. What makes the act's number true
+is a BEFORE INSERT check against the claim's actual revision — before the act's own AFTER trigger
+advances it — which is available, cheap, and takes no lock (a plain read).
+
+**R4-2 and round 3's R3-3 are in direct tension, and resolving it changes the design.** R3-3 said
+install the guards before the abort; R4-2 observes that once they are installed a legacy NULL
+grant can be neither filled nor consumed nor retired, so the documented repair ("re-issue, then
+redeploy") never clears the count and the migration is not rerunnable at all. Codex names both
+exits. The right one is that **an abort was the wrong instrument**: the migration RETIRES legacy
+grants with an attributable stamp instead of stopping the deploy. That is not the silent
+revocation the abort existed to prevent — the row is retained, marked, and named in the runbook —
+and it is the only shape where the remedy terminates.

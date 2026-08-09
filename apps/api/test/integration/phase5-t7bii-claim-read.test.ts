@@ -644,189 +644,51 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
   });
 
 
-  it('h5: the legacy diagnostic fires on a LEGACY grant, and never on a well-formed live one', async () => {
+  it('h5: a legacy grant is RETIRED, attributably, and a well-formed live one is untouched', async () => {
     const projectId = await freshProject();
     const approver = await secondPmc(projectId);
     const billId = await verifiedOnly(projectId);
 
-    // The migration adds `reviewedStatus` as NULLABLE and refuses to guess what a pre-existing
-    // approver reviewed, so it STOPS the deploy rather than silently revoking live authority.
-    //
-    // The diagnostic is read OUT OF THE MIGRATION FILE rather than restated here. An inline copy
-    // proves a copy: the first version of this probe asserted a hand-written `DO` block that
-    // matched the file when written and would not have noticed the file drifting from it — which
-    // is the same two-implementations-of-one-rule shape the correction round below is all about.
-    const sql = readFileSync(
+    // Round 4 changed the instrument, and the probe changes with it. The migration used to ABORT on
+    // a legacy unconsumed grant. Codex round 4: once the guards above are installed such a row can
+    // be neither filled, consumed nor deleted, so the abort's own remedy ("re-issue and redeploy")
+    // never clears it and the migration is not rerunnable at all. A fact this release cannot judge
+    // is RETIRED with a reason — retained, marked, and named in the runbook.
+    const retirement = readFileSync(
       join(__dirname, '../../prisma/migrations/20270705000000_phase5_t7biiih_sod_reviewed_status/migration.sql'),
       'utf8',
-    );
-    const diagnostic = /DO \$\$\s*\n\s*DECLARE\s+v_live[\s\S]*?END \$\$;/u.exec(sql)?.[0];
-    expect(diagnostic, 'the migration must still carry its legacy diagnostic').toBeDefined();
+    ).match(/UPDATE "SodGrant"\n\s+SET "retiredAt"[\s\S]*?reviewedLifecycleVersion" IS NULL\);/u)?.[0];
+    expect(retirement, 'the migration must still carry its legacy retirement').toBeDefined();
 
-    // quiet when there is nothing to warn about — a diagnostic that always fires is not a diagnostic
-    await expect(t.prisma.$executeRawUnsafe(diagnostic!)).resolves.toBeDefined();
-
-    // …and STILL quiet with a perfectly well-formed live grant standing. Codex round 2 (P2): a
-    // database that has already taken this migration and then accepted a legitimate authorisation
-    // must survive a replay, because replay is exactly what the diagnostic's own remedy instructs
-    // ("re-issue, then redeploy"). Counting every unconsumed row made the repair path unreachable
-    // the moment the repair succeeded.
+    // a well-formed live authorisation is NOT touched — the retirement names legacy rows only
     const live = await grantAt(projectId, billId, f.memberUser.id, approver);
-    await expect(t.prisma.$executeRawUnsafe(diagnostic!)).resolves.toBeDefined();
+    await t.prisma.$executeRawUnsafe(retirement!);
+    const untouched = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: live.id } });
+    expect(untouched.retiredAt, 'a grant carrying its reviewed evidence is not legacy').toBeNull();
 
-    // …and it fires for the state it is FOR: a row that predates the column and records nothing.
-    // Reaching that state needs the append-only bypass, which is itself the point — a legacy row
-    // is one this release cannot create, only inherit.
+    // …and a row that predates the columns IS retired, with a reason a human can act on. Reaching
+    // that state needs the append-only bypass, which is the point: this release cannot create one.
     await t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
       await tx.$executeRawUnsafe(
-        'UPDATE "SodGrant" SET "reviewedStatus"=NULL WHERE "projectId"=$1 AND "id"=$2', projectId, live.id,
+        'UPDATE "SodGrant" SET "reviewedStatus"=NULL, "reviewedLifecycleVersion"=NULL WHERE "projectId"=$1 AND "id"=$2',
+        projectId, live.id,
       );
       await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
       await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
     });
-    await expect(t.prisma.$executeRawUnsafe(diagnostic!)).rejects.toThrow(/phase5_t7biiih: 1 unconsumed/u);
+    await t.prisma.$executeRawUnsafe(retirement!);
+    const retired = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: live.id } });
+    expect(retired.retiredAt, 'a grant with no reviewed evidence is retired').not.toBeNull();
+    expect(retired.retiredReason).toMatch(/predates the reviewed-state record/u);
+
+    // RERUNNABLE, which is the finding: a second pass finds nothing left to retire and the
+    // retired row does not block the replacement a pmc now issues
+    await expect(t.prisma.$executeRawUnsafe(retirement!)).resolves.toBeDefined();
+    await expect(grantAt(projectId, billId, f.memberUser.id, approver)).resolves.toBeDefined();
   });
 
-  // ── the correction round: the evidence column joins the SEALS that already surround it ───────
-  //
-  // Findings 1, 3 and 4 are one root wearing three costumes — the same root PR #310's audit named
-  // first. I added `reviewedStatus` to the COLUMN and stopped: the append-only trigger that freezes
-  // every other field of a grant did not learn it, the commit-time seal that judges a consumed
-  // grant did not learn it, and the OTHER resolver — the payment half — did not learn it either.
-  // A new fact on a guarded row belongs to every guard on that row, or it is decoration.
-
-  /** The bypass writer a DATABASE seal exists for, spelled honestly.
-   *
-   *  ONE trigger is disabled BY NAME, inside a transaction, and re-enabled before that transaction
-   *  ends — so the seal is restored on the way out or the whole DDL rolls back with the abort. This
-   *  is not a shortcut around a service check: it is the only way to reach the state the finding
-   *  describes, because the service refuses to create it and `SodGrant_append_only` refuses to edit
-   *  a consumed grant at all. What the probe asks is whether the DATABASE would notice.
-   *
-   *  `SET CONSTRAINTS ALL IMMEDIATE` is load-bearing rather than decorative: the deferred seals
-   *  queue behind the UPDATE, and PostgreSQL refuses to ALTER a table with pending trigger events.
-   *  Forcing them here also puts the refusal at the write that caused it. */
-  const regressReviewedState = async (projectId: string, grantId: string, to: string | null): Promise<void> => {
-    await t.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
-      await tx.$executeRawUnsafe(
-        'UPDATE "SodGrant" SET "reviewedStatus"=$3 WHERE "projectId"=$1 AND "id"=$2', projectId, grantId, to,
-      );
-      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
-      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
-    });
-  };
-
-  it('h6: the reviewed state is FROZEN by the trigger that freezes the rest of the grant', async () => {
-    const projectId = await freshProject();
-    const approver = await secondPmc(projectId);
-    const billId = await verifiedOnly(projectId);
-    const grant = await grantAt(projectId, billId, f.memberUser.id, approver);
-
-    // `SodGrant` is append-only apart from its one consume stamp, and `reviewedStatus` arrived
-    // OUTSIDE that frozen set — so a direct update could rewrite what an approver is recorded as
-    // having reviewed, on the exact register whose purpose is attributable human authorisation.
-    await expect(t.prisma.$executeRawUnsafe(
-      'UPDATE "SodGrant" SET "reviewedStatus"=\'submitted\' WHERE "projectId"=$1 AND "id"=$2',
-      projectId, grant.id,
-    )).rejects.toThrow(/IMMUTABLE/u);
-    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
-      .toBe('verified');
-
-    // …and the ONE transition the trigger exists to permit still passes, so the freeze is precise
-    // rather than a lock on the row. Round 4's lesson: test what the fix must PRESERVE.
-    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
-    expect(cert.id).toBeDefined();
-  });
-
-  it('h7: a certificate cannot come to rest on a grant recorded at a state it never certified', async () => {
-    const projectId = await freshProject();
-    const recorder = await secondPmc(projectId);
-    const line = await issuedMaterialLine(projectId, { qty: '100' });
-    await acceptOnLine(projectId, line, '100');
-    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
-    const grant = await grantAt(projectId, billId, recorder, f.memberUser.id);
-    const cert = await certification.certify(projectId, { billId }, asUser(projectId, recorder));
-    expect(cert.sodException?.grantId, 'the fixture must produce a REAL §I chain').toBe(grant.id);
-
-    // the whole §I chain is coherent — certificate, exception, consumed grant — and the ONLY thing
-    // wrong with it is that the grant now records a state no certification proceeds from
-    // pinned to THIS seal's message, not merely "it threw": a refusal from a different seal would
-    // leave the finding open while the probe reported green, which this suite has produced before
-    await expect(regressReviewedState(projectId, grant.id, 'submitted'))
-      .rejects.toThrow(/state no `evidence-recorder-may-not-certify` authority can be spent from/u);
-    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
-      .toBe('verified');
-
-    // NULL is refused for the same reason and not by accident: a legacy grant carries no evidence
-    // of what its approver saw, and guessing here puts words in their mouth
-    await expect(regressReviewedState(projectId, grant.id, null))
-      .rejects.toThrow(/records no reviewed state/u);
-
-    // …and the state the certification actually rests on is ACCEPTED, so the seal is precise
-    await expect(regressReviewedState(projectId, grant.id, 'verified')).resolves.toBeUndefined();
-  });
-
-  it('h8: the SQL mirror of the admissible reviewed states IS the shared TypeScript set', async () => {
-    // A trigger cannot import TypeScript, so the admissible sets are the one unavoidable second
-    // copy — the same position `phase5_t6b_derived_bill_status` is in. This is the closure that
-    // makes the copy safe: a status added to the shared lifecycle and forgotten in SQL fails here
-    // rather than by silently refusing a legitimate authorisation in production.
-    const admissible = async (rule: string): Promise<string[]> => {
-      const rows = await t.prisma.$queryRawUnsafe<Array<{ s: string[] }>>(
-        'SELECT phase5_t7biiih_admissible_reviewed_states($1) AS s', rule,
-      );
-      return rows[0]!.s;
-    };
-    expect(await admissible('evidence-recorder-may-not-certify')).toEqual([...BILL_CERTIFY_FROM]);
-    expect(await admissible('certifier-may-not-approve')).toEqual([...BILL_STATUSES_PAST_CERTIFICATION]);
-    // an unknown rule admits NOTHING — a third §I rule added without teaching this function is
-    // refused rather than silently waved through, which is the direction a seal should fail
-    expect(await admissible('some-future-rule')).toEqual([]);
-  });
-
-  it('h10: the version the pin is checked against is read UNDER the lock that protects it', async () => {
-    // Codex round 2 (P2). The live-version lookup sat ABOVE `lockBill`, so the pin was compared to
-    // a row read before the lock was held.
-    //
-    // Stated honestly, because the alternative is claiming more than I fixed: the interleaving
-    // Codex describes is NOT reachable today, because `grantSodException` and `amend` both take
-    // `lockProjectReadiness` first and are therefore already serialized against each other. What
-    // was wrong is that the correctness of a version pin rested on a lock taken for a different
-    // reason somewhere else — and a rule enforced by an accident elsewhere is not enforced. This
-    // is a STRUCTURAL probe of the read order, which is the thing that was actually wrong.
-    const source = readFileSync(
-      join(__dirname, '../../src/commercial/commercial-certification.service.ts'), 'utf8',
-    );
-    const grantBody = /async grantSodException\([\s\S]*?const row = await tx\.sodGrant\.create/u.exec(source)?.[0];
-    expect(grantBody, 'grantSodException must still be findable, or this probe is checking nothing').toBeDefined();
-    const lockAt = grantBody!.indexOf('this.lockBill(');
-    const versionAt = grantBody!.indexOf('vendorBillVersion.findFirst');
-    expect(lockAt, 'the bill lock must be taken').toBeGreaterThan(-1);
-    expect(versionAt, 'the live version must still be resolved server-side').toBeGreaterThan(-1);
-    expect(
-      versionAt,
-      'the live version must be read AFTER the bill lock — a pin compared against a row read before the lock is a pin against a row that may already have been superseded',
-    ).toBeGreaterThan(lockAt);
-
-    // …and the behaviour that read order exists to protect still works: an amended claim refuses a
-    // pin naming the version the approver actually read.
-    const projectId = await freshProject();
-    const approver = await secondPmc(projectId);
-    const line = await issuedMaterialLine(projectId, { qty: '100' });
-    await acceptOnLine(projectId, line, '100');
-    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
-    const readVersion = (await claims.readClaim(projectId, billId, pmc(projectId)))
-      .bill.versions.find((v) => v.live)!.id;
-    await bills.amend(projectId, {
-      billId, lines: [{ poLineId: line.poLineId, quantity: '90', rate: '1' }], reason: 'vendor corrected the quantity',
-    }, pmc(projectId));
-    await expect(grantAt(projectId, billId, f.memberUser.id, approver, { versionId: readVersion }))
-      .rejects.toThrow(/amended after you read it/u);
-  });
-
-  it('h11: the guards are installed BEFORE the diagnostic that can abort the deploy', async () => {
+  it('h11: the guards are installed BEFORE the legacy retirement acts', async () => {
     // Codex round 3 (P1). The abort is deliberate and it is not a rollback: this file is written
     // for retry, so on the legacy path the new columns stay committed while the widened index and
     // the replacement append-only trigger — both BELOW the abort — never run.
@@ -842,8 +704,8 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
       join(__dirname, '../../prisma/migrations/20270705000000_phase5_t7biiih_sod_reviewed_status/migration.sql'),
       'utf8',
     );
-    const abortAt = sql.indexOf("RAISE EXCEPTION\n      'phase5_t7biiih:");
-    expect(abortAt, 'the legacy diagnostic must still be in this migration').toBeGreaterThan(-1);
+    const abortAt = sql.indexOf('UPDATE "SodGrant"\n   SET "retiredAt"');
+    expect(abortAt, 'the legacy retirement must still be in this migration').toBeGreaterThan(-1);
     for (const guard of [
       'CREATE UNIQUE INDEX "SodGrant_live_scope_key"',
       'CREATE OR REPLACE FUNCTION phase5_t5_grant_append_only()',
@@ -851,7 +713,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     ]) {
       const at = sql.indexOf(guard);
       expect(at, `${guard} must be in this migration`).toBeGreaterThan(-1);
-      expect(at, `${guard} must be installed BEFORE the aborting diagnostic`).toBeLessThan(abortAt);
+      expect(at, `${guard} must be installed BEFORE legacy authority is retired`).toBeLessThan(abortAt);
     }
   });
 

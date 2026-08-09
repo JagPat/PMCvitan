@@ -62,6 +62,18 @@ CREATE TABLE IF NOT EXISTS "VendorBillRevision" (
 -- never revive one — so the guard is only about the two directions that could revive a stale pin.
 CREATE OR REPLACE FUNCTION phase5_t7biiih_revision_forward_only() RETURNS trigger AS $$
 BEGIN
+  -- DELETING it resets the claim to `COALESCE(..., 0)`, which revives every authorisation ever
+  -- pinned at 0. A counter that can be removed is not monotonic; it is monotonic until someone
+  -- tires of it.
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'A claim revision is never deleted — removing it would take the claim back to 0 and revive authorisations pinned there (%)', OLD."billId";
+  END IF;
+  -- …and it belongs to ONE claim. Codex round 4: checking only the counter let a direct update
+  -- move B1's row onto another bill, leaving B1 reading 0 again — the same revival by a different
+  -- route. The identity is as much a part of the fact as the number.
+  IF NEW."projectId" IS DISTINCT FROM OLD."projectId" OR NEW."billId" IS DISTINCT FROM OLD."billId" THEN
+    RAISE EXCEPTION 'A claim revision belongs to the claim it was opened for and cannot be moved (%)', OLD."billId";
+  END IF;
   IF NEW."revision" <> OLD."revision" + 1 THEN
     RAISE EXCEPTION 'The claim revision only ever moves forward, one step at a time (%)', OLD."billId";
   END IF;
@@ -70,7 +82,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS "VendorBillRevision_forward_only" ON "VendorBillRevision";
-CREATE TRIGGER "VendorBillRevision_forward_only" BEFORE UPDATE ON "VendorBillRevision"
+CREATE TRIGGER "VendorBillRevision_forward_only" BEFORE UPDATE OR DELETE ON "VendorBillRevision"
   FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_revision_forward_only();
 
 -- One place every mover goes through, so no writer can advance it halfway.
@@ -99,6 +111,25 @@ CREATE TRIGGER "VendorBill_lifecycle_version" AFTER UPDATE ON "VendorBill"
 -- a row written before this column existed attests to nothing, and inventing a version for it would
 -- be inventing the very evidence the register exists to carry.
 ALTER TABLE "SodGrant" ADD COLUMN IF NOT EXISTS "reviewedLifecycleVersion" INTEGER;
+
+-- ── A LEGACY GRANT MUST BE ABLE TO REACH A TERMINAL STATE ────────────────────────────────────
+--
+-- Codex round 4 (P1), and it is in direct tension with round 3's finding — which is the useful
+-- part. Round 3 said: install the guards BEFORE the abort, or the legacy path commits the evidence
+-- columns unguarded. Round 4 observes that once they are installed a legacy NULL grant can be
+-- neither filled (the freeze), nor consumed (the seal), nor deleted (append-only) — so the
+-- diagnostic's own remedy, "re-issue and redeploy", never clears the count. Re-issuing writes a
+-- SECOND row; the first still trips the abort, forever.
+--
+-- Both exits Codex names are real. The one that terminates is that **an abort was the wrong
+-- instrument.** A legacy grant is a row this release can no longer judge, and the honest disposal
+-- of a fact you cannot judge is to RETIRE it with a reason — retained, marked, attributable, and
+-- named in the runbook — not to stop every deploy until someone does the impossible.
+--
+-- This is not the silent revocation the abort existed to prevent. Silent would be deleting it, or
+-- inventing a reviewed state for it. A retirement says exactly what happened and why.
+ALTER TABLE "SodGrant" ADD COLUMN IF NOT EXISTS "retiredAt" TIMESTAMP(3);
+ALTER TABLE "SodGrant" ADD COLUMN IF NOT EXISTS "retiredReason" TEXT;
 
 -- ── …AND THE MONEY IS NOT THE LABEL ──────────────────────────────────────────────────────────
 --
@@ -160,6 +191,59 @@ END $$;
 ALTER TABLE "BillCertificate" ADD COLUMN IF NOT EXISTS "reviewedLifecycleVersion" INTEGER;
 ALTER TABLE "PaymentApproval" ADD COLUMN IF NOT EXISTS "reviewedLifecycleVersion" INTEGER;
 
+-- ── THE ACT'S RECORDED REVISION IS TRUE WHEN WRITTEN, AND FROZEN AFTER ───────────────────────
+--
+-- Codex round 4 (P1), and it is the objection that invalidates round 3's premise. Round 3 had the
+-- consume seal compare the grant's revision to the ACT'S and called that "two frozen columns, no
+-- inference". They are two SELF-AUTHORED columns: a bypass writer inserts the certificate with
+-- whatever revision matches the stale grant it wants to spend, and the seal proves only that the
+-- writer agrees with itself.
+--
+-- What makes the act's number TRUE is checking it against the claim's actual revision at the
+-- moment of writing — BEFORE INSERT, so it runs ahead of this table's own AFTER trigger advancing
+-- it, and by a plain read, so it takes no lock and adds no lock order.
+--
+-- And FROZEN afterwards, because an evidence column that a later UPDATE can rewrite is not
+-- evidence. A SEPARATE trigger rather than a `CREATE OR REPLACE` of the two cleared append-only
+-- functions, deliberately: replacing them would mean copying their cleared clauses forward, and a
+-- seal that judges a copy as an original is the root this PR's audit already names four times.
+-- Task 6A made the same choice for the same reason.
+CREATE OR REPLACE FUNCTION phase5_t7biiih_act_reviewed_revision() RETURNS trigger AS $$
+DECLARE v_now integer;
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW."reviewedLifecycleVersion" IS DISTINCT FROM OLD."reviewedLifecycleVersion" THEN
+      RAISE EXCEPTION 'The claim revision an act was performed against is evidence and cannot be rewritten (%)', OLD."id";
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  -- NULL is the legacy shape: rows written before this column existed carry nothing, and nothing
+  -- is what they must keep. A grant can never be consumed by one, because the consume seal
+  -- requires the two to be equal and refuses a NULL act.
+  IF NEW."reviewedLifecycleVersion" IS NULL THEN RETURN NEW; END IF;
+
+  SELECT COALESCE((SELECT r."revision" FROM "VendorBillRevision" r
+                    WHERE r."projectId" = NEW."projectId" AND r."billId" = NEW."billId"), 0)
+    INTO v_now;
+  IF NEW."reviewedLifecycleVersion" <> v_now THEN
+    RAISE EXCEPTION 'This act records revision % of the claim, which is at revision % — an act carries the passage of the claim it was actually performed on', NEW."reviewedLifecycleVersion", v_now;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['BillCertificate', 'PaymentApproval'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', t || '_reviewed_revision_true', t);
+    EXECUTE format(
+      'CREATE TRIGGER %I BEFORE INSERT OR UPDATE ON %I FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_act_reviewed_revision()',
+      t || '_reviewed_revision_true', t);
+  END LOOP;
+END $$;
+
 
 
 -- …and the live-scope index has to learn the new way a row becomes INERT.
@@ -183,7 +267,7 @@ ALTER TABLE "PaymentApproval" ADD COLUMN IF NOT EXISTS "reviewedLifecycleVersion
 DROP INDEX IF EXISTS "SodGrant_live_scope_key";
 CREATE UNIQUE INDEX "SodGrant_live_scope_key"
   ON "SodGrant"("projectId", "billId", "versionId", "rule", "actorId", "approverId", "reviewedStatus", "reviewedLifecycleVersion")
-  WHERE "consumedAt" IS NULL;
+  WHERE "consumedAt" IS NULL AND "retiredAt" IS NULL;
 
 -- ── …AND THE COLUMN JOINS EVERY SEAL THAT ALREADY SURROUNDS THIS ROW ─────────────────────────
 --
@@ -217,6 +301,14 @@ BEGIN
   END IF;
   IF OLD."consumedAt" IS NOT NULL THEN
     RAISE EXCEPTION 'This grant was already consumed at % — an authority is exercised ONCE (%)', OLD."consumedAt", OLD."id";
+  END IF;
+  -- RETIREMENT is the other one-way stamp, and it is one-way for the same reason consumption is:
+  -- a row that can be un-retired is a row whose disposal nobody can rely on.
+  IF OLD."retiredAt" IS NOT NULL THEN
+    RAISE EXCEPTION 'This grant was retired at % — a retired authority is history and does not come back (%)', OLD."retiredAt", OLD."id";
+  END IF;
+  IF NEW."retiredAt" IS NOT NULL AND NEW."consumedAt" IS NOT NULL THEN
+    RAISE EXCEPTION 'A grant is either exercised or retired, never both (%)', OLD."id";
   END IF;
   RETURN NEW;
 END;
@@ -306,38 +398,27 @@ CREATE CONSTRAINT TRIGGER "SodGrant_reviewed_state_sealed"
   AFTER INSERT OR UPDATE ON "SodGrant" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_grant_reviewed_state_sealed();
 
--- ── ONLY NOW MAY THIS MIGRATION STOP ─────────────────────────────────────────────────────────
+-- ── AND ONLY NOW MAY LEGACY AUTHORITY BE RETIRED ────────────────────────────────────────────
 --
--- Codex round 3 (P1). The abort below is deliberate and it is NOT a rollback — this file is written
--- for retry — so everything that makes stopping safe has to be installed above it.
+-- Placed last for round 3's reason — a migration that changes what authority means installs every
+-- guard before it acts — and shaped as a retirement rather than an abort for round 4's: an abort
+-- here could never be cleared, because the guards above make a legacy row unfillable,
+-- unconsumable and undeletable.
 --
--- With the diagnostic placed earlier, the legacy path committed the new evidence columns while the
--- widened live-scope index and the replacement append-only trigger never ran. That is worse than
--- the hole it guards: an operator "repairing" the legacy grants by hand could write reviewed
--- evidence nobody reviewed, rerun into a now-quiet diagnostic, and have the trigger installed on
--- the next pass FREEZE the fabrication as immutable — while the old scope key, still live, refused
--- the legitimate replacement as a duplicate.
---
--- Diagnostic-first, per this repository's established pattern: an UNCONSUMED legacy grant is one
--- whose behaviour this change alters (it stops authorising anything until re-issued), so the
--- deploy STOPS and names them rather than silently revoking live authority. Consumed grants are
--- history and are unaffected — they already did their work under the old rule.
---
--- `reviewedStatus IS NULL` is the WHOLE predicate, not a convenience. "Legacy" here means precisely
--- "written before this column existed"; an unconsumed grant that CARRIES a reviewed state is a
--- perfectly good authorisation this release created. Counting every unconsumed row instead made the
--- migration abort on any database that had already taken it and then done the very thing the abort
--- instructs — re-issue the authorisations and redeploy — so the remedy destroyed itself on success.
--- The rerunnability guard one statement above and this predicate are the same requirement asked of
--- two statements in one file.
+-- RETROACTIVE and idempotent: it names rows that predate the evidence columns, and a rerun finds
+-- none because the first run retired them.
+UPDATE "SodGrant"
+   SET "retiredAt" = now(),
+       "retiredReason" = 'phase5_t7biiih: predates the reviewed-state record; no evidence exists of what its approver reviewed, so it authorises nothing and must be re-issued against the claim as it stands'
+ WHERE "consumedAt" IS NULL AND "retiredAt" IS NULL
+   AND ("reviewedStatus" IS NULL OR "reviewedLifecycleVersion" IS NULL);
+
 DO $$
-DECLARE
-  v_live integer;
+DECLARE v_retired integer;
 BEGIN
-  SELECT count(*) INTO v_live FROM "SodGrant" WHERE "consumedAt" IS NULL AND "reviewedStatus" IS NULL;
-  IF v_live > 0 THEN
-    RAISE EXCEPTION
-      'phase5_t7biiih: % unconsumed SodGrant row(s) predate the reviewedStatus column. They record no evidence of what their approver reviewed, so this release makes them unusable rather than inventing one. Have a pmc re-issue each authorisation against the claim state they can see now, then redeploy. See docs/RUNBOOK.md.',
-      v_live;
+  SELECT count(*) INTO v_retired FROM "SodGrant"
+   WHERE "retiredAt" IS NOT NULL AND "reviewedStatus" IS NULL;
+  IF v_retired > 0 THEN
+    RAISE NOTICE 'phase5_t7biiih: retired % segregation-of-duties grant(s) that predate the reviewed-state record. They are retained and marked, and authorise nothing. A pmc must re-issue each one against the claim state they can see now — see docs/RUNBOOK.md.', v_retired;
   END IF;
 END $$;

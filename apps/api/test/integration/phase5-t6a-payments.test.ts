@@ -1237,4 +1237,67 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
       projectId, { paymentId, amount: '10.00', reason: 'bank returned it' }, pmc(projectId),
     ));
   });
+
+  it('PROBE 31 (§I): an act cannot CLAIM a revision it was not performed at, nor rewrite it after', async () => {
+    // Codex round 4 (P1), and it is the objection that invalidated round 3's premise. The consume
+    // seal compares the grant's revision to the ACT'S — but both columns are written by the same
+    // writer, so a bypass could insert the certificate carrying whatever revision matched the
+    // stale grant it wanted to spend. "Two frozen columns" proved only that the writer agreed
+    // with itself.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const now = async (): Promise<number> =>
+      (await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0;
+    const at = await now();
+    expect(at, 'the fixture must have advanced the claim, or the probe is about nothing').toBeGreaterThan(0);
+
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    // strictly BEFORE the current one: the certify transaction advances the claim twice more (its
+    // own certificate row, then the status transition), and the act records what it acted ON
+    expect(cert.reviewedLifecycleVersion, 'the honest act recorded the revision it acted at')
+      .toBeLessThan(at);
+    expect(cert.reviewedLifecycleVersion).toBeGreaterThanOrEqual(0);
+
+    // a WRONG claim about which passage this act was performed on is refused at INSERT, checked
+    // against the claim itself rather than against another row the same writer wrote
+    const mint = async (ref: string): Promise<string> => t.prisma.$transaction(async (tx) => {
+      const c = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId: f.memberUser.id,
+          commandType: 'commercial.payment.approve', idempotencyKey: `t7h-rev-${seq++}`, requestHash: 'x', status: 'reserved',
+        }, select: { id: true },
+      });
+      await tx.commandExecution.update({ where: { id: c.id }, data: { status: 'succeeded', resultRef: ref, completedAt: new Date() } });
+      return c.id;
+    });
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","reviewedLifecycleVersion","sourceCommandId")
+       VALUES($1,$2,$3,$4,10.00,$5,$6,$7)`,
+      'forged-rev', projectId, cert.id, billId, f.ownerUser.id, at - 1, await mint('forged-rev'),
+    )).rejects.toThrow(/an act carries the passage of the claim it was actually performed on/u);
+
+    // …and once written it is EVIDENCE: a later update cannot rewrite which passage it names
+    await expect(t.prisma.$executeRawUnsafe(
+      'UPDATE "BillCertificate" SET "reviewedLifecycleVersion"=0 WHERE "projectId"=$1 AND "id"=$2',
+      projectId, cert.id,
+    )).rejects.toThrow(/cannot be rewritten/u);
+  });
+
+  it('PROBE 32 (§I): the revision row cannot be moved or removed, only advanced', async () => {
+    // The counter's IDENTITY is as much a part of the fact as its number (Codex round 4), and its
+    // EXISTENCE is too — this enumeration's own addition. Both routes end the same way: the claim
+    // reads `COALESCE(..., 0)` again and every authorisation ever pinned at 0 comes back.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await freshProject();
+
+    await expect(t.prisma.$executeRawUnsafe(
+      'DELETE FROM "VendorBillRevision" WHERE "projectId"=$1 AND "billId"=$2', projectId, billId,
+    )).rejects.toThrow(/never deleted/u);
+    await expect(t.prisma.$executeRawUnsafe(
+      'UPDATE "VendorBillRevision" SET "billId"=$3, "revision"="revision"+1 WHERE "projectId"=$1 AND "billId"=$2',
+      projectId, billId, `${billId}-elsewhere`,
+    )).rejects.toThrow(/cannot be moved|violates foreign key/u);
+    expect(other).toBeDefined();
+  });
 });

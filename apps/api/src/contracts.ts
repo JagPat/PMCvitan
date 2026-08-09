@@ -1482,7 +1482,7 @@ export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
  * to pin and is not attacker-reachable. Requiring it in both would have meant editing 121 call
  * sites to invent a version they never displayed — which is not evidence, it is ceremony.
  */
-export type CertifyBillCommand = { billId: string; versionId?: string };
+export type CertifyBillCommand = { billId: string; versionId?: string; lifecycleVersion?: number };
 
 /**
  * §I — GRANT permission for ONE otherwise-forbidden act. Issued BY the approver, so the
@@ -1616,9 +1616,17 @@ export const approvePaymentSchema = z
   .object({
     billId: z.string().min(1),
     amount: z.string().trim().min(1).max(32),
+    /** …and the claim REVISION the approver read. Codex named this for the grant and the certify
+     *  commands; it belongs here for the same reason and was missing from both — an approval is
+     *  an act that spends a §I authority, and it must be able to say which passage of the claim it
+     *  was performed on. The §F payment status is re-enterable, so nothing else can say it. */
+    lifecycleVersion: z.number().int().nonnegative(),
   })
   .strict();
 export type ApprovePaymentInput = z.infer<typeof approvePaymentSchema>;
+/** The SERVICE shape, deliberately weaker than the HTTP one — the boundary is where a posted or
+ *  replayed body can carry a revision nobody read; an in-process caller has no rendered fact. */
+export type ApprovePaymentCommand = Omit<ApprovePaymentInput, 'lifecycleVersion'> & { lifecycleVersion?: number };
 
 /**
  * §G — RECORD money leaving against an approval that covers it.

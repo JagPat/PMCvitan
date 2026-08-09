@@ -1,6 +1,23 @@
 import type { Prisma } from '@prisma/client';
 import type { SodGrantState as GrantStateName } from '@vitan/shared';
+import { ConflictException } from '@nestjs/common';
 import type { OrgsParticipant } from '../orgs/orgs.participant';
+
+/**
+ * The claim REVISION a caller says they read, checked against what is true under the bill lock.
+ *
+ * One function for the grant, the certification and the approval, because it is one rule and this
+ * PR's audit is largely the story of the same rule being spelled once per call site. Optional
+ * in-process (no rendered fact to pin, not attacker-reachable); REQUIRED at every HTTP boundary,
+ * which is where a posted or replayed body can carry a revision nobody read.
+ */
+export function assertReviewedRevision(pinned: number | undefined, actual: number): void {
+  if (pinned !== undefined && pinned !== actual) {
+    throw new ConflictException(
+      'This claim has moved on since you read it — money on it has changed, so this act would be recorded against a claim you have not seen. Reload and try again.',
+    );
+  }
+}
 
 /**
  * §I — WHICH authorisation, if any, stands for one actor on one claim version, under one rule.
@@ -60,7 +77,9 @@ export async function resolveSodGrant(
   asOf: { status: string; lifecycleVersion: number },
 ): Promise<SodGrantResolution> {
   const live = await tx.sodGrant.findMany({
-    where: { projectId, billId, versionId, rule, actorId, consumedAt: null },
+    // a RETIRED grant is history: this release cannot judge what its approver reviewed, so it
+    // authorises nothing and must not be a candidate — nor block the replacement that replaces it
+    where: { projectId, billId, versionId, rule, actorId, consumedAt: null, retiredAt: null },
     select: {
       id: true, approverId: true, reason: true, reviewedStatus: true, reviewedLifecycleVersion: true,
     },
@@ -105,7 +124,7 @@ export async function resolveSodGrant(
   // version-pinned: an amendment is a DIFFERENT claim, and permission over the one the approver
   // looked at should not silently carry over to one they never saw
   const stale = await tx.sodGrant.count({
-    where: { projectId, billId, rule, actorId, consumedAt: null },
+    where: { projectId, billId, rule, actorId, consumedAt: null, retiredAt: null },
   });
   return { state: stale > 0 ? 'stale-version' : 'none' };
 }
