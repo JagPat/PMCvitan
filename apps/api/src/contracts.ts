@@ -1465,9 +1465,24 @@ export type VendorBillStepInput = z.infer<typeof vendorBillStepSchema>;
  * and the risk is specific to a command that can sit in a queue across an amendment.
  */
 export const certifyBillSchema = z
-  .object({ billId: z.string().min(1), versionId: z.string().min(1).optional() })
+  .object({ billId: z.string().min(1), versionId: z.string().min(1) })
   .strict();
 export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
+/**
+ * The SERVICE's shape, deliberately WEAKER than the HTTP one above.
+ *
+ * Codex round 6 — round 2 made the viewed version optional so in-process callers (121 call sites
+ * across the Task-5 suites and operator paths, which hold no rendered version) would compile, and
+ * that weakened the guard for the boundary too: a request omitting the field simply skipped the
+ * drift check, which is the one place the check exists for. A replayed body is an HTTP body.
+ *
+ * The fix is to stop making one contract serve two callers with different threat models. The
+ * BOUNDARY requires the pin, because that is where an unreviewed version can be posted or
+ * replayed; the INTERNAL shape does not, because a caller inside the process has no rendered fact
+ * to pin and is not attacker-reachable. Requiring it in both would have meant editing 121 call
+ * sites to invent a version they never displayed — which is not evidence, it is ceremony.
+ */
+export type CertifyBillCommand = { billId: string; versionId?: string };
 
 /**
  * §I — GRANT permission for ONE otherwise-forbidden act. Issued BY the approver, so the
@@ -1505,11 +1520,13 @@ export const supersedeCertificateSchema = z
     /** Codex round-2 — the certificate the corrector was LOOKING AT. Supersession names "the live
      *  one" at execution, so a queued correction intended for c1 supersedes its replacement c2 if
      *  c1 was corrected first: a document nobody reviewed, replaced with a reason written about a
-     *  different one. */
-    certificateId: z.string().min(1).optional(),
+     *  different one. REQUIRED at the boundary from round 6; see `SupersedeCertificateCommand`. */
+    certificateId: z.string().min(1),
   })
   .strict();
 export type SupersedeCertificateInput = z.infer<typeof supersedeCertificateSchema>;
+/** The SERVICE's shape — weaker than the boundary's, for the reason given on `CertifyBillCommand`. */
+export type SupersedeCertificateCommand = { billId: string; reason: string; certificateId?: string };
 
 /**
  * §H — WITHHOLD money from a certified payable.

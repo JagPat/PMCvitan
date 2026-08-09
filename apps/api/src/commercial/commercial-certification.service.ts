@@ -18,7 +18,7 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
-import type { CertifyBillInput, GrantSodExceptionInput, SupersedeCertificateInput } from '../contracts';
+import type { CertifyBillCommand, GrantSodExceptionInput, SupersedeCertificateCommand } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -120,7 +120,7 @@ export class CommercialCertificationService {
    * having serialized on the status it depends on.
    */
   async certify(
-    projectId: string, input: CertifyBillInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: CertifyBillCommand, user: AuthUser, idempotencyKey?: string,
   ): Promise<CertificateDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertCertify(user);
@@ -568,7 +568,7 @@ export class CommercialCertificationService {
    * live certificates only. That is what releases the evidence for reversal or re-certification.
    */
   async supersede(
-    projectId: string, input: SupersedeCertificateInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: SupersedeCertificateCommand, user: AuthUser, idempotencyKey?: string,
   ): Promise<CertificateDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertCertify(user);

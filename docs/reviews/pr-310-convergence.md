@@ -184,6 +184,33 @@ evidenced, with no path at all; here the common path (a certifier who did not re
 evidence) works end to end and the uncommon one gets an accurate refusal. It is still a
 gap, and it is stated in the screen, the packet and here rather than papered over.
 
+## Round 6 — one contract serving two threat models
+
+Head `faca18f` (the post-split unit) returned two findings of one shape, and they land on
+a decision I made deliberately and wrote a paragraph defending.
+
+Round 2 added viewed-fact pinning and made the pin **optional**, with the stated reason
+that 121 in-process call sites hold no rendered version. Optional means the drift guard is
+**skipped for any request that omits it** — and the request is exactly where the risk
+lives: a body posted or replayed after another user amends and re-verifies certifies a
+version its sender never reviewed. I closed the queue path and left the boundary open,
+then documented the asymmetry as a considered trade-off, which made it harder to see.
+
+The root, in its round-6 costume: **I made one contract serve two callers with different
+threat models, and weakened it to the laxer one.** The fix is to stop doing that — the
+HTTP schema now REQUIRES the pin, and a separate `CertifyBillCommand` /
+`SupersedeCertificateCommand` type carries the internal shape that does not. The boundary
+is attacker-reachable; an in-process caller is not, and has no rendered fact to pin.
+Requiring it in both would have meant editing 121 call sites to invent a version they
+never displayed — ceremony, not evidence.
+
+**This is the 6th finding-bearing head, past the advisory limit of 5, and I am not
+splitting again.** What remains is `certify` and `supersede` — two acts on one document,
+where supersession exists to correct what certification produced. Splitting them strands
+one without the other, which is the dead end the whole 7B-iii sequence has been avoiding.
+The advisory is real and is recorded here; the remedy it points at has already been taken
+once, at round 5, and there is no second cut that leaves both halves finishable.
+
 ## Carry-forward
 
 - A **monotonic per-bill lifecycle version** from the server remains the durable fix

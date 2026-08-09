@@ -111,6 +111,18 @@ passing under mutation:** "Authorise stays disabled" used only valid values, so 
 exercised the eligibility term; the probe that does is a chosen member *leaving the
 project* with the draft still holding their id.
 
+## Round 6 — two Codex findings on head `faca18f`
+
+Both one shape, on a decision I documented as a trade-off. Round 2 made the viewed-fact
+pins **optional** so 121 in-process call sites would compile — which skipped the drift
+guard for any REQUEST that omitted them, and the request is where the risk lives.
+
+| # | Finding | Fix |
+|---|---|---|
+| R6-1/2 | `certifyBillSchema` and `supersedeCertificateSchema` accepted a body without the viewed version / certificate, so the drift guard the previous rounds added was skipped exactly at the boundary a replayed body arrives on | the HTTP schemas REQUIRE the pin; `CertifyBillCommand` / `SupersedeCertificateCommand` carry the weaker internal shape. The boundary is attacker-reachable; an in-process caller is not, and has no rendered fact to pin |
+
+One mutation (pins optional again), reddening the boundary probe.
+
 ## Round 4 — five Codex findings on head `13c87a4`
 
 The P1 was a **documentation-truth error of exactly the kind this packet exists to
