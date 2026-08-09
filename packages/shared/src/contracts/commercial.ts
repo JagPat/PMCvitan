@@ -946,6 +946,15 @@ export interface CertifyPreflightDto {
    *  server is certain to refuse, instead of queueing it into the write-ahead outbox and reporting
    *  it saved. */
   callerActorId: string;
+  /** §I — the claim's REVISION at the instant this bundle was read.
+   *
+   *  A monotonic per-claim counter that advances whenever anything a reviewer would have seen
+   *  changes — every §F status transition AND every write that moves `NET_PAYABLE`, `APPROVED` or
+   *  `PAID`. It exists because the two obvious identities are both re-enterable: a claim returns to
+   *  a status label it has left, and a retention release moves what is owed without moving the
+   *  label at all. An authorisation echoes this value to say WHICH passage of the claim it was
+   *  given against, and the server refuses it if the claim has moved since. */
+  lifecycleVersion: number;
 }
 
 export interface CashForecastReadDto extends CashForecastDto {

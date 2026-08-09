@@ -928,14 +928,23 @@ rule, and nothing in this release re-judges them.
    re-trigger the abort. A repair that destroyed itself on success would not be a repair.
 
 **One column this migration adds that needs no operator action, mentioned because it appears in
-the diff.** `VendorBill.lifecycleVersion` is a per-claim counter, bumped by the
-`VendorBill_lifecycle_version` trigger whenever a claim's status changes. It starts at 0 on every
-existing row and needs no back-fill: nothing reads it historically, and it only has to be
-*monotonic from here*. It exists because a status LABEL recycles — §F derives the payment status
-from the folds, and `certified → paid → certified` is an ordinary sequence — so anything pinning
-"the claim the approver was looking at" needs a fact that cannot be true twice. The trigger also
-refuses any direct write of the column: a counter a writer can rewind is not monotonic, and a
-stale authorisation could otherwise be revived by moving the claim rather than the authorisation.
+the diff.** `VendorBill.lifecycleVersion` is the claim's COMMERCIAL REVISION: a per-claim counter
+that advances whenever anything a reviewer would have seen changes — every §F status transition,
+and every write to the six tables feeding `NET_PAYABLE`, `APPROVED` and `PAID`
+(`BillCertificate`, `BillDeduction`, `BillDeductionRelease`, `PaymentApproval`, `Payment`,
+`PaymentReversal`). It starts at 0 on every existing row and needs no back-fill: nothing reads it
+historically, and it only has to be *monotonic from here*.
+
+It exists because neither obvious identity survives contact with §F. A status LABEL recycles
+(`certified → paid → certified`, when a release raises the payable again), and it also fails to
+move at all when the money does — §F reads `certified` at any payable while nothing is approved,
+so returning ₹5 of a retention changes what is owed and changes no label. Anything pinning "the
+claim the approver was looking at" needs a fact that does both.
+
+Bumped by triggers rather than by the services, because six separate writers move `status` and
+six tables move the folds; the guard refuses a rewind or a jump, so a stale authorisation can
+never be revived by moving the claim instead of the authorisation. Advancing it is always safe —
+it can only invalidate an authority, never restore one.
 
 **If you cannot reach the approvers before the deploy window closes,** the safe move is to leave the
 release unapplied. There is no partial state to be stuck in: the migration runs in one transaction

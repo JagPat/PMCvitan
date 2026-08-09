@@ -42,15 +42,24 @@ ALTER TABLE "VendorBill" ADD COLUMN IF NOT EXISTS "lifecycleVersion" INTEGER NOT
 
 CREATE OR REPLACE FUNCTION phase5_t7biiih_bill_lifecycle_version() RETURNS trigger AS $$
 BEGIN
-  -- It counts TRANSITIONS, not writes. A write that leaves the status alone must not move it, or
-  -- every unrelated edit would silently stale an approver's pin and the remedy — re-authorise —
-  -- would be demanded for nothing.
+  -- A status transition advances it on its own, so no `status` writer has to remember.
   IF NEW."status" IS DISTINCT FROM OLD."status" THEN
-    NEW."lifecycleVersion" := OLD."lifecycleVersion" + 1;
-  ELSIF NEW."lifecycleVersion" IS DISTINCT FROM OLD."lifecycleVersion" THEN
-    -- and it is not a field anyone may set. A counter a writer can rewind is not monotonic, and a
-    -- stale pin could be made to match again by moving the claim rather than the authorisation.
-    RAISE EXCEPTION 'The claim lifecycle version only ever moves forward, and only when the status does (%)', OLD."id";
+    NEW."lifecycleVersion" := GREATEST(NEW."lifecycleVersion", OLD."lifecycleVersion" + 1);
+    RETURN NEW;
+  END IF;
+
+  -- Otherwise the ONLY admissible movement is a single step forward, which is what the fold
+  -- triggers below take. Codex round 3 (P1): the first spelling forbade every direct write, which
+  -- also forbade the fold triggers — and forbidding them is what left the counter tracking LABELS
+  -- when the thing it exists to identify is the MONEY.
+  --
+  -- A hostile writer can therefore advance it by one. That asymmetry is deliberate and it is the
+  -- safe direction: advancing the counter can only INVALIDATE an authorisation, never revive one.
+  -- Going backwards, or jumping, is what would let a stale pin be made to match again, and both
+  -- are refused.
+  IF NEW."lifecycleVersion" IS DISTINCT FROM OLD."lifecycleVersion"
+     AND NEW."lifecycleVersion" <> OLD."lifecycleVersion" + 1 THEN
+    RAISE EXCEPTION 'The claim lifecycle version only ever moves forward, one step at a time (%)', OLD."id";
   END IF;
   RETURN NEW;
 END;
@@ -65,29 +74,68 @@ CREATE TRIGGER "VendorBill_lifecycle_version" BEFORE UPDATE ON "VendorBill"
 -- be inventing the very evidence the register exists to carry.
 ALTER TABLE "SodGrant" ADD COLUMN IF NOT EXISTS "reviewedLifecycleVersion" INTEGER;
 
--- Diagnostic-first, per this repository's established pattern: an UNCONSUMED legacy grant is one
--- whose behaviour this change alters (it stops authorising anything until re-issued), so the
--- deploy STOPS and names them rather than silently revoking live authority. Consumed grants are
--- history and are unaffected — they already did their work under the old rule.
+-- ── …AND THE MONEY IS NOT THE LABEL ──────────────────────────────────────────────────────────
 --
--- `reviewedStatus IS NULL` is the WHOLE predicate, not a convenience. "Legacy" here means precisely
--- "written before this column existed"; an unconsumed grant that CARRIES a reviewed state is a
--- perfectly good authorisation this release created. Counting every unconsumed row instead made the
--- migration abort on any database that had already taken it and then done the very thing the abort
--- instructs — re-issue the authorisations and redeploy — so the remedy destroyed itself on success.
--- The rerunnability guard one statement above and this predicate are the same requirement asked of
--- two statements in one file.
-DO $$
+-- Codex round 3 (P1), which is round 2's finding one level deeper. Round 2 said "a label recycles,
+-- so pin a counter"; I then advanced that counter only when the LABEL changed.
+--
+-- §F's first two arms are `NET_PAYABLE = PAID` and `APPROVED = 0`, so a claim with nothing approved
+-- reads `certified` at ANY payable. A retention release raises what is owed from ₹90 to ₹95 and the
+-- label does not move at all — and the approver who authorised against ₹90 never saw the ₹95.
+--
+-- So the counter is the claim's COMMERCIAL REVISION: it advances whenever anything a reviewer would
+-- have seen changes. §F reads three folds (NET_PAYABLE, APPROVED, PAID) and exactly six tables feed
+-- them. Each gets the same trigger, so a seventh fold source added tomorrow is a visible omission in
+-- one list rather than a silent hole in an authority check.
+CREATE OR REPLACE FUNCTION phase5_t7biiih_touch_bill_lifecycle() RETURNS trigger AS $$
 DECLARE
-  v_live integer;
+  v_row record;
+  v_bill text;
+  v_project text;
 BEGIN
-  SELECT count(*) INTO v_live FROM "SodGrant" WHERE "consumedAt" IS NULL AND "reviewedStatus" IS NULL;
-  IF v_live > 0 THEN
-    RAISE EXCEPTION
-      'phase5_t7biiih: % unconsumed SodGrant row(s) predate the reviewedStatus column. They record no evidence of what their approver reviewed, so this release makes them unusable rather than inventing one. Have a pmc re-issue each authorisation against the claim state they can see now, then redeploy. See docs/RUNBOOK.md.',
-      v_live;
+  v_row := COALESCE(NEW, OLD);
+  v_project := v_row."projectId";
+
+  -- each fold source reaches its claim; the ones that do not carry `billId` walk their own FKs
+  IF TG_TABLE_NAME IN ('BillCertificate', 'PaymentApproval', 'Payment', 'PaymentReversal') THEN
+    v_bill := v_row."billId";
+  ELSIF TG_TABLE_NAME = 'BillDeduction' THEN
+    SELECT c."billId" INTO v_bill FROM "BillCertificate" c
+     WHERE c."projectId" = v_project AND c."id" = v_row."certificateId";
+  ELSIF TG_TABLE_NAME = 'BillDeductionRelease' THEN
+    SELECT c."billId" INTO v_bill FROM "BillDeduction" d
+      JOIN "BillCertificate" c ON c."projectId" = d."projectId" AND c."id" = d."certificateId"
+     WHERE d."projectId" = v_project AND d."id" = v_row."deductionId";
   END IF;
+
+  IF v_bill IS NOT NULL THEN
+    UPDATE "VendorBill" SET "lifecycleVersion" = "lifecycleVersion" + 1
+     WHERE "projectId" = v_project AND "id" = v_bill;
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['BillCertificate', 'BillDeduction', 'BillDeductionRelease',
+                           'PaymentApproval', 'Payment', 'PaymentReversal'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', t || '_touches_bill_lifecycle', t);
+    EXECUTE format(
+      'CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_touch_bill_lifecycle()',
+      t || '_touches_bill_lifecycle', t);
+  END LOOP;
 END $$;
+
+-- The ACT records the revision it was performed against, so the consume seal can compare two frozen
+-- columns rather than guess at what the counter was before the act moved it (Codex round 3 P1). By
+-- COMMIT the certificate insert and the status transition have both advanced it; what the authority
+-- must match is what the act SAW, and that is a fact the act can carry.
+ALTER TABLE "BillCertificate" ADD COLUMN IF NOT EXISTS "reviewedLifecycleVersion" INTEGER;
+ALTER TABLE "PaymentApproval" ADD COLUMN IF NOT EXISTS "reviewedLifecycleVersion" INTEGER;
+
+
 
 -- …and the live-scope index has to learn the new way a row becomes INERT.
 --
@@ -183,6 +231,7 @@ $$ LANGUAGE sql IMMUTABLE;
 -- shape again. This is placed on the transition every arm passes through, so a third target would
 -- inherit it rather than need a third copy.
 CREATE OR REPLACE FUNCTION phase5_t7biiih_grant_reviewed_state_sealed() RETURNS trigger AS $$
+DECLARE v_acted integer;
 BEGIN
   IF NEW."consumedAt" IS NULL THEN RETURN NULL; END IF;
 
@@ -202,6 +251,27 @@ BEGIN
   IF NOT (NEW."reviewedStatus" = ANY (phase5_t7biiih_admissible_reviewed_states(NEW."rule"))) THEN
     RAISE EXCEPTION 'Grant % was authorised over a claim reading %, a state no `%` authority can be spent from — the claim version does not change as it moves through its lifecycle, so a version pin does not say WHAT was reviewed; it needs authorising again against the state that holds now', NEW."id", NEW."reviewedStatus", NEW."rule";
   END IF;
+
+  -- …and the AUTHORITY and the ACT must name the same passage of the claim (Codex round 3, P1).
+  --
+  -- The admissible-set check above says the reviewed state is one this rule can proceed FROM. It
+  -- does not say it is the one THIS act proceeded from — and it cannot, because a claim returns to
+  -- an admissible state repeatedly. Leave an unspent `verified` grant at revision L1, let a
+  -- certificate be issued and superseded so the claim is `verified` again at L3, and every other
+  -- clause still matches.
+  --
+  -- Comparing against the bill's CURRENT revision is not available here: this fires at COMMIT, by
+  -- which time the act itself has advanced it. So the act carries what it saw, the grant carries
+  -- what its approver saw, and the seal requires them equal — two frozen columns, no inference.
+  SELECT COALESCE(
+    (SELECT c."reviewedLifecycleVersion" FROM "BillCertificate" c
+      WHERE c."projectId" = NEW."projectId" AND c."id" = NEW."consumedByCertificateId"),
+    (SELECT a."reviewedLifecycleVersion" FROM "PaymentApproval" a
+      WHERE a."projectId" = NEW."projectId" AND a."id" = NEW."consumedByApprovalId")
+  ) INTO v_acted;
+  IF v_acted IS NULL OR v_acted <> NEW."reviewedLifecycleVersion" THEN
+    RAISE EXCEPTION 'Grant % was authorised against revision % of this claim, and the act consuming it was performed against % — an authority is spent on the claim its approver actually reviewed, and this claim moved in between', NEW."id", NEW."reviewedLifecycleVersion", COALESCE(v_acted::text, '(unrecorded)');
+  END IF;
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
@@ -210,3 +280,39 @@ DROP TRIGGER IF EXISTS "SodGrant_reviewed_state_sealed" ON "SodGrant";
 CREATE CONSTRAINT TRIGGER "SodGrant_reviewed_state_sealed"
   AFTER INSERT OR UPDATE ON "SodGrant" DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_grant_reviewed_state_sealed();
+
+-- ── ONLY NOW MAY THIS MIGRATION STOP ─────────────────────────────────────────────────────────
+--
+-- Codex round 3 (P1). The abort below is deliberate and it is NOT a rollback — this file is written
+-- for retry — so everything that makes stopping safe has to be installed above it.
+--
+-- With the diagnostic placed earlier, the legacy path committed the new evidence columns while the
+-- widened live-scope index and the replacement append-only trigger never ran. That is worse than
+-- the hole it guards: an operator "repairing" the legacy grants by hand could write reviewed
+-- evidence nobody reviewed, rerun into a now-quiet diagnostic, and have the trigger installed on
+-- the next pass FREEZE the fabrication as immutable — while the old scope key, still live, refused
+-- the legitimate replacement as a duplicate.
+--
+-- Diagnostic-first, per this repository's established pattern: an UNCONSUMED legacy grant is one
+-- whose behaviour this change alters (it stops authorising anything until re-issued), so the
+-- deploy STOPS and names them rather than silently revoking live authority. Consumed grants are
+-- history and are unaffected — they already did their work under the old rule.
+--
+-- `reviewedStatus IS NULL` is the WHOLE predicate, not a convenience. "Legacy" here means precisely
+-- "written before this column existed"; an unconsumed grant that CARRIES a reviewed state is a
+-- perfectly good authorisation this release created. Counting every unconsumed row instead made the
+-- migration abort on any database that had already taken it and then done the very thing the abort
+-- instructs — re-issue the authorisations and redeploy — so the remedy destroyed itself on success.
+-- The rerunnability guard one statement above and this predicate are the same requirement asked of
+-- two statements in one file.
+DO $$
+DECLARE
+  v_live integer;
+BEGIN
+  SELECT count(*) INTO v_live FROM "SodGrant" WHERE "consumedAt" IS NULL AND "reviewedStatus" IS NULL;
+  IF v_live > 0 THEN
+    RAISE EXCEPTION
+      'phase5_t7biiih: % unconsumed SodGrant row(s) predate the reviewedStatus column. They record no evidence of what their approver reviewed, so this release makes them unusable rather than inventing one. Have a pmc re-issue each authorisation against the claim state they can see now, then redeploy. See docs/RUNBOOK.md.',
+      v_live;
+  END IF;
+END $$;

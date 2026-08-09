@@ -253,6 +253,43 @@ path is what proves that half.
 suite on a pristine migrated database; `upgrade-proof.sh` PASSED with the whole ledger applied
 from scratch; the migration verified applying from scratch on a clean database.
 
+---
+
+## Correction round 3 — the counter tracked the label, and the label is not the money
+
+Four P1s, one sentence. Full audit: `docs/reviews/pr-312-convergence.md`.
+
+| # | Finding | Fix |
+|---|---|---|
+| R3-1 (P1) | the counter advanced only on §F status transitions, so a retention release moving ₹90 → ₹95 left it unmoved | it is now the claim's COMMERCIAL REVISION — one trigger on each of the **six** tables feeding §F's three folds, enumerated and asserted by PROBE 30 |
+| R3-4 (P1) | the command compared version/status and then recorded the DATABASE'S CURRENT revision as "what was reviewed" | `lifecycleVersion` is REQUIRED at the boundary, compared under the bill lock, and the **approver's** pin is what gets persisted |
+| R3-2 (P1) | the consume seal never compared revisions, so a claim returning to `verified` later still satisfied it | the ACT records the revision it was performed at (`BillCertificate`/`PaymentApproval`), and the seal requires the two frozen columns equal |
+| R3-3 (P1) | the aborting diagnostic ran before the guards, so the legacy path could commit the evidence columns with neither the widened index nor the freeze installed | every guard is installed first; h11 pins the ordering against the file itself |
+
+**Why §F's label cannot carry this.** Its first two arms are `NET_PAYABLE = PAID` and
+`APPROVED = 0`, so a claim with nothing approved reads `certified` at any payable at all. A
+release raises what is owed and moves no label. The reviewed identity therefore has to advance
+on **anything a reviewer would have seen**, which is what the six fold triggers give it.
+
+**One correction to round 2's own reasoning, stated because it was written down.** That packet
+argued the DB seal *could not* compare revisions, since by COMMIT the act has moved the claim
+on. The premise was true and the conclusion did not follow: the act can carry what it saw. It
+does now.
+
+### Correction-3 evidence
+
+| Probe | Reproduced RED at `81aa65c` |
+|---|---|
+| PROBE 29 — a release that moves the money but not the label staleness the authorisation | the approval **succeeded** |
+| PROBE 30 — all six fold sources move the reviewed identity | only `BillCertificate` did, via its status transition |
+| h11 — guards installed before the aborting diagnostic | the index was 1,844 characters BELOW the abort |
+| h12 — the approver pins the revision they reviewed | the boundary accepted a grant with no revision pin, and the server recorded its own |
+
+**Gates on this head:** `pnpm check` EXIT 0 (web 685/685, API 781/781); focused
+`phase5-t7bii-claim-read` + `phase5-t6a-payments` **57/57**; full API integration on a pristine
+migrated database; `upgrade-proof.sh` **PASSED** — which caught the new fold trigger joining
+`PaymentReversal`'s exhaustively-enumerated trigger set, exactly as that assertion intends.
+
 **Two things stated rather than implied.** (1) h10 is a STRUCTURAL probe of the read order, and
 the interleaving Codex describes is **not reachable today** — `grantSodException` and `amend`
 both take `lockProjectReadiness` and are already serialized. What was wrong is that the pin's

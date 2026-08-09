@@ -1520,6 +1520,20 @@ export const grantSodExceptionSchema = z
      */
     versionId: z.string().min(1),
     status: z.string().min(1),
+    /**
+     * …and the claim's REVISION at that moment (Codex round 3).
+     *
+     * The version and the status are both RE-ENTERABLE: §F derives the payment status from the
+     * folds, a claim returns to a label it has left, and a retention release moves what is owed
+     * without moving the label at all. So neither pin says WHICH passage of the claim the approver
+     * was looking at — and the first spelling of this command compared those two and then recorded
+     * the DATABASE'S CURRENT revision as the thing reviewed, which is the server agreeing with
+     * itself about a number nobody had seen.
+     *
+     * The claim read publishes it; the approver echoes it; it is compared under the bill lock
+     * before it is persisted.
+     */
+    lifecycleVersion: z.number().int().nonnegative(),
     rule: z
       .enum([SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove])
       .optional(),
@@ -1529,7 +1543,7 @@ export type GrantSodExceptionInput = z.infer<typeof grantSodExceptionSchema>;
 /** The SERVICE's shape — weaker than the boundary's, for the reason given on `CertifyBillCommand`. */
 export type GrantSodExceptionCommand = {
   billId: string; actorId: string; reason: string;
-  versionId?: string; status?: string;
+  versionId?: string; status?: string; lifecycleVersion?: number;
   rule?: GrantSodExceptionInput['rule'];
 };
 

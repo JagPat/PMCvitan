@@ -546,7 +546,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
 
   const grantAt = async (
     projectId: string, billId: string, actorId: string, approverId: string,
-    pins: { versionId?: string; status?: string } = {},
+    pins: { versionId?: string; status?: string; lifecycleVersion?: number } = {},
   ) => certification.grantSodException(
     projectId, { billId, actorId, reason: 'two-person practice', ...pins }, asUser(projectId, approverId),
   );
@@ -633,8 +633,13 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     const { grantSodExceptionSchema } = await import('../../src/contracts');
     expect(grantSodExceptionSchema.safeParse({ billId: 'b', actorId: 'a', reason: 'r' }).success,
       'an authorisation without the reviewed facts must be refused at the boundary').toBe(false);
+    // …and round 3 adds the third pin: the claim REVISION. The version and the status are both
+    // re-enterable, so neither says WHICH passage of the claim the approver was looking at.
     expect(grantSodExceptionSchema.safeParse({
       billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 'verified',
+    }).success, 'version + status alone no longer identify what was reviewed').toBe(false);
+    expect(grantSodExceptionSchema.safeParse({
+      billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 'verified', lifecycleVersion: 3,
     }).success).toBe(true);
   });
 
@@ -819,6 +824,66 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     }, pmc(projectId));
     await expect(grantAt(projectId, billId, f.memberUser.id, approver, { versionId: readVersion }))
       .rejects.toThrow(/amended after you read it/u);
+  });
+
+  it('h11: the guards are installed BEFORE the diagnostic that can abort the deploy', async () => {
+    // Codex round 3 (P1). The abort is deliberate and it is not a rollback: this file is written
+    // for retry, so on the legacy path the new columns stay committed while the widened index and
+    // the replacement append-only trigger — both BELOW the abort — never run.
+    //
+    // What that leaves is worse than the hole it guards: an operator "fixing" the legacy grants by
+    // hand can populate `reviewedStatus`/`reviewedLifecycleVersion` with values nobody reviewed,
+    // rerun, pass the now-quiet diagnostic, and have the trigger installed on the next pass FREEZE
+    // the fabrication as immutable evidence. Meanwhile the OLD scope key is still live, so a
+    // legitimate replacement from the same approver collides with the row it is replacing.
+    //
+    // A migration that can stop must install everything that makes stopping SAFE before it stops.
+    const sql = readFileSync(
+      join(__dirname, '../../prisma/migrations/20270705000000_phase5_t7biiih_sod_reviewed_status/migration.sql'),
+      'utf8',
+    );
+    const abortAt = sql.indexOf("RAISE EXCEPTION\n      'phase5_t7biiih:");
+    expect(abortAt, 'the legacy diagnostic must still be in this migration').toBeGreaterThan(-1);
+    for (const guard of [
+      'CREATE UNIQUE INDEX "SodGrant_live_scope_key"',
+      'CREATE OR REPLACE FUNCTION phase5_t5_grant_append_only()',
+      'CREATE TRIGGER "VendorBill_lifecycle_version"',
+    ]) {
+      const at = sql.indexOf(guard);
+      expect(at, `${guard} must be in this migration`).toBeGreaterThan(-1);
+      expect(at, `${guard} must be installed BEFORE the aborting diagnostic`).toBeLessThan(abortAt);
+    }
+  });
+
+  it('h12: the approver pins the lifecycle they REVIEWED, and a queued grant cannot adopt a newer one', async () => {
+    // Codex round 3 (P1). The command compared the caller's version and status pins and then wrote
+    // the DATABASE'S CURRENT lifecycle version onto the grant — recording, as the thing the
+    // approver reviewed, a number the approver never saw. A pin the server fills in for you is not
+    // a pin; it is the server agreeing with itself.
+    const { grantSodExceptionSchema } = await import('../../src/contracts');
+    expect(
+      grantSodExceptionSchema.safeParse({ billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 'verified' }).success,
+      'the reviewed lifecycle is REQUIRED at the boundary, exactly as the version and status pins are',
+    ).toBe(false);
+
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    const read = await claims.readClaim(projectId, billId, pmc(projectId));
+    const viewed = read.certifyPreflight.lifecycleVersion;
+    expect(viewed, 'the claim read must publish it, or no client can pin it').toBeGreaterThanOrEqual(0);
+
+    // a stale pin — what a queued authorisation carries after the claim has moved — is refused
+    // even though the version and the status still match
+    await expect(grantAt(projectId, billId, f.memberUser.id, approver,
+      { versionId: read.bill.versions.find((v) => v.live)!.id, status: 'verified', lifecycleVersion: viewed - 1 }))
+      .rejects.toThrow(/moved on since you read it/u);
+
+    // …and the pin the reader actually saw is accepted, and is what gets RECORDED
+    const ok = await grantAt(projectId, billId, f.memberUser.id, approver,
+      { versionId: read.bill.versions.find((v) => v.live)!.id, status: 'verified', lifecycleVersion: viewed });
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: ok.id } })).reviewedLifecycleVersion)
+      .toBe(viewed);
   });
 
   it('h9: the column addition is RERUNNABLE, so the diagnostic abort does not poison the retry', async () => {

@@ -179,7 +179,8 @@ export class CommercialPaymentService {
         // the row is written so a refusal costs nothing; the grant is spent afterwards, against the
         // approval id it authorises.
         const override = certificate.certifiedById === actor.actorId
-          ? await this.resolveSodGrant(tx, projectId, input.billId, certificate.versionId, actor.actorId)
+          ? await this.resolveSodGrant(tx, projectId, input.billId, certificate.versionId, actor.actorId,
+            { status: bill.status, lifecycleVersion: bill.lifecycleVersion })
           : null;
 
         // §G BOUND 4, re-derived under the lock and stated as the REMAINING headroom, because a
@@ -202,6 +203,10 @@ export class CommercialPaymentService {
         const approval = await tx.paymentApproval.create({
           data: {
             projectId, billId: input.billId, certificateId: position.certificateId,
+            // the claim REVISION this authorisation was made against, read under the bill lock —
+            // the §I consume seal matches it against the grant's, so an authority and the act it
+            // excuses cannot name two different passages of the same claim
+            reviewedLifecycleVersion: bill.lifecycleVersion,
             amount, approvedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
@@ -643,8 +648,11 @@ export class CommercialPaymentService {
    */
   private async resolveSodGrant(
     tx: Prisma.TransactionClient, projectId: string, billId: string, versionId: string, actorId: string,
+    asOf: { status: string; lifecycleVersion: number },
   ): Promise<{ grantId: string; approverId: string; reason: string }> {
-    const resolved = await resolveGrantForRule(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, true);
+    const resolved = await resolveGrantForRule(
+      tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, true, asOf,
+    );
     if (resolved.state === 'live') {
       return { grantId: resolved.grant.id, approverId: resolved.grant.approverId, reason: resolved.grant.reason };
     }
@@ -677,9 +685,9 @@ export class CommercialPaymentService {
 
   private async lockBill(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
-  ): Promise<{ id: string; status: string }> {
-    const rows = await tx.$queryRaw<Array<{ id: string; status: string }>>`
-      SELECT "id", "status" FROM "VendorBill"
+  ): Promise<{ id: string; status: string; lifecycleVersion: number }> {
+    const rows = await tx.$queryRaw<Array<{ id: string; status: string; lifecycleVersion: number }>>`
+      SELECT "id", "status", "lifecycleVersion" FROM "VendorBill"
        WHERE "projectId" = ${projectId} AND "id" = ${billId} FOR UPDATE`;
     const bill = rows[0];
     if (!bill) throw new NotFoundException('Vendor bill not found in this project');

@@ -1145,4 +1145,95 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
       'UPDATE "VendorBill" SET "lifecycleVersion"=1 WHERE "projectId"=$1 AND "id"=$2', projectId, billId,
     )).rejects.toThrow(/only ever moves forward/u);
   });
+
+  it('PROBE 29 (§I): the reviewed identity moves when the MONEY moves, not only when the label does', async () => {
+    // Codex round 3 (P1), and it is round 2's finding one level deeper. Round 2 said "a status
+    // label recycles, so pin a counter"; I then bumped that counter only when the LABEL changed.
+    //
+    // The label is not the money. §F's first two arms are `NET_PAYABLE = PAID` and `APPROVED = 0`,
+    // so a claim with nothing approved reads `certified` at ANY payable — ₹90 or ₹95 or ₹900. A
+    // retention release raises what is owed without moving the label at all, and the approver who
+    // authorised against ₹90 never saw the ₹95.
+    //
+    // What has to advance is the CLAIM'S COMMERCIAL REVISION: anything a reviewer would have seen.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+
+    const retention = await deductions.record(
+      projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId),
+    );
+    const reads = async () => t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } });
+    expect((await reads()).status).toBe('certified');
+    // `approvable` IS the net payable while nothing is approved — read through the ordinary
+    // surface rather than a private fold, so the probe measures what a reviewer would see
+    expect((await payments.ledger(projectId, billId, pmc(projectId))).approvable).toBe('90.00');
+
+    // authorised against a ₹90 payable
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const atGrant = (await reads()).lifecycleVersion;
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedLifecycleVersion)
+      .toBe(atGrant);
+
+    // …and ₹5 of the retention comes back. The claim now owes ₹95 and STILL reads `certified`.
+    await deductions.release(
+      projectId, { deductionId: retention.id, amount: '5.00', reason: 'defects made good' }, pmc(projectId),
+    );
+    expect((await reads()).status, 'the LABEL must not move, or this probe is about the recycling case again')
+      .toBe('certified');
+    expect((await payments.ledger(projectId, billId, pmc(projectId))).approvable).toBe('95.00');
+    expect((await reads()).lifecycleVersion, 'the money moved, so the reviewed identity must have moved')
+      .toBeGreaterThan(atGrant);
+
+    await expect(payments.approve(projectId, { billId, amount: '95.00' }, pmc(projectId)))
+      .rejects.toThrow(/granted against a claim state that no longer holds/u);
+
+    // THE LEGAL PATH: re-authorised against what is owed now, the certifier may approve it
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'still the only pmc on site', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    expect((await payments.approve(projectId, { billId, amount: '95.00' }, pmc(projectId))).amount)
+      .toBe('95.00');
+  });
+
+  it('PROBE 30 (§I): EVERY fold source moves the reviewed identity', async () => {
+    // Enumerated rather than sampled, because the defect this answers was a counter that moved on
+    // one kind of change and not another. §F reads three folds — NET_PAYABLE, APPROVED, PAID — and
+    // six tables feed them. A seventh fold source added tomorrow without a bump is exactly the
+    // hole Codex just found, so this probe is the list.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);          // BillCertificate
+    const at = async () => (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).lifecycleVersion;
+    const moved = async (label: string, act: () => Promise<unknown>): Promise<void> => {
+      const before = await at();
+      await act();
+      expect(await at(), `${label} moves a payment fold, so it must move the reviewed identity`)
+        .toBeGreaterThan(before);
+    };
+
+    let retentionId = '';
+    await moved('BillDeduction', async () => {
+      retentionId = (await deductions.record(
+        projectId, { billId, type: 'retention', amount: '20.00' }, pmc(projectId),
+      )).id;
+    });
+    await moved('BillDeductionRelease', () => deductions.release(
+      projectId, { deductionId: retentionId, amount: '5.00', reason: 'partial release' }, pmc(projectId),
+    ));
+    let approvalId = '';
+    await moved('PaymentApproval', async () => {
+      approvalId = (await payments.approve(projectId, { billId, amount: '50.00' }, approver(projectId))).id;
+    });
+    let paymentId = '';
+    await moved('Payment', async () => {
+      paymentId = (await payments.record(
+        projectId, { approvalId, amount: '50.00', method: 'neft' }, pmc(projectId),
+      )).id;
+    });
+    await moved('PaymentReversal', () => payments.reverse(
+      projectId, { paymentId, amount: '10.00', reason: 'bank returned it' }, pmc(projectId),
+    ));
+  });
 });

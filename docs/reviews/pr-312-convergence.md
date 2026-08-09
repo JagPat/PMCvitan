@@ -120,6 +120,47 @@ that decision names — not under a lock that happens to be held.
 
 ---
 
+---
+
+## Round 3 — root B was right and my answer to it was one level too shallow
+
+Four more P1s, and they are all the same sentence: **the counter I added tracks the label, and
+the label is not the money.**
+
+| Finding | What it showed |
+|---|---|
+| R3-1 | the counter advanced only on status transitions — but §F's first two arms mean a claim with nothing approved reads `certified` at ANY payable, so a retention release moves ₹90 to ₹95 and the counter does not move at all |
+| R3-4 | the command compared the caller's version/status pins and then recorded the DATABASE'S CURRENT counter — the server agreeing with itself about a number the approver never saw |
+| R3-2 | the consume seal checked the admissible reviewed *state* and never the revision, so a claim returning to `verified` at a later revision still satisfied it |
+| R3-3 | the aborting diagnostic ran BEFORE the guards, so the legacy path could commit the evidence columns with neither the widened index nor the freeze installed |
+
+Root A's rule — *fix the class, not the instance* — is what R3-1 and R3-4 violate, one more
+time and in a new costume: I answered "the label recycles" with "count the label's
+transitions", and I answered "pin what was reviewed" with "record what is current". Both
+times the finding's example got fixed and the property behind it did not.
+
+Root B's rule, restated after round 3, is the one that actually generalises:
+
+> **The reviewed identity must advance whenever anything a reviewer would have seen changes.**
+
+Not when a label changes. Not when the server happens to look. The counter is now the claim's
+COMMERCIAL REVISION, advanced by a trigger on every one of the six tables that feed §F's three
+folds — so a seventh fold source added tomorrow is a visible omission in one enumerated list
+rather than a silent hole in an authority check. `PROBE 30` is that list, asserted.
+
+Two more things this round makes structural rather than promised:
+
+- **The act carries what it saw.** `BillCertificate.reviewedLifecycleVersion` and
+  `PaymentApproval.reviewedLifecycleVersion` let the consume seal compare two frozen columns
+  instead of inferring what the counter was before the act moved it. Round 2's packet argued
+  the seal *could not* check the revision; that argument was true only for the shape I had,
+  and Codex was right that the conclusion did not follow.
+- **The resolver is told what it is judging.** `resolveSodGrant` now takes the claim state the
+  caller is acting on. That is not plumbing: `certify` inserts its certificate — a fold source —
+  before it asks the §I question, so reading "now" made every certification refuse its own
+  valid authorisation. My own probes caught that within a minute of the fix, which is the
+  argument for the probes existing.
+
 ## What this head does NOT do
 
 It does not touch the round-1 fixes that Codex accepted; they are unchanged. It does not

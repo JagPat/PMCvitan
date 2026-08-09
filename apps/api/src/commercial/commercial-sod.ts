@@ -47,6 +47,17 @@ export async function resolveSodGrant(
   rule: string,
   actorId: string,
   forUpdate: boolean,
+  /**
+   * The claim state this caller is resolving AGAINST — read under its own lock, or read by the
+   * screen that is about to display the answer.
+   *
+   * Passed in rather than read here, and that is not plumbing: `certify` inserts its certificate
+   * BEFORE it asks this question, and a certificate is a payment-fold source, so the act had
+   * already advanced the claim's revision by the time the resolver looked. Reading "now" made
+   * every certification refuse its own valid authorisation. An authority is judged against the
+   * claim the ACT is being performed on, which only the caller knows.
+   */
+  asOf: { status: string; lifecycleVersion: number },
 ): Promise<SodGrantResolution> {
   const live = await tx.sodGrant.findMany({
     where: { projectId, billId, versionId, rule, actorId, consumedAt: null },
@@ -71,11 +82,8 @@ export async function resolveSodGrant(
   // `certified → paid → certified`, when a release raises the payable again. Comparing the label
   // alone would bring an authorisation given when nothing was approved back to life after ₹90 had
   // been authorised and paid. A counter that only moves forward cannot be re-entered.
-  const bill = await tx.vendorBill.findFirst({
-    where: { projectId, id: billId }, select: { status: true, lifecycleVersion: true },
-  });
-  const currentStatus = bill?.status ?? null;
-  const currentVersion = bill?.lifecycleVersion ?? null;
+  const currentStatus = asOf.status;
+  const currentVersion = asOf.lifecycleVersion;
   const reviewHolds = (c: { reviewedStatus: string | null; reviewedLifecycleVersion: number | null }): boolean =>
     c.reviewedStatus !== null && c.reviewedStatus === currentStatus
     && c.reviewedLifecycleVersion !== null && c.reviewedLifecycleVersion === currentVersion;

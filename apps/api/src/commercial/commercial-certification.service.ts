@@ -267,6 +267,11 @@ export class CommercialCertificationService {
           data: {
             projectId, billId: input.billId, versionId,
             certifiedAmount,
+            // …and the claim REVISION this act was performed against, read under the bill lock
+            // above. The §I consume seal requires the authority and the act to name the same
+            // passage of the claim, and by COMMIT this insert has already advanced the counter —
+            // so what the seal compares has to be a fact each row carries.
+            reviewedLifecycleVersion: bill.lifecycleVersion,
             certifiedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
@@ -302,7 +307,12 @@ export class CommercialCertificationService {
         // FROZEN ROWS, so asking it once they exist lets both layers ask it of the same rows
         // through the same function. A refusal costs nothing: it throws inside the transaction,
         // so the certificate and its freeze are never committed.
-        const sod = await this.assertSegregation(tx, projectId, input.billId, versionId, actor.actorId, certificate.id);
+        const sod = await this.assertSegregation(
+          tx, projectId, input.billId, versionId, actor.actorId, certificate.id,
+          // the claim as it was when this act STARTED — before the certificate above advanced its
+          // revision. The authority is judged against what the certifier acted on.
+          { status: bill.status, lifecycleVersion: bill.lifecycleVersion },
+        );
 
         // §I — written in the SAME transaction as the override it authorises, bound to THAT
         // certificate by composite FK, and carrying the SAME `sourceCommandId`. An exception is
@@ -671,6 +681,7 @@ export class CommercialCertificationService {
     versionId: string,
     actorId: string,
     certificateId: string,
+    asOf: { status: string; lifecycleVersion: number },
   ): Promise<{ grantId: string; rule: string; actorId: string; approverId: string; reason: string } | null> {
     // Codex rounds 3 and 5, twice about the same rule: the service counted the authors of positive
     // measurement corrections as evidence actors and the database seal did not, because they were
@@ -707,7 +718,7 @@ export class CommercialCertificationService {
     // question from "select a candidate that is valid" whenever more than one can exist, and the
     // live-grant scope is now deliberately wide enough for more than one. So the standing filter
     // moves INTO the selection, and the stale rows are simply not candidates.
-    const resolved = await this.resolveGrant(tx, projectId, billId, versionId, actorId, true);
+    const resolved = await this.resolveGrant(tx, projectId, billId, versionId, actorId, true, asOf);
     if (resolved.state !== 'live') {
       // The three refusals are the resolver's three non-live states, spelled once here where the
       // ACT is refused. `resolveGrant` decides WHICH state holds; this decides what that means for
@@ -762,8 +773,9 @@ export class CommercialCertificationService {
     versionId: string,
     actorId: string,
     forUpdate: boolean,
+    asOf: { status: string; lifecycleVersion: number },
   ): Promise<SodGrantResolution> {
-    return resolveSodGrant(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, forUpdate);
+    return resolveSodGrant(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, forUpdate, asOf);
   }
 
   /**
@@ -815,6 +827,15 @@ export class CommercialCertificationService {
             `This claim moved to ${reviewed.status} after you read it — the authorisation would apply to a state you have not reviewed. Reload and authorise again.`,
           );
         }
+        // …and the REVISION, which is the only one of the three pins that cannot be re-entered.
+        // Codex round 3: comparing version and status and then recording the database's CURRENT
+        // revision made the recorded evidence the server's, not the approver's — an authorisation
+        // queued at revision 1 would be written as if its approver had reviewed revision 3.
+        if (input.lifecycleVersion !== undefined && input.lifecycleVersion !== reviewed.lifecycleVersion) {
+          throw new ConflictException(
+            'This claim has moved on since you read it — money on it has changed, so the authorisation would apply to a claim you have not reviewed. Reload and authorise again.',
+          );
+        }
         // 7B-iii-h — the EXCUSED actor must be able to perform the act at all. A grant naming
         // someone without standing for it is an authority that can never be exercised: it is
         // recorded, displayed, and the named actor is still refused by a different rule when they
@@ -858,7 +879,9 @@ export class CommercialCertificationService {
             // The STATUS says what the claim read; the monotonic lifecycle version says WHICH
             // passage through that reading it was, because the label itself recycles.
             reviewedStatus: reviewed.status,
-            reviewedLifecycleVersion: reviewed.lifecycleVersion,
+            // the pin the APPROVER echoed, having just been proven equal to what is true under the
+            // lock — recorded rather than the server's own reading of "now"
+            reviewedLifecycleVersion: input.lifecycleVersion ?? reviewed.lifecycleVersion,
             actorId: input.actorId, approverId: actor.actorId, reason: input.reason,
             sourceCommandId: ctx.commandId!,
           },
