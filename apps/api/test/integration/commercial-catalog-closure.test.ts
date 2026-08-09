@@ -188,6 +188,17 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
       prosrcSha256: '84dfd52318f0d6bb5401e96881664e9342ebe77644db14dfd2a3fa2c84e8d4fe',
       constraintTrigger: true,
     },
+    // 7B-iii-h — the state a grant was justified against, sealed where the authority is SPENT.
+    // `tgtype` 21 = AFTER INSERT OR UPDATE, FOR EACH ROW: BOTH events, because the transition can
+    // arrive as a stamped UPDATE or as an already-consumed INSERT, and a seal that watches one of
+    // them is a seal a direct writer walks around by choosing the other.
+    SodGrant_reviewed_state_sealed: {
+      relation: 'SodGrant',
+      tgtype: 21,
+      fn: 'phase5_t7biiih_grant_reviewed_state_sealed',
+      prosrcSha256: '87c72ccbfddb97b27cfd10b65272a0f2ecf4b61e3c492b90323ee96433580338',
+      constraintTrigger: true,
+    },
   };
 
   const CONSTRAINT_SEALS: Record<string, { relation: string }> = {

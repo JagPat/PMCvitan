@@ -1956,12 +1956,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await acceptOnLine(projectId, line, '100', pmc(projectId));
     const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
     const grant = await grantOverride(projectId, billId, approver, f.memberUser.id);
-    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
-    expect(cert.sodException?.grantId).toBe(grant.id);
 
-    // (c) the CONSUME transition is sealed. Round 9's third finding: a stray UPDATE could burn an
-    // approver's single-use authority against an unrelated certificate, leaving the ledger saying
-    // the authority was exercised when no override consumed it.
     // 7B-iii-h — the excused actor must be able to CERTIFY, or the exception authorises nothing
     // they could act on. This probe's subject is the CONSUME seal and it used a stranger merely as
     // "a different actor"; a stranger holds no membership and so cannot certify, which the grant
@@ -1972,7 +1967,20 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       create: { projectId, userId: f.strangerUser.id, role: 'pmc', status: 'active' },
       update: { role: 'pmc', status: 'active' },
     });
+    // …and the second grant is issued BEFORE the certification, for the same reason: 7B-iii-h's
+    // correction round seals the reviewed STATE at consumption, and a grant written after this
+    // claim reached `certified` records a state no certification proceeds from — so it would be
+    // refused by THAT seal and this probe would prove nothing about the one it is named for.
+    // Certifying reads the grant scoped to the CERTIFIER, so a live grant naming someone else is
+    // not a candidate and the act below still consumes `grant`.
     const second = await grantOverride(projectId, billId, approver, f.strangerUser.id, 'a different actor');
+
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.sodException?.grantId).toBe(grant.id);
+
+    // (c) the CONSUME transition is sealed. Round 9's third finding: a stray UPDATE could burn an
+    // approver's single-use authority against an unrelated certificate, leaving the ledger saying
+    // the authority was exercised when no override consumed it.
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "SodGrant" SET "consumedAt"=now(), "consumedByCertificateId"=$2 WHERE "projectId"=$1 AND "id"=$3`,
       projectId, cert.id, second.id,
