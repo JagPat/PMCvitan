@@ -83,10 +83,10 @@ the next. Server and client mutations listed together:
 
 ### Gates
 
-- `pnpm check` — **EXIT 0** (web 683/683 across 45 files, API 780/780 across 57 files, lint + typecheck + both builds clean)
-- `commercial-verification.test.ts` **25/25**; `commercial.test.ts` + `commercial-screen.test.tsx` green (133/133 together)
-- API integration, focused: `phase5-t7bii-claim-read` **12/12** (5 new preflight probes); `phase5-t5b-certification` **49/49 unchanged**
-- Full API integration suite on a pristine migrated database — 86 files / 1033 tests at the initial head; re-running over the correction head, result recorded on the PR before promotion
+- `pnpm check` — **EXIT 0** (web 689/689 across 45 files, API 780/780 across 57 files, lint + typecheck + both builds clean)
+- `commercial-verification.test.ts` **27/27**; `commercial-screen.test.tsx` **64/64**; `commercial.test.ts` green
+- API integration, focused: `phase5-t7bii-claim-read` **16/16** (5 preflight + 4 correction probes); `phase5-t5b-certification` **49/49 unchanged**
+- Full API integration suite on a pristine migrated database — **86 files / 1037 tests**, exit 0, run over the CORRECTION head (the initial head's own run was 86/1033; the +4 are this round's API probes)
 - No migration, so `upgrade-proof.sh` is not applicable
 - Browser e2e runs in CI (the local Chromium build does not match the pinned Playwright revision)
 
