@@ -59,7 +59,7 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -884,8 +884,8 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
       );
       const newCert = `${cert.id}-r`;
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $1,"projectId","billId","versionId","certifiedAmount","certifiedById",$3 FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $1,"projectId","billId","versionId","certifiedAmount","certifiedById",$3, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
         newCert, projectId, await mintCommand(projectId, 'commercial.bill.certify', newCert), cert.id,
       );
       // a certificate rests on EXACTLY the evidence it claimed (5B), so the replacement freezes the
@@ -985,8 +985,8 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
           cert.id, f.memberUser.id,
         );
         await tx.$executeRawUnsafe(
-          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-           SELECT $1,"projectId","billId","versionId","certifiedAmount","certifiedById",$3 FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
+          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+           SELECT $1,"projectId","billId","versionId","certifiedAmount","certifiedById",$3, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
           newCert, projectId, await mintCommand(projectId, 'commercial.bill.certify', newCert), cert.id,
         );
         await tx.$executeRawUnsafe(
@@ -1374,8 +1374,8 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
         cert.id, f.memberUser.id,
       );
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $1,"projectId","billId","versionId",${amount},"certifiedById",$3 FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $1,"projectId","billId","versionId",${amount},"certifiedById",$3, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
         newCert, projectId, await mintCommand(projectId, 'commercial.bill.certify', newCert), cert.id,
       );
       await tx.$executeRawUnsafe(
@@ -1427,8 +1427,8 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
         cert2.id, f.memberUser.id,
       );
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $1,"projectId","billId","versionId",10.00,"certifiedById",$3 FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $1,"projectId","billId","versionId",10.00,"certifiedById",$3, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
         newCert, projectId, await mintCommand(projectId, 'commercial.bill.certify', newCert), cert2.id,
       );
       await tx.$executeRawUnsafe(

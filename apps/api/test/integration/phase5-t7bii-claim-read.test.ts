@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { BILL_CERTIFY_FROM, BILL_STATUSES_PAST_CERTIFICATION } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
@@ -56,7 +59,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -537,5 +540,227 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
 
 
 
+
+
+  // ── 7B-iii-h — the §I grant records the STATE it was justified against ───────────────────────
+
+  const grantAt = async (
+    projectId: string, billId: string, actorId: string, approverId: string,
+    pins: { versionId?: string; status?: string; lifecycleVersion?: number } = {},
+  ) => certification.grantSodException(
+    projectId, { billId, actorId, reason: 'two-person practice', ...pins }, asUser(projectId, approverId),
+  );
+
+  it('h1: a grant RECORDS the reviewed state, and it still holds when the authority is spent', async () => {
+    const projectId = await freshProject();
+    const recorder = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');            // recorded BY `recorder`
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    const grant = await grantAt(projectId, billId, recorder, f.memberUser.id);
+    const row = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } });
+    expect(row.reviewedStatus, 'the state the approver reviewed is RECORDED, not merely checked').toBe('verified');
+
+    // THE LEGAL PATH (the round-4 lesson): a guard that only ever refuses is indistinguishable
+    // from one that never permits, so the ordinary case is asserted first.
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, recorder))).certifyPreflight)
+      .toMatchObject({ grantState: 'live', grantId: grant.id });
+    const cert = await certification.certify(projectId, { billId }, asUser(projectId, recorder));
+    expect(cert.sodException?.grantId).toBe(grant.id);
+  });
+
+  it('h2: an authorisation given BEFORE the §E verdict cannot be spent after it', async () => {
+    const projectId = await freshProject();
+    const recorder = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const recorded = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: `V-H2-${seq++}`, documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId));
+    await bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
+
+    // authorised while the claim is SUBMITTED — the verdict does not exist yet. The pins are sent
+    // exactly as the client sends them; they are also what makes a later re-authorisation a
+    // DIFFERENT command rather than an idempotent replay of this one.
+    const submittedVersion = (await claims.readClaim(projectId, recorded.id, pmc(projectId)))
+      .bill.versions.find((v) => v.live)!.id;
+    const grant = await grantAt(projectId, recorded.id, recorder, f.memberUser.id,
+      { versionId: submittedVersion, status: 'submitted' });
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('submitted');
+
+    // the claim verifies — SAME version, different state
+    await bills.beginVerification(projectId, { billId: recorded.id }, pmc(projectId));
+    await verification.verify(projectId, { billId: recorded.id }, pmc(projectId));
+    const versions = (await claims.readClaim(projectId, recorded.id, pmc(projectId))).bill.versions;
+    expect(versions.find((v) => v.live)!.id, 'the version must NOT have moved, or this probe is about the wrong thing')
+      .toBe(grant.versionId);
+
+    // the authority is not spendable on a verdict its approver never reviewed
+    expect((await claims.readClaim(projectId, recorded.id, asUser(projectId, recorder))).certifyPreflight.grantState)
+      .toBe('stale-review');
+    await expect(certification.certify(projectId, { billId: recorded.id }, asUser(projectId, recorder)))
+      .rejects.toThrow(/Segregation of duties/u);
+
+    // …and re-authorising against what is true NOW restores it — the guard is precise, not merely
+    // strict. A different reviewed state is a different command, not a replay of the first.
+    await grantAt(projectId, recorded.id, recorder, f.memberUser.id,
+      { versionId: submittedVersion, status: 'verified' });
+    expect((await claims.readClaim(projectId, recorded.id, asUser(projectId, recorder))).certifyPreflight.grantState)
+      .toBe('live');
+  });
+
+  it('h3: a grant naming someone who cannot CERTIFY is refused at the command', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
+      create: { projectId, userId: f.strangerUser.id, role: 'engineer', status: 'active' },
+      update: { role: 'engineer', status: 'active' },
+    });
+    // an engineer holds no certify path, so the authority could never be exercised
+    await expect(grantAt(projectId, billId, f.strangerUser.id, approver))
+      .rejects.toThrow(/cannot certify on this project/u);
+    // the legal path: a certifier is granted normally
+    const ok = await grantAt(projectId, billId, f.memberUser.id, approver);
+    expect(ok.actorId).toBe(f.memberUser.id);
+  });
+
+  it('h4: the pins are REQUIRED at the boundary and optional in-process', async () => {
+    const { grantSodExceptionSchema } = await import('../../src/contracts');
+    expect(grantSodExceptionSchema.safeParse({ billId: 'b', actorId: 'a', reason: 'r' }).success,
+      'an authorisation without the reviewed facts must be refused at the boundary').toBe(false);
+    // …and round 3 adds the third pin: the claim REVISION. The version and the status are both
+    // re-enterable, so neither says WHICH passage of the claim the approver was looking at.
+    expect(grantSodExceptionSchema.safeParse({
+      billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 'verified',
+    }).success, 'version + status alone no longer identify what was reviewed').toBe(false);
+    expect(grantSodExceptionSchema.safeParse({
+      billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 'verified', lifecycleVersion: 3,
+    }).success).toBe(true);
+  });
+
+
+  it('h5: a legacy grant is RETIRED, attributably, and a well-formed live one is untouched', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+
+    // Round 4 changed the instrument, and the probe changes with it. The migration used to ABORT on
+    // a legacy unconsumed grant. Codex round 4: once the guards above are installed such a row can
+    // be neither filled, consumed nor deleted, so the abort's own remedy ("re-issue and redeploy")
+    // never clears it and the migration is not rerunnable at all. A fact this release cannot judge
+    // is RETIRED with a reason — retained, marked, and named in the runbook.
+    const retirement = readFileSync(
+      join(__dirname, '../../prisma/migrations/20270705000000_phase5_t7biiih_sod_reviewed_status/migration.sql'),
+      'utf8',
+    ).match(/UPDATE "SodGrant"\n\s+SET "retiredAt"[\s\S]*?reviewedLifecycleVersion" IS NULL\);/u)?.[0];
+    expect(retirement, 'the migration must still carry its legacy retirement').toBeDefined();
+
+    // a well-formed live authorisation is NOT touched — the retirement names legacy rows only
+    const live = await grantAt(projectId, billId, f.memberUser.id, approver);
+    await t.prisma.$executeRawUnsafe(retirement!);
+    const untouched = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: live.id } });
+    expect(untouched.retiredAt, 'a grant carrying its reviewed evidence is not legacy').toBeNull();
+
+    // …and a row that predates the columns IS retired, with a reason a human can act on. Reaching
+    // that state needs the append-only bypass, which is the point: this release cannot create one.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
+      await tx.$executeRawUnsafe(
+        'UPDATE "SodGrant" SET "reviewedStatus"=NULL, "reviewedLifecycleVersion"=NULL WHERE "projectId"=$1 AND "id"=$2',
+        projectId, live.id,
+      );
+      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
+    });
+    await t.prisma.$executeRawUnsafe(retirement!);
+    const retired = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: live.id } });
+    expect(retired.retiredAt, 'a grant with no reviewed evidence is retired').not.toBeNull();
+    expect(retired.retiredReason).toMatch(/predates the reviewed-state record/u);
+
+    // RERUNNABLE, which is the finding: a second pass finds nothing left to retire and the
+    // retired row does not block the replacement a pmc now issues
+    await expect(t.prisma.$executeRawUnsafe(retirement!)).resolves.toBeDefined();
+    await expect(grantAt(projectId, billId, f.memberUser.id, approver)).resolves.toBeDefined();
+  });
+
+  it('h11: the guards are installed BEFORE the legacy retirement acts', async () => {
+    // Codex round 3 (P1). The abort is deliberate and it is not a rollback: this file is written
+    // for retry, so on the legacy path the new columns stay committed while the widened index and
+    // the replacement append-only trigger — both BELOW the abort — never run.
+    //
+    // What that leaves is worse than the hole it guards: an operator "fixing" the legacy grants by
+    // hand can populate `reviewedStatus`/`reviewedLifecycleVersion` with values nobody reviewed,
+    // rerun, pass the now-quiet diagnostic, and have the trigger installed on the next pass FREEZE
+    // the fabrication as immutable evidence. Meanwhile the OLD scope key is still live, so a
+    // legitimate replacement from the same approver collides with the row it is replacing.
+    //
+    // A migration that can stop must install everything that makes stopping SAFE before it stops.
+    const sql = readFileSync(
+      join(__dirname, '../../prisma/migrations/20270705000000_phase5_t7biiih_sod_reviewed_status/migration.sql'),
+      'utf8',
+    );
+    const abortAt = sql.indexOf('UPDATE "SodGrant"\n   SET "retiredAt"');
+    expect(abortAt, 'the legacy retirement must still be in this migration').toBeGreaterThan(-1);
+    for (const guard of [
+      'CREATE UNIQUE INDEX "SodGrant_live_scope_key"',
+      'CREATE OR REPLACE FUNCTION phase5_t5_grant_append_only()',
+      'CREATE TRIGGER "VendorBill_lifecycle_version"',
+    ]) {
+      const at = sql.indexOf(guard);
+      expect(at, `${guard} must be in this migration`).toBeGreaterThan(-1);
+      expect(at, `${guard} must be installed BEFORE legacy authority is retired`).toBeLessThan(abortAt);
+    }
+  });
+
+  it('h12: the approver pins the lifecycle they REVIEWED, and a queued grant cannot adopt a newer one', async () => {
+    // Codex round 3 (P1). The command compared the caller's version and status pins and then wrote
+    // the DATABASE'S CURRENT lifecycle version onto the grant — recording, as the thing the
+    // approver reviewed, a number the approver never saw. A pin the server fills in for you is not
+    // a pin; it is the server agreeing with itself.
+    const { grantSodExceptionSchema } = await import('../../src/contracts');
+    expect(
+      grantSodExceptionSchema.safeParse({ billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 'verified' }).success,
+      'the reviewed lifecycle is REQUIRED at the boundary, exactly as the version and status pins are',
+    ).toBe(false);
+
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    const read = await claims.readClaim(projectId, billId, pmc(projectId));
+    const viewed = read.certifyPreflight.lifecycleVersion;
+    expect(viewed, 'the claim read must publish it, or no client can pin it').toBeGreaterThanOrEqual(0);
+
+    // a stale pin — what a queued authorisation carries after the claim has moved — is refused
+    // even though the version and the status still match
+    await expect(grantAt(projectId, billId, f.memberUser.id, approver,
+      { versionId: read.bill.versions.find((v) => v.live)!.id, status: 'verified', lifecycleVersion: viewed - 1 }))
+      .rejects.toThrow(/moved on since you read it/u);
+
+    // …and the pin the reader actually saw is accepted, and is what gets RECORDED
+    const ok = await grantAt(projectId, billId, f.memberUser.id, approver,
+      { versionId: read.bill.versions.find((v) => v.live)!.id, status: 'verified', lifecycleVersion: viewed });
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: ok.id } })).reviewedLifecycleVersion)
+      .toBe(viewed);
+  });
+
+  it('h9: the column addition is RERUNNABLE, so the diagnostic abort does not poison the retry', async () => {
+    // The closing `DO` block aborts the deploy on a legacy unconsumed grant — AFTER `ADD COLUMN`
+    // has already succeeded. The operator clears the grants and redeploys, and the retry replays
+    // the whole file: without `IF NOT EXISTS` that second run dies on duplicate-column, and the
+    // remedy the diagnostic instructs is unreachable.
+    const sql = readFileSync(
+      join(__dirname, '../../prisma/migrations/20270705000000_phase5_t7biiih_sod_reviewed_status/migration.sql'),
+      'utf8',
+    );
+    const add = sql.split('\n').find((l) => l.startsWith('ALTER TABLE "SodGrant" ADD COLUMN'));
+    expect(add, 'the migration must still be the thing that adds the column').toBeDefined();
+    // this database is migrated, so re-running the statement IS the retry
+    await expect(t.prisma.$executeRawUnsafe(add!)).resolves.toBeDefined();
+  });
 
 });

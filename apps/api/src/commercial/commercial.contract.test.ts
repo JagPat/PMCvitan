@@ -1461,7 +1461,13 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
   it('§F: certify and supersede REQUIRE the viewed fact at the HTTP boundary', () => {
     expect(certifyBillSchema.safeParse({ billId: 'b1' }).success,
       'certify without a viewed version must be refused at the boundary — the drift guard is the point').toBe(false);
-    expect(certifyBillSchema.safeParse({ billId: 'b1', versionId: 'v1' }).success).toBe(true);
+    // Codex round 5 — …and without the viewed REVISION, which the version pin cannot stand in for:
+    // `versionId` is stable across the whole payment lifecycle, so a queued certify replayed after
+    // `verified → certified → superseded → verified` matches it and would otherwise fall through to
+    // the server's reading of `now`, recorded afterwards as if the certifier had reviewed it.
+    expect(certifyBillSchema.safeParse({ billId: 'b1', versionId: 'v1' }).success,
+      'certify without the viewed revision must be refused — a default here fabricates the evidence it stands in for').toBe(false);
+    expect(certifyBillSchema.safeParse({ billId: 'b1', versionId: 'v1', lifecycleVersion: 0 }).success).toBe(true);
 
     expect(supersedeCertificateSchema.safeParse({ billId: 'b1', reason: 'wrong qty' }).success,
       'supersede without the reviewed certificate must be refused — the reason was written about a document').toBe(false);

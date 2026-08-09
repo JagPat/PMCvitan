@@ -453,7 +453,10 @@ export interface AppActions {
   beginVerification: (billId: string) => void;
   verifyVendorBill: (billId: string) => void;
   /** §F/§I writes (7B-iii-f) — the certification authority chain. */
-  certifyBill: (billId: string, versionId: string) => void;
+  /** …and the claim REVISION the certifier read, from the same authoritative claim reading that
+   *  offered the button — so a certify queued offline is refused rather than silently re-aimed at
+   *  whichever passage of the claim is live when it replays. */
+  certifyBill: (billId: string, versionId: string, lifecycleVersion: number) => void;
   supersedeCertificate: (billId: string, reason: string, certificateId: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
@@ -3000,9 +3003,9 @@ export const useStore = create<Store>()(
         `Verify ${billId}`, 'Verification recorded.',
       );
     },
-    certifyBill: (billId, versionId) => {
+    certifyBill: (billId, versionId, lifecycleVersion) => {
       dispatchCommercial(
-        { t: 'certifyBill', input: { billId, versionId }, idempotencyKey: newIdempotencyKey(),
+        { t: 'certifyBill', input: { billId, versionId, lifecycleVersion }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'certify') },
         `Certify ${billId}`, 'Claim certified.',
       );

@@ -885,6 +885,19 @@ export interface CommercialClaimDto {
 
 
 /**
+ * §I — every authorisation state the server can report, as a RUNTIME list.
+ *
+ * A bare union let a state be added to the contract and forgotten by the consumer that renders it:
+ * `stale-review` arrived and the screen enumerated the three it already knew, so an affected
+ * certifier got an empty card and no reason. The list is the one both sides read, so a state added
+ * here without a rendering fails the screen's own probe rather than shipping blank.
+ */
+export const SOD_GRANT_STATES = [
+  'live', 'stale-version', 'stale-review', 'approver-lost-standing', 'none',
+] as const;
+export type SodGrantState = (typeof SOD_GRANT_STATES)[number];
+
+/**
  * §I — the part of "may I certify this claim?" that a READ can answer exactly.
  *
  * What it carries is the CALLER'S OWN grant state, resolved by the same `resolveGrant` the
@@ -916,9 +929,12 @@ export interface CertifyPreflightDto {
   /** `live` — an authorisation stands for this caller on this version, and certification would
    *  consume it. `stale-version` — one stands, but against a version this claim has amended past.
    *  `approver-lost-standing` — one stands, but no granting approver still holds pmc standing.
-   *  `none` — no unconsumed authorisation names this caller on this claim. NONE of these four says
-   *  whether one is NEEDED; see above. */
-  grantState: 'live' | 'stale-version' | 'approver-lost-standing' | 'none';
+   *  `stale-review` — one stands for this version, but against a claim STATE the claim has since
+   *  moved past (one version walks the §E lifecycle without changing id, so an authorisation given
+   *  over a `submitted` claim must not be spent on a `verified` one), or it predates the reviewed-
+   *  state record entirely. `none` — no unconsumed authorisation names this caller on this claim.
+   *  NONE of these says whether one is NEEDED; see above. */
+  grantState: SodGrantState;
   /** The authorisation that would be consumed, when `grantState` is `live`; null otherwise. */
   grantId: string | null;
   /** The actor id the SERVER resolved for this caller (Codex F1).
@@ -930,6 +946,15 @@ export interface CertifyPreflightDto {
    *  server is certain to refuse, instead of queueing it into the write-ahead outbox and reporting
    *  it saved. */
   callerActorId: string;
+  /** §I — the claim's REVISION at the instant this bundle was read.
+   *
+   *  A monotonic per-claim counter that advances whenever anything a reviewer would have seen
+   *  changes — every §F status transition AND every write that moves `NET_PAYABLE`, `APPROVED` or
+   *  `PAID`. It exists because the two obvious identities are both re-enterable: a claim returns to
+   *  a status label it has left, and a retention release moves what is owed without moving the
+   *  label at all. An authorisation echoes this value to say WHICH passage of the claim it was
+   *  given against, and the server refuses it if the claim has moved since. */
+  lifecycleVersion: number;
 }
 
 export interface CashForecastReadDto extends CashForecastDto {

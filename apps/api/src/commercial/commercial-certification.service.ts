@@ -18,7 +18,8 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
-import type { CertifyBillCommand, GrantSodExceptionInput, SupersedeCertificateCommand } from '../contracts';
+import { assertReviewedRevision, resolveSodGrant, type SodGrantResolution } from './commercial-sod';
+import type { CertifyBillCommand, GrantSodExceptionCommand, SupersedeCertificateCommand } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -202,6 +203,10 @@ export class CommercialCertificationService {
 
         // 3 — the BILL, and every side re-read under it
         const bill = await this.lockBill(tx, projectId, input.billId);
+        // Codex round 4 — the certifier's own pin. A certificate can be issued and superseded so
+        // the SAME version reads `verified` again, so the version pin alone would let a queued
+        // certification be recorded against a passage of the claim its certifier never saw.
+        assertReviewedRevision(input.lifecycleVersion, bill.lifecycleVersion);
         if (!(BILL_CERTIFY_FROM as readonly string[]).includes(bill.status)) {
           throw new ConflictException(
             `A ${bill.status} claim cannot be certified — certification applies to a VERIFIED claim, because the §E verdict is what makes it safe`,
@@ -266,6 +271,11 @@ export class CommercialCertificationService {
           data: {
             projectId, billId: input.billId, versionId,
             certifiedAmount,
+            // …and the claim REVISION this act was performed against, read under the bill lock
+            // above. The §I consume seal requires the authority and the act to name the same
+            // passage of the claim, and by COMMIT this insert has already advanced the counter —
+            // so what the seal compares has to be a fact each row carries.
+            reviewedLifecycleVersion: input.lifecycleVersion ?? bill.lifecycleVersion,
             certifiedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
@@ -301,7 +311,12 @@ export class CommercialCertificationService {
         // FROZEN ROWS, so asking it once they exist lets both layers ask it of the same rows
         // through the same function. A refusal costs nothing: it throws inside the transaction,
         // so the certificate and its freeze are never committed.
-        const sod = await this.assertSegregation(tx, projectId, input.billId, versionId, actor.actorId, certificate.id);
+        const sod = await this.assertSegregation(
+          tx, projectId, input.billId, versionId, actor.actorId, certificate.id,
+          // the claim as it was when this act STARTED — before the certificate above advanced its
+          // revision. The authority is judged against what the certifier acted on.
+          { status: bill.status, lifecycleVersion: bill.lifecycleVersion },
+        );
 
         // §I — written in the SAME transaction as the override it authorises, bound to THAT
         // certificate by composite FK, and carrying the SAME `sourceCommandId`. An exception is
@@ -670,6 +685,7 @@ export class CommercialCertificationService {
     versionId: string,
     actorId: string,
     certificateId: string,
+    asOf: { status: string; lifecycleVersion: number },
   ): Promise<{ grantId: string; rule: string; actorId: string; approverId: string; reason: string } | null> {
     // Codex rounds 3 and 5, twice about the same rule: the service counted the authors of positive
     // measurement corrections as evidence actors and the database seal did not, because they were
@@ -706,7 +722,7 @@ export class CommercialCertificationService {
     // question from "select a candidate that is valid" whenever more than one can exist, and the
     // live-grant scope is now deliberately wide enough for more than one. So the standing filter
     // moves INTO the selection, and the stale rows are simply not candidates.
-    const resolved = await this.resolveGrant(tx, projectId, billId, versionId, actorId, true);
+    const resolved = await this.resolveGrant(tx, projectId, billId, versionId, actorId, true, asOf);
     if (resolved.state !== 'live') {
       // The three refusals are the resolver's three non-live states, spelled once here where the
       // ACT is refused. `resolveGrant` decides WHICH state holds; this decides what that means for
@@ -744,22 +760,15 @@ export class CommercialCertificationService {
   /**
    * §I — WHICH authorisation, if any, stands for this actor on this claim version.
    *
-   * Extracted from `assertSegregation` rather than written beside it, because 7B-iii-f needs the
-   * same answer on a READ — a certifier who has just been granted an exception cannot otherwise
-   * tell whether it is live and version-matched, and "granted against an earlier version because
-   * the claim was amended since" is invisible until the certification is refused. The service's
-   * own history is the argument for sharing rather than re-deriving: this rule was twice TWO
-   * implementations of one question, and only the one a finding named ever got fixed.
+   * Exposed here because 7B-iii-f needs the same answer on a READ — a certifier who has just been
+   * granted an exception cannot otherwise tell whether it is live and version-matched, and "granted
+   * against an earlier version because the claim was amended since" is invisible until the
+   * certification is refused.
    *
-   * `forUpdate` is the CALLER'S INTENT, not a second rule. A certification is an authority
-   * DECISION, so it reads standing under a lock — a concurrent downgrade must not commit behind an
-   * approval it granted. A screen is asking what is true now and locks nothing. The predicate is
-   * identical either way; only whether the answer is held is different.
-   *
-   * The shape is deliberate. "Select an arbitrary candidate, then check it" answers a different
-   * question from "select a candidate that is valid" whenever more than one can exist — Codex
-   * rounds 8, 9 and 10 were three costumes of that one defect — so the standing filter is INSIDE
-   * the selection and stale rows are simply not candidates.
+   * The rule itself lives in `commercial-sod.ts` and is READ BY BOTH HALVES of §I. It was two
+   * near-identical private methods until Codex found the payment half missing this unit's
+   * reviewed-state check — the third recurrence of the shape this service's own comments already
+   * record: two implementations of one question, and only the one a finding named ever got fixed.
    */
   async resolveGrant(
     tx: Prisma.TransactionClient,
@@ -768,27 +777,9 @@ export class CommercialCertificationService {
     versionId: string,
     actorId: string,
     forUpdate: boolean,
-  ): Promise<
-    | { state: 'live'; grant: { id: string; approverId: string; reason: string } }
-    | { state: 'none' | 'stale-version' | 'approver-lost-standing' }
-  > {
-    const live = await tx.sodGrant.findMany({
-      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
-      select: { id: true, approverId: true, reason: true },
-      orderBy: { grantedAt: 'asc' },
-    });
-    for (const candidate of live) {
-      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate })) {
-        return { state: 'live', grant: candidate };
-      }
-    }
-    if (live.length > 0) return { state: 'approver-lost-standing' };
-    // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
-    // approver looked at should not silently carry over to one they never saw
-    const stale = await tx.sodGrant.count({
-      where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
-    });
-    return { state: stale > 0 ? 'stale-version' : 'none' };
+    asOf: { status: string; lifecycleVersion: number },
+  ): Promise<SodGrantResolution> {
+    return resolveSodGrant(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, forUpdate, asOf);
   }
 
   /**
@@ -797,7 +788,7 @@ export class CommercialCertificationService {
    * in with somebody else's name.
    */
   async grantSodException(
-    projectId: string, input: GrantSodExceptionInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: GrantSodExceptionCommand, user: AuthUser, idempotencyKey?: string,
   ): Promise<SodGrantDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertGrant(user);
@@ -812,12 +803,62 @@ export class CommercialCertificationService {
         if (input.actorId === actor.actorId) {
           throw new ForbiddenException('A segregation-of-duties exception cannot be authorised by the actor it excuses');
         }
+        // 7B-iii-h — the approver authorises the claim they READ, not whichever one is live when a
+        // queued command replays. Version AND state: one version walks the §E lifecycle without
+        // changing id, so the version alone would let an authorisation issued before the verdict
+        // existed excuse the certification of a verdict its approver never saw.
+        //
+        // The LOCK COMES FIRST (Codex round 2). The live-version lookup used to sit above it, so
+        // the pin was compared against a row read before the lock was held. Today `amend` also
+        // takes `lockProjectReadiness`, which happens to serialize the two — but a version pin
+        // whose correctness rests on a lock taken elsewhere for another reason is not a pin that
+        // has been made correct, and the next command added here would inherit the accident
+        // rather than the rule.
+        const reviewed = await this.lockBill(tx, projectId, input.billId);
         // the grant names the claim's LIVE version, so it is pinned to what the approver looked at
         const version = await tx.vendorBillVersion.findFirst({
           where: { projectId, billId: input.billId, supersededAt: null },
           select: { id: true },
         });
         if (!version) throw new NotFoundException(`Vendor bill ${input.billId} has no live claim version`);
+        if (input.versionId !== undefined && input.versionId !== version.id) {
+          throw new ConflictException(
+            'This claim was amended after you read it — the authorisation would apply to a version you have not seen. Reload and authorise again.',
+          );
+        }
+        if (input.status !== undefined && input.status !== reviewed.status) {
+          throw new ConflictException(
+            `This claim moved to ${reviewed.status} after you read it — the authorisation would apply to a state you have not reviewed. Reload and authorise again.`,
+          );
+        }
+        // …and the REVISION, which is the only one of the three pins that cannot be re-entered.
+        // Codex round 3: comparing version and status and then recording the database's CURRENT
+        // revision made the recorded evidence the server's, not the approver's — an authorisation
+        // queued at revision 1 would be written as if its approver had reviewed revision 3.
+        assertReviewedRevision(input.lifecycleVersion, reviewed.lifecycleVersion);
+        // 7B-iii-h — the EXCUSED actor must be able to perform the act at all. A grant naming
+        // someone without standing for it is an authority that can never be exercised: it is
+        // recorded, displayed, and the named actor is still refused by a different rule when they
+        // try. Refused at the COMMAND, not merely hidden in a picker — the picker is not the only
+        // way here, which is the whole reason the durable layer carries its own guard.
+        //
+        // The permission is chosen BY THE RULE. §I has two halves and they excuse different acts;
+        // both resolve to pmc today, so this changes no behaviour — it stops a future divergence in
+        // one policy from silently validating the wrong one, which is the same
+        // correction-did-not-travel-to-the-sibling shape this file has now paid for three times.
+        const rule = input.rule ?? SOD_RULE;
+        const excusedPermission = rule === SOD_RULES.certifierMayNotApprove
+          ? 'commercial.approve-payment' : 'commercial.certify';
+        const excusedMayAct = await this.orgs.hasProjectRoleStanding(
+          tx, projectId, input.actorId, ROLE_POLICY[excusedPermission] as readonly string[], { forUpdate: true },
+        );
+        if (!excusedMayAct) {
+          throw new ForbiddenException(
+            rule === SOD_RULES.certifierMayNotApprove
+              ? 'That person cannot approve payments on this project, so an exception would authorise nothing they could act on'
+              : 'That person cannot certify on this project, so an exception would authorise nothing they could act on',
+          );
+        }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
         // certification will use — the participant, because standing is the orgs module's rule
         const entitled = await this.orgs.hasProjectRoleStanding(
@@ -832,7 +873,15 @@ export class CommercialCertificationService {
             // contract, so every Task-5 caller is unchanged). An approver authorising a store user
             // to certify has not thereby authorised anyone to approve that claim's payment, and the
             // consumption sites select on this column for exactly that reason.
-            projectId, billId: input.billId, versionId: version.id, rule: input.rule ?? SOD_RULE,
+            projectId, billId: input.billId, versionId: version.id, rule,
+            // …and the state it was justified against, RECORDED rather than merely checked: a
+            // check at issue proves nothing at consumption, which is where the authority is spent.
+            // The STATUS says what the claim read; the monotonic lifecycle version says WHICH
+            // passage through that reading it was, because the label itself recycles.
+            reviewedStatus: reviewed.status,
+            // the pin the APPROVER echoed, having just been proven equal to what is true under the
+            // lock — recorded rather than the server's own reading of "now"
+            reviewedLifecycleVersion: input.lifecycleVersion ?? reviewed.lifecycleVersion,
             actorId: input.actorId, approverId: actor.actorId, reason: input.reason,
             sourceCommandId: ctx.commandId!,
           },
@@ -960,10 +1009,15 @@ export class CommercialCertificationService {
   /** §0b — the BILL is taken FIRST, before any foreign row, so the lock order stays total. */
   private async lockBill(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
-  ): Promise<{ id: string; status: string; vendorId: string }> {
-    const rows = await tx.$queryRaw<Array<{ id: string; status: string; vendorId: string }>>`
-      SELECT "id", "status", "vendorId" FROM "VendorBill"
-       WHERE "projectId" = ${projectId} AND "id" = ${billId} FOR UPDATE`;
+  ): Promise<{ id: string; status: string; vendorId: string; lifecycleVersion: number }> {
+    // the REVISION is read beside the claim and comes from its OWN row — `FOR UPDATE OF b` locks
+    // the claim only, so this read never takes the revision row's lock out of order
+    const rows = await tx.$queryRaw<Array<{ id: string; status: string; vendorId: string; lifecycleVersion: number }>>`
+      SELECT b."id", b."status", b."vendorId",
+             COALESCE(r."revision", 0)::int AS "lifecycleVersion"
+        FROM "VendorBill" b
+        LEFT JOIN "VendorBillRevision" r ON r."projectId" = b."projectId" AND r."billId" = b."id"
+       WHERE b."projectId" = ${projectId} AND b."id" = ${billId} FOR UPDATE OF b`;
     const bill = rows[0];
     if (!bill) throw new NotFoundException('Vendor bill not found in this project');
     return bill;

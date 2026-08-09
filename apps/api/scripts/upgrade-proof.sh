@@ -1920,14 +1920,14 @@ assert_rejects "commercial T5B §F: the arrow into CERTIFIED with NO live certif
   "UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
 # §G bound 3 — `UPT4-B3` claims 3.00, so 4.00 is money nobody claimed
 assert_rejects "commercial T5B §G bound 3: a certificate ABOVE the claim it certifies (deferred bound seal)" \
-  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CB','p1','UPT4-B3','UPT4-BV3',4.00,'USER-1','UP45-CMD')"
+  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-CB','p1','UPT4-B3','UPT4-BV3',4.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),'UP45-CMD')"
 assert_rejects "commercial T5B §A: a ZERO-money certificate (an authority that authorises nothing)" \
-  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CZ','p1','UPT4-B3','UPT4-BV3',0,'USER-1','UP45-CMD')"
+  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-CZ','p1','UPT4-B3','UPT4-BV3',0,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),'UP45-CMD')"
 # a certificate must name a version OF THE BILL IT CERTIFIES — the composite FK, not a bare id
 assert_rejects "commercial T5B §E: a certificate naming ANOTHER bill's claim version" \
-  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CX','p1','UPT4-B3','UPT4-BV1',1.00,'USER-1','UP45-CMD')"
+  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-CX','p1','UPT4-B3','UPT4-BV1',1.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),'UP45-CMD')"
 assert_rejects "commercial T5B §F: a HALF-STAMPED supersession (unattributable history)" \
-  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"supersededAt\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CH','p1','UPT4-B3','UPT4-BV3',3.00,now(),'USER-1','UP45-CMD')"
+  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"supersededAt\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-CH','p1','UPT4-B3','UPT4-BV3',3.00,(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),now(),'USER-1','UP45-CMD')"
 # …and the coherent certificate is ACCEPTED, so every refusal above is about ITS OWN rule
 # The certificate and the bill STATUS move TOGETHER — the round-1 projection seal. Each `psql -c`
 # is its own transaction, so the coherent case is written as ONE transaction; a fixture that left
@@ -1937,7 +1937,7 @@ assert_rejects "commercial T5B §F: a HALF-STAMPED supersession (unattributable 
 # freezes nothing is refused however it is written — and §I refuses one certified by the actor who
 # RECORDED that evidence unless an exception names them, so `USER-2` certifies what `USER-1`
 # accepted. Every refusal below is therefore about ITS OWN rule rather than about a missing piece.
-$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C1','p1','UPT4-B3','UPT4-BV3',3.00,'USER-2','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A2','p1','UPT5B-C1','UP45-ACC',3); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-C1','p1','UPT4-B3','UPT4-BV3',3.00,'USER-2',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),'UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A2','p1','UPT5B-C1','UP45-ACC',3); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5B §G/§F/§E: a certificate AT the claimed amount, with its frozen evidence and its status projection, is ACCEPTED (every seal precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T5B §G: a coherent certificate was rejected"; FAIL=1; }
 
@@ -2047,7 +2047,7 @@ assert_rejects "commercial T5C R5-F3: a SECOND release reusing the receipt that 
 # released withholding, which is the case a naive "any release at all" rule would wave through.
 mint5c UP5C-CMD-NOCARRY commercial.bill.certify UPT5B-C1-NC
 assert_rejects "commercial T5C R9: re-certifying WITHOUT carrying the retained balance forward" \
-  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='drops the balance' WHERE \"id\"='UPT5B-C1'; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") SELECT 'UPT5B-C1-NC',\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",'UP5C-CMD-NOCARRY' FROM \"BillCertificate\" WHERE \"id\"='UPT5B-C1'; INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") SELECT gen_random_uuid()::text,\"projectId\",'UPT5B-C1-NC',\"stockTransactionId\",\"consumedQty\" FROM \"CertifiedAcceptanceConsumption\" WHERE \"certificateId\"='UPT5B-C1'; COMMIT;" \
+  "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='drops the balance' WHERE \"id\"='UPT5B-C1'; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-C1-NC',\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"=\"BillCertificate\".\"projectId\" AND r.\"billId\"=\"BillCertificate\".\"billId\"),'UP5C-CMD-NOCARRY' FROM \"BillCertificate\" WHERE \"id\"='UPT5B-C1'; INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") SELECT gen_random_uuid()::text,\"projectId\",'UPT5B-C1-NC',\"stockTransactionId\",\"consumedQty\" FROM \"CertifiedAcceptanceConsumption\" WHERE \"certificateId\"='UPT5B-C1'; COMMIT;" \
   'does not re-state'
 assert "commercial T5C R9: …and the original certificate is still LIVE, so the refusal actually held" \
   "SELECT (SELECT COUNT(*) FROM \"BillCertificate\" WHERE \"id\"='UPT5B-C1' AND \"supersededAt\" IS NULL)::text || '|' || (SELECT \"status\" FROM \"VendorBill\" WHERE \"id\"='UPT4-B3');" \
@@ -2064,13 +2064,13 @@ assert "commercial T5C: the withholding is now fully released, so nothing below 
 # Codex round-2 P2 — a certificate that rests on NOTHING. Every row-level seal passes; only the
 # certificate-side completeness check sees the absence.
 assert_rejects "commercial T5B R2-F1: a certificate freezing NO evidence at all (a row seal cannot see an absence)" \
-  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CE','p1','UPT4-B3','UPT4-BV3',3.00,'USER-2','UP45-CMD')"
+  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-CE','p1','UPT4-B3','UPT4-BV3',3.00,'USER-2',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),'UP45-CMD')"
 assert_rejects "commercial T5B R1-F2: a STANDALONE supersession, leaving the bill claiming to be certified" \
   "UPDATE \"BillCertificate\" SET \"supersededAt\"=now(), \"supersededById\"='USER-1', \"supersedeReason\"='orphaned' WHERE \"id\"='UPT5B-C1'"
 assert_rejects "commercial T5B R1-F2: moving the bill OFF certified while its certificate still stands" \
   "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'"
 assert_rejects "commercial T5B §F: a SECOND live certificate on one bill (bounds 3-5 read the live one)" \
-  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C2','p1','UPT4-B3','UPT4-BV3',1.00,'USER-1','UP45-CMD')"
+  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-C2','p1','UPT4-B3','UPT4-BV3',1.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),'UP45-CMD')"
 assert_rejects "commercial T5B §F: EDITING the amount a certificate authorised" \
   "UPDATE \"BillCertificate\" SET \"certifiedAmount\"=999 WHERE \"id\"='UPT5B-C1'"
 assert_rejects "commercial T5B §F: DELETING a certificate (the correction path is a superseding one)" \
@@ -2123,7 +2123,7 @@ assert_rejects "commercial T5B R5-F1: EVIDENCE appended to a superseded certific
 # membership row at all, which is the strongest evidence available that the seal no longer consults
 # orgs at all — a proof by what the fixture does NOT need.
 assert_rejects "commercial T5B §I: the complete act by the actor who RECORDED its evidence, with NO override" \
-  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CR','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-CRE','p1','UPT5B-CR','UP45-ACC',3); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-CR','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),'UP45-CMD'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-CRE','p1','UPT5B-CR','UP45-ACC',3); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
 
 # …and the SAME act WITH its attributable override is ACCEPTED — the seal is precise, not merely
 # strict. One transaction, because §I requires the override to be written with the act it excuses,
@@ -2142,25 +2142,28 @@ $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\
 # resultRef names it (Codex round-8 P1 — a grant is only an authority if the approver's own command
 # wrote it, which is the round-7 receipt rule applied to the artifact round 7 introduced)
 $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5B-CMDG','project','org-legacy','p1','USER-2','commercial.sod.grant','upt5b-g','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5B-G4', \"completedAt\"=now() WHERE \"id\"='UPT5B-CMDG'; COMMIT;"
-$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-G4','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDG')"
+# 7B-iii-h — the grant also records the claim STATE its approver reviewed, and `verified` is the
+# only state a certification proceeds from. Written here so every §I assertion below is refused by
+# the seal it is NAMED for rather than by the reviewed-state seal standing in front of it.
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-G4','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','verified',COALESCE((SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),0),'UPT5B-CMDG' FROM \"VendorBill\" b WHERE b.\"id\"='UPT4-B3'"
 assert_rejects "commercial T5B R7-F1: a certificate consuming a grant it did not spend (the override must be the approver's act, exercised HERE)" \
-  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CU','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMDU'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AU','p1','UPT5B-CU','UP45-ACC',3); INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SU','p1','UPT5B-CU','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDU'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-CU','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),'UPT5B-CMDU'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AU','p1','UPT5B-CU','UP45-ACC',3); INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SU','p1','UPT5B-CU','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDU'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
 # Codex round-11 P2 — the certify RECEIPT must be the CERTIFIER'S own. Round 8 bound the grant
 # receipt to its approver and left the certify receipt bound only by type, status and result, so a
 # certificate attributed to `USER-1` could rest on a command `USER-2` actually ran and the durable
 # trail would name two different people for one act.
 $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5B-CMDX','project','org-legacy','p1','USER-2','commercial.bill.certify','upt5b-x','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5B-CX', \"completedAt\"=now() WHERE \"id\"='UPT5B-CMDX'; COMMIT;"
 assert_rejects "commercial T5B R11-F2: a certificate whose certify RECEIPT was run by someone else" \
-  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CX','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMDX'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AX','p1','UPT5B-CX','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-CX' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SX','p1','UPT5B-CX','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDX'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-CX','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1',COALESCE((SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),0),'UPT5B-CMDX' FROM \"VendorBill\" b WHERE b.\"id\"='UPT4-B3'; INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AX','p1','UPT5B-CX','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-CX' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SX','p1','UPT5B-CX','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDX'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
 
 # Codex round-11 P2 — the override carries the APPROVER'S reason. The grant/exception match bound
 # approver, actor, rule, bill and version and left `reason` free, so the one sentence a reader
 # trusts was the one field the person being excused could still write.
 $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('UPT5B-CMDY','project','org-legacy','p1','USER-1','commercial.bill.certify','upt5b-y','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='UPT5B-CY', \"completedAt\"=now() WHERE \"id\"='UPT5B-CMDY'; COMMIT;"
 assert_rejects "commercial T5B R11-F3: an override rewriting the approver's stated reason" \
-  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CY','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMDY'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AY','p1','UPT5B-CY','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-CY' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SY','p1','UPT5B-CY','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','blanket authority for this vendor','UPT5B-CMDY'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
+  "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-CY','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1',COALESCE((SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),0),'UPT5B-CMDY' FROM \"VendorBill\" b WHERE b.\"id\"='UPT4-B3'; INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AY','p1','UPT5B-CY','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-CY' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SY','p1','UPT5B-CY','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','blanket authority for this vendor','UPT5B-CMDY'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
 
-$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-C4','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMD4'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A4','p1','UPT5B-C4','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-C4' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S4','p1','UPT5B-C4','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMD4'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-C4','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1',COALESCE((SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='UPT4-B3'),0),'UPT5B-CMD4' FROM \"VendorBill\" b WHERE b.\"id\"='UPT4-B3'; INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-A4','p1','UPT5B-C4','UP45-ACC',3); UPDATE \"SodGrant\" SET \"consumedAt\"=now(), \"consumedByCertificateId\"='UPT5B-C4' WHERE \"id\"='UPT5B-G4'; INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S4','p1','UPT5B-C4','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMD4'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5B §I: the RECORDER may certify WITH an attributable override, in one transaction" \
   || { printf 'FAILED  %s\n' "commercial T5B §I: the coherent recorder-certified act was rejected"; FAIL=1; }
 # the override carries the trusted-evidence seals
@@ -2172,6 +2175,72 @@ assert_rejects "commercial T5B R7-F1: RE-SPENDING a consumed grant (an authority
   "UPDATE \"SodGrant\" SET \"consumedByCertificateId\"='UPT5B-C1' WHERE \"id\"='UPT5B-G4'"
 assert_rejects "commercial T5B R7-F1: a grant that excuses its OWN author (a signature on a mirror)" \
   "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-GM','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-2','USER-2','self','UP45-CMD')"
+# ── 7B-iii-h — the state a grant was justified against, sealed where the authority is SPENT ──
+#
+# `SodGrant` pins the claim VERSION, and one version walks the whole lifecycle without changing id.
+# So the version says WHICH claim and not WHAT WAS TRUE about it, and an authorisation given before
+# the §E verdict existed could excuse the certification of a verdict its approver never reviewed.
+# The service refuses that; these prove the DATABASE does too, for a writer that never called it.
+#
+# `reviewedStatus` is also FROZEN by the append-only trigger now — a new fact on a guarded row
+# belongs to every guard on that row, or a direct writer simply rewrites the justification.
+mint5b_grant() { $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('$1','project','org-legacy','p1','USER-2','commercial.sod.grant','$1','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='$2', \"completedAt\"=now() WHERE \"id\"='$1'; COMMIT;"; }
+mint5b_grant UPT5B-CMDGF UPT5B-GF
+# THE LEGAL PATH FIRST: an authorisation naming the claim exactly as it stands is ACCEPTED, so the
+# issue-side seal below is precise rather than merely strict. The reviewed pair is SELECTED from the
+# claim rather than typed, because typing it is what the seal exists to refuse.
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-GF','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','a live authorisation',b.\"status\",r.\"revision\",'UPT5B-CMDGF' FROM \"VendorBill\" b JOIN \"VendorBillRevision\" r ON r.\"projectId\"=b.\"projectId\" AND r.\"billId\"=b.\"id\" WHERE b.\"projectId\"='p1' AND b.\"id\"='UPT4-B3'" \
+  && printf 'ok      %s\n' "commercial T7BIIIH: an authorisation naming the claim AS IT STANDS is accepted" \
+  || { printf 'FAILED  %s\n' "commercial T7BIIIH: a truthful live authorisation was rejected at issue"; FAIL=1; }
+# ── round 5 — the guards on how a row is BORN, not only on how it changes ────────────────────
+mint5b_grant UPT5B-CMDGP UPT5B-GP
+assert_rejects "commercial T7BIIIH R5: authorising a passage of the claim that has not happened yet" \
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-GP','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','post-dated',b.\"status\",r.\"revision\"+5,'UPT5B-CMDGP' FROM \"VendorBill\" b JOIN \"VendorBillRevision\" r ON r.\"projectId\"=b.\"projectId\" AND r.\"billId\"=b.\"id\" WHERE b.\"projectId\"='p1' AND b.\"id\"='UPT4-B3'" \
+  'never a passage it has not reached'
+# the counter cannot be BORN behind the authorities already pinned to it (the BEFORE INSERT arm
+# fires ahead of the primary-key check, so this is the trigger answering, not the index)
+assert_rejects "commercial T7BIIIH R5: a claim revision row created BELOW zero" \
+  "INSERT INTO \"VendorBillRevision\"(\"projectId\",\"billId\",\"revision\") VALUES('p1','UPT4-B3',-1)" \
+  'starts at zero and only moves forward'
+# retirement disposes of authority this release cannot JUDGE — never of a live, evidenced one
+assert_rejects "commercial T7BIIIH R5: RETIRING an authorisation that carries its reviewed evidence" \
+  "UPDATE \"SodGrant\" SET \"retiredAt\"=now(), \"retiredReason\"='tidying up' WHERE \"id\"='UPT5B-GF'" \
+  'judged by the seals rather than retired'
+# ── round 6 — NULL is the LEGACY shape, and legacy means "written before the column existed" ──
+#
+# A row that predates the column is never INSERTED again, so on INSERT a missing revision is not a
+# legacy row: it is a post-migration writer declining to say which passage of the claim it acted on,
+# at a boundary that now requires the answer. Nothing downstream would ask — the consume seal reads
+# the column only when a §I authority is spent.
+#
+# The OTHERWISE-COHERENT version of this refusal is PROBE 37 in `phase5-t6a-payments.test.ts`,
+# which builds a fully valid approval and omits only this column. Here the point is narrower and is
+# the one this script exists for: the rule is installed on a database upgraded from the legacy
+# fixture, not merely on a freshly migrated one.
+assert_rejects "commercial T7BIIIH R6: an act that will not say which passage of the claim it acted on" \
+  "INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CN','p1','UPT4-B3','UPT4-BV3',3.00,'USER-2','UP45-CMD')" \
+  'records no passage of claim'
+# …and the whitespace-only retirement reason (round 6, P2) is proven by PROBE 35 instead: reaching
+# it needs a LIVE grant with no reviewed evidence, and this release can no longer create one — the
+# issue seal above refuses it. The probe reaches that state through the append-only bypass, which
+# is the only honest way to build a row the current code cannot write.
+assert_rejects "commercial T7BIIIH: REWRITING what an approver is recorded as having reviewed" \
+  "UPDATE \"SodGrant\" SET \"reviewedStatus\"='verified' WHERE \"id\"='UPT5B-GF'" \
+  'IMMUTABLE'
+mint5b_grant UPT5B-CMDGS UPT5B-GS
+assert_rejects "commercial T7BIIIH: spending an authorisation given over a SUBMITTED claim on a certification" \
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\",\"consumedAt\",\"consumedByCertificateId\") VALUES('UPT5B-GS','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','authorised before the verdict','submitted',0,'UPT5B-CMDGS',now(),'UPT5B-C4')" \
+  'authority can be spent from'
+mint5b_grant UPT5B-CMDGN UPT5B-GN
+assert_rejects "commercial T7BIIIH: spending a LEGACY grant that records no reviewed state at all" \
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\",\"consumedAt\",\"consumedByCertificateId\") VALUES('UPT5B-GN','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','predates the column','UPT5B-CMDGN',now(),'UPT5B-C4')" \
+  'records no reviewed state'
+# The APPROVAL arm of the same seal is proven against live PostgreSQL by PROBE 26 in
+# `phase5-t6a-payments.test.ts`, and deliberately not here: reaching it needs a coherent
+# grant→exception→approval chain, and this legacy fixture's only approval is one §I permits
+# outright — so an assertion would be refused by the biconditional first and prove nothing about
+# the seal it names. Same reasoning the bound-5 note below already records.
+
 assert_rejects "commercial T5B §I: an exception naming NO fact (a standing waiver)" \
   "INSERT INTO \"SodException\"(\"id\",\"projectId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-S0','p1','r','USER-1','USER-2','reason','UP45-CMD')"
 assert_rejects "commercial T5B §I: an actor approving their OWN override (a signature on a mirror)" \
@@ -2336,7 +2405,7 @@ $PSQL >/dev/null -c "INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"org
 $PSQL >/dev/null -c "INSERT INTO \"BillVerification\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"verdict\",\"verifiedById\",\"sourceCommandId\") VALUES('UP5C-V0','p1','$UP5C_BILL','$UP5C_VER','matched','USER-1','UP5C-CMDV')"
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='under-verification', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'"
 $PSQL >/dev/null -c "UPDATE \"VendorBill\" SET \"status\"='verified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'"
-$PSQL -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP5C-C0','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP5C-CMD0'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP5C-A0','p1','UP5C-C0','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
+$PSQL -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP5C-C0','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP5C-CMD0'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP5C-A0','p1','UP5C-C0','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T5C R3/R4: a fresh live certificate stands on its own bill" \
   || { printf 'FAILED  %s\n' "commercial T5C R3/R4: could not stand up a live certificate — every assertion below would be vacuous"; FAIL=1; }
 assert "commercial T5C R3/R4: exactly the certificate this block created is LIVE, so nothing below is vacuous" \
@@ -2362,7 +2431,7 @@ replace_without_carry() {   # $1 = 'nothing' | 'deduction-only'
   if [ "$1" = "deduction-only" ]; then
     carry_rows="INSERT INTO \"BillDeduction\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\",\"restatedFromId\") SELECT 'UP5C-D2-NC',\"projectId\",'UP5C-LIVE-NC',\"billId\",\"type\",\"amount\",\"reason\",\"recordedById\",\"sourceCommandId\",\"id\" FROM \"BillDeduction\" WHERE \"id\"='UP5C-D2';"
   fi
-  printf 'BEGIN; UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=%s, "supersedeReason"=%s WHERE "id"=%s; INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId") SELECT %s,"projectId","billId","versionId","certifiedAmount","certifiedById",%s FROM "BillCertificate" WHERE "id"=%s; INSERT INTO "CertifiedAcceptanceConsumption"("id","projectId","certificateId","stockTransactionId","consumedQty") SELECT gen_random_uuid()::text,"projectId",%s,"stockTransactionId","consumedQty" FROM "CertifiedAcceptanceConsumption" WHERE "certificateId"=%s; %s COMMIT;' \
+  printf 'BEGIN; UPDATE "BillCertificate" SET "supersededAt"=now(), "supersededById"=%s, "supersedeReason"=%s WHERE "id"=%s; INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","reviewedLifecycleVersion","sourceCommandId") SELECT %s,"projectId","billId","versionId","certifiedAmount","certifiedById",(SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId"),%s FROM "BillCertificate" WHERE "id"=%s; INSERT INTO "CertifiedAcceptanceConsumption"("id","projectId","certificateId","stockTransactionId","consumedQty") SELECT gen_random_uuid()::text,"projectId",%s,"stockTransactionId","consumedQty" FROM "CertifiedAcceptanceConsumption" WHERE "certificateId"=%s; %s COMMIT;' \
     "'USER-1'" "'drops the balance'" "'$UP5C_LIVE'" "'UP5C-LIVE-NC'" "'UP5C-CMD-NC2'" "'$UP5C_LIVE'" "'UP5C-LIVE-NC'" "'$UP5C_LIVE'" "$carry_rows"
 }
 assert_rejects "commercial T5C R9: re-certifying WITHOUT carrying the retained balance (the money would vanish)" \
@@ -2425,14 +2494,14 @@ assert "commercial T6A: every existing membership keeps unlimited approval autho
 # which would make every assertion below vacuous rather than wrong.
 mint5c UP6A-CMD-OVER commercial.payment.approve UP6A-A-OVER
 assert_rejects "commercial T6A: approving MORE than the net payable" \
-  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OVER','p1','$UP5C_LIVE','$UP5C_BILL',5.00,'USER-1','UP6A-CMD-OVER')" \
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP6A-A-OVER','p1','$UP5C_LIVE','$UP5C_BILL',5.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP6A-CMD-OVER')" \
   'exceed the'
 mint5c UP6A-CMD-OK commercial.payment.approve UP6A-A-OK
 # Task 6B-i — the approval now carries the status it derives, in the SAME transaction, because the
 # derivation seal refuses a fold that moves without it. That is not a weakening of this assertion:
 # the row is identical and bound 4 still decides whether it may exist. It is the fixture being made
 # to do what `payment.approve` does, which is what an upgrade proof should be exercising anyway.
-$PSQL >/dev/null -c "BEGIN; INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-OK','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-OK'); UPDATE \"VendorBill\" SET \"status\"='approved-for-payment', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
+$PSQL >/dev/null -c "BEGIN; INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP6A-A-OK','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP6A-CMD-OK'); UPDATE \"VendorBill\" SET \"status\"='approved-for-payment', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;" \
   && printf 'ok      %s\n' "commercial T6A: approving EXACTLY the net payable is ACCEPTED (the bound is precise, not merely strict)" \
   || { printf 'FAILED  %s\n' "commercial T6A: a coherent approval was rejected — bound 4 is over-strict"; FAIL=1; }
 
@@ -2465,7 +2534,7 @@ assert_rejects "commercial T6A: an SoD exception naming BOTH a certificate and a
 # "which act exercised this authority?" unanswerable (Codex round 2, the widened CHECK)
 mint5c UP6A-CMD-GRANT commercial.sod.grant UP6A-G-BOTH
 assert_rejects "commercial T6A: an SoD grant consumed by BOTH a certificate and an approval" \
-  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\",\"consumedAt\",\"consumedByCertificateId\",\"consumedByApprovalId\") VALUES('UP6A-G-BOTH','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','both kinds','UP6A-CMD-GRANT',now(),'$UP5C_LIVE','UP6A-A-OK')"
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"consumedAt\",\"consumedByCertificateId\",\"consumedByApprovalId\") VALUES('UP6A-G-BOTH','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','both kinds','UP6A-CMD-GRANT','certified',0,now(),'$UP5C_LIVE','UP6A-A-OK')"
 
 # §I is a BICONDITIONAL. `UP6A-A-OK` was approved by USER-1 while USER-2 certified — the rule
 # permits that act outright, so an override attached to it records an authorisation nobody needed.
@@ -2481,7 +2550,7 @@ assert_rejects "commercial T6A: an SoD exception on an approval the rule would n
 # column skipped it entirely and an approver's authority could be burned against an act it never
 # excused.
 mint5c UP6A-CMD-GRANT2 commercial.sod.grant UP6A-G-LIVE
-$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UP6A-G-LIVE','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','only pmc on site','UP6A-CMD-GRANT2')" \
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UP6A-G-LIVE','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','only pmc on site',b.\"status\",COALESCE((SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),0),'UP6A-CMD-GRANT2' FROM \"VendorBill\" b WHERE b.\"id\"='$UP5C_BILL'" \
   && printf 'ok      %s\n' "commercial T6A R3: a live payment-side grant is ACCEPTED (the approver's own receipt backs it)" \
   || { printf 'FAILED  %s\n' "commercial T6A R3: a well-formed payment-side grant was rejected"; FAIL=1; }
 assert_rejects "commercial T6A R3: burning a grant against an approval that carries no matching override" \
@@ -2522,7 +2591,7 @@ assert_rejects "commercial T6A R2: paying against an approval whose certificatio
   'superseded'
 mint5c UP6A-CMD-GHOST commercial.payment.approve UP6A-A-GHOST
 assert_rejects "commercial T6A R2: approving against a certificate that is retained history" \
-  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6A-A-GHOST','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1','UP6A-CMD-GHOST')" \
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP6A-A-GHOST','p1','$UP5C_LIVE','$UP5C_BILL',1.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP6A-CMD-GHOST')" \
   'superseded'
 
 # ── Phase 5 Task 6B unit i (§F) — the DERIVED payment status, over the migrated legacy database ──
@@ -2550,7 +2619,7 @@ assert "commercial T6B R1: the derivation seal fires from the bill AND from ever
 # A FRESH live certificate on the bill the 6A block left at `verified` — the arrows below are
 # vacuous without one, because the projection seal refuses every derived status with no certificate.
 mint5c UP6B-CMD-C1 commercial.bill.certify UP6B-C1
-if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP6B-C1','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP6B-CMD-C1'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6B-A1','p1','UP6B-C1','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP6B-C1','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP6B-CMD-C1'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6B-A1','p1','UP6B-C1','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
 then printf 'ok      %s\n' "commercial T6B: a fresh live certificate stands on the bill, so the family arrows below are not vacuous"
 else printf 'FAILED  %s\n' "commercial T6B: could not stand up a live certificate — every family assertion below would be vacuous"; FAIL=1
 fi
@@ -2587,7 +2656,7 @@ t6b_arrow "a release moves the status BACKWARD — the derivation is not monoton
   "INSERT INTO \"BillDeductionRelease\"(\"id\",\"projectId\",\"deductionId\",\"amount\",\"reason\",\"releasedById\",\"sourceCommandId\") VALUES('UP6B-R1','p1','UP6B-D1',0.40,'first milestone','USER-1','UP6B-CMD-R1')"
 mint5c UP6B-CMD-A1 commercial.payment.approve UP6B-A1
 t6b_arrow "an authority against the released payable" certified approved-for-payment \
-  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6B-A1','p1','UP6B-C1','$UP5C_BILL',0.40,'USER-1','UP6B-CMD-A1')"
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP6B-A1','p1','UP6B-C1','$UP5C_BILL',0.40,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP6B-CMD-A1')"
 
 # ── Codex round 1 — the two mouths of the same gap ───────────────────────────────────────────────
 #
@@ -2634,13 +2703,13 @@ $PSQL >/dev/null -c "BEGIN; UPDATE \"BillCertificate\" SET \"supersededAt\"=now(
 # A REPLACEMENT certificate, so the cash arrows below have an authority to stand on. The withholding
 # above is fully released, so nothing is carried and §H's carry seal is satisfied.
 mint5c UP6B-CMD-C2 commercial.bill.certify UP6B-C2
-if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP6B-C2','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP6B-CMD-C2'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6B-A2EV','p1','UP6B-C2','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP6B-C2','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP6B-CMD-C2'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6B-A2EV','p1','UP6B-C2','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
 then printf 'ok      %s\n' "commercial T6B: the corrected certification stands, and the cash arrows below are not vacuous"
 else printf 'FAILED  %s\n' "commercial T6B: could not re-certify — the cash arrows below would be vacuous"; FAIL=1
 fi
 mint5c UP6B-CMD-A3 commercial.payment.approve UP6B-A3
 t6b_arrow "an authority over the corrected certification" certified approved-for-payment \
-  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"sourceCommandId\") VALUES('UP6B-A3','p1','UP6B-C2','$UP5C_BILL',1.00,'USER-1','UP6B-CMD-A3')"
+  "INSERT INTO \"PaymentApproval\"(\"id\",\"projectId\",\"certificateId\",\"billId\",\"amount\",\"approvedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP6B-A3','p1','UP6B-C2','$UP5C_BILL',1.00,'USER-1',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP6B-CMD-A3')"
 mint5c UP6B-CMD-P1 commercial.payment.record UP6B-P1
 t6b_arrow "cash leaving against part of that authority" approved-for-payment part-paid \
   "INSERT INTO \"Payment\"(\"id\",\"projectId\",\"approvalId\",\"billId\",\"amount\",\"method\",\"paidById\",\"sourceCommandId\") VALUES('UP6B-P1','p1','UP6B-A3','$UP5C_BILL',0.40,'neft','USER-1','UP6B-CMD-P1')"
@@ -2706,9 +2775,12 @@ assert "commercial T6B R1: re-running the migration's backfill over the upgraded
 assert "commercial T6B-ii: the reversal table upgrades ROW-FREE over the legacy fixture" \
   "SELECT COUNT(*)::text FROM \"PaymentReversal\";" \
   "0"
+# EXHAUSTIVE over the table's triggers, not a subset — which is why 7B-iii-h's fold-revision
+# trigger has to appear here the moment it is attached. That is the assertion working: a new
+# trigger on a money table is a thing a reader must be told about, not one that slips in.
 assert "commercial T6B-ii: its four seals are installed, with the deferred ones deferred" \
   "SELECT string_agg(t.\"tgname\" || '/' || t.\"tginitdeferred\"::text, ',' ORDER BY t.\"tgname\") FROM pg_trigger t JOIN pg_class c ON c.\"oid\" = t.\"tgrelid\" WHERE c.\"relname\" = 'PaymentReversal' AND NOT t.\"tgisinternal\";" \
-  "PaymentReversal_append_only/false,PaymentReversal_bound_sealed/true,PaymentReversal_command_succeeded/true,PaymentReversal_t6b_status_sealed/true"
+  "PaymentReversal_append_only/false,PaymentReversal_bound_sealed/true,PaymentReversal_command_succeeded/true,PaymentReversal_t6b_status_sealed/true,PaymentReversal_touches_bill_lifecycle/false"
 
 # Provenance first, while the payment still has reversible headroom: run after the arrows below and
 # the BOUND fires first, so the assertion would pass for the wrong rule. A refusal is only evidence
@@ -2792,7 +2864,7 @@ assert "commercial T6C: the recovery CEILING fires from the deduction table, def
 # one the 6B block left at `verified` after its supersession, so it is re-certified first — the
 # arrows below would otherwise be vacuous.
 mint5c UP6C-CMD-C3 commercial.bill.certify UP6C-C3
-if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UP6C-C3','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2','UP6C-CMD-C3'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6C-A3EV','p1','UP6C-C3','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
+if $PSQL >/dev/null -c "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UP6C-C3','p1','$UP5C_BILL','$UP5C_VER',1.00,'USER-2',(SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),'UP6C-CMD-C3'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UP6C-A3EV','p1','UP6C-C3','UP45-ACC',1); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='$UP5C_BILL'; COMMIT;"
 then printf 'ok      %s\n' "commercial T6C: a live certificate stands again, so the recovery arrows below are not vacuous"
 else printf 'FAILED  %s\n' "commercial T6C: could not re-certify — the recovery arrows below would be vacuous"; FAIL=1
 fi

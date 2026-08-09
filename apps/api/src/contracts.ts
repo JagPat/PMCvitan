@@ -1464,8 +1464,27 @@ export type VendorBillStepInput = z.infer<typeof vendorBillStepSchema>;
  * saw. Optional for the same reason as the grant's: in-process callers hold no rendered version,
  * and the risk is specific to a command that can sit in a queue across an amendment.
  */
+/**
+ * Codex round-5 — …and the claim REVISION the certifier read, REQUIRED at the boundary.
+ *
+ * The service already refuses a stale pin (`assertReviewedRevision`) and already records what the
+ * certifier saw. What it could not do was tell the difference between "this certifier reviewed
+ * revision 3" and "this certifier sent no pin at all", because the boundary never asked for one:
+ * every web and offline certification arrived without the field, fell through to the server's own
+ * reading of `now`, and was recorded as reviewed evidence. A default that fabricates the evidence
+ * it stands in for is worse than no field, because it is indistinguishable from the real thing
+ * afterwards.
+ *
+ * The version pin cannot cover this. `versionId` is stable across the whole payment lifecycle, so a
+ * queued certify replayed after `verified → certified → superseded → verified` still matches it;
+ * only the monotonic revision separates the two passages.
+ */
 export const certifyBillSchema = z
-  .object({ billId: z.string().min(1), versionId: z.string().min(1) })
+  .object({
+    billId: z.string().min(1),
+    versionId: z.string().min(1),
+    lifecycleVersion: z.number().int().nonnegative(),
+  })
   .strict();
 export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
 /**
@@ -1482,7 +1501,7 @@ export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
  * to pin and is not attacker-reachable. Requiring it in both would have meant editing 121 call
  * sites to invent a version they never displayed — which is not evidence, it is ceremony.
  */
-export type CertifyBillCommand = { billId: string; versionId?: string };
+export type CertifyBillCommand = { billId: string; versionId?: string; lifecycleVersion?: number };
 
 /**
  * §I — GRANT permission for ONE otherwise-forbidden act. Issued BY the approver, so the
@@ -1505,12 +1524,47 @@ export const grantSodExceptionSchema = z
     // HTTP boundary. Every in-process caller — the Task-5 suites, the operator paths — constructs
     // this object directly, and a default that lives only in the pipe leaves them writing a NULL
     // rule. The default belongs with the rule, in the service.
+    /**
+     * §I — the claim VERSION and the STATUS the approver had in front of them (7B-iii-h).
+     *
+     * REQUIRED at this boundary, and the asymmetry with the service's own shape is deliberate:
+     * round 6 of PR #310 established that making a viewed-fact pin optional so in-process callers
+     * compile skips the guard exactly where the risk lives — a posted or replayed body. The
+     * boundary is attacker-reachable; an in-process caller is not, and carries no rendered fact.
+     *
+     * The VERSION says which claim; the STATUS says what was true about it. One version walks
+     * `submitted → under-verification → verified` without changing id, so the version alone would
+     * let an authorisation issued before the §E verdict excuse the certification of a verdict its
+     * approver never saw.
+     */
+    versionId: z.string().min(1),
+    status: z.string().min(1),
+    /**
+     * …and the claim's REVISION at that moment (Codex round 3).
+     *
+     * The version and the status are both RE-ENTERABLE: §F derives the payment status from the
+     * folds, a claim returns to a label it has left, and a retention release moves what is owed
+     * without moving the label at all. So neither pin says WHICH passage of the claim the approver
+     * was looking at — and the first spelling of this command compared those two and then recorded
+     * the DATABASE'S CURRENT revision as the thing reviewed, which is the server agreeing with
+     * itself about a number nobody had seen.
+     *
+     * The claim read publishes it; the approver echoes it; it is compared under the bill lock
+     * before it is persisted.
+     */
+    lifecycleVersion: z.number().int().nonnegative(),
     rule: z
       .enum([SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove])
       .optional(),
   })
   .strict();
 export type GrantSodExceptionInput = z.infer<typeof grantSodExceptionSchema>;
+/** The SERVICE's shape — weaker than the boundary's, for the reason given on `CertifyBillCommand`. */
+export type GrantSodExceptionCommand = {
+  billId: string; actorId: string; reason: string;
+  versionId?: string; status?: string; lifecycleVersion?: number;
+  rule?: GrantSodExceptionInput['rule'];
+};
 
 /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */
 export const supersedeCertificateSchema = z
@@ -1581,9 +1635,17 @@ export const approvePaymentSchema = z
   .object({
     billId: z.string().min(1),
     amount: z.string().trim().min(1).max(32),
+    /** …and the claim REVISION the approver read. Codex named this for the grant and the certify
+     *  commands; it belongs here for the same reason and was missing from both — an approval is
+     *  an act that spends a §I authority, and it must be able to say which passage of the claim it
+     *  was performed on. The §F payment status is re-enterable, so nothing else can say it. */
+    lifecycleVersion: z.number().int().nonnegative(),
   })
   .strict();
 export type ApprovePaymentInput = z.infer<typeof approvePaymentSchema>;
+/** The SERVICE shape, deliberately weaker than the HTTP one — the boundary is where a posted or
+ *  replayed body can carry a revision nobody read; an in-process caller has no rendered fact. */
+export type ApprovePaymentCommand = Omit<ApprovePaymentInput, 'lifecycleVersion'> & { lifecycleVersion?: number };
 
 /**
  * §G — RECORD money leaving against an approval that covers it.

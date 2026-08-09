@@ -188,6 +188,19 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
       prosrcSha256: '84dfd52318f0d6bb5401e96881664e9342ebe77644db14dfd2a3fa2c84e8d4fe',
       constraintTrigger: true,
     },
+    // 7B-iii-h — the state a grant was justified against, sealed where the authority is SPENT.
+    // `tgtype` 21 = AFTER INSERT OR UPDATE, FOR EACH ROW: BOTH events, because the transition can
+    // arrive as a stamped UPDATE or as an already-consumed INSERT, and a seal that watches one of
+    // them is a seal a direct writer walks around by choosing the other.
+    SodGrant_reviewed_state_sealed: {
+      relation: 'SodGrant',
+      tgtype: 21,
+      fn: 'phase5_t7biiih_grant_reviewed_state_sealed',
+      // round 5 — the seal gained its ISSUE-side arm (a grant may not name a passage the claim has
+      // not reached), so the body it pins moved with it
+      prosrcSha256: '426b038d98ec3d40bd593b61be1e9eede28ed244262b5a282e1a33937b40f53e',
+      constraintTrigger: true,
+    },
   };
 
   const CONSTRAINT_SEALS: Record<string, { relation: string }> = {
@@ -605,6 +618,57 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
   it('every seal AUTHORITY_GUARDS names is ENFORCED in the live catalog', async () => {
     await inTx(async (db) => {
       expect(await authoritySealViolations(db)).toEqual([]);
+    });
+  });
+
+  /**
+   * 7B-iii-h round 5 — the guards the two §I seals REST ON.
+   *
+   * `SodGrant_reviewed_state_sealed` and the act-truth check both ask what passage of a claim
+   * something names, and both answer from `VendorBillRevision`. Neither can be stronger than the
+   * counter underneath them: if the row is not opened with the claim, there is nothing to lock; if
+   * the forward-only rule stops covering INSERT, the counter can be born behind the authorities
+   * already pinned to it. Those two are DB-only — no service message pairs with them, so
+   * `AUTHORITY_GUARDS` cannot name them and `TRIGGER_SEALS` cannot hold them — and that is exactly
+   * why they are pinned here instead of nowhere.
+   *
+   * `tgtype` is the catalog's bitmask: ROW=1, BEFORE=2, INSERT=4, DELETE=8, UPDATE=16. The numbers
+   * are asserted rather than the DDL text because the finding round 5 opened was a MISSING EVENT —
+   * a trigger that existed, read correctly, and simply was not attached to the way a row is born.
+   */
+  it('the counter every §I seal reads is itself guarded, on every event', async () => {
+    const want: Record<string, { relation: string; tgtype: number; fn: string }> = {
+      // AFTER INSERT ROW (1|4) — the row exists from the claim's first moment, so no reader falls
+      // back to an implicit zero that nothing holds still
+      VendorBill_opens_revision: {
+        relation: 'VendorBill', tgtype: 5, fn: 'phase5_t7biiih_open_bill_revision',
+      },
+      // BEFORE INSERT OR UPDATE OR DELETE ROW (1|2|4|8|16) — INSERT is the arm round 5 added; a
+      // guard on how a row CHANGES is not a guard on how it is BORN
+      VendorBillRevision_forward_only: {
+        relation: 'VendorBillRevision', tgtype: 31, fn: 'phase5_t7biiih_revision_forward_only',
+      },
+      // BEFORE INSERT OR UPDATE ROW (1|2|4|16) on BOTH acts — the revision an act claims is true
+      // when written and frozen after
+      BillCertificate_reviewed_revision_true: {
+        relation: 'BillCertificate', tgtype: 23, fn: 'phase5_t7biiih_act_reviewed_revision',
+      },
+      PaymentApproval_reviewed_revision_true: {
+        relation: 'PaymentApproval', tgtype: 23, fn: 'phase5_t7biiih_act_reviewed_revision',
+      },
+    };
+    await inTx(async (db) => {
+      const rows = await db.$queryRawUnsafe<Array<{ tgname: string; relation: string; tgtype: number; fn: string }>>(
+        `SELECT t."tgname", c."relname" AS relation, t."tgtype"::int AS tgtype, p."proname" AS fn
+           FROM pg_trigger t
+           JOIN pg_class c ON c.oid = t.tgrelid
+           JOIN pg_proc  p ON p.oid = t.tgfoid
+          WHERE NOT t."tgisinternal" AND t."tgname" = ANY($1)`,
+        Object.keys(want),
+      );
+      const live = Object.fromEntries(rows.map((r) => [r.tgname, { relation: r.relation, tgtype: r.tgtype, fn: r.fn }]));
+      expect(live, 'a revision guard is missing, re-aimed, or no longer fires on every event')
+        .toEqual(want);
     });
   });
 

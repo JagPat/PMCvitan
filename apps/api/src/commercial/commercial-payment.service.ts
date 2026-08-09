@@ -23,7 +23,8 @@ import { CommercialStatusService } from './commercial-status.service';
 import { announceMoneyMoved } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import type { ApprovePaymentInput, RecordPaymentInput, ReversePaymentInput } from '../contracts';
+import { assertReviewedRevision, resolveSodGrant as resolveGrantForRule } from './commercial-sod';
+import type { ApprovePaymentCommand, RecordPaymentInput, ReversePaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -146,7 +147,7 @@ export class CommercialPaymentService {
    * history, and the bound would then measure against a certification that no longer stands.
    */
   async approve(
-    projectId: string, input: ApprovePaymentInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: ApprovePaymentCommand, user: AuthUser, idempotencyKey?: string,
   ): Promise<PaymentApprovalDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertApprove(user);
@@ -160,6 +161,9 @@ export class CommercialPaymentService {
       run: async (tx, ctx) => {
         await lockProjectReadiness(tx, projectId);
         const bill = await this.lockBill(tx, projectId, input.billId);
+        // the claim REVISION this approver read — compared under the lock before it is recorded,
+        // so a queued approval cannot be written as having reviewed a passage it never saw
+        assertReviewedRevision(input.lifecycleVersion, bill.lifecycleVersion);
 
         // §H's own fold, under the lock. It answers both "is anything payable" and "how much".
         const position = await this.deductions.positionFor(tx, projectId, input.billId);
@@ -178,7 +182,8 @@ export class CommercialPaymentService {
         // the row is written so a refusal costs nothing; the grant is spent afterwards, against the
         // approval id it authorises.
         const override = certificate.certifiedById === actor.actorId
-          ? await this.resolveSodGrant(tx, projectId, input.billId, certificate.versionId, actor.actorId)
+          ? await this.resolveSodGrant(tx, projectId, input.billId, certificate.versionId, actor.actorId,
+            { status: bill.status, lifecycleVersion: bill.lifecycleVersion })
           : null;
 
         // §G BOUND 4, re-derived under the lock and stated as the REMAINING headroom, because a
@@ -201,6 +206,10 @@ export class CommercialPaymentService {
         const approval = await tx.paymentApproval.create({
           data: {
             projectId, billId: input.billId, certificateId: position.certificateId,
+            // the claim REVISION this authorisation was made against, read under the bill lock —
+            // the §I consume seal matches it against the grant's, so an authority and the act it
+            // excuses cannot name two different passages of the same claim
+            reviewedLifecycleVersion: input.lifecycleVersion ?? bill.lifecycleVersion,
             amount, approvedById: actor.actorId, sourceCommandId: ctx.commandId!,
           },
         });
@@ -631,39 +640,44 @@ export class CommercialPaymentService {
    * against the same `SodGrant` table, selected on the PAYMENT rule so an authority issued for
    * certification can never be spent here.
    *
-   * The shape is deliberately the one Task 5's round 10 arrived at: candidates are FILTERED by
-   * standing rather than "pick one, then check it", because more than one live grant can legally
-   * exist (a downgraded approver's stale row beside a valid replacement) and picking arbitrarily
-   * refuses good work.
+   * The RULE is `commercial-sod.ts` and is shared with the certification half. It used to be thirty
+   * lines of near-identical logic here, and Codex found exactly what that costs: 7B-iii-h taught
+   * the certification resolver that a grant records the claim STATE its approver reviewed, and this
+   * copy never learned it — so an authorisation written over a claim with nothing approved on it
+   * could still release money after someone else had approved ₹10 of the same claim. Two
+   * implementations of one question, and only the one the unit was named for got fixed. Now there
+   * is one, and only the REFUSALS are stated here, because what a non-live state means is a
+   * property of the act being refused rather than of the resolution.
    */
   private async resolveSodGrant(
     tx: Prisma.TransactionClient, projectId: string, billId: string, versionId: string, actorId: string,
+    asOf: { status: string; lifecycleVersion: number },
   ): Promise<{ grantId: string; approverId: string; reason: string }> {
-    const live = await tx.sodGrant.findMany({
-      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
-      select: { id: true, approverId: true, reason: true },
-      orderBy: { grantedAt: 'asc' },
-    });
-    for (const candidate of live) {
-      // standing is the ORGS module's question, asked under a lock because this IS an authority
-      // decision — a concurrent downgrade must not commit behind an approval it granted
-      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate: true })) {
-        return { grantId: candidate.id, approverId: candidate.approverId, reason: candidate.reason };
-      }
+    const resolved = await resolveGrantForRule(
+      tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, true, asOf,
+    );
+    if (resolved.state === 'live') {
+      return { grantId: resolved.grant.id, approverId: resolved.grant.approverId, reason: resolved.grant.reason };
     }
-    if (live.length > 0) {
+    if (resolved.state === 'approver-lost-standing') {
       throw new ForbiddenException(
         'The authorisation to approve this claim was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again',
       );
     }
     // version-pinned, exactly as certification's grant is: an amendment is a DIFFERENT claim, and
     // permission to release money against the one the approver looked at must not carry over
-    const stale = await tx.sodGrant.count({
-      where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
-    });
-    if (stale > 0) {
+    if (resolved.state === 'stale-version') {
       throw new ConflictException(
         'The authorisation to approve this claim was granted against an earlier claim version — the claim has been amended since, so it needs authorising again',
+      );
+    }
+    // …and the version is not the whole of what an approver looked at. A claim keeps ONE version id
+    // while its payment state moves, so an exception written when nothing was approved would
+    // otherwise still stand after somebody approved part of it — a materially different claim,
+    // authorised by nobody.
+    if (resolved.state === 'stale-review') {
+      throw new ConflictException(
+        'The authorisation to approve this claim was granted against a claim state that no longer holds — the claim has moved on since it was authorised, so it needs authorising again against what stands now',
       );
     }
     throw new ForbiddenException(
@@ -674,10 +688,13 @@ export class CommercialPaymentService {
 
   private async lockBill(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
-  ): Promise<{ id: string; status: string }> {
-    const rows = await tx.$queryRaw<Array<{ id: string; status: string }>>`
-      SELECT "id", "status" FROM "VendorBill"
-       WHERE "projectId" = ${projectId} AND "id" = ${billId} FOR UPDATE`;
+  ): Promise<{ id: string; status: string; lifecycleVersion: number }> {
+    const rows = await tx.$queryRaw<Array<{ id: string; status: string; lifecycleVersion: number }>>`
+      SELECT b."id", b."status",
+             COALESCE(r."revision", 0)::int AS "lifecycleVersion"
+        FROM "VendorBill" b
+        LEFT JOIN "VendorBillRevision" r ON r."projectId" = b."projectId" AND r."billId" = b."id"
+       WHERE b."projectId" = ${projectId} AND b."id" = ${billId} FOR UPDATE OF b`;
     const bill = rows[0];
     if (!bill) throw new NotFoundException('Vendor bill not found in this project');
     return bill;

@@ -3,6 +3,7 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { CommercialScreen } from '@/screens/CommercialScreen';
 import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
+import { SOD_GRANT_STATES } from '@vitan/shared';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 
 /**
@@ -61,7 +62,7 @@ const claim = (): CommercialClaimView => ({
     approved: '0.00', paid: '0.00', approvable: null, billStatus: 'certified',
   },
   measurements: {},
-  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self' },
+  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self', lifecycleVersion: 0 },
 });
 
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {
@@ -1355,6 +1356,48 @@ describe('Task 7B-iii-c-i (§E/§F) — the verification chain on the Certificat
       pending: ['com:billtx:bill-9:verify'],
     });
     expect(enabled(other, 'bill-begin-verification-bill-1')).toBe(true);
+  });
+
+  /**
+   * 7B-iii-h correction (finding 5) — EVERY authorisation state the server can send is legible.
+   *
+   * The panel enumerated three of the four non-`none` states, so `stale-review` — added by the
+   * unit this correction belongs to — rendered an empty card: a reader whose authorisation had
+   * gone stale saw a box with nothing in it and no way to learn why their certification would be
+   * refused. Enumerating the fourth would repeat the defect the moment a fifth arrives, so the
+   * probe is over the SHARED state list rather than over the strings I happened to write.
+   */
+  it('renders a reason for every §I authorisation state the contract can carry', () => {
+    for (const grantState of SOD_GRANT_STATES) {
+      const base = withStatus('verified', at(1));
+      useStore.setState(getInitialState());
+      useStore.getState()._setGateway(null);
+      useStore.setState({
+        capabilities: ['commercial'],
+        role: 'pmc',
+        commercialView: bundle(),
+        commercialLoad: 'ready',
+        commercialBills: [base.bill],
+        commercialBillsLoad: 'ready',
+        commercialClaims: {
+          'bill-1': { ...base, certifyPreflight: { ...base.certifyPreflight, grantState } },
+        },
+        commercialClaimLoad: { 'bill-1': 'ready' },
+      });
+      const r = render(<CommercialScreen />);
+      fireEvent.click(r.getByTestId('commercial-tab-claims'));
+      fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+      fireEvent.click(r.getByTestId('commercial-tab-certification'));
+
+      if (grantState === 'none') {
+        // no authorisation is in play, so there is nothing to report — the card is absent, not empty
+        expect(r.queryByTestId('commercial-sod-state'), 'no card when there is no authorisation').toBeNull();
+      } else {
+        const card = r.getByTestId('commercial-sod-state');
+        expect(card.textContent?.trim(), `${grantState} must SAY something`).toBeTruthy();
+      }
+      cleanup();
+    }
   });
 });
 

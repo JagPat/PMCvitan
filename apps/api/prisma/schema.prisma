@@ -3190,7 +3190,32 @@ model BudgetException {
 // The status lives on the ROOT rather than the version because the duplicate-document index is a
 // predicate on the lifecycle's own terminal release states (§F, probe 5bj), and a partial unique
 // can only read columns of the row it indexes.
+/// §F/§I — the claim's COMMERCIAL REVISION: a counter that only ever moves forward, advanced
+/// whenever anything a reviewer would have seen changes — every §F status transition and every
+/// write to the six tables feeding `NET_PAYABLE`, `APPROVED` and `PAID`.
+///
+/// ITS OWN ROW, not a column on `VendorBill`, and that is the design rather than a detail. A
+/// trigger advancing a column would take the CLAIM'S row lock from writers holding no other lock,
+/// and Task 5C's Codex round 6 removed a certificate-side bill lock for exactly that reason: the
+/// honest withholding path runs `bill → certificate`, so a certificate-side write reaching back
+/// for the bill is ABBA, and PostgreSQL answers an ABBA cycle with a deadlock abort rather than
+/// the refusal the seal was written to give. On its own row the counter is taken LAST by everyone
+/// and forms a cycle with nothing.
+///
+/// The row is created WITH the bill (a trigger on `VendorBill` insert) and can never be deleted,
+/// so every reader locks a row that exists rather than falling back to an implicit zero that
+/// nothing holds still.
+model VendorBillRevision {
+  projectId String
+  billId    String
+  bill      VendorBill @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  revision  Int        @default(0)
+
+  @@id([projectId, billId])
+}
+
 model VendorBill {
+  revisionRow  VendorBillRevision?
   certificates BillCertificate[]
   id        String  @id @default(cuid())
   projectId String
@@ -3421,6 +3446,12 @@ model BillVerification {
 /// `certifiedAmount` is FROZEN. §G bound 3 caps it at `BILLED_AMOUNT(bill)`, and bound 4 caps the
 /// approvals that hang off it at `NET_PAYABLE` = this amount less unreleased deductions.
 model BillCertificate {
+  /// §I — the claim's commercial revision at the moment this act was performed, so the consume
+  /// seal can require an authority and the act it excuses to name the SAME passage of the claim.
+  /// By COMMIT the act has already advanced the counter, so what the seal compares has to be a
+  /// fact each row carries rather than one it infers. NULLABLE for rows written before it existed.
+  reviewedLifecycleVersion Int?
+
   id        String  @id @default(cuid())
   projectId String
   project   Project @relation(fields: [projectId], references: [id])
@@ -3577,6 +3608,37 @@ model SodGrant {
   approverId String
   reason     String
 
+  /// §I — the claim STATUS the approver had in front of them when they authorised.
+  ///
+  /// Phase 5 Task 7B-iii-h. The version alone does not identify what was reviewed: one version
+  /// walks `submitted → under-verification → verified` WITHOUT changing id, so a grant authorised
+  /// before the §E verdict existed would otherwise survive into `verified` and excuse the
+  /// certification of a verdict its approver never saw. A grant's justification has to carry
+  /// immutable evidence of what it was justified against.
+  ///
+  /// NULLABLE only for rows written before this column existed — their reviewed state is not
+  /// recorded and cannot be invented, so `resolveGrant` treats them as UNUSABLE rather than
+  /// guessing. New grants always carry it.
+  reviewedStatus           String?
+  /// …and the claim's MONOTONIC lifecycle version at that moment, because the status label alone
+  /// recycles. Certify ₹100 with ₹10 withheld → `certified`; approve and pay the ₹90 → `paid`;
+  /// release ₹5 → `certified` again. An authorisation given at the first `certified` matches the
+  /// label at the second, by which time ₹90 has been authorised and has left the practice.
+  ///
+  /// NULLABLE for the same reason `reviewedStatus` is: a row written before this column existed
+  /// attests to nothing, and inventing a version for it would invent the evidence.
+  reviewedLifecycleVersion Int?
+
+  /// §I — a grant this release can no longer JUDGE, retired rather than left to block every
+  /// deploy. Rows written before the reviewed-state columns existed carry no evidence of what
+  /// their approver saw; retiring them is attributable disposal (retained, marked, named in the
+  /// runbook), where an abort was an instruction nobody could carry out and deleting them would
+  /// be the silent revocation the abort existed to prevent. One-way, like consumption, and
+  /// available ONLY to a row that lacks reviewed evidence — a grant that carries its evidence is
+  /// judged by the seals, never disposed of.
+  retiredAt     DateTime?
+  retiredReason String?
+
   grantedAt       DateTime @default(now())
   sourceCommandId String
 
@@ -3695,6 +3757,12 @@ model BillDeductionRelease {
 /// owed; an approval is the separate authority that says it may be PAID, and §I keeps the two
 /// apart deliberately: the actor who certified may not approve.
 model PaymentApproval {
+  /// §I — the claim's commercial revision at the moment this act was performed, so the consume
+  /// seal can require an authority and the act it excuses to name the SAME passage of the claim.
+  /// By COMMIT the act has already advanced the counter, so what the seal compares has to be a
+  /// fact each row carries rather than one it infers. NULLABLE for rows written before it existed.
+  reviewedLifecycleVersion Int?
+
   id        String  @id @default(cuid())
   projectId String
   project   Project @relation(fields: [projectId], references: [id])

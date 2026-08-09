@@ -876,6 +876,62 @@ would attribute a future payable to a counterparty nobody chose.
 **Nothing else in this migration can abort.** The three vendor-bill tables are additive and the
 closing check asserts they are row-free — a migration that creates no claim cannot leave one behind.
 
+## §P5T7BH. Phase 5 Task-7B-iii-h — legacy §I authorisations are RETIRED, not aborted on
+
+`20270705000000_phase5_t7biiih_sod_reviewed_status` records, on every segregation-of-duties
+grant, the claim STATE and the claim REVISION its approver was looking at. A grant written before
+those columns existed carries neither, and there is no honest way to infer them: filling them from
+the claim's current state would fabricate evidence that an approver saw something they may never
+have seen, on the exact register whose purpose is attributable human authorisation.
+
+**So the migration retires those rows rather than stopping the deploy.** Each is stamped
+`retiredAt` with a `retiredReason` naming exactly why, and is retained. It authorises nothing, it
+does not block a replacement, and it is visible to anyone asking what happened.
+
+An earlier draft aborted the deploy instead. That was wrong in a way worth recording: once this
+migration installs its guards — the append-only freeze, the consume seal, the widened live-scope
+index — a legacy row can be neither filled, nor consumed, nor deleted. The abort's own instruction
+("re-issue the authorisations, then redeploy") could therefore never clear it, because re-issuing
+writes a SECOND row while the first still trips the count. The deploy would have been permanently
+stuck on a repair nobody could perform.
+
+**What you will see.** A `NOTICE` during migration:
+
+> `phase5_t7biiih: retired N segregation-of-duties grant(s) that predate the reviewed-state record. They are retained and marked, and authorise nothing. A pmc must re-issue each one against the claim state they can see now — see docs/RUNBOOK.md.`
+
+**What to do.** Nothing blocks the deploy. Afterwards, list what was retired and take it to each
+project's PMC:
+
+```sql
+SELECT g."projectId", g."id", g."billId", g."versionId", g."rule",
+       g."actorId" AS excused, g."approverId" AS approver, g."reason", g."grantedAt",
+       b."status" AS claim_status_now
+  FROM "SodGrant" g
+  JOIN "VendorBill" b ON b."projectId" = g."projectId" AND b."id" = g."billId"
+ WHERE g."retiredAt" IS NOT NULL AND g."reviewedStatus" IS NULL
+ ORDER BY g."grantedAt";
+```
+
+For every row still wanted, the named **approver** re-issues it through `commercial.sod.grant`
+against the claim as it stands now — the ordinary product surface, no SQL. One nobody re-issues
+simply lapses, which is a legitimate outcome and the reason this is a conversation rather than a
+script. Do **not** write `reviewedStatus`/`reviewedLifecycleVersion` onto a retired row by hand:
+the append-only trigger refuses it, and that refusal is the point.
+
+**Two columns this migration adds that need no operator action.** `VendorBillRevision` is the
+claim's COMMERCIAL REVISION — a counter that only ever moves forward, advanced whenever anything a
+reviewer would have seen changes: every §F status transition and every write to the six tables
+feeding `NET_PAYABLE`, `APPROVED` and `PAID`. It exists because neither obvious identity survives
+contact with §F: a status label recycles (`certified → paid → certified`), and it also fails to
+move when the money does (§F reads `certified` at any payable while nothing is approved, so
+returning ₹5 of a retention changes what is owed and changes no label).
+
+It lives on its own row rather than as a column on `VendorBill` because a trigger advancing a
+column would take the CLAIM'S row lock from writers holding no other lock — the ABBA inversion
+Task 5C's review already removed once. On its own row it is taken last by everybody. It cannot be
+rewound, jumped, moved to another claim, or deleted; and `BillCertificate`/`PaymentApproval` each
+record the revision they were performed at, checked against the claim at insert and frozen after.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender

@@ -366,8 +366,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // bound 4 at PG: 150 approved against a 100 payable, with no service in the way
     const overId = `${cert.id}-over`;
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES($1,$2,$3,$4,150.00,$5,$6)`,
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+       VALUES($1,$2,$3,$4,150.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
       overId, projectId, cert.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', overId),
     )).rejects.toThrow(/exceed the 100\.00 payable/u);
 
@@ -381,8 +381,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const okId = `${cert.id}-ok`;
     await t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-         VALUES($1,$2,$3,$4,30.00,$5,$6)`,
+        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES($1,$2,$3,$4,30.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
         okId, projectId, cert.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', okId),
       );
       await tx.$executeRawUnsafe(
@@ -464,8 +464,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // the certifier is `f.memberUser`; a forged approval in their own name
     const forged = `${cert.id}-forged`;
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+       VALUES($1,$2,$3,$4,10.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
       forged, projectId, cert.id, billId, f.memberUser.id,
       await mint('commercial.payment.approve', forged, f.memberUser.id),
     )).rejects.toThrow(/who certified this claim/u);
@@ -478,8 +478,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const cmd = await mint('commercial.payment.approve', excused, f.memberUser.id);
     await expect(t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-         VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES($1,$2,$3,$4,10.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
         excused, projectId, cert.id, billId, f.memberUser.id, cmd,
       );
       await tx.$executeRawUnsafe(
@@ -673,8 +673,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const ghost = `${stale.id}-ghost`;
     const dead = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: { not: null } } });
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+       VALUES($1,$2,$3,$4,10.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
       ghost, projectId, dead.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', ghost),
     )).rejects.toThrow(/superseded/u);
 
@@ -970,5 +970,632 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
 
     await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
     expect((await positionOf(projectId)).certifiedPayable).toBe('0.00');
+  });
+
+  // ── 7B-iii-h correction — the PAYMENT half of §I learns the reviewed state too ───────────────
+  //
+  // 7B-iii-h taught the CERTIFICATION resolver that a grant records the claim state its approver
+  // reviewed, and left this half exactly as it was. Two implementations of one question, and only
+  // the one the unit was named for got fixed — which is the root PR #310's audit names first, and
+  // the specific shape this service's own §I comments already warned about twice.
+
+  it('PROBE 25 (§I): a payment authorisation must still match the state its approver reviewed', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+
+    // authorised while the claim reads `certified` — nothing on it is approved yet
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('certified');
+
+    // …and then the other pmc authorises part of it themselves. The VERSION has not moved, so the
+    // version pin still matches — but ₹10 of this claim is now approved money, which is not the
+    // claim the approver was looking at when they wrote the exception.
+    await payments.approve(projectId, { billId, amount: '10.00' }, approver(projectId));
+    expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).status)
+      .toBe('approved-for-payment');
+
+    await expect(payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId)))
+      .rejects.toThrow(/granted against a claim state that no longer holds/u);
+
+    // THE LEGAL PATH: re-authorised against what is true now, the certifier may approve. A guard
+    // that only ever refuses is indistinguishable from one that never permits.
+    const fresh = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'still the only pmc on site', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const approval = await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect(approval.sodException?.grantId).toBe(fresh.id);
+    // the stale one is untouched: it authorised a state that no longer stands, and it is inert
+    // rather than spent — history, not a lock
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).consumedAt)
+      .toBeNull();
+  });
+
+  it('PROBE 26 (§I): an approval cannot come to rest on a grant recorded at a state it never approved', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const approval = await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect(approval.sodException?.grantId, 'the fixture must produce a REAL §I chain').toBe(grant.id);
+
+    // The bypass writer a DATABASE seal exists for. ONE trigger is disabled BY NAME inside a
+    // transaction and re-enabled before it ends, so the seal is restored on the way out or the DDL
+    // rolls back with the abort. It is the only way to reach the state the finding describes: the
+    // service refuses to create it and `SodGrant_append_only` refuses to edit a consumed grant at
+    // all. The question the probe asks is whether the DATABASE would notice.
+    //
+    // `SET CONSTRAINTS ALL IMMEDIATE` is load-bearing: the deferred seals queue behind the UPDATE
+    // and PostgreSQL refuses to ALTER a table with pending trigger events.
+    const regress = async (to: string): Promise<void> => {
+      await t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
+        await tx.$executeRawUnsafe(
+          'UPDATE "SodGrant" SET "reviewedStatus"=$3 WHERE "projectId"=$1 AND "id"=$2', projectId, grant.id, to,
+        );
+        await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+        await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
+      });
+    };
+
+    await expect(regress('verified'))
+      .rejects.toThrow(/state no `certifier-may-not-approve` authority can be spent from/u);
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('certified');
+    // …and another state this authority CAN legitimately be spent from is accepted, so the seal is
+    // the admissible set and not a single hard-coded status
+    await expect(regress('part-paid')).resolves.toBeUndefined();
+  });
+
+  it('PROBE 27 (§I): a RECYCLED status label does not bring a spent-past authorisation back to life', async () => {
+    // Codex round 2 (P1), and the deeper half of the same defect this unit exists for.
+    //
+    // Round 1 recorded the claim STATE a grant was justified against, and compared that state to
+    // what is true now. But `certified` is not a point in time — §F DERIVES it from the folds, and
+    // the derivation genuinely returns to a label it has left before. So an authorisation given
+    // when nothing on the claim was approved could be spent after somebody had approved AND PAID
+    // the whole payable, purely because a later release put the label back.
+    //
+    // A status is a description; it is not an identity. What the reviewed identity needs is a fact
+    // that only ever moves FORWARD — which is what the claim's REVISION is.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+
+    // ₹100 certified, ₹10 withheld → ₹90 payable, and the claim reads `certified`
+    const retention = await deductions.record(
+      projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId),
+    );
+    const reads = async (): Promise<string> =>
+      (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).status;
+    expect(await reads()).toBe('certified');
+
+    // authorised HERE: nothing on this claim is approved, and ₹90 stands payable
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('certified');
+
+    // …then the OTHER pmc approves and pays the whole payable. Nothing about this is irregular.
+    const approval = await payments.approve(projectId, { billId, amount: '90.00' }, approver(projectId));
+    await payments.record(projectId, { approvalId: approval.id, amount: '90.00', method: 'neft' }, pmc(projectId));
+    expect(await reads()).toBe('paid');
+
+    // …and a release raises the payable again, so §F derives the claim BACK to `certified`. The
+    // label is identical to the one the approver reviewed; the claim underneath is not — ₹90 has
+    // been authorised and has left the practice since.
+    await deductions.release(
+      projectId, { deductionId: retention.id, amount: '5.00', reason: 'defects made good' }, pmc(projectId),
+    );
+    expect(await reads(), 'the fixture must RECYCLE the label, or this probe is about nothing').toBe('certified');
+
+    await expect(payments.approve(projectId, { billId, amount: '5.00' }, pmc(projectId)))
+      .rejects.toThrow(/granted against a claim state that no longer holds/u);
+
+    // THE LEGAL PATH: re-authorised against the claim as it stands now, the certifier may approve
+    // the newly payable ₹5 — the guard is precise, not a permanent block.
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'still the only pmc on site', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const second = await payments.approve(projectId, { billId, amount: '5.00' }, pmc(projectId));
+    expect(second.amount).toBe('5.00');
+    // and the stale one is still unspent — inert history, not a lock
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).consumedAt)
+      .toBeNull();
+  });
+
+  it('PROBE 28 (§F): the lifecycle version is monotonic across EVERY status writer', async () => {
+    // The bump is a BEFORE UPDATE trigger rather than a line in each service, because there are six
+    // separate writers of `VendorBill.status` across four services and "remember to also bump it"
+    // is precisely the instruction this review lineage keeps proving nobody remembers. One site,
+    // and no writer can opt out of it.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+    const version = async (): Promise<number> =>
+      (await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0;
+
+    // it already moved, because reaching `certified` is several forward transitions
+    const atCertified = await version();
+    expect(atCertified).toBeGreaterThan(0);
+
+    const approval = await payments.approve(projectId, { billId, amount: '100.00' }, approver(projectId));
+    const atApproved = await version();
+    expect(atApproved, 'a DERIVED transition bumps it too').toBeGreaterThan(atCertified);
+
+    await payments.record(projectId, { approvalId: approval.id, amount: '100.00', method: 'neft' }, pmc(projectId));
+    const atPaid = await version();
+    expect(atPaid).toBeGreaterThan(atApproved);
+
+    // …and a write that does NOT move the status does not move the version either: it counts
+    // lifecycle transitions, not writes, or an approver's pin would go stale for no reason
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'unrelated', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    expect(await version()).toBe(atPaid);
+
+    // a direct writer cannot walk it backwards, so a stale pin cannot be made to match again
+    await expect(t.prisma.$executeRawUnsafe(
+      'UPDATE "VendorBillRevision" SET "revision"=1 WHERE "projectId"=$1 AND "billId"=$2', projectId, billId,
+    )).rejects.toThrow(/only ever moves forward/u);
+  });
+
+  it('PROBE 29 (§I): the reviewed identity moves when the MONEY moves, not only when the label does', async () => {
+    // Codex round 3 (P1), and it is round 2's finding one level deeper. Round 2 said "a status
+    // label recycles, so pin a counter"; I then bumped that counter only when the LABEL changed.
+    //
+    // The label is not the money. §F's first two arms are `NET_PAYABLE = PAID` and `APPROVED = 0`,
+    // so a claim with nothing approved reads `certified` at ANY payable — ₹90 or ₹95 or ₹900. A
+    // retention release raises what is owed without moving the label at all, and the approver who
+    // authorised against ₹90 never saw the ₹95.
+    //
+    // What has to advance is the CLAIM'S COMMERCIAL REVISION: anything a reviewer would have seen.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+
+    const retention = await deductions.record(
+      projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId),
+    );
+    const reads = async () => t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } });
+    expect((await reads()).status).toBe('certified');
+    // `approvable` IS the net payable while nothing is approved — read through the ordinary
+    // surface rather than a private fold, so the probe measures what a reviewer would see
+    expect((await payments.ledger(projectId, billId, pmc(projectId))).approvable).toBe('90.00');
+
+    // authorised against a ₹90 payable
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const atGrant = (await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0;
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedLifecycleVersion)
+      .toBe(atGrant);
+
+    // …and ₹5 of the retention comes back. The claim now owes ₹95 and STILL reads `certified`.
+    await deductions.release(
+      projectId, { deductionId: retention.id, amount: '5.00', reason: 'defects made good' }, pmc(projectId),
+    );
+    expect((await reads()).status, 'the LABEL must not move, or this probe is about the recycling case again')
+      .toBe('certified');
+    expect((await payments.ledger(projectId, billId, pmc(projectId))).approvable).toBe('95.00');
+    expect((await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0,
+      'the money moved, so the reviewed identity must have moved').toBeGreaterThan(atGrant);
+
+    await expect(payments.approve(projectId, { billId, amount: '95.00' }, pmc(projectId)))
+      .rejects.toThrow(/granted against a claim state that no longer holds/u);
+
+    // THE LEGAL PATH: re-authorised against what is owed now, the certifier may approve it
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'still the only pmc on site', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    expect((await payments.approve(projectId, { billId, amount: '95.00' }, pmc(projectId))).amount)
+      .toBe('95.00');
+  });
+
+  it('PROBE 30 (§I): EVERY fold source moves the reviewed identity', async () => {
+    // Enumerated rather than sampled, because the defect this answers was a counter that moved on
+    // one kind of change and not another. §F reads three folds — NET_PAYABLE, APPROVED, PAID — and
+    // six tables feed them. A seventh fold source added tomorrow without a bump is exactly the
+    // hole Codex just found, so this probe is the list.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);          // BillCertificate
+    const at = async (): Promise<number> =>
+      (await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0;
+    const moved = async (label: string, act: () => Promise<unknown>): Promise<void> => {
+      const before = await at();
+      await act();
+      expect(await at(), `${label} moves a payment fold, so it must move the reviewed identity`)
+        .toBeGreaterThan(before);
+    };
+
+    let retentionId = '';
+    await moved('BillDeduction', async () => {
+      retentionId = (await deductions.record(
+        projectId, { billId, type: 'retention', amount: '20.00' }, pmc(projectId),
+      )).id;
+    });
+    await moved('BillDeductionRelease', () => deductions.release(
+      projectId, { deductionId: retentionId, amount: '5.00', reason: 'partial release' }, pmc(projectId),
+    ));
+    let approvalId = '';
+    await moved('PaymentApproval', async () => {
+      approvalId = (await payments.approve(projectId, { billId, amount: '50.00' }, approver(projectId))).id;
+    });
+    let paymentId = '';
+    await moved('Payment', async () => {
+      paymentId = (await payments.record(
+        projectId, { approvalId, amount: '50.00', method: 'neft' }, pmc(projectId),
+      )).id;
+    });
+    await moved('PaymentReversal', () => payments.reverse(
+      projectId, { paymentId, amount: '10.00', reason: 'bank returned it' }, pmc(projectId),
+    ));
+  });
+
+  it('PROBE 31 (§I): an act cannot CLAIM a revision it was not performed at, nor rewrite it after', async () => {
+    // Codex round 4 (P1), and it is the objection that invalidated round 3's premise. The consume
+    // seal compares the grant's revision to the ACT'S — but both columns are written by the same
+    // writer, so a bypass could insert the certificate carrying whatever revision matched the
+    // stale grant it wanted to spend. "Two frozen columns" proved only that the writer agreed
+    // with itself.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const now = async (): Promise<number> =>
+      (await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0;
+    const at = await now();
+    expect(at, 'the fixture must have advanced the claim, or the probe is about nothing').toBeGreaterThan(0);
+
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    // strictly BEFORE the current one: the certify transaction advances the claim twice more (its
+    // own certificate row, then the status transition), and the act records what it acted ON
+    expect(cert.reviewedLifecycleVersion, 'the honest act recorded the revision it acted at')
+      .toBeLessThan(at);
+    expect(cert.reviewedLifecycleVersion).toBeGreaterThanOrEqual(0);
+
+    // a WRONG claim about which passage this act was performed on is refused at INSERT, checked
+    // against the claim itself rather than against another row the same writer wrote
+    const mint = async (ref: string): Promise<string> => t.prisma.$transaction(async (tx) => {
+      const c = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId, actorId: f.memberUser.id,
+          commandType: 'commercial.payment.approve', idempotencyKey: `t7h-rev-${seq++}`, requestHash: 'x', status: 'reserved',
+        }, select: { id: true },
+      });
+      await tx.commandExecution.update({ where: { id: c.id }, data: { status: 'succeeded', resultRef: ref, completedAt: new Date() } });
+      return c.id;
+    });
+    await expect(t.prisma.$executeRawUnsafe(
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","reviewedLifecycleVersion","sourceCommandId")
+       VALUES($1,$2,$3,$4,10.00,$5,$6,$7)`,
+      'forged-rev', projectId, cert.id, billId, f.ownerUser.id, at - 1, await mint('forged-rev'),
+    )).rejects.toThrow(/an act carries the passage of the claim it was actually performed on/u);
+
+    // …and once written it is EVIDENCE: a later update cannot rewrite which passage it names
+    await expect(t.prisma.$executeRawUnsafe(
+      'UPDATE "BillCertificate" SET "reviewedLifecycleVersion"=0 WHERE "projectId"=$1 AND "id"=$2',
+      projectId, cert.id,
+    )).rejects.toThrow(/cannot be rewritten/u);
+  });
+
+  it('PROBE 32 (§I): the revision row cannot be moved or removed, only advanced', async () => {
+    // The counter's IDENTITY is as much a part of the fact as its number (Codex round 4), and its
+    // EXISTENCE is too — this enumeration's own addition. Both routes end the same way: the claim
+    // reads `COALESCE(..., 0)` again and every authorisation ever pinned at 0 comes back.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await freshProject();
+
+    await expect(t.prisma.$executeRawUnsafe(
+      'DELETE FROM "VendorBillRevision" WHERE "projectId"=$1 AND "billId"=$2', projectId, billId,
+    )).rejects.toThrow(/never deleted/u);
+    await expect(t.prisma.$executeRawUnsafe(
+      'UPDATE "VendorBillRevision" SET "billId"=$3, "revision"="revision"+1 WHERE "projectId"=$1 AND "billId"=$2',
+      projectId, billId, `${billId}-elsewhere`,
+    )).rejects.toThrow(/cannot be moved|violates foreign key/u);
+    expect(other).toBeDefined();
+  });
+
+  // ── 7B-iii-h round 5 — THE GUARDS COVER THE WAY A ROW IS BORN, NOT ONLY THE WAY IT CHANGES ───
+  //
+  // Four findings, and three of them are ONE root: every seal in this unit was written on the
+  // TRANSITIONS of a row and left the INSERT open. The revision counter policed UPDATE and DELETE;
+  // the grant seal policed consumption; the act's truth check read a counter it did not hold. A
+  // value that can be written wrong the first time does not become right because later edits are
+  // policed — so each probe below constructs the row's BIRTH, not its edit.
+
+  const mintCommand = async (
+    projectId: string, ref: string,
+    o: { actorId?: string; commandType?: string } = {},
+  ): Promise<string> =>
+    t.prisma.$transaction(async (tx) => {
+      const c = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId,
+          actorId: o.actorId ?? f.memberUser.id,
+          commandType: o.commandType ?? 'commercial.payment.approve', idempotencyKey: `t7h-r5-${seq++}`,
+          requestHash: 'x', status: 'reserved',
+        }, select: { id: true },
+      });
+      await tx.commandExecution.update({
+        where: { id: c.id }, data: { status: 'succeeded', resultRef: ref, completedAt: new Date() },
+      });
+      return c.id;
+    });
+
+  // A session waiting on a ROW lock. `pg_stat_activity` reports that as `transactionid` (blocked on
+  // the holder's transaction) or `tuple` (queued behind another waiter) — and observing it is the
+  // whole probe: the finding is that the conflicting write did NOT wait.
+  const waitForRowLockWaiter = async (): Promise<void> => {
+    for (let i = 0; i < 400; i++) {
+      const rows = await t.prisma.$queryRaw<Array<{ c: number }>>`
+        SELECT COUNT(*)::int AS c FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock' AND wait_event IN ('transactionid', 'tuple')`;
+      if (rows[0]!.c >= 1) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error('barrier timeout: expected a session blocked on a row lock');
+  };
+
+  it('PROBE 33 (§I): the revision row opens WITH the claim, and cannot be born behind it', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+
+    // (1) THE ORDINARY CASE FIRST. The counter used to read `COALESCE(…, 0)` — a claim that had
+    // never moved money had NO ROW and read zero by absence. An absence cannot be locked and cannot
+    // be constrained, which is the premise PROBE 34's race and the issue-side seal both rest on.
+    //
+    // A claim that has already moved is no test of this: its folds created the row on the way past.
+    // So the probe LODGES one and stops — no status transition, no fold, nothing touched — and asks
+    // whether the counter is there anyway.
+    const line = await issuedMaterialLine(projectId, { qty: '10' });
+    const lodged = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: `V-untouched-${seq++}`, documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
+    }, pmc(projectId));
+    expect(await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId: lodged.id } }),
+      'a claim that has moved nothing still carries a revision row, so there is something to lock')
+      .toMatchObject({ revision: 0 });
+
+    // (2) …and the guard itself, against the state the fix removes. Reaching "a claim with no
+    // revision row" now needs the append-only bypass, which IS the point: this release cannot
+    // create one, so the probe builds it deliberately and shows the counter still cannot be born
+    // below the floor every authority pinned at zero stands on.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('ALTER TABLE "VendorBillRevision" DISABLE TRIGGER "VendorBillRevision_forward_only"');
+      await tx.$executeRawUnsafe('DELETE FROM "VendorBillRevision" WHERE "projectId"=$1 AND "billId"=$2', projectId, billId);
+      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      await tx.$executeRawUnsafe('ALTER TABLE "VendorBillRevision" ENABLE TRIGGER "VendorBillRevision_forward_only"');
+    });
+
+    await expect(t.prisma.$executeRawUnsafe(
+      'INSERT INTO "VendorBillRevision"("projectId","billId","revision") VALUES($1,$2,-1)', projectId, billId,
+    )).rejects.toThrow(/starts at zero and only moves forward/u);
+
+    // …and the SAFE direction is still open, because a guard that refuses everything is not a
+    // guard: a row born at or above the floor can only ever invalidate authorities, never revive
+    // one, and an operator restoring a counter needs that door.
+    await expect(t.prisma.$executeRawUnsafe(
+      'INSERT INTO "VendorBillRevision"("projectId","billId","revision") VALUES($1,$2,0)', projectId, billId,
+    )).resolves.toBeDefined();
+  });
+
+  it('PROBE 34 (§I): the act\'s revision is compared to a counter this session HOLDS', async () => {
+    // Codex round 5 (P1). The act-truth check read the counter with a plain `SELECT`, which is not
+    // authoritative about a number another session is moving: a fold writer holds the row at L2
+    // uncommitted, this trigger still sees the committed L1, accepts an act recorded at L1, and
+    // both commit — leaving a certificate or an approval recorded against a passage of the claim
+    // that was already gone when it was written.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const at = (await t.prisma.vendorBillRevision.findFirstOrThrow({ where: { projectId, billId } })).revision;
+
+    const other = new PrismaClient();
+    try {
+      let released!: () => void;
+      let ready!: () => void;
+      const holding = new Promise<void>((resolve) => { released = resolve; });
+      const staged = new Promise<void>((resolve) => { ready = resolve; });
+      // a concurrent FOLD WRITER: every one of the six sources advances the counter through the
+      // same `+ 1` touch, so this is that touch, held open
+      const held = other.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          'UPDATE "VendorBillRevision" SET "revision"="revision"+1 WHERE "projectId"=$1 AND "billId"=$2',
+          projectId, billId,
+        );
+        ready();
+        await holding;
+      }, { timeout: 30_000 });
+      await staged;
+
+      // the act names the revision that was current before the fold — exactly what a writer racing
+      // the fold would carry, and what the plain read used to accept
+      // OTHERWISE WELL-FORMED, deliberately: the command's actor is the approver the row names, and
+      // the §F status follows the money the approval moves. An insert that some OTHER seal rejects
+      // would prove nothing about this one — pre-fix this transaction must genuinely COMMIT, or the
+      // probe is not reproducing the finding.
+      const command = await mintCommand(projectId, 'raced-rev', { actorId: f.ownerUser.id });
+      const acting = t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","reviewedLifecycleVersion","sourceCommandId")
+           VALUES($1,$2,$3,$4,10.00,$5,$6,$7)`,
+          'raced-rev', projectId, cert.id, billId, f.ownerUser.id, at, command,
+        );
+        await tx.$executeRawUnsafe(
+          `UPDATE "VendorBill" SET "status"='approved-for-payment', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+          projectId, billId,
+        );
+      }, { timeout: 30_000 }).then(() => 'accepted').catch((e: Error) => e);
+
+      // CONDITION-based, never a fixed sleep: the finding is that this insert did NOT wait, so the
+      // probe is worthless unless the wait itself is observed
+      await waitForRowLockWaiter();
+      released();
+      await held;
+
+      const outcome = await acting;
+      expect(outcome, 'the act blocked on the counter, re-read it, and was refused')
+        .toBeInstanceOf(Error);
+      expect((outcome as Error).message)
+        .toMatch(/an act carries the passage of the claim it was actually performed on/u);
+      expect(await t.prisma.paymentApproval.findFirst({ where: { projectId, id: 'raced-rev' } }),
+        'nothing was written against the stale passage').toBeNull();
+    } finally {
+      await other.$disconnect();
+    }
+  });
+
+  it('PROBE 35 (§I): retirement disposes of authority this release cannot JUDGE, and nothing else', async () => {
+    // Codex round 5 (P2). Round 4 cut retirement for LEGACY rows — ones written before the reviewed
+    // columns existed, whose approver's view was never recorded. Making the transition one-way is
+    // not the same as saying who may take it, and unscoped it became a general revocation: stamp
+    // `retiredAt` on a fully evidenced grant and the resolver filters it out while the live-scope
+    // index frees the slot, so a recorded authority disappears with no counter-authority anywhere.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "SodGrant" SET "retiredAt"=now(), "retiredReason"='tidying up' WHERE "projectId"=$1 AND "id"=$2`,
+      projectId, grant.id,
+    )).rejects.toThrow(/judged by the seals rather than retired/u);
+
+    // …and the population it WAS cut for still reaches its terminal state. Reaching that state
+    // needs the bypass, which is the point: this release cannot write an evidence-less grant.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
+      await tx.$executeRawUnsafe(
+        'UPDATE "SodGrant" SET "reviewedStatus"=NULL, "reviewedLifecycleVersion"=NULL WHERE "projectId"=$1 AND "id"=$2',
+        projectId, grant.id,
+      );
+      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
+    });
+    // a disposal without a stated reason records a disappearance, not a disposal
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "SodGrant" SET "retiredAt"=now() WHERE "projectId"=$1 AND "id"=$2`, projectId, grant.id,
+    )).rejects.toThrow(/states why/u);
+    // …and neither does one made of whitespace (Codex round 6, P2). Bare `btrim()` strips only
+    // SPACES, so a tab or a newline reads as non-blank to the check and blank to a human — the
+    // same empty claim in a costume. The repository settled this for `manualReason` in Phase 4 and
+    // the rule is the same here.
+    for (const blank of ['\t', '\n', '  \t\r\n ', '\f']) {
+      await expect(t.prisma.$executeRawUnsafe(
+        `UPDATE "SodGrant" SET "retiredAt"=now(), "retiredReason"=$3 WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, grant.id, blank,
+      ), `a reason of ${JSON.stringify(blank)} is not a reason`).rejects.toThrow(/states why/u);
+    }
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "SodGrant" SET "retiredAt"=now(), "retiredReason"='predates the reviewed-state record' WHERE "projectId"=$1 AND "id"=$2`,
+      projectId, grant.id,
+    )).resolves.toBeDefined();
+  });
+
+  it('PROBE 37 (§I): a NEW act cannot decline to say which passage of the claim it acted on', async () => {
+    // Codex round 6 (P1-shaped, filed P2), and it is root D a THIRD time: an escape hatch cut for
+    // one population applying to all of them. NULL was the LEGACY shape — a row written before the
+    // column existed — and the trigger returned early on it. But a legacy row is never INSERTED
+    // again; it can only be updated, and the freeze arm already refuses every change to it. So on
+    // INSERT, NULL was never legacy: it was a post-migration writer declining to answer, at a
+    // boundary that now requires the answer.
+    //
+    // Nothing downstream would have asked. The consume seal reads this column only when a §I
+    // authority is spent, so an act consuming no grant carried no reviewed passage at all.
+    //
+    // Round 5 scoped retirement to the population it was cut for and did not sweep the sibling
+    // hatch nine lines away in the same file. This is that sweep.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const at = (await t.prisma.vendorBillRevision.findFirstOrThrow({ where: { projectId, billId } })).revision;
+
+    // OTHERWISE WELL-FORMED — the command's actor is the approver the row names, and the §F status
+    // follows the money — so the only thing that can refuse it is the omission under test.
+    const insertApproval = async (id: string, rev: number | null) => {
+      const command = await mintCommand(projectId, id, { actorId: f.ownerUser.id });
+      return t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","reviewedLifecycleVersion","sourceCommandId")
+           VALUES($1,$2,$3,$4,10.00,$5,$6,$7)`,
+          id, projectId, cert.id, billId, f.ownerUser.id, rev, command,
+        );
+        await tx.$executeRawUnsafe(
+          `UPDATE "VendorBill" SET "status"='approved-for-payment', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+          projectId, billId,
+        );
+      }, { timeout: 30_000 });
+    };
+
+    await expect(insertApproval('rev-silent', null))
+      .rejects.toThrow(/records no passage of claim/u);
+    expect(await t.prisma.paymentApproval.findFirst({ where: { projectId, id: 'rev-silent' } }),
+      'an act that will not say what it looked at is not recorded at all').toBeNull();
+
+    // THE LEGAL PATH: the same write, answering the question, is accepted — so the seal is precise
+    // rather than merely strict, and the refusal above is about the omission and nothing else.
+    await insertApproval('rev-stated', at);
+    expect(await t.prisma.paymentApproval.findFirstOrThrow({ where: { projectId, id: 'rev-stated' } }))
+      .toMatchObject({ reviewedLifecycleVersion: at });
+  });
+
+  it('PROBE 36 (§I): an authority cannot name a passage the claim has not reached', async () => {
+    // Codex round 5 (P1). The consume seal returned immediately for every unconsumed grant, so the
+    // way a grant is BORN was never judged. What that left open is not a stale authority — those
+    // the consume seal catches — but a PREMATURE one: a grant whose reviewed revision is a passage
+    // the claim has not arrived at. Later it arrives, the resolver finds a row matching on every
+    // column, and the consume seal is satisfied because the act and the grant agree — about a
+    // state the approver could not have reviewed, because it did not exist when they signed.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+    const honest = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const row = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: honest.id } });
+    const at = (await t.prisma.vendorBillRevision.findFirstOrThrow({ where: { projectId, billId } })).revision;
+
+    expect(at, 'the fixture must have advanced the claim, or the probe is about nothing').toBeGreaterThan(0);
+    expect(row.reviewedLifecycleVersion, 'the honest grant named the claim as it stood').toBe(at);
+
+    // A DIFFERENT excused actor throughout, so these rows are distinct authorisations from the
+    // honest one rather than duplicates of it, and EACH gets its own well-formed
+    // `commercial.sod.grant` command naming the approver — otherwise Task 5B's evidence-actors seal
+    // would refuse them first and this probe would be asserting somebody else's guard.
+    const forge = async (id: string, patch: { rev: number | null; status?: string | null }) =>
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "SodGrant"("id","projectId","billId","versionId","rule","actorId","approverId","reason",
+                                "reviewedStatus","reviewedLifecycleVersion","sourceCommandId")
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        id, projectId, billId, row.versionId, row.rule, f.strangerUser.id, row.approverId, row.reason,
+        patch.status === undefined ? row.reviewedStatus : patch.status, patch.rev,
+        await mintCommand(projectId, id, { actorId: row.approverId, commandType: 'commercial.sod.grant' }),
+      );
+
+    // a passage the claim has NOT reached
+    await expect(forge('forged-future', { rev: at + 5 }))
+      .rejects.toThrow(/never a passage it has not reached/u);
+    // …and one it has already LEFT, which the same comparison catches from the other side
+    await expect(forge('forged-past', { rev: at - 1 }))
+      .rejects.toThrow(/never a passage it has not reached/u);
+    // …and a reviewed LABEL that is not the one the claim is wearing, caught by the same clause
+    await expect(forge('forged-label', { rev: at, status: 'submitted' }))
+      .rejects.toThrow(/never a passage it has not reached/u);
+    // …and a grant recording nothing at all, refused where it is written rather than where it is
+    // spent — an authority attests to something or it is a permission slip
+    await expect(forge('forged-blank', { rev: null, status: null }))
+      .rejects.toThrow(/records no reviewed state/u);
+
+    // THE LEGAL PATH: the claim as it actually stands is accepted, so the seal is precise rather
+    // than merely strict.
+    await expect(forge('forged-true', { rev: at })).resolves.toBeDefined();
   });
 });

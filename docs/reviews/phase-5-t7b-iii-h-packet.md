@@ -1,0 +1,475 @@
+# Phase 5 Task 7B-iii-h — a §I grant records the state it was justified against
+
+Branch `claude/phase5-task7b-iii-h`, from `main` `8e33f2c`.
+
+## Vision alignment
+
+§I's exception exists so a two-person site can operate without the separation-of-duties
+rule being quietly relaxed: the override is legitimate *because* it writes an
+attributable record of who authorised what, and why. **That record has to carry evidence
+of what it was justified against, or it is not a justification — it is a permission
+slip.** This unit closes the gap between those two things.
+
+## Scope
+
+| | |
+|---|---|
+| Files | 31 |
+| Changed lines | 3,441 |
+| Budget | 20 files / 1,500 lines — **over both, declared `justified-large`** (three correction rounds, twelve findings, a convergence audit, and a migration RESTRUCTURED rather than appended to; twelve of the files are one-line reset-list additions the truncate closure requires) |
+| Schema / migration | `SodGrant.reviewedStatus` + `SodGrant.reviewedLifecycleVersion` + `VendorBillRevision` + `BillCertificate`/`PaymentApproval.reviewedLifecycleVersion`; `20270705000000`, additive, diagnostic-first, replay-safe |
+
+### Split before writing
+
+Re-applying the parked §I surface plus its three findings measured at **~18 files /
+~1,300 lines** — near both ceilings, on a unit whose predecessor (#310) hit the review
+head limit at five finding-bearing heads. So it was split *before* any code, on the seam
+that has worked twice in this phase (7B-ii-a/7B-ii-b): **each half provable by one kind
+of evidence.**
+
+- **7B-iii-h (this unit) — the server.** Live-PG integration tests.
+- **7B-iii-g — the client surface** (picker, form, and R5-1's pending-transition block in
+  the screen *and* the dispatcher). Store and render tests.
+
+The dependency runs h → g: the client cannot pin what the contract does not carry.
+
+## The defect
+
+`SodGrant` pinned the claim **version**. One version walks
+`submitted → under-verification → verified` **without changing id**, so an authorisation
+given before the §E verdict existed survived into `verified` and could be spent to
+certify a verdict its approver never reviewed. The version says *which* claim; it does
+not say *what was true* about it.
+
+The fix records the reviewed state on the grant **and re-checks it where the authority
+is spent**. A check at issue proves nothing at consumption, which is where the authority
+is actually exercised — that asymmetry is the whole finding.
+
+`stale-review` joins `grantState`, kept distinct from `approver-lost-standing` because
+the two need different remedies: one needs re-authorising against what is true now, the
+other needs a different pmc.
+
+## The migration refuses to guess
+
+Additive and **nullable**, with no back-fill. Filling a legacy row with the bill's
+*current* status would fabricate evidence that an approver saw something they may never
+have seen — on the exact register whose purpose is attributable human authorisation.
+
+So legacy rows keep NULL, `resolveGrant` treats NULL as **unusable** (the safe
+direction), and a closing `DO` block **stops the deploy** on any unconsumed legacy grant
+rather than silently revoking live authority. Consumed grants are history and unaffected —
+they already did their work under the old rule.
+
+## The gap my own fix created, found by probing the legal path
+
+Asking *"does re-authorising restore it?"* — the question rule 3 exists to force — showed
+that a `stale-review` grant could **never be replaced**: the live-scope unique index did
+not know the new way a row becomes inert.
+
+The index's own comment already records this lesson. Codex round 9 added `approverId` to
+its scope for exactly the same reason:
+
+> the stale row is inert rather than dangerous … what the index must not do is let that
+> inert row block a valid one.
+
+`reviewedStatus` creates a second way to be inert, so it joins the same scope. Without it
+the remedy for a stale review is unreachable — worse than the hole it closes.
+
+## PR #310's four rules, asked up front
+
+| Rule | Applied here |
+|---|---|
+| 1 — fix the class, not the instance | the reviewed-state check lives at **resolution**, where every consumer passes, rather than only at the one call site the finding named |
+| 2 — never approximate a server authority decision | the **excused actor's** `commercial.certify` standing is checked at the COMMAND, not just hidden in a picker: a grant is an authority between two people and both are now modelled |
+| 3 — probe what the fix must preserve | every probe asserts the legal path; h2 asserts re-authorisation **restores** the grant, which is what surfaced the index gap |
+| 4 — one contract per threat model | the pins are REQUIRED at the HTTP boundary; `GrantSodExceptionCommand` carries the weaker internal shape for the 121 in-process callers |
+
+## Invariant matrix
+
+| Invariant | Risk in this change | Reproduce-first / verification evidence |
+| --- | --- | --- |
+| authorization-tenancy | a grant naming someone who cannot certify is an authority that can never be exercised — recorded, displayed, and refused by a different rule when used | checked at the command via `hasProjectRoleStanding` under `FOR UPDATE`; probe h3, RED when the guard is removed |
+| civil-time-lifecycle | one version spans the whole §E lifecycle, so a version pin does not identify what was reviewed | `reviewedStatus` recorded and re-checked at resolution; probe h2 (authorise at `submitted`, verify, refuse, re-authorise, allow), RED when resolution ignores the record |
+| concurrency-idempotency | a re-authorisation after the state moves must be a new command, not an idempotent replay, and must not be blocked by the inert row it replaces | the pins change the request hash; `reviewedStatus` joins the live-scope unique index; h2 exercises both |
+| data-integrity-conservation | back-filling a legacy grant would fabricate an approver's review | nullable, no back-fill, NULL treated as unusable; probe h5 — the diagnostic fires on an unconsumed grant and is quiet without one |
+| offline-reconciliation | n/a in this half — no client, no outbox surface. R5-1's pending-transition block is 7B-iii-g | stated rather than implied |
+| ui-server-parity | a boundary weakened so in-process callers compile skips the guard where the risk lives | `grantSodExceptionSchema` requires the pins; `GrantSodExceptionCommand` is the internal shape; probe h4 |
+
+## Evidence
+
+| Mutation | Probe that went RED |
+|---|---|
+| the reviewed state is not RECORDED (`reviewedStatus: null`) | h1, and 6b/6c/6d/6e — the whole preflight family |
+| resolution ignores the recorded state (checked at issue only) | h2 |
+| the excused actor's certify standing is not checked at the command | h3 |
+
+Measured on the FIRST head (`0240338`); the corrected head's figures are in the correction
+section below, and supersede these where they differ.
+
+- `pnpm check` — **EXIT 0** (web 684/684, API 781/781)
+- API integration, focused: `phase5-t7bii-claim-read` **20/20**, `phase5-t5b-certification` **47/47**
+- Full API integration suite on a pristine migrated database — **86 files / 1041 tests**, exit 0
+- Migration verified applying **from scratch** on a clean database, producing both the column and the widened index
+
+**One boundary stated honestly:** probe h5 exercises the diagnostic's *logic* against real
+rows. That it runs at *deploy* time is a property of the migration file, which CI applies
+from scratch on every head — I did not stand up a separate deploy-time abort harness for a
+nullable additive column whose diagnostic is a safety stop.
+
+---
+
+## Correction round 1 — five Codex findings, and three of them are one root
+
+Findings 1, 3 and 4 are the same defect in three costumes, and it is the root PR #310's
+audit names FIRST: **I added the evidence to the COLUMN and stopped there.** Every guard
+that already surrounded `SodGrant` — the trigger that freezes its fields, the seal that
+judges a consumed one, and the OTHER resolver next door — kept working exactly as if the
+new fact did not exist.
+
+That is not a coincidence of three separate oversights. It is one habit: *fix the instance
+a finding names, not the class it belongs to.* This table's own migration comments already
+record it happening twice before (Task 5's rounds 7→8, Task 6A's round 3), and this unit
+managed it again on the artifact introduced to close a finding.
+
+| # | Finding | Fixed as a CLASS, not an instance |
+|---|---|---|
+| 1 (P1) | `reviewedStatus` outside `phase5_t5_grant_append_only`, so a direct writer could rewrite what an approver reviewed | the column joins the frozen set — the rule ("immutable apart from its one-way consumption") is unchanged, only the field list |
+| 3 (P1) | `CommercialPaymentService.resolveSodGrant` ignored the reviewed state | the two near-identical resolvers become **ONE** (`commercial-sod.ts`) read by both §I halves, so the next fact added cannot reach one half and miss the other |
+| 4 (P1) | the PostgreSQL seals matched a grant by version alone | ONE constraint trigger on the transition **every** consumption arm passes through — a third target would inherit it rather than need a third copy |
+| 2 (P2) | the diagnostic could abort *after* `ADD COLUMN`, making its own instructed retry impossible | `ADD COLUMN IF NOT EXISTS` |
+| 5 (P2) | the panel enumerated three of four states, so `stale-review` rendered an empty card | an exhaustive `Record<SodGrantState, …>` over a shared runtime state list — a sixth state without a message is a **compile error** |
+
+### The seal states what is invariant, because the service cannot
+
+The service compares the reviewed state to what is true *now*. The database cannot: by
+COMMIT the act has already moved the claim on (a certification leaves the bill `certified`,
+not `verified`). So the durable rule is the part that does not move — **a grant may only be
+spent from a state its rule can legitimately proceed from** — with the admissible sets in
+`phase5_t7biiih_admissible_reviewed_states` and pinned to the shared TypeScript constants by
+probe h8. An unknown rule admits nothing: a third §I rule added without teaching this
+function is refused rather than waved through.
+
+`ADD COLUMN IF NOT EXISTS` is worth one more sentence, because it looks like caution and is
+not: the closing diagnostic deliberately aborts the deploy *after* the column exists, and
+instructs the operator to clear the grants and redeploy. Without it that replay dies on
+duplicate-column — the migration would have made itself unrepairable by the very diagnostic
+that exists to repair it.
+
+### Correction evidence — every probe RED first
+
+| Probe | Reproduced RED at `0240338` |
+|---|---|
+| h6 — the append-only trigger freezes `reviewedStatus` | the UPDATE **committed** |
+| h7 — a certificate cannot rest on a grant recorded at a state it never certified | the bypass **committed**, leaving exactly the state finding 4 describes |
+| h8 — the SQL mirror IS the shared TypeScript set | the function did not exist |
+| h9 — the column addition is rerunnable | `42701 column "reviewedStatus" already exists` |
+| PROBE 25 — a payment authorisation must match the reviewed state | the approval **succeeded** |
+| PROBE 26 — an approval cannot rest on a grant recorded at a state it never approved | the bypass **committed** |
+| screen — every §I state is legible | `stale-review must SAY something: expected '' to be truthy` |
+
+Two things about h7/PROBE 26 stated plainly rather than buried. They disable **one named
+trigger** inside a transaction and re-enable it before that transaction ends, so the seal is
+restored on the way out or the DDL rolls back with the abort. That is not a shortcut around
+a service check — it is the *only* way to reach the state the finding describes, because the
+service refuses to create it and `SodGrant_append_only` refuses to edit a consumed grant at
+all. A database seal exists for exactly that writer, so that is the writer the probe uses.
+`SET CONSTRAINTS ALL IMMEDIATE` is load-bearing too: PostgreSQL will not ALTER a table with
+pending trigger events.
+
+**Gates on the corrected head:** `pnpm check` **EXIT 0** (web 685/685, API 781/781); the full
+API integration suite on a pristine migrated database; `upgrade-proof.sh` **PASSED**, with the
+whole ledger re-applied from scratch and four new §I assertions (a live grant may record any
+state; rewriting it is refused; spending one recorded at `submitted` is refused; spending a
+legacy NULL one is refused) — each pinned to the message of the seal it names, so none can
+pass because a different seal refused it first.
+
+**One boundary stated honestly, again.** The upgrade proof covers the seal's **certificate**
+arm. Reaching the **approval** arm there needs a coherent grant→exception→approval chain, and
+that legacy fixture's only approval is one §I permits outright — so an assertion would be
+refused by the biconditional first and prove nothing about the seal it names. PROBE 26 proves
+that arm against live PostgreSQL instead. This is the same reasoning the script already
+records for §G bound 5's approval-scoped half.
+
+**One equivalence claimed as an equivalence, not a fix.** `grantSodException` now chooses the
+excused actor's required permission BY RULE (`commercial.approve-payment` for the payment
+half) instead of always asking about `commercial.certify`. Both resolve to `pmc` today, so
+this changes no behaviour — it stops a future divergence in one policy from silently
+validating the wrong one, which is the same correction-did-not-travel-to-the-sibling shape
+this file has now paid for three times.
+
+**One cleared fixture changed:** Task-5's `R9` granted to a stranger merely as "a different
+actor". A stranger holds no membership and so cannot certify, which this unit's command now
+refuses at issue, so the fixture names a certifier — keeping the probe about the consume
+seal it is titled for.
+
+---
+
+## Correction round 2 — three findings, and the deferral that came due
+
+Full audit: `docs/reviews/pr-312-convergence.md`. Three roots, only one of them new.
+
+| # | Finding | Fix |
+|---|---|---|
+| R2-2 (P1) | a RECYCLED status label revives a spent-past authorisation | `VendorBill.lifecycleVersion` — a monotonic per-claim counter, bumped by a trigger, recorded on the grant and the second term of every reviewed identity |
+| R2-1 (P2) | the legacy diagnostic counted EVERY unconsumed grant, so its own instructed repair aborted the retry | the predicate is `reviewedStatus IS NULL` — which is what "legacy" actually means |
+| R2-3 (P2) | the live-version lookup sat above the bill lock | the lock comes first, and the version is read under it |
+
+### R2-2 is the carried deferral, paid
+
+§F **derives** the payment status from the folds, and the derivation returns to labels it
+has left. Certify ₹100 withholding ₹10 → `certified`; approve and pay the ₹90 → `paid`;
+release ₹5 → `certified` again. An authorisation given at the first `certified`, when
+nothing was approved, matches the label at the second — by which time ₹90 has been
+authorised and has left the practice.
+
+JagPat's directive on PR #306 had already named the general form ("expose a monotonic server
+lifecycle version, or treat … as ambiguous"), and it was carried as a deferral. Codex reached
+the same requirement independently. Two independent readers naming one missing primitive is
+the signal to stop deferring it, so `lifecycleVersion` ships here.
+
+**It is bumped by a trigger, not by the services.** There are six writers of
+`VendorBill.status` across four services; a line in each is precisely the instruction this
+PR's audit is about nobody remembering. The same trigger refuses any direct write of the
+column, so a stale pin cannot be made to match by moving the claim rather than the
+authorisation.
+
+`reviewedLifecycleVersion` joins the append-only frozen set and the live-scope unique index
+for the reasons already written into both — and in the index it is **load-bearing rather than
+symmetric**: a re-authorisation after a recycle carries the identical status, so without the
+counter in the scope the inert row would collide with its own legitimate replacement, and the
+fix for the hole would have created the deadlock the index exists to prevent. PROBE 27's legal
+path is what proves that half.
+
+### Correction-2 evidence
+
+| Probe | Reproduced RED at `a805d47` |
+|---|---|
+| PROBE 27 — a recycled label does not revive a spent-past authorisation | the approval **succeeded**; with the version term mutated out of `reviewHolds` it succeeds again, so the probe is load-bearing on the fix and not on its neighbours |
+| PROBE 28 — the counter is monotonic across every status writer, unmoved by non-status writes, and not rewindable | the column did not exist |
+| h5 — the diagnostic is quiet with a well-formed live grant | it **fired**, aborting the replay its own remedy instructs |
+| h10 — the live version is read under the bill lock | the read was 664 characters ABOVE the lock |
+
+**Gates on this head:** `pnpm check` EXIT 0 (web 685/685, API 781/781); the full API integration
+suite on a pristine migrated database; `upgrade-proof.sh` PASSED with the whole ledger applied
+from scratch; the migration verified applying from scratch on a clean database.
+
+---
+
+## Correction round 3 — the counter tracked the label, and the label is not the money
+
+Four P1s, one sentence. Full audit: `docs/reviews/pr-312-convergence.md`.
+
+| # | Finding | Fix |
+|---|---|---|
+| R3-1 (P1) | the counter advanced only on §F status transitions, so a retention release moving ₹90 → ₹95 left it unmoved | it is now the claim's COMMERCIAL REVISION — one trigger on each of the **six** tables feeding §F's three folds, enumerated and asserted by PROBE 30 |
+| R3-4 (P1) | the command compared version/status and then recorded the DATABASE'S CURRENT revision as "what was reviewed" | `lifecycleVersion` is REQUIRED at the boundary, compared under the bill lock, and the **approver's** pin is what gets persisted |
+| R3-2 (P1) | the consume seal never compared revisions, so a claim returning to `verified` later still satisfied it | the ACT records the revision it was performed at (`BillCertificate`/`PaymentApproval`), and the seal requires the two frozen columns equal |
+| R3-3 (P1) | the aborting diagnostic ran before the guards, so the legacy path could commit the evidence columns with neither the widened index nor the freeze installed | every guard is installed first; h11 pins the ordering against the file itself |
+
+**Why §F's label cannot carry this.** Its first two arms are `NET_PAYABLE = PAID` and
+`APPROVED = 0`, so a claim with nothing approved reads `certified` at any payable at all. A
+release raises what is owed and moves no label. The reviewed identity therefore has to advance
+on **anything a reviewer would have seen**, which is what the six fold triggers give it.
+
+**One correction to round 2's own reasoning, stated because it was written down.** That packet
+argued the DB seal *could not* compare revisions, since by COMMIT the act has moved the claim
+on. The premise was true and the conclusion did not follow: the act can carry what it saw. It
+does now.
+
+### Correction-3 evidence
+
+| Probe | Reproduced RED at `81aa65c` |
+|---|---|
+| PROBE 29 — a release that moves the money but not the label staleness the authorisation | the approval **succeeded** |
+| PROBE 30 — all six fold sources move the reviewed identity | only `BillCertificate` did, via its status transition |
+| h11 — guards installed before the aborting diagnostic | the index was 1,844 characters BELOW the abort |
+| h12 — the approver pins the revision they reviewed | the boundary accepted a grant with no revision pin, and the server recorded its own |
+
+### The fix's first shape re-opened a cleared decision, and a probe caught it
+
+Worth stating plainly. The first spelling advanced the counter with a trigger that UPDATEd
+`VendorBill` — which takes the CLAIM'S row lock, from a writer that may hold no other lock at
+all. Task 5C's Codex round 6 had already **removed** a certificate-side bill lock for exactly
+that reason (the honest withholding path runs `bill → certificate`, so reaching back is ABBA and
+PostgreSQL answers with a deadlock abort instead of the seal's refusal), and it left PROBE 20/21
+standing over the decision. PROBE 20 failed the moment my trigger re-introduced the inversion —
+locally and in CI, identically.
+
+So the counter lives on its OWN row, `VendorBillRevision`, taken LAST by everybody
+(`bill → certificate → revision`, `certificate → revision`, `deduction → revision`) and forming
+a cycle with nothing. Not a workaround for one probe: the same inversion existed for all six fold
+sources. **A new trigger is a new lock order** — that is the narrow lesson, recorded in the
+convergence audit.
+
+**Gates on this head:** `pnpm check` EXIT 0 (web 685/685, API 781/781); focused
+`phase5-t7bii-claim-read` + `phase5-t6a-payments` + `phase5-t5c-deductions` **86/86**; full API
+integration on a pristine migrated database; `upgrade-proof.sh` **PASSED** — which caught the new
+fold trigger joining `PaymentReversal`'s exhaustively-enumerated trigger set, exactly as that
+assertion intends. Two module closures also fired correctly on the new table and were answered
+rather than suppressed: `boundary.test.ts` (it must be OWNED by a manifest) and
+`truncate-closure.test.ts` (it has an inbound FK, so every reset must clear it first).
+
+**Two things stated rather than implied.** (1) h10 is a STRUCTURAL probe of the read order, and
+the interleaving Codex describes is **not reachable today** — `grantSodException` and `amend`
+both take `lockProjectReadiness` and are already serialized. What was wrong is that the pin's
+correctness rested on a lock taken elsewhere for another reason; that is worth fixing and it is
+not the same as having closed a live hole. (2) The DB consume seal still checks the admissible
+reviewed *state* and not the lifecycle version, because at COMMIT the act being sealed has
+already moved the claim on. The division is the one this phase has used throughout — the seal
+states what is invariant, the service states what is fresh — and PROBE 27 is where the
+freshness rule is proven.
+
+---
+
+## Correction round 4 — the enumeration, done
+
+Five P1s (a sixth posted comment re-states round 3's, already closed at the seal). Full audit:
+`docs/reviews/pr-312-convergence.md`, which now carries the artifact-by-guard table this unit
+should have had from round 1.
+
+| # | Finding | Fix |
+|---|---|---|
+| R4-4 (P1) | the act's recorded revision is **self-authored**, so the consume seal proved only that a writer agreed with itself | a BEFORE INSERT check against the claim's actual revision — ahead of the act's own AFTER-trigger bump, by a plain read that takes no lock |
+| R4-3 (P1) + the `PaymentApproval` twin this enumeration found | the act columns were outside their tables' append-only freezes | one new trigger per act table covering both the freeze and the truth check — a SEPARATE trigger, not a `CREATE OR REPLACE` of two cleared functions, exactly as 6A chose for the same reason |
+| R4-5 (P1) + the DELETE guard this enumeration found | the revision row's counter was guarded, its IDENTITY and EXISTENCE were not — either route resets the claim to `COALESCE(…, 0)` and revives every authorisation pinned there | identity frozen, deletion refused |
+| R4-2 (P1) | the abort could **never** be cleared: once the guards are installed a legacy grant can be neither filled, consumed nor deleted, so "re-issue and redeploy" never terminates | the abort becomes an attributable **retirement** — retained, stamped, reasoned, runbooked |
+| R4-6 (P1) + the `approve` pin this enumeration found | `certify` and `approve` recorded the database's current revision as the one their actor reviewed | both pin it at the HTTP boundary and compare under the bill lock, through **one** shared `assertReviewedRevision` the grant command also uses |
+
+**R4-2 resolves a direct tension with round 3's R3-3** — install the guards first, versus the
+guards making the repair impossible — and the resolution is that an abort was the wrong instrument
+for a fact this release cannot judge. Retiring it is not the silent revocation the abort existed
+to prevent: silent would be deleting it, or inventing a reviewed state for it.
+
+### Round-4 evidence
+
+| Probe | Reproduced RED at `1024c4b` |
+|---|---|
+| PROBE 31 — an act cannot claim a revision it was not performed at, nor rewrite it after | the forged approval **committed**; the certificate column **was rewritable** |
+| PROBE 32 — the revision row cannot be moved or removed | both **succeeded**, resetting the claim to 0 |
+| h5 — legacy grants are retired, attributably, and a replacement is then issuable | the migration **aborted** instead, and the second pass aborted again |
+| h11 — every guard is installed before legacy authority is touched | — (ordering pin, retargeted to the retirement) |
+
+**Gates:** `pnpm check` EXIT 0 (web 685/685, API 781/781); the four affected suites green;
+`upgrade-proof.sh` PASSED; migration applies from scratch on a clean database.
+
+---
+
+## Correction round 5 — the guards cover how a row is BORN
+
+Five findings on `5af64d6`. Full audit: `docs/reviews/pr-312-convergence.md`, whose round-5
+section re-enumerates every guard on the axis that would have caught them — **events and
+serialization**, not existence. Round 4's table asked "does a guard exist?" and every cell it
+marked ✓ was true; three of these five are guards that existed and were simply not attached to
+`INSERT`, one is a guard that read a number without holding it, and one is the same question at
+the HTTP boundary.
+
+| # | Finding | Fix |
+|---|---|---|
+| R5-1 (P1) | `VendorBillRevision_forward_only` ran on `UPDATE OR DELETE` only, so a row could be **born** at `-1`; the next fold write lifts it to `0` and revives every authority pinned there | the trigger covers `INSERT` and refuses a negative birth. Only the reviving direction is refused — a row born high can only invalidate authorities, and an operator restoring a counter needs that door |
+| R5-2 (P1) | the act's revision check was a **plain read**: a fold writer holding the counter at L2 uncommitted let the trigger see committed L1 and accept an act recorded against a passage already gone | `SELECT … FOR UPDATE` on the revision row before comparing. The second session blocks, re-reads, and is refused |
+| R5-3 (P2) | retirement was made one-way but never **scoped**: stamping `retiredAt` on a live, evidenced grant silently revoked a recorded authority, and the widened live-scope index then freed the slot | retirement is refused for any row that carries its reviewed evidence, and a disposal without a stated reason is refused outright |
+| R5-4 (P1) | the grant seal returned immediately for every unconsumed grant, so the way a grant is **issued** was never judged — a row could name a passage the claim had not reached, and later be spent when it arrived | an issue-side arm: on `INSERT` the reviewed pair must be present and must equal the claim's current status and revision, read under the revision row's lock |
+| R5-5 (P1) | the certify HTTP contract was strict over `billId`/`versionId` only, so every web and offline certification fell through to the server's own reading of "now" and recorded it as the certifier's reviewed evidence | `lifecycleVersion` is required at the boundary and compared under the bill lock. `versionId` cannot stand in for it — a version id is stable across the whole payment lifecycle |
+
+**The sixth gap, which this round's table found rather than Codex:** the counter read
+`COALESCE((SELECT revision …), 0)`, so a claim that had never moved money had **no row** and read
+zero *by absence*. R5-2 and R5-4 both ask the database to hold that reading still, and an absence
+cannot be locked or constrained — the fix would have been theatre on exactly the quiet claims where
+an authority is most likely to be issued. The revision row is now **opened with the claim**
+(`VendorBill_opens_revision`, plus a row-free backfill for existing claims) and can never be
+deleted, so the implicit zero stops being a state the system can be in.
+
+Lock order is unchanged: `VendorBillRevision` is still taken LAST on every path
+(`bill → certificate → revision`), so neither new acquisition closes a cycle with the claim lock.
+The ABBA constraint Task 5C's round 6 established still holds, and PROBE 20/21 still stand over it.
+
+### Round-5 evidence — every probe verified RED at `5af64d6` before the fix
+
+| Probe | Reproduced RED at `5af64d6` |
+|---|---|
+| PROBE 33 — the revision row opens WITH the claim, and cannot be born behind it | `expected null to match object { revision: 0 }` — a lodged claim had **no counter at all**; and the `-1` insert **committed** |
+| PROBE 34 — the act's revision is compared to a counter this session HOLDS | the stale-passage approval **committed** (`expected 'accepted' to be an instance of Error`), with the concurrent fold writer confirmed blocking via `pg_stat_activity` rather than a fixed sleep |
+| PROBE 35 — retirement disposes of authority this release cannot judge, and nothing else | retiring a live, fully evidenced grant **succeeded** |
+| PROBE 36 — an authority cannot name a passage the claim has not reached | the post-dated grant **committed**; so did one naming a passage already left, and one recording nothing at all |
+| `commercial.contract.test.ts` §F boundary | `certifyBillSchema.safeParse({ billId, versionId })` returned **success** — the pin was never asked for |
+| catalog closure — the counter every §I seal reads is itself guarded | new: pins relation, `tgtype` and function for all four revision guards, so a missing **event** (not just a missing trigger) fails a test |
+
+PROBE 34's racing write is deliberately **otherwise well-formed** — its command's actor is the
+approver the row names, and the §F status follows the money it moves — because two earlier drafts
+were refused by unrelated seals and would have looked green while proving nothing about the check
+under test.
+
+### Review size, measured rather than assumed
+
+The orchestrator flagged this unit at its finding-bearing-head limit. The reasoning for correcting
+here rather than splitting is recorded in the convergence audit. What was actually inflating the
+review surface was **1,215 lines of `prisma format` realignment** in `schema.prisma` (672
+insertions / 611 deletions of column whitespace, drowning the 68 lines that carry meaning). That
+churn is reverted; the schema diff is now additions only, and the PR drops from 3,546 changed
+lines to roughly 2,300.
+
+**Gates:** `pnpm check` EXIT 0; the affected suites green (`phase5-t6a-payments` 36/36,
+`commercial-catalog-closure` + `phase5-t5b-certification` + `phase5-t7bii-claim-read` 93/93, web
+commercial 87/87); `upgrade-proof.sh` PASSED with four new hostile inserts **and** the legal path
+accepted, so the seals are precise rather than merely strict; migration applies from scratch on a
+clean database.
+
+---
+
+## Correction round 6 — the exemption inside a covered event
+
+Two P2 findings on `b142501`. Full audit: `docs/reviews/pr-312-convergence.md` (round 6).
+
+| # | Finding | Fix |
+|---|---|---|
+| R6-1 (P2) | `phase5_t7biiih_act_reviewed_revision` returned early on `reviewedLifecycleVersion IS NULL`, treating it as the LEGACY shape. A legacy row is never inserted again — so on INSERT this was a post-migration writer declining to say which passage of the claim it acted on, and no later seal would ask (the consume seal reads the column only when a §I authority is spent) | on INSERT the column is REQUIRED. The value is refused, never derived — deriving it is the server recording its own "now", the defect of rounds 3 and 4 |
+| R6-2 (P2) | the retirement-reason check used bare `btrim()`, which strips only spaces, so a tab or a newline read as non-blank | the full ASCII-whitespace trim `btrim(x, E' \t\n\x0B\f\r')` this repository settled for `manualReason` in Phase 4 |
+
+**R6-1 is root D a third time, nine lines from where round 5 fixed it the second time.** Round 5's
+own text closing the retirement fix reads *"an escape hatch cut for one population applies to all
+of them unless it says otherwise"* — and the sibling hatch in the same function was not looked at.
+
+### Why the round-5 class sweep missed it
+
+After pushing `b142501` a sweep was run for root D across the commercial trigger set: every
+non-internal trigger on the eleven §F/§I relations that does not fire on INSERT. Twelve hits, all
+correctly scoped, conclusion "no further instances". The sweep was sound and its conclusion was
+wrong: `*_reviewed_revision_true` **does** fire on INSERT, so it never appeared — the gap was not a
+missing event but a **conditional exemption inside a covered event**, which an event-mask sweep
+cannot see.
+
+The round-6 artifact is therefore an early-return table rather than an event table: *for every
+guard, list its early returns and name the population each one is for.* An exemption that does not
+say who it is for is an exemption for everybody. This unit has four; the table in the convergence
+audit shows all four and which round scoped each.
+
+### Blast radius, measured before it was decided on
+
+R6-1's rule refused **22 cleared bypass-writer probes** across five suites — probes that raw-insert
+a certificate or approval and assert a refusal from some *other* seal. Each now constructs a fully
+coherent act (the revision read from `VendorBillRevision` at insert time, by correlated subquery
+where the insert copies a source row) and omits only the thing under test, so every refusal they
+assert is unambiguously the seal it names. That is the same correction round 5 applied to PROBE 34
+and to `phase5-t5b`'s R8-F1.
+
+This is also what settled the split question at the sixth finding-bearing head. The split's seam
+runs between unit A (the monotonic revision + act pins) and unit B (the §I reviewed-state record),
+and **R6-1 is in unit A** — so all 22 edits land in unit A either way and a split would have added
+branch surgery on top of identical work. Direction supports the same call: round 5 was five
+findings with four P1s, round 6 is two findings with none.
+
+### Round-6 evidence
+
+| Probe | Reproduced RED at `b142501` |
+|---|---|
+| PROBE 37 — a NEW act cannot decline to say which passage of the claim it acted on | the otherwise-coherent approval with a NULL revision **committed** |
+| PROBE 35 (extended) — a retirement reason of `\t`, `\n`, `  \t\r\n `, `\f` | each **succeeded**, recording a disposal with no readable reason |
+| `upgrade-proof.sh` T7BIIIH R6 | the NULL-revision certificate **committed** on a database upgraded from the legacy fixture |
+
+The whitespace rule is proven by PROBE 35 rather than by the upgrade proof, and the reason is
+stated rather than skipped: reaching it needs a LIVE grant carrying no reviewed evidence, and this
+release can no longer create one — the round-5 issue seal refuses it. The probe reaches that state
+through the append-only bypass, the only honest way to build a row the current code cannot write.
+
+**Gates:** `pnpm check` EXIT 0; full integration green on a pristine database; `upgrade-proof.sh`
+PASSED with the round-6 hostile insert added and every prior rejection surviving.

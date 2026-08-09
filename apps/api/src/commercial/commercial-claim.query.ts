@@ -104,13 +104,26 @@ export class CommercialClaimQuery {
       // read outside the snapshot this method exists to assemble, and a second checkout that can
       // self-block on a saturated pool. `resolveActor` resolves a display NAME, which no part of
       // this answer uses.
+      // §I — the claim REVISION this bundle was read at, from the SAME repeatable-read snapshot as
+      // everything else here, so what a reader echoes belongs with the figures beside it.
+      const claimNow = await tx.vendorBill.findFirst({
+        where: { projectId, id: billId },
+        select: { status: true, revisionRow: { select: { revision: true } } },
+      });
+      const asOf = {
+        status: claimNow?.status ?? '',
+        lifecycleVersion: claimNow?.revisionRow?.revision ?? 0,
+      };
       const resolved = liveVersionId === null
         ? ({ state: 'none' } as const)
-        : await this.certification.resolveGrant(tx, projectId, billId, liveVersionId, user.sub, false);
+        : await this.certification.resolveGrant(tx, projectId, billId, liveVersionId, user.sub, false, asOf);
       const certifyPreflight: CertifyPreflightDto = {
         grantState: resolved.state,
         grantId: resolved.state === 'live' ? resolved.grant.id : null,
         callerActorId: user.sub,
+        // published so an authorisation can pin WHICH passage of the claim its approver saw —
+        // neither the version nor the status can carry that, because both are re-enterable
+        lifecycleVersion: asOf.lifecycleVersion,
       };
 
       return {

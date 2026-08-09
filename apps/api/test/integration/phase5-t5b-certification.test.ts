@@ -54,7 +54,7 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -529,8 +529,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-       SELECT 'forged-live', $1, $2, $3, 1, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+      `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+       SELECT 'forged-live', $1, $2, $3, 1, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
       projectId, billId, version.id, cert.id,
     )).rejects.toThrow(/Key \("projectId", "billId"\)=.* already exists/u);
   });
@@ -578,8 +578,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
     const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-       SELECT 'forged-bound', $1, $2, $3, 150, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+      `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+       SELECT 'forged-bound', $1, $2, $3, 150, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
       projectId, billId, version.id, cert.id,
     )).rejects.toThrow(/Bound 3 breached/u);
 
@@ -599,8 +599,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     });
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT 'coherent-bound', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT 'coherent-bound', $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -824,8 +824,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // withdrawal guards would find no frozen rows and permit the reversal it exists to block.
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT 'evidence-free', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT 'evidence-free', $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -850,8 +850,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('recorder',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('recorder',$1,$2,$3,100,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -867,8 +867,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // reading the evidence-actor set rather than refusing every direct certificate
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('outsider',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('outsider',$1,$2,$3,100,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -906,8 +906,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT 'inflated', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT 'inflated', $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -943,8 +943,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT 'stale-version', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT 'stale-version', $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, v1.id, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -1154,8 +1154,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
                          checked: () => void, commitWhen: Promise<void>) =>
       client.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(
-          `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-           VALUES ($5,$1,$2,$3,$6,$4,$7)`,
+          `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+           VALUES ($5,$1,$2,$3,$6,$4,$7, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`,
           projectId, billId, versionId, f.memberUser.id, id, qty, cmd.id,
         );
         await tx.$executeRawUnsafe(
@@ -1315,8 +1315,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // seal saw a certifier who had recorded none of it
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('corrector',$1,$2,$3,4,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('corrector',$1,$2,$3,4,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedMeasurementConsumption" ("id","projectId","certificateId","measurementId","consumedQty")
@@ -1332,8 +1332,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // is accepted, so the seal is counting the actor set and not simply refusing labour evidence
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('outsider',$1,$2,$3,4,$4,$5)`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('outsider',$1,$2,$3,4,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedMeasurementConsumption" ("id","projectId","certificateId","measurementId","consumedQty")
@@ -1495,8 +1495,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     const forge = (id: string, rule: string, approverId: string) => t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $5, $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $5, $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id, id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -1572,8 +1572,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('precedence',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('precedence',$1,$2,$3,100,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -1694,8 +1694,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     const forge = (id: string, certCmd: string, sodCmd: string) => t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ($5,$1,$2,$3,100,$4,$6)`, projectId, billId, version.id, f.memberUser.id, id, certCmd,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ($5,$1,$2,$3,100,$4,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id, id, certCmd,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -1903,10 +1903,18 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // certificate tries to spend it — so a forged authority row cannot be parked in the table at
     // all, waiting for its named approver to acquire standing later. Arm (c)'s grant clause remains
     // as the second line of defence; this is the first.
+    // 7B-iii-h round 5 — the forged row now carries a TRUE reviewed state (the claim's own status
+    // and revision). Not to weaken the probe: the opposite. The issue-side seal added in round 5
+    // refuses a grant recording nothing, and an empty reviewed state would have this row rejected
+    // for THAT reason instead — leaving the authorship rule below untested while the suite still
+    // looked green. Every other seal is satisfied so the only thing left to refuse it is the one
+    // this probe is named for.
+    const reviewed = await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } });
+    const reviewedRev = (await t.prisma.vendorBillRevision.findFirstOrThrow({ where: { projectId, billId } })).revision;
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "SodGrant" ("id","projectId","billId","versionId","rule","actorId","approverId","reason","sourceCommandId")
-       VALUES ('forged-grant',$1,$2,$3,'evidence-recorder-may-not-certify',$4,$5,'nobody granted this',$6)`,
-      projectId, billId, version.id, f.memberUser.id, approver, cmd.id,
+      `INSERT INTO "SodGrant" ("id","projectId","billId","versionId","rule","actorId","approverId","reason","sourceCommandId","reviewedStatus","reviewedLifecycleVersion")
+       VALUES ('forged-grant',$1,$2,$3,'evidence-recorder-may-not-certify',$4,$5,'nobody granted this',$6,$7,$8)`,
+      projectId, billId, version.id, f.memberUser.id, approver, cmd.id, reviewed.status, reviewedRev,
     )).rejects.toThrow(/not the act of the approver it names/u);
     expect(await t.prisma.sodGrant.count({ where: { projectId } })).toBe(0);
 
@@ -1956,13 +1964,31 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await acceptOnLine(projectId, line, '100', pmc(projectId));
     const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
     const grant = await grantOverride(projectId, billId, approver, f.memberUser.id);
+
+    // 7B-iii-h — the excused actor must be able to CERTIFY, or the exception authorises nothing
+    // they could act on. This probe's subject is the CONSUME seal and it used a stranger merely as
+    // "a different actor"; a stranger holds no membership and so cannot certify, which the grant
+    // command now refuses at issue. Giving them pmc standing keeps the probe about the seal it is
+    // named for rather than about who is grantable.
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
+      create: { projectId, userId: f.strangerUser.id, role: 'pmc', status: 'active' },
+      update: { role: 'pmc', status: 'active' },
+    });
+    // …and the second grant is issued BEFORE the certification, for the same reason: 7B-iii-h's
+    // correction round seals the reviewed STATE at consumption, and a grant written after this
+    // claim reached `certified` records a state no certification proceeds from — so it would be
+    // refused by THAT seal and this probe would prove nothing about the one it is named for.
+    // Certifying reads the grant scoped to the CERTIFIER, so a live grant naming someone else is
+    // not a candidate and the act below still consumes `grant`.
+    const second = await grantOverride(projectId, billId, approver, f.strangerUser.id, 'a different actor');
+
     const cert = await certification.certify(projectId, { billId }, pmc(projectId));
     expect(cert.sodException?.grantId).toBe(grant.id);
 
     // (c) the CONSUME transition is sealed. Round 9's third finding: a stray UPDATE could burn an
     // approver's single-use authority against an unrelated certificate, leaving the ledger saying
     // the authority was exercised when no override consumed it.
-    const second = await grantOverride(projectId, billId, approver, f.strangerUser.id, 'a different actor');
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "SodGrant" SET "consumedAt"=now(), "consumedByCertificateId"=$2 WHERE "projectId"=$1 AND "id"=$3`,
       projectId, cert.id, second.id,
@@ -2058,8 +2084,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // act and is consumed by this very certificate. The ONLY defect is who ran the command.
     await expect(t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('wrong-actor-cert',$1,$2,$3,100,$4,'wrong-actor-cmd')`, projectId, billId, version.id, f.memberUser.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('wrong-actor-cert',$1,$2,$3,100,$4,'wrong-actor-cmd', (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id,
       );
       await tx.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -2122,8 +2148,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // defect is that the recorded justification is not the one the approver wrote
     await expect(t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('rewritten-cert',$1,$2,$3,100,$4,'rewritten-cmd')`, projectId, billId, version.id, f.memberUser.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('rewritten-cert',$1,$2,$3,100,$4,'rewritten-cmd', (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id,
       );
       await tx.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")

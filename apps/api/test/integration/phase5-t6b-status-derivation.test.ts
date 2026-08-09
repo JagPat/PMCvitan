@@ -74,7 +74,7 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "DailyLogProjection", "DrawingsProjection", "InspectionsProjection", "ActivitiesProjection", "MaterialReadinessProjection", "CashForecastProjection", "LabourReadinessProjection", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "CrewMembership", "Crew", "WorkerDevice", "WorkerSkill", "Worker", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "LabourTrade", "LabourSkill", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const asUser = (projectId: string, userId: string): AuthUser => ({ sub: userId, role: 'pmc', projectId }) as AuthUser;
@@ -570,8 +570,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     // moving the status. The folds now derive `approved-for-payment`; the column still says
     // `certified`. Sealing only `VendorBill` would have closed the other mouth and left this one.
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES ($1,$2,$3,$4,40.00,$5,$6)`,
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+       VALUES ($1,$2,$3,$4,40.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
       forgedApproval, projectId, certificate.id, billId, f.ownerUser.id,
       await mint('commercial.payment.approve', f.ownerUser.id, forgedApproval),
     )).rejects.toThrow(/its own folds derive/u);
@@ -679,8 +679,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
           c1.id, f.memberUser.id, projectId,
         );
         await tx.$executeRawUnsafe(
-          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-           VALUES ($1,$2,$3,$4,100.00,$5,$6)`,
+          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+           VALUES ($1,$2,$3,$4,100.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$3))`,
           c2, projectId, billId, c1.versionId, c1.certifiedById, commandId,
         );
         await tx.$executeRawUnsafe(
@@ -720,8 +720,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
         c1.id, f.memberUser.id, projectId,
       );
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ($1,$2,$3,$4,100.00,$5,$6)`,
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ($1,$2,$3,$4,100.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$3))`,
         c2, projectId, billId, c1.versionId, c1.certifiedById, okCommand,
       );
       await tx.$executeRawUnsafe(
@@ -919,8 +919,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
           data: { status: 'succeeded', resultRef: approvalId, completedAt: new Date() },
         });
         await tx.$executeRawUnsafe(
-          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-           VALUES ($1,$2,$3,$4,40.00,$5,$6)`,
+          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+           VALUES ($1,$2,$3,$4,40.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
           approvalId, projectId, certificate.id, billId, f.ownerUser.id, commandId,
         );
         await tx.$executeRawUnsafe(

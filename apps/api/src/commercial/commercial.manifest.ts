@@ -32,7 +32,7 @@ export const commercialManifest: ModuleManifest = {
   // `BILLED_QTY`/`BILLED_AMOUNT` are commercial folds and nothing outside commercial reads them.
   ownsModels: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
-    'vendorBill', 'vendorBillVersion', 'vendorBillLine', 'billVerification',
+    'vendorBill', 'vendorBillRevision', 'vendorBillVersion', 'vendorBillLine', 'billVerification',
     // Phase 5 Task 5B (§E/§I) — the certificate, the two frozen consumption sets and the SoD
     // exception. All four are read-encapsulated with the rest: a certificate is what the §G
     // bounds and the withdrawal guards read, and every one of those readers is commercial.
@@ -57,7 +57,7 @@ export const commercialManifest: ModuleManifest = {
   ],
   readEncapsulated: [
     'costHead', 'commitmentAttribution', 'budgetLine', 'budgetException', 'measurement',
-    'vendorBill', 'vendorBillVersion', 'vendorBillLine', 'billVerification',
+    'vendorBill', 'vendorBillRevision', 'vendorBillVersion', 'vendorBillLine', 'billVerification',
     'billCertificate', 'certifiedAcceptanceConsumption', 'certifiedMeasurementConsumption',
     'sodException', 'sodGrant',
     // Phase 5 Task 5C (§H) — the deduction ledger. Owned AND read-encapsulated together: a model
