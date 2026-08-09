@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import {
-  billTransitionCoalesceKey, readClearsKey,
+  billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey,
   COMMERCIAL_OUTBOX_OP_TYPES, normalizeCommercialOutbox,
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
@@ -339,5 +339,120 @@ describe('Q-a — a read releases a key only if it could have OBSERVED the write
     // a finding to learn that a late FAILURE must not overwrite a newer success either)
     expect(s().commercialClaims['bill-1']?.bill.status).toBe('under-verification');
     expect(s().commercialClaimLoad['bill-1']).toBe('ready');
+  });
+});
+
+describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => {
+  let calls: string[];
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    calls = [];
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc', activeProjectId: 'p-1', online: false,
+    });
+    s()._setGateway({
+      certifyBill: vi.fn(async (i: { billId: string }) => { calls.push(`certify:${i.billId}`); }),
+      grantSodException: vi.fn(async (i: { billId: string; actorId: string }) => { calls.push(`sod:${i.billId}:${i.actorId}`); }),
+      supersedeCertificate: vi.fn(async (i: { billId: string }) => { calls.push(`supersede:${i.billId}`); }),
+      // the flush reconcile re-reads commercial truth after any commercial write settles; these
+      // are read boundaries, not what these probes are about
+      commercialMoneyPosition: vi.fn(async () => { throw new Error('read boundary'); }),
+      commercialBills: vi.fn(async () => { throw new Error('read boundary'); }),
+      commercialClaim: vi.fn(async () => { throw new Error('read boundary'); }),
+      // Every replay chains a snapshot, and a throwing one is a TRANSIENT error that stops the
+      // flush — so without this the probe would have silently only ever exercised the first
+      // command. It answers a snapshot for a DIFFERENT project, which `acceptSnapshot` discards as
+      // out-of-scope on its first check: the replay path is what is under test here, not snapshot
+      // application, and a stub that applied would be reaching past the boundary.
+      snapshot: vi.fn(async () => ({ project: { id: 'not-this-project' } })),
+    } as unknown as ApiGateway);
+  });
+
+  const keys = () => s().outbox.flatMap((o) => {
+    const k = (o as { coalesceKey?: unknown }).coalesceKey;
+    return typeof k === 'string' ? [k] : [];
+  });
+
+  /**
+   * Certify and supersede are transitions on the CLAIM, so they join the existing conflict rule and
+   * a pending verify blocks them — the claim is the constrained resource, not the verb.
+   */
+  it('certify and supersede join the CLAIM-wide transition conflict', () => {
+    s().beginVerification('bill-1');
+    s().certifyBill('bill-1');
+    s().supersedeCertificate('bill-1', 'wrong quantity');
+    expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'begin-verification')]);
+
+    useStore.setState({ outbox: [], commercialPending: [] });
+    s().certifyBill('bill-1');
+    s().verifyVendorBill('bill-1');
+    expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
+  });
+
+  /**
+   * An authorisation is NOT a claim transition, and keying it on the claim would be a real defect:
+   * an approver authorising Ravi has not authorised Sunil, the server records a separate grant for
+   * each, and coalescing the second away would leave the approver believing they had granted
+   * something they had not. Labour round 5 inverted — there the key was too NARROW for a shared
+   * resource; here it would be too WIDE for independent ones.
+   */
+  it('a SoD authorisation is keyed by the PERSON excused, so two are independent', () => {
+    s().grantSodException('bill-1', 'user-ravi', 'only store user this week');
+    s().grantSodException('bill-1', 'user-sunil', 'covering the weekend');
+    expect(keys()).toEqual([
+      sodGrantCoalesceKey('bill-1', 'user-ravi'),
+      sodGrantCoalesceKey('bill-1', 'user-sunil'),
+    ]);
+    // …the SAME person twice while pending is still one command
+    s().grantSodException('bill-1', 'user-ravi', 'edited justification');
+    expect(keys()).toHaveLength(2);
+    // …and an authorisation does not block the claim's own transitions, nor they it
+    s().certifyBill('bill-1');
+    expect(keys()).toHaveLength(3);
+  });
+
+  it('each command carries its OWN authority, and they are not interchangeable', () => {
+    // `commercial.certify` and `commercial.sod.grant` both resolve to pmc today, so a role probe
+    // cannot separate them; what CAN be asserted is that the dispatcher reads the policy per
+    // command rather than one blanket answer — a contractor holds none of the three.
+    useStore.setState({ role: 'contractor' });
+    s().certifyBill('bill-1');
+    s().grantSodException('bill-1', 'user-ravi', 'why');
+    s().supersedeCertificate('bill-1', 'why');
+    expect(s().outbox).toHaveLength(0);
+  });
+
+  it('is inert off the commercial pilot', () => {
+    useStore.setState({ capabilities: [] });
+    s().certifyBill('bill-1');
+    s().grantSodException('bill-1', 'user-ravi', 'why');
+    s().supersedeCertificate('bill-1', 'why');
+    expect(s().outbox).toHaveLength(0);
+  });
+
+  it('replays each through its OWN route under its original key', async () => {
+    s().certifyBill('bill-1');
+    s().grantSodException('bill-2', 'user-ravi', 'why');
+    useStore.setState({ online: true });
+    await s().flushOutbox();
+    await flush();
+    expect(calls).toEqual(['certify:bill-1', 'sod:bill-2:user-ravi']);
+  });
+
+  it('the CLAIM read is what makes an authorisation visible, and only once it observed the write', () => {
+    // `certifyPreflight` is part of the claim bundle, so that bundle IS the read a grant becomes
+    // visible in — and the hoisted causality term applies to it like every other key.
+    const key = sodGrantCoalesceKey('bill-1', 'user-ravi');
+    expect(readClearsKey(key, { read: 'claim', billId: 'bill-1', observedWrite: true })).toBe(true);
+    expect(readClearsKey(key, { read: 'claim', billId: 'bill-1', observedWrite: false })).toBe(false);
+    // …and not by another claim's bundle, nor by the money position
+    expect(readClearsKey(key, { read: 'claim', billId: 'bill-9', observedWrite: true })).toBe(false);
+    expect(readClearsKey(key, { read: 'money', observedWrite: true })).toBe(false);
+  });
+
+  it('the three op types are commercial ops, so hydration and the reconcile cover them', () => {
+    for (const t of ['certifyBill', 'grantSodException', 'supersedeCertificate']) {
+      expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
+    }
   });
 });

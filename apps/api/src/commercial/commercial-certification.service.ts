@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { BILL_STATUSES_PAST_CERTIFICATION, ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
+import { BILL_CERTIFY_FROM, BILL_STATUSES_PAST_CERTIFICATION, ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { hashRequest, type CommandScope } from '../platform/commands';
@@ -202,7 +202,7 @@ export class CommercialCertificationService {
 
         // 3 — the BILL, and every side re-read under it
         const bill = await this.lockBill(tx, projectId, input.billId);
-        if (bill.status !== 'verified') {
+        if (!(BILL_CERTIFY_FROM as readonly string[]).includes(bill.status)) {
           throw new ConflictException(
             `A ${bill.status} claim cannot be certified — certification applies to a VERIFIED claim, because the §E verdict is what makes it safe`,
           );

@@ -3,9 +3,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, isSodGrantPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { BILL_BEGIN_VERIFICATION_FROM, BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
+import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
@@ -175,6 +175,11 @@ export function CommercialScreen() {
   // 7B-iii-c-i — pmc-only, and DELIBERATELY not the same permission as `commercial.bill`: §E's
   // separation of duties starts here, with the actor who lodges a claim being unable to verify it.
   const mayVerify = may('commercial.verify');
+  // 7B-iii-f — SEPARATE from `commercial.verify` even though both resolve to pmc today: certifying
+  // decides what is OWED. And `commercial.sod.grant` is separate again — authority to EXCUSE the
+  // rule is a stronger thing than authority to perform the act it excuses.
+  const mayCertify = may('commercial.certify');
+  const mayGrantSod = may('commercial.sod.grant');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
@@ -187,6 +192,10 @@ export function CommercialScreen() {
   // 7B-iii-c-i — the verifier's two.
   const beginVerification = useStore((s) => s.beginVerification);
   const verifyBill = useStore((s) => s.verifyVendorBill);
+  // 7B-iii-f — the certifier's three.
+  const certifyBill = useStore((s) => s.certifyBill);
+  const grantSod = useStore((s) => s.grantSodException);
+  const supersedeCertificate = useStore((s) => s.supersedeCertificate);
   const recordBill = useStore((s) => s.recordVendorBill);
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
@@ -319,6 +328,18 @@ export function CommercialScreen() {
   const billReasonFor = (id: string): string => billScoped[id] ?? '';
   const setBillReason = (id: string, reason: string): void =>
     setBillDrafts({ scope: scopeKey, byId: { ...billScoped, [id]: reason } });
+
+  // 7B-iii-f — the certifier's drafts, SCOPED exactly like the reason drafts above (J2: a
+  // component-wide draft armed one row's button with another row's text). Two fields because a
+  // supersede reason and a SoD authorisation are different acts with different authority.
+  const [certDrafts, setCertDrafts] = useState<{
+    scope: string; byId: Record<string, { supersedeReason: string; sodActor: string; sodReason: string }>;
+  }>({ scope: '', byId: {} });
+  const certScoped = certDrafts.scope === scopeKey ? certDrafts.byId : {};
+  const EMPTY_CERT_DRAFT = { supersedeReason: '', sodActor: '', sodReason: '' };
+  const certDraftFor = (id: string) => certScoped[id] ?? EMPTY_CERT_DRAFT;
+  const setCertDraft = (id: string, patch: Partial<{ supersedeReason: string; sodActor: string; sodReason: string }>): void =>
+    setCertDrafts({ scope: scopeKey, byId: { ...certScoped, [id]: { ...certDraftFor(id), ...patch } } });
 
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
     { scope: '', byId: {} },
@@ -1124,6 +1145,115 @@ export function CommercialScreen() {
                       </>
                     );
                   })()}
+                  {/* §I — WHAT THE SERVER SAID about this reader's authorisation on this claim.
+                      Reported for whoever can act on it, because a certifier who has just been
+                      authorised otherwise cannot tell whether the authorisation is live and
+                      version-matched, and "granted against an earlier version" is discoverable
+                      only by being refused.
+
+                      Note what is NOT claimed: nothing here says an authorisation is NEEDED. §I
+                      asks about the rows the certificate freezes, which are decided inside the
+                      certification transaction, so that question has no honest answer before the
+                      act — see `CertifyPreflightDto`. The panel reports the state that IS known
+                      and leaves the rest to the server's refusal, which the block below makes
+                      legible instead of guessing at. */}
+                  {mayCertify && claim.certifyPreflight.grantState !== 'none' && (
+                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-sod-state">
+                      {claim.certifyPreflight.grantState === 'live'
+                        && 'A segregation-of-duties authorisation stands for you on this claim, and certifying will consume it.'}
+                      {claim.certifyPreflight.grantState === 'stale-version'
+                        && 'Your authorisation was granted against an earlier version of this claim — it has been amended since, so it needs authorising again.'}
+                      {claim.certifyPreflight.grantState === 'approver-lost-standing'
+                        && 'Your authorisation was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again.'}
+                    </div>
+                  )}
+
+                  {mayCertify && (() => {
+                    const listRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
+                    const reading = arbitrateBillCopy(listRow, claim.bill);
+                    const draft = certDraftFor(claim.bill.id);
+                    return (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }} data-testid="commercial-certify-actions">
+                        <Button
+                          variant="ink"
+                          data-testid={`bill-certify-${claim.bill.id}`}
+                          disabled={!transitionOffered(reading, BILL_CERTIFY_FROM) || billTxPending(claim.bill.id)}
+                          onClick={() => certifyBill(claim.bill.id)}
+                        >
+                          {billTxPending(claim.bill.id) ? 'Working…' : 'Certify'}
+                        </Button>
+                        {/* §F — past certification the correction path is a SUPERSEDING certificate,
+                            never an edit, so the reason is required rather than optional. */}
+                        <input
+                          value={draft.supersedeReason}
+                          onChange={(e) => setCertDraft(claim.bill.id, { supersedeReason: e.target.value })}
+                          placeholder="Reason for superseding"
+                          data-testid={`cert-supersede-reason-${claim.bill.id}`}
+                          style={{ ...input, flex: '2 1 160px' }}
+                        />
+                        <Button
+                          variant="ghost"
+                          data-testid={`cert-supersede-${claim.bill.id}`}
+                          disabled={!transitionOffered(reading, BILL_STATUSES_PAST_CERTIFICATION)
+                            || !draft.supersedeReason.trim() || billTxPending(claim.bill.id)}
+                          onClick={() => supersedeCertificate(claim.bill.id, draft.supersedeReason.trim())}
+                        >
+                          Supersede
+                        </Button>
+                      </div>
+                    );
+                  })()}
+
+                  {/* §I — the REMEDY, beside the act it unblocks. `certify` can be refused for a
+                      reason no read can predict (see above), and an unpredictable refusal is only
+                      workable if its remedy is reachable from where it happens — which is the whole
+                      argument for these three commands being one unit rather than two.
+
+                      Its own authority: `commercial.sod.grant`, not `commercial.certify`. An
+                      approver authorising someone else is doing a different thing from certifying,
+                      and the person who needs the authorisation is precisely the person who may not
+                      grant it — the server refuses a self-grant, so the form does too. */}
+                  {mayGrantSod && (() => {
+                    const draft = certDraftFor(claim.bill.id);
+                    const actorId = draft.sodActor.trim();
+                    const reason = draft.sodReason.trim();
+                    const pending = commercialPending.some((k) => isSodGrantPending(k, claim.bill.id, actorId));
+                    return (
+                      <div style={{ ...rowCard, marginTop: 8 }} data-testid="commercial-sod-grant">
+                        <div style={{ fontWeight: 600 }}>Authorise a segregation-of-duties exception</div>
+                        <div style={{ ...muted, marginTop: 4 }}>
+                          The actor who recorded the evidence under a claim may not certify it. You
+                          may authorise one named person to, against this version of this claim, and
+                          your reason is recorded with it.
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                          <input
+                            value={draft.sodActor}
+                            onChange={(e) => setCertDraft(claim.bill.id, { sodActor: e.target.value })}
+                            placeholder="Person to authorise"
+                            data-testid={`sod-actor-${claim.bill.id}`}
+                            style={{ ...input, flex: '1 1 140px' }}
+                          />
+                          <input
+                            value={draft.sodReason}
+                            onChange={(e) => setCertDraft(claim.bill.id, { sodReason: e.target.value })}
+                            placeholder="Why this is justified"
+                            data-testid={`sod-reason-${claim.bill.id}`}
+                            style={{ ...input, flex: '2 1 180px' }}
+                          />
+                          <Button
+                            variant="ink"
+                            data-testid={`sod-grant-${claim.bill.id}`}
+                            disabled={actorId === '' || reason === '' || pending}
+                            onClick={() => grantSod(claim.bill.id, actorId, reason)}
+                          >
+                            {pending ? 'Working…' : 'Authorise'}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {claim.certificate === null ? (
                     <div style={{ ...rowCard, ...muted }} data-testid="commercial-certificate-none">
                       Not certified yet. A claim before certification is an ordinary state, not an error.

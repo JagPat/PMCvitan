@@ -73,7 +73,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -452,6 +452,10 @@ export interface AppActions {
   /** §E/§F writes (7B-iii-c-i) — the verification chain, on the SAME claim lifecycle. */
   beginVerification: (billId: string) => void;
   verifyVendorBill: (billId: string) => void;
+  /** §F/§I writes (7B-iii-f) — the certification authority chain. */
+  certifyBill: (billId: string) => void;
+  grantSodException: (billId: string, actorId: string, reason: string) => void;
+  supersedeCertificate: (billId: string, reason: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -1634,6 +1638,13 @@ export const useStore = create<Store>()(
       // the durable dispatcher refuse it, not just the screen that hides the button.
       beginVerification: 'commercial.verify',
       verifyVendorBill: 'commercial.verify',
+      // 7B-iii-f — `commercial.certify` is DELIBERATELY separate from `commercial.verify` even
+      // though both resolve to pmc today: certifying decides what is OWED, and the policy is the
+      // source rather than a copy of its current answer. `commercial.sod.grant` is separate again —
+      // it is the authority to EXCUSE the rule, which is a stronger thing than performing the act.
+      certifyBill: 'commercial.certify',
+      grantSodException: 'commercial.sod.grant',
+      supersedeCertificate: 'commercial.certify',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
@@ -2989,6 +3000,27 @@ export const useStore = create<Store>()(
         { t: 'verifyVendorBill', input: { billId }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'verify') },
         `Verify ${billId}`, 'Verification recorded.',
+      );
+    },
+    certifyBill: (billId) => {
+      dispatchCommercial(
+        { t: 'certifyBill', input: { billId }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'certify') },
+        `Certify ${billId}`, 'Claim certified.',
+      );
+    },
+    grantSodException: (billId, actorId, reason) => {
+      dispatchCommercial(
+        { t: 'grantSodException', input: { billId, actorId, reason }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: sodGrantCoalesceKey(billId, actorId) },
+        `Authorise ${actorId}`, 'Authorisation recorded.',
+      );
+    },
+    supersedeCertificate: (billId, reason) => {
+      dispatchCommercial(
+        { t: 'supersedeCertificate', input: { billId, reason }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'supersede') },
+        `Supersede ${billId}`, 'Certificate superseded.',
       );
     },
     reattributeCommitment: (line, costHeadCode, reason) => {

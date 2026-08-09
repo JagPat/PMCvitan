@@ -68,6 +68,8 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   // same op-type set and the same `com:billtx:` key shape: hydration, the pending rebuild, the
   // flush reconcile and the transition-conflict rule all cover them without a second registry.
   'beginVerification', 'verifyVendorBill',
+  // 7B-iii-f — the certification authority chain.
+  'certifyBill', 'grantSodException', 'supersedeCertificate',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -112,6 +114,24 @@ export function normalizeCommercialOutbox<T extends OutboxOpShape>(ops: readonly
   return { ops: out, changed };
 }
 
+// ── Phase 5 Task 7B-iii-f (§I) — the certification authority chain ───────────────────────────
+
+/**
+ * §I — one authorisation per (claim, excused actor) in flight.
+ *
+ * The constrained resource is the PERSON being excused, not the claim: an approver authorising Ravi
+ * has not authorised Sunil, and the server records a separate grant for each. Keying on the claim —
+ * as the transition verbs do — would coalesce a second, legitimate authorisation away and leave an
+ * approver believing they had granted something they had not. Labour round 5 in reverse: there the
+ * key was too NARROW for a shared resource, here it would be too WIDE for independent ones.
+ */
+export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
+  `com:sod:${billId}:${actorId}`;
+
+/** Whether an authorisation for THIS excused actor on THIS claim is already in flight. */
+export const isSodGrantPending = (key: string, billId: string, actorId: string): boolean =>
+  key === sodGrantCoalesceKey(billId, actorId);
+
 // ── Phase 5 Task 7B-iii-b (§D/§F) — the engineer's six writes ────────────────────────────────
 
 /** §D — one measurement per (labour PO line, activity) in flight. The pair IS the target. */
@@ -151,7 +171,13 @@ export const billCoalesceKey = (vendorId: string, vendorBillNumber: string): str
  * the same lesson about one live attribution per PO line — this is its third instance, so the key
  * names the BILL and `isBillTransitionPending` disables all three together.
  */
-export type BillTransitionVerb = 'submit' | 'amend' | 'reject' | 'begin-verification' | 'verify';
+export type BillTransitionVerb =
+  | 'submit' | 'amend' | 'reject' | 'begin-verification' | 'verify'
+  // 7B-iii-f — certify and supersede are transitions on the CLAIM, so they share the key shape and
+  // the conflict rule. A SoD grant is deliberately NOT one: it names a PERSON, two approvers may
+  // authorise two different actors on one claim concurrently, and coalescing them onto the claim
+  // would silently drop the second authorisation.
+  | 'certify' | 'supersede';
 
 export const billTransitionCoalesceKey = (billId: string, verb: BillTransitionVerb): string =>
   `com:billtx:${billId}:${verb}`;
@@ -249,6 +275,9 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
     case 'bills':
       return coalesceKey.startsWith('com:bill:') || coalesceKey.startsWith('com:billtx:');
     case 'claim':
+      // …and an AUTHORISATION for this claim: `certifyPreflight` is part of this very bundle, so
+      // this is the read that makes a grant visible to the actor it excuses.
+      if (coalesceKey.startsWith(`com:sod:${r.billId}:`)) return true;
       return isBillTransitionPending(coalesceKey, r.billId);
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
