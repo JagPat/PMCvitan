@@ -208,6 +208,14 @@ export class CommercialCertificationService {
           );
         }
         const { versionId, lines } = await this.verification.claimLines(tx, projectId, input.billId);
+        // Codex round-2 — certify the claim that was READ, not whichever version is live when a
+        // queued command replays. Round 1 applied this to the grant and left the act it authorises
+        // unguarded; the exposure is the same and the stake is higher.
+        if (input.versionId !== undefined && input.versionId !== versionId) {
+          throw new ConflictException(
+            'This claim was amended after you read it — certifying now would freeze evidence for a version you have not seen. Reload and certify again.',
+          );
+        }
 
         // The lots were chosen from an UNLOCKED read, so an amendment committing in between could
         // have moved the claim onto a purchase-order line whose evidence this transaction never
@@ -592,6 +600,13 @@ export class CommercialCertificationService {
           select: { id: true },
         });
         if (!live) throw new NotFoundException(`Vendor bill ${input.billId} has no live certificate`);
+        // Codex round-2 — the same rule for the document being corrected: a queued supersession
+        // names the certificate its reason was written about, or it is refused.
+        if (input.certificateId !== undefined && input.certificateId !== live.id) {
+          throw new ConflictException(
+            'This certificate was already superseded — the correction would replace a different document than the one you reviewed. Reload and supersede again.',
+          );
+        }
 
         // §H — a certificate carrying an UNRELEASED withholding is not correctable in place.
         const { count } = await tx.billCertificate.updateMany({

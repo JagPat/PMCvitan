@@ -1363,11 +1363,14 @@ export interface AmendVendorBillInput {
   lines: VendorBillLineInput[];
 }
 export interface VendorBillStepInput { billId: string }
-export interface CertifyBillInput { billId: string }
+/** §F/§I — `versionId` is the claim version the certifier READ (Codex round-2): the server
+ *  refuses a mismatch rather than freezing evidence for a version they never saw. */
+export interface CertifyBillInput { billId: string; versionId: string }
 /** §I — `versionId` is the claim version the approver READ (Codex F4): the server refuses a
  *  mismatch rather than re-pinning a queued grant onto a version they never saw. */
 export interface GrantSodExceptionInput { billId: string; actorId: string; reason: string; versionId: string }
-export interface SupersedeCertificateInput { billId: string; reason: string }
+/** §F — `certificateId` is the document the correction was WRITTEN ABOUT (Codex round-2). */
+export interface SupersedeCertificateInput { billId: string; reason: string; certificateId: string }
 export interface RejectVendorBillInput { billId: string; reason: string }
 
 export interface RecordLabourAttendanceInput {

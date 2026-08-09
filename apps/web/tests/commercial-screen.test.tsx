@@ -1387,8 +1387,12 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
       commercialClaimLoad: { 'bill-1': 'ready' },
       members: [
         { userId: 'u-self', name: 'Approving PMC', email: null, phone: null, role: 'pmc', status: 'active' },
-        { userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'engineer', status: 'active' },
-        { userId: 'u-gone', name: 'Former', email: null, phone: null, role: 'engineer', status: 'removed' },
+        // a SECOND pmc: §I's real subject is the two-person practice where one pmc both receives
+        // and certifies, not an engineer — an engineer can never certify, so a grant naming one
+        // would be an authorisation that cannot be exercised (Codex round-2)
+        { userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'pmc', status: 'active' },
+        { userId: 'u-eng', name: 'Site engineer', email: null, phone: null, role: 'engineer', status: 'active' },
+        { userId: 'u-gone', name: 'Former', email: null, phone: null, role: 'pmc', status: 'removed' },
       ] as never,
     });
     const r = render(<CommercialScreen />);
@@ -1404,8 +1408,8 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
     const r = openWithMembers('u-self');
     const options = Array.from((r.getByTestId('sod-actor-bill-1') as HTMLSelectElement).options)
       .map((o) => o.value).filter((v) => v !== '');
-    // the approver cannot pick themselves (§I refuses a self-grant), and a removed member is not
-    // a person to authorise
+    // the approver cannot pick themselves (§I refuses a self-grant), a removed member is not a
+    // person to authorise, and neither is someone who could not certify with the authorisation
     expect(options).toEqual(['u-ravi']);
   });
 
@@ -1430,10 +1434,72 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
       useStore.setState({
         members: [
           { userId: 'u-self', name: 'Approving PMC', email: null, phone: null, role: 'pmc', status: 'active' },
-          { userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'engineer', status: 'removed' },
+          { userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'pmc', status: 'removed' },
         ] as never,
       });
     });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('round-2: the screen LOADS the team it builds the picker from', () => {
+    // the remedy for a segregation-of-duties refusal was unavailable until the user happened to
+    // visit the Team screen first: `members` starts empty and this screen never asked for it, so
+    // the picker had no options and Authorise stayed disabled on a project with active teammates
+    useStore.setState(getInitialState());
+    const loadTeam = vi.fn(async () => {});
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: bundle(), commercialLoad: 'ready',
+      commercialBills: [], commercialBillsLoad: 'ready',
+      members: [],
+      loadTeam,
+    } as never);
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    expect(loadTeam).toHaveBeenCalled();
+  });
+
+  it('round-2: only someone who could CERTIFY is authorisable', () => {
+    // an engineer can never certify, so a grant naming one is an authorisation that cannot be
+    // exercised — the approver watches it land and the named actor is still refused, by a
+    // different rule, at the moment they try
+    const r = openWithMembers('u-self');
+    const options = Array.from((r.getByTestId('sod-actor-bill-1') as HTMLSelectElement).options)
+      .map((o) => o.value);
+    expect(options).not.toContain('u-eng');
+  });
+
+  it('round-2: an authorisation that ALREADY STANDS is not offered again', () => {
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    const withGrant: CommercialClaimView = {
+      ...claimWithTeam('u-self'),
+      sodGrants: [{
+        id: 'g-1', actorId: 'u-ravi', approverId: 'u-self',
+        rule: 'evidence-recorder-may-not-certify', reason: 'only store user',
+        grantedAt: '2026-08-21T00:00:00.000Z',
+      }],
+    };
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: bundle(), commercialLoad: 'ready',
+      commercialBills: [withGrant.bill], commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': withGrant }, commercialClaimLoad: { 'bill-1': 'ready' },
+      members: [
+        { userId: 'u-self', name: 'Approving PMC', email: null, phone: null, role: 'pmc', status: 'active' },
+        { userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'pmc', status: 'active' },
+      ] as never,
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    // the grant is SHOWN — the read carries it, which is what makes clearing its key honest…
+    expect(r.getByTestId('sod-live-g-1')).toBeTruthy();
+    fireEvent.change(r.getByTestId('sod-actor-bill-1'), { target: { value: 'u-ravi' } });
+    fireEvent.change(r.getByTestId('sod-reason-bill-1'), { target: { value: 'only store user' } });
+    // …and BECAUSE it is shown, the guard reads the fact rather than holding a key: a duplicate
+    // would be refused by the server's live-scope uniqueness after being reported saved
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
   });
 

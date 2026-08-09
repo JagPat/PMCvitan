@@ -453,9 +453,9 @@ export interface AppActions {
   beginVerification: (billId: string) => void;
   verifyVendorBill: (billId: string) => void;
   /** §F/§I writes (7B-iii-f) — the certification authority chain. */
-  certifyBill: (billId: string) => void;
+  certifyBill: (billId: string, versionId: string) => void;
   grantSodException: (billId: string, actorId: string, reason: string, versionId: string) => void;
-  supersedeCertificate: (billId: string, reason: string) => void;
+  supersedeCertificate: (billId: string, reason: string, certificateId: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -3002,9 +3002,9 @@ export const useStore = create<Store>()(
         `Verify ${billId}`, 'Verification recorded.',
       );
     },
-    certifyBill: (billId) => {
+    certifyBill: (billId, versionId) => {
       dispatchCommercial(
-        { t: 'certifyBill', input: { billId }, idempotencyKey: newIdempotencyKey(),
+        { t: 'certifyBill', input: { billId, versionId }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'certify') },
         `Certify ${billId}`, 'Claim certified.',
       );
@@ -3016,9 +3016,9 @@ export const useStore = create<Store>()(
         `Authorise ${actorId}`, 'Authorisation recorded.',
       );
     },
-    supersedeCertificate: (billId, reason) => {
+    supersedeCertificate: (billId, reason, certificateId) => {
       dispatchCommercial(
-        { t: 'supersedeCertificate', input: { billId, reason }, idempotencyKey: newIdempotencyKey(),
+        { t: 'supersedeCertificate', input: { billId, reason, certificateId }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'supersede') },
         `Supersede ${billId}`, 'Certificate superseded.',
       );

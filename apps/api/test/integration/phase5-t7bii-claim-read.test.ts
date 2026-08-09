@@ -532,4 +532,61 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     expect(ok.versionId).toBe(current);
   });
 
+
+  it('round-2: CERTIFY naming a version the claim moved past is refused, not re-pinned', async () => {
+    const projectId = await freshProject();
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const viewed = (await claims.readClaim(projectId, billId, pmc(projectId)))
+      .bill.versions.find((v) => v.live)!.id;
+
+    // amended and re-verified while the certifier's command sat in a queue
+    await bills.amend(projectId, {
+      billId, reason: 'vendor re-issued at 90',
+      lines: [{ poLineId: line.poLineId, quantity: '90', rate: '1' }],
+    }, pmc(projectId));
+    await bills.beginVerification(projectId, { billId }, pmc(projectId));
+    await verification.verify(projectId, { billId }, pmc(projectId));
+
+    await expect(certification.certify(projectId, { billId, versionId: viewed }, pmc(projectId)))
+      .rejects.toThrow(/amended after you read it/u);
+
+    // the CURRENT version certifies, so the guard is precise rather than merely strict
+    const current = (await claims.readClaim(projectId, billId, pmc(projectId)))
+      .bill.versions.find((v) => v.live)!.id;
+    const cert = await certification.certify(projectId, { billId, versionId: current }, pmc(projectId));
+    expect(cert.id).toBeTruthy();
+  });
+
+  it('round-2: SUPERSEDE naming a certificate already replaced is refused', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const first = (await claims.readClaim(projectId, billId, pmc(projectId))).certificate!.id;
+
+    // someone else corrects it first. Superseding returns the claim to `verified` — there is no
+    // live certificate until it is certified again — so the replacement c2 only exists after a
+    // re-certification, and THAT is the state where a queued correction for c1 would land on c2.
+    await certification.supersede(projectId, { billId, reason: 'first correction' }, pmc(projectId));
+    // re-certified naming the CURRENT version. The version is load-bearing here beyond the guard
+    // it was added for: `certify` synthesizes an idempotency key from the request hash, so a
+    // second `{ billId }` alone REPLAYS the first certification and returns the same row.
+    const liveVersion = (await claims.readClaim(projectId, billId, pmc(projectId)))
+      .bill.versions.find((v) => v.live)!.id;
+    const second = await certification.certify(projectId, { billId, versionId: liveVersion }, pmc(projectId));
+    expect(second.id).not.toBe(first);
+
+    await expect(certification.supersede(
+      projectId, { billId, reason: 'my correction', certificateId: first }, pmc(projectId),
+    )).rejects.toThrow(/already superseded/u);
+
+    // …and naming the CURRENT one succeeds, superseding exactly the document it names
+    const now = (await claims.readClaim(projectId, billId, pmc(projectId))).certificate!.id;
+    expect(now).toBe(second.id);
+    const ok = await certification.supersede(
+      projectId, { billId, reason: 'my correction', certificateId: now }, pmc(projectId),
+    );
+    expect(ok.id).toBe(now);
+  });
+
 });

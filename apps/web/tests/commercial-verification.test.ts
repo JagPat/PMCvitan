@@ -380,12 +380,12 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
    */
   it('certify and supersede join the CLAIM-wide transition conflict', () => {
     s().beginVerification('bill-1');
-    s().certifyBill('bill-1');
-    s().supersedeCertificate('bill-1', 'wrong quantity');
+    s().certifyBill('bill-1', 'ver-1');
+    s().supersedeCertificate('bill-1', 'wrong quantity', 'cert-1');
     expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'begin-verification')]);
 
     useStore.setState({ outbox: [], commercialPending: [] });
-    s().certifyBill('bill-1');
+    s().certifyBill('bill-1', 'ver-1');
     s().verifyVendorBill('bill-1');
     expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
   });
@@ -408,7 +408,7 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
     s().grantSodException('bill-1', 'user-ravi', 'edited justification', 'ver-1');
     expect(keys()).toHaveLength(2);
     // …and an authorisation does not block the claim's own transitions, nor they it
-    s().certifyBill('bill-1');
+    s().certifyBill('bill-1', 'ver-1');
     expect(keys()).toHaveLength(3);
   });
 
@@ -417,22 +417,22 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
     // cannot separate them; what CAN be asserted is that the dispatcher reads the policy per
     // command rather than one blanket answer — a contractor holds none of the three.
     useStore.setState({ role: 'contractor' });
-    s().certifyBill('bill-1');
+    s().certifyBill('bill-1', 'ver-1');
     s().grantSodException('bill-1', 'user-ravi', 'why', 'ver-1');
-    s().supersedeCertificate('bill-1', 'why');
+    s().supersedeCertificate('bill-1', 'why', 'cert-1');
     expect(s().outbox).toHaveLength(0);
   });
 
   it('is inert off the commercial pilot', () => {
     useStore.setState({ capabilities: [] });
-    s().certifyBill('bill-1');
+    s().certifyBill('bill-1', 'ver-1');
     s().grantSodException('bill-1', 'user-ravi', 'why', 'ver-1');
-    s().supersedeCertificate('bill-1', 'why');
+    s().supersedeCertificate('bill-1', 'why', 'cert-1');
     expect(s().outbox).toHaveLength(0);
   });
 
   it('replays each through its OWN route under its original key', async () => {
-    s().certifyBill('bill-1');
+    s().certifyBill('bill-1', 'ver-1');
     s().grantSodException('bill-2', 'user-ravi', 'why', 'ver-1');
     useStore.setState({ online: true });
     await s().flushOutbox();
@@ -469,6 +469,21 @@ describe('7B-iii-f correction — a grant is tighter than the first head modelle
     useStore.setState(getInitialState());
     useStore.setState({ capabilities: ['commercial'], role: 'pmc', activeProjectId: 'p-1', online: false });
     s()._setGateway({ grantSodException: vi.fn(async () => {}) } as unknown as ApiGateway);
+  });
+
+  /**
+   * Round 2's root, and it is the sharper one: round 1 pinned the GRANT to its viewed version and
+   * stopped there. Certify and supersede have identical exposure — a queued certify freezes
+   * evidence for whatever version is live at replay, a queued supersession replaces whatever
+   * certificate is live — and certification is the act that creates money. Fixing the instance a
+   * finding named instead of the class it belongs to is what produced this round.
+   */
+  it('round-2: certify carries the version READ, and supersede the certificate READ', () => {
+    s().certifyBill('bill-1', 'ver-7');
+    expect((s().outbox[0] as { input: { versionId?: string } }).input.versionId).toBe('ver-7');
+    useStore.setState({ outbox: [], commercialPending: [] });
+    s().supersedeCertificate('bill-1', 'wrong quantity', 'cert-3');
+    expect((s().outbox[0] as { input: { certificateId?: string } }).input.certificateId).toBe('cert-3');
   });
 
   it('F4: the queued grant carries the version the approver READ', () => {

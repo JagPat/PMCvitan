@@ -183,6 +183,7 @@ export function CommercialScreen() {
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   // Codex F1 — the project TEAM, so an authorisation names a real identity rather than typed text.
   const members = useStore(useShallow((s) => s.members));
+  const loadTeam = useStore((s) => s.loadTeam);
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
@@ -412,6 +413,15 @@ export function CommercialScreen() {
   useEffect(() => {
     if (inClaimWorkflow && onPilot && billsLoad === 'idle') void loadCommercialBills();
   }, [inClaimWorkflow, onPilot, billsLoad, loadCommercialBills]);
+
+  // Codex round-2 — the §I authorisation picker is built from the project TEAM, and this screen
+  // never loaded it: `members` is empty until the user happens to visit Team, so the remedy for a
+  // segregation-of-duties refusal was unavailable exactly when it was needed. Expressed as a
+  // CONDITION with every term it depends on in the deps (Codex H3, one tab over), and scoped to
+  // the actor who can actually use it.
+  useEffect(() => {
+    if (inClaimWorkflow && onPilot && mayGrantSod && members.length === 0) void loadTeam();
+  }, [inClaimWorkflow, onPilot, mayGrantSod, members.length, loadTeam]);
 
   /**
    * Codex I1 — REFRESH RE-READS WHAT THIS SCREEN IS SHOWING.
@@ -1174,13 +1184,19 @@ export function CommercialScreen() {
                     const listRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
                     const reading = arbitrateBillCopy(listRow, claim.bill);
                     const draft = certDraftFor(claim.bill.id);
+                    // Codex round-2 — the facts this reader is LOOKING AT, carried with the command
+                    // so a replay cannot act on a version/document they never saw. Round 1 pinned
+                    // the grant and stopped there; certification and supersession have the same
+                    // exposure, and certification is the act that creates money.
+                    const viewedVersion = claim.bill.versions.find((v) => v.live)?.id ?? null;
+                    const viewedCertificate = claim.certificate?.id ?? null;
                     return (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }} data-testid="commercial-certify-actions">
                         <Button
                           variant="ink"
                           data-testid={`bill-certify-${claim.bill.id}`}
-                          disabled={!transitionOffered(reading, BILL_CERTIFY_FROM) || billTxPending(claim.bill.id)}
-                          onClick={() => certifyBill(claim.bill.id)}
+                          disabled={!transitionOffered(reading, BILL_CERTIFY_FROM) || viewedVersion === null || billTxPending(claim.bill.id)}
+                          onClick={() => certifyBill(claim.bill.id, viewedVersion as string)}
                         >
                           {billTxPending(claim.bill.id) ? 'Working…' : 'Certify'}
                         </Button>
@@ -1197,8 +1213,9 @@ export function CommercialScreen() {
                           variant="ghost"
                           data-testid={`cert-supersede-${claim.bill.id}`}
                           disabled={!transitionOffered(reading, BILL_STATUSES_PAST_CERTIFICATION)
-                            || !draft.supersedeReason.trim() || billTxPending(claim.bill.id)}
-                          onClick={() => supersedeCertificate(claim.bill.id, draft.supersedeReason.trim())}
+                            || !draft.supersedeReason.trim() || viewedCertificate === null
+                            || billTxPending(claim.bill.id)}
+                          onClick={() => supersedeCertificate(claim.bill.id, draft.supersedeReason.trim(), viewedCertificate as string)}
                         >
                           Supersede
                         </Button>
@@ -1230,8 +1247,23 @@ export function CommercialScreen() {
                     // put three server refusals into the write-ahead outbox (a display name, a
                     // typo, and the self-grant §I forbids) and reported each as saved before
                     // reconnect dropped it. A picker cannot express any of them.
-                    const candidates = members.filter((m) => m.status === 'active' && m.userId !== claim.certifyPreflight.callerActorId);
+                    // Codex round-2 — a grant is authority to CERTIFY, so only someone who could
+                    // certify can use one. Authorising an engineer records a live authorisation
+                    // that can never be exercised: the approver sees it land and the named actor is
+                    // still refused, by a different rule, at the moment they try. The policy is the
+                    // source (`commercial.certify`), never a copy of its current answer.
+                    const certifierRoles = ROLE_POLICY['commercial.certify'] as readonly string[];
+                    const candidates = members.filter((m) => m.status === 'active'
+                      && m.userId !== claim.certifyPreflight.callerActorId
+                      && certifierRoles.includes(m.role));
                     const eligible = candidates.some((m) => m.userId === actorId);
+                    // Codex round-2 — and one that ALREADY STANDS is not granted twice. The bundle
+                    // carries the live grants as of round 1; the button did not consult them, so
+                    // once the pending key cleared an unchanged draft could queue a duplicate for
+                    // the server's live-scope uniqueness to reject — reported saved, then dropped.
+                    // Holding the key longer was the wrong shape: the fact is visible, so the guard
+                    // reads the fact.
+                    const alreadyStands = claim.sodGrants.some((g) => g.actorId === actorId);
                     return (
                       <div style={{ ...rowCard, marginTop: 8 }} data-testid="commercial-sod-grant">
                         <div style={{ fontWeight: 600 }}>Authorise a segregation-of-duties exception</div>
@@ -1273,7 +1305,7 @@ export function CommercialScreen() {
                           <Button
                             variant="ink"
                             data-testid={`sod-grant-${claim.bill.id}`}
-                            disabled={!eligible || reason === '' || viewedVersionId === null || pending}
+                            disabled={!eligible || alreadyStands || reason === '' || viewedVersionId === null || pending}
                             onClick={() => grantSod(claim.bill.id, actorId, reason, viewedVersionId as string)}
                           >
                             {pending ? 'Working…' : 'Authorise'}

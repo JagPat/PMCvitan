@@ -1455,7 +1455,18 @@ export type VendorBillStepInput = z.infer<typeof vendorBillStepSchema>;
  * their own authenticated command (`commercial.sod.grant`), and certification CONSUMES it. There is
  * no field here to forge.
  */
-export const certifyBillSchema = z.object({ billId: z.string().min(1) }).strict();
+/**
+ * Codex round-2 — `versionId` is the claim version the certifier READ.
+ *
+ * Round 1 pinned the GRANT to its viewed version and stopped there; certification has the same
+ * exposure and it is the act that creates money. Queue Certify against a verified v1 offline,
+ * another user amends and re-verifies v2, and the replay certifies a claim this certifier never
+ * saw. Optional for the same reason as the grant's: in-process callers hold no rendered version,
+ * and the risk is specific to a command that can sit in a queue across an amendment.
+ */
+export const certifyBillSchema = z
+  .object({ billId: z.string().min(1), versionId: z.string().min(1).optional() })
+  .strict();
 export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
 
 /**
@@ -1504,7 +1515,15 @@ export type GrantSodExceptionInput = z.infer<typeof grantSodExceptionSchema>;
 
 /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */
 export const supersedeCertificateSchema = z
-  .object({ billId: z.string().min(1), reason: z.string().trim().min(1).max(1000) })
+  .object({
+    billId: z.string().min(1),
+    reason: z.string().trim().min(1).max(1000),
+    /** Codex round-2 — the certificate the corrector was LOOKING AT. Supersession names "the live
+     *  one" at execution, so a queued correction intended for c1 supersedes its replacement c2 if
+     *  c1 was corrected first: a document nobody reviewed, replaced with a reason written about a
+     *  different one. */
+    certificateId: z.string().min(1).optional(),
+  })
   .strict();
 export type SupersedeCertificateInput = z.infer<typeof supersedeCertificateSchema>;
 

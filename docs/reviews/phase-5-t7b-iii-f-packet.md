@@ -86,7 +86,7 @@ the next. Server and client mutations listed together:
 - `pnpm check` — **EXIT 0** (web 689/689 across 45 files, API 780/780 across 57 files, lint + typecheck + both builds clean)
 - `commercial-verification.test.ts` **27/27**; `commercial-screen.test.tsx` **64/64**; `commercial.test.ts` green
 - API integration, focused: `phase5-t7bii-claim-read` **16/16** (5 preflight + 4 correction probes); `phase5-t5b-certification` **49/49 unchanged**
-- Full API integration suite on a pristine migrated database — **86 files / 1037 tests**, exit 0, run over the CORRECTION head (the initial head's own run was 86/1033; the +4 are this round's API probes)
+- Full API integration suite on a pristine migrated database, per head: initial `495718d` **86 files / 1033 tests**; round-1 correction `a8e73d4` **86 files / 1037 tests**, both exit 0. round-2 changes **86 files / 1039 tests**, exit 0 (the +2 are this round's certify-version-drift and supersede-certificate-drift probes). Each figure names the code it actually measured rather than being carried forward from a head that did not contain the changes
 - No migration, so `upgrade-proof.sh` is not applicable
 - Browser e2e runs in CI (the local Chromium build does not match the pinned Playwright revision)
 
@@ -110,6 +110,26 @@ Seven mutations, each reddening exactly its own probe. **One probe was rewritten
 passing under mutation:** "Authorise stays disabled" used only valid values, so it never
 exercised the eligibility term; the probe that does is a chosen member *leaving the
 project* with the draft still holding their id.
+
+## Round 2 — four Codex findings on head `a8e73d4`
+
+Two of them are **round 1's own fixes, applied to one member of a set.** The
+convergence audit (`docs/reviews/pr-310-convergence.md`) names the root:
+*I fix the instance a finding names, not the class it belongs to.*
+
+| # | Finding | Fix |
+|---|---|---|
+| R2-1 | round 1 pinned the **grant** to its viewed version; certify and supersede sit in the same outbox with the same exposure — a queued certify freezes evidence for a version never seen, a queued supersession replaces a certificate its reason was never written about | viewed-fact pinning applied to **all three** commands: `versionId` on grant and certify, `certificateId` on supersede, each refused server-side on drift |
+| R2-2 | round 1 added `sodGrants` to the bundle to justify clearing a grant's key; the **button never consulted them**, so an unchanged draft could queue a duplicate one click later | the guard reads the **fact**, not the key — holding a key against a read that can now show the truth would be a second mechanism disagreeing with the first |
+| R2-3 | the picker was built from `members`, which this screen never loaded — so the §I remedy was unavailable until the user happened to visit Team | a condition-shaped effect with every term in its deps (Codex H3's lesson, one tab over) |
+| R2-4 | candidates were filtered by active membership alone, so authorising an engineer recorded a live grant that can never be exercised — `certify` still requires `commercial.certify` | eligibility derived from `ROLE_POLICY['commercial.certify']`, never a copy of its current answer |
+
+Seven mutations this round, each reddening exactly its own probe. **Two probes were
+corrected after their scenarios turned out to be wrong about the product:** superseding
+returns a claim to `verified` (so a second supersession needs a re-certification), and
+`certify` synthesizes its idempotency key from the request hash (so a repeated
+`{ billId }` replays rather than creating a second certificate). Both were my
+misreadings, found by running them.
 
 ## What is deliberately not here
 
