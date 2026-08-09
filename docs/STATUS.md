@@ -14,9 +14,9 @@ phase: 5
 phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
 task: 7
 task_state: in_progress
-work_item: none
+work_item: phase-5-task-7b-iii-h
 reviewed_merge: 6861a85
-open_pr: none
+open_pr: 312
 next_task: phase-5-task-7b-iii-h
 blocking_directive: none
 updated: 2026-08-09
