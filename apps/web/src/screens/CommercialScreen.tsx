@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto, SodGrantState } from '@vitan/shared';
@@ -201,10 +201,15 @@ export function CommercialScreen() {
   // is a stronger thing than authority to perform the act it excuses — and its surface is
   // 7B-iii-h.)
   const mayCertify = may('commercial.certify');
+  // §I — issuing an authorisation is the APPROVER's act and a DIFFERENT permission from certifying.
+  // Both resolve to pmc today; naming them separately is what keeps that a fact about the policy
+  // rather than an assumption baked into the screen.
+  const mayGrant = may('commercial.sod.grant');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
+  const grantSodException = useStore((s) => s.grantSodException);
   // 7B-iii-b — the engineer's writes.
   const takeMeasurement = useStore((s) => s.takeMeasurement);
   const correctMeasurement = useStore((s) => s.correctMeasurement);
@@ -353,12 +358,14 @@ export function CommercialScreen() {
   // component-wide draft armed one row's button with another row's text). Two fields because a
   // supersede reason and a SoD authorisation are different acts with different authority.
   const [certDrafts, setCertDrafts] = useState<{
-    scope: string; byId: Record<string, { supersedeReason: string }>;
+    scope: string; byId: Record<string, { supersedeReason: string; sodActorId: string; sodReason: string }>;
   }>({ scope: '', byId: {} });
   const certScoped = certDrafts.scope === scopeKey ? certDrafts.byId : {};
-  const EMPTY_CERT_DRAFT = { supersedeReason: '' };
+  const EMPTY_CERT_DRAFT = { supersedeReason: '', sodActorId: '', sodReason: '' };
   const certDraftFor = (id: string) => certScoped[id] ?? EMPTY_CERT_DRAFT;
-  const setCertDraft = (id: string, patch: Partial<{ supersedeReason: string }>): void =>
+  const setCertDraft = (
+    id: string, patch: Partial<{ supersedeReason: string; sodActorId: string; sodReason: string }>,
+  ): void =>
     setCertDrafts({ scope: scopeKey, byId: { ...certScoped, [id]: { ...certDraftFor(id), ...patch } } });
 
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
@@ -1183,6 +1190,128 @@ export function CommercialScreen() {
                       {SOD_STATE_MESSAGE[claim.certifyPreflight.grantState]}
                     </div>
                   )}
+
+                  {/* ── §I (7B-iii-g) — the APPROVER's own act, on the surface that reports the refusal ──
+                      Before this, a certifier who recorded the evidence got an accurate refusal
+                      naming `commercial.sod.grant` and no way to reach it. The remedy is now where
+                      the problem is stated.
+
+                      The picker NARROWS; the server DECIDES. It offers active pmc members and
+                      excludes the caller (§I forbids a self-grant, and `callerActorId` exists in
+                      the preflight precisely so the client can honour that instead of queueing the
+                      one choice the server is certain to refuse). It does NOT enumerate authority:
+                      standing is re-checked at the command, because a picker is not the only way
+                      in, and a second implementation of the standing question is exactly the root
+                      this unit's audit opens with. */}
+                  {mayGrant && (() => {
+                    const draft = certDraftFor(claim.bill.id);
+                    const viewedVersion = claim.bill.versions.find((v) => v.live)?.id ?? null;
+                    // ── the SAME reading the Certify control acts on ──────────────────────────
+                    //
+                    // Round 1 findings 4 and 5, and they are one mistake: this form pinned
+                    // `claim.bill` directly while the control beneath it arbitrated the list copy
+                    // against the bundle. Two consequences, both the write-ahead lie:
+                    //
+                    //  · the bundle can be OLDER than the list. Pinning its status and revision
+                    //    queues an authorisation against facts the server has already moved past,
+                    //    and refuses it after the outbox reported it saved.
+                    //  · certification is legal only from `verified`. An authorisation recorded
+                    //    while the claim is draft/submitted/under-verification can NEVER be spent —
+                    //    it is `stale-review` the moment the claim reaches the state it was meant
+                    //    for. Recording one is worse than refusing it, because the approver is told
+                    //    an authority exists that does not.
+                    //
+                    // So the form is offered exactly where certification is, from exactly the copy
+                    // certification acts on.
+                    const grantListRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
+                    const grantReading = arbitrateBillCopy(grantListRow, claim.bill);
+                    const grantAuthoritative = grantReading !== null && grantReading.source !== 'list';
+                    const certifiable = transitionOffered(grantReading, BILL_CERTIFY_FROM);
+                    // ── who may be named, decided by the module that owns the rule ─────────────
+                    //
+                    // Round 1, finding 6. The first draft filtered the team roster in the browser
+                    // (`role === 'pmc' && status === 'active'`), which I had argued was "narrowing,
+                    // not enumerating authority". It was enumerating authority — badly. The server
+                    // admits an org owner/admin as pmc where they hold no active membership here,
+                    // and that filter silently excluded exactly those people, so a legitimate
+                    // approver could not be named for an authorisation the command would accept.
+                    //
+                    // A picker built from an approximation of an authority rule IS an authority
+                    // rule, and a second one. The list is now computed server-side beside the
+                    // predicate itself and arrives on the claim read — which also means the form
+                    // needs no team data the screen never asked for (finding 3).
+                    const candidates = claim.certifyPreflight.sodCandidates;
+                    // R5-1 — the SAME function the dispatcher refuses with, so the screen and the
+                    // outbox cannot answer differently. A pending claim transition is about to move
+                    // the version, status and revision this authorisation pins.
+                    const blocked = draft.sodActorId !== ''
+                      && commercialWriteBlocked(
+                        sodGrantCoalesceKey(claim.bill.id, draft.sodActorId), commercialPending,
+                      );
+                    return (
+                      <div style={rowCard} data-testid="commercial-sod-grant">
+                        <div style={{ ...muted, marginBottom: 7 }}>
+                          Authorise someone to certify this claim, against the claim as it stands now.
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          <select
+                            style={input}
+                            data-testid="sod-actor"
+                            value={draft.sodActorId}
+                            onChange={(e) => setCertDraft(claim.bill.id, { sodActorId: e.target.value })}
+                          >
+                            <option value="">Who is being authorised…</option>
+                            {candidates.map((m) => (
+                              <option key={m.userId} value={m.userId}>{m.name}</option>
+                            ))}
+                          </select>
+                          <input
+                            style={{ ...input, flex: 1 }}
+                            data-testid="sod-reason"
+                            placeholder="Why this authorisation is justified"
+                            value={draft.sodReason}
+                            onChange={(e) => setCertDraft(claim.bill.id, { sodReason: e.target.value })}
+                          />
+                          <Button
+                            variant="ink"
+                            data-testid={`sod-grant-${claim.bill.id}`}
+                            disabled={draft.sodActorId === '' || !draft.sodReason.trim()
+                              || viewedVersion === null || blocked
+                              || !certifiable || !grantAuthoritative}
+                            onClick={() => {
+                              grantSodException(claim.bill.id, draft.sodActorId, draft.sodReason.trim(), {
+                                versionId: viewedVersion as string,
+                                status: grantReading!.copy.status,
+                                lifecycleVersion: claim.certifyPreflight.lifecycleVersion,
+                              });
+                              setCertDraft(claim.bill.id, { sodActorId: '', sodReason: '' });
+                            }}
+                          >
+                            {blocked ? 'Working…' : 'Authorise'}
+                          </Button>
+                        </div>
+                        {!blocked && !certifiable && (
+                          <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-not-certifiable">
+                            Certification is only legal once this claim is verified, so an
+                            authorisation recorded now could never be spent. Authorise it once the
+                            claim is verified.
+                          </div>
+                        )}
+                        {blocked && (
+                          <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-blocked">
+                            This claim has a change in flight. An authorisation records the version,
+                            state and revision it was given against, and that change is about to move
+                            all three — authorise again once it has landed.
+                          </div>
+                        )}
+                        {candidates.length === 0 && (
+                          <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-nobody">
+                            There is nobody else on this project with pmc standing to authorise.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {mayCertify && (() => {
                     const listRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;

@@ -929,8 +929,19 @@ returning ₹5 of a retention changes what is owed and changes no label).
 It lives on its own row rather than as a column on `VendorBill` because a trigger advancing a
 column would take the CLAIM'S row lock from writers holding no other lock — the ABBA inversion
 Task 5C's review already removed once. On its own row it is taken last by everybody. It cannot be
-rewound, jumped, moved to another claim, or deleted; and `BillCertificate`/`PaymentApproval` each
-record the revision they were performed at, checked against the claim at insert and frozen after.
+opened WITH the claim and cannot be rewound, jumped, created below zero, moved to another claim, or
+deleted — so every reader locks a row that exists rather than falling back to an implicit zero that
+nothing can hold still; and `BillCertificate`/`PaymentApproval` each record the revision they were
+performed at, REQUIRED on any new row, checked against the claim under that row's lock at insert,
+and frozen after.
+
+**Retirement is only for authority this release cannot JUDGE.** A grant that CARRIES its reviewed
+evidence cannot be retired — PostgreSQL refuses the stamp, and a reason made only of whitespace is
+refused too. That is deliberate rather than an oversight: an evidenced authority is judged by the
+seals (spent, or refused with a stated reason), and withdrawing a live one is a different act with
+a different author that does not exist in this release. If you believe a live authorisation should
+be withdrawn, the answer today is that its holder does not spend it; there is no maintenance path,
+by design.
 
 ## 1. Drain all OLD application instances
 

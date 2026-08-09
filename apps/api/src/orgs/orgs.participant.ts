@@ -57,6 +57,59 @@ export class OrgsParticipant {
   }
 
   /**
+   * Everyone on this project who WOULD satisfy `hasProjectRoleStanding` for `roles`.
+   *
+   * §I's authorisation form needs to offer candidates, and the alternative was a client-side
+   * filter over the team roster — which is a SECOND implementation of the standing rule, and a
+   * worse one: it silently excluded org owners/admins, who this rule admits as pmc when they hold
+   * no active membership here. A picker built from an approximation of an authority rule is an
+   * authority rule.
+   *
+   * So the enumeration lives beside the predicate, in the module that owns `Membership`,
+   * `Project` and `OrgMembership`, and its two arms are the predicate's two arms — the active
+   * membership, and the org fallback that applies ONLY where no active membership exists. A
+   * candidate this returns is one `hasProjectRoleStanding` says yes to; that is the point of
+   * putting them in the same file.
+   *
+   * It answers WHO COULD, never WHO MAY: the command re-checks the person it is given, because a
+   * picker is not the only way in and standing can change between the read and the write.
+   */
+  async projectRoleCandidates(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    roles: readonly string[],
+  ): Promise<Array<{ userId: string; name: string }>> {
+    if (roles.length === 0) return [];
+    const rolePlaceholders = roles.map((_, i) => `$${i + 2}`).join(', ');
+    // the org arm mirrors `hasProjectRoleStanding` exactly, including the precedence rule: an
+    // active membership DECIDES, so someone holding one is judged on its role alone and never
+    // upgraded through the org
+    const orgArm = roles.includes('pmc')
+      ? `UNION
+         SELECT u."id" AS "userId", u."name" AS "name"
+           FROM "Project" p
+           JOIN "OrgMembership" om ON om."orgId" = p."orgId" AND om."role" IN ('owner', 'admin')
+           JOIN "User" u ON u."id" = om."userId"
+          WHERE p."id" = $1
+            AND NOT EXISTS (
+              SELECT 1 FROM "Membership" m
+               WHERE m."projectId" = $1 AND m."userId" = om."userId" AND m."status" = 'active'
+            )`
+      : '';
+    return (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string; name: string }>>(
+      `SELECT u."id" AS "userId", u."name" AS "name"
+         FROM "Membership" m
+         JOIN "User" u ON u."id" = m."userId"
+        WHERE m."projectId" = $1 AND m."status" = 'active'
+          AND m."role" IN (${rolePlaceholders})
+       ${orgArm}
+       ORDER BY 2, 1`,
+      projectId,
+      ...roles,
+    );
+  }
+
+  /**
    * Resolve an OPERATOR STRING — a user id or an email — to the orgs-owned `User` row it names.
    * Returns `null` when it names nobody.
    *

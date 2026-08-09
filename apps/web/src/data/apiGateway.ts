@@ -1028,6 +1028,10 @@ export class ApiGateway {
   supersedeCertificate(input: SupersedeCertificateInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/certificates/supersede', input, idempotencyKey);
   }
+  /** §I — the APPROVER's own act: authorise one actor to perform one otherwise-forbidden act. */
+  grantSodException(input: GrantSodExceptionInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/bills/sod-grant', input, idempotencyKey);
+  }
 
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command
   //    routed through the durable write-ahead outbox with the two-key split (see OutboxOp), so a
@@ -1364,6 +1368,29 @@ export interface VendorBillStepInput { billId: string }
  *  a version id is stable across the whole payment lifecycle, so it cannot say WHICH passage of
  *  the claim a queued certify was authored against. */
 export interface CertifyBillInput { billId: string; versionId: string; lifecycleVersion: number }
+/**
+ * §I — the approver AUTHORISES one otherwise-forbidden act, and the request carries the three facts
+ * they were looking at when they did.
+ *
+ * All three are REQUIRED by the server, and each closes a hole the previous one left open:
+ * `versionId` the claim version they read; `status` the state that version was in (one version
+ * walks the whole §E lifecycle without changing id); `lifecycleVersion` the claim's monotonic
+ * revision (a status label recycles, and money can move without the label moving at all). A
+ * queued authorisation is refused rather than silently re-pinned onto whatever is true when it
+ * lands.
+ *
+ * There is no `approverId`: the AUTHENTICATED caller is the authority, and a field naming them
+ * would be a field a caller could forge.
+ */
+export interface GrantSodExceptionInput {
+  billId: string;
+  /** the person being excused — never the caller; §I forbids a self-grant */
+  actorId: string;
+  reason: string;
+  versionId: string;
+  status: string;
+  lifecycleVersion: number;
+}
 /** §F — `certificateId` is the document the correction was WRITTEN ABOUT (Codex round-2). */
 export interface SupersedeCertificateInput { billId: string; reason: string; certificateId: string }
 export interface RejectVendorBillInput { billId: string; reason: string }
@@ -1470,6 +1497,7 @@ export type OutboxOp =
   | { t: 'submitVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'certifyBill'; input: CertifyBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'supersedeCertificate'; input: SupersedeCertificateInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'grantSodException'; input: GrantSodExceptionInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'rejectVendorBill'; input: RejectVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
@@ -1574,6 +1602,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.certifyBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'supersedeCertificate':
       return gw.supersedeCertificate(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'grantSodException':
+      return gw.grantSodException(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'submitVendorBill':
       return gw.submitVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'amendVendorBill':

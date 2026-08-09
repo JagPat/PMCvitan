@@ -2,11 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import {
-  billTransitionCoalesceKey, readClearsKey,
+  billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey, commercialWriteBlocked,
   COMMERCIAL_OUTBOX_OP_TYPES, normalizeCommercialOutbox,
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
+import gatewaySource from '@/data/apiGateway.ts?raw';
+import controllerSource from '../../api/src/commercial/commercial.controller.ts?raw';
 import verificationServiceSource from '../../api/src/commercial/commercial-verification.service.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
 
@@ -465,4 +467,98 @@ describe('7B-iii-f correction — the acts carry the facts they were decided on'
   });
 
 
+});
+
+describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, not of the CLAIM', () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc', activeProjectId: 'p-1', online: false,
+    });
+    s()._setGateway({ grantSodException: vi.fn(async () => {}) } as unknown as ApiGateway);
+  });
+  const keys = () => s().outbox.flatMap((o) => {
+    const k = (o as { coalesceKey?: unknown }).coalesceKey;
+    return typeof k === 'string' ? [k] : [];
+  });
+  const viewed = { versionId: 'ver-1', status: 'verified', lifecycleVersion: 4 };
+
+  /**
+   * R5-1, the finding this unit exists to close, asserted on the RULE rather than on a screen.
+   *
+   * The per-PERSON key was right and stays. What was carried one step too far is concluding that a
+   * grant therefore conflicts with nothing: an authorisation PINS the claim's version, status and
+   * revision, and a queued transition is precisely a command that moves all three. Queued behind
+   * one, the grant is written against facts that are already gone — and the user was told it saved.
+   */
+  it('a pending claim transition BLOCKS a new authorisation on that claim', () => {
+    expect(commercialWriteBlocked(
+      sodGrantCoalesceKey('bill-1', 'u-2'), [billTransitionCoalesceKey('bill-1', 'certify')],
+    ), 'a certify in flight is about to move every fact the grant pins').toBe(true);
+    // …and the dispatcher REFUSES it, not merely the screen. An op it accepts has already been
+    // persisted and reported as saved (Codex J1).
+    s().certifyBill('bill-1', 'ver-1', 4);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
+  });
+
+  it('…but two authorisations for DIFFERENT people on one claim are independent', () => {
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-3', 'covering leave', viewed);
+    expect(keys()).toEqual([
+      sodGrantCoalesceKey('bill-1', 'u-2'), sodGrantCoalesceKey('bill-1', 'u-3'),
+    ]);
+    // and an EQUIVALENT one while pending still coalesces — the per-person key is a coalesce key
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    expect(keys()).toHaveLength(2);
+  });
+
+  /** ONE-DIRECTIONAL by design: a certify arriving before its authorisation is refused by the
+   *  server for a reason that is true and legible, not silently mis-pinned. */
+  it('a pending authorisation does NOT block a claim transition', () => {
+    expect(commercialWriteBlocked(
+      billTransitionCoalesceKey('bill-1', 'certify'), [sodGrantCoalesceKey('bill-1', 'u-2')],
+    )).toBe(false);
+  });
+
+  it('the authorisation carries the three facts its approver was looking at', () => {
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    expect((s().outbox[0] as unknown as { input: Record<string, unknown> }).input).toMatchObject({
+      billId: 'bill-1', actorId: 'u-2', reason: 'only pmc on site',
+      versionId: 'ver-1', status: 'verified', lifecycleVersion: 4,
+    });
+  });
+
+  it('a role without the granting authority queues NOTHING, even bypassing the screen', () => {
+    useStore.setState({ role: 'engineer' });
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    expect(s().outbox).toHaveLength(0);
+  });
+
+  /** Round 1, finding 1 — the client posted to a route the server does not expose, so every
+   *  authorisation 404'd and the outbox discarded it as terminal AFTER reporting it saved. The
+   *  route is pinned against the controller's own decorator rather than restated, because a
+   *  restated constant is what drifted. */
+  it('posts to the route the API controller actually exposes', () => {
+    expect(gatewaySource).toContain("this.cmd('/commercial/bills/sod-grant'");
+    expect(controllerSource, 'the server decorator is the source of truth for this path')
+      .toContain("@Post('commercial/bills/sod-grant')");
+  });
+
+  /** Round 1, finding 2 — a key with no release path is not pending, it is stuck: the op settles,
+   *  the read lands, and the button stays disabled until a hydration or a scope change. */
+  it('the settling read RELEASES the authorisation key', () => {
+    expect(readClearsKey('com:sodgrant:bill-1:u-2',
+      { read: 'claim', billId: 'bill-1', observedWrite: true } as never)).toBe(true);
+    // …and only for the claim it belongs to — a sibling claim's read settles nothing here
+    expect(readClearsKey('com:sodgrant:bill-1:u-2',
+      { read: 'claim', billId: 'bill-2', observedWrite: true } as never)).toBe(false);
+  });
+
+  it('the op type joins the ONE registry, so hydration and the flush cover it', () => {
+    expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain('grantSodException');
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    const op = s().outbox[0] as { t: string; idempotencyKey: string; coalesceKey: string };
+    expect(normalizeCommercialOutbox([op]).ops).toHaveLength(1);
+  });
 });
