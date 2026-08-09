@@ -73,7 +73,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -452,6 +452,16 @@ export interface AppActions {
   /** §E/§F writes (7B-iii-c-i) — the verification chain, on the SAME claim lifecycle. */
   beginVerification: (billId: string) => void;
   verifyVendorBill: (billId: string) => void;
+  /** §I write (7B-iii-g) — the APPROVER authorises one actor for one otherwise-forbidden act.
+   *
+   *  Carries the three facts the approver was LOOKING AT, all from the one authoritative claim
+   *  reading: the version, the status that version was in, and the claim's monotonic revision. The
+   *  server refuses the grant if any has moved, so a queued authorisation is refused rather than
+   *  silently re-pinned onto a claim its approver never saw. */
+  grantSodException: (
+    billId: string, actorId: string, reason: string,
+    viewed: { versionId: string; status: string; lifecycleVersion: number },
+  ) => void;
   /** §F/§I writes (7B-iii-f) — the certification authority chain. */
   /** …and the claim REVISION the certifier read, from the same authoritative claim reading that
    *  offered the button — so a certify queued offline is refused rather than silently re-aimed at
@@ -1646,6 +1656,10 @@ export const useStore = create<Store>()(
       // it is the authority to EXCUSE the rule, which is a stronger thing than performing the act.
       certifyBill: 'commercial.certify',
       supersedeCertificate: 'commercial.certify',
+      // 7B-iii-g — and the authorisation itself takes the stronger permission the comment above
+      // already names. Mapped here rather than left out, because this map is what makes the DURABLE
+      // dispatcher refuse it: the screen hiding a form is not a guarantee (Codex J1).
+      grantSodException: 'commercial.sod.grant',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
@@ -3008,6 +3022,18 @@ export const useStore = create<Store>()(
         { t: 'certifyBill', input: { billId, versionId, lifecycleVersion }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'certify') },
         `Certify ${billId}`, 'Claim certified.',
+      );
+    },
+    grantSodException: (billId, actorId, reason, viewed) => {
+      dispatchCommercial(
+        { t: 'grantSodException',
+          input: { billId, actorId, reason, ...viewed },
+          idempotencyKey: newIdempotencyKey(),
+          // per PERSON, not per claim: two approvers may authorise two different actors on one
+          // claim concurrently and both are real. What the key does NOT do is exempt the grant
+          // from the claim's transition conflict — see `commercialWriteBlocked` (R5-1).
+          coalesceKey: sodGrantCoalesceKey(billId, actorId) },
+        `Authorise ${actorId} on ${billId}`, 'Authorisation recorded.',
       );
     },
     supersedeCertificate: (billId, reason, certificateId) => {

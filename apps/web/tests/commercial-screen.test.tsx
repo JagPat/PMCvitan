@@ -1449,3 +1449,89 @@ describe('7B-iii-f round 5 — Supersede respects the cash the bundle is holding
     expect((open('0.00').getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled).toBe(false);
   });
 });
+
+describe('§I (7B-iii-g) — the approver can act where the refusal is reported', () => {
+  const at = (n: number) => `2026-08-21T00:00:0${n}.000Z`;
+
+  const openWith = (o: {
+    members?: Array<{ userId: string; name: string; role: string; status: string }>;
+    pending?: string[];
+    role?: string;
+  }) => {
+    const c = claim();
+    const base: CommercialClaimView = {
+      ...c, bill: { ...c.bill, status: 'verified', statusChangedAt: at(1) },
+    };
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    useStore.setState({
+      capabilities: ['commercial'],
+      role: (o.role ?? 'pmc') as never,
+      commercialView: bundle(),
+      commercialLoad: 'ready',
+      commercialBills: [base.bill],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': base },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialPending: o.pending ?? [],
+      members: (o.members ?? [
+        { userId: 'u-self', name: 'Me', role: 'pmc', status: 'active' },
+        { userId: 'u-2', name: 'Asha', role: 'pmc', status: 'active' },
+        { userId: 'u-3', name: 'Ravi', role: 'engineer', status: 'active' },
+        { userId: 'u-4', name: 'Gone', role: 'pmc', status: 'removed' },
+      ]) as never,
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    return r;
+  };
+
+  /**
+   * The picker NARROWS; the server DECIDES. It must not enumerate authority — that would be a
+   * second implementation of the standing question, which is root A of this unit's own audit —
+   * but it must exclude the one choice §I is certain to refuse, which is why `callerActorId` is
+   * in the preflight at all.
+   */
+  it('offers other active pmc members and never the caller', () => {
+    const r = openWith({});
+    const names = Array.from(r.getByTestId('sod-actor').querySelectorAll('option'))
+      .map((o) => (o as HTMLOptionElement).value).filter((v) => v !== '');
+    expect(names, 'a self-grant is the one choice the server is certain to refuse').not.toContain('u-self');
+    expect(names).toContain('u-2');
+    expect(names, 'an engineer cannot certify, so authorising one authorises nothing').not.toContain('u-3');
+    expect(names, 'a removed member holds no standing').not.toContain('u-4');
+  });
+
+  it('says so plainly when there is nobody with standing to authorise', () => {
+    const r = openWith({ members: [{ userId: 'u-self', name: 'Me', role: 'pmc', status: 'active' }] });
+    expect(r.getByTestId('sod-grant-nobody').textContent).toMatch(/nobody else/iu);
+  });
+
+  it('will not authorise without both a person and a stated reason', () => {
+    const r = openWith({});
+    const btn = () => r.getByTestId('sod-grant-bill-1') as HTMLButtonElement;
+    expect(btn().disabled, 'no person named').toBe(true);
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
+    expect(btn().disabled, 'no reason given — the justification is the point of the record').toBe(true);
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: '   ' } });
+    expect(btn().disabled, 'whitespace is not a reason').toBe(true);
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
+    expect(btn().disabled).toBe(false);
+  });
+
+  /** R5-1 in the SCREEN — the same rule the dispatcher refuses with, so the two cannot disagree. */
+  it('blocks authorising while a change to the claim is in flight, and says why', () => {
+    const r = openWith({ pending: ['com:billtx:bill-1:certify'] });
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('sod-grant-blocked').textContent).toMatch(/version, state and revision/iu);
+  });
+
+  it('is absent entirely for a role without the granting authority', () => {
+    const r = openWith({ role: 'engineer' });
+    expect(r.queryByTestId('commercial-sod-grant')).toBeNull();
+  });
+});

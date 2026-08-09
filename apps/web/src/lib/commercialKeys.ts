@@ -70,6 +70,10 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   'beginVerification', 'verifyVendorBill',
   // 7B-iii-f — the certification authority chain.
   'certifyBill', 'supersedeCertificate',
+  // 7B-iii-g — the §I authorisation itself. It joins the same op-type set for the same reason as
+  // the others: one registry, so hydration, the pending rebuild and the flush reconcile cover it
+  // without a second list to keep in step.
+  'grantSodException',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -169,6 +173,19 @@ export const isBillTransitionPending = (key: string, billId: string): boolean =>
   key.startsWith(`com:billtx:${billId}:`);
 
 /**
+ * §I — an authorisation names a PERSON, so its key does too.
+ *
+ * Two approvers may authorise two different actors on one claim at the same time, and those are
+ * independent facts: coalescing them onto the claim would report both saved and write one. That
+ * much the transition-verb comment above already got right.
+ *
+ * What it got wrong is treating that independence as independence from the CLAIM — see
+ * `commercialWriteBlocked`.
+ */
+export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
+  `com:sodgrant:${billId}:${actorId}`;
+
+/**
  * Whether a commercial write must be refused because an EQUIVALENT or CONFLICTING one is pending.
  *
  * `dispatchCommercial` used exact key equality, which is right for most actions and wrong for the
@@ -200,6 +217,26 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // a third time — the key identifies the ACTION, the conflict rule names the RESOURCE.
   const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
   if (meas) return pending.some((k) => isMeasurePendingForLine(k, meas[1]!));
+  // ── §I, round 5 finding R5-1 — the grant's independence is from other GRANTS, not from the claim
+  //
+  // The per-PERSON key is right and stays: two approvers authorising two different actors on one
+  // claim are independent facts, and coalescing them would report both saved and write one. What
+  // was carried one step too far is concluding that a grant therefore conflicts with nothing.
+  //
+  // An authorisation is not a free-standing note. It PINS the claim it was given against — version,
+  // status, and (since 7B-iii-h) the monotonic revision — and the server refuses it if any of the
+  // three has moved. A queued transition is precisely a command that moves them. So queueing an
+  // authorisation behind a pending certify/amend/verify writes a grant whose pinned facts that
+  // transition is about to invalidate: the user is told it is saved, and the server refuses it when
+  // it lands.
+  //
+  // This is the same shape as the §F verbs above and as M7's corrections — the key identifies the
+  // ACTION, the conflict rule names the RESOURCE, and the resource here is the claim. The block is
+  // ONE-DIRECTIONAL by design: a pending grant does not block a transition, because a certify that
+  // arrives before its authorisation is refused by the server for a reason that is true and
+  // legible ("no authorisation stands"), not silently mis-pinned.
+  const grant = /^com:sodgrant:(.+):[^:]*$/u.exec(coalesceKey);
+  if (grant) return pending.some((k) => isBillTransitionPending(k, grant[1]!));
   return false;
 }
 
