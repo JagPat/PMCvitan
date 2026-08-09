@@ -1010,9 +1010,14 @@ export class CommercialCertificationService {
   private async lockBill(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
   ): Promise<{ id: string; status: string; vendorId: string; lifecycleVersion: number }> {
+    // the REVISION is read beside the claim and comes from its OWN row — `FOR UPDATE OF b` locks
+    // the claim only, so this read never takes the revision row's lock out of order
     const rows = await tx.$queryRaw<Array<{ id: string; status: string; vendorId: string; lifecycleVersion: number }>>`
-      SELECT "id", "status", "vendorId", "lifecycleVersion" FROM "VendorBill"
-       WHERE "projectId" = ${projectId} AND "id" = ${billId} FOR UPDATE`;
+      SELECT b."id", b."status", b."vendorId",
+             COALESCE(r."revision", 0)::int AS "lifecycleVersion"
+        FROM "VendorBill" b
+        LEFT JOIN "VendorBillRevision" r ON r."projectId" = b."projectId" AND r."billId" = b."id"
+       WHERE b."projectId" = ${projectId} AND b."id" = ${billId} FOR UPDATE OF b`;
     const bill = rows[0];
     if (!bill) throw new NotFoundException('Vendor bill not found in this project');
     return bill;

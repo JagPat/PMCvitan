@@ -14,10 +14,10 @@ slip.** This unit closes the gap between those two things.
 
 | | |
 |---|---|
-| Files | 17 |
-| Changed lines | 1,141 |
-| Budget | 20 files / 1,500 lines — inside |
-| Schema / migration | `SodGrant.reviewedStatus` (nullable) + `20270705000000`, additive and diagnostic-first |
+| Files | 31 |
+| Changed lines | 3,441 |
+| Budget | 20 files / 1,500 lines — **over both, declared `justified-large`** (three correction rounds, twelve findings, a convergence audit, and a migration RESTRUCTURED rather than appended to; twelve of the files are one-line reset-list additions the truncate closure requires) |
+| Schema / migration | `SodGrant.reviewedStatus` + `SodGrant.reviewedLifecycleVersion` + `VendorBillRevision` + `BillCertificate`/`PaymentApproval.reviewedLifecycleVersion`; `20270705000000`, additive, diagnostic-first, replay-safe |
 
 ### Split before writing
 
@@ -285,10 +285,29 @@ does now.
 | h11 — guards installed before the aborting diagnostic | the index was 1,844 characters BELOW the abort |
 | h12 — the approver pins the revision they reviewed | the boundary accepted a grant with no revision pin, and the server recorded its own |
 
+### The fix's first shape re-opened a cleared decision, and a probe caught it
+
+Worth stating plainly. The first spelling advanced the counter with a trigger that UPDATEd
+`VendorBill` — which takes the CLAIM'S row lock, from a writer that may hold no other lock at
+all. Task 5C's Codex round 6 had already **removed** a certificate-side bill lock for exactly
+that reason (the honest withholding path runs `bill → certificate`, so reaching back is ABBA and
+PostgreSQL answers with a deadlock abort instead of the seal's refusal), and it left PROBE 20/21
+standing over the decision. PROBE 20 failed the moment my trigger re-introduced the inversion —
+locally and in CI, identically.
+
+So the counter lives on its OWN row, `VendorBillRevision`, taken LAST by everybody
+(`bill → certificate → revision`, `certificate → revision`, `deduction → revision`) and forming
+a cycle with nothing. Not a workaround for one probe: the same inversion existed for all six fold
+sources. **A new trigger is a new lock order** — that is the narrow lesson, recorded in the
+convergence audit.
+
 **Gates on this head:** `pnpm check` EXIT 0 (web 685/685, API 781/781); focused
-`phase5-t7bii-claim-read` + `phase5-t6a-payments` **57/57**; full API integration on a pristine
-migrated database; `upgrade-proof.sh` **PASSED** — which caught the new fold trigger joining
-`PaymentReversal`'s exhaustively-enumerated trigger set, exactly as that assertion intends.
+`phase5-t7bii-claim-read` + `phase5-t6a-payments` + `phase5-t5c-deductions` **86/86**; full API
+integration on a pristine migrated database; `upgrade-proof.sh` **PASSED** — which caught the new
+fold trigger joining `PaymentReversal`'s exhaustively-enumerated trigger set, exactly as that
+assertion intends. Two module closures also fired correctly on the new table and were answered
+rather than suppressed: `boundary.test.ts` (it must be OWNED by a manifest) and
+`truncate-closure.test.ts` (it has an inbound FK, so every reset must clear it first).
 
 **Two things stated rather than implied.** (1) h10 is a STRUCTURAL probe of the read order, and
 the interleaving Codex describes is **not reachable today** — `grantSodException` and `amend`

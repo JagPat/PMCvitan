@@ -1062,7 +1062,7 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // the whole payable, purely because a later release put the label back.
     //
     // A status is a description; it is not an identity. What the reviewed identity needs is a fact
-    // that only ever moves FORWARD — which is what `lifecycleVersion` is.
+    // that only ever moves FORWARD — which is what the claim's REVISION is.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);
     const other = await secondPmc(projectId);
@@ -1119,7 +1119,7 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const billId = await certifiedClaim(projectId);
     const other = await secondPmc(projectId);
     const version = async (): Promise<number> =>
-      (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).lifecycleVersion;
+      (await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0;
 
     // it already moved, because reaching `certified` is several forward transitions
     const atCertified = await version();
@@ -1142,7 +1142,7 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
 
     // a direct writer cannot walk it backwards, so a stale pin cannot be made to match again
     await expect(t.prisma.$executeRawUnsafe(
-      'UPDATE "VendorBill" SET "lifecycleVersion"=1 WHERE "projectId"=$1 AND "id"=$2', projectId, billId,
+      'UPDATE "VendorBillRevision" SET "revision"=1 WHERE "projectId"=$1 AND "billId"=$2', projectId, billId,
     )).rejects.toThrow(/only ever moves forward/u);
   });
 
@@ -1173,7 +1173,7 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const grant = await certification.grantSodException(projectId, {
       billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
     }, asUser(projectId, other));
-    const atGrant = (await reads()).lifecycleVersion;
+    const atGrant = (await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0;
     expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedLifecycleVersion)
       .toBe(atGrant);
 
@@ -1184,8 +1184,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     expect((await reads()).status, 'the LABEL must not move, or this probe is about the recycling case again')
       .toBe('certified');
     expect((await payments.ledger(projectId, billId, pmc(projectId))).approvable).toBe('95.00');
-    expect((await reads()).lifecycleVersion, 'the money moved, so the reviewed identity must have moved')
-      .toBeGreaterThan(atGrant);
+    expect((await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0,
+      'the money moved, so the reviewed identity must have moved').toBeGreaterThan(atGrant);
 
     await expect(payments.approve(projectId, { billId, amount: '95.00' }, pmc(projectId)))
       .rejects.toThrow(/granted against a claim state that no longer holds/u);
@@ -1205,7 +1205,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // hole Codex just found, so this probe is the list.
     const projectId = await freshProject();
     const billId = await certifiedClaim(projectId);          // BillCertificate
-    const at = async () => (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).lifecycleVersion;
+    const at = async (): Promise<number> =>
+      (await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId } }))?.revision ?? 0;
     const moved = async (label: string, act: () => Promise<unknown>): Promise<void> => {
       const before = await at();
       await act();

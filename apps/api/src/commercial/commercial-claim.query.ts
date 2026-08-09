@@ -107,9 +107,13 @@ export class CommercialClaimQuery {
       // §I — the claim REVISION this bundle was read at, from the SAME repeatable-read snapshot as
       // everything else here, so what a reader echoes belongs with the figures beside it.
       const claimNow = await tx.vendorBill.findFirst({
-        where: { projectId, id: billId }, select: { status: true, lifecycleVersion: true },
+        where: { projectId, id: billId },
+        select: { status: true, revisionRow: { select: { revision: true } } },
       });
-      const asOf = { status: claimNow?.status ?? '', lifecycleVersion: claimNow?.lifecycleVersion ?? 0 };
+      const asOf = {
+        status: claimNow?.status ?? '',
+        lifecycleVersion: claimNow?.revisionRow?.revision ?? 0,
+      };
       const resolved = liveVersionId === null
         ? ({ state: 'none' } as const)
         : await this.certification.resolveGrant(tx, projectId, billId, liveVersionId, user.sub, false, asOf);

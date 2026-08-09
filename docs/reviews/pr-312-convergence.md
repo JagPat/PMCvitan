@@ -1,12 +1,14 @@
 # PR #312 — convergence audit
 
-Two finding-bearing heads, eight findings. The protocol says stop patching and say what is
-actually going wrong. Three things are, and only one of them is new.
+Three finding-bearing heads, twelve findings. The protocol says stop patching and say what is
+actually going wrong. Three roots are, and only one of them is new — plus one narrower lesson
+about lock order that round 3 bought the hard way.
 
 | Head | Findings |
 |---|---|
 | `0240338` | 5 — freeze the column · rerunnable `ADD COLUMN` · the payment resolver · the DB consume seal · the unrendered state |
 | `a805d47` | 3 — the legacy diagnostic's predicate · a recycled status label · the version read outside its lock |
+| `d5753e9` | 4 — the counter tracked labels not money · the server recorded its own "now" · the consume seal never compared revisions · the abort ran before its own guards |
 
 ---
 
@@ -38,11 +40,11 @@ warn about it:
 1. **One implementation, not two.** `commercial-sod.ts` now holds the §I resolution rule and
    both halves read it. The reason R2-2 could not repeat the F3 shape is that there is no
    longer a second copy to forget — the fix landed in the only place there is.
-2. **One site the writers cannot opt out of.** `lifecycleVersion` is bumped by a BEFORE
-   UPDATE trigger, not by a line in each service. There are **six** writers of
-   `VendorBill.status` across four services; "remember to also bump the counter" is exactly
-   the instruction this audit is about nobody remembering. A seventh writer added tomorrow
-   inherits it without being told.
+2. **One site the writers cannot opt out of.** The claim's revision is advanced by triggers,
+   not by a line in each service. There are **six** writers of `VendorBill.status` across four
+   services and **six** tables feeding the payment folds; "remember to also bump the counter"
+   is exactly the instruction this audit is about nobody remembering. A seventh writer added
+   tomorrow inherits it without being told.
 
 The rule I am extracting for myself, stated so it is checkable rather than aspirational:
 **when a finding names an artifact, enumerate every other thing that already surrounds that
@@ -86,10 +88,10 @@ arrived at the same requirement independently ("the reviewed identity needs to i
 monotonic payment-state fact, not just the reusable status string"), which is two
 independent readers naming one missing primitive.
 
-So the deferral is paid here rather than deferred again. `VendorBill.lifecycleVersion` is a
-per-claim counter that only ever moves forward, and it is the second term of every reviewed
-identity. It is available to the client work in 7B-iii-g and to 7B-iii-d without being
-re-derived, because it is a server fact rather than an inference from timestamps.
+So the deferral is paid here rather than deferred again. The claim's REVISION
+(`VendorBillRevision`) is a counter that only ever moves forward, and it is the second term of
+every reviewed identity. It is available to the client work in 7B-iii-g and to 7B-iii-d without
+being re-derived, because it is a server fact rather than an inference from timestamps.
 
 **Checkable form:** before pinning "what someone was looking at", ask whether the pinned
 value can ever be true twice. If it can, it is a description; pin a monotonic fact beside it.
@@ -120,8 +122,6 @@ that decision names — not under a lock that happens to be held.
 
 ---
 
----
-
 ## Round 3 — root B was right and my answer to it was one level too shallow
 
 Four more P1s, and they are all the same sentence: **the counter I added tracks the label, and
@@ -147,6 +147,29 @@ Not when a label changes. Not when the server happens to look. The counter is no
 COMMERCIAL REVISION, advanced by a trigger on every one of the six tables that feed §F's three
 folds — so a seventh fold source added tomorrow is a visible omission in one enumerated list
 rather than a silent hole in an authority check. `PROBE 30` is that list, asserted.
+
+### …and the fix's FIRST shape re-opened a decision an earlier round had already made
+
+Worth recording, because the probe that caught it is the point of having probes.
+
+The first spelling advanced the counter with a trigger that UPDATEd `VendorBill`. That takes the
+CLAIM'S row lock — from a writer that may hold no other lock at all. Task 5C's Codex round 6 had
+already **removed** a certificate-side bill lock for exactly this reason: the honest withholding
+path runs `bill → certificate`, so a certificate-side write reaching back for the bill is ABBA,
+and PostgreSQL answers an ABBA cycle by aborting somebody with a deadlock rather than by the
+refusal the seal was written to give. That decision left two probes standing over it, and PROBE 20
+failed the moment my trigger re-introduced the inversion.
+
+So the counter lives on its OWN row (`VendorBillRevision`), taken LAST by everybody —
+`bill → certificate → revision`, `certificate → revision`, `deduction → revision` — and forms a
+cycle with nothing. This is not a workaround for one probe: the same inversion existed for every
+one of the six fold sources, because a bypass writer touching only that table would have reached
+for the bill from a lock position the honest path never uses.
+
+The lesson is narrower than the roots above and worth its own line: **a new trigger is a new lock
+order.** Adding one to a table that other transactions already reach through is a concurrency
+change, not a bookkeeping change, and this repository has already paid to learn where its cycles
+are.
 
 Two more things this round makes structural rather than promised:
 

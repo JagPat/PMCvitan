@@ -38,35 +38,61 @@ ALTER TABLE "SodGrant" ADD COLUMN IF NOT EXISTS "reviewedStatus" TEXT;
 -- across four services, and "remember to also bump the counter" is exactly the instruction this
 -- review lineage has now proved three times that nobody remembers. A trigger is the one site none
 -- of them can opt out of, and a seventh writer added tomorrow inherits it without being told.
-ALTER TABLE "VendorBill" ADD COLUMN IF NOT EXISTS "lifecycleVersion" INTEGER NOT NULL DEFAULT 0;
+-- ON ITS OWN ROW, and that is the whole design rather than a detail.
+--
+-- The counter has to advance from every fold source, and a trigger that advances it by UPDATEing
+-- `VendorBill` takes the CLAIM'S row lock — from a writer that may hold no other lock at all. Task
+-- 5C's Codex round 6 removed a certificate-side bill lock for exactly this reason and left two
+-- probes standing over it: the honest withholding path runs `bill → certificate`, so a
+-- certificate-side write reaching for the bill is ABBA, and PostgreSQL answers an ABBA cycle by
+-- aborting somebody with a deadlock rather than by the refusal the seal was written to give.
+--
+-- A counter on its own row is taken LAST by everybody — `bill → certificate → revision`,
+-- `certificate → revision`, `deduction → revision` — so it introduces no cycle with anything.
+CREATE TABLE IF NOT EXISTS "VendorBillRevision" (
+  "projectId" TEXT NOT NULL,
+  "billId"    TEXT NOT NULL,
+  "revision"  INTEGER NOT NULL DEFAULT 0,
+  CONSTRAINT "VendorBillRevision_pkey" PRIMARY KEY ("projectId", "billId"),
+  CONSTRAINT "VendorBillRevision_bill_fkey" FOREIGN KEY ("projectId", "billId")
+    REFERENCES "VendorBill"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION
+);
 
-CREATE OR REPLACE FUNCTION phase5_t7biiih_bill_lifecycle_version() RETURNS trigger AS $$
+-- Never rewound, never jumped. Advancing is always safe — it can only INVALIDATE an authority,
+-- never revive one — so the guard is only about the two directions that could revive a stale pin.
+CREATE OR REPLACE FUNCTION phase5_t7biiih_revision_forward_only() RETURNS trigger AS $$
 BEGIN
-  -- A status transition advances it on its own, so no `status` writer has to remember.
-  IF NEW."status" IS DISTINCT FROM OLD."status" THEN
-    NEW."lifecycleVersion" := GREATEST(NEW."lifecycleVersion", OLD."lifecycleVersion" + 1);
-    RETURN NEW;
-  END IF;
-
-  -- Otherwise the ONLY admissible movement is a single step forward, which is what the fold
-  -- triggers below take. Codex round 3 (P1): the first spelling forbade every direct write, which
-  -- also forbade the fold triggers — and forbidding them is what left the counter tracking LABELS
-  -- when the thing it exists to identify is the MONEY.
-  --
-  -- A hostile writer can therefore advance it by one. That asymmetry is deliberate and it is the
-  -- safe direction: advancing the counter can only INVALIDATE an authorisation, never revive one.
-  -- Going backwards, or jumping, is what would let a stale pin be made to match again, and both
-  -- are refused.
-  IF NEW."lifecycleVersion" IS DISTINCT FROM OLD."lifecycleVersion"
-     AND NEW."lifecycleVersion" <> OLD."lifecycleVersion" + 1 THEN
-    RAISE EXCEPTION 'The claim lifecycle version only ever moves forward, one step at a time (%)', OLD."id";
+  IF NEW."revision" <> OLD."revision" + 1 THEN
+    RAISE EXCEPTION 'The claim revision only ever moves forward, one step at a time (%)', OLD."billId";
   END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS "VendorBillRevision_forward_only" ON "VendorBillRevision";
+CREATE TRIGGER "VendorBillRevision_forward_only" BEFORE UPDATE ON "VendorBillRevision"
+  FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_revision_forward_only();
+
+-- One place every mover goes through, so no writer can advance it halfway.
+CREATE OR REPLACE FUNCTION phase5_t7biiih_touch_revision(p_project text, p_bill text) RETURNS void AS $$
+  INSERT INTO "VendorBillRevision"("projectId", "billId", "revision") VALUES (p_project, p_bill, 1)
+  ON CONFLICT ("projectId", "billId") DO UPDATE SET "revision" = "VendorBillRevision"."revision" + 1;
+$$ LANGUAGE sql;
+
+CREATE OR REPLACE FUNCTION phase5_t7biiih_bill_lifecycle_version() RETURNS trigger AS $$
+BEGIN
+  -- A §F status transition is a change a reviewer would have seen, so it advances the revision —
+  -- AFTER the row is written, and against the revision row rather than this one, so the claim's
+  -- own lock is never taken by anybody who was not already holding it.
+  IF NEW."status" IS DISTINCT FROM OLD."status" THEN
+    PERFORM phase5_t7biiih_touch_revision(NEW."projectId", NEW."id");
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
 DROP TRIGGER IF EXISTS "VendorBill_lifecycle_version" ON "VendorBill";
-CREATE TRIGGER "VendorBill_lifecycle_version" BEFORE UPDATE ON "VendorBill"
+CREATE TRIGGER "VendorBill_lifecycle_version" AFTER UPDATE ON "VendorBill"
   FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_bill_lifecycle_version();
 
 -- The grant records it alongside the status. NULLABLE for the same reason `reviewedStatus` is:
@@ -109,8 +135,7 @@ BEGIN
   END IF;
 
   IF v_bill IS NOT NULL THEN
-    UPDATE "VendorBill" SET "lifecycleVersion" = "lifecycleVersion" + 1
-     WHERE "projectId" = v_project AND "id" = v_bill;
+    PERFORM phase5_t7biiih_touch_revision(v_project, v_bill);
   END IF;
   RETURN NULL;
 END;

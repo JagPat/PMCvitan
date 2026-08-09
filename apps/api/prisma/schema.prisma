@@ -3189,11 +3189,32 @@ model BudgetException {
 // The status lives on the ROOT rather than the version because the duplicate-document index is a
 // predicate on the lifecycle's own terminal release states (§F, probe 5bj), and a partial unique
 // can only read columns of the row it indexes.
+/// §F/§I — the claim's COMMERCIAL REVISION: a counter that only ever moves forward, advanced
+/// whenever anything a reviewer would have seen changes — every §F status transition and every
+/// write to the six tables feeding `NET_PAYABLE`, `APPROVED` and `PAID`.
+///
+/// ITS OWN ROW, not a column on `VendorBill`, and that is the design rather than a detail. A
+/// trigger advancing a column would take the CLAIM'S row lock from writers holding no other lock,
+/// and Task 5C's Codex round 6 removed a certificate-side bill lock for exactly that reason: the
+/// honest withholding path runs `bill → certificate`, so a certificate-side write reaching back
+/// for the bill is ABBA, and PostgreSQL answers an ABBA cycle with a deadlock abort rather than
+/// the refusal the seal was written to give. On its own row the counter is taken LAST by everyone
+/// and forms a cycle with nothing.
+model VendorBillRevision {
+  projectId String
+  billId    String
+  bill      VendorBill @relation(fields: [projectId, billId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  revision  Int        @default(0)
+
+  @@id([projectId, billId])
+}
+
 model VendorBill {
+  revisionRow  VendorBillRevision?
   certificates BillCertificate[]
-  id           String            @id @default(cuid())
+  id           String              @id @default(cuid())
   projectId    String
-  project      Project           @relation(fields: [projectId], references: [id])
+  project      Project             @relation(fields: [projectId], references: [id])
 
   /// the counterparty, bound to this project. A LINE's PO line is FK-proven to carry the SAME
   /// vendor, so Vendor A claiming against Vendor B's order is unrepresentable (§F).
@@ -3216,18 +3237,6 @@ model VendorBill {
   /// produces their evidence (§E, Task 5) — a control ships with the transition it guards.
   status            String   @default("draft")
   statusChangedAt   DateTime @default(now())
-  /// §F/§I — a per-claim counter that only ever moves FORWARD, bumped whenever `status` changes.
-  ///
-  /// A status LABEL is a description, not an identity: §F derives the payment status from the
-  /// folds, and the derivation genuinely returns to a label it has left (`certified → paid →
-  /// certified`, when a release raises the payable again). Anything that needs to say "the claim
-  /// the approver was looking at" therefore cannot pin the label alone.
-  ///
-  /// Bumped by `VendorBill_lifecycle_version`, a BEFORE UPDATE trigger, rather than by the six
-  /// services that write `status` — one site none of them can opt out of, which a line in each
-  /// service would not be. The same trigger refuses any direct write of the column: a counter a
-  /// writer can rewind is not monotonic.
-  lifecycleVersion  Int      @default(0)
   /// why the claim left the live set — required on `rejected` and on `disputed` (non-blank CHECK)
   statusReason      String?
   /// §F — the version that was live when this claim was DISPUTED, captured by the lifecycle
