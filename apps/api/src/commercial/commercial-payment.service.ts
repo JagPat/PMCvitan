@@ -23,6 +23,7 @@ import { CommercialStatusService } from './commercial-status.service';
 import { announceMoneyMoved } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
+import { resolveSodGrant as resolveGrantForRule } from './commercial-sod';
 import type { ApprovePaymentInput, RecordPaymentInput, ReversePaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -631,39 +632,41 @@ export class CommercialPaymentService {
    * against the same `SodGrant` table, selected on the PAYMENT rule so an authority issued for
    * certification can never be spent here.
    *
-   * The shape is deliberately the one Task 5's round 10 arrived at: candidates are FILTERED by
-   * standing rather than "pick one, then check it", because more than one live grant can legally
-   * exist (a downgraded approver's stale row beside a valid replacement) and picking arbitrarily
-   * refuses good work.
+   * The RULE is `commercial-sod.ts` and is shared with the certification half. It used to be thirty
+   * lines of near-identical logic here, and Codex found exactly what that costs: 7B-iii-h taught
+   * the certification resolver that a grant records the claim STATE its approver reviewed, and this
+   * copy never learned it — so an authorisation written over a claim with nothing approved on it
+   * could still release money after someone else had approved ₹10 of the same claim. Two
+   * implementations of one question, and only the one the unit was named for got fixed. Now there
+   * is one, and only the REFUSALS are stated here, because what a non-live state means is a
+   * property of the act being refused rather than of the resolution.
    */
   private async resolveSodGrant(
     tx: Prisma.TransactionClient, projectId: string, billId: string, versionId: string, actorId: string,
   ): Promise<{ grantId: string; approverId: string; reason: string }> {
-    const live = await tx.sodGrant.findMany({
-      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
-      select: { id: true, approverId: true, reason: true },
-      orderBy: { grantedAt: 'asc' },
-    });
-    for (const candidate of live) {
-      // standing is the ORGS module's question, asked under a lock because this IS an authority
-      // decision — a concurrent downgrade must not commit behind an approval it granted
-      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate: true })) {
-        return { grantId: candidate.id, approverId: candidate.approverId, reason: candidate.reason };
-      }
+    const resolved = await resolveGrantForRule(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, true);
+    if (resolved.state === 'live') {
+      return { grantId: resolved.grant.id, approverId: resolved.grant.approverId, reason: resolved.grant.reason };
     }
-    if (live.length > 0) {
+    if (resolved.state === 'approver-lost-standing') {
       throw new ForbiddenException(
         'The authorisation to approve this claim was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again',
       );
     }
     // version-pinned, exactly as certification's grant is: an amendment is a DIFFERENT claim, and
     // permission to release money against the one the approver looked at must not carry over
-    const stale = await tx.sodGrant.count({
-      where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
-    });
-    if (stale > 0) {
+    if (resolved.state === 'stale-version') {
       throw new ConflictException(
         'The authorisation to approve this claim was granted against an earlier claim version — the claim has been amended since, so it needs authorising again',
+      );
+    }
+    // …and the version is not the whole of what an approver looked at. A claim keeps ONE version id
+    // while its payment state moves, so an exception written when nothing was approved would
+    // otherwise still stand after somebody approved part of it — a materially different claim,
+    // authorised by nobody.
+    if (resolved.state === 'stale-review') {
+      throw new ConflictException(
+        'The authorisation to approve this claim was granted against a claim state that no longer holds — the claim has moved on since it was authorised, so it needs authorising again against what stands now',
       );
     }
     throw new ForbiddenException(

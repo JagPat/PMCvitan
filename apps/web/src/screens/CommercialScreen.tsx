@@ -6,7 +6,7 @@ import { RefreshCw, WifiOff } from '@/lib/icons';
 import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
-import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
+import type { CostHeadPositionDto, MeasurementRegisterDto, SodGrantState } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import { decGt } from '@/lib/decimal';
@@ -66,6 +66,26 @@ const CLAIM_TABS: readonly Tab[] = ['certification', 'payments'];
  * principle was right and applied to exactly the layer I was looking at.
  */
 const MONEY_TABS: readonly Tab[] = ['position', 'commitments', 'forecast'];
+
+/**
+ * §I — what each authorisation state MEANS to the person reading it, and its remedy.
+ *
+ * A `Record` over the shared state union rather than a chain of `&&`s in the JSX, because the
+ * chain silently rendered an empty card for the one state it did not enumerate: `stale-review`
+ * arrived with 7B-iii-h and a certifier whose authorisation had gone stale saw a box with nothing
+ * in it, no reason and no remedy. The map makes that unrepresentable — a state added to
+ * `SodGrantState` without a message here is a compile error, not a blank panel.
+ *
+ * `none` maps to null and renders NO card: there is no authorisation in play, which is different
+ * from having one and saying nothing about it.
+ */
+const SOD_STATE_MESSAGE: Record<SodGrantState, string | null> = {
+  live: 'A segregation-of-duties authorisation stands for you on this claim, and certifying will consume it.',
+  'stale-version': 'Your authorisation was granted against an earlier version of this claim — it has been amended since, so it needs authorising again.',
+  'stale-review': 'Your authorisation was granted against an earlier state of this claim — it has moved on since, so it needs authorising again against the claim as it stands now.',
+  'approver-lost-standing': 'Your authorisation was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again.',
+  none: null,
+};
 
 const rowCard: CSSProperties = { border: '1px solid var(--hairline)', borderRadius: 11, padding: '11px 13px', marginTop: 10, background: 'var(--panel)' };
 const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--faint)' };
@@ -1158,14 +1178,9 @@ export function CommercialScreen() {
                       act — see `CertifyPreflightDto`. The panel reports the state that IS known
                       and leaves the rest to the server's refusal, which the block below makes
                       legible instead of guessing at. */}
-                  {mayCertify && claim.certifyPreflight.grantState !== 'none' && (
+                  {mayCertify && SOD_STATE_MESSAGE[claim.certifyPreflight.grantState] !== null && (
                     <div style={{ ...rowCard, ...muted }} data-testid="commercial-sod-state">
-                      {claim.certifyPreflight.grantState === 'live'
-                        && 'A segregation-of-duties authorisation stands for you on this claim, and certifying will consume it.'}
-                      {claim.certifyPreflight.grantState === 'stale-version'
-                        && 'Your authorisation was granted against an earlier version of this claim — it has been amended since, so it needs authorising again.'}
-                      {claim.certifyPreflight.grantState === 'approver-lost-standing'
-                        && 'Your authorisation was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again.'}
+                      {SOD_STATE_MESSAGE[claim.certifyPreflight.grantState]}
                     </div>
                   )}
 

@@ -18,6 +18,7 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
+import { resolveSodGrant, type SodGrantResolution } from './commercial-sod';
 import type { CertifyBillCommand, GrantSodExceptionCommand, SupersedeCertificateCommand } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -744,22 +745,15 @@ export class CommercialCertificationService {
   /**
    * §I — WHICH authorisation, if any, stands for this actor on this claim version.
    *
-   * Extracted from `assertSegregation` rather than written beside it, because 7B-iii-f needs the
-   * same answer on a READ — a certifier who has just been granted an exception cannot otherwise
-   * tell whether it is live and version-matched, and "granted against an earlier version because
-   * the claim was amended since" is invisible until the certification is refused. The service's
-   * own history is the argument for sharing rather than re-deriving: this rule was twice TWO
-   * implementations of one question, and only the one a finding named ever got fixed.
+   * Exposed here because 7B-iii-f needs the same answer on a READ — a certifier who has just been
+   * granted an exception cannot otherwise tell whether it is live and version-matched, and "granted
+   * against an earlier version because the claim was amended since" is invisible until the
+   * certification is refused.
    *
-   * `forUpdate` is the CALLER'S INTENT, not a second rule. A certification is an authority
-   * DECISION, so it reads standing under a lock — a concurrent downgrade must not commit behind an
-   * approval it granted. A screen is asking what is true now and locks nothing. The predicate is
-   * identical either way; only whether the answer is held is different.
-   *
-   * The shape is deliberate. "Select an arbitrary candidate, then check it" answers a different
-   * question from "select a candidate that is valid" whenever more than one can exist — Codex
-   * rounds 8, 9 and 10 were three costumes of that one defect — so the standing filter is INSIDE
-   * the selection and stale rows are simply not candidates.
+   * The rule itself lives in `commercial-sod.ts` and is READ BY BOTH HALVES of §I. It was two
+   * near-identical private methods until Codex found the payment half missing this unit's
+   * reviewed-state check — the third recurrence of the shape this service's own comments already
+   * record: two implementations of one question, and only the one a finding named ever got fixed.
    */
   async resolveGrant(
     tx: Prisma.TransactionClient,
@@ -768,42 +762,8 @@ export class CommercialCertificationService {
     versionId: string,
     actorId: string,
     forUpdate: boolean,
-  ): Promise<
-    | { state: 'live'; grant: { id: string; approverId: string; reason: string } }
-    | { state: 'none' | 'stale-version' | 'approver-lost-standing' | 'stale-review' }
-  > {
-    const live = await tx.sodGrant.findMany({
-      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
-      select: { id: true, approverId: true, reason: true, reviewedStatus: true },
-      orderBy: { grantedAt: 'asc' },
-    });
-    // 7B-iii-h — the reviewed state must still HOLD, checked where the authority is SPENT.
-    //
-    // Checking it only at issue proves nothing here: the version does not change as a claim moves
-    // through the §E lifecycle, so an authorisation given over a `submitted` claim would otherwise
-    // be consumed to certify a verdict that did not exist when it was written. A grant whose
-    // `reviewedStatus` is NULL predates the column and records no evidence of what was reviewed —
-    // unusable rather than guessed, because guessing here puts words in an approver's mouth.
-    const bill = await tx.vendorBill.findFirst({ where: { projectId, id: billId }, select: { status: true } });
-    const currentStatus = bill?.status ?? null;
-    for (const candidate of live) {
-      if (candidate.reviewedStatus === null || candidate.reviewedStatus !== currentStatus) continue;
-      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate })) {
-        return { state: 'live', grant: candidate };
-      }
-    }
-    // the two non-live reasons are distinguished, because they need different remedies: a stale
-    // review needs re-authorising against what is true now, a lost approver needs a different pmc
-    if (live.length > 0) {
-      const anyStanding = live.some((c) => c.reviewedStatus !== null && c.reviewedStatus === currentStatus);
-      return { state: anyStanding ? 'approver-lost-standing' : 'stale-review' };
-    }
-    // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
-    // approver looked at should not silently carry over to one they never saw
-    const stale = await tx.sodGrant.count({
-      where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
-    });
-    return { state: stale > 0 ? 'stale-version' : 'none' };
+  ): Promise<SodGrantResolution> {
+    return resolveSodGrant(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, forUpdate);
   }
 
   /**
@@ -848,17 +808,27 @@ export class CommercialCertificationService {
             `This claim moved to ${reviewed.status} after you read it — the authorisation would apply to a state you have not reviewed. Reload and authorise again.`,
           );
         }
-        // 7B-iii-h — the EXCUSED actor must be able to certify at all. A grant naming someone
-        // without `commercial.certify` standing is an authority that can never be exercised: it is
+        // 7B-iii-h — the EXCUSED actor must be able to perform the act at all. A grant naming
+        // someone without standing for it is an authority that can never be exercised: it is
         // recorded, displayed, and the named actor is still refused by a different rule when they
         // try. Refused at the COMMAND, not merely hidden in a picker — the picker is not the only
         // way here, which is the whole reason the durable layer carries its own guard.
-        const excusedMayCertify = await this.orgs.hasProjectRoleStanding(
-          tx, projectId, input.actorId, ROLE_POLICY['commercial.certify'] as readonly string[], { forUpdate: true },
+        //
+        // The permission is chosen BY THE RULE. §I has two halves and they excuse different acts;
+        // both resolve to pmc today, so this changes no behaviour — it stops a future divergence in
+        // one policy from silently validating the wrong one, which is the same
+        // correction-did-not-travel-to-the-sibling shape this file has now paid for three times.
+        const rule = input.rule ?? SOD_RULE;
+        const excusedPermission = rule === SOD_RULES.certifierMayNotApprove
+          ? 'commercial.approve-payment' : 'commercial.certify';
+        const excusedMayAct = await this.orgs.hasProjectRoleStanding(
+          tx, projectId, input.actorId, ROLE_POLICY[excusedPermission] as readonly string[], { forUpdate: true },
         );
-        if (!excusedMayCertify) {
+        if (!excusedMayAct) {
           throw new ForbiddenException(
-            'That person cannot certify on this project, so an exception would authorise nothing they could act on',
+            rule === SOD_RULES.certifierMayNotApprove
+              ? 'That person cannot approve payments on this project, so an exception would authorise nothing they could act on'
+              : 'That person cannot certify on this project, so an exception would authorise nothing they could act on',
           );
         }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
@@ -875,7 +845,7 @@ export class CommercialCertificationService {
             // contract, so every Task-5 caller is unchanged). An approver authorising a store user
             // to certify has not thereby authorised anyone to approve that claim's payment, and the
             // consumption sites select on this column for exactly that reason.
-            projectId, billId: input.billId, versionId: version.id, rule: input.rule ?? SOD_RULE,
+            projectId, billId: input.billId, versionId: version.id, rule,
             // …and the state it was justified against, RECORDED rather than merely checked: a
             // check at issue proves nothing at consumption, which is where the authority is spent.
             reviewedStatus: reviewed.status,

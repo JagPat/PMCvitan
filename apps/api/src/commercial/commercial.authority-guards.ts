@@ -56,6 +56,11 @@ export const AUTHORITY_GUARDS: readonly AuthorityGuard[] = [
       why: 'the seal pins the grant to the certificate’s own `versionId`, so a stale grant cannot excuse an approval on an amended claim',
     },
     {
+      match: 'granted against a claim state that no longer holds',
+      seal: 'SodGrant_reviewed_state_sealed',
+      why: 'a claim keeps ONE version id while its payment state moves, so the version pin above cannot ask what the approver actually reviewed. The seal refuses to let any grant be spent from a state its rule cannot proceed from — both §I arms, at the transition that spends the authority',
+    },
+    {
       match: 'may not also approve its payment',
       seal: 'PaymentApproval_approver_not_certifier',
       why: '§I’s payment half, sealed at PG with the override path honoured rather than banned',

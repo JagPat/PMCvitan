@@ -14,8 +14,8 @@ slip.** This unit closes the gap between those two things.
 
 | | |
 |---|---|
-| Files | 8 |
-| Changed lines | 285 |
+| Files | 17 |
+| Changed lines | 1,141 |
 | Budget | 20 files / 1,500 lines — inside |
 | Schema / migration | `SodGrant.reviewedStatus` (nullable) + `20270705000000`, additive and diagnostic-first |
 
@@ -103,6 +103,9 @@ the remedy for a stale review is unreachable — worse than the hole it closes.
 | resolution ignores the recorded state (checked at issue only) | h2 |
 | the excused actor's certify standing is not checked at the command | h3 |
 
+Measured on the FIRST head (`0240338`); the corrected head's figures are in the correction
+section below, and supersede these where they differ.
+
 - `pnpm check` — **EXIT 0** (web 684/684, API 781/781)
 - API integration, focused: `phase5-t7bii-claim-read` **20/20**, `phase5-t5b-certification` **47/47**
 - Full API integration suite on a pristine migrated database — **86 files / 1041 tests**, exit 0
@@ -112,6 +115,87 @@ the remedy for a stale review is unreachable — worse than the hole it closes.
 rows. That it runs at *deploy* time is a property of the migration file, which CI applies
 from scratch on every head — I did not stand up a separate deploy-time abort harness for a
 nullable additive column whose diagnostic is a safety stop.
+
+---
+
+## Correction round 1 — five Codex findings, and three of them are one root
+
+Findings 1, 3 and 4 are the same defect in three costumes, and it is the root PR #310's
+audit names FIRST: **I added the evidence to the COLUMN and stopped there.** Every guard
+that already surrounded `SodGrant` — the trigger that freezes its fields, the seal that
+judges a consumed one, and the OTHER resolver next door — kept working exactly as if the
+new fact did not exist.
+
+That is not a coincidence of three separate oversights. It is one habit: *fix the instance
+a finding names, not the class it belongs to.* This table's own migration comments already
+record it happening twice before (Task 5's rounds 7→8, Task 6A's round 3), and this unit
+managed it again on the artifact introduced to close a finding.
+
+| # | Finding | Fixed as a CLASS, not an instance |
+|---|---|---|
+| 1 (P1) | `reviewedStatus` outside `phase5_t5_grant_append_only`, so a direct writer could rewrite what an approver reviewed | the column joins the frozen set — the rule ("immutable apart from its one-way consumption") is unchanged, only the field list |
+| 3 (P1) | `CommercialPaymentService.resolveSodGrant` ignored the reviewed state | the two near-identical resolvers become **ONE** (`commercial-sod.ts`) read by both §I halves, so the next fact added cannot reach one half and miss the other |
+| 4 (P1) | the PostgreSQL seals matched a grant by version alone | ONE constraint trigger on the transition **every** consumption arm passes through — a third target would inherit it rather than need a third copy |
+| 2 (P2) | the diagnostic could abort *after* `ADD COLUMN`, making its own instructed retry impossible | `ADD COLUMN IF NOT EXISTS` |
+| 5 (P2) | the panel enumerated three of four states, so `stale-review` rendered an empty card | an exhaustive `Record<SodGrantState, …>` over a shared runtime state list — a sixth state without a message is a **compile error** |
+
+### The seal states what is invariant, because the service cannot
+
+The service compares the reviewed state to what is true *now*. The database cannot: by
+COMMIT the act has already moved the claim on (a certification leaves the bill `certified`,
+not `verified`). So the durable rule is the part that does not move — **a grant may only be
+spent from a state its rule can legitimately proceed from** — with the admissible sets in
+`phase5_t7biiih_admissible_reviewed_states` and pinned to the shared TypeScript constants by
+probe h8. An unknown rule admits nothing: a third §I rule added without teaching this
+function is refused rather than waved through.
+
+`ADD COLUMN IF NOT EXISTS` is worth one more sentence, because it looks like caution and is
+not: the closing diagnostic deliberately aborts the deploy *after* the column exists, and
+instructs the operator to clear the grants and redeploy. Without it that replay dies on
+duplicate-column — the migration would have made itself unrepairable by the very diagnostic
+that exists to repair it.
+
+### Correction evidence — every probe RED first
+
+| Probe | Reproduced RED at `0240338` |
+|---|---|
+| h6 — the append-only trigger freezes `reviewedStatus` | the UPDATE **committed** |
+| h7 — a certificate cannot rest on a grant recorded at a state it never certified | the bypass **committed**, leaving exactly the state finding 4 describes |
+| h8 — the SQL mirror IS the shared TypeScript set | the function did not exist |
+| h9 — the column addition is rerunnable | `42701 column "reviewedStatus" already exists` |
+| PROBE 25 — a payment authorisation must match the reviewed state | the approval **succeeded** |
+| PROBE 26 — an approval cannot rest on a grant recorded at a state it never approved | the bypass **committed** |
+| screen — every §I state is legible | `stale-review must SAY something: expected '' to be truthy` |
+
+Two things about h7/PROBE 26 stated plainly rather than buried. They disable **one named
+trigger** inside a transaction and re-enable it before that transaction ends, so the seal is
+restored on the way out or the DDL rolls back with the abort. That is not a shortcut around
+a service check — it is the *only* way to reach the state the finding describes, because the
+service refuses to create it and `SodGrant_append_only` refuses to edit a consumed grant at
+all. A database seal exists for exactly that writer, so that is the writer the probe uses.
+`SET CONSTRAINTS ALL IMMEDIATE` is load-bearing too: PostgreSQL will not ALTER a table with
+pending trigger events.
+
+**Gates on the corrected head:** `pnpm check` **EXIT 0** (web 685/685, API 781/781); the full
+API integration suite on a pristine migrated database; `upgrade-proof.sh` **PASSED**, with the
+whole ledger re-applied from scratch and four new §I assertions (a live grant may record any
+state; rewriting it is refused; spending one recorded at `submitted` is refused; spending a
+legacy NULL one is refused) — each pinned to the message of the seal it names, so none can
+pass because a different seal refused it first.
+
+**One boundary stated honestly, again.** The upgrade proof covers the seal's **certificate**
+arm. Reaching the **approval** arm there needs a coherent grant→exception→approval chain, and
+that legacy fixture's only approval is one §I permits outright — so an assertion would be
+refused by the biconditional first and prove nothing about the seal it names. PROBE 26 proves
+that arm against live PostgreSQL instead. This is the same reasoning the script already
+records for §G bound 5's approval-scoped half.
+
+**One equivalence claimed as an equivalence, not a fix.** `grantSodException` now chooses the
+excused actor's required permission BY RULE (`commercial.approve-payment` for the payment
+half) instead of always asking about `commercial.certify`. Both resolve to `pmc` today, so
+this changes no behaviour — it stops a future divergence in one policy from silently
+validating the wrong one, which is the same correction-did-not-travel-to-the-sibling shape
+this file has now paid for three times.
 
 **One cleared fixture changed:** Task-5's `R9` granted to a stranger merely as "a different
 actor". A stranger holds no membership and so cannot certify, which this unit's command now

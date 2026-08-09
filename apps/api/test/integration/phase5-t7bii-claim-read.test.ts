@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { BILL_CERTIFY_FROM, BILL_STATUSES_PAST_CERTIFICATION } from '@vitan/shared';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
@@ -660,6 +663,119 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
 
     await grantAt(projectId, billId, f.memberUser.id, approver);
     await expect(t.prisma.$executeRawUnsafe(diagnostic)).rejects.toThrow(/phase5_t7biiih: 1 unconsumed/u);
+  });
+
+  // ── the correction round: the evidence column joins the SEALS that already surround it ───────
+  //
+  // Findings 1, 3 and 4 are one root wearing three costumes — the same root PR #310's audit named
+  // first. I added `reviewedStatus` to the COLUMN and stopped: the append-only trigger that freezes
+  // every other field of a grant did not learn it, the commit-time seal that judges a consumed
+  // grant did not learn it, and the OTHER resolver — the payment half — did not learn it either.
+  // A new fact on a guarded row belongs to every guard on that row, or it is decoration.
+
+  /** The bypass writer a DATABASE seal exists for, spelled honestly.
+   *
+   *  ONE trigger is disabled BY NAME, inside a transaction, and re-enabled before that transaction
+   *  ends — so the seal is restored on the way out or the whole DDL rolls back with the abort. This
+   *  is not a shortcut around a service check: it is the only way to reach the state the finding
+   *  describes, because the service refuses to create it and `SodGrant_append_only` refuses to edit
+   *  a consumed grant at all. What the probe asks is whether the DATABASE would notice.
+   *
+   *  `SET CONSTRAINTS ALL IMMEDIATE` is load-bearing rather than decorative: the deferred seals
+   *  queue behind the UPDATE, and PostgreSQL refuses to ALTER a table with pending trigger events.
+   *  Forcing them here also puts the refusal at the write that caused it. */
+  const regressReviewedState = async (projectId: string, grantId: string, to: string | null): Promise<void> => {
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
+      await tx.$executeRawUnsafe(
+        'UPDATE "SodGrant" SET "reviewedStatus"=$3 WHERE "projectId"=$1 AND "id"=$2', projectId, grantId, to,
+      );
+      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
+    });
+  };
+
+  it('h6: the reviewed state is FROZEN by the trigger that freezes the rest of the grant', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    const grant = await grantAt(projectId, billId, f.memberUser.id, approver);
+
+    // `SodGrant` is append-only apart from its one consume stamp, and `reviewedStatus` arrived
+    // OUTSIDE that frozen set — so a direct update could rewrite what an approver is recorded as
+    // having reviewed, on the exact register whose purpose is attributable human authorisation.
+    await expect(t.prisma.$executeRawUnsafe(
+      'UPDATE "SodGrant" SET "reviewedStatus"=\'submitted\' WHERE "projectId"=$1 AND "id"=$2',
+      projectId, grant.id,
+    )).rejects.toThrow(/IMMUTABLE/u);
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('verified');
+
+    // …and the ONE transition the trigger exists to permit still passes, so the freeze is precise
+    // rather than a lock on the row. Round 4's lesson: test what the fix must PRESERVE.
+    const cert = await certification.certify(projectId, { billId }, pmc(projectId));
+    expect(cert.id).toBeDefined();
+  });
+
+  it('h7: a certificate cannot come to rest on a grant recorded at a state it never certified', async () => {
+    const projectId = await freshProject();
+    const recorder = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const grant = await grantAt(projectId, billId, recorder, f.memberUser.id);
+    const cert = await certification.certify(projectId, { billId }, asUser(projectId, recorder));
+    expect(cert.sodException?.grantId, 'the fixture must produce a REAL §I chain').toBe(grant.id);
+
+    // the whole §I chain is coherent — certificate, exception, consumed grant — and the ONLY thing
+    // wrong with it is that the grant now records a state no certification proceeds from
+    // pinned to THIS seal's message, not merely "it threw": a refusal from a different seal would
+    // leave the finding open while the probe reported green, which this suite has produced before
+    await expect(regressReviewedState(projectId, grant.id, 'submitted'))
+      .rejects.toThrow(/state no `evidence-recorder-may-not-certify` authority can be spent from/u);
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('verified');
+
+    // NULL is refused for the same reason and not by accident: a legacy grant carries no evidence
+    // of what its approver saw, and guessing here puts words in their mouth
+    await expect(regressReviewedState(projectId, grant.id, null))
+      .rejects.toThrow(/records no reviewed state/u);
+
+    // …and the state the certification actually rests on is ACCEPTED, so the seal is precise
+    await expect(regressReviewedState(projectId, grant.id, 'verified')).resolves.toBeUndefined();
+  });
+
+  it('h8: the SQL mirror of the admissible reviewed states IS the shared TypeScript set', async () => {
+    // A trigger cannot import TypeScript, so the admissible sets are the one unavoidable second
+    // copy — the same position `phase5_t6b_derived_bill_status` is in. This is the closure that
+    // makes the copy safe: a status added to the shared lifecycle and forgotten in SQL fails here
+    // rather than by silently refusing a legitimate authorisation in production.
+    const admissible = async (rule: string): Promise<string[]> => {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ s: string[] }>>(
+        'SELECT phase5_t7biiih_admissible_reviewed_states($1) AS s', rule,
+      );
+      return rows[0]!.s;
+    };
+    expect(await admissible('evidence-recorder-may-not-certify')).toEqual([...BILL_CERTIFY_FROM]);
+    expect(await admissible('certifier-may-not-approve')).toEqual([...BILL_STATUSES_PAST_CERTIFICATION]);
+    // an unknown rule admits NOTHING — a third §I rule added without teaching this function is
+    // refused rather than silently waved through, which is the direction a seal should fail
+    expect(await admissible('some-future-rule')).toEqual([]);
+  });
+
+  it('h9: the column addition is RERUNNABLE, so the diagnostic abort does not poison the retry', async () => {
+    // The closing `DO` block aborts the deploy on a legacy unconsumed grant — AFTER `ADD COLUMN`
+    // has already succeeded. The operator clears the grants and redeploys, and the retry replays
+    // the whole file: without `IF NOT EXISTS` that second run dies on duplicate-column, and the
+    // remedy the diagnostic instructs is unreachable.
+    const sql = readFileSync(
+      join(__dirname, '../../prisma/migrations/20270705000000_phase5_t7biiih_sod_reviewed_status/migration.sql'),
+      'utf8',
+    );
+    const add = sql.split('\n').find((l) => l.startsWith('ALTER TABLE "SodGrant" ADD COLUMN'));
+    expect(add, 'the migration must still be the thing that adds the column').toBeDefined();
+    // this database is migrated, so re-running the statement IS the retry
+    await expect(t.prisma.$executeRawUnsafe(add!)).resolves.toBeDefined();
   });
 
 });

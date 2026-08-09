@@ -885,6 +885,19 @@ export interface CommercialClaimDto {
 
 
 /**
+ * §I — every authorisation state the server can report, as a RUNTIME list.
+ *
+ * A bare union let a state be added to the contract and forgotten by the consumer that renders it:
+ * `stale-review` arrived and the screen enumerated the three it already knew, so an affected
+ * certifier got an empty card and no reason. The list is the one both sides read, so a state added
+ * here without a rendering fails the screen's own probe rather than shipping blank.
+ */
+export const SOD_GRANT_STATES = [
+  'live', 'stale-version', 'stale-review', 'approver-lost-standing', 'none',
+] as const;
+export type SodGrantState = (typeof SOD_GRANT_STATES)[number];
+
+/**
  * §I — the part of "may I certify this claim?" that a READ can answer exactly.
  *
  * What it carries is the CALLER'S OWN grant state, resolved by the same `resolveGrant` the
@@ -921,7 +934,7 @@ export interface CertifyPreflightDto {
    *  over a `submitted` claim must not be spent on a `verified` one), or it predates the reviewed-
    *  state record entirely. `none` — no unconsumed authorisation names this caller on this claim.
    *  NONE of these says whether one is NEEDED; see above. */
-  grantState: 'live' | 'stale-version' | 'stale-review' | 'approver-lost-standing' | 'none';
+  grantState: SodGrantState;
   /** The authorisation that would be consumed, when `grantState` is `live`; null otherwise. */
   grantId: string | null;
   /** The actor id the SERVER resolved for this caller (Codex F1).

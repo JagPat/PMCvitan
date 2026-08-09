@@ -876,6 +876,59 @@ would attribute a future payable to a counterparty nobody chose.
 **Nothing else in this migration can abort.** The three vendor-bill tables are additive and the
 closing check asserts they are row-free — a migration that creates no claim cannot leave one behind.
 
+## §P5T7BH. Phase 5 Task-7B-iii-h — a live §I authorisation that predates the reviewed-state record
+
+`20270705000000_phase5_t7biiih_sod_reviewed_status` adds `SodGrant.reviewedStatus`: the claim STATE
+an approver was looking at when they authorised a segregation-of-duties exception. It is
+diagnostic-first and aborts rather than guessing one:
+
+> `phase5_t7biiih: N unconsumed SodGrant row(s) predate the reviewedStatus column. They record no evidence of what their approver reviewed, so this release makes them unusable rather than inventing one. Have a pmc re-issue each authorisation against the claim state they can see now, then redeploy.`
+
+**What it means.** `SodGrant` pinned the claim VERSION, and one version walks the whole lifecycle
+without changing id — so the version says WHICH claim and not WHAT WAS TRUE about it. From this
+release an authorisation must record the state it was justified against, and is refused at
+consumption when that state no longer holds. Rows written before the column exists carry no such
+evidence, and there is no honest way to infer it: back-filling the bill's CURRENT status would
+fabricate a claim that an approver saw something they may never have seen, on the exact register
+whose purpose is attributable human authorisation.
+
+So the deploy STOPS rather than silently revoking live authority — a certifier or approver would
+otherwise discover it at the moment they tried to act, with nothing on screen explaining why.
+
+**Consumed grants are unaffected.** They are history: they already did their work under the old
+rule, and nothing in this release re-judges them.
+
+**What to do.**
+
+1. List the affected authorisations, with the people involved:
+
+   ```sql
+   SELECT g."projectId", g."id", g."billId", g."versionId", g."rule",
+          g."actorId" AS excused, g."approverId" AS approver, g."reason", g."grantedAt",
+          b."status" AS claim_status_now
+     FROM "SodGrant" g
+     JOIN "VendorBill" b ON b."projectId" = g."projectId" AND b."id" = g."billId"
+    WHERE g."consumedAt" IS NULL
+    ORDER BY g."grantedAt";
+   ```
+
+2. Take that list to each project's PMC. For every row still wanted, the named **approver** re-issues
+   it through `commercial.sod.grant` against the claim as it stands now — the ordinary product
+   surface, no SQL. An authorisation nobody wants to re-issue simply lapses; that is a legitimate
+   outcome and the reason this is a conversation rather than a script.
+
+   Do **not** write `reviewedStatus` onto an existing row by hand. The append-only trigger refuses
+   it, and that refusal is the point: the column records what a person reviewed, so an operator
+   filling it in is putting words in their mouth.
+
+3. Re-run the deploy. The migration is retry-safe — the column addition is `IF NOT EXISTS`, the
+   index is rebuilt from scratch each run, and every function and trigger is `CREATE OR REPLACE` /
+   `DROP … IF EXISTS`.
+
+**If you cannot reach the approvers before the deploy window closes,** the safe move is to leave the
+release unapplied. There is no partial state to be stuck in: the migration runs in one transaction
+and the abort rolls all of it back.
+
 ## 1. Drain all OLD application instances
 
 Stop routing to and shut down every instance running the PREVIOUS build. The single-sender

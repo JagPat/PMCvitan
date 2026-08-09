@@ -971,4 +971,84 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     await payments.approve(projectId, { billId, amount: '40.00' }, approver(projectId));
     expect((await positionOf(projectId)).certifiedPayable).toBe('0.00');
   });
+
+  // ── 7B-iii-h correction — the PAYMENT half of §I learns the reviewed state too ───────────────
+  //
+  // 7B-iii-h taught the CERTIFICATION resolver that a grant records the claim state its approver
+  // reviewed, and left this half exactly as it was. Two implementations of one question, and only
+  // the one the unit was named for got fixed — which is the root PR #310's audit names first, and
+  // the specific shape this service's own §I comments already warned about twice.
+
+  it('PROBE 25 (§I): a payment authorisation must still match the state its approver reviewed', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+
+    // authorised while the claim reads `certified` — nothing on it is approved yet
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('certified');
+
+    // …and then the other pmc authorises part of it themselves. The VERSION has not moved, so the
+    // version pin still matches — but ₹10 of this claim is now approved money, which is not the
+    // claim the approver was looking at when they wrote the exception.
+    await payments.approve(projectId, { billId, amount: '10.00' }, approver(projectId));
+    expect((await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).status)
+      .toBe('approved-for-payment');
+
+    await expect(payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId)))
+      .rejects.toThrow(/granted against a claim state that no longer holds/u);
+
+    // THE LEGAL PATH: re-authorised against what is true now, the certifier may approve. A guard
+    // that only ever refuses is indistinguishable from one that never permits.
+    const fresh = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'still the only pmc on site', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const approval = await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect(approval.sodException?.grantId).toBe(fresh.id);
+    // the stale one is untouched: it authorised a state that no longer stands, and it is inert
+    // rather than spent — history, not a lock
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).consumedAt)
+      .toBeNull();
+  });
+
+  it('PROBE 26 (§I): an approval cannot come to rest on a grant recorded at a state it never approved', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const approval = await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect(approval.sodException?.grantId, 'the fixture must produce a REAL §I chain').toBe(grant.id);
+
+    // The bypass writer a DATABASE seal exists for. ONE trigger is disabled BY NAME inside a
+    // transaction and re-enabled before it ends, so the seal is restored on the way out or the DDL
+    // rolls back with the abort. It is the only way to reach the state the finding describes: the
+    // service refuses to create it and `SodGrant_append_only` refuses to edit a consumed grant at
+    // all. The question the probe asks is whether the DATABASE would notice.
+    //
+    // `SET CONSTRAINTS ALL IMMEDIATE` is load-bearing: the deferred seals queue behind the UPDATE
+    // and PostgreSQL refuses to ALTER a table with pending trigger events.
+    const regress = async (to: string): Promise<void> => {
+      await t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
+        await tx.$executeRawUnsafe(
+          'UPDATE "SodGrant" SET "reviewedStatus"=$3 WHERE "projectId"=$1 AND "id"=$2', projectId, grant.id, to,
+        );
+        await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+        await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
+      });
+    };
+
+    await expect(regress('verified'))
+      .rejects.toThrow(/state no `certifier-may-not-approve` authority can be spent from/u);
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('certified');
+    // …and another state this authority CAN legitimately be spent from is accepted, so the seal is
+    // the admissible set and not a single hard-coded status
+    await expect(regress('part-paid')).resolves.toBeUndefined();
+  });
 });
