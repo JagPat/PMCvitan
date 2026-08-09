@@ -1123,7 +1123,10 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     pilot(engGw({ takeMeasurement: vi.fn().mockReturnValue(gate.promise) }));
     s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '5', citedOutputId: 'OUT-1' });
     expect(s().outbox).toHaveLength(1);
-    expect(s().commercialPendingQty['LPL-1'], 'the queued QUANTITY is what the cap subtracts').toEqual(['5']);
+    expect(
+      Object.values(s().commercialPendingQty).filter((r) => r.lineId === 'LPL-1').map((r) => r.qty),
+      'the queued QUANTITY is what the cap subtracts',
+    ).toEqual(['5']);
 
     s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-2', quantity: '5', citedOutputId: 'OUT-2' });
     expect(s().outbox, 'a second activity queued against a remainder the first already claimed').toHaveLength(1);
@@ -1142,15 +1145,44 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     pilot(engGw({ correctMeasurement: vi.fn().mockReturnValue(gate.promise) }));
     s().correctMeasurement('m1', '5', 'more work', 'LPL-1');
     expect(s().outbox).toHaveLength(1);
-    expect(
-      s().commercialPendingQty['LPL-1'],
-      'a positive correction spends line authority and was not counted against it',
-    ).toEqual(['5']);
+    const reserved = () => Object.values(s().commercialPendingQty)
+      .filter((r) => r.lineId === 'LPL-1').map((r) => r.qty);
+    expect(reserved(), 'a positive correction spends line authority and was not counted against it')
+      .toEqual(['5']);
 
     // a WITHDRAWAL frees authority rather than spending it, so it is never subtracted
     s().correctMeasurement('m2', '-2', 'miscount', 'LPL-1');
-    expect(s().commercialPendingQty['LPL-1']).toEqual(['5']);
+    expect(reserved()).toEqual(['5']);
     gate.resolve({});
+  });
+
+  it('R4-1: a reservation lives exactly as long as its key', async () => {
+    // RED before: the quantity map was re-derived from the live outbox on EVERY read, so a money
+    // read landing after the op left the outbox dropped the reservation while the KEY was still
+    // retained — the cap freed authority the screen had not yet been told about.
+    const slowLine = deferred();
+    pilot(engGw({
+      commercialLineRegister: vi.fn().mockReturnValue(slowLine.promise),
+      commercialMoneyPosition: vi.fn<ApiGateway['commercialMoneyPosition']>().mockResolvedValue(bundle()),
+    }));
+    useStore.setState({ commercialLineRegisterLoad: { 'LPL-1': 'ready' } });
+
+    s().takeMeasurement({ labourPoLineId: 'LPL-1', activityId: 'ACT-1', quantity: '5', citedOutputId: 'OUT-1' });
+    await vi.waitFor(() => { if (s().commercialLoad !== 'ready') throw new Error('money not applied'); },
+      { timeout: 5000, interval: 5 });
+
+    // the money read has applied and the LINE REGISTER has not: the key is held, so its
+    // reservation must be too
+    expect(s().commercialPending).toContain('com:meas:LPL-1:ACT-1');
+    expect(
+      Object.values(s().commercialPendingQty).filter((r) => r.lineId === 'LPL-1').map((r) => r.qty),
+      'the reservation was dropped while its key was still held, freeing authority on screen',
+    ).toEqual(['5']);
+
+    slowLine.resolve(register({ measured: '5' }));
+    await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
+      { timeout: 5000, interval: 5 });
+    expect(s().commercialPendingQty, 'the reservation outlived the key it belongs to').toEqual({});
   });
 
   it('R3-3: the realtime `changed` path refreshes open line registers', () => {

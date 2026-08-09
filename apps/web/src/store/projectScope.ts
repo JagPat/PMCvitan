@@ -88,8 +88,9 @@ export interface ProjectDataState {
   commercialView: CommercialView | null;
   commercialBills: CommercialBillRow[] | null;
   commercialClaims: Record<string, CommercialClaimView>;
-  /** §D — queued measurement quantities per labour PO line (the cap subtracts them). */
-  commercialPendingQty: Record<string, string[]>;
+  /** §D — the cap reservation each pending write holds, keyed by its COALESCE KEY so the
+   *  reservation and the key share one lifecycle. */
+  commercialPendingQty: Record<string, { lineId: string; qty: string }>;
   /** §D — one labour PO line's measurement register, keyed by line id. The claim bundle reports
    *  registers only for a LIVE version's lines, and a lodged claim is `draft`, so this is the read
    *  a measurement becomes VISIBLE in. Project-owned: a line id is project-contained. */

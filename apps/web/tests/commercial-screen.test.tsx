@@ -192,6 +192,18 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     expect(r.getByTestId('verification-verdict').textContent).toBe('matched');
   });
 
+  it('R4-2: Refresh on Measurements reloads the bundle the LINE LIST comes from', () => {
+    // RED before: Refresh reloaded the claim reads and the registers it already knew about, and
+    // never the money bundle that supplies the lines — so a failed or stale bundle could not be
+    // recovered from the one control offered for exactly that, and a newly attributed line never
+    // appeared.
+    const loaders = stubLoaders();
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    fireEvent.click(r.getByTestId('commercial-refresh'));
+    expect(loaders.loadCommercial, 'the line list could not recover from its own Refresh').toHaveBeenCalled();
+  });
+
   it('R3-1: the Measurements tab needs no claim — the line is the subject', () => {
     // RED before: `claimPanel` rendered "Choose a claim", so on a project with no claim yet the
     // engineer could not measure at all and had to lodge a draft first just to select its lines.

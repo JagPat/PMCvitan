@@ -247,10 +247,14 @@ export interface AppState {
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaims: Record<string, CommercialClaimView>;
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
-  /** §D — the quantities of measurements queued per labour PO line. The pending SET holds keys,
-   *  and a key carries no amount, so the remaining-authority cap cannot subtract queued work from
-   *  it. Written beside the key at dispatch and rebuilt with it from the live outbox. */
-  commercialPendingQty: Record<string, string[]>;
+  /** §D — the cap RESERVATION each pending write holds, keyed by its COALESCE KEY.
+   *
+   *  Keyed by the coalesce key, not by line, so the reservation's lifecycle IS the key's: round 3
+   *  rebuilt a per-line map from the live outbox on every read, and a money read landing after the
+   *  op left the outbox dropped the reservation while the KEY was still retained — the cap freed
+   *  authority the screen had not yet been told about. Two structures with two rules disagree; one
+   *  structure keyed by the other cannot. */
+  commercialPendingQty: Record<string, { lineId: string; qty: string }>;
   /** §D — per-LINE measurement registers, and the read a measurement becomes VISIBLE in. */
   commercialLineRegisters: Record<string, MeasurementRegisterDto>;
   commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
@@ -669,7 +673,11 @@ export function checklistFrozen(
  * how `com:bill:` came to be released by two of them.
  */
 function releaseCommercialKeys(
-  s: { outbox: readonly unknown[]; commercialPending: string[]; commercialPendingQty: Record<string, string[]> },
+  s: {
+    outbox: readonly unknown[];
+    commercialPending: string[];
+    commercialPendingQty: Record<string, { lineId: string; qty: string }>;
+  },
   r: CommercialRead,
 ): void {
   const live = s.outbox.flatMap((o) =>
@@ -681,30 +689,28 @@ function releaseCommercialKeys(
     ...s.commercialPending.filter((k) => !readClearsKey(k, r)),
     ...live.filter((k) => readClearsKey(k, r)),
   ];
-  // the queued QUANTITIES are re-derived from the same live outbox, so they can never disagree
-  // with the key set about what is still in flight
-  s.commercialPendingQty = pendingMeasureQty(s.outbox);
+  // A reservation lives exactly as long as its key. Pruning to the surviving key set is the WHOLE
+  // rule — there is no second derivation that could disagree with it.
+  const held = new Set(s.commercialPending);
+  for (const key of Object.keys(s.commercialPendingQty)) {
+    if (!held.has(key)) delete s.commercialPendingQty[key];
+  }
 }
 
-/** Queued measurement quantities per labour PO line, straight off the live outbox. */
-function pendingMeasureQty(outbox: readonly unknown[]): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  for (const o of outbox) {
-    const op = o as {
-      t?: unknown; labourPoLineId?: unknown;
-      input?: { labourPoLineId?: unknown; quantity?: unknown };
-    };
-    // a measurement, and a POSITIVE correction — both consume the line's remaining authority
-    const isMeasure = op.t === 'takeMeasurement';
-    const isCorrection = op.t === 'correctMeasurement';
-    if (!isMeasure && !isCorrection) continue;
-    const line = isMeasure ? op.input?.labourPoLineId : op.labourPoLineId;
-    const qty = op.input?.quantity;
-    if (typeof line !== 'string' || typeof qty !== 'string') continue;
-    if (isCorrection && qty.startsWith('-')) continue; // a withdrawal frees authority, never spends it
-    (out[line] ??= []).push(qty);
-  }
-  return out;
+/** The cap reservation a commercial op holds, or null if it spends no line authority. */
+export function capReservationOf(op: unknown): { lineId: string; qty: string } | null {
+  const o = op as {
+    t?: unknown; labourPoLineId?: unknown; input?: { labourPoLineId?: unknown; quantity?: unknown };
+  };
+  const isMeasure = o.t === 'takeMeasurement';
+  const isCorrection = o.t === 'correctMeasurement';
+  if (!isMeasure && !isCorrection) return null;
+  const lineId = isMeasure ? o.input?.labourPoLineId : o.labourPoLineId;
+  const qty = o.input?.quantity;
+  if (typeof lineId !== 'string' || typeof qty !== 'string') return null;
+  // a WITHDRAWAL frees authority rather than spending it, so it reserves nothing
+  if (isCorrection && qty.startsWith('-')) return null;
+  return { lineId, qty };
 }
 
 function reconcileSubmission(s: AppState): void {
@@ -1645,15 +1651,8 @@ export const useStore = create<Store>()(
         s.commercialPending.push(ck);
         // and the queued QUANTITY, so the remaining-authority cap can subtract work that is in
         // flight but not yet folded into any register
-        const mi = (op as {
-          t?: string; labourPoLineId?: unknown; input?: { labourPoLineId?: unknown; quantity?: unknown };
-        });
-        const line = mi.t === 'takeMeasurement' ? mi.input?.labourPoLineId
-          : mi.t === 'correctMeasurement' ? mi.labourPoLineId : undefined;
-        const qty = mi.input?.quantity;
-        if (typeof line === 'string' && typeof qty === 'string' && !qty.startsWith('-')) {
-          (s.commercialPendingQty[line] ??= []).push(qty);
-        }
+        const reservation = capReservationOf(op);
+        if (reservation) s.commercialPendingQty[ck] = reservation;
       });
       runWriteAhead(op, label, okMsg);
     };

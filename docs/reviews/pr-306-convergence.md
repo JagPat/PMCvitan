@@ -1,7 +1,7 @@
 # PR #306 convergence audit — the pre-check that kept guessing
 
-Three finding-bearing heads (`ee4edb1`, `b488260`, and this correction's predecessor). **Ten
-findings, all P2**, on a unit whose product surface is two buttons and a form.
+Four finding-bearing heads (`ee4edb1`, `b488260`, `5d20519`, …). **Twelve findings, all P2**, on a
+unit whose product surface is two buttons and a form.
 
 Not one is a wrong calculation. Every one is the same shape: **a client-side guard that
 approximates a server rule instead of matching it, in front of a write-ahead outbox that has
@@ -20,7 +20,8 @@ already told the user "saved".**
 | 7 | 2 | Cached registers were never refreshed on the realtime `changed` path — the money bundle, the claim list and the claims all were |
 | 8 | 2 | The certificate floor read only the SELECTED claim's certificate; the server refuses against any live one |
 | 9 | 2 | **The Measurements tab sat inside `claimPanel`, so the advertised workflow's FIRST step required its LAST** |
-| 10 | 3 | (this round) — the corrections above |
+| 10 | 3 | The cap RESERVATION was rebuilt from the live outbox on every read, so a money read landing after the op left the outbox dropped it while the KEY was still retained |
+| 11 | 3 | Refresh on the Measurements tab reloaded the registers and the claim reads, but not the money bundle the LINE LIST is derived from |
 
 ## Root: sound, incomplete, and approximate are three different things
 
@@ -66,6 +67,23 @@ and described the order it could not perform. Writing a lesson down is not the s
 and the check that would have caught this is mechanical: **open the app with an empty project and
 try to perform step 1.**
 
+## Round 4 — two structures, two rules, one disagreement
+
+Finding 10 is the sharpest instance of this PR's whole theme, and it is inside round 3's own fix.
+I introduced a per-line quantity map to make the cap subtract queued work, and rebuilt it from the
+live outbox on **every** read — while the KEYS were released per read, by the one read that carries
+their effect. Two structures with two lifecycles: a money read landing first dropped the
+reservation and left the key, so the screen freed authority it had not yet been told about.
+
+The fix is not a third rule. The reservation is now keyed BY the coalesce key and pruned to the
+surviving key set, so its lifecycle *is* the key's by construction. **Two structures with two rules
+will disagree; one structure keyed by the other cannot.**
+
+Finding 11 is the same shape as finding 7 one layer up: the line list moved to the money bundle in
+round 3, and Refresh — the one control offered when a read fails — reloaded everything except the
+thing the list is derived FROM. **When a surface changes where its data comes from, its recovery
+path has to move with it.**
+
 ## What carries forward
 
 1. **Sound ≠ complete ≠ approximate.** Keep the sound-but-incomplete guard and label it; delete the
@@ -81,3 +99,8 @@ try to perform step 1.**
    (Finding 9.)
 6. **To test "can a user finish this", start from an empty project and do step 1.** No unit-level
    probe will tell you the first step needs the last one to exist.
+7. **Derived state must be keyed by the thing whose lifecycle it shares.** A parallel map with its
+   own rebuild rule will diverge from the set it mirrors, at exactly the moment the two are read
+   together. (Finding 10.)
+8. **Move the recovery path when you move the data source.** Refresh has to reload what a surface
+   is derived FROM, not only the things that surface names. (Findings 7, 11.)

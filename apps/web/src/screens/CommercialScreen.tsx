@@ -143,6 +143,9 @@ export function CommercialScreen() {
   // version's lines, so this is what a measurement taken on a lodged DRAFT becomes visible in.
   const lineRegisters = useStore(useShallow((s) => s.commercialLineRegisters));
   const pendingQty = useStore(useShallow((s) => s.commercialPendingQty));
+  /** The cap reservations held for one line — every pending write that spends its authority. */
+  const reservedFor = (lineId: string): string[] =>
+    Object.values(pendingQty).filter((p) => p.lineId === lineId).map((p) => p.qty);
   const lineRegisterLoad = useStore(useShallow((s) => s.commercialLineRegisterLoad));
   const loadLineRegister = useStore((s) => s.loadCommercialLineRegister);
   // Codex I2 — the ordering of the two reads' last SUCCESS, so "which is fresher" is looked up
@@ -404,6 +407,13 @@ export function CommercialScreen() {
     if (onMoneyTab) { void loadCommercial(); return; }
     void loadCommercialBills();
     if (selectedBillId) void loadCommercialClaim(selectedBillId);
+    if (tab === 'measurements') {
+      // the LINE LIST comes from the money bundle's attributions, so refreshing only the registers
+      // could never recover a failed or stale bundle — the tab would keep reporting "no labour
+      // lines" from the one control offered to fix exactly that, and a newly attributed line would
+      // never appear. Refresh the thing the list is derived FROM, not only the things it names.
+      void loadCommercial();
+    }
     // the §D registers are their own read, so Refresh has to say so — otherwise a line whose
     // register failed is unreachable from the one control offered for exactly that situation
     for (const id of measurableLineIds) void loadLineRegister(id);
@@ -1255,7 +1265,7 @@ export function CommercialScreen() {
                                 // prove it against, so the control waits rather than guessing.
                                 || register === null
                                 || lineRegisterLoad[lineId] === 'error'
-                                || exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim(), pendingQty[lineId] ?? [])
+                                || exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim(), reservedFor(lineId))
                               }
                               onClick={() => {
                                 const f = measureFormFor(lineId);
@@ -1275,9 +1285,9 @@ export function CommercialScreen() {
                               </div>
                             )}
                             {register !== null && isPositiveQuantity(measureFormFor(lineId).qty)
-                              && exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim(), pendingQty[lineId] ?? []) && (
+                              && exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim(), reservedFor(lineId)) && (
                               <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`measure-over-cap-${lineId}`}>
-                                Only {remainingMeasurable(register, pendingQty[lineId] ?? [])} person-shifts remain
+                                Only {remainingMeasurable(register, reservedFor(lineId))} person-shifts remain
                                 measurable on this line's live order authority, net of anything already queued for it.
                               </div>
                             )}
@@ -1319,7 +1329,7 @@ export function CommercialScreen() {
                                 // by what its row still has to give AFTER a live certificate's
                                 // frozen consumption.
                                 || correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(),
-                                  { certified: claimCertified, pending: pendingQty[lineId] ?? [] })
+                                  { certified: claimCertified, pending: reservedFor(lineId) })
                               }
                               onClick={() => correctMeasurement(row.id, corrFormFor(row.id).qty.trim(), corrFormFor(row.id).reason.trim(), lineId)}
                             >
@@ -1332,11 +1342,11 @@ export function CommercialScreen() {
                             )}
                             {register !== null && isCorrectionDelta(corrFormFor(row.id).qty)
                               && correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(),
-                                { certified: claimCertified, pending: pendingQty[lineId] ?? [] }) && (
+                                { certified: claimCertified, pending: reservedFor(lineId) }) && (
                               <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`correct-over-withdraw-${row.id}`}>
                                 {corrFormFor(row.id).qty.trim().startsWith('-')
                                   ? `This measurement has ${remainingWithdrawable(register, row.id, claimCertified)} person-shifts left to withdraw — evidence a live certificate rests on requires superseding that certificate first.`
-                                  : `Only ${remainingMeasurable(register, pendingQty[lineId] ?? [])} person-shifts remain measurable on this line, and a positive correction is measured work too.`}
+                                  : `Only ${remainingMeasurable(register, reservedFor(lineId))} person-shifts remain measurable on this line, and a positive correction is measured work too.`}
                               </div>
                             )}
                           </div>
