@@ -172,9 +172,6 @@ export function CommercialScreen() {
   const loadLineRegister = useStore((s) => s.loadCommercialLineRegister);
   // Task 7B-iii-a — the §M writes and their disable-while-pending set.
   const role = useStore((s) => s.role);
-  // the project team, already loaded for the Team screen. The §I picker NARROWS from it; it does
-  // not enumerate authority — the server decides standing at the command.
-  const members = useStore((s) => s.members);
   /**
    * Codex J1 — the hub is READABLE by pmc AND engineer (`commercial.read`), but all three writes
    * are `pmc`. An engineer saw the forms, and because the outbox is WRITE-AHEAD the op is
@@ -1209,10 +1206,41 @@ export function CommercialScreen() {
                   {mayGrant && (() => {
                     const draft = certDraftFor(claim.bill.id);
                     const viewedVersion = claim.bill.versions.find((v) => v.live)?.id ?? null;
-                    const candidates = (members ?? []).filter(
-                      (m) => m.role === 'pmc' && m.status === 'active'
-                        && m.userId !== claim.certifyPreflight.callerActorId,
-                    );
+                    // ── the SAME reading the Certify control acts on ──────────────────────────
+                    //
+                    // Round 1 findings 4 and 5, and they are one mistake: this form pinned
+                    // `claim.bill` directly while the control beneath it arbitrated the list copy
+                    // against the bundle. Two consequences, both the write-ahead lie:
+                    //
+                    //  · the bundle can be OLDER than the list. Pinning its status and revision
+                    //    queues an authorisation against facts the server has already moved past,
+                    //    and refuses it after the outbox reported it saved.
+                    //  · certification is legal only from `verified`. An authorisation recorded
+                    //    while the claim is draft/submitted/under-verification can NEVER be spent —
+                    //    it is `stale-review` the moment the claim reaches the state it was meant
+                    //    for. Recording one is worse than refusing it, because the approver is told
+                    //    an authority exists that does not.
+                    //
+                    // So the form is offered exactly where certification is, from exactly the copy
+                    // certification acts on.
+                    const grantListRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
+                    const grantReading = arbitrateBillCopy(grantListRow, claim.bill);
+                    const grantAuthoritative = grantReading !== null && grantReading.source !== 'list';
+                    const certifiable = transitionOffered(grantReading, BILL_CERTIFY_FROM);
+                    // ── who may be named, decided by the module that owns the rule ─────────────
+                    //
+                    // Round 1, finding 6. The first draft filtered the team roster in the browser
+                    // (`role === 'pmc' && status === 'active'`), which I had argued was "narrowing,
+                    // not enumerating authority". It was enumerating authority — badly. The server
+                    // admits an org owner/admin as pmc where they hold no active membership here,
+                    // and that filter silently excluded exactly those people, so a legitimate
+                    // approver could not be named for an authorisation the command would accept.
+                    //
+                    // A picker built from an approximation of an authority rule IS an authority
+                    // rule, and a second one. The list is now computed server-side beside the
+                    // predicate itself and arrives on the claim read — which also means the form
+                    // needs no team data the screen never asked for (finding 3).
+                    const candidates = claim.certifyPreflight.sodCandidates;
                     // R5-1 — the SAME function the dispatcher refuses with, so the screen and the
                     // outbox cannot answer differently. A pending claim transition is about to move
                     // the version, status and revision this authorisation pins.
@@ -1248,11 +1276,12 @@ export function CommercialScreen() {
                             variant="ink"
                             data-testid={`sod-grant-${claim.bill.id}`}
                             disabled={draft.sodActorId === '' || !draft.sodReason.trim()
-                              || viewedVersion === null || blocked}
+                              || viewedVersion === null || blocked
+                              || !certifiable || !grantAuthoritative}
                             onClick={() => {
                               grantSodException(claim.bill.id, draft.sodActorId, draft.sodReason.trim(), {
                                 versionId: viewedVersion as string,
-                                status: claim.bill.status,
+                                status: grantReading!.copy.status,
                                 lifecycleVersion: claim.certifyPreflight.lifecycleVersion,
                               });
                               setCertDraft(claim.bill.id, { sodActorId: '', sodReason: '' });
@@ -1261,6 +1290,13 @@ export function CommercialScreen() {
                             {blocked ? 'Working…' : 'Authorise'}
                           </Button>
                         </div>
+                        {!blocked && !certifiable && (
+                          <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-not-certifiable">
+                            Certification is only legal once this claim is verified, so an
+                            authorisation recorded now could never be spent. Authorise it once the
+                            claim is verified.
+                          </div>
+                        )}
                         {blocked && (
                           <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-blocked">
                             This claim has a change in flight. An authorisation records the version,

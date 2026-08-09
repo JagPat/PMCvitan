@@ -294,7 +294,15 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
     case 'bills':
       return coalesceKey.startsWith('com:bill:') || coalesceKey.startsWith('com:billtx:');
     case 'claim':
-      return isBillTransitionPending(coalesceKey, r.billId);
+      // …and the §I authorisation (7B-iii-g), on THIS claim only. It settles here rather than on
+      // the bills list because that is where its effect is visible: the grant changes the claim's
+      // own `certifyPreflight`, and nothing about the list row moves.
+      //
+      // A key with no release path is not "pending" — it is STUCK. The op settles, the read lands,
+      // and the button stays disabled until a hydration or a scope change rebuilds the pending set
+      // from an outbox that no longer holds it.
+      return isBillTransitionPending(coalesceKey, r.billId)
+        || coalesceKey.startsWith(`com:sodgrant:${r.billId}:`);
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;

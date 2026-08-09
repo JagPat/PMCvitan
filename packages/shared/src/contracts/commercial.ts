@@ -955,7 +955,21 @@ export interface CertifyPreflightDto {
    *  label at all. An authorisation echoes this value to say WHICH passage of the claim it was
    *  given against, and the server refuses it if the claim has moved since. */
   lifecycleVersion: number;
+  /** §I — everyone on this project who WOULD satisfy the certification standing rule, so the
+   *  authorisation form can offer candidates without approximating that rule client-side.
+   *
+   *  Server-computed, from the same module that owns the predicate, because the alternative —
+   *  filtering the team roster by role in the browser — is a second implementation of an authority
+   *  rule and a worse one: it silently excludes org owners/admins, whom the rule admits as pmc
+   *  where they hold no active membership on the project.
+   *
+   *  The CALLER is excluded (§I forbids a self-grant). It says who COULD be authorised, never who
+   *  MAY: the command re-checks the person it is given, because a picker is not the only way in. */
+  sodCandidates: readonly SodCandidateDto[];
 }
+
+/** §I — one person the authorisation form may name. Identity only; authority is the server's. */
+export interface SodCandidateDto { userId: string; name: string }
 
 export interface CashForecastReadDto extends CashForecastDto {
   /** when the serving generation last recomputed this project's row, or null if it never has.

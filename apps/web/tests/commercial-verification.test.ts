@@ -7,6 +7,8 @@ import {
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
+import gatewaySource from '@/data/apiGateway.ts?raw';
+import controllerSource from '../../api/src/commercial/commercial.controller.ts?raw';
 import verificationServiceSource from '../../api/src/commercial/commercial-verification.service.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
 
@@ -531,6 +533,26 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
     useStore.setState({ role: 'engineer' });
     s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
     expect(s().outbox).toHaveLength(0);
+  });
+
+  /** Round 1, finding 1 — the client posted to a route the server does not expose, so every
+   *  authorisation 404'd and the outbox discarded it as terminal AFTER reporting it saved. The
+   *  route is pinned against the controller's own decorator rather than restated, because a
+   *  restated constant is what drifted. */
+  it('posts to the route the API controller actually exposes', () => {
+    expect(gatewaySource).toContain("this.cmd('/commercial/bills/sod-grant'");
+    expect(controllerSource, 'the server decorator is the source of truth for this path')
+      .toContain("@Post('commercial/bills/sod-grant')");
+  });
+
+  /** Round 1, finding 2 — a key with no release path is not pending, it is stuck: the op settles,
+   *  the read lands, and the button stays disabled until a hydration or a scope change. */
+  it('the settling read RELEASES the authorisation key', () => {
+    expect(readClearsKey('com:sodgrant:bill-1:u-2',
+      { read: 'claim', billId: 'bill-1', observedWrite: true } as never)).toBe(true);
+    // …and only for the claim it belongs to — a sibling claim's read settles nothing here
+    expect(readClearsKey('com:sodgrant:bill-1:u-2',
+      { read: 'claim', billId: 'bill-2', observedWrite: true } as never)).toBe(false);
   });
 
   it('the op type joins the ONE registry, so hydration and the flush cover it', () => {

@@ -108,3 +108,41 @@ refused by design. An operator meeting that refusal without the note would read 
 - [x] R5-1's probe reproduced RED by mutation (the fix removed) before being relied on.
 - [x] `pnpm check` EXIT 0.
 - [x] No schema, migration, or API change — client surface only.
+
+---
+
+## Correction round 1 — six findings, and one of them says the design rule was wrong
+
+| # | Finding | Fix |
+|---|---|---|
+| F1 (P1) | the client posted `/commercial/sod/grant`; the server exposes `commercial/bills/sod-grant`. Every authorisation would 404, and the outbox treats non-401/408/429 4xx as terminal — so it was discarded **after** telling the user it saved | the real route, plus a source tripwire pinning the client path against the controller's own `@Post` decorator, because a restated constant is what drifted |
+| F2 (P2) | no read released `com:sodgrant:` — the op settled, the read landed, and the button stayed disabled until a hydration or scope change | released by the **claim** read, scoped to that bill: the grant's effect is visible in `certifyPreflight`, and nothing about the list row moves |
+| F3 (P2) | the picker read `members`, which only `TeamScreen` ever loads — a PMC opening Commercial directly saw "nobody else" | **subsumed by F6**: the candidates now arrive on the claim read the screen already loads, so there is no roster dependency to satisfy |
+| F4 (P2) | pinned `status`/`lifecycleVersion` from `claim.bill` while the Certify control beside it arbitrated list-vs-bundle | the same `arbitrateBillCopy` reading, and the form is offered only where that reading is authoritative |
+| F5 (P2) | offered on draft/submitted/under-verification, where certification is not legal — the grant becomes `stale-review` the moment the claim reaches the state it was meant for | gated on `BILL_CERTIFY_FROM`, with an explicit reason rather than a silently dead control |
+| F6 (P2) | the picker filtered the roster by `role === 'pmc'`, excluding org owners/admins whom the standing rule admits as pmc where they hold no active membership | the candidates are computed **server-side, beside the predicate**, and the caller is removed there |
+
+### F6 is the one worth reading
+
+This unit's stated rule was *"the picker narrows; the server decides — don't build a second
+implementation of standing."* I then built one: `role === 'pmc' && status === 'active'` **is** an
+implementation of the standing rule, and a wrong one, because the real rule has a second arm (an org
+owner/admin with no active membership on the project counts as pmc) and a precedence clause (an
+active membership decides, and is never upgraded through the org).
+
+What I got wrong was the location, not the principle. A server-computed candidate list is not a
+second implementation — it is the *same* implementation, if it lives beside the predicate and
+mirrors its arms. So `OrgsParticipant.projectRoleCandidates` sits next to
+`hasProjectRoleStanding` in the module that owns `Membership`, `Project` and `OrgMembership`, and
+the claim read publishes its answer.
+
+This makes the unit touch the server, which breaks the "client-only" seam the 7B-iii-h/g split was
+made on. That is the right trade and is stated rather than defended: the seam was a scoping
+heuristic, and a picker that cannot name a legitimate approver is a broken feature.
+
+`h13` proves both disagreements between a roster filter and the rule: an org owner with no
+membership **is** a candidate; the same person given an `engineer` membership here **is not**
+(precedence); promoted to `pmc` here they are again (membership arm).
+
+**Gates:** `pnpm check` EXIT 0 — web 700/700, API 781/781; live-PG `phase5-t7bii-claim-read` 24/24
+and `phase5-t5b-certification` 48/48.

@@ -62,7 +62,7 @@ const claim = (): CommercialClaimView => ({
     approved: '0.00', paid: '0.00', approvable: null, billStatus: 'certified',
   },
   measurements: {},
-  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self', lifecycleVersion: 0 },
+  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self', lifecycleVersion: 0, sodCandidates: [] },
 });
 
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {
@@ -1454,13 +1454,19 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
   const at = (n: number) => `2026-08-21T00:00:0${n}.000Z`;
 
   const openWith = (o: {
-    members?: Array<{ userId: string; name: string; role: string; status: string }>;
+    candidates?: Array<{ userId: string; name: string }>;
     pending?: string[];
     role?: string;
+    status?: string;
   }) => {
     const c = claim();
     const base: CommercialClaimView = {
-      ...c, bill: { ...c.bill, status: 'verified', statusChangedAt: at(1) },
+      ...c,
+      bill: { ...c.bill, status: (o.status ?? 'verified') as never, statusChangedAt: at(1) },
+      certifyPreflight: {
+        ...c.certifyPreflight,
+        sodCandidates: o.candidates ?? [{ userId: 'u-2', name: 'Asha' }, { userId: 'u-5', name: 'Org Admin' }],
+      },
     };
     useStore.setState(getInitialState());
     useStore.getState()._setGateway(null);
@@ -1474,12 +1480,6 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
       commercialClaims: { 'bill-1': base },
       commercialClaimLoad: { 'bill-1': 'ready' },
       commercialPending: o.pending ?? [],
-      members: (o.members ?? [
-        { userId: 'u-self', name: 'Me', role: 'pmc', status: 'active' },
-        { userId: 'u-2', name: 'Asha', role: 'pmc', status: 'active' },
-        { userId: 'u-3', name: 'Ravi', role: 'engineer', status: 'active' },
-        { userId: 'u-4', name: 'Gone', role: 'pmc', status: 'removed' },
-      ]) as never,
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -1494,18 +1494,18 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
    * but it must exclude the one choice §I is certain to refuse, which is why `callerActorId` is
    * in the preflight at all.
    */
-  it('offers other active pmc members and never the caller', () => {
+  it('offers exactly the candidates the SERVER named, and nothing it derived itself', () => {
     const r = openWith({});
     const names = Array.from(r.getByTestId('sod-actor').querySelectorAll('option'))
       .map((o) => (o as HTMLOptionElement).value).filter((v) => v !== '');
-    expect(names, 'a self-grant is the one choice the server is certain to refuse').not.toContain('u-self');
-    expect(names).toContain('u-2');
-    expect(names, 'an engineer cannot certify, so authorising one authorises nothing').not.toContain('u-3');
-    expect(names, 'a removed member holds no standing').not.toContain('u-4');
+    // round 1 finding 6 — the first draft filtered the roster by `role === 'pmc'` in the browser,
+    // which excluded org owners/admins the standing rule admits. `u-5` is exactly that person, and
+    // the picker offers them because it no longer decides who has standing.
+    expect(names).toEqual(['u-2', 'u-5']);
   });
 
   it('says so plainly when there is nobody with standing to authorise', () => {
-    const r = openWith({ members: [{ userId: 'u-self', name: 'Me', role: 'pmc', status: 'active' }] });
+    const r = openWith({ candidates: [] });
     expect(r.getByTestId('sod-grant-nobody').textContent).toMatch(/nobody else/iu);
   });
 
@@ -1528,6 +1528,18 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
     expect(r.getByTestId('sod-grant-blocked').textContent).toMatch(/version, state and revision/iu);
+  });
+
+  /** Round 1, finding 5 — certification is legal only from `verified`, so an authorisation
+   *  recorded earlier could NEVER be spent: it is `stale-review` the moment the claim reaches the
+   *  state it was meant for. Recording one is worse than refusing it, because the approver is told
+   *  an authority exists that does not. */
+  it('will not authorise a claim certification is not yet legal on, and says why', () => {
+    const r = openWith({ status: 'submitted' });
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('sod-grant-not-certifiable').textContent).toMatch(/only legal once this claim is verified/iu);
   });
 
   it('is absent entirely for a role without the granting authority', () => {

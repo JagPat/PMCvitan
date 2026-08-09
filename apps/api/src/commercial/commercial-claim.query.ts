@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 import { ROLE_POLICY, type CertifyPreflightDto, type CommercialClaimDto, type MeasurementRegisterDto, type VendorBillDto } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
@@ -43,6 +44,9 @@ export class CommercialClaimQuery {
     private readonly deductions: CommercialDeductionService,
     private readonly payments: CommercialPaymentService,
     private readonly measurements: CommercialMeasurementService,
+    // §I — the standing rule's own module supplies the authorisation candidates, so the picker and
+    // the command's check are one implementation rather than two (round 1, finding 6).
+    private readonly orgs: OrgsParticipant,
   ) {}
 
   private assertRead(user: AuthUser): void {
@@ -124,6 +128,12 @@ export class CommercialClaimQuery {
         // published so an authorisation can pin WHICH passage of the claim its approver saw —
         // neither the version nor the status can carry that, because both are re-enterable
         lifecycleVersion: asOf.lifecycleVersion,
+        // §I — who this claim's authorisation form may offer. Read through the orgs participant so
+        // the candidate list and the standing check are the same rule rather than two, and with
+        // the CALLER removed because §I forbids a self-grant.
+        sodCandidates: (await this.orgs.projectRoleCandidates(
+          tx, projectId, ROLE_POLICY['commercial.certify'],
+        )).filter((c) => c.userId !== user.sub),
       };
 
       return {

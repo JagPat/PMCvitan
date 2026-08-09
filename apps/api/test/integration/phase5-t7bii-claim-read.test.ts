@@ -748,6 +748,49 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
       .toBe(viewed);
   });
 
+
+  it('h13: the authorisation candidates are the STANDING RULE\'s answer, not the roster\'s', async () => {
+    // 7B-iii-g round 1, finding 6. The first draft derived the picker in the browser by filtering
+    // the team roster on `role === 'pmc' && status === 'active'` — which I had defended as
+    // "narrowing, not enumerating authority". It WAS enumerating authority, and wrongly: the
+    // server admits an org owner/admin as pmc where they hold NO active membership on the project,
+    // so exactly those people were excluded from a form that exists to name them.
+    //
+    // The list now comes from the module that owns the predicate, and this probe is about the two
+    // places a roster filter and the real rule disagree.
+    const projectId = await freshProject();
+    const billId = await verifiedOnly(projectId);
+    const cands = async (): Promise<string[]> =>
+      (await claims.readClaim(projectId, billId, pmc(projectId)))
+        .certifyPreflight.sodCandidates.map((c) => c.userId);
+
+    // THE ORG ARM: `ownerUser` owns the org and holds no membership on this fresh project. A
+    // roster filter cannot see them; the standing rule says yes.
+    expect(await cands(), 'an org owner with no membership here still holds pmc standing')
+      .toContain(f.ownerUser.id);
+    // …and never the caller: §I forbids a self-grant, so offering it would queue the one command
+    // the server is certain to refuse
+    expect(await cands(), 'a self-grant is not a candidate').not.toContain(f.memberUser.id);
+
+    // PRECEDENCE: an ACTIVE membership decides, and is never silently upgraded through the org.
+    // Give the same org owner a non-certifying role here and they must drop out — this is the
+    // clause `hasProjectRoleStanding` states, mirrored rather than re-invented.
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: f.ownerUser.id } },
+      create: { projectId, userId: f.ownerUser.id, role: 'engineer', status: 'active' },
+      update: { role: 'engineer', status: 'active' },
+    });
+    expect(await cands(), 'an active membership decides, so an org owner working here as an engineer is an engineer')
+      .not.toContain(f.ownerUser.id);
+
+    // …and the same person promoted on THIS project is a candidate again, by the membership arm
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.ownerUser.id } },
+      data: { role: 'pmc', status: 'active' },
+    });
+    expect(await cands()).toContain(f.ownerUser.id);
+  });
+
   it('h9: the column addition is RERUNNABLE, so the diagnostic abort does not poison the retry', async () => {
     // The closing `DO` block aborts the deploy on a legacy unconsumed grant — AFTER `ADD COLUMN`
     // has already succeeded. The operator clears the grants and redeploys, and the retry replays

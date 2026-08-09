@@ -1030,7 +1030,7 @@ export class ApiGateway {
   }
   /** §I — the APPROVER's own act: authorise one actor to perform one otherwise-forbidden act. */
   grantSodException(input: GrantSodExceptionInput, idempotencyKey?: string): Promise<unknown> {
-    return this.cmd('/commercial/sod/grant', input, idempotencyKey);
+    return this.cmd('/commercial/bills/sod-grant', input, idempotencyKey);
   }
 
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command
