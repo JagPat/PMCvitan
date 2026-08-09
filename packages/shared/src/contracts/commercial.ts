@@ -879,6 +879,47 @@ export interface CommercialClaimDto {
    *  PO line. Material lines carry no measurement (their evidence is accepted stock), so the map is
    *  empty for a material-only claim rather than carrying empty registers. */
   measurements: Record<string, MeasurementRegisterDto>;
+  /** §I — what authorisation stands for THE CALLER on this claim's live version. */
+  certifyPreflight: CertifyPreflightDto;
+}
+
+/**
+ * §I — the part of "may I certify this claim?" that a READ can answer exactly.
+ *
+ * What it carries is the CALLER'S OWN grant state, resolved by the same `resolveGrant` the
+ * certification command uses, so the screen and the server cannot disagree about it. It closes the
+ * two outcomes that are otherwise invisible: an exception that was granted and is live, and one
+ * granted against an EARLIER version — the claim was amended since, so it needs authorising again,
+ * which a certifier has no way to discover except by being refused.
+ *
+ * What it deliberately does NOT carry is whether the caller is one of this claim's EVIDENCE ACTORS
+ * — that is, whether a grant is needed at all. The reason is worth stating rather than leaving as
+ * an omission, because the missing term looks like an oversight and is not:
+ *
+ *   §I asks about the rows the certificate FREEZES, and that set is decided by the draw
+ *   (`drawMeasurements`/`drawAcceptances`) over rows locked in a total order inside the
+ *   certification transaction. `phase5_t5_evidence_actors` reads the frozen rows, so it cannot be
+ *   asked before they exist. Three ways to answer it here were considered and all are worse than
+ *   silence: a prospective SQL twin would be a SECOND implementation of a rule whose whole history
+ *   is two implementations drifting apart; a rolled-back dry run is a heavy side-effecting write
+ *   dressed as a read; and "every actor on the line" OVER-refuses, because an actor whose evidence
+ *   an earlier live certificate already consumed is not in this certificate's evidence at all —
+ *   and blocking a certification the server would accept is as wrong as offering one it refuses.
+ *
+ * So a screen may say "you hold a live authorisation" or "yours was granted against an earlier
+ * version" with certainty, and may NOT say "you will need one". That outcome stays a server
+ * refusal, and the answer to an unpredictable refusal is to make it legible and its remedy
+ * reachable — not to guess it.
+ */
+export interface CertifyPreflightDto {
+  /** `live` — an authorisation stands for this caller on this version, and certification would
+   *  consume it. `stale-version` — one stands, but against a version this claim has amended past.
+   *  `approver-lost-standing` — one stands, but no granting approver still holds pmc standing.
+   *  `none` — no unconsumed authorisation names this caller on this claim. NONE of these four says
+   *  whether one is NEEDED; see above. */
+  grantState: 'live' | 'stale-version' | 'approver-lost-standing' | 'none';
+  /** The authorisation that would be consumed, when `grantState` is `live`; null otherwise. */
+  grantId: string | null;
 }
 
 export interface CashForecastReadDto extends CashForecastDto {

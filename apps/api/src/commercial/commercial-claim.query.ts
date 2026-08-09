@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ROLE_POLICY, type CommercialClaimDto, type MeasurementRegisterDto, type VendorBillDto } from '@vitan/shared';
+import { ROLE_POLICY, type CertifyPreflightDto, type CommercialClaimDto, type MeasurementRegisterDto, type VendorBillDto } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
@@ -10,6 +10,7 @@ import { CommercialCertificationService } from './commercial-certification.servi
 import { CommercialDeductionService } from './commercial-deduction.service';
 import { CommercialPaymentService } from './commercial-payment.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
+import { resolveActor } from '../common/actor';
 
 /**
  * Phase 5 Task 7B-ii (§M) — ONE CLAIM'S WHOLE LIFECYCLE, from one repeatable-read transaction.
@@ -89,7 +90,26 @@ export class CommercialClaimQuery {
       const measurements: Record<string, MeasurementRegisterDto> = {};
       for (const [id, register] of registers) measurements[id] = register;
 
-      return { bill, verification, certificate, deductions, payments, measurements };
+      // §I — the CALLER'S own authorisation state on this claim's live version, resolved by the
+      // same `resolveGrant` the certification command uses. Read WITHOUT `FOR UPDATE`: a screen is
+      // asking what is true now and holds nothing, while a certification is an authority decision
+      // and locks. Same predicate, different intent — which is why the lock is a parameter rather
+      // than a second function.
+      //
+      // The live version is the one the grant is pinned to. A claim with NO live version (disputed,
+      // rejected) cannot be certified at all, so there is nothing to authorise and `none` is the
+      // honest answer rather than a lookup against a version the claim has moved past.
+      const liveVersionId = bill.versions.find((v) => v.live)?.id ?? null;
+      const actor = await resolveActor(this.prisma, user);
+      const resolved = liveVersionId === null
+        ? ({ state: 'none' } as const)
+        : await this.certification.resolveGrant(tx, projectId, billId, liveVersionId, actor.actorId, false);
+      const certifyPreflight: CertifyPreflightDto = {
+        grantState: resolved.state,
+        grantId: resolved.state === 'live' ? resolved.grant.id : null,
+      };
+
+      return { bill, verification, certificate, deductions, payments, measurements, certifyPreflight };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 }

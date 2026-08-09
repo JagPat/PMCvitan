@@ -363,4 +363,99 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
       '§D — an unenabled project must 404, not 403: the feature does not exist there',
     ).rejects.toMatchObject({ status: 404 });
   });
+
+  // ── 6 (7B-iii-f) — the §I CERTIFY PREFLIGHT ──────────────────────────────────────────────────
+
+  /**
+   * The preflight exists because two of §I's outcomes are otherwise INVISIBLE. A certifier who has
+   * just been authorised cannot tell whether the authorisation is live and version-matched, and
+   * "granted against an earlier version, because the claim was amended since" is discoverable only
+   * by being refused — after the write-ahead outbox has already reported the certification saved.
+   *
+   * What these probes must establish is not just that the field is populated, but that it is the
+   * SAME rule the command enforces. That is what PROBE 6e is for: the resolver is shared, so a
+   * divergence is unrepresentable rather than merely untested.
+   */
+  const grantTo = async (projectId: string, billId: string, actorId: string, approverId: string) =>
+    certification.grantSodException(
+      projectId, { billId, actorId, reason: 'two-person practice' }, asUser(projectId, approverId),
+    );
+
+  it('6a: no authorisation names this caller — `none`, and no id invented', async () => {
+    const projectId = await freshProject();
+    const billId = await verifiedOnly(projectId);
+    const claim = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(claim.certifyPreflight).toEqual({ grantState: 'none', grantId: null });
+  });
+
+  it('6b: a live authorisation for THIS caller is reported with the id that would be consumed', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    const grant = await grantTo(projectId, billId, f.memberUser.id, approver);
+    const claim = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(claim.certifyPreflight).toEqual({ grantState: 'live', grantId: grant.id });
+  });
+
+  it('6c: it is the CALLER\'s state — an authorisation naming someone else is not theirs', async () => {
+    const projectId = await freshProject();
+    await secondPmc(projectId);   // give the owner pmc standing so they can be named
+    const billId = await verifiedOnly(projectId);
+    // granted to the OWNER by the MEMBER — an approver may never excuse themselves, so the two
+    // identities have to be distinct for the grant to exist at all
+    await grantTo(projectId, billId, f.ownerUser.id, f.memberUser.id);
+    const asMember = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(asMember.certifyPreflight.grantState).toBe('none');
+    // …and the owner, reading the same claim, sees theirs
+    const asOwner = await claims.readClaim(projectId, billId, asUser(projectId, f.ownerUser.id));
+    expect(asOwner.certifyPreflight.grantState).toBe('live');
+  });
+
+  it('6d: an amendment strands the authorisation, and the read SAYS so rather than staying silent', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    await grantTo(projectId, billId, f.memberUser.id, approver);
+    expect((await claims.readClaim(projectId, billId, pmc(projectId))).certifyPreflight.grantState).toBe('live');
+
+    // the claim is amended: a NEW live version the approver never saw
+    await bills.amend(projectId, {
+      billId, reason: 'vendor re-issued the invoice at 90',
+      lines: [{ poLineId: line.poLineId, quantity: '90', rate: '1' }],
+    }, pmc(projectId));
+
+    const after = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(after.certifyPreflight).toEqual({ grantState: 'stale-version', grantId: null });
+  });
+
+  /**
+   * The agreement probe. The certifier here IS the evidence actor (the store user who recorded the
+   * acceptance), so §I genuinely refuses without an authorisation — and the preflight named the
+   * exact grant the command then consumed.
+   */
+  it('6e: the preflight names the grant the COMMAND consumes — one rule, not two', async () => {
+    const projectId = await freshProject();
+    const recorder = await secondPmc(projectId);            // the store user who accepts below
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');             // recorded BY `recorder`
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    // without an authorisation the recorder is refused, and their own read says `none`
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, recorder))).certifyPreflight)
+      .toEqual({ grantState: 'none', grantId: null });
+    await expect(certification.certify(projectId, { billId }, asUser(projectId, recorder)))
+      .rejects.toThrow(/Segregation of duties/u);
+
+    // authorised by the OTHER pmc, the read reports it…
+    const grant = await grantTo(projectId, billId, recorder, f.memberUser.id);
+    const pre = await claims.readClaim(projectId, billId, asUser(projectId, recorder));
+    expect(pre.certifyPreflight).toEqual({ grantState: 'live', grantId: grant.id });
+
+    // …and the command consumes exactly that one
+    const cert = await certification.certify(projectId, { billId }, asUser(projectId, recorder));
+    expect(cert.sodException?.grantId).toBe(grant.id);
+  });
+
 });

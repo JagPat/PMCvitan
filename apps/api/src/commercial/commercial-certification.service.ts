@@ -691,32 +691,18 @@ export class CommercialCertificationService {
     // question from "select a candidate that is valid" whenever more than one can exist, and the
     // live-grant scope is now deliberately wide enough for more than one. So the standing filter
     // moves INTO the selection, and the stale rows are simply not candidates.
-    const live = await tx.sodGrant.findMany({
-      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
-      select: { id: true, approverId: true, reason: true },
-      orderBy: { grantedAt: 'asc' },
-    });
-    let grant: { id: string; approverId: string; reason: string } | null = null;
-    for (const candidate of live) {
-      // standing is the ORGS module's question, asked under a lock because this IS an authority
-      // decision — a concurrent downgrade must not commit behind an approval it granted
-      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate: true })) {
-        grant = candidate;
-        break;
-      }
-    }
-    if (!grant) {
-      if (live.length > 0) {
+    const resolved = await this.resolveGrant(tx, projectId, billId, versionId, actorId, true);
+    if (resolved.state !== 'live') {
+      // The three refusals are the resolver's three non-live states, spelled once here where the
+      // ACT is refused. `resolveGrant` decides WHICH state holds; this decides what that means for
+      // a certification, and the read path decides what it means for a screen. One rule, two
+      // consequences — rather than the read re-deriving the rule and drifting from it.
+      if (resolved.state === 'approver-lost-standing') {
         throw new ForbiddenException(
           'The authorisation on this claim was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again',
         );
       }
-      // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
-      // approver looked at should not silently carry over to one they never saw
-      const stale = await tx.sodGrant.count({
-        where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
-      });
-      if (stale > 0) {
+      if (resolved.state === 'stale-version') {
         throw new ConflictException(
           'The authorisation on this claim was granted against an earlier version — the claim has been amended since, so it needs authorising again',
         );
@@ -727,6 +713,7 @@ export class CommercialCertificationService {
         + 'their own reason against this claim.',
       );
     }
+    const grant = resolved.grant;
     const { count } = await tx.sodGrant.updateMany({
       where: { id: grant.id, projectId, consumedAt: null },
       data: { consumedAt: new Date(), consumedByCertificateId: certificateId },
@@ -737,6 +724,56 @@ export class CommercialCertificationService {
     return {
       grantId: grant.id, rule: SOD_RULE, actorId, approverId: grant.approverId, reason: grant.reason,
     };
+  }
+
+  /**
+   * §I — WHICH authorisation, if any, stands for this actor on this claim version.
+   *
+   * Extracted from `assertSegregation` rather than written beside it, because 7B-iii-f needs the
+   * same answer on a READ — a certifier who has just been granted an exception cannot otherwise
+   * tell whether it is live and version-matched, and "granted against an earlier version because
+   * the claim was amended since" is invisible until the certification is refused. The service's
+   * own history is the argument for sharing rather than re-deriving: this rule was twice TWO
+   * implementations of one question, and only the one a finding named ever got fixed.
+   *
+   * `forUpdate` is the CALLER'S INTENT, not a second rule. A certification is an authority
+   * DECISION, so it reads standing under a lock — a concurrent downgrade must not commit behind an
+   * approval it granted. A screen is asking what is true now and locks nothing. The predicate is
+   * identical either way; only whether the answer is held is different.
+   *
+   * The shape is deliberate. "Select an arbitrary candidate, then check it" answers a different
+   * question from "select a candidate that is valid" whenever more than one can exist — Codex
+   * rounds 8, 9 and 10 were three costumes of that one defect — so the standing filter is INSIDE
+   * the selection and stale rows are simply not candidates.
+   */
+  async resolveGrant(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    billId: string,
+    versionId: string,
+    actorId: string,
+    forUpdate: boolean,
+  ): Promise<
+    | { state: 'live'; grant: { id: string; approverId: string; reason: string } }
+    | { state: 'none' | 'stale-version' | 'approver-lost-standing' }
+  > {
+    const live = await tx.sodGrant.findMany({
+      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
+      select: { id: true, approverId: true, reason: true },
+      orderBy: { grantedAt: 'asc' },
+    });
+    for (const candidate of live) {
+      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate })) {
+        return { state: 'live', grant: candidate };
+      }
+    }
+    if (live.length > 0) return { state: 'approver-lost-standing' };
+    // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
+    // approver looked at should not silently carry over to one they never saw
+    const stale = await tx.sodGrant.count({
+      where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
+    });
+    return { state: stale > 0 ? 'stale-version' : 'none' };
   }
 
   /**
