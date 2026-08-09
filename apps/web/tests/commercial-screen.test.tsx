@@ -246,6 +246,52 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     expect(r.getByTestId('commercial-measurements-retry')).toBeTruthy();
   });
 
+  it('S3: a CACHED line source whose refresh failed is stale, not an empty project', () => {
+    // The cached half of S2, which S2 did not cover: `viewOf` reports staleness ON content, so a
+    // cached bundle with a failed latest read is `{ show: 'content', stale: true }` — and reading
+    // only `show` let the empty-project statement stand over a read that failed. The failed read
+    // is exactly the one that would have carried a newly attributed line.
+    useStore.setState({
+      commercialView: { ...bundle(), attributions: [] } as never,   // cached, and EMPTY
+      commercialLoad: 'error',                                       // the latest refresh failed
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    expect(
+      r.queryByTestId('commercial-measurements-empty'),
+      'an unrefreshable cached bundle was presented as current project truth',
+    ).toBeNull();
+    expect(r.getByTestId('commercial-measurements-stale')).toBeTruthy();
+    expect(r.getByTestId('commercial-measurements-retry')).toBeTruthy();
+  });
+
+  it('S4: equal timestamps with DIFFERING status are ambiguous, never a tie broken toward the claim', () => {
+    // `statusChangedAt` is `new Date()` at millisecond precision, not a lifecycle version, so two
+    // DIFFERENT transitions can share a stamp. The causal sequence: the claim read succeeds at
+    // `certified` stamped T; approval commits in the same millisecond T; a list read that STARTS
+    // after that claim success returns `approved-for-payment`, also stamped T. A `>=` tie broken
+    // toward the claim regresses the row to `certified` and offers its transitions.
+    const t = '2026-08-21T09:00:00.000Z';
+    useStore.setState({
+      commercialBills: [{ ...claim().bill, status: 'approved-for-payment' as const, statusChangedAt: t }],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': { ...claim(), bill: { ...claim().bill, status: 'certified' as const, statusChangedAt: t } } },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+
+    expect(
+      r.getByTestId('commercial-claim-status-bill-1').textContent,
+      'an undecidable pair was decided toward the copy that can be older',
+    ).not.toBe('certified');
+    // and it says the two disagree rather than picking silently…
+    expect(r.getByTestId('commercial-claim-ambiguous-bill-1')).toBeTruthy();
+    // …and refuses to ACT on a status it cannot establish
+    expect((r.getByTestId('bill-reject-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('R3-1: the Measurements tab needs no claim — the line is the subject', () => {
     // RED before: `claimPanel` rendered "Choose a claim", so on a project with no claim yet the
     // engineer could not measure at all and had to lodge a draft first just to select its lines.
@@ -304,8 +350,11 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     // used to infer "fresher" from the claim's mere presence (F4) and then from its not having
     // errored (H4); it now reads the ordering of the two successes, so the precondition this test
     // has always described is stated as data rather than implied by a proxy.
-    const stale = { ...claim().bill, status: 'verified' as const };
-    const fresh = claim(); // status: 'certified'
+    // "fresher" is stated as DATA: the claim copy carries the later transition moment. Round 6
+    // sharpened why that matters — equal stamps with differing statuses are ambiguous, not a tie
+    // to be broken, so a probe that means "the claim is newer" has to say so.
+    const stale = { ...claim().bill, status: 'verified' as const, statusChangedAt: '2026-08-21T00:00:00.000Z' };
+    const fresh = { ...claim(), bill: { ...claim().bill, statusChangedAt: '2026-08-21T09:00:00.000Z' } }; // 'certified'
     useStore.setState({
       commercialBills: [stale],
       commercialBillsLoad: 'ready',
@@ -457,11 +506,12 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
   });
 
   it('H4: a healthy claim still wins over a stale list row', () => {
-    // the guard must not swing the other way: this is the case the previous round fixed
+    // the guard must not swing the other way: this is the case the previous round fixed. The
+    // claim's later transition moment is what makes it the newer copy — stated, not assumed.
     useStore.setState({
-      commercialBills: [{ ...claim().bill, status: 'verified' as const }],
+      commercialBills: [{ ...claim().bill, status: 'verified' as const, statusChangedAt: '2026-08-21T00:00:00.000Z' }],
       commercialBillsLoad: 'ready',
-      commercialClaims: { 'bill-1': claim() },
+      commercialClaims: { 'bill-1': { ...claim(), bill: { ...claim().bill, statusChangedAt: '2026-08-21T09:00:00.000Z' } } },
       commercialClaimLoad: { 'bill-1': 'ready' },
     });
     const r = render(<CommercialScreen />);

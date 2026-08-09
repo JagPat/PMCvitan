@@ -981,12 +981,30 @@ export function CommercialScreen() {
                 // and offered the transitions of a claim that had already been certified.
                 //
                 // `statusChangedAt` is the domain moment the server stamped on the transition
-                // itself, so comparing it asks about the BILL instead of about the requests. Equal
-                // timestamps mean both copies describe the same moment and neither can regress the
-                // other; the tie goes to the claim bundle, which is the fuller lifecycle the tabs
-                // beside this row already read from.
+                // itself, so comparing it asks about the BILL instead of about the requests.
+                //
+                // But it is NOT a lifecycle version. Every transition writes `new Date()` at
+                // millisecond precision, so two DIFFERENT transitions can carry the same stamp:
+                // certify at T, approve at T, and a claim read taken between them ties with a list
+                // read taken after. My first rule broke that tie with `>=` toward the claim copy —
+                // imposing a total order on data that does not have one, and regressing the row to
+                // `certified` in exactly that sequence.
+                //
+                // Equal stamp + SAME status is not a tie at all; the copies agree. Equal stamp +
+                // DIFFERING status is genuinely undecidable from what the reads carry, so this
+                // refuses to decide: it shows the LIST row (never the claim copy, which is the one
+                // that can be older), says the two disagree, and disables this bill's transitions
+                // until a canonical read resolves it. A fresh pair of reads converges, because the
+                // ambiguity is a property of reading at two times, not of the timestamps.
+                //
+                // The durable fix is a monotonic per-bill lifecycle version from the server; that
+                // is a schema change and is named in the convergence audit rather than smuggled
+                // into the end of an over-budget unit. Refusing to decide is sound without it.
                 const claimCopy = row.id === selectedBillId ? claim?.bill ?? null : null;
-                const b = claimCopy !== null
+                const sameMoment = claimCopy !== null
+                  && Date.parse(claimCopy.statusChangedAt) === Date.parse(row.statusChangedAt);
+                const ambiguous = sameMoment && claimCopy !== null && claimCopy.status !== row.status;
+                const b = claimCopy !== null && !ambiguous
                   && Date.parse(claimCopy.statusChangedAt) >= Date.parse(row.statusChangedAt)
                   ? claimCopy : row;
                 return (
@@ -1002,6 +1020,11 @@ export function CommercialScreen() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline' }}>
                       <div style={{ fontWeight: 600 }}>{b.vendorBillNumber}</div>
                       <span style={mono} data-testid={`commercial-claim-status-${b.id}`}>{b.status}</span>
+                      {ambiguous && (
+                        <span style={{ ...muted, color: 'var(--amber-text)' }} data-testid={`commercial-claim-ambiguous-${b.id}`}>
+                          two reads disagree about this claim's status and carry the same timestamp — refresh to resolve
+                        </span>
+                      )}
                     </div>
                     <div style={mono}>{b.id}</div>
                   </button>
@@ -1019,7 +1042,7 @@ export function CommercialScreen() {
                       <Button
                         variant="ink"
                         data-testid={`bill-submit-${b.id}`}
-                        disabled={!(BILL_SUBMITTABLE_FROM as readonly string[]).includes(b.status) || billTxPending(b.id)}
+                        disabled={ambiguous || !(BILL_SUBMITTABLE_FROM as readonly string[]).includes(b.status) || billTxPending(b.id)}
                         onClick={() => submitBill(b.id)}
                       >
                         {billTxPending(b.id) ? 'Working…' : 'Submit'}
@@ -1034,7 +1057,7 @@ export function CommercialScreen() {
                       <Button
                         variant="ghost"
                         data-testid={`bill-reject-${b.id}`}
-                        disabled={!(BILL_REJECTABLE_FROM as readonly string[]).includes(b.status) || !billReasonFor(b.id).trim() || billTxPending(b.id)}
+                        disabled={ambiguous || !(BILL_REJECTABLE_FROM as readonly string[]).includes(b.status) || !billReasonFor(b.id).trim() || billTxPending(b.id)}
                         onClick={() => rejectBill(b.id, billReasonFor(b.id).trim())}
                       >
                         Reject
@@ -1142,6 +1165,14 @@ export function CommercialScreen() {
                 // behind; this is that third move. The empty-project statement is only made once
                 // the source it describes has actually loaded.
                 const lineSource = viewOf(commercial, commercialLoad, onPilot);
+                // `viewOf` reports staleness ON content — `{ show: 'content', stale: true }` is a
+                // cached bundle whose LATEST read failed. Round 6 handled only `show !== 'content'`,
+                // so the cached half of this same finding survived: an empty cached bundle plus a
+                // failed refresh still announced "no labour lines are attributed on this project",
+                // when the read that failed is exactly the one that would have carried a newly
+                // attributed line. Half a finding fixed is the instance, not the class.
+                const sourceStale = lineSource.show === 'content' && lineSource.stale;
+                const sourceRefreshing = lineSource.show === 'content' && lineSource.refreshing;
                 if (lineSource.show !== 'content') {
                   return lineSource.show === 'loading' ? (
                     <div style={{ ...rowCard, ...muted }} data-testid="commercial-measurements-loading">
@@ -1183,13 +1214,39 @@ export function CommercialScreen() {
                   // §D applies to LABOUR lines. A material line's evidence is accepted stock, which
                   // the verification triple already reports — so this says "does not apply" rather
                   // than showing empty registers, which would read as "measured nothing".
+                  sourceStale ? (
+                    <div style={{ ...rowCard, ...muted, color: 'var(--amber-text)' }} data-testid="commercial-measurements-stale">
+                      This project's labour commitments could not be refreshed, so the lines that can be
+                      measured are not known to be current — a line attributed since the last successful
+                      read would not appear here.{' '}
+                      <Button variant="ghost" data-testid="commercial-measurements-retry" onClick={() => void loadCommercial()}>
+                        Retry
+                      </Button>
+                    </div>
+                  ) : (
                   <div style={{ ...rowCard, ...muted }} data-testid="commercial-measurements-empty">
                     No labour purchase-order lines are attributed on this project yet — §D measurement
                     applies to labour, and a material claim's evidence is accepted stock, shown under
                     Certification.
                   </div>
+                  )
                 ) : (
                   <>
+                    {(sourceStale || sourceRefreshing) && (
+                      // a NON-empty list can be stale too: the lines shown are real, and a line
+                      // attributed since the last successful read is missing from them
+                      <div style={{ ...rowCard, ...muted, ...(sourceStale ? { color: 'var(--amber-text)' } : {}) }} data-testid="commercial-measurements-source-state">
+                        {sourceStale ? (
+                          <>
+                            This line list could not be refreshed — a line attributed since the last
+                            successful read would not appear.{' '}
+                            <Button variant="ghost" data-testid="commercial-measurements-retry" onClick={() => void loadCommercial()}>
+                              Retry
+                            </Button>
+                          </>
+                        ) : 'Refreshing this project\u2019s labour commitments…'}
+                      </div>
+                    )}
                     {measurable.map(([lineId, register]) => (
                       <div key={lineId} style={rowCard} data-testid={`commercial-measurement-${lineId}`}>
                         <div style={mono}>{lineId}</div>

@@ -27,6 +27,8 @@ already told the user "saved".**
 | 14 | 4 | The certificate floor was still the selected claim's, so a stale or absent claim silently emptied it |
 | 15 | 5 | (JagPat) Row freshness was arbitrated by a counter over read COMPLETIONS, so a held list response landing last regressed a certified bill to `verified` |
 | 16 | 5 | (JagPat) A failed money-bundle read rendered "no labour lines are attributed on this project yet" — a claim about the PROJECT, made from a read that never arrived |
+| 17 | 6 | (JagPat) Finding 16 fixed only the `commercialView === null` half; a CACHED bundle whose latest refresh failed still presented the empty-project statement as current truth |
+| 18 | 6 | (JagPat) `statusChangedAt` is `new Date()` at ms precision, not a lifecycle version, so the `>=` tie-break imposed a total order on data that has none and could still regress a status |
 
 ## Root: sound, incomplete, and approximate are three different things
 
@@ -140,6 +142,33 @@ exactly this and was not applied to the new source.
 
 Together they sharpen carry-forward 8: moving a data source is not one edit but three.
 
+## Round 7 — half a finding, and an order that does not exist
+
+**Finding 17 is finding 16 fixed at the instance rather than the class.** `viewOf` reports staleness
+ON content — `{ show: 'content', stale: true }` is a cached bundle whose latest read failed — and I
+handled only `show !== 'content'`. So the null case was covered and the cached case, which is the
+common one in a running app, was not. My own probe (S2) tested exactly the half I had fixed.
+
+That is root F from PR #304 in its plainest form: *stating a principle is not applying it;
+enumerate the instances.* The instances here were the three states `viewOf` was built to express,
+and I read one field of the three.
+
+**Finding 18 says the ordering primitive does not exist.** `statusChangedAt` is written by
+`new Date()` at millisecond precision, so two DIFFERENT transitions can share a stamp: certify at
+T, approve at T, and a claim read taken between them ties with a list read taken after. My `>=`
+broke that tie toward the claim copy — the one that can be older — and regressed the row.
+
+The fix is to stop deciding. Equal stamp + SAME status is not a tie (the copies agree); equal stamp
++ DIFFERING status is undecidable from what the reads carry, so the row shows the list copy, says
+the two disagree, and disables that bill's transitions until a canonical read resolves it. A fresh
+pair converges, because the ambiguity is a property of reading at two times rather than of the
+timestamps.
+
+**The durable fix is a monotonic per-bill lifecycle version from the server**, and it is named here
+rather than smuggled into the end of an over-budget unit: it is a schema change, and refusing to
+decide is sound without it. This is a stated deferral, not the silent approximation round 5 was
+about — the difference is that this one never displays or acts on a copy it cannot establish.
+
 ## What carries forward
 
 1. **Sound ≠ complete ≠ approximate.** Keep the sound-but-incomplete guard and label it; delete the
@@ -169,6 +198,12 @@ Together they sharpen carry-forward 8: moving a data source is not one edit but 
    counter is the one that regresses state. (Finding 15.)
 11. **Moving a data source is three moves: the read, the recovery path, and the honest states.** Two
    rounds found the second and third separately. (Findings 11, 16.)
-12. **A lifecycle has to hold where state is REBUILT, not only where it is maintained.** Hydration
+12. **Fixing the case the probe reaches is not fixing the finding.** `viewOf` has three states and
+   I read one field of it; the null half was covered and the cached half — the common one — was
+   not. (Finding 17.)
+13. **Do not impose a total order on data that has none.** A wall-clock stamp orders transitions
+   only when they differ; equal-stamp-different-status is undecidable, and breaking the tie is
+   choosing to be wrong half the time. Refusing to decide, and saying so, is available. (Finding 18.)
+14. **A lifecycle has to hold where state is REBUILT, not only where it is maintained.** Hydration
    is the moment every in-memory invariant is reconstructed from bytes, and it is the easiest place
    for a pairing to come apart. (Finding 12.)
