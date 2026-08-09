@@ -1479,6 +1479,22 @@ export const grantSodExceptionSchema = z
     // HTTP boundary. Every in-process caller — the Task-5 suites, the operator paths — constructs
     // this object directly, and a default that lives only in the pipe leaves them writing a NULL
     // rule. The default belongs with the rule, in the service.
+    /**
+     * Codex F4 — the claim VERSION the approver was looking at.
+     *
+     * §I pins a grant to a version so permission for the claim someone reviewed never carries to
+     * one they never saw, and the server resolves "live" at EXECUTION. Through the durable
+     * write-ahead outbox those are different moments: an approver reads v1 offline, an amendment
+     * creates v2, and the queued grant replays against v2 — authorising exactly what the pinning
+     * exists to prevent.
+     *
+     * OPTIONAL rather than required, deliberately, and the asymmetry is stated rather than
+     * accidental: every in-process caller (the Task-5 suites, operator paths) constructs this
+     * object directly and holds no rendered version, while the risk is specific to a command that
+     * can sit in a queue across an amendment. When present the service REFUSES a mismatch; when
+     * absent the behaviour is exactly as before. The client always sends it.
+     */
+    versionId: z.string().min(1).optional(),
     rule: z
       .enum([SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove])
       .optional(),

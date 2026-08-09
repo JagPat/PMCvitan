@@ -454,7 +454,7 @@ export interface AppActions {
   verifyVendorBill: (billId: string) => void;
   /** §F/§I writes (7B-iii-f) — the certification authority chain. */
   certifyBill: (billId: string) => void;
-  grantSodException: (billId: string, actorId: string, reason: string) => void;
+  grantSodException: (billId: string, actorId: string, reason: string, versionId: string) => void;
   supersedeCertificate: (billId: string, reason: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
@@ -3009,9 +3009,9 @@ export const useStore = create<Store>()(
         `Certify ${billId}`, 'Claim certified.',
       );
     },
-    grantSodException: (billId, actorId, reason) => {
+    grantSodException: (billId, actorId, reason, versionId) => {
       dispatchCommercial(
-        { t: 'grantSodException', input: { billId, actorId, reason }, idempotencyKey: newIdempotencyKey(),
+        { t: 'grantSodException', input: { billId, actorId, reason, versionId }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: sodGrantCoalesceKey(billId, actorId) },
         `Authorise ${actorId}`, 'Authorisation recorded.',
       );

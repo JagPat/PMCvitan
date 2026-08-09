@@ -181,6 +181,8 @@ export function CommercialScreen() {
   const mayCertify = may('commercial.certify');
   const mayGrantSod = may('commercial.sod.grant');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
+  // Codex F1 — the project TEAM, so an authorisation names a real identity rather than typed text.
+  const members = useStore(useShallow((s) => s.members));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
@@ -1218,22 +1220,49 @@ export function CommercialScreen() {
                     const actorId = draft.sodActor.trim();
                     const reason = draft.sodReason.trim();
                     const pending = commercialPending.some((k) => isSodGrantPending(k, claim.bill.id, actorId));
+                    // Codex F4 — the version the approver is LOOKING AT. A grant is pinned to a
+                    // version so permission never carries to a claim they never saw, and the
+                    // durable outbox is exactly where that guarantee was lost: the server resolved
+                    // "live" at replay, which can be after an amendment. Sent with the command and
+                    // refused server-side on drift.
+                    const viewedVersionId = claim.bill.versions.find((v) => v.live)?.id ?? null;
+                    // Codex F1 — the ACTIVE project team minus the approver themselves. Free text
+                    // put three server refusals into the write-ahead outbox (a display name, a
+                    // typo, and the self-grant §I forbids) and reported each as saved before
+                    // reconnect dropped it. A picker cannot express any of them.
+                    const candidates = members.filter((m) => m.status === 'active' && m.userId !== claim.certifyPreflight.callerActorId);
+                    const eligible = candidates.some((m) => m.userId === actorId);
                     return (
                       <div style={{ ...rowCard, marginTop: 8 }} data-testid="commercial-sod-grant">
                         <div style={{ fontWeight: 600 }}>Authorise a segregation-of-duties exception</div>
                         <div style={{ ...muted, marginTop: 4 }}>
                           The actor who recorded the evidence under a claim may not certify it. You
                           may authorise one named person to, against this version of this claim, and
-                          your reason is recorded with it.
+                          your reason is recorded with it. You cannot authorise yourself.
                         </div>
+                        {/* the grants that already stand — the read now SHOWS what it clears a
+                            pending key for (F3), so an approver can see their own act landed */}
+                        {claim.sodGrants.length > 0 && (
+                          <div style={{ marginTop: 8 }} data-testid="commercial-sod-live-grants">
+                            {claim.sodGrants.map((g) => (
+                              <div key={g.id} style={{ ...muted, marginTop: 4 }} data-testid={`sod-live-${g.id}`}>
+                                {g.actorId} — authorised by {g.approverId}: {g.reason}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                          <input
+                          <select
                             value={draft.sodActor}
                             onChange={(e) => setCertDraft(claim.bill.id, { sodActor: e.target.value })}
-                            placeholder="Person to authorise"
                             data-testid={`sod-actor-${claim.bill.id}`}
                             style={{ ...input, flex: '1 1 140px' }}
-                          />
+                          >
+                            <option value="">Person to authorise…</option>
+                            {candidates.map((m) => (
+                              <option key={m.userId} value={m.userId}>{m.name}</option>
+                            ))}
+                          </select>
                           <input
                             value={draft.sodReason}
                             onChange={(e) => setCertDraft(claim.bill.id, { sodReason: e.target.value })}
@@ -1244,8 +1273,8 @@ export function CommercialScreen() {
                           <Button
                             variant="ink"
                             data-testid={`sod-grant-${claim.bill.id}`}
-                            disabled={actorId === '' || reason === '' || pending}
-                            onClick={() => grantSod(claim.bill.id, actorId, reason)}
+                            disabled={!eligible || reason === '' || viewedVersionId === null || pending}
+                            onClick={() => grantSod(claim.bill.id, actorId, reason, viewedVersionId as string)}
                           >
                             {pending ? 'Working…' : 'Authorise'}
                           </Button>

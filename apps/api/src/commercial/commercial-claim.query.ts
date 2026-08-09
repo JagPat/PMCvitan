@@ -10,7 +10,6 @@ import { CommercialCertificationService } from './commercial-certification.servi
 import { CommercialDeductionService } from './commercial-deduction.service';
 import { CommercialPaymentService } from './commercial-payment.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
-import { resolveActor } from '../common/actor';
 
 /**
  * Phase 5 Task 7B-ii (§M) — ONE CLAIM'S WHOLE LIFECYCLE, from one repeatable-read transaction.
@@ -100,16 +99,26 @@ export class CommercialClaimQuery {
       // rejected) cannot be certified at all, so there is nothing to authorise and `none` is the
       // honest answer rather than a lookup against a version the claim has moved past.
       const liveVersionId = bill.versions.find((v) => v.live)?.id ?? null;
-      const actor = await resolveActor(this.prisma, user);
+      // Codex F2 — `user.sub` IS the actor id, so the old `resolveActor` call bought nothing but a
+      // `user.findUnique` on the ROOT client while this transaction holds its own connection: a
+      // read outside the snapshot this method exists to assemble, and a second checkout that can
+      // self-block on a saturated pool. `resolveActor` resolves a display NAME, which no part of
+      // this answer uses.
       const resolved = liveVersionId === null
         ? ({ state: 'none' } as const)
-        : await this.certification.resolveGrant(tx, projectId, billId, liveVersionId, actor.actorId, false);
+        : await this.certification.resolveGrant(tx, projectId, billId, liveVersionId, user.sub, false);
       const certifyPreflight: CertifyPreflightDto = {
         grantState: resolved.state,
         grantId: resolved.state === 'live' ? resolved.grant.id : null,
+        callerActorId: user.sub,
       };
+      // Codex F3 — and the grants THEMSELVES, so this read shows what it clears a pending key for.
+      const sodGrants = await this.certification.liveGrantsIn(tx, projectId, billId, liveVersionId);
 
-      return { bill, verification, certificate, deductions, payments, measurements, certifyPreflight };
+      return {
+        bill, verification, certificate, deductions, payments, measurements,
+        certifyPreflight, sodGrants,
+      };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 }

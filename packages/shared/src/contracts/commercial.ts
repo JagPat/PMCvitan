@@ -881,6 +881,30 @@ export interface CommercialClaimDto {
   measurements: Record<string, MeasurementRegisterDto>;
   /** §I — what authorisation stands for THE CALLER on this claim's live version. */
   certifyPreflight: CertifyPreflightDto;
+  /** §I — every LIVE authorisation on this claim's live version, whoever it names.
+   *
+   *  Codex F3. `certifyPreflight` answers only for the caller, so an APPROVER who has just
+   *  authorised someone else reloads this bundle and sees nothing about the grant they issued —
+   *  which made the claim read clear that grant's pending key while showing no trace of it, and
+   *  re-armed the form for a duplicate. §I's own rule is that the exception is NAMED rather than
+   *  silent, so the honest fix is for the read to actually carry it rather than for the key to be
+   *  held against a read that can never show it.
+   *
+   *  `commercial.read` is a pmc/engineer surface and a grant is an attributable authority decision,
+   *  so listing it here tells the same people the register already tells. */
+  sodGrants: SodGrantSummaryDto[];
+}
+
+/** §I — one live, unconsumed authorisation on a claim's live version. */
+export interface SodGrantSummaryDto {
+  id: string;
+  /** the person being EXCUSED */
+  actorId: string;
+  /** the pmc who authorised it — never the excused actor; the server refuses a self-grant */
+  approverId: string;
+  rule: string;
+  reason: string;
+  grantedAt: string;
 }
 
 /**
@@ -920,6 +944,15 @@ export interface CertifyPreflightDto {
   grantState: 'live' | 'stale-version' | 'approver-lost-standing' | 'none';
   /** The authorisation that would be consumed, when `grantState` is `live`; null otherwise. */
   grantId: string | null;
+  /** The actor id the SERVER resolved for this caller (Codex F1).
+   *
+   *  Returned because §I forbids a self-grant and the client otherwise has no way to honour that:
+   *  the session carries a role and a name, never an actor id, so an authorisation form could not
+   *  tell the approver apart from the people they may authorise. It is the caller's own identity
+   *  handed back to the caller — no one else's — and it lets the picker exclude the one choice the
+   *  server is certain to refuse, instead of queueing it into the write-ahead outbox and reporting
+   *  it saved. */
+  callerActorId: string;
 }
 
 export interface CashForecastReadDto extends CashForecastDto {

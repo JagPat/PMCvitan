@@ -433,7 +433,8 @@ const claimDto = (over: Partial<CommercialClaimView> = {}): CommercialClaimView 
     approved: '0.00', paid: '0.00', approvable: '90.00', billStatus: 'certified',
   },
   measurements: {},
-  certifyPreflight: { grantState: 'none', grantId: null },
+  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self' },
+  sodGrants: [],
   ...over,
 });
 

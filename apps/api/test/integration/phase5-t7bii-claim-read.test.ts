@@ -385,7 +385,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     const projectId = await freshProject();
     const billId = await verifiedOnly(projectId);
     const claim = await claims.readClaim(projectId, billId, pmc(projectId));
-    expect(claim.certifyPreflight).toEqual({ grantState: 'none', grantId: null });
+    expect(claim.certifyPreflight).toEqual({ grantState: 'none', grantId: null, callerActorId: f.memberUser.id });
   });
 
   it('6b: a live authorisation for THIS caller is reported with the id that would be consumed', async () => {
@@ -394,7 +394,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     const billId = await verifiedOnly(projectId);
     const grant = await grantTo(projectId, billId, f.memberUser.id, approver);
     const claim = await claims.readClaim(projectId, billId, pmc(projectId));
-    expect(claim.certifyPreflight).toEqual({ grantState: 'live', grantId: grant.id });
+    expect(claim.certifyPreflight).toEqual({ grantState: 'live', grantId: grant.id, callerActorId: f.memberUser.id });
   });
 
   it('6c: it is the CALLER\'s state — an authorisation naming someone else is not theirs', async () => {
@@ -427,7 +427,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     }, pmc(projectId));
 
     const after = await claims.readClaim(projectId, billId, pmc(projectId));
-    expect(after.certifyPreflight).toEqual({ grantState: 'stale-version', grantId: null });
+    expect(after.certifyPreflight).toEqual({ grantState: 'stale-version', grantId: null, callerActorId: f.memberUser.id });
   });
 
   /**
@@ -444,18 +444,92 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
 
     // without an authorisation the recorder is refused, and their own read says `none`
     expect((await claims.readClaim(projectId, billId, asUser(projectId, recorder))).certifyPreflight)
-      .toEqual({ grantState: 'none', grantId: null });
+      .toEqual({ grantState: 'none', grantId: null, callerActorId: recorder });
     await expect(certification.certify(projectId, { billId }, asUser(projectId, recorder)))
       .rejects.toThrow(/Segregation of duties/u);
 
     // authorised by the OTHER pmc, the read reports it…
     const grant = await grantTo(projectId, billId, recorder, f.memberUser.id);
     const pre = await claims.readClaim(projectId, billId, asUser(projectId, recorder));
-    expect(pre.certifyPreflight).toEqual({ grantState: 'live', grantId: grant.id });
+    expect(pre.certifyPreflight).toEqual({ grantState: 'live', grantId: grant.id, callerActorId: recorder });
 
     // …and the command consumes exactly that one
     const cert = await certification.certify(projectId, { billId }, asUser(projectId, recorder));
     expect(cert.sodException?.grantId).toBe(grant.id);
+  });
+
+
+  // ── 7 (7B-iii-f correction) — the Codex findings on head 495718d ─────────────────────────────
+
+  it('F3: the bundle carries the claim\'s LIVE grants, whoever they name', async () => {
+    const projectId = await freshProject();
+    await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    // the MEMBER authorises the OWNER; the member then reloads the claim as themselves
+    const grant = await grantTo(projectId, billId, f.ownerUser.id, f.memberUser.id);
+
+    const asApprover = await claims.readClaim(projectId, billId, pmc(projectId));
+    // their own preflight says nothing — the grant is not theirs — which is exactly why the
+    // register below has to exist: without it this read cleared the pending key while showing no
+    // trace of the act, and re-armed the form for a duplicate authorisation
+    expect(asApprover.certifyPreflight.grantState).toBe('none');
+    expect(asApprover.sodGrants).toEqual([
+      expect.objectContaining({ id: grant.id, actorId: f.ownerUser.id, approverId: f.memberUser.id }),
+    ]);
+  });
+
+  it('F3: a CONSUMED grant leaves the live register', async () => {
+    const projectId = await freshProject();
+    const recorder = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    await grantTo(projectId, billId, recorder, f.memberUser.id);
+    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants).toHaveLength(1);
+
+    await certification.certify(projectId, { billId }, asUser(projectId, recorder));
+    // certification consumed it, so it is no longer an authorisation anyone holds
+    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants).toEqual([]);
+  });
+
+  it('F1: the read hands the caller their OWN actor id, and only theirs', async () => {
+    const projectId = await freshProject();
+    await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    expect((await claims.readClaim(projectId, billId, pmc(projectId))).certifyPreflight.callerActorId)
+      .toBe(f.memberUser.id);
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, f.ownerUser.id))).certifyPreflight.callerActorId)
+      .toBe(f.ownerUser.id);
+  });
+
+  it('F4: a grant naming a version the claim has moved past is REFUSED, not re-pinned', async () => {
+    const projectId = await freshProject();
+    await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const read = await claims.readClaim(projectId, billId, pmc(projectId));
+    const viewed = read.bill.versions.find((v) => v.live)!.id;
+
+    // the claim is amended AFTER the approver read it — the interleaving a queued command creates
+    await bills.amend(projectId, {
+      billId, reason: 'vendor re-issued at 90',
+      lines: [{ poLineId: line.poLineId, quantity: '90', rate: '1' }],
+    }, pmc(projectId));
+
+    await expect(certification.grantSodException(
+      projectId, { billId, actorId: f.ownerUser.id, reason: 'two-person practice', versionId: viewed },
+      pmc(projectId),
+    )).rejects.toThrow(/amended after you read it/u);
+
+    // …and the CURRENT version is accepted, so the guard is precise rather than merely strict
+    const now = await claims.readClaim(projectId, billId, pmc(projectId));
+    const current = now.bill.versions.find((v) => v.live)!.id;
+    const ok = await certification.grantSodException(
+      projectId, { billId, actorId: f.ownerUser.id, reason: 'two-person practice', versionId: current },
+      pmc(projectId),
+    );
+    expect(ok.versionId).toBe(current);
   });
 
 });

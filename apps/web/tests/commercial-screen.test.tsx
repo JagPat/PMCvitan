@@ -61,7 +61,8 @@ const claim = (): CommercialClaimView => ({
     approved: '0.00', paid: '0.00', approvable: null, billStatus: 'certified',
   },
   measurements: {},
-  certifyPreflight: { grantState: 'none', grantId: null },
+  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self' },
+  sodGrants: [],
 });
 
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {
@@ -1355,5 +1356,94 @@ describe('Task 7B-iii-c-i (§E/§F) — the verification chain on the Certificat
       pending: ['com:billtx:bill-9:verify'],
     });
     expect(enabled(other, 'bill-begin-verification-bill-1')).toBe(true);
+  });
+});
+
+describe('7B-iii-f correction — the authorisation form cannot express what the server refuses', () => {
+  /**
+   * Codex F1. The first head took the excused person as free text, so a display name, a typo, or
+   * the approver's own id all queued a `grantSodException` into the durable outbox — reported saved,
+   * then refused and dropped on reconnect. A picker over the ACTIVE project team, minus the caller,
+   * cannot express any of the three.
+   *
+   * The caller's own id comes from the server (`certifyPreflight.callerActorId`), because the
+   * session carries a role and a name and never an actor id — without it the form could not tell
+   * the approver apart from the people they may authorise.
+   */
+  const claimWithTeam = (callerActorId: string): CommercialClaimView => {
+    const c = claim();
+    return { ...c, bill: { ...c.bill, status: 'verified' }, certifyPreflight: { ...c.certifyPreflight, callerActorId } };
+  };
+
+  const openWithMembers = (callerActorId: string) => {
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: bundle(), commercialLoad: 'ready',
+      commercialBills: [claimWithTeam(callerActorId).bill],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': claimWithTeam(callerActorId) },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      members: [
+        { userId: 'u-self', name: 'Approving PMC', email: null, phone: null, role: 'pmc', status: 'active' },
+        { userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'engineer', status: 'active' },
+        { userId: 'u-gone', name: 'Former', email: null, phone: null, role: 'engineer', status: 'removed' },
+      ] as never,
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    return r;
+  };
+
+  afterEach(cleanup);
+
+  it('offers the ACTIVE team minus the caller — never a free-text identity', () => {
+    const r = openWithMembers('u-self');
+    const options = Array.from((r.getByTestId('sod-actor-bill-1') as HTMLSelectElement).options)
+      .map((o) => o.value).filter((v) => v !== '');
+    // the approver cannot pick themselves (§I refuses a self-grant), and a removed member is not
+    // a person to authorise
+    expect(options).toEqual(['u-ravi']);
+  });
+
+  it('the caller identity comes from the SERVER, so the exclusion follows it', () => {
+    // the same screen, viewed by Ravi: now the other pmc is the authorisable one
+    const r = openWithMembers('u-ravi');
+    const options = Array.from((r.getByTestId('sod-actor-bill-1') as HTMLSelectElement).options)
+      .map((o) => o.value).filter((v) => v !== '');
+    expect(options).toEqual(['u-self']);
+  });
+
+  it('a chosen person who LEAVES the project disarms the button, draft and all', () => {
+    // the eligibility term, not the non-empty one: the draft still holds `u-ravi` after Ravi is
+    // removed from the team, and a form that only checked "is something selected" would queue an
+    // authorisation for someone the server no longer has an active membership for
+    const r = openWithMembers('u-self');
+    fireEvent.change(r.getByTestId('sod-actor-bill-1'), { target: { value: 'u-ravi' } });
+    fireEvent.change(r.getByTestId('sod-reason-bill-1'), { target: { value: 'only store user' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
+
+    act(() => {
+      useStore.setState({
+        members: [
+          { userId: 'u-self', name: 'Approving PMC', email: null, phone: null, role: 'pmc', status: 'active' },
+          { userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'engineer', status: 'removed' },
+        ] as never,
+      });
+    });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('Authorise stays disabled until a real person and a reason are chosen', () => {
+    const r = openWithMembers('u-self');
+    const btn = () => r.getByTestId('sod-grant-bill-1') as HTMLButtonElement;
+    expect(btn().disabled).toBe(true);
+    fireEvent.change(r.getByTestId('sod-actor-bill-1'), { target: { value: 'u-ravi' } });
+    expect(btn().disabled).toBe(true);                       // still no reason
+    fireEvent.change(r.getByTestId('sod-reason-bill-1'), { target: { value: 'only store user' } });
+    expect(btn().disabled).toBe(false);
   });
 });

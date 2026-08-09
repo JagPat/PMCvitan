@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { BILL_CERTIFY_FROM, BILL_STATUSES_PAST_CERTIFICATION, ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
+import { BILL_CERTIFY_FROM, BILL_STATUSES_PAST_CERTIFICATION, ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type SodGrantSummaryDto, type VendorBillStatus } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { hashRequest, type CommandScope } from '../platform/commands';
@@ -803,6 +803,14 @@ export class CommercialCertificationService {
           select: { id: true },
         });
         if (!version) throw new NotFoundException(`Vendor bill ${input.billId} has no live claim version`);
+        // Codex F4 — the approver authorises the claim they READ, not whichever one is live when a
+        // queued command happens to replay. A drifted version is refused rather than silently
+        // re-pinned, because re-pinning is the exact thing §I's version pinning forbids.
+        if (input.versionId !== undefined && input.versionId !== version.id) {
+          throw new ConflictException(
+            'This claim was amended after you read it — the authorisation would apply to a version you have not seen. Reload and authorise again.',
+          );
+        }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
         // certification will use — the participant, because standing is the orgs module's rule
         const entitled = await this.orgs.hasProjectRoleStanding(
@@ -864,6 +872,31 @@ export class CommercialCertificationService {
    * same reason `readCertificate` carries it — resolving the live certificate and re-reading it by
    * id leaves a window in which a supersession makes history look current.
    */
+  /**
+   * §I — every LIVE authorisation on ONE claim version, whoever it names (Codex F3).
+   *
+   * `resolveGrant` answers for ONE actor and is the write path's question. This is the READ's
+   * question — "what authorisations stand on this claim?" — and the two are deliberately separate
+   * rather than one over-parameterised function: an authority DECISION must select a candidate
+   * that is valid (standing filtered inside the selection, rounds 8–10), while a register LISTS
+   * what was granted, including one whose approver has since lost standing. Collapsing them would
+   * make the list silently omit a grant that exists, which is the opposite of §I's "named, not
+   * silent".
+   */
+  async liveGrantsIn(
+    tx: Prisma.TransactionClient, projectId: string, billId: string, versionId: string | null,
+  ): Promise<SodGrantSummaryDto[]> {
+    if (versionId === null) return [];
+    const rows = await tx.sodGrant.findMany({
+      where: { projectId, billId, versionId, consumedAt: null },
+      orderBy: [{ grantedAt: 'asc' }, { id: 'asc' }],
+    });
+    return rows.map((r) => ({
+      id: r.id, actorId: r.actorId, approverId: r.approverId,
+      rule: r.rule, reason: r.reason, grantedAt: r.grantedAt.toISOString(),
+    }));
+  }
+
   async liveCertificateIn(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
   ): Promise<CertificateDto | null> {
