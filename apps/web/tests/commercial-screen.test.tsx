@@ -1545,6 +1545,58 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it('round-4: Certify IS offered when the two reads AGREE — the ordinary case', () => {
+    // The round-3 guard was `reading.copy === claim.bill`, and `arbitrateBillCopy` returns the LIST
+    // object when the two agree — so opening a current claim read as "the bundle is stale" and
+    // disabled certification outright. My round-3 probe asserted only the stale case: I tested the
+    // defect and never the feature, so a correctness fix shipped as a functional regression.
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    const c = claimWithTeam('u-self');
+    const agreed: CommercialClaimView = {
+      ...c, bill: { ...c.bill, status: 'verified', statusChangedAt: '2026-08-21T00:00:01.000Z' },
+    };
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: bundle(), commercialLoad: 'ready',
+      // the list carries the SAME moment and the SAME status: both reads are current
+      commercialBills: [{ ...agreed.bill }], commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': agreed }, commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    expect((r.getByTestId('bill-certify-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('round-4: Authorise is ALSO withheld while the claim bundle is stale', () => {
+    // round 3 applied the freshness guard to certify and supersede and not to this button — the
+    // audit's own root, recurring inside the round that named it. A grant queued from a stale
+    // bundle carries a stale versionId into the drift refusal, reported saved and then dropped.
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    const c = claimWithTeam('u-self');
+    const stale: CommercialClaimView = {
+      ...c, bill: { ...c.bill, status: 'verified', statusChangedAt: '2026-08-21T00:00:01.000Z' },
+    };
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: bundle(), commercialLoad: 'ready',
+      commercialBills: [{ ...stale.bill, statusChangedAt: '2026-08-21T00:00:02.000Z' }],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': stale }, commercialClaimLoad: { 'bill-1': 'ready' },
+      members: [{ userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'pmc', status: 'active' }] as never,
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    fireEvent.change(r.getByTestId('sod-actor-bill-1'), { target: { value: 'u-ravi' } });
+    fireEvent.change(r.getByTestId('sod-reason-bill-1'), { target: { value: 'only store user' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('round-3: Certify is not offered while the LIST is fresher than the claim bundle', () => {
     // the gate arbitrates list-vs-claim; the payload is pinned from the claim bundle. If the list
     // is the fresher copy the gate would say yes while the pin is stale, and the server refuses a

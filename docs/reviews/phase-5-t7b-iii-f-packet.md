@@ -19,9 +19,9 @@ clear, which is exactly the dead end 7B-iii-b was split to avoid.
 
 | | |
 |---|---|
-| Files | 14 |
-| Changed lines | 700 (including the round-1 correction) |
-| Budget | 20 files / 1,500 lines — inside, marker not used |
+| Files | 17 |
+| Changed lines | ~1,780 (initial 592 + four correction rounds) |
+| Budget | 20 files / 1,500 lines — **OVER on lines; carries the `justified-large` marker** |
 | Schema / migration | none |
 | New server behaviour | none (one grant rule extracted and shared; two inline `from:` literals replaced by shared constants the services read) |
 
@@ -110,6 +110,31 @@ Seven mutations, each reddening exactly its own probe. **One probe was rewritten
 passing under mutation:** "Authorise stays disabled" used only valid values, so it never
 exercised the eligibility term; the probe that does is a chosen member *leaving the
 project* with the draft still holding their id.
+
+## Round 4 — five Codex findings on head `13c87a4`
+
+The P1 was a **documentation-truth error of exactly the kind this packet exists to
+prevent**: I added the `justified-large` marker to the PR body when the scope gate
+failed, and left this packet saying the unit was inside budget with the marker unused.
+Two artefacts describing one diff, disagreeing. Corrected above.
+
+| # | Finding | Fix |
+|---|---|---|
+| R4-1 | **a regression I introduced in round 3.** `claimIsAuthoritative` compared object identity, and `arbitrateBillCopy` returns the LIST object when the two reads AGREE — so opening a current claim read as "stale" and disabled certification outright | `BillReading.source` names which read won (`agreed`/`list`/`claim`); the guard reads the named concept instead of inferring it |
+| R4-2 | the freshness guard covered certify and supersede but **not the grant button** — the audit's own root, recurring inside the round that named it | the same guard, on all three |
+| R4-3 | `usableForCertification` checked the rule and the APPROVER's standing, never the EXCUSED actor's — so a grant for someone who cannot certify read as usable | both parties checked; and the grant COMMAND refuses a non-certifier at issue, because the picker is not the only way in |
+| R4-4 | the grant's drift guard pinned `versionId` only, and one version walks `submitted → under-verification → verified` **without changing id** — so a grant queued before the §E verdict authorised certification of facts its approver never reviewed | the reviewed STATUS is pinned too |
+| R4-5 (P1) | the packet claimed the unit was inside budget | corrected; the marker and matrix live in the PR body |
+
+**R4-1 is the sharpest lesson of the four rounds.** My round-3 probe asserted only the
+stale case — I tested the defect and never the feature, so a correctness fix shipped as
+a functional regression that disabled the workflow it was guarding. The round-4 probe
+asserts the ordinary path, and it is RED against the round-3 code.
+
+Four mutations, each reddening exactly its own probe. One cleared Task-5 fixture changed
+(`R9`): it granted to a stranger merely as "a different actor", and a stranger cannot
+certify, so the new refusal is correct — the fixture now names a certifier and the probe
+stays about the consume seal it is titled for.
 
 ## Round 3 — three Codex findings on head `00c42f0`
 

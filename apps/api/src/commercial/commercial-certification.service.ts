@@ -826,6 +826,29 @@ export class CommercialCertificationService {
             'This claim was amended after you read it — the authorisation would apply to a version you have not seen. Reload and authorise again.',
           );
         }
+        // Codex round 4 — the STATUS too. Round 2 answered the drift finding with `versionId`
+        // alone, and one version walks the whole §E lifecycle without changing id: an approver who
+        // authorised a `submitted` claim would otherwise be authorising the certification of a
+        // verdict that did not exist when they decided.
+        const billNow = await this.lockBill(tx, projectId, input.billId);
+        if (input.status !== undefined && input.status !== billNow.status) {
+          throw new ConflictException(
+            `This claim moved to ${billNow.status} after you read it — the authorisation would apply to a state you have not reviewed. Reload and authorise again.`,
+          );
+        }
+        // Codex round 4 — the EXCUSED actor must be able to certify at all. A grant naming someone
+        // without `commercial.certify` standing is an authority that can never be exercised: it is
+        // recorded, displayed, and the named actor is still refused by a different rule when they
+        // try. Refused at the command, not merely hidden in the picker, because the picker is not
+        // the only way here.
+        const excusedMayCertify = await this.orgs.hasProjectRoleStanding(
+          tx, projectId, input.actorId, ROLE_POLICY['commercial.certify'] as readonly string[], { forUpdate: true },
+        );
+        if (!excusedMayCertify) {
+          throw new ForbiddenException(
+            'That person cannot certify on this project, so an exception would authorise nothing they could act on',
+          );
+        }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
         // certification will use — the participant, because standing is the orgs module's rule
         const entitled = await this.orgs.hasProjectRoleStanding(
@@ -912,8 +935,13 @@ export class CommercialCertificationService {
     // ORGS module's question and no client can answer it.
     const out: SodGrantSummaryDto[] = [];
     for (const r of rows) {
+      // Codex round 4 — BOTH parties. The approver must still hold pmc standing for the grant to
+      // be an authority at all, and the EXCUSED actor must still be able to certify for it to
+      // authorise anything: a grant naming someone who has since lost certify standing is a row
+      // that looks live and buys nothing.
       const usableForCertification = r.rule === SOD_RULE
-        && await this.orgs.hasProjectRoleStanding(tx, projectId, r.approverId, ['pmc']);
+        && await this.orgs.hasProjectRoleStanding(tx, projectId, r.approverId, ['pmc'])
+        && await this.orgs.hasProjectRoleStanding(tx, projectId, r.actorId, ROLE_POLICY['commercial.certify'] as readonly string[]);
       out.push({
         id: r.id, actorId: r.actorId, approverId: r.approverId,
         rule: r.rule, reason: r.reason, grantedAt: r.grantedAt.toISOString(),

@@ -1196,7 +1196,13 @@ export function CommercialScreen() {
                     // and the server refuses a command the screen had already reported saved — the
                     // write-ahead lie, produced by my own arbitration used inconsistently. So these
                     // acts are offered only while the claim bundle IS the authoritative copy.
-                    const claimIsAuthoritative = reading?.copy === claim.bill;
+                    // Round 4 — the claim bundle is good enough to act on unless the LIST is
+                    // strictly newer. Derived from the named source, because the previous spelling
+                    // compared object identity and `arbitrateBillCopy` returns the LIST object when
+                    // the two AGREE — so the ordinary case of opening a current claim read as
+                    // "stale" and disabled certification outright. A correctness guard that
+                    // disables the workflow it guards is worse than the defect it closed.
+                    const claimIsAuthoritative = reading !== null && reading.source !== 'list';
                     return (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }} data-testid="commercial-certify-actions">
                         <Button
@@ -1252,6 +1258,19 @@ export function CommercialScreen() {
                     // "live" at replay, which can be after an amendment. Sent with the command and
                     // refused server-side on drift.
                     const viewedVersionId = claim.bill.versions.find((v) => v.live)?.id ?? null;
+                    // Round 4 — the SAME freshness guard the certify controls use. Round 3 applied
+                    // it to certify and supersede and not to this button, in the very round whose
+                    // audit names "fix the class, not the instance" as the root. A grant queued
+                    // from a stale bundle carries a stale `versionId` straight into the drift
+                    // refusal round 2 added — reported saved, then dropped.
+                    const listForGrant = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
+                    const grantReading = arbitrateBillCopy(listForGrant, claim.bill);
+                    const grantOnCurrentClaim = grantReading !== null && grantReading.source !== 'list';
+                    // …and the STATUS the approver reviewed. A version moves submitted →
+                    // under-verification → verified without changing id, so pinning the version
+                    // alone lets a grant queued before the §E verdict authorise certification of
+                    // facts its approver never saw.
+                    const viewedStatus = claim.bill.status;
                     // Codex F1 — the ACTIVE project team minus the approver themselves. Free text
                     // put three server refusals into the write-ahead outbox (a display name, a
                     // typo, and the self-grant §I forbids) and reported each as saved before
@@ -1320,8 +1339,9 @@ export function CommercialScreen() {
                           <Button
                             variant="ink"
                             data-testid={`sod-grant-${claim.bill.id}`}
-                            disabled={!eligible || alreadyStands || reason === '' || viewedVersionId === null || pending}
-                            onClick={() => grantSod(claim.bill.id, actorId, reason, viewedVersionId as string)}
+                            disabled={!eligible || alreadyStands || reason === '' || !grantOnCurrentClaim
+                              || viewedVersionId === null || pending}
+                            onClick={() => grantSod(claim.bill.id, actorId, reason, viewedVersionId as string, viewedStatus)}
                           >
                             {pending ? 'Working…' : 'Authorise'}
                           </Button>

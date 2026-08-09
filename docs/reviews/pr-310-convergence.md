@@ -2,7 +2,7 @@
 
 Required after two distinct finding-bearing heads, and updated in place on each
 subsequent one rather than re-attached. Head 1 `495718d` returned four findings; head 2
-`a8e73d4` four more; head 3 `00c42f0` three. This is the architectural account of why,
+`a8e73d4` four more; head 3 `00c42f0` three; head 4 `13c87a4` five. This is the architectural account of why,
 not a list of patches.
 
 ## The root
@@ -101,6 +101,45 @@ copy while its **payload** was pinned from the claim bundle, so a fresher list e
 command pinned to a stale version — my own arbitration mechanism used inconsistently
 within one control. Gate and payload now come from one copy.
 
+## Round 4 — the root eats its own fix, and a third half appears
+
+Head `13c87a4` returned five. Two belong to roots already named, and they are the most
+damning instances of each:
+
+- **The class root, inside the round that named it.** Round 3 added a list-vs-bundle
+  freshness guard to certify and supersede and not to the grant button — while its own
+  commit message and this audit were both explaining that fixing one member of a set is
+  the recurring failure. Writing the rule down in the same change did not make me apply it.
+- **The authority root, one field short.** Round 3 moved "who may be authorised" and "is
+  this grant usable" to their owning module, and checked the APPROVER's standing while
+  never checking the EXCUSED actor's. The grant is an authority *between two people*; I
+  modelled one of them.
+
+The third half is new, and it is the one worth carrying furthest:
+
+**I test the defect a finding names, not the behaviour the fix must preserve.**
+
+Round 3's fix for the gate/payload mismatch was `reading.copy === claim.bill` — object
+identity. `arbitrateBillCopy` deliberately returns the LIST object when the two reads
+AGREE, so the ordinary case of opening a current claim evaluated as "the bundle is
+stale" and **disabled certification entirely**. My round-3 probe asserted only the stale
+case. A correctness fix shipped as a functional regression in the workflow it guarded,
+and my own probe suite reported green.
+
+The structural response is not "write more probes". It is that **a guard which disables
+an action must be probed on the path where the action is still legal** — the negative
+case alone cannot distinguish "correctly withheld" from "never available". Round 4's
+probe asserts the ordinary path and is RED against round 3.
+
+The mechanism fix follows the same rule as the rest of this audit: `BillReading.source`
+NAMES which read won, so a caller asks the concept instead of inferring it from which
+object came back. Inference is what made a deliberate tie-break look like staleness.
+
+The fifth finding is a documentation-truth error of exactly the kind these packets exist
+to prevent: the scope gate failed, I added `justified-large` to the PR body, and left the
+packet asserting the unit was inside budget with the marker unused. Two artefacts about
+one diff, disagreeing.
+
 ## Carry-forward
 
 - A **monotonic per-bill lifecycle version** from the server remains the durable fix
@@ -117,6 +156,10 @@ within one control. Gate and payload now come from one copy.
   2. *Which of this screen's decisions are server AUTHORITY decisions?* Every one of
      them is answered by its owning module and displayed, never derived from whatever
      the client happens to hold. (Round 3's root.)
-  Both were already stated somewhere in this repository before they were found here —
-  the second is written verbatim in `orgs.participant.ts`. The failure was not knowing
-  them; it was applying them only where a reviewer had pointed.
+  3. *What must still WORK after this guard?* Probe the legal path, not only the
+     refused one — round 4's regression disabled certification outright and every
+     existing probe stayed green.
+  Both of the first two were already stated somewhere in this repository before they
+  were found here — the second verbatim in `orgs.participant.ts`, and the first in this
+  very audit while I was violating it. The failure was never not knowing them; it was
+  applying them only where a reviewer had pointed.

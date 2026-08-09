@@ -633,4 +633,69 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
       .toEqual([expect.objectContaining({ id: good.id, usableForCertification: false })]);
   });
 
+
+  it('round-4: a grant naming the reviewed VERSION but a different STATUS is refused', async () => {
+    const projectId = await freshProject();
+    await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    // read while the claim is SUBMITTED — before the §E verdict exists
+    const recorded = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: `V-R4-${seq++}`, documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId));
+    await bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
+    const read = await claims.readClaim(projectId, recorded.id, pmc(projectId));
+    const viewed = read.bill.versions.find((v) => v.live)!.id;
+    expect(read.bill.status).toBe('submitted');
+
+    // the claim verifies — SAME version, different state
+    await bills.beginVerification(projectId, { billId: recorded.id }, pmc(projectId));
+    await verification.verify(projectId, { billId: recorded.id }, pmc(projectId));
+    const after = await claims.readClaim(projectId, recorded.id, pmc(projectId));
+    expect(after.bill.versions.find((v) => v.live)!.id).toBe(viewed);   // the version did NOT move
+
+    await expect(certification.grantSodException(
+      projectId,
+      { billId: recorded.id, actorId: f.ownerUser.id, reason: 'two-person practice', versionId: viewed, status: 'submitted' },
+      pmc(projectId),
+    )).rejects.toThrow(/moved to verified after you read it/u);
+
+    // the reviewed state is accepted, so the guard is precise rather than merely strict
+    const ok = await certification.grantSodException(
+      projectId,
+      { billId: recorded.id, actorId: f.ownerUser.id, reason: 'two-person practice', versionId: viewed, status: 'verified' },
+      pmc(projectId),
+    );
+    expect(ok.versionId).toBe(viewed);
+  });
+
+  it('round-4: the EXCUSED actor must be able to certify — at issue and in usability', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+
+    // an engineer holds no certify path, so an exception would authorise nothing they could act on
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
+      create: { projectId, userId: f.strangerUser.id, role: 'engineer', status: 'active' },
+      update: { role: 'engineer', status: 'active' },
+    });
+    await expect(grantTo(projectId, billId, f.strangerUser.id, approver))
+      .rejects.toThrow(/cannot certify on this project/u);
+
+    // a certifier is granted normally, and the grant reads USABLE…
+    const grant = await grantTo(projectId, billId, f.memberUser.id, approver);
+    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants)
+      .toEqual([expect.objectContaining({ id: grant.id, usableForCertification: true })]);
+
+    // …until the EXCUSED actor loses certify standing, which round 3 did not check
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { role: 'engineer' },
+    });
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, approver))).sodGrants)
+      .toEqual([expect.objectContaining({ id: grant.id, usableForCertification: false })]);
+  });
+
 });

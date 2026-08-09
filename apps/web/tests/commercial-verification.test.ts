@@ -39,14 +39,17 @@ describe('§F — one arbitration rule for both surfaces that act on a claim lif
   it('prefers the copy with the later server stamp, in EITHER direction', () => {
     const later = copy('verified', '2026-08-21T00:00:02.000Z');
     const earlier = copy('submitted', '2026-08-21T00:00:01.000Z');
-    expect(arbitrateBillCopy(earlier, later)).toEqual({ copy: later, ambiguous: false });
-    expect(arbitrateBillCopy(later, earlier)).toEqual({ copy: later, ambiguous: false });
+    expect(arbitrateBillCopy(earlier, later)).toMatchObject({ copy: later, ambiguous: false, source: 'claim' });
+    expect(arbitrateBillCopy(later, earlier)).toMatchObject({ copy: later, ambiguous: false, source: 'list' });
   });
 
   it('EQUAL stamp + SAME status is agreement, not a tie', () => {
     const a = copy('submitted', '2026-08-21T00:00:01.000Z');
     const b = copy('submitted', '2026-08-21T00:00:01.000Z');
     expect(arbitrateBillCopy(a, b)?.ambiguous).toBe(false);
+    // …and it says so: round 4's regression came from inferring "is the bundle current?" from
+    // WHICH OBJECT came back, when agreement deliberately returns the list one
+    expect(arbitrateBillCopy(a, b)?.source).toBe('agreed');
   });
 
   /**
@@ -76,8 +79,8 @@ describe('§F — one arbitration rule for both surfaces that act on a claim lif
 
   it('ONE copy is authoritative; NO copy offers nothing', () => {
     const only = copy('submitted', '2026-08-21T00:00:01.000Z');
-    expect(arbitrateBillCopy(only, null)).toEqual({ copy: only, ambiguous: false });
-    expect(arbitrateBillCopy(null, only)).toEqual({ copy: only, ambiguous: false });
+    expect(arbitrateBillCopy(only, null)).toMatchObject({ copy: only, ambiguous: false, source: 'list' });
+    expect(arbitrateBillCopy(null, only)).toMatchObject({ copy: only, ambiguous: false, source: 'claim' });
     // and a control with no reading at all acts on nothing
     expect(arbitrateBillCopy(null, null)).toBeNull();
     expect(transitionOffered(null, BILL_VERIFY_FROM)).toBe(false);
@@ -398,14 +401,14 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
    * resource; here it would be too WIDE for independent ones.
    */
   it('a SoD authorisation is keyed by the PERSON excused, so two are independent', () => {
-    s().grantSodException('bill-1', 'user-ravi', 'only store user this week', 'ver-1');
-    s().grantSodException('bill-1', 'user-sunil', 'covering the weekend', 'ver-1');
+    s().grantSodException('bill-1', 'user-ravi', 'only store user this week', 'ver-1', 'verified');
+    s().grantSodException('bill-1', 'user-sunil', 'covering the weekend', 'ver-1', 'verified');
     expect(keys()).toEqual([
       sodGrantCoalesceKey('bill-1', 'user-ravi'),
       sodGrantCoalesceKey('bill-1', 'user-sunil'),
     ]);
     // …the SAME person twice while pending is still one command
-    s().grantSodException('bill-1', 'user-ravi', 'edited justification', 'ver-1');
+    s().grantSodException('bill-1', 'user-ravi', 'edited justification', 'ver-1', 'verified');
     expect(keys()).toHaveLength(2);
     // …and an authorisation does not block the claim's own transitions, nor they it
     s().certifyBill('bill-1', 'ver-1');
@@ -418,7 +421,7 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
     // command rather than one blanket answer — a contractor holds none of the three.
     useStore.setState({ role: 'contractor' });
     s().certifyBill('bill-1', 'ver-1');
-    s().grantSodException('bill-1', 'user-ravi', 'why', 'ver-1');
+    s().grantSodException('bill-1', 'user-ravi', 'why', 'ver-1', 'verified');
     s().supersedeCertificate('bill-1', 'why', 'cert-1');
     expect(s().outbox).toHaveLength(0);
   });
@@ -426,14 +429,14 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
   it('is inert off the commercial pilot', () => {
     useStore.setState({ capabilities: [] });
     s().certifyBill('bill-1', 'ver-1');
-    s().grantSodException('bill-1', 'user-ravi', 'why', 'ver-1');
+    s().grantSodException('bill-1', 'user-ravi', 'why', 'ver-1', 'verified');
     s().supersedeCertificate('bill-1', 'why', 'cert-1');
     expect(s().outbox).toHaveLength(0);
   });
 
   it('replays each through its OWN route under its original key', async () => {
     s().certifyBill('bill-1', 'ver-1');
-    s().grantSodException('bill-2', 'user-ravi', 'why', 'ver-1');
+    s().grantSodException('bill-2', 'user-ravi', 'why', 'ver-1', 'verified');
     useStore.setState({ online: true });
     await s().flushOutbox();
     await flush();
@@ -487,12 +490,16 @@ describe('7B-iii-f correction — a grant is tighter than the first head modelle
   });
 
   it('F4: the queued grant carries the version the approver READ', () => {
-    s().grantSodException('bill-1', 'user-ravi', 'only store user', 'ver-1');
-    const op = s().outbox[0] as { input: { versionId?: string } };
+    s().grantSodException('bill-1', 'user-ravi', 'only store user', 'ver-1', 'verified');
+    const op = s().outbox[0] as { input: { versionId?: string; status?: string } };
     // without it the server resolves "live" at REPLAY, so an amendment landing while the command
     // sat in the queue would authorise a version the approver never saw — exactly what §I's
     // version pinning exists to forbid, reintroduced through the outbox
     expect(op.input.versionId).toBe('ver-1');
+    // round 4 — and the STATUS, because one version walks the whole §E lifecycle without changing
+    // id: pinning the version alone lets a grant queued before the verdict authorise certification
+    // of facts its approver never reviewed
+    expect(op.input.status).toBe('verified');
   });
 
   /**

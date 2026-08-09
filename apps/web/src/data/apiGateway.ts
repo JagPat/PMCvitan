@@ -1368,7 +1368,14 @@ export interface VendorBillStepInput { billId: string }
 export interface CertifyBillInput { billId: string; versionId: string }
 /** §I — `versionId` is the claim version the approver READ (Codex F4): the server refuses a
  *  mismatch rather than re-pinning a queued grant onto a version they never saw. */
-export interface GrantSodExceptionInput { billId: string; actorId: string; reason: string; versionId: string }
+export interface GrantSodExceptionInput {
+  billId: string; actorId: string; reason: string;
+  /** the claim version the approver READ (round 2) */
+  versionId: string;
+  /** …and the STATUS they read it in (round 4): one version moves through the §E lifecycle without
+   *  changing id, so the version alone does not identify what was reviewed. */
+  status: string;
+}
 /** §F — `certificateId` is the document the correction was WRITTEN ABOUT (Codex round-2). */
 export interface SupersedeCertificateInput { billId: string; reason: string; certificateId: string }
 export interface RejectVendorBillInput { billId: string; reason: string }

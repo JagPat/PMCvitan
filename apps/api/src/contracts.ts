@@ -1506,6 +1506,13 @@ export const grantSodExceptionSchema = z
      * absent the behaviour is exactly as before. The client always sends it.
      */
     versionId: z.string().min(1).optional(),
+    /**
+     * Codex round 4 — and the STATUS the approver read it in. One version moves
+     * `submitted → under-verification → verified` WITHOUT changing id, so pinning the version
+     * alone lets an approver authorise before the §E verdict exists and have that grant authorise
+     * certification of facts they never reviewed. Optional on the same terms as `versionId`.
+     */
+    status: z.string().min(1).optional(),
     rule: z
       .enum([SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove])
       .optional(),
