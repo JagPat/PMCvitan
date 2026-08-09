@@ -570,8 +570,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
     // moving the status. The folds now derive `approved-for-payment`; the column still says
     // `certified`. Sealing only `VendorBill` would have closed the other mouth and left this one.
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES ($1,$2,$3,$4,40.00,$5,$6)`,
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+       VALUES ($1,$2,$3,$4,40.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
       forgedApproval, projectId, certificate.id, billId, f.ownerUser.id,
       await mint('commercial.payment.approve', f.ownerUser.id, forgedApproval),
     )).rejects.toThrow(/its own folds derive/u);
@@ -679,8 +679,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
           c1.id, f.memberUser.id, projectId,
         );
         await tx.$executeRawUnsafe(
-          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-           VALUES ($1,$2,$3,$4,100.00,$5,$6)`,
+          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+           VALUES ($1,$2,$3,$4,100.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$3))`,
           c2, projectId, billId, c1.versionId, c1.certifiedById, commandId,
         );
         await tx.$executeRawUnsafe(
@@ -720,8 +720,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
         c1.id, f.memberUser.id, projectId,
       );
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ($1,$2,$3,$4,100.00,$5,$6)`,
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ($1,$2,$3,$4,100.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$3))`,
         c2, projectId, billId, c1.versionId, c1.certifiedById, okCommand,
       );
       await tx.$executeRawUnsafe(
@@ -919,8 +919,8 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
           data: { status: 'succeeded', resultRef: approvalId, completedAt: new Date() },
         });
         await tx.$executeRawUnsafe(
-          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-           VALUES ($1,$2,$3,$4,40.00,$5,$6)`,
+          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+           VALUES ($1,$2,$3,$4,40.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
           approvalId, projectId, certificate.id, billId, f.ownerUser.id, commandId,
         );
         await tx.$executeRawUnsafe(

@@ -263,10 +263,27 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  -- NULL is the legacy shape: rows written before this column existed carry nothing, and nothing
-  -- is what they must keep. A grant can never be consumed by one, because the consume seal
-  -- requires the two to be equal and refuses a NULL act.
-  IF NEW."reviewedLifecycleVersion" IS NULL THEN RETURN NEW; END IF;
+  -- NULL is the LEGACY shape, and legacy means one thing: written before this column existed.
+  --
+  -- Codex round 6 (P2), and it is root D a third time — an escape hatch cut for one population
+  -- applying to all of them. Round 5 scoped retirement to the rows it was cut for and did not sweep
+  -- the sibling hatch nine lines away, in the same file, for the same reason.
+  --
+  -- A row that predates the column is never INSERTED again; it can only be updated, and the branch
+  -- above already refuses every change to it. So on INSERT, NULL is not legacy — it is a writer
+  -- declining to say which passage of the claim they acted on, at a boundary that now requires it.
+  -- Nothing downstream would ask: the consume seal only reads this column when a §I authority is
+  -- spent, so an act that consumes no grant would carry no reviewed passage at all.
+  --
+  -- The absent value is NOT filled in here. Deriving it would be the server recording its own
+  -- "now" as what the actor reviewed — the exact defect of rounds 3 and 4 — so this refuses rather
+  -- than repairs.
+  IF NEW."reviewedLifecycleVersion" IS NULL THEN
+    IF TG_OP = 'INSERT' THEN
+      RAISE EXCEPTION 'This act records no passage of claim %, so nothing says what its author was looking at — an act carries the revision it was performed against, and it cannot be supplied afterwards', NEW."billId";
+    END IF;
+    RETURN NEW;
+  END IF;
 
   -- FOR UPDATE, and that is the difference between a check and a guess (Codex round 5, P1).
   --
@@ -389,7 +406,11 @@ BEGIN
     IF OLD."reviewedStatus" IS NOT NULL AND OLD."reviewedLifecycleVersion" IS NOT NULL THEN
       RAISE EXCEPTION 'Grant % records what its approver reviewed, so it is judged by the seals rather than retired — retirement disposes of authority this release cannot judge, and withdrawing a live one is a separate act with its own author', OLD."id";
     END IF;
-    IF NEW."retiredReason" IS NULL OR btrim(NEW."retiredReason") = '' THEN
+    -- the repository's FULL ASCII-whitespace trim (Codex round 6, P2). Bare `btrim()` strips only
+    -- spaces, so a reason of one tab or one newline is "non-blank" to it and blank to a reader —
+    -- the same empty claim in a costume, which is the rule Phase 4's `manualReason` CHECK already
+    -- settled for this repository.
+    IF NEW."retiredReason" IS NULL OR btrim(NEW."retiredReason", E' \t\n\x0B\f\r') = '' THEN
       RAISE EXCEPTION 'Retiring an authority states why, or the register records a disappearance rather than a disposal (%)', OLD."id";
     END IF;
   END IF;

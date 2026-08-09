@@ -529,8 +529,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-       SELECT 'forged-live', $1, $2, $3, 1, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+      `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+       SELECT 'forged-live', $1, $2, $3, 1, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
       projectId, billId, version.id, cert.id,
     )).rejects.toThrow(/Key \("projectId", "billId"\)=.* already exists/u);
   });
@@ -578,8 +578,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
     const version = await t.prisma.vendorBillVersion.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-       SELECT 'forged-bound', $1, $2, $3, 150, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+      `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+       SELECT 'forged-bound', $1, $2, $3, 150, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
       projectId, billId, version.id, cert.id,
     )).rejects.toThrow(/Bound 3 breached/u);
 
@@ -599,8 +599,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     });
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT 'coherent-bound', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT 'coherent-bound', $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -824,8 +824,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // withdrawal guards would find no frozen rows and permit the reversal it exists to block.
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT 'evidence-free', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT 'evidence-free', $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -850,8 +850,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('recorder',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('recorder',$1,$2,$3,100,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -867,8 +867,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // reading the evidence-actor set rather than refusing every direct certificate
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('outsider',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('outsider',$1,$2,$3,100,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -906,8 +906,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     await certification.supersede(projectId, { billId, reason: 'restated' }, pmc(projectId));
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT 'inflated', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT 'inflated', $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -943,8 +943,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT 'stale-version', $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT 'stale-version', $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, v1.id, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -1154,8 +1154,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
                          checked: () => void, commitWhen: Promise<void>) =>
       client.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(
-          `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-           VALUES ($5,$1,$2,$3,$6,$4,$7)`,
+          `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+           VALUES ($5,$1,$2,$3,$6,$4,$7, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`,
           projectId, billId, versionId, f.memberUser.id, id, qty, cmd.id,
         );
         await tx.$executeRawUnsafe(
@@ -1315,8 +1315,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // seal saw a certifier who had recorded none of it
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('corrector',$1,$2,$3,4,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('corrector',$1,$2,$3,4,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedMeasurementConsumption" ("id","projectId","certificateId","measurementId","consumedQty")
@@ -1332,8 +1332,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // is accepted, so the seal is counting the actor set and not simply refusing labour evidence
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('outsider',$1,$2,$3,4,$4,$5)`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('outsider',$1,$2,$3,4,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.strangerUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedMeasurementConsumption" ("id","projectId","certificateId","measurementId","consumedQty")
@@ -1495,8 +1495,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     const forge = (id: string, rule: string, approverId: string) => t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $5, $1, $2, $3, 100, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "id" = $4`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $5, $1, $2, $3, 100, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2) FROM "BillCertificate" WHERE "id" = $4`,
         projectId, billId, version.id, cert.id, id,
       ),
       t.prisma.$executeRawUnsafe(
@@ -1572,8 +1572,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     const cmd = await t.prisma.commandExecution.findFirstOrThrow({ where: { projectId }, select: { id: true } });
     await expect(t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('precedence',$1,$2,$3,100,$4,$5)`, projectId, billId, version.id, f.memberUser.id, cmd.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('precedence',$1,$2,$3,100,$4,$5, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id, cmd.id,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -1694,8 +1694,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
 
     const forge = (id: string, certCmd: string, sodCmd: string) => t.prisma.$transaction([
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ($5,$1,$2,$3,100,$4,$6)`, projectId, billId, version.id, f.memberUser.id, id, certCmd,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ($5,$1,$2,$3,100,$4,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id, id, certCmd,
       ),
       t.prisma.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -2084,8 +2084,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // act and is consumed by this very certificate. The ONLY defect is who ran the command.
     await expect(t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('wrong-actor-cert',$1,$2,$3,100,$4,'wrong-actor-cmd')`, projectId, billId, version.id, f.memberUser.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('wrong-actor-cert',$1,$2,$3,100,$4,'wrong-actor-cmd', (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id,
       );
       await tx.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")
@@ -2148,8 +2148,8 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // defect is that the recorded justification is not the one the approver wrote
     await expect(t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         VALUES ('rewritten-cert',$1,$2,$3,100,$4,'rewritten-cmd')`, projectId, billId, version.id, f.memberUser.id,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES ('rewritten-cert',$1,$2,$3,100,$4,'rewritten-cmd', (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$1 AND r."billId"=$2))`, projectId, billId, version.id, f.memberUser.id,
       );
       await tx.$executeRawUnsafe(
         `INSERT INTO "CertifiedAcceptanceConsumption" ("id","projectId","certificateId","stockTransactionId","consumedQty")

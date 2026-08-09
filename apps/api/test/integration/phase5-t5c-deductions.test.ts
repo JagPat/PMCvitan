@@ -884,8 +884,8 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
       );
       const newCert = `${cert.id}-r`;
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $1,"projectId","billId","versionId","certifiedAmount","certifiedById",$3 FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $1,"projectId","billId","versionId","certifiedAmount","certifiedById",$3, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
         newCert, projectId, await mintCommand(projectId, 'commercial.bill.certify', newCert), cert.id,
       );
       // a certificate rests on EXACTLY the evidence it claimed (5B), so the replacement freezes the
@@ -985,8 +985,8 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
           cert.id, f.memberUser.id,
         );
         await tx.$executeRawUnsafe(
-          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-           SELECT $1,"projectId","billId","versionId","certifiedAmount","certifiedById",$3 FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
+          `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+           SELECT $1,"projectId","billId","versionId","certifiedAmount","certifiedById",$3, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
           newCert, projectId, await mintCommand(projectId, 'commercial.bill.certify', newCert), cert.id,
         );
         await tx.$executeRawUnsafe(
@@ -1374,8 +1374,8 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
         cert.id, f.memberUser.id,
       );
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $1,"projectId","billId","versionId",${amount},"certifiedById",$3 FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $1,"projectId","billId","versionId",${amount},"certifiedById",$3, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
         newCert, projectId, await mintCommand(projectId, 'commercial.bill.certify', newCert), cert.id,
       );
       await tx.$executeRawUnsafe(
@@ -1427,8 +1427,8 @@ describe('Phase 5 Task 5C — §H the deduction ledger (live PG)', () => {
         cert2.id, f.memberUser.id,
       );
       await tx.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $1,"projectId","billId","versionId",10.00,"certifiedById",$3 FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
+        `INSERT INTO "BillCertificate"("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $1,"projectId","billId","versionId",10.00,"certifiedById",$3, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId"=$2 AND "id"=$4`,
         newCert, projectId, await mintCommand(projectId, 'commercial.bill.certify', newCert), cert2.id,
       );
       await tx.$executeRawUnsafe(

@@ -366,8 +366,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // bound 4 at PG: 150 approved against a 100 payable, with no service in the way
     const overId = `${cert.id}-over`;
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES($1,$2,$3,$4,150.00,$5,$6)`,
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+       VALUES($1,$2,$3,$4,150.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
       overId, projectId, cert.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', overId),
     )).rejects.toThrow(/exceed the 100\.00 payable/u);
 
@@ -381,8 +381,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const okId = `${cert.id}-ok`;
     await t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-         VALUES($1,$2,$3,$4,30.00,$5,$6)`,
+        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES($1,$2,$3,$4,30.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
         okId, projectId, cert.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', okId),
       );
       await tx.$executeRawUnsafe(
@@ -464,8 +464,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // the certifier is `f.memberUser`; a forged approval in their own name
     const forged = `${cert.id}-forged`;
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+       VALUES($1,$2,$3,$4,10.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
       forged, projectId, cert.id, billId, f.memberUser.id,
       await mint('commercial.payment.approve', forged, f.memberUser.id),
     )).rejects.toThrow(/who certified this claim/u);
@@ -478,8 +478,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const cmd = await mint('commercial.payment.approve', excused, f.memberUser.id);
     await expect(t.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-         VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+        `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+         VALUES($1,$2,$3,$4,10.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
         excused, projectId, cert.id, billId, f.memberUser.id, cmd,
       );
       await tx.$executeRawUnsafe(
@@ -673,8 +673,8 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const ghost = `${stale.id}-ghost`;
     const dead = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: { not: null } } });
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId")
-       VALUES($1,$2,$3,$4,10.00,$5,$6)`,
+      `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","sourceCommandId","reviewedLifecycleVersion")
+       VALUES($1,$2,$3,$4,10.00,$5,$6, (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"=$2 AND r."billId"=$4))`,
       ghost, projectId, dead.id, billId, f.ownerUser.id, await mint('commercial.payment.approve', ghost),
     )).rejects.toThrow(/superseded/u);
 
@@ -1484,10 +1484,67 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "SodGrant" SET "retiredAt"=now() WHERE "projectId"=$1 AND "id"=$2`, projectId, grant.id,
     )).rejects.toThrow(/states why/u);
+    // …and neither does one made of whitespace (Codex round 6, P2). Bare `btrim()` strips only
+    // SPACES, so a tab or a newline reads as non-blank to the check and blank to a human — the
+    // same empty claim in a costume. The repository settled this for `manualReason` in Phase 4 and
+    // the rule is the same here.
+    for (const blank of ['\t', '\n', '  \t\r\n ', '\f']) {
+      await expect(t.prisma.$executeRawUnsafe(
+        `UPDATE "SodGrant" SET "retiredAt"=now(), "retiredReason"=$3 WHERE "projectId"=$1 AND "id"=$2`,
+        projectId, grant.id, blank,
+      ), `a reason of ${JSON.stringify(blank)} is not a reason`).rejects.toThrow(/states why/u);
+    }
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "SodGrant" SET "retiredAt"=now(), "retiredReason"='predates the reviewed-state record' WHERE "projectId"=$1 AND "id"=$2`,
       projectId, grant.id,
     )).resolves.toBeDefined();
+  });
+
+  it('PROBE 37 (§I): a NEW act cannot decline to say which passage of the claim it acted on', async () => {
+    // Codex round 6 (P1-shaped, filed P2), and it is root D a THIRD time: an escape hatch cut for
+    // one population applying to all of them. NULL was the LEGACY shape — a row written before the
+    // column existed — and the trigger returned early on it. But a legacy row is never INSERTED
+    // again; it can only be updated, and the freeze arm already refuses every change to it. So on
+    // INSERT, NULL was never legacy: it was a post-migration writer declining to answer, at a
+    // boundary that now requires the answer.
+    //
+    // Nothing downstream would have asked. The consume seal reads this column only when a §I
+    // authority is spent, so an act consuming no grant carried no reviewed passage at all.
+    //
+    // Round 5 scoped retirement to the population it was cut for and did not sweep the sibling
+    // hatch nine lines away in the same file. This is that sweep.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const at = (await t.prisma.vendorBillRevision.findFirstOrThrow({ where: { projectId, billId } })).revision;
+
+    // OTHERWISE WELL-FORMED — the command's actor is the approver the row names, and the §F status
+    // follows the money — so the only thing that can refuse it is the omission under test.
+    const insertApproval = async (id: string, rev: number | null) => {
+      const command = await mintCommand(projectId, id, { actorId: f.ownerUser.id });
+      return t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","reviewedLifecycleVersion","sourceCommandId")
+           VALUES($1,$2,$3,$4,10.00,$5,$6,$7)`,
+          id, projectId, cert.id, billId, f.ownerUser.id, rev, command,
+        );
+        await tx.$executeRawUnsafe(
+          `UPDATE "VendorBill" SET "status"='approved-for-payment', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+          projectId, billId,
+        );
+      }, { timeout: 30_000 });
+    };
+
+    await expect(insertApproval('rev-silent', null))
+      .rejects.toThrow(/records no passage of claim/u);
+    expect(await t.prisma.paymentApproval.findFirst({ where: { projectId, id: 'rev-silent' } }),
+      'an act that will not say what it looked at is not recorded at all').toBeNull();
+
+    // THE LEGAL PATH: the same write, answering the question, is accepted — so the seal is precise
+    // rather than merely strict, and the refusal above is about the omission and nothing else.
+    await insertApproval('rev-stated', at);
+    expect(await t.prisma.paymentApproval.findFirstOrThrow({ where: { projectId, id: 'rev-stated' } }))
+      .toMatchObject({ reviewedLifecycleVersion: at });
   });
 
   it('PROBE 36 (§I): an authority cannot name a passage the claim has not reached', async () => {

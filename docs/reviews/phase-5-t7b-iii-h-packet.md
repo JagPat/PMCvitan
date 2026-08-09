@@ -413,3 +413,63 @@ lines to roughly 2,300.
 commercial 87/87); `upgrade-proof.sh` PASSED with four new hostile inserts **and** the legal path
 accepted, so the seals are precise rather than merely strict; migration applies from scratch on a
 clean database.
+
+---
+
+## Correction round 6 — the exemption inside a covered event
+
+Two P2 findings on `b142501`. Full audit: `docs/reviews/pr-312-convergence.md` (round 6).
+
+| # | Finding | Fix |
+|---|---|---|
+| R6-1 (P2) | `phase5_t7biiih_act_reviewed_revision` returned early on `reviewedLifecycleVersion IS NULL`, treating it as the LEGACY shape. A legacy row is never inserted again — so on INSERT this was a post-migration writer declining to say which passage of the claim it acted on, and no later seal would ask (the consume seal reads the column only when a §I authority is spent) | on INSERT the column is REQUIRED. The value is refused, never derived — deriving it is the server recording its own "now", the defect of rounds 3 and 4 |
+| R6-2 (P2) | the retirement-reason check used bare `btrim()`, which strips only spaces, so a tab or a newline read as non-blank | the full ASCII-whitespace trim `btrim(x, E' \t\n\x0B\f\r')` this repository settled for `manualReason` in Phase 4 |
+
+**R6-1 is root D a third time, nine lines from where round 5 fixed it the second time.** Round 5's
+own text closing the retirement fix reads *"an escape hatch cut for one population applies to all
+of them unless it says otherwise"* — and the sibling hatch in the same function was not looked at.
+
+### Why the round-5 class sweep missed it
+
+After pushing `b142501` a sweep was run for root D across the commercial trigger set: every
+non-internal trigger on the eleven §F/§I relations that does not fire on INSERT. Twelve hits, all
+correctly scoped, conclusion "no further instances". The sweep was sound and its conclusion was
+wrong: `*_reviewed_revision_true` **does** fire on INSERT, so it never appeared — the gap was not a
+missing event but a **conditional exemption inside a covered event**, which an event-mask sweep
+cannot see.
+
+The round-6 artifact is therefore an early-return table rather than an event table: *for every
+guard, list its early returns and name the population each one is for.* An exemption that does not
+say who it is for is an exemption for everybody. This unit has four; the table in the convergence
+audit shows all four and which round scoped each.
+
+### Blast radius, measured before it was decided on
+
+R6-1's rule refused **22 cleared bypass-writer probes** across five suites — probes that raw-insert
+a certificate or approval and assert a refusal from some *other* seal. Each now constructs a fully
+coherent act (the revision read from `VendorBillRevision` at insert time, by correlated subquery
+where the insert copies a source row) and omits only the thing under test, so every refusal they
+assert is unambiguously the seal it names. That is the same correction round 5 applied to PROBE 34
+and to `phase5-t5b`'s R8-F1.
+
+This is also what settled the split question at the sixth finding-bearing head. The split's seam
+runs between unit A (the monotonic revision + act pins) and unit B (the §I reviewed-state record),
+and **R6-1 is in unit A** — so all 22 edits land in unit A either way and a split would have added
+branch surgery on top of identical work. Direction supports the same call: round 5 was five
+findings with four P1s, round 6 is two findings with none.
+
+### Round-6 evidence
+
+| Probe | Reproduced RED at `b142501` |
+|---|---|
+| PROBE 37 — a NEW act cannot decline to say which passage of the claim it acted on | the otherwise-coherent approval with a NULL revision **committed** |
+| PROBE 35 (extended) — a retirement reason of `\t`, `\n`, `  \t\r\n `, `\f` | each **succeeded**, recording a disposal with no readable reason |
+| `upgrade-proof.sh` T7BIIIH R6 | the NULL-revision certificate **committed** on a database upgraded from the legacy fixture |
+
+The whitespace rule is proven by PROBE 35 rather than by the upgrade proof, and the reason is
+stated rather than skipped: reaching it needs a LIVE grant carrying no reviewed evidence, and this
+release can no longer create one — the round-5 issue seal refuses it. The probe reaches that state
+through the append-only bypass, the only honest way to build a row the current code cannot write.
+
+**Gates:** `pnpm check` EXIT 0; full integration green on a pristine database; `upgrade-proof.sh`
+PASSED with the round-6 hostile insert added and every prior rejection surviving.

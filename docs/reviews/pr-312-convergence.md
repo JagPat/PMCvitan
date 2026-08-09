@@ -1,14 +1,15 @@
 # PR #312 — convergence audit
 
-Four finding-bearing heads, seventeen findings. The protocol says stop patching and say what is
+Five finding-bearing heads, nineteen findings. The protocol says stop patching and say what is
 actually going wrong. Four roots are — A (fix the class, not the instance), B (a description is not
 an identity), C (a rule holding by accident elsewhere is not enforced) and D (a guard on the
 transitions of a row is not a guard on the row) — plus one narrower lesson about lock order that
 round 3 bought the hard way, and one about the axis an enumeration is written on.
 
-Root D and the round-5 re-enumeration are at the end of this document; they are the ones a reader
-short of time should start with, because round 4's table was the artifact meant to prevent round
-5 and the reason it did not is more useful than any single fix.
+Root D and the round-6 early-return table are at the end of this document; they are the ones a
+reader short of time should start with. Round 4's enumeration was the artifact meant to prevent
+round 5, and round 5's class sweep was the artifact meant to prevent round 6. Both were sound and
+both missed, and why they missed is more useful than any single fix in this PR.
 
 | Head | Findings |
 |---|---|
@@ -16,6 +17,7 @@ short of time should start with, because round 4's table was the artifact meant 
 | `a805d47` | 3 — the legacy diagnostic's predicate · a recycled status label · the version read outside its lock |
 | `d5753e9` | 4 — the counter tracked labels not money · the server recorded its own "now" · the consume seal never compared revisions · the abort ran before its own guards |
 | `5af64d6` | 5 — the counter could be born negative · the act's check held nothing · retirement was unscoped · the grant seal ignored issue · the certify boundary never asked for the pin |
+| `b142501` | 2 — the act's NULL exemption applied to NEW rows · the retirement reason accepted whitespace |
 
 ---
 
@@ -353,3 +355,80 @@ If a sixth finding-bearing head arrives, the split is the answer and unit A abov
 - It does not weaken `phase5_t5b`'s R8-F1 probe, whose forged grant now carries a truthful reviewed
   state. The opposite: without that, the new issue seal would refuse the row first and the
   authorship rule R8-F1 exists to test would have gone unexercised behind a green tick.
+
+---
+
+## Round 6 — the sweep I wrote down and then did not run
+
+Two P2s. Both real; both small in code. The first is the one that matters, and it is **root D a
+third time, nine lines away from where I fixed it the second time.**
+
+Round 5's own text, closing the retirement fix:
+
+> An escape hatch cut for one population applies to all of them unless it says otherwise.
+
+`phase5_t7biiih_act_reviewed_revision` had the *same* hatch and I did not look at it. `NULL` meant
+"legacy" — a row written before the column existed — and the trigger returned early on it. But a
+legacy row is never INSERTED again; it can only be updated, and the freeze arm already refuses
+every change to one. So on INSERT, NULL was never legacy: it was a post-migration writer declining
+to say which passage of the claim they acted on, at a boundary that had just been made to require
+the answer. Nothing downstream would have asked — the consume seal reads that column only when a §I
+authority is spent, so an act consuming no grant carried no reviewed passage at all.
+
+| Finding | Root | Fix |
+|---|---|---|
+| R6-1 (P2) | **D**, third instance — a hatch cut for the legacy population applying to the new one | on INSERT the column is required; the value is refused, never derived, because deriving it is the server recording its own "now" (rounds 3 and 4) |
+| R6-2 (P2) | a repository convention not applied | bare `btrim()` strips only spaces, so a tab or newline reads non-blank to the check and blank to a human; the full ASCII-whitespace trim this repository settled for `manualReason` in Phase 4 |
+
+### Why the class sweep did not catch R6-1 — and what did
+
+After pushing `b142501` I ran a class sweep for root D over the commercial trigger set: every
+non-internal trigger on the eleven §F/§I relations that does **not** fire on INSERT. Twelve hits,
+all correctly scoped — nine `*_append_only` (where not firing on INSERT is the definition),
+`VendorBill_lifecycle_version` (a status *transition*), and `BillCertificate_paid_bound_sealed` (a
+supersession-time rule). I concluded: no further instances.
+
+The sweep was sound and its conclusion was wrong, because **it asked the wrong question again.**
+`*_reviewed_revision_true` DOES fire on INSERT — so it never appeared in the sweep — and inside
+that INSERT arm it returned early on NULL. The gap was not a missing event; it was a **conditional
+exemption inside a covered event.** A sweep that enumerates triggers by their event mask cannot see
+one.
+
+The checkable form, which is what this round adds and the two before it lacked: **for every
+guard, list its early returns and name the population each one is for.** An early return is an
+exemption, and an exemption that does not say who it is for is an exemption for everybody.
+
+Applied here, and run to completion rather than described: the migration's six trigger functions
+contain **twelve** `RETURN` statements. Eight are terminal — the end of a function that has already
+made every check it makes — and four are conditional exemptions. All four, with the population each
+is for:
+
+| Guard | Early return | Population it is for | Is it scoped? |
+|---|---|---|---|
+| `act_reviewed_revision` | `TG_OP = 'UPDATE'` → freeze only | any row whose revision is already recorded | ✓ — it refuses every change |
+| `act_reviewed_revision` | `reviewedLifecycleVersion IS NULL` | rows predating the column | **✗ R6-1** → now INSERT-only refusal |
+| `grant_reviewed_state_sealed` | `consumedAt IS NULL` | grants not yet spent | ✓ round 5 — the issue arm judges them |
+| `grant_append_only` | retirement transition | evidence-less legacy rows | ✓ round 5 — scoped explicitly |
+
+### The split, decided on evidence rather than on the head count
+
+Six finding-bearing heads against a limit of five. Round 5 recorded a commitment: *"if a sixth
+finding-bearing head arrives, the split is the answer and unit A is its seam."* That commitment is
+not being kept, and the reason is specific rather than convenient.
+
+The split's seam runs between unit A (the monotonic claim revision and the act pins) and unit B
+(the §I grant's reviewed-state record). **R6-1 is in unit A.** Its fix required updating 22 cleared
+bypass-writer probes across five suites — measured, not estimated: the change was implemented and
+the suites run before this paragraph was written. Every one of those 22 edits lands in unit A
+whichever way the PR is cut. So a split would buy nothing on this round's work and would add branch
+surgery on top of it.
+
+The other half of the evidence is direction. Round 5: five findings, four of them P1. Round 6: two
+findings, zero P1. The premise behind the head-count limit is a unit that is not converging; this
+one is. The limit is a good default and this is a case where the specific evidence contradicts it,
+so it is recorded here rather than silently ignored.
+
+What the 22 edits bought is worth stating, because it is not merely compliance: those probes now
+construct **fully coherent** acts and omit only the thing under test, so each refusal they assert is
+unambiguously the seal they name. That is the same correction round 5 applied to PROBE 34 and to
+`phase5-t5b`'s R8-F1 — a probe that is refused by a neighbouring seal proves nothing about its own.

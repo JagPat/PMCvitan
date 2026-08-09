@@ -321,8 +321,8 @@ describe('Phase 5 Task 5B unit C — §J certified-payable (live PG)', () => {
         projectId, cert.id,
       ),
       t.prisma.$executeRawUnsafe(
-        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId")
-         SELECT $4, $1, $2, $3, 60, "certifiedById", "sourceCommandId" FROM "BillCertificate" WHERE "projectId" = $1 AND "id" = $5`,
+        `INSERT INTO "BillCertificate" ("id","projectId","billId","versionId","certifiedAmount","certifiedById","sourceCommandId","reviewedLifecycleVersion")
+         SELECT $4, $1, $2, $3, 60, "certifiedById", "sourceCommandId", (SELECT r."revision" FROM "VendorBillRevision" r WHERE r."projectId"="BillCertificate"."projectId" AND r."billId"="BillCertificate"."billId") FROM "BillCertificate" WHERE "projectId" = $1 AND "id" = $5`,
         projectId, billId, version.id, `${cert.id}-partial`, cert.id,
       ),
       // …carrying the SAME frozen evidence, because unit A's seal requires a certificate to rest on
