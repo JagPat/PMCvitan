@@ -66,6 +66,7 @@ applied *before* the code rather than after it.
 | 3 | Two reads that **cannot be ordered** decide nothing | same, ambiguity branch — equal stamp + differing status, and an unparseable stamp | "EQUAL stamp + DIFFERING status is undecidable"; "an UNPARSEABLE stamp orders nothing"; "refuses BOTH transitions while the two reads are undecidable" |
 | 4 | One claim is one constrained resource: no two transitions in flight | `commercialWriteBlocked`, deriving the conflicting set from the **key shape** | "a pending transition blocks EVERY other transition on the same claim, both directions" |
 | 5 | Authority is checked where the command is **durable**, not only where it is shown | `COMMERCIAL_OP_PERMISSION` in `dispatchCommercial` + `mayVerify` on the screen | "an ENGINEER queues nothing"; "is ABSENT for an engineer" |
+| 5b | Authority gates the **action**, never the honesty of what is displayed | the ambiguity warning renders outside `mayVerify`; the controls inside it | "warns EVERY reader when the two reads disagree, not just the one who can act" |
 | 6 | A key clears only on the read that makes its effect **visible** | `readClearsKey`, per-read ownership + the hoisted `observedWrite` | the three stale/fresh read probes |
 
 ## The two structural corrections
@@ -149,15 +150,16 @@ caught.
 | drop disable-while-pending on the chain | "disables the whole chain while ANY transition on this claim is pending" |
 | `verify` offered from the begin-verification set | "offers each transition exactly where the SERVER admits it"; "reads the ARBITRATED status" |
 | drop the per-resource ownership token on the claim read | "a SUPERSEDED read applies nothing and releases nothing" |
+| put the ambiguity warning back inside the `mayVerify` gate | "warns EVERY reader when the two reads disagree" |
 
 ### Gates
 
 - `pnpm check` — **EXIT 0** (web 675/675 across 45 files, API 780/780 across 57 files, lint + typecheck + both builds clean)
-- `commercial-verification.test.ts` **18/18**, `commercial-screen.test.tsx` **59/59**, `commercial.test.ts` unchanged and green
+- `commercial-verification.test.ts` **18/18**, `commercial-screen.test.tsx` **60/60**, `commercial.test.ts` unchanged and green
 - API integration, focused: `phase5-t4-vendor-bill` · `phase5-t5a-verification` ·
   `phase5-t6b-status-derivation` · `phase5-t7bii-claim-read` **122/122**;
   `phase5-t1-commercial` · `commercial-catalog-closure` **43/43**
-- Full API integration suite on a pristine migrated database — see the PR body for the run
+- Full API integration suite on a pristine migrated database — **86 files / 1028 tests**, exit 0 (the `decision notification fault` line in the log is a test's own fault injection, not a failure)
 - No migration, so `upgrade-proof.sh` is not applicable
 - Browser e2e (`e2e`, `api-e2e`) runs in CI; the local Chromium build does not match the pinned Playwright revision
 

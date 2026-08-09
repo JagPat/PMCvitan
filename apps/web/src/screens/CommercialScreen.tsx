@@ -1086,33 +1086,42 @@ export function CommercialScreen() {
                       CAN be the older one — so asking it alone would offer "Begin verification"
                       on a claim the list already shows as verified, and the write-ahead outbox
                       would report that saved before dropping it on a terminal 409. */}
-                  {mayVerify && (() => {
+                  {(() => {
                     const listRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
                     const reading = arbitrateBillCopy(listRow, claim.bill);
                     return (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }} data-testid="commercial-verification-actions">
+                      <>
+                        {/* Outside the authority gate on purpose: an undecidable pair means the
+                            status and verdict above may not be current, and that is true for
+                            whoever is reading them. Hiding it from the actor who lodged the claim
+                            would leave them the only person on this page not told. */}
                         {reading?.ambiguous && (
-                          <div style={{ ...muted, color: 'var(--amber-text)', flexBasis: '100%' }} data-testid="commercial-verification-ambiguous">
-                            two reads disagree about this claim&rsquo;s status and carry the same timestamp — refresh to resolve
+                          <div style={{ ...rowCard, ...muted, borderColor: 'var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)' }} data-testid="commercial-verification-ambiguous">
+                            two reads disagree about this claim&rsquo;s status and carry the same
+                            timestamp — refresh to resolve
                           </div>
                         )}
-                        <Button
-                          variant="ink"
-                          data-testid={`bill-begin-verification-${claim.bill.id}`}
-                          disabled={!transitionOffered(reading, BILL_BEGIN_VERIFICATION_FROM) || billTxPending(claim.bill.id)}
-                          onClick={() => beginVerification(claim.bill.id)}
-                        >
-                          {billTxPending(claim.bill.id) ? 'Working…' : 'Begin verification'}
-                        </Button>
-                        <Button
-                          variant="ink"
-                          data-testid={`bill-verify-${claim.bill.id}`}
-                          disabled={!transitionOffered(reading, BILL_VERIFY_FROM) || billTxPending(claim.bill.id)}
-                          onClick={() => verifyBill(claim.bill.id)}
-                        >
-                          Record verdict
-                        </Button>
-                      </div>
+                        {mayVerify && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }} data-testid="commercial-verification-actions">
+                            <Button
+                              variant="ink"
+                              data-testid={`bill-begin-verification-${claim.bill.id}`}
+                              disabled={!transitionOffered(reading, BILL_BEGIN_VERIFICATION_FROM) || billTxPending(claim.bill.id)}
+                              onClick={() => beginVerification(claim.bill.id)}
+                            >
+                              {billTxPending(claim.bill.id) ? 'Working…' : 'Begin verification'}
+                            </Button>
+                            <Button
+                              variant="ink"
+                              data-testid={`bill-verify-${claim.bill.id}`}
+                              disabled={!transitionOffered(reading, BILL_VERIFY_FROM) || billTxPending(claim.bill.id)}
+                              onClick={() => verifyBill(claim.bill.id)}
+                            >
+                              Record verdict
+                            </Button>
+                          </div>
+                        )}
+                      </>
                     );
                   })()}
                   {claim.certificate === null ? (

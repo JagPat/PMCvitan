@@ -1327,6 +1327,19 @@ describe('Task 7B-iii-c-i (§E/§F) — the verification chain on the Certificat
     expect(r.getByTestId('verification-verdict')).toBeTruthy();
   });
 
+  it('warns EVERY reader when the two reads disagree, not just the one who can act', () => {
+    // the status and verdict rendered above may not be current, and that is true for whoever is
+    // reading them — an authority gate on the WARNING would leave the actor who lodged the claim
+    // the only person on the page not told
+    const r = openCertification({
+      listStatus: 'under-verification', listAt: at(1),
+      claimStatus: 'submitted', claimAt: at(1),
+      role: 'engineer',
+    });
+    expect(r.getByTestId('commercial-verification-ambiguous')).toBeTruthy();
+    expect(r.queryByTestId('commercial-verification-actions')).toBeNull();
+  });
+
   it('disables the whole chain while ANY transition on this claim is pending', () => {
     const r = openCertification({
       listStatus: 'submitted', listAt: at(1), claimStatus: 'submitted', claimAt: at(1),
