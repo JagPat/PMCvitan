@@ -69,7 +69,7 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   // flush reconcile and the transition-conflict rule all cover them without a second registry.
   'beginVerification', 'verifyVendorBill',
   // 7B-iii-f — the certification authority chain.
-  'certifyBill', 'grantSodException', 'supersedeCertificate',
+  'certifyBill', 'supersedeCertificate',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -113,24 +113,6 @@ export function normalizeCommercialOutbox<T extends OutboxOpShape>(ops: readonly
   }
   return { ops: out, changed };
 }
-
-// ── Phase 5 Task 7B-iii-f (§I) — the certification authority chain ───────────────────────────
-
-/**
- * §I — one authorisation per (claim, excused actor) in flight.
- *
- * The constrained resource is the PERSON being excused, not the claim: an approver authorising Ravi
- * has not authorised Sunil, and the server records a separate grant for each. Keying on the claim —
- * as the transition verbs do — would coalesce a second, legitimate authorisation away and leave an
- * approver believing they had granted something they had not. Labour round 5 in reverse: there the
- * key was too NARROW for a shared resource, here it would be too WIDE for independent ones.
- */
-export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
-  `com:sod:${billId}:${actorId}`;
-
-/** Whether an authorisation for THIS excused actor on THIS claim is already in flight. */
-export const isSodGrantPending = (key: string, billId: string, actorId: string): boolean =>
-  key === sodGrantCoalesceKey(billId, actorId);
 
 // ── Phase 5 Task 7B-iii-b (§D/§F) — the engineer's six writes ────────────────────────────────
 
@@ -275,9 +257,6 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
     case 'bills':
       return coalesceKey.startsWith('com:bill:') || coalesceKey.startsWith('com:billtx:');
     case 'claim':
-      // …and an AUTHORISATION for this claim: `certifyPreflight` is part of this very bundle, so
-      // this is the read that makes a grant visible to the actor it excuses.
-      if (coalesceKey.startsWith(`com:sod:${r.billId}:`)) return true;
       return isBillTransitionPending(coalesceKey, r.billId);
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);

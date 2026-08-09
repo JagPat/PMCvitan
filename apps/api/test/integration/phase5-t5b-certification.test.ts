@@ -1962,16 +1962,6 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // (c) the CONSUME transition is sealed. Round 9's third finding: a stray UPDATE could burn an
     // approver's single-use authority against an unrelated certificate, leaving the ledger saying
     // the authority was exercised when no override consumed it.
-    // 7B-iii-f round 4 — the excused actor must be able to CERTIFY, or the exception authorises
-    // nothing they could act on. This probe's subject is the CONSUME seal, and it used a stranger
-    // merely as "a different actor"; the stranger holds no membership and so cannot certify, which
-    // the grant command now refuses at issue. Giving them pmc standing keeps the probe about the
-    // seal it is named for rather than about who is grantable.
-    await t.prisma.membership.upsert({
-      where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
-      create: { projectId, userId: f.strangerUser.id, role: 'pmc', status: 'active' },
-      update: { role: 'pmc', status: 'active' },
-    });
     const second = await grantOverride(projectId, billId, approver, f.strangerUser.id, 'a different actor');
     await expect(t.prisma.$executeRawUnsafe(
       `UPDATE "SodGrant" SET "consumedAt"=now(), "consumedByCertificateId"=$2 WHERE "projectId"=$1 AND "id"=$3`,

@@ -73,7 +73,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -454,7 +454,6 @@ export interface AppActions {
   verifyVendorBill: (billId: string) => void;
   /** §F/§I writes (7B-iii-f) — the certification authority chain. */
   certifyBill: (billId: string, versionId: string) => void;
-  grantSodException: (billId: string, actorId: string, reason: string, versionId: string, status: string) => void;
   supersedeCertificate: (billId: string, reason: string, certificateId: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
@@ -1643,7 +1642,6 @@ export const useStore = create<Store>()(
       // source rather than a copy of its current answer. `commercial.sod.grant` is separate again —
       // it is the authority to EXCUSE the rule, which is a stronger thing than performing the act.
       certifyBill: 'commercial.certify',
-      grantSodException: 'commercial.sod.grant',
       supersedeCertificate: 'commercial.certify',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
@@ -3007,13 +3005,6 @@ export const useStore = create<Store>()(
         { t: 'certifyBill', input: { billId, versionId }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'certify') },
         `Certify ${billId}`, 'Claim certified.',
-      );
-    },
-    grantSodException: (billId, actorId, reason, versionId, status) => {
-      dispatchCommercial(
-        { t: 'grantSodException', input: { billId, actorId, reason, versionId, status }, idempotencyKey: newIdempotencyKey(),
-          coalesceKey: sodGrantCoalesceKey(billId, actorId) },
-        `Authorise ${actorId}`, 'Authorisation recorded.',
       );
     },
     supersedeCertificate: (billId, reason, certificateId) => {

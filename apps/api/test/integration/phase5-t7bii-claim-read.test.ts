@@ -411,6 +411,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     expect(asOwner.certifyPreflight.grantState).toBe('live');
   });
 
+
   it('6d: an amendment strands the authorisation, and the read SAYS so rather than staying silent', async () => {
     const projectId = await freshProject();
     const approver = await secondPmc(projectId);
@@ -461,36 +462,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
 
   // ── 7 (7B-iii-f correction) — the Codex findings on head 495718d ─────────────────────────────
 
-  it('F3: the bundle carries the claim\'s LIVE grants, whoever they name', async () => {
-    const projectId = await freshProject();
-    await secondPmc(projectId);
-    const billId = await verifiedOnly(projectId);
-    // the MEMBER authorises the OWNER; the member then reloads the claim as themselves
-    const grant = await grantTo(projectId, billId, f.ownerUser.id, f.memberUser.id);
 
-    const asApprover = await claims.readClaim(projectId, billId, pmc(projectId));
-    // their own preflight says nothing — the grant is not theirs — which is exactly why the
-    // register below has to exist: without it this read cleared the pending key while showing no
-    // trace of the act, and re-armed the form for a duplicate authorisation
-    expect(asApprover.certifyPreflight.grantState).toBe('none');
-    expect(asApprover.sodGrants).toEqual([
-      expect.objectContaining({ id: grant.id, actorId: f.ownerUser.id, approverId: f.memberUser.id }),
-    ]);
-  });
-
-  it('F3: a CONSUMED grant leaves the live register', async () => {
-    const projectId = await freshProject();
-    const recorder = await secondPmc(projectId);
-    const line = await issuedMaterialLine(projectId, { qty: '100' });
-    await acceptOnLine(projectId, line, '100');
-    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
-    await grantTo(projectId, billId, recorder, f.memberUser.id);
-    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants).toHaveLength(1);
-
-    await certification.certify(projectId, { billId }, asUser(projectId, recorder));
-    // certification consumed it, so it is no longer an authorisation anyone holds
-    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants).toEqual([]);
-  });
 
   it('F1: the read hands the caller their OWN actor id, and only theirs', async () => {
     const projectId = await freshProject();
@@ -502,35 +474,6 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
       .toBe(f.ownerUser.id);
   });
 
-  it('F4: a grant naming a version the claim has moved past is REFUSED, not re-pinned', async () => {
-    const projectId = await freshProject();
-    await secondPmc(projectId);
-    const line = await issuedMaterialLine(projectId, { qty: '100' });
-    await acceptOnLine(projectId, line, '100');
-    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
-    const read = await claims.readClaim(projectId, billId, pmc(projectId));
-    const viewed = read.bill.versions.find((v) => v.live)!.id;
-
-    // the claim is amended AFTER the approver read it — the interleaving a queued command creates
-    await bills.amend(projectId, {
-      billId, reason: 'vendor re-issued at 90',
-      lines: [{ poLineId: line.poLineId, quantity: '90', rate: '1' }],
-    }, pmc(projectId));
-
-    await expect(certification.grantSodException(
-      projectId, { billId, actorId: f.ownerUser.id, reason: 'two-person practice', versionId: viewed },
-      pmc(projectId),
-    )).rejects.toThrow(/amended after you read it/u);
-
-    // …and the CURRENT version is accepted, so the guard is precise rather than merely strict
-    const now = await claims.readClaim(projectId, billId, pmc(projectId));
-    const current = now.bill.versions.find((v) => v.live)!.id;
-    const ok = await certification.grantSodException(
-      projectId, { billId, actorId: f.ownerUser.id, reason: 'two-person practice', versionId: current },
-      pmc(projectId),
-    );
-    expect(ok.versionId).toBe(current);
-  });
 
 
   it('round-2: CERTIFY naming a version the claim moved past is refused, not re-pinned', async () => {
@@ -590,112 +533,9 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
   });
 
 
-  it('round-3: the AUTHORISABLE set comes from the standing rule, org-admin fallback included', async () => {
-    const projectId = await freshProject();
-    await secondPmc(projectId);
-    const billId = await verifiedOnly(projectId);
-    const read = await claims.readClaim(projectId, billId, pmc(projectId));
-
-    // the other pmc is offered; the caller is not (§I refuses a self-grant)
-    expect(read.certifyPreflight.authorisableActorIds).toContain(f.ownerUser.id);
-    expect(read.certifyPreflight.authorisableActorIds).not.toContain(f.memberUser.id);
-
-    // …and an ORG owner/admin with NO project membership is offered too, because the server's own
-    // standing rule admits them as pmc through the documented fallback. A picker built from the
-    // member list could never offer them, which is the omission this closes.
-    const orgAdmin = f.strangerUser.id;
-    await t.prisma.orgMembership.upsert({
-      where: { orgId_userId: { orgId: f.orgA.id, userId: orgAdmin } },
-      create: { orgId: f.orgA.id, userId: orgAdmin, role: 'admin' },
-      update: { role: 'admin' },
-    });
-    const withAdmin = await claims.readClaim(projectId, billId, pmc(projectId));
-    expect(withAdmin.certifyPreflight.authorisableActorIds).toContain(orgAdmin);
-    // the server agrees: a grant naming them is accepted
-    const g = await grantTo(projectId, billId, orgAdmin, f.memberUser.id);
-    expect(g.actorId).toBe(orgAdmin);
-  });
-
-  it('round-3: a grant is USABLE only for the certification rule with a standing approver', async () => {
-    const projectId = await freshProject();
-    const approver = await secondPmc(projectId);
-    const billId = await verifiedOnly(projectId);
-    const good = await grantTo(projectId, billId, f.memberUser.id, approver);
-    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants)
-      .toEqual([expect.objectContaining({ id: good.id, usableForCertification: true })]);
-
-    // the approver loses pmc standing: the row still LIVES, and is no longer an authority
-    await t.prisma.membership.update({
-      where: { projectId_userId: { projectId, userId: approver } },
-      data: { role: 'engineer' },
-    });
-    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants)
-      .toEqual([expect.objectContaining({ id: good.id, usableForCertification: false })]);
-  });
 
 
-  it('round-4: a grant naming the reviewed VERSION but a different STATUS is refused', async () => {
-    const projectId = await freshProject();
-    await secondPmc(projectId);
-    const line = await issuedMaterialLine(projectId, { qty: '100' });
-    await acceptOnLine(projectId, line, '100');
-    // read while the claim is SUBMITTED — before the §E verdict exists
-    const recorded = await bills.record(projectId, {
-      vendorId: line.vendorId, vendorBillNumber: `V-R4-${seq++}`, documentDate: '2026-08-20',
-      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
-    }, pmc(projectId));
-    await bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
-    const read = await claims.readClaim(projectId, recorded.id, pmc(projectId));
-    const viewed = read.bill.versions.find((v) => v.live)!.id;
-    expect(read.bill.status).toBe('submitted');
 
-    // the claim verifies — SAME version, different state
-    await bills.beginVerification(projectId, { billId: recorded.id }, pmc(projectId));
-    await verification.verify(projectId, { billId: recorded.id }, pmc(projectId));
-    const after = await claims.readClaim(projectId, recorded.id, pmc(projectId));
-    expect(after.bill.versions.find((v) => v.live)!.id).toBe(viewed);   // the version did NOT move
 
-    await expect(certification.grantSodException(
-      projectId,
-      { billId: recorded.id, actorId: f.ownerUser.id, reason: 'two-person practice', versionId: viewed, status: 'submitted' },
-      pmc(projectId),
-    )).rejects.toThrow(/moved to verified after you read it/u);
-
-    // the reviewed state is accepted, so the guard is precise rather than merely strict
-    const ok = await certification.grantSodException(
-      projectId,
-      { billId: recorded.id, actorId: f.ownerUser.id, reason: 'two-person practice', versionId: viewed, status: 'verified' },
-      pmc(projectId),
-    );
-    expect(ok.versionId).toBe(viewed);
-  });
-
-  it('round-4: the EXCUSED actor must be able to certify — at issue and in usability', async () => {
-    const projectId = await freshProject();
-    const approver = await secondPmc(projectId);
-    const billId = await verifiedOnly(projectId);
-
-    // an engineer holds no certify path, so an exception would authorise nothing they could act on
-    await t.prisma.membership.upsert({
-      where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
-      create: { projectId, userId: f.strangerUser.id, role: 'engineer', status: 'active' },
-      update: { role: 'engineer', status: 'active' },
-    });
-    await expect(grantTo(projectId, billId, f.strangerUser.id, approver))
-      .rejects.toThrow(/cannot certify on this project/u);
-
-    // a certifier is granted normally, and the grant reads USABLE…
-    const grant = await grantTo(projectId, billId, f.memberUser.id, approver);
-    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants)
-      .toEqual([expect.objectContaining({ id: grant.id, usableForCertification: true })]);
-
-    // …until the EXCUSED actor loses certify standing, which round 3 did not check
-    await t.prisma.membership.update({
-      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
-      data: { role: 'engineer' },
-    });
-    expect((await claims.readClaim(projectId, billId, asUser(projectId, approver))).sodGrants)
-      .toEqual([expect.objectContaining({ id: grant.id, usableForCertification: false })]);
-  });
 
 });

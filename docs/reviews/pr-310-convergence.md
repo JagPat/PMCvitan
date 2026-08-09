@@ -140,6 +140,50 @@ to prevent: the scope gate failed, I added `justified-large` to the PR body, and
 packet asserting the unit was inside budget with the marker unused. Two artefacts about
 one diff, disagreeing.
 
+## Round 5 — the review lifecycle reports the head limit, and the unit SPLITS
+
+Head `33b6e68` returned three findings and the lifecycle reported **5 finding-bearing
+heads, limit 5**. That changes the answer I gave two rounds ago, and the reversal is
+recorded rather than quietly performed: at round 3 I argued splitting would make the
+change less safe, and that argument no longer holds.
+
+**What the finding distribution shows.** Across five rounds and 19 findings, the large
+majority land on ONE surface — the §I authorisation form: who may be authorised, whether
+a standing grant is usable, what facts a queued grant pins, whether the excused actor can
+certify, whether a pending transition invalidates it. Certify and supersede generated
+comparatively few. A surface that produces findings at that rate needs its own review
+unit, which is the thing the head limit is measuring.
+
+**And round 5's P1 is a different KIND of change.** It requires the reviewed status to be
+PERSISTED on `SodGrant` and required at resolution — a schema change. Everything else in
+this unit is read, contract and UI over already-cleared facts. Carrying a migration into
+a unit at its head limit would be the worst of both.
+
+So: `certify` · `supersede` stay here; the §I authorisation surface is parked WHOLE on
+`claude/phase5-task7b-iii-f-sod-parked` at `33b6e68` and becomes **7B-iii-h**, carrying
+its three open round-5 findings NAMED AND UNFIXED so nothing known-broken ships:
+
+- **R5-1 (P2)** a pending `com:billtx:` transition does not block Authorise, so a grant
+  queues behind a transition that invalidates the very facts it pins. The grant's key is
+  deliberately per-PERSON (round 2, correctly — two grants for different people are
+  independent); that independence was carried one step too far, to transitions that
+  change what the grant is pinned to. Needs the dispatcher, not only the screen.
+- **R5-2 (P1)** the reviewed status is CHECKED at issue and never PERSISTED, and
+  `resolveGrant` consumes by version alone — so a grant authorised on a `submitted`
+  claim survives into `verified` and can certify a verdict its approver never saw.
+  Schema change.
+- **R5-3 (P2)** Supersede stays enabled while paid cash stands against the certificate;
+  the payment ledger is already in the claim bundle and the button does not read it.
+  *(This one is certify-side and is fixed HERE, not parked — see below.)*
+
+**What honestly remains as a gap in this unit.** A certifier who recorded the evidence is
+refused by §I with a message naming `commercial.sod.grant`, and cannot self-serve that
+remedy on this screen until 7B-iii-h lands. That is narrower than the 7B-iii-b dead end
+the phase paid 25 findings for — there a labour claim could be lodged and never
+evidenced, with no path at all; here the common path (a certifier who did not record the
+evidence) works end to end and the uncommon one gets an accurate refusal. It is still a
+gap, and it is stated in the screen, the packet and here rather than papered over.
+
 ## Carry-forward
 
 - A **monotonic per-bill lifecycle version** from the server remains the durable fix

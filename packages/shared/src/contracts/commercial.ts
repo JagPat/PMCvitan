@@ -881,42 +881,8 @@ export interface CommercialClaimDto {
   measurements: Record<string, MeasurementRegisterDto>;
   /** §I — what authorisation stands for THE CALLER on this claim's live version. */
   certifyPreflight: CertifyPreflightDto;
-  /** §I — every LIVE authorisation on this claim's live version, whoever it names.
-   *
-   *  Codex F3. `certifyPreflight` answers only for the caller, so an APPROVER who has just
-   *  authorised someone else reloads this bundle and sees nothing about the grant they issued —
-   *  which made the claim read clear that grant's pending key while showing no trace of it, and
-   *  re-armed the form for a duplicate. §I's own rule is that the exception is NAMED rather than
-   *  silent, so the honest fix is for the read to actually carry it rather than for the key to be
-   *  held against a read that can never show it.
-   *
-   *  `commercial.read` is a pmc/engineer surface and a grant is an attributable authority decision,
-   *  so listing it here tells the same people the register already tells. */
-  sodGrants: SodGrantSummaryDto[];
 }
 
-/** §I — one live, unconsumed authorisation on a claim's live version. */
-export interface SodGrantSummaryDto {
-  id: string;
-  /** the person being EXCUSED */
-  actorId: string;
-  /** the pmc who authorised it — never the excused actor; the server refuses a self-grant */
-  approverId: string;
-  rule: string;
-  reason: string;
-  grantedAt: string;
-  /** Whether THIS grant would actually authorise a certification (Codex round 3).
-   *
-   *  A live row is not the same as a usable authority: it may name a DIFFERENT §I rule (the
-   *  payment half, `certifier-may-not-approve`), or its approver may have lost pmc standing since
-   *  granting it. The certification resolver filters on both, so a screen that blocked a
-   *  replacement grant merely because a row existed would leave the named actor refused and no pmc
-   *  able to fix it from the page where the refusal happens.
-   *
-   *  Computed server-side by the same standing rule the command uses, because standing is the orgs
-   *  module's question and a client cannot answer it at all. */
-  usableForCertification: boolean;
-}
 
 /**
  * §I — the part of "may I certify this claim?" that a READ can answer exactly.
@@ -955,17 +921,6 @@ export interface CertifyPreflightDto {
   grantState: 'live' | 'stale-version' | 'approver-lost-standing' | 'none';
   /** The authorisation that would be consumed, when `grantState` is `live`; null otherwise. */
   grantId: string | null;
-  /** WHO this caller may authorise on this project (Codex round 3).
-   *
-   *  Enumerated by the ORGS module's own standing rule, not derived from the project member list:
-   *  an org owner/admin operating this project through the documented pmc fallback holds no
-   *  `Membership` row at all, so a picker built from members could never offer them even though
-   *  the server would accept a grant naming them — and they are exactly the person a two-person
-   *  site is likely to need authorised. Excludes this caller: §I refuses a self-grant.
-   *
-   *  Ids only. Display names come from the project team where it has them, and an id with no
-   *  member row is shown as itself rather than hidden — hiding it would recreate the omission. */
-  authorisableActorIds: string[];
   /** The actor id the SERVER resolved for this caller (Codex F1).
    *
    *  Returned because §I forbids a self-grant and the client otherwise has no way to honour that:

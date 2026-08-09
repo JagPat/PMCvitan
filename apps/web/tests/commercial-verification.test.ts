@@ -2,14 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import {
-  billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey,
+  billTransitionCoalesceKey, readClearsKey,
   COMMERCIAL_OUTBOX_OP_TYPES, normalizeCommercialOutbox,
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
 import verificationServiceSource from '../../api/src/commercial/commercial-verification.service.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
-import type { CommercialClaimView } from '@/store/commercial';
 
 /**
  * Phase 5 Task 7B-iii-c-i (§E/§F) — the VERIFICATION CHAIN: `begin-verification` then `verify`.
@@ -356,7 +355,6 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
     });
     s()._setGateway({
       certifyBill: vi.fn(async (i: { billId: string }) => { calls.push(`certify:${i.billId}`); }),
-      grantSodException: vi.fn(async (i: { billId: string; actorId: string }) => { calls.push(`sod:${i.billId}:${i.actorId}`); }),
       supersedeCertificate: vi.fn(async (i: { billId: string }) => { calls.push(`supersede:${i.billId}`); }),
       // the flush reconcile re-reads commercial truth after any commercial write settles; these
       // are read boundaries, not what these probes are about
@@ -400,20 +398,6 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
    * something they had not. Labour round 5 inverted — there the key was too NARROW for a shared
    * resource; here it would be too WIDE for independent ones.
    */
-  it('a SoD authorisation is keyed by the PERSON excused, so two are independent', () => {
-    s().grantSodException('bill-1', 'user-ravi', 'only store user this week', 'ver-1', 'verified');
-    s().grantSodException('bill-1', 'user-sunil', 'covering the weekend', 'ver-1', 'verified');
-    expect(keys()).toEqual([
-      sodGrantCoalesceKey('bill-1', 'user-ravi'),
-      sodGrantCoalesceKey('bill-1', 'user-sunil'),
-    ]);
-    // …the SAME person twice while pending is still one command
-    s().grantSodException('bill-1', 'user-ravi', 'edited justification', 'ver-1', 'verified');
-    expect(keys()).toHaveLength(2);
-    // …and an authorisation does not block the claim's own transitions, nor they it
-    s().certifyBill('bill-1', 'ver-1');
-    expect(keys()).toHaveLength(3);
-  });
 
   it('each command carries its OWN authority, and they are not interchangeable', () => {
     // `commercial.certify` and `commercial.sod.grant` both resolve to pmc today, so a role probe
@@ -421,7 +405,6 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
     // command rather than one blanket answer — a contractor holds none of the three.
     useStore.setState({ role: 'contractor' });
     s().certifyBill('bill-1', 'ver-1');
-    s().grantSodException('bill-1', 'user-ravi', 'why', 'ver-1', 'verified');
     s().supersedeCertificate('bill-1', 'why', 'cert-1');
     expect(s().outbox).toHaveLength(0);
   });
@@ -429,58 +412,39 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
   it('is inert off the commercial pilot', () => {
     useStore.setState({ capabilities: [] });
     s().certifyBill('bill-1', 'ver-1');
-    s().grantSodException('bill-1', 'user-ravi', 'why', 'ver-1', 'verified');
     s().supersedeCertificate('bill-1', 'why', 'cert-1');
     expect(s().outbox).toHaveLength(0);
   });
 
   it('replays each through its OWN route under its original key', async () => {
     s().certifyBill('bill-1', 'ver-1');
-    s().grantSodException('bill-2', 'user-ravi', 'why', 'ver-1', 'verified');
     useStore.setState({ online: true });
     await s().flushOutbox();
     await flush();
-    expect(calls).toEqual(['certify:bill-1', 'sod:bill-2:user-ravi']);
+    expect(calls).toEqual(['certify:bill-1']);
   });
 
-  it('the CLAIM read is what makes an authorisation visible, and only once it observed the write', () => {
-    // `certifyPreflight` is part of the claim bundle, so that bundle IS the read a grant becomes
-    // visible in — and the hoisted causality term applies to it like every other key.
-    const key = sodGrantCoalesceKey('bill-1', 'user-ravi');
-    expect(readClearsKey(key, { read: 'claim', billId: 'bill-1', observedWrite: true })).toBe(true);
-    expect(readClearsKey(key, { read: 'claim', billId: 'bill-1', observedWrite: false })).toBe(false);
-    // …and not by another claim's bundle, nor by the money position
-    expect(readClearsKey(key, { read: 'claim', billId: 'bill-9', observedWrite: true })).toBe(false);
-    expect(readClearsKey(key, { read: 'money', observedWrite: true })).toBe(false);
-  });
 
   it('the three op types are commercial ops, so hydration and the reconcile cover them', () => {
-    for (const t of ['certifyBill', 'grantSodException', 'supersedeCertificate']) {
+    for (const t of ['certifyBill', 'supersedeCertificate']) {
       expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
     }
   });
 });
 
-describe('7B-iii-f correction — a grant is tighter than the first head modelled it', () => {
+describe('7B-iii-f correction — the acts carry the facts they were decided on', () => {
   /**
-   * Three of the four findings share one root: I modelled a SoD authorisation as a bare
-   * (claim, person) fact, when it is a VERSION-PINNED authority naming a REAL identity. Each
-   * looseness put a command the server is certain to refuse into the durable write-ahead outbox,
-   * where it is reported saved and then dropped on reconnect.
+   * The root the corrections turn on: a queued command replays against whatever is live when the
+   * outbox drains, not against what the user was looking at when they decided. Round 1 pinned one
+   * command and left its two siblings — fixing the instance a finding named instead of the class
+   * it belongs to, which is the root `docs/reviews/pr-310-convergence.md` names.
    */
   beforeEach(() => {
     useStore.setState(getInitialState());
     useStore.setState({ capabilities: ['commercial'], role: 'pmc', activeProjectId: 'p-1', online: false });
-    s()._setGateway({ grantSodException: vi.fn(async () => {}) } as unknown as ApiGateway);
+    s()._setGateway({} as unknown as ApiGateway);
   });
 
-  /**
-   * Round 2's root, and it is the sharper one: round 1 pinned the GRANT to its viewed version and
-   * stopped there. Certify and supersede have identical exposure — a queued certify freezes
-   * evidence for whatever version is live at replay, a queued supersession replaces whatever
-   * certificate is live — and certification is the act that creates money. Fixing the instance a
-   * finding named instead of the class it belongs to is what produced this round.
-   */
   it('round-2: certify carries the version READ, and supersede the certificate READ', () => {
     s().certifyBill('bill-1', 'ver-7');
     expect((s().outbox[0] as { input: { versionId?: string } }).input.versionId).toBe('ver-7');
@@ -489,39 +453,5 @@ describe('7B-iii-f correction — a grant is tighter than the first head modelle
     expect((s().outbox[0] as { input: { certificateId?: string } }).input.certificateId).toBe('cert-3');
   });
 
-  it('F4: the queued grant carries the version the approver READ', () => {
-    s().grantSodException('bill-1', 'user-ravi', 'only store user', 'ver-1', 'verified');
-    const op = s().outbox[0] as { input: { versionId?: string; status?: string } };
-    // without it the server resolves "live" at REPLAY, so an amendment landing while the command
-    // sat in the queue would authorise a version the approver never saw — exactly what §I's
-    // version pinning exists to forbid, reintroduced through the outbox
-    expect(op.input.versionId).toBe('ver-1');
-    // round 4 — and the STATUS, because one version walks the whole §E lifecycle without changing
-    // id: pinning the version alone lets a grant queued before the verdict authorise certification
-    // of facts its approver never reviewed
-    expect(op.input.status).toBe('verified');
-  });
 
-  /**
-   * F3, and it is my own doctrine broken in the PR that hoisted it. "A key clears only on the read
-   * that makes its effect visible" — but `certifyPreflight` answers for the CALLER, so an approver
-   * reloading the claim after authorising Ravi saw nothing about Ravi's grant while the key
-   * cleared, re-arming the form for a duplicate.
-   *
-   * The fix is the contract, not the key: the bundle now carries the claim's live grants, so the
-   * read genuinely does show the effect. This asserts the property that makes clearing honest.
-   */
-  it('F3: the claim bundle carries the grants themselves, not just the caller\'s own state', () => {
-    const key = sodGrantCoalesceKey('bill-1', 'user-ravi');
-    expect(readClearsKey(key, { read: 'claim', billId: 'bill-1', observedWrite: true })).toBe(true);
-    // the contract is what earns that: a reader can see a grant naming someone ELSE
-    const dto: Pick<CommercialClaimView, 'sodGrants'> = {
-      sodGrants: [{
-        id: 'g-1', actorId: 'user-ravi', approverId: 'u-self',
-        rule: 'evidence-recorder-may-not-certify', reason: 'only store user',
-        grantedAt: '2026-08-21T00:00:00.000Z', usableForCertification: true,
-      }],
-    };
-    expect(dto.sodGrants[0]!.actorId).toBe('user-ravi');
-  });
 });

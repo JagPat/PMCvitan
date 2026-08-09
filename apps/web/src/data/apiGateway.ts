@@ -1024,11 +1024,6 @@ export class ApiGateway {
   certifyBill(input: CertifyBillInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/bills/certify', input, idempotencyKey);
   }
-  /** §I — AUTHORISE one otherwise-forbidden certification. Issued BY the approver: the
-   *  authenticated actor is the authority, and `actorId` names the person being excused. */
-  grantSodException(input: GrantSodExceptionInput, idempotencyKey?: string): Promise<unknown> {
-    return this.cmd('/commercial/bills/sod-grant', input, idempotencyKey);
-  }
   /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */
   supersedeCertificate(input: SupersedeCertificateInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/certificates/supersede', input, idempotencyKey);
@@ -1366,16 +1361,6 @@ export interface VendorBillStepInput { billId: string }
 /** §F/§I — `versionId` is the claim version the certifier READ (Codex round-2): the server
  *  refuses a mismatch rather than freezing evidence for a version they never saw. */
 export interface CertifyBillInput { billId: string; versionId: string }
-/** §I — `versionId` is the claim version the approver READ (Codex F4): the server refuses a
- *  mismatch rather than re-pinning a queued grant onto a version they never saw. */
-export interface GrantSodExceptionInput {
-  billId: string; actorId: string; reason: string;
-  /** the claim version the approver READ (round 2) */
-  versionId: string;
-  /** …and the STATUS they read it in (round 4): one version moves through the §E lifecycle without
-   *  changing id, so the version alone does not identify what was reviewed. */
-  status: string;
-}
 /** §F — `certificateId` is the document the correction was WRITTEN ABOUT (Codex round-2). */
 export interface SupersedeCertificateInput { billId: string; reason: string; certificateId: string }
 export interface RejectVendorBillInput { billId: string; reason: string }
@@ -1481,7 +1466,6 @@ export type OutboxOp =
   | { t: 'verifyVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'submitVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'certifyBill'; input: CertifyBillInput; idempotencyKey: string; coalesceKey: string }
-  | { t: 'grantSodException'; input: GrantSodExceptionInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'supersedeCertificate'; input: SupersedeCertificateInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'rejectVendorBill'; input: RejectVendorBillInput; idempotencyKey: string; coalesceKey: string }
@@ -1585,8 +1569,6 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.verifyVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'certifyBill':
       return gw.certifyBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
-    case 'grantSodException':
-      return gw.grantSodException(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'supersedeCertificate':
       return gw.supersedeCertificate(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'submitVendorBill':

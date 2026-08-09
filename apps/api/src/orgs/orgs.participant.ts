@@ -174,57 +174,6 @@ export class OrgsParticipant {
   }
 
   /**
-   * Phase 5 Task 7B-iii-f round 3 — WHO holds this standing on this project, as a set.
-   *
-   * `hasProjectRoleStanding` answers about one named person. A screen offering "who may I
-   * authorise?" needs the same rule enumerated, and the commercial module must not enumerate it
-   * itself: an §I picker built from `MembersService.list` silently omits the org owner/admin who
-   * operates this project through the documented pmc fallback WITHOUT a `Membership` row — the
-   * server would accept a grant naming them, and the only screen that can issue it could never
-   * offer them. That is this file's own rule restated: **a read being representable is not the same
-   * as it being legitimate — the OWNER states the rule.**
-   *
-   * The two arms are deliberately the same two, in the same precedence, as the singular method:
-   * an ACTIVE project membership DECIDES, and the org arm applies ONLY to users holding no active
-   * membership here. An org admin who is also an active contractor on the site operates AS
-   * contractor and is therefore NOT in this set — the fallback is for the absent membership, never
-   * an upgrade over a present one.
-   *
-   * No `forUpdate`: this answers a question for a SCREEN, not an authority decision. The decision
-   * that matters is still made by `hasProjectRoleStanding` inside the granting transaction.
-   */
-  async usersWithProjectRoleStanding(
-    tx: OrgsParticipantClient | Prisma.TransactionClient,
-    projectId: string,
-    roles: readonly string[],
-  ): Promise<string[]> {
-    if (roles.length === 0) return [];
-    const rolePlaceholders = roles.map((_, i) => `$${i + 2}`).join(', ');
-    const orgArm = roles.includes('pmc')
-      ? `UNION
-         SELECT om."userId" AS "userId"
-           FROM "Project" p
-           JOIN "OrgMembership" om ON om."orgId" = p."orgId"
-          WHERE p."id" = $1 AND om."role" IN ('owner', 'admin')
-            AND NOT EXISTS (
-              SELECT 1 FROM "Membership" m
-               WHERE m."projectId" = $1 AND m."userId" = om."userId" AND m."status" = 'active'
-            )`
-      : '';
-    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ userId: string }>>(
-      `SELECT m."userId" AS "userId"
-         FROM "Membership" m
-        WHERE m."projectId" = $1 AND m."status" = 'active'
-          AND m."role" IN (${rolePlaceholders})
-       ${orgArm}
-        ORDER BY 1`,
-      projectId,
-      ...roles,
-    );
-    return rows.map((r) => r.userId);
-  }
-
-  /**
    * Phase 5 Task 6A (§I) — may `userId` approve on `projectId` at all, and up to what CEILING?
    *
    * Approval limits are authority/standing data and `Membership` is orgs-owned, so commercial does

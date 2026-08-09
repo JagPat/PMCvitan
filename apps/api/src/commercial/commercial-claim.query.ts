@@ -10,7 +10,6 @@ import { CommercialCertificationService } from './commercial-certification.servi
 import { CommercialDeductionService } from './commercial-deduction.service';
 import { CommercialPaymentService } from './commercial-payment.service';
 import { CommercialMeasurementService } from './commercial-measurement.service';
-import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /**
  * Phase 5 Task 7B-ii (§M) — ONE CLAIM'S WHOLE LIFECYCLE, from one repeatable-read transaction.
@@ -44,7 +43,6 @@ export class CommercialClaimQuery {
     private readonly deductions: CommercialDeductionService,
     private readonly payments: CommercialPaymentService,
     private readonly measurements: CommercialMeasurementService,
-    private readonly orgs: OrgsParticipant,
   ) {}
 
   private assertRead(user: AuthUser): void {
@@ -113,17 +111,11 @@ export class CommercialClaimQuery {
         grantState: resolved.state,
         grantId: resolved.state === 'live' ? resolved.grant.id : null,
         callerActorId: user.sub,
-        // Codex round 3 — the ORGS module enumerates its own standing rule; commercial does not
-        // rebuild it from the member list, which omits the org-admin pmc fallback entirely.
-        authorisableActorIds: (await this.orgs.usersWithProjectRoleStanding(tx, projectId, ROLE_POLICY['commercial.certify'] as readonly string[]))
-          .filter((id) => id !== user.sub),
       };
-      // Codex F3 — and the grants THEMSELVES, so this read shows what it clears a pending key for.
-      const sodGrants = await this.certification.liveGrantsIn(tx, projectId, billId, liveVersionId);
 
       return {
         bill, verification, certificate, deductions, payments, measurements,
-        certifyPreflight, sodGrants,
+        certifyPreflight,
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }

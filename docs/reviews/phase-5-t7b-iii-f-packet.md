@@ -20,8 +20,8 @@ clear, which is exactly the dead end 7B-iii-b was split to avoid.
 | | |
 |---|---|
 | Files | 17 |
-| Changed lines | ~1,780 (initial 592 + four correction rounds) |
-| Budget | 20 files / 1,500 lines — **OVER on lines; carries the `justified-large` marker** |
+| Changed lines | ~1,057 |
+| Budget | 20 files / 1,500 lines — **inside, after the round-5 split** |
 | Schema / migration | none |
 | New server behaviour | none (one grant rule extracted and shared; two inline `from:` literals replaced by shared constants the services read) |
 

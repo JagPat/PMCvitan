@@ -3,12 +3,13 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, isSodGrantPending } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
+import { decGt } from '@/lib/decimal';
 import styles from './responsive.module.css';
 
 /**
@@ -176,14 +177,11 @@ export function CommercialScreen() {
   // separation of duties starts here, with the actor who lodges a claim being unable to verify it.
   const mayVerify = may('commercial.verify');
   // 7B-iii-f — SEPARATE from `commercial.verify` even though both resolve to pmc today: certifying
-  // decides what is OWED. And `commercial.sod.grant` is separate again — authority to EXCUSE the
-  // rule is a stronger thing than authority to perform the act it excuses.
+  // decides what is OWED. (`commercial.sod.grant` is separate again — authority to EXCUSE the rule
+  // is a stronger thing than authority to perform the act it excuses — and its surface is
+  // 7B-iii-h.)
   const mayCertify = may('commercial.certify');
-  const mayGrantSod = may('commercial.sod.grant');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
-  // Codex F1 — the project TEAM, so an authorisation names a real identity rather than typed text.
-  const members = useStore(useShallow((s) => s.members));
-  const loadTeam = useStore((s) => s.loadTeam);
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
@@ -197,7 +195,6 @@ export function CommercialScreen() {
   const verifyBill = useStore((s) => s.verifyVendorBill);
   // 7B-iii-f — the certifier's three.
   const certifyBill = useStore((s) => s.certifyBill);
-  const grantSod = useStore((s) => s.grantSodException);
   const supersedeCertificate = useStore((s) => s.supersedeCertificate);
   const recordBill = useStore((s) => s.recordVendorBill);
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
@@ -336,12 +333,12 @@ export function CommercialScreen() {
   // component-wide draft armed one row's button with another row's text). Two fields because a
   // supersede reason and a SoD authorisation are different acts with different authority.
   const [certDrafts, setCertDrafts] = useState<{
-    scope: string; byId: Record<string, { supersedeReason: string; sodActor: string; sodReason: string }>;
+    scope: string; byId: Record<string, { supersedeReason: string }>;
   }>({ scope: '', byId: {} });
   const certScoped = certDrafts.scope === scopeKey ? certDrafts.byId : {};
-  const EMPTY_CERT_DRAFT = { supersedeReason: '', sodActor: '', sodReason: '' };
+  const EMPTY_CERT_DRAFT = { supersedeReason: '' };
   const certDraftFor = (id: string) => certScoped[id] ?? EMPTY_CERT_DRAFT;
-  const setCertDraft = (id: string, patch: Partial<{ supersedeReason: string; sodActor: string; sodReason: string }>): void =>
+  const setCertDraft = (id: string, patch: Partial<{ supersedeReason: string }>): void =>
     setCertDrafts({ scope: scopeKey, byId: { ...certScoped, [id]: { ...certDraftFor(id), ...patch } } });
 
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
@@ -414,14 +411,6 @@ export function CommercialScreen() {
     if (inClaimWorkflow && onPilot && billsLoad === 'idle') void loadCommercialBills();
   }, [inClaimWorkflow, onPilot, billsLoad, loadCommercialBills]);
 
-  // Codex round-2 — the §I authorisation picker is built from the project TEAM, and this screen
-  // never loaded it: `members` is empty until the user happens to visit Team, so the remedy for a
-  // segregation-of-duties refusal was unavailable exactly when it was needed. Expressed as a
-  // CONDITION with every term it depends on in the deps (Codex H3, one tab over), and scoped to
-  // the actor who can actually use it.
-  useEffect(() => {
-    if (inClaimWorkflow && onPilot && mayGrantSod && members.length === 0) void loadTeam();
-  }, [inClaimWorkflow, onPilot, mayGrantSod, members.length, loadTeam]);
 
   /**
    * Codex I1 — REFRESH RE-READS WHAT THIS SCREEN IS SHOWING.
@@ -1190,6 +1179,12 @@ export function CommercialScreen() {
                     // exposure, and certification is the act that creates money.
                     const viewedVersion = claim.bill.versions.find((v) => v.live)?.id ?? null;
                     const viewedCertificate = claim.certificate?.id ?? null;
+                    // Round 5 — §0's rule that cash already gone is not corrected by correcting a
+                    // document. The server's paid-vs-approved bound refuses a supersession while
+                    // cash stands against the certificate, and this bundle already carries the
+                    // payment ledger — so offering the button anyway is the write-ahead lie again,
+                    // told with a figure the screen is holding.
+                    const cashStands = decGt(claim.payments.paid, '0');
                     // Codex round 3 — the GATE and the PAYLOAD must come from ONE copy. The gate
                     // arbitrates list-vs-claim; the payload is pinned from the CLAIM bundle. When
                     // the list is the fresher of the two, the gate says yes while the pin is stale,
@@ -1229,7 +1224,7 @@ export function CommercialScreen() {
                           disabled={!transitionOffered(reading, BILL_STATUSES_PAST_CERTIFICATION)
                             || !claimIsAuthoritative
                             || !draft.supersedeReason.trim() || viewedCertificate === null
-                            || billTxPending(claim.bill.id)}
+                            || cashStands || billTxPending(claim.bill.id)}
                           onClick={() => supersedeCertificate(claim.bill.id, draft.supersedeReason.trim(), viewedCertificate as string)}
                         >
                           Supersede
@@ -1238,118 +1233,20 @@ export function CommercialScreen() {
                     );
                   })()}
 
-                  {/* §I — the REMEDY, beside the act it unblocks. `certify` can be refused for a
-                      reason no read can predict (see above), and an unpredictable refusal is only
-                      workable if its remedy is reachable from where it happens — which is the whole
-                      argument for these three commands being one unit rather than two.
+                  {/* §I — the AUTHORISATION surface (issue an exception, and the register of
+                      those that stand) is 7B-iii-h, parked whole on
+                      `claude/phase5-task7b-iii-f-sod-parked`. It is split out because the review
+                      lifecycle reported this unit at its head limit and nearly every finding across
+                      five rounds landed on that surface: it mirrors server AUTHORITY decisions, and
+                      round 5 established it also needs a schema change (the reviewed status must be
+                      PERSISTED on the grant, not merely checked at issue).
 
-                      Its own authority: `commercial.sod.grant`, not `commercial.certify`. An
-                      approver authorising someone else is doing a different thing from certifying,
-                      and the person who needs the authorisation is precisely the person who may not
-                      grant it — the server refuses a self-grant, so the form does too. */}
-                  {mayGrantSod && (() => {
-                    const draft = certDraftFor(claim.bill.id);
-                    const actorId = draft.sodActor.trim();
-                    const reason = draft.sodReason.trim();
-                    const pending = commercialPending.some((k) => isSodGrantPending(k, claim.bill.id, actorId));
-                    // Codex F4 — the version the approver is LOOKING AT. A grant is pinned to a
-                    // version so permission never carries to a claim they never saw, and the
-                    // durable outbox is exactly where that guarantee was lost: the server resolved
-                    // "live" at replay, which can be after an amendment. Sent with the command and
-                    // refused server-side on drift.
-                    const viewedVersionId = claim.bill.versions.find((v) => v.live)?.id ?? null;
-                    // Round 4 — the SAME freshness guard the certify controls use. Round 3 applied
-                    // it to certify and supersede and not to this button, in the very round whose
-                    // audit names "fix the class, not the instance" as the root. A grant queued
-                    // from a stale bundle carries a stale `versionId` straight into the drift
-                    // refusal round 2 added — reported saved, then dropped.
-                    const listForGrant = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
-                    const grantReading = arbitrateBillCopy(listForGrant, claim.bill);
-                    const grantOnCurrentClaim = grantReading !== null && grantReading.source !== 'list';
-                    // …and the STATUS the approver reviewed. A version moves submitted →
-                    // under-verification → verified without changing id, so pinning the version
-                    // alone lets a grant queued before the §E verdict authorise certification of
-                    // facts its approver never saw.
-                    const viewedStatus = claim.bill.status;
-                    // Codex F1 — the ACTIVE project team minus the approver themselves. Free text
-                    // put three server refusals into the write-ahead outbox (a display name, a
-                    // typo, and the self-grant §I forbids) and reported each as saved before
-                    // reconnect dropped it. A picker cannot express any of them.
-                    // Codex round 3 — the SERVER'S answer to "who may I authorise", enumerated by
-                    // the ORGS module's own standing rule. Round 2 filtered the project member list
-                    // by `commercial.certify`, which is the right idea applied to the wrong source:
-                    // an org owner/admin operating this project through the documented pmc fallback
-                    // holds no `Membership` row at all, so they could never be offered even though
-                    // the server accepts a grant naming them — and on a two-person site they are
-                    // exactly who needs authorising. A name is shown where the team has one; an id
-                    // without a member row is shown as itself rather than dropped, because dropping
-                    // it would recreate the omission this fixes.
-                    const nameOf = (id: string): string => members.find((m) => m.userId === id)?.name ?? id;
-                    const candidates = claim.certifyPreflight.authorisableActorIds;
-                    const eligible = candidates.includes(actorId);
-                    // Codex round-2 — and one that ALREADY STANDS is not granted twice. The bundle
-                    // carries the live grants as of round 1; the button did not consult them, so
-                    // once the pending key cleared an unchanged draft could queue a duplicate for
-                    // the server's live-scope uniqueness to reject — reported saved, then dropped.
-                    // Holding the key longer was the wrong shape: the fact is visible, so the guard
-                    // reads the fact.
-                    // Codex round 3 — only a USABLE authority blocks a replacement. A live row for
-                    // the payment half of §I, or one whose approver has since lost pmc standing,
-                    // leaves the named actor refused; blocking on its mere existence would leave no
-                    // pmc able to fix that from the page where the refusal happens.
-                    const alreadyStands = claim.sodGrants.some((g) => g.actorId === actorId && g.usableForCertification);
-                    return (
-                      <div style={{ ...rowCard, marginTop: 8 }} data-testid="commercial-sod-grant">
-                        <div style={{ fontWeight: 600 }}>Authorise a segregation-of-duties exception</div>
-                        <div style={{ ...muted, marginTop: 4 }}>
-                          The actor who recorded the evidence under a claim may not certify it. You
-                          may authorise one named person to, against this version of this claim, and
-                          your reason is recorded with it. You cannot authorise yourself.
-                        </div>
-                        {/* the grants that already stand — the read now SHOWS what it clears a
-                            pending key for (F3), so an approver can see their own act landed */}
-                        {claim.sodGrants.length > 0 && (
-                          <div style={{ marginTop: 8 }} data-testid="commercial-sod-live-grants">
-                            {claim.sodGrants.map((g) => (
-                              <div key={g.id} style={{ ...muted, marginTop: 4 }} data-testid={`sod-live-${g.id}`}>
-                                {g.actorId} — authorised by {g.approverId}: {g.reason}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                          <select
-                            value={draft.sodActor}
-                            onChange={(e) => setCertDraft(claim.bill.id, { sodActor: e.target.value })}
-                            data-testid={`sod-actor-${claim.bill.id}`}
-                            style={{ ...input, flex: '1 1 140px' }}
-                          >
-                            <option value="">Person to authorise…</option>
-                            {candidates.map((id) => (
-                              <option key={id} value={id}>{nameOf(id)}</option>
-                            ))}
-                          </select>
-                          <input
-                            value={draft.sodReason}
-                            onChange={(e) => setCertDraft(claim.bill.id, { sodReason: e.target.value })}
-                            placeholder="Why this is justified"
-                            data-testid={`sod-reason-${claim.bill.id}`}
-                            style={{ ...input, flex: '2 1 180px' }}
-                          />
-                          <Button
-                            variant="ink"
-                            data-testid={`sod-grant-${claim.bill.id}`}
-                            disabled={!eligible || alreadyStands || reason === '' || !grantOnCurrentClaim
-                              || viewedVersionId === null || pending}
-                            onClick={() => grantSod(claim.bill.id, actorId, reason, viewedVersionId as string, viewedStatus)}
-                          >
-                            {pending ? 'Working…' : 'Authorise'}
-                          </Button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
+                      What remains here is honest about the gap: a certifier who recorded the
+                      evidence is refused by §I with a message naming `commercial.sod.grant`, and
+                      cannot self-serve that remedy on this screen until 7B-iii-h lands. That is a
+                      narrower gap than it sounds — the common path is a certifier who did NOT
+                      record the evidence, which works end to end — but it IS a gap, and it is
+                      stated rather than papered over. */}
                   {claim.certificate === null ? (
                     <div style={{ ...rowCard, ...muted }} data-testid="commercial-certificate-none">
                       Not certified yet. A claim before certification is an ordinary state, not an error.
