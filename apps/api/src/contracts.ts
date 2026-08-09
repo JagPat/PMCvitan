@@ -1464,8 +1464,27 @@ export type VendorBillStepInput = z.infer<typeof vendorBillStepSchema>;
  * saw. Optional for the same reason as the grant's: in-process callers hold no rendered version,
  * and the risk is specific to a command that can sit in a queue across an amendment.
  */
+/**
+ * Codex round-5 — …and the claim REVISION the certifier read, REQUIRED at the boundary.
+ *
+ * The service already refuses a stale pin (`assertReviewedRevision`) and already records what the
+ * certifier saw. What it could not do was tell the difference between "this certifier reviewed
+ * revision 3" and "this certifier sent no pin at all", because the boundary never asked for one:
+ * every web and offline certification arrived without the field, fell through to the server's own
+ * reading of `now`, and was recorded as reviewed evidence. A default that fabricates the evidence
+ * it stands in for is worse than no field, because it is indistinguishable from the real thing
+ * afterwards.
+ *
+ * The version pin cannot cover this. `versionId` is stable across the whole payment lifecycle, so a
+ * queued certify replayed after `verified → certified → superseded → verified` still matches it;
+ * only the monotonic revision separates the two passages.
+ */
 export const certifyBillSchema = z
-  .object({ billId: z.string().min(1), versionId: z.string().min(1) })
+  .object({
+    billId: z.string().min(1),
+    versionId: z.string().min(1),
+    lifecycleVersion: z.number().int().nonnegative(),
+  })
   .strict();
 export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
 /**

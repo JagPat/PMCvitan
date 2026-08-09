@@ -1,14 +1,21 @@
 # PR #312 — convergence audit
 
-Three finding-bearing heads, twelve findings. The protocol says stop patching and say what is
-actually going wrong. Three roots are, and only one of them is new — plus one narrower lesson
-about lock order that round 3 bought the hard way.
+Four finding-bearing heads, seventeen findings. The protocol says stop patching and say what is
+actually going wrong. Four roots are — A (fix the class, not the instance), B (a description is not
+an identity), C (a rule holding by accident elsewhere is not enforced) and D (a guard on the
+transitions of a row is not a guard on the row) — plus one narrower lesson about lock order that
+round 3 bought the hard way, and one about the axis an enumeration is written on.
+
+Root D and the round-5 re-enumeration are at the end of this document; they are the ones a reader
+short of time should start with, because round 4's table was the artifact meant to prevent round
+5 and the reason it did not is more useful than any single fix.
 
 | Head | Findings |
 |---|---|
 | `0240338` | 5 — freeze the column · rerunnable `ADD COLUMN` · the payment resolver · the DB consume seal · the unrendered state |
 | `a805d47` | 3 — the legacy diagnostic's predicate · a recycled status label · the version read outside its lock |
 | `d5753e9` | 4 — the counter tracked labels not money · the server recorded its own "now" · the consume seal never compared revisions · the abort ran before its own guards |
+| `5af64d6` | 5 — the counter could be born negative · the act's check held nothing · retirement was unscoped · the grant seal ignored issue · the certify boundary never asked for the pin |
 
 ---
 
@@ -237,3 +244,112 @@ exits. The right one is that **an abort was the wrong instrument**: the migratio
 grants with an attributable stamp instead of stopping the deploy. That is not the silent
 revocation the abort existed to prevent — the row is retained, marked, and named in the runbook —
 and it is the only shape where the remedy terminates.
+
+---
+
+## Round 5 — the enumeration was on the wrong axis
+
+Five findings on `5af64d6`. Round 4 wrote a table specifically to stop this, and the table did
+find four gaps Codex had not named — so the practice works. It still missed these five, and the
+reason is worth more than the fixes.
+
+**Round 4 enumerated ARTIFACT × GUARD: "does a guard exist for this fact?"** Every cell it marked
+✓ was true. A guard existed in every one of them. What it never asked was the two questions that
+decide whether an existing guard is worth anything:
+
+1. **On which EVENTS does it fire?** A trigger declared `BEFORE UPDATE OR DELETE` is invisible on
+   the way a row is born.
+2. **Does it HOLD what it reads?** A comparison against a number another session is moving is a
+   guess with good manners.
+
+Three of the five findings are question 1, one is question 2, and one is the same question at the
+HTTP boundary. Read on the right axis they are nearly one finding.
+
+### The sentence round 4 wrote that round 5 refuted
+
+Round 4's own text, above, closing the R4-4 argument:
+
+> What makes the act's number true is a BEFORE INSERT check against the claim's actual revision —
+> before the act's own AFTER trigger advances it — **which is available, cheap, and takes no lock
+> (a plain read).**
+
+That parenthesis is finding `migration:228` verbatim, written by me, in this document, as a
+reassurance. I reasoned about *when* the check runs and never about *what else could be running*.
+A guard's correctness is not a property of the guard; it is a property of the guard **and every
+concurrent writer of the thing it reads**, and only the second half needs the lock.
+
+### Root D — a guard on the transitions of a row is not a guard on the row
+
+The three event-coverage findings are one root, and it is distinct from root A. Root A is *the fix
+did not travel to the siblings*. This is *the fix did not cover the way in*:
+
+| Guard | Covered | Open | What walked through |
+|---|---|---|---|
+| `VendorBillRevision_forward_only` | UPDATE, DELETE | **INSERT** | a row born at `-1`; the next fold write lifts it to `0` and revives every authority pinned there |
+| `phase5_t7biiih_grant_reviewed_state_sealed` | consumption | **issue** | a grant post-dated to a passage the claim has not reached — later it arrives, every column matches, and the consume seal is satisfied |
+| `phase5_t5_grant_append_only` retirement | the direction (one-way) | **the population** | an escape hatch cut for evidence-less legacy rows, silently revoking live evidenced ones |
+
+The third is the same shape seen from the other side: a transition made one-way without ever
+asking *which rows may take it*. One-way is about direction; scope is about membership; and
+policing one is not policing the other.
+
+### Re-enumerated on the axis that would have caught them
+
+**✗ = gap on head `5af64d6`.** The columns are now events and serialization, not existence.
+
+| Guard | INSERT | UPDATE | DELETE | Holds what it reads | Population scoped |
+|---|---|---|---|---|---|
+| `VendorBillRevision_forward_only` | **✗ R5-1** | ✓ | ✓ | n/a (row-local) | n/a |
+| `VendorBill_opens_revision` | **✗ absent (this table)** | n/a | n/a | n/a | n/a |
+| `*_reviewed_revision_true` (both acts) | ✓ | ✓ freeze | n/a (append-only) | **✗ R5-2** | n/a |
+| `grant_reviewed_state_sealed` | **✗ R5-4** | ✓ consumption | n/a | **✗ R5-4** (issue arm) | n/a |
+| `grant_append_only` retirement | n/a | ✓ one-way | n/a | n/a | **✗ R5-3** |
+| certify HTTP contract | **✗ R5-5** | n/a | n/a | n/a | n/a |
+| approve HTTP contract | ✓ | n/a | n/a | n/a | n/a |
+| grant HTTP contract | ✓ | n/a | n/a | n/a | n/a |
+
+Six gaps; five Codex named, and one — `VendorBill_opens_revision` — this table found.
+
+**That sixth is the premise the other two rest on**, which is why it is a design change rather
+than a patch. The counter read `COALESCE((SELECT revision …), 0)`: a claim that had never moved
+money had **no row**, and read zero *by absence*. An absence cannot be locked (`SELECT … FOR
+UPDATE` over nothing locks nothing) and cannot be constrained (no CHECK polices a row that is not
+there). Adding `FOR UPDATE` to the act check and to the issue seal would have been theatre on
+exactly the claims where an authority is most likely to be issued — the quiet ones. So the row is
+now opened **with the claim** and can never be deleted, and the implicit zero stops being a state
+the system can be in.
+
+Lock order is unchanged and deliberately so: `VendorBillRevision` is still taken LAST by every
+path (`bill → certificate → revision`), so the two new acquisitions close no cycle with the claim
+lock. The ABBA constraint round 3 bought the hard way still holds, and PROBE 20/21 still stand
+over it.
+
+### The review-lifecycle signal, and why this head is not a split
+
+The orchestrator flagged this unit at its finding-bearing-head limit and suggested splitting it. I
+did not, and the reasoning belongs on the record rather than in a commit message.
+
+A split here is available and coherent — unit A (the monotonic claim revision, the act pins, the
+optimistic-concurrency refusal) genuinely precedes unit B (the §I grant's reviewed-state record),
+and B depends on A rather than the reverse. What decided against it is that **all five open
+findings are sealing gaps in one trigger set in one file**, four of them in guards that exist only
+to serve the seal, and splitting would have meant surgery on a branch with ten green checks to
+spread one mechanism's seals across two migrations — making the seal set harder to audit as a
+whole, which is the thing review size is a proxy for.
+
+The reviewability problem in this PR was measured instead of assumed. It was **1,215 lines of
+`prisma format` realignment** in `schema.prisma` — 672 insertions and 611 deletions of column
+whitespace, carrying no meaning and drowning 68 lines that do. That churn is reverted here and the
+schema diff is now additions only. The PR drops from 3,546 changed lines to roughly 2,300, of
+which the required packet, convergence audit and probes are the majority.
+
+If a sixth finding-bearing head arrives, the split is the answer and unit A above is its seam.
+
+### What this head does NOT do
+
+- It does not add a command to withdraw a live authority. Round 5's F3 makes retirement unable to
+  serve as one; building the real thing needs its own author, its own evidence and its own
+  attribution, and inventing it inside a correction is how the unscoped hatch got here.
+- It does not weaken `phase5_t5b`'s R8-F1 probe, whose forged grant now carries a truthful reviewed
+  state. The opposite: without that, the new issue seal would refuse the row first and the
+  authorship rule R8-F1 exists to test would have gone unexercised behind a green tick.

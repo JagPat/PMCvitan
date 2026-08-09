@@ -2186,9 +2186,26 @@ assert_rejects "commercial T5B R7-F1: a grant that excuses its OWN author (a sig
 # belongs to every guard on that row, or a direct writer simply rewrites the justification.
 mint5b_grant() { $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('$1','project','org-legacy','p1','USER-2','commercial.sod.grant','$1','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='$2', \"completedAt\"=now() WHERE \"id\"='$1'; COMMIT;"; }
 mint5b_grant UPT5B-CMDGF UPT5B-GF
-$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-GF','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','a live authorisation','submitted',0,'UPT5B-CMDGF')" \
-  && printf 'ok      %s\n' "commercial T7BIIIH: a LIVE grant may record any reviewed state — the seal bites at consumption" \
-  || { printf 'FAILED  %s\n' "commercial T7BIIIH: a live grant recording an early state was rejected at issue"; FAIL=1; }
+# THE LEGAL PATH FIRST: an authorisation naming the claim exactly as it stands is ACCEPTED, so the
+# issue-side seal below is precise rather than merely strict. The reviewed pair is SELECTED from the
+# claim rather than typed, because typing it is what the seal exists to refuse.
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-GF','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','a live authorisation',b.\"status\",r.\"revision\",'UPT5B-CMDGF' FROM \"VendorBill\" b JOIN \"VendorBillRevision\" r ON r.\"projectId\"=b.\"projectId\" AND r.\"billId\"=b.\"id\" WHERE b.\"projectId\"='p1' AND b.\"id\"='UPT4-B3'" \
+  && printf 'ok      %s\n' "commercial T7BIIIH: an authorisation naming the claim AS IT STANDS is accepted" \
+  || { printf 'FAILED  %s\n' "commercial T7BIIIH: a truthful live authorisation was rejected at issue"; FAIL=1; }
+# ── round 5 — the guards on how a row is BORN, not only on how it changes ────────────────────
+mint5b_grant UPT5B-CMDGP UPT5B-GP
+assert_rejects "commercial T7BIIIH R5: authorising a passage of the claim that has not happened yet" \
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-GP','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','post-dated',b.\"status\",r.\"revision\"+5,'UPT5B-CMDGP' FROM \"VendorBill\" b JOIN \"VendorBillRevision\" r ON r.\"projectId\"=b.\"projectId\" AND r.\"billId\"=b.\"id\" WHERE b.\"projectId\"='p1' AND b.\"id\"='UPT4-B3'" \
+  'never a passage it has not reached'
+# the counter cannot be BORN behind the authorities already pinned to it (the BEFORE INSERT arm
+# fires ahead of the primary-key check, so this is the trigger answering, not the index)
+assert_rejects "commercial T7BIIIH R5: a claim revision row created BELOW zero" \
+  "INSERT INTO \"VendorBillRevision\"(\"projectId\",\"billId\",\"revision\") VALUES('p1','UPT4-B3',-1)" \
+  'starts at zero and only moves forward'
+# retirement disposes of authority this release cannot JUDGE — never of a live, evidenced one
+assert_rejects "commercial T7BIIIH R5: RETIRING an authorisation that carries its reviewed evidence" \
+  "UPDATE \"SodGrant\" SET \"retiredAt\"=now(), \"retiredReason\"='tidying up' WHERE \"id\"='UPT5B-GF'" \
+  'judged by the seals rather than retired'
 assert_rejects "commercial T7BIIIH: REWRITING what an approver is recorded as having reviewed" \
   "UPDATE \"SodGrant\" SET \"reviewedStatus\"='verified' WHERE \"id\"='UPT5B-GF'" \
   'IMMUTABLE'
@@ -2515,7 +2532,7 @@ assert_rejects "commercial T6A: an SoD exception on an approval the rule would n
 # column skipped it entirely and an approver's authority could be burned against an act it never
 # excused.
 mint5c UP6A-CMD-GRANT2 commercial.sod.grant UP6A-G-LIVE
-$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UP6A-G-LIVE','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','only pmc on site','certified',COALESCE((SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),0),'UP6A-CMD-GRANT2' FROM \"VendorBill\" b WHERE b.\"id\"='$UP5C_BILL'" \
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UP6A-G-LIVE','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','only pmc on site',b.\"status\",COALESCE((SELECT r.\"revision\" FROM \"VendorBillRevision\" r WHERE r.\"projectId\"='p1' AND r.\"billId\"='$UP5C_BILL'),0),'UP6A-CMD-GRANT2' FROM \"VendorBill\" b WHERE b.\"id\"='$UP5C_BILL'" \
   && printf 'ok      %s\n' "commercial T6A R3: a live payment-side grant is ACCEPTED (the approver's own receipt backs it)" \
   || { printf 'FAILED  %s\n' "commercial T6A R3: a well-formed payment-side grant was rejected"; FAIL=1; }
 assert_rejects "commercial T6A R3: burning a grant against an approval that carries no matching override" \

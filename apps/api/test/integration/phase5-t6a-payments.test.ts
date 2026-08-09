@@ -1300,4 +1300,245 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     )).rejects.toThrow(/cannot be moved|violates foreign key/u);
     expect(other).toBeDefined();
   });
+
+  // ── 7B-iii-h round 5 — THE GUARDS COVER THE WAY A ROW IS BORN, NOT ONLY THE WAY IT CHANGES ───
+  //
+  // Four findings, and three of them are ONE root: every seal in this unit was written on the
+  // TRANSITIONS of a row and left the INSERT open. The revision counter policed UPDATE and DELETE;
+  // the grant seal policed consumption; the act's truth check read a counter it did not hold. A
+  // value that can be written wrong the first time does not become right because later edits are
+  // policed — so each probe below constructs the row's BIRTH, not its edit.
+
+  const mintCommand = async (
+    projectId: string, ref: string,
+    o: { actorId?: string; commandType?: string } = {},
+  ): Promise<string> =>
+    t.prisma.$transaction(async (tx) => {
+      const c = await tx.commandExecution.create({
+        data: {
+          scopeKind: 'project', organizationId: f.orgA.id, projectId,
+          actorId: o.actorId ?? f.memberUser.id,
+          commandType: o.commandType ?? 'commercial.payment.approve', idempotencyKey: `t7h-r5-${seq++}`,
+          requestHash: 'x', status: 'reserved',
+        }, select: { id: true },
+      });
+      await tx.commandExecution.update({
+        where: { id: c.id }, data: { status: 'succeeded', resultRef: ref, completedAt: new Date() },
+      });
+      return c.id;
+    });
+
+  // A session waiting on a ROW lock. `pg_stat_activity` reports that as `transactionid` (blocked on
+  // the holder's transaction) or `tuple` (queued behind another waiter) — and observing it is the
+  // whole probe: the finding is that the conflicting write did NOT wait.
+  const waitForRowLockWaiter = async (): Promise<void> => {
+    for (let i = 0; i < 400; i++) {
+      const rows = await t.prisma.$queryRaw<Array<{ c: number }>>`
+        SELECT COUNT(*)::int AS c FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock' AND wait_event IN ('transactionid', 'tuple')`;
+      if (rows[0]!.c >= 1) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error('barrier timeout: expected a session blocked on a row lock');
+  };
+
+  it('PROBE 33 (§I): the revision row opens WITH the claim, and cannot be born behind it', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+
+    // (1) THE ORDINARY CASE FIRST. The counter used to read `COALESCE(…, 0)` — a claim that had
+    // never moved money had NO ROW and read zero by absence. An absence cannot be locked and cannot
+    // be constrained, which is the premise PROBE 34's race and the issue-side seal both rest on.
+    //
+    // A claim that has already moved is no test of this: its folds created the row on the way past.
+    // So the probe LODGES one and stops — no status transition, no fold, nothing touched — and asks
+    // whether the counter is there anyway.
+    const line = await issuedMaterialLine(projectId, { qty: '10' });
+    const lodged = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: `V-untouched-${seq++}`, documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '10', rate: '1' }],
+    }, pmc(projectId));
+    expect(await t.prisma.vendorBillRevision.findFirst({ where: { projectId, billId: lodged.id } }),
+      'a claim that has moved nothing still carries a revision row, so there is something to lock')
+      .toMatchObject({ revision: 0 });
+
+    // (2) …and the guard itself, against the state the fix removes. Reaching "a claim with no
+    // revision row" now needs the append-only bypass, which IS the point: this release cannot
+    // create one, so the probe builds it deliberately and shows the counter still cannot be born
+    // below the floor every authority pinned at zero stands on.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('ALTER TABLE "VendorBillRevision" DISABLE TRIGGER "VendorBillRevision_forward_only"');
+      await tx.$executeRawUnsafe('DELETE FROM "VendorBillRevision" WHERE "projectId"=$1 AND "billId"=$2', projectId, billId);
+      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      await tx.$executeRawUnsafe('ALTER TABLE "VendorBillRevision" ENABLE TRIGGER "VendorBillRevision_forward_only"');
+    });
+
+    await expect(t.prisma.$executeRawUnsafe(
+      'INSERT INTO "VendorBillRevision"("projectId","billId","revision") VALUES($1,$2,-1)', projectId, billId,
+    )).rejects.toThrow(/starts at zero and only moves forward/u);
+
+    // …and the SAFE direction is still open, because a guard that refuses everything is not a
+    // guard: a row born at or above the floor can only ever invalidate authorities, never revive
+    // one, and an operator restoring a counter needs that door.
+    await expect(t.prisma.$executeRawUnsafe(
+      'INSERT INTO "VendorBillRevision"("projectId","billId","revision") VALUES($1,$2,0)', projectId, billId,
+    )).resolves.toBeDefined();
+  });
+
+  it('PROBE 34 (§I): the act\'s revision is compared to a counter this session HOLDS', async () => {
+    // Codex round 5 (P1). The act-truth check read the counter with a plain `SELECT`, which is not
+    // authoritative about a number another session is moving: a fold writer holds the row at L2
+    // uncommitted, this trigger still sees the committed L1, accepts an act recorded at L1, and
+    // both commit — leaving a certificate or an approval recorded against a passage of the claim
+    // that was already gone when it was written.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const cert = await t.prisma.billCertificate.findFirstOrThrow({ where: { projectId, billId, supersededAt: null } });
+    const at = (await t.prisma.vendorBillRevision.findFirstOrThrow({ where: { projectId, billId } })).revision;
+
+    const other = new PrismaClient();
+    try {
+      let released!: () => void;
+      let ready!: () => void;
+      const holding = new Promise<void>((resolve) => { released = resolve; });
+      const staged = new Promise<void>((resolve) => { ready = resolve; });
+      // a concurrent FOLD WRITER: every one of the six sources advances the counter through the
+      // same `+ 1` touch, so this is that touch, held open
+      const held = other.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          'UPDATE "VendorBillRevision" SET "revision"="revision"+1 WHERE "projectId"=$1 AND "billId"=$2',
+          projectId, billId,
+        );
+        ready();
+        await holding;
+      }, { timeout: 30_000 });
+      await staged;
+
+      // the act names the revision that was current before the fold — exactly what a writer racing
+      // the fold would carry, and what the plain read used to accept
+      // OTHERWISE WELL-FORMED, deliberately: the command's actor is the approver the row names, and
+      // the §F status follows the money the approval moves. An insert that some OTHER seal rejects
+      // would prove nothing about this one — pre-fix this transaction must genuinely COMMIT, or the
+      // probe is not reproducing the finding.
+      const command = await mintCommand(projectId, 'raced-rev', { actorId: f.ownerUser.id });
+      const acting = t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "PaymentApproval"("id","projectId","certificateId","billId","amount","approvedById","reviewedLifecycleVersion","sourceCommandId")
+           VALUES($1,$2,$3,$4,10.00,$5,$6,$7)`,
+          'raced-rev', projectId, cert.id, billId, f.ownerUser.id, at, command,
+        );
+        await tx.$executeRawUnsafe(
+          `UPDATE "VendorBill" SET "status"='approved-for-payment', "statusChangedAt"=now() WHERE "projectId"=$1 AND "id"=$2`,
+          projectId, billId,
+        );
+      }, { timeout: 30_000 }).then(() => 'accepted').catch((e: Error) => e);
+
+      // CONDITION-based, never a fixed sleep: the finding is that this insert did NOT wait, so the
+      // probe is worthless unless the wait itself is observed
+      await waitForRowLockWaiter();
+      released();
+      await held;
+
+      const outcome = await acting;
+      expect(outcome, 'the act blocked on the counter, re-read it, and was refused')
+        .toBeInstanceOf(Error);
+      expect((outcome as Error).message)
+        .toMatch(/an act carries the passage of the claim it was actually performed on/u);
+      expect(await t.prisma.paymentApproval.findFirst({ where: { projectId, id: 'raced-rev' } }),
+        'nothing was written against the stale passage').toBeNull();
+    } finally {
+      await other.$disconnect();
+    }
+  });
+
+  it('PROBE 35 (§I): retirement disposes of authority this release cannot JUDGE, and nothing else', async () => {
+    // Codex round 5 (P2). Round 4 cut retirement for LEGACY rows — ones written before the reviewed
+    // columns existed, whose approver's view was never recorded. Making the transition one-way is
+    // not the same as saying who may take it, and unscoped it became a general revocation: stamp
+    // `retiredAt` on a fully evidenced grant and the resolver filters it out while the live-scope
+    // index frees the slot, so a recorded authority disappears with no counter-authority anywhere.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "SodGrant" SET "retiredAt"=now(), "retiredReason"='tidying up' WHERE "projectId"=$1 AND "id"=$2`,
+      projectId, grant.id,
+    )).rejects.toThrow(/judged by the seals rather than retired/u);
+
+    // …and the population it WAS cut for still reaches its terminal state. Reaching that state
+    // needs the bypass, which is the point: this release cannot write an evidence-less grant.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
+      await tx.$executeRawUnsafe(
+        'UPDATE "SodGrant" SET "reviewedStatus"=NULL, "reviewedLifecycleVersion"=NULL WHERE "projectId"=$1 AND "id"=$2',
+        projectId, grant.id,
+      );
+      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
+    });
+    // a disposal without a stated reason records a disappearance, not a disposal
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "SodGrant" SET "retiredAt"=now() WHERE "projectId"=$1 AND "id"=$2`, projectId, grant.id,
+    )).rejects.toThrow(/states why/u);
+    await expect(t.prisma.$executeRawUnsafe(
+      `UPDATE "SodGrant" SET "retiredAt"=now(), "retiredReason"='predates the reviewed-state record' WHERE "projectId"=$1 AND "id"=$2`,
+      projectId, grant.id,
+    )).resolves.toBeDefined();
+  });
+
+  it('PROBE 36 (§I): an authority cannot name a passage the claim has not reached', async () => {
+    // Codex round 5 (P1). The consume seal returned immediately for every unconsumed grant, so the
+    // way a grant is BORN was never judged. What that left open is not a stale authority — those
+    // the consume seal catches — but a PREMATURE one: a grant whose reviewed revision is a passage
+    // the claim has not arrived at. Later it arrives, the resolver finds a row matching on every
+    // column, and the consume seal is satisfied because the act and the grant agree — about a
+    // state the approver could not have reviewed, because it did not exist when they signed.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+    const honest = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const row = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: honest.id } });
+    const at = (await t.prisma.vendorBillRevision.findFirstOrThrow({ where: { projectId, billId } })).revision;
+
+    expect(at, 'the fixture must have advanced the claim, or the probe is about nothing').toBeGreaterThan(0);
+    expect(row.reviewedLifecycleVersion, 'the honest grant named the claim as it stood').toBe(at);
+
+    // A DIFFERENT excused actor throughout, so these rows are distinct authorisations from the
+    // honest one rather than duplicates of it, and EACH gets its own well-formed
+    // `commercial.sod.grant` command naming the approver — otherwise Task 5B's evidence-actors seal
+    // would refuse them first and this probe would be asserting somebody else's guard.
+    const forge = async (id: string, patch: { rev: number | null; status?: string | null }) =>
+      t.prisma.$executeRawUnsafe(
+        `INSERT INTO "SodGrant"("id","projectId","billId","versionId","rule","actorId","approverId","reason",
+                                "reviewedStatus","reviewedLifecycleVersion","sourceCommandId")
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        id, projectId, billId, row.versionId, row.rule, f.strangerUser.id, row.approverId, row.reason,
+        patch.status === undefined ? row.reviewedStatus : patch.status, patch.rev,
+        await mintCommand(projectId, id, { actorId: row.approverId, commandType: 'commercial.sod.grant' }),
+      );
+
+    // a passage the claim has NOT reached
+    await expect(forge('forged-future', { rev: at + 5 }))
+      .rejects.toThrow(/never a passage it has not reached/u);
+    // …and one it has already LEFT, which the same comparison catches from the other side
+    await expect(forge('forged-past', { rev: at - 1 }))
+      .rejects.toThrow(/never a passage it has not reached/u);
+    // …and a reviewed LABEL that is not the one the claim is wearing, caught by the same clause
+    await expect(forge('forged-label', { rev: at, status: 'submitted' }))
+      .rejects.toThrow(/never a passage it has not reached/u);
+    // …and a grant recording nothing at all, refused where it is written rather than where it is
+    // spent — an authority attests to something or it is a permission slip
+    await expect(forge('forged-blank', { rev: null, status: null }))
+      .rejects.toThrow(/records no reviewed state/u);
+
+    // THE LEGAL PATH: the claim as it actually stands is accepted, so the seal is precise rather
+    // than merely strict.
+    await expect(forge('forged-true', { rev: at })).resolves.toBeDefined();
+  });
 });

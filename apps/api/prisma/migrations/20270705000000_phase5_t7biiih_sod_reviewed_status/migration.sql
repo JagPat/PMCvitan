@@ -58,13 +58,57 @@ CREATE TABLE IF NOT EXISTS "VendorBillRevision" (
     REFERENCES "VendorBill"("projectId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION
 );
 
+-- ── …AND THE ROW EXISTS FROM THE CLAIM'S FIRST MOMENT ───────────────────────────────────────
+--
+-- Codex round 5, and it is the premise two of that round's findings rest on. The counter started
+-- life as `COALESCE((SELECT revision …), 0)`: a claim that had never moved money had NO ROW, and
+-- read zero by absence. An absence cannot be locked and cannot be constrained — `SELECT … FOR
+-- UPDATE` over nothing locks nothing, and a CHECK cannot police a row that is not there.
+--
+-- So the row is opened WITH the claim. Every later reader locks a row that exists, and the implicit
+-- zero — the thing a rewind could aim at — stops existing as a state the system can be in.
+CREATE OR REPLACE FUNCTION phase5_t7biiih_open_bill_revision() RETURNS trigger AS $$
+BEGIN
+  INSERT INTO "VendorBillRevision"("projectId", "billId", "revision")
+  VALUES (NEW."projectId", NEW."id", 0)
+  ON CONFLICT ("projectId", "billId") DO NOTHING;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "VendorBill_opens_revision" ON "VendorBill";
+CREATE TRIGGER "VendorBill_opens_revision" AFTER INSERT ON "VendorBill"
+  FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_open_bill_revision();
+
+-- …and every claim that already exists gets its row now, at zero. Zero is what those claims already
+-- read by absence, so this changes no authority's standing — it only makes the reading lockable.
+INSERT INTO "VendorBillRevision"("projectId", "billId", "revision")
+SELECT b."projectId", b."id", 0 FROM "VendorBill" b
+ON CONFLICT ("projectId", "billId") DO NOTHING;
+
 -- Never rewound, never jumped. Advancing is always safe — it can only INVALIDATE an authority,
--- never revive one — so the guard is only about the two directions that could revive a stale pin.
+-- never revive one — so the guard is only about the directions that could revive a stale pin.
 CREATE OR REPLACE FUNCTION phase5_t7biiih_revision_forward_only() RETURNS trigger AS $$
 BEGIN
-  -- DELETING it resets the claim to `COALESCE(..., 0)`, which revives every authorisation ever
-  -- pinned at 0. A counter that can be removed is not monotonic; it is monotonic until someone
-  -- tires of it.
+  -- INSERT (Codex round 5, P1). The trigger used to police only UPDATE and DELETE, which left the
+  -- way a row is BORN completely open: a direct insert of `revision = -1` on a claim reading the
+  -- implicit zero made every authority pinned at 0 stale, and the next fold write advanced it back
+  -- to 0 and revived them — a rewind performed by creation rather than by change.
+  --
+  -- This is the same shape as the grant seal below, which guarded consumption and not issue, and
+  -- both are one root: A GUARD ON THE TRANSITIONS OF A ROW IS NOT A GUARD ON THE ROW. A value that
+  -- can be written wrong the first time does not become right because later edits are policed.
+  --
+  -- Only the direction that can REVIVE is refused. A row born high only invalidates authorities,
+  -- which is the safe direction and the one an operator restoring a counter would need.
+  IF TG_OP = 'INSERT' THEN
+    IF NEW."revision" < 0 THEN
+      RAISE EXCEPTION 'A claim revision starts at zero and only moves forward — % would place this claim behind authorisations already pinned to it (%)', NEW."revision", NEW."billId";
+    END IF;
+    RETURN NEW;
+  END IF;
+  -- DELETING it resets the claim to zero, which revives every authorisation ever pinned there. A
+  -- counter that can be removed is not monotonic; it is monotonic until someone tires of it.
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'A claim revision is never deleted — removing it would take the claim back to 0 and revive authorisations pinned there (%)', OLD."billId";
   END IF;
@@ -82,7 +126,8 @@ END;
 $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS "VendorBillRevision_forward_only" ON "VendorBillRevision";
-CREATE TRIGGER "VendorBillRevision_forward_only" BEFORE UPDATE OR DELETE ON "VendorBillRevision"
+CREATE TRIGGER "VendorBillRevision_forward_only"
+  BEFORE INSERT OR UPDATE OR DELETE ON "VendorBillRevision"
   FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_revision_forward_only();
 
 -- One place every mover goes through, so no writer can advance it halfway.
@@ -223,9 +268,25 @@ BEGIN
   -- requires the two to be equal and refuses a NULL act.
   IF NEW."reviewedLifecycleVersion" IS NULL THEN RETURN NEW; END IF;
 
-  SELECT COALESCE((SELECT r."revision" FROM "VendorBillRevision" r
-                    WHERE r."projectId" = NEW."projectId" AND r."billId" = NEW."billId"), 0)
-    INTO v_now;
+  -- FOR UPDATE, and that is the difference between a check and a guess (Codex round 5, P1).
+  --
+  -- A plain read is not authoritative about a counter another session is moving. A fold writer can
+  -- hold this row at L2 uncommitted while this trigger still sees the committed L1, accept an act
+  -- recorded at L1, and then queue its own touch behind the fold — leaving a certificate or an
+  -- approval recorded against a passage of the claim that was already gone when it was written.
+  --
+  -- Taking the row lock makes the comparison and the advance one indivisible step: the second
+  -- session blocks, re-reads L2, and is refused. The lock order is unchanged, and deliberately so —
+  -- the revision row is taken LAST by everybody (`bill → certificate → revision`), so this
+  -- acquisition closes no cycle with the claim lock the honest paths already hold.
+  SELECT r."revision" INTO v_now FROM "VendorBillRevision" r
+   WHERE r."projectId" = NEW."projectId" AND r."billId" = NEW."billId"
+     FOR UPDATE;
+  -- The row is opened with the claim and can never be deleted, so its absence is not a new claim —
+  -- it is tampering, and reading a fallback zero here would be trusting the tamper.
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Claim % carries no revision record, so there is nothing an act can honestly say it was performed against', NEW."billId";
+  END IF;
   IF NEW."reviewedLifecycleVersion" <> v_now THEN
     RAISE EXCEPTION 'This act records revision % of the claim, which is at revision % — an act carries the passage of the claim it was actually performed on', NEW."reviewedLifecycleVersion", v_now;
   END IF;
@@ -310,6 +371,28 @@ BEGIN
   IF NEW."retiredAt" IS NOT NULL AND NEW."consumedAt" IS NOT NULL THEN
     RAISE EXCEPTION 'A grant is either exercised or retired, never both (%)', OLD."id";
   END IF;
+  -- ── …AND RETIREMENT IS FOR THE POPULATION IT WAS CUT FOR ────────────────────────────────────
+  --
+  -- Codex round 5 (P2). Round 4 introduced retirement as the disposal of a LEGACY row — one written
+  -- before the reviewed columns existed, which this release cannot judge because no evidence of
+  -- what its approver saw was ever recorded. Making the transition one-way is not the same as
+  -- saying WHO may take it, and unscoped it became a general revocation: stamp `retiredAt` on a
+  -- fully evidenced grant and `resolveSodGrant` filters it out while the live-scope index frees the
+  -- slot, so an approver's recorded authority disappears with no counter-authority anywhere.
+  --
+  -- An escape hatch cut for one population applies to all of them unless it says otherwise. This
+  -- says otherwise: a grant that CARRIES its evidence is judged by the seals — spent, or refused
+  -- for a stated reason — and is never disposed of. Withdrawing a live authority is a different act
+  -- with a different author, and it does not exist in this release rather than existing by
+  -- accident here.
+  IF NEW."retiredAt" IS NOT NULL AND OLD."retiredAt" IS NULL THEN
+    IF OLD."reviewedStatus" IS NOT NULL AND OLD."reviewedLifecycleVersion" IS NOT NULL THEN
+      RAISE EXCEPTION 'Grant % records what its approver reviewed, so it is judged by the seals rather than retired — retirement disposes of authority this release cannot judge, and withdrawing a live one is a separate act with its own author', OLD."id";
+    END IF;
+    IF NEW."retiredReason" IS NULL OR btrim(NEW."retiredReason") = '' THEN
+      RAISE EXCEPTION 'Retiring an authority states why, or the register records a disappearance rather than a disposal (%)', OLD."id";
+    END IF;
+  END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -348,9 +431,54 @@ $$ LANGUAGE sql IMMUTABLE;
 -- shape again. This is placed on the transition every arm passes through, so a third target would
 -- inherit it rather than need a third copy.
 CREATE OR REPLACE FUNCTION phase5_t7biiih_grant_reviewed_state_sealed() RETURNS trigger AS $$
-DECLARE v_acted integer;
+DECLARE
+  v_acted  integer;
+  v_status text;
+  v_rev    integer;
 BEGIN
-  IF NEW."consumedAt" IS NULL THEN RETURN NULL; END IF;
+  -- ── AN AUTHORITY IS TRUE WHEN IT IS ISSUED, NOT ONLY WHEN IT IS SPENT ───────────────────────
+  --
+  -- Codex round 5 (P1), and the same root as the revision trigger's missing INSERT arm above: this
+  -- seal policed CONSUMPTION and returned immediately for everything else, so the way a grant is
+  -- BORN was never judged at all.
+  --
+  -- What that left open is not a stale grant — those the consume seal catches — but a PREMATURE
+  -- one. A direct writer records a grant whose reviewed revision is a passage the claim has not
+  -- reached yet. Nothing refuses it, because nothing looks. Later the claim arrives at that
+  -- revision in an admissible status, `resolveSodGrant` finds a row matching on every column, and
+  -- the consume seal is satisfied because the act and the grant agree — on a state the approver
+  -- could not possibly have reviewed, because it did not exist when they signed.
+  --
+  -- So the grant is checked against the claim as it stands the moment it is written: the evidence
+  -- must be present, and it must be TRUE. An authority is either about something that has happened
+  -- or it is a blank cheque post-dated by whoever wrote it.
+  IF NEW."consumedAt" IS NULL THEN
+    -- The only other way here is a retirement stamp, which asserts nothing new about what was
+    -- reviewed — and by then the claim has usually moved, so re-judging it would refuse the very
+    -- disposal the row needs. The issue-time facts were judged when the row was written.
+    IF TG_OP <> 'INSERT' THEN RETURN NULL; END IF;
+
+    IF NEW."reviewedStatus" IS NULL OR NEW."reviewedLifecycleVersion" IS NULL THEN
+      RAISE EXCEPTION 'Grant % records no reviewed state, so nothing attests to what its approver was looking at — an authority is issued against a claim someone read, and this one names nothing', NEW."id";
+    END IF;
+
+    -- FOR UPDATE for the act trigger's reason, and it holds the STATUS still as well: every §F
+    -- transition touches this same counter, so a session that cannot move the revision cannot move
+    -- the label underneath this check either.
+    SELECT r."revision" INTO v_rev FROM "VendorBillRevision" r
+     WHERE r."projectId" = NEW."projectId" AND r."billId" = NEW."billId"
+       FOR UPDATE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'Claim % carries no revision record, so there is no passage of it an authority could name', NEW."billId";
+    END IF;
+    SELECT b."status" INTO v_status FROM "VendorBill" b
+     WHERE b."projectId" = NEW."projectId" AND b."id" = NEW."billId";
+
+    IF NEW."reviewedLifecycleVersion" <> v_rev OR NEW."reviewedStatus" IS DISTINCT FROM v_status THEN
+      RAISE EXCEPTION 'Grant % is authorised over this claim reading % at revision %, but the claim reads % at revision % — an authority names the claim as it stands, never a passage it has not reached', NEW."id", NEW."reviewedStatus", NEW."reviewedLifecycleVersion", COALESCE(v_status, '(absent)'), v_rev;
+    END IF;
+    RETURN NULL;
+  END IF;
 
   -- A grant written before this column existed records NO evidence of what its approver saw. That
   -- is not the same as recording something harmless: the register's whole purpose is attributable

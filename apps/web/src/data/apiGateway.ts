@@ -1360,7 +1360,10 @@ export interface AmendVendorBillInput {
 export interface VendorBillStepInput { billId: string }
 /** §F/§I — `versionId` is the claim version the certifier READ (Codex round-2): the server
  *  refuses a mismatch rather than freezing evidence for a version they never saw. */
-export interface CertifyBillInput { billId: string; versionId: string }
+/** `lifecycleVersion` is the claim REVISION the certifier read, required by the server contract:
+ *  a version id is stable across the whole payment lifecycle, so it cannot say WHICH passage of
+ *  the claim a queued certify was authored against. */
+export interface CertifyBillInput { billId: string; versionId: string; lifecycleVersion: number }
 /** §F — `certificateId` is the document the correction was WRITTEN ABOUT (Codex round-2). */
 export interface SupersedeCertificateInput { billId: string; reason: string; certificateId: string }
 export interface RejectVendorBillInput { billId: string; reason: string }

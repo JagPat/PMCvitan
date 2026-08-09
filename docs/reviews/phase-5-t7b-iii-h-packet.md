@@ -351,3 +351,65 @@ to prevent: silent would be deleting it, or inventing a reviewed state for it.
 
 **Gates:** `pnpm check` EXIT 0 (web 685/685, API 781/781); the four affected suites green;
 `upgrade-proof.sh` PASSED; migration applies from scratch on a clean database.
+
+---
+
+## Correction round 5 — the guards cover how a row is BORN
+
+Five findings on `5af64d6`. Full audit: `docs/reviews/pr-312-convergence.md`, whose round-5
+section re-enumerates every guard on the axis that would have caught them — **events and
+serialization**, not existence. Round 4's table asked "does a guard exist?" and every cell it
+marked ✓ was true; three of these five are guards that existed and were simply not attached to
+`INSERT`, one is a guard that read a number without holding it, and one is the same question at
+the HTTP boundary.
+
+| # | Finding | Fix |
+|---|---|---|
+| R5-1 (P1) | `VendorBillRevision_forward_only` ran on `UPDATE OR DELETE` only, so a row could be **born** at `-1`; the next fold write lifts it to `0` and revives every authority pinned there | the trigger covers `INSERT` and refuses a negative birth. Only the reviving direction is refused — a row born high can only invalidate authorities, and an operator restoring a counter needs that door |
+| R5-2 (P1) | the act's revision check was a **plain read**: a fold writer holding the counter at L2 uncommitted let the trigger see committed L1 and accept an act recorded against a passage already gone | `SELECT … FOR UPDATE` on the revision row before comparing. The second session blocks, re-reads, and is refused |
+| R5-3 (P2) | retirement was made one-way but never **scoped**: stamping `retiredAt` on a live, evidenced grant silently revoked a recorded authority, and the widened live-scope index then freed the slot | retirement is refused for any row that carries its reviewed evidence, and a disposal without a stated reason is refused outright |
+| R5-4 (P1) | the grant seal returned immediately for every unconsumed grant, so the way a grant is **issued** was never judged — a row could name a passage the claim had not reached, and later be spent when it arrived | an issue-side arm: on `INSERT` the reviewed pair must be present and must equal the claim's current status and revision, read under the revision row's lock |
+| R5-5 (P1) | the certify HTTP contract was strict over `billId`/`versionId` only, so every web and offline certification fell through to the server's own reading of "now" and recorded it as the certifier's reviewed evidence | `lifecycleVersion` is required at the boundary and compared under the bill lock. `versionId` cannot stand in for it — a version id is stable across the whole payment lifecycle |
+
+**The sixth gap, which this round's table found rather than Codex:** the counter read
+`COALESCE((SELECT revision …), 0)`, so a claim that had never moved money had **no row** and read
+zero *by absence*. R5-2 and R5-4 both ask the database to hold that reading still, and an absence
+cannot be locked or constrained — the fix would have been theatre on exactly the quiet claims where
+an authority is most likely to be issued. The revision row is now **opened with the claim**
+(`VendorBill_opens_revision`, plus a row-free backfill for existing claims) and can never be
+deleted, so the implicit zero stops being a state the system can be in.
+
+Lock order is unchanged: `VendorBillRevision` is still taken LAST on every path
+(`bill → certificate → revision`), so neither new acquisition closes a cycle with the claim lock.
+The ABBA constraint Task 5C's round 6 established still holds, and PROBE 20/21 still stand over it.
+
+### Round-5 evidence — every probe verified RED at `5af64d6` before the fix
+
+| Probe | Reproduced RED at `5af64d6` |
+|---|---|
+| PROBE 33 — the revision row opens WITH the claim, and cannot be born behind it | `expected null to match object { revision: 0 }` — a lodged claim had **no counter at all**; and the `-1` insert **committed** |
+| PROBE 34 — the act's revision is compared to a counter this session HOLDS | the stale-passage approval **committed** (`expected 'accepted' to be an instance of Error`), with the concurrent fold writer confirmed blocking via `pg_stat_activity` rather than a fixed sleep |
+| PROBE 35 — retirement disposes of authority this release cannot judge, and nothing else | retiring a live, fully evidenced grant **succeeded** |
+| PROBE 36 — an authority cannot name a passage the claim has not reached | the post-dated grant **committed**; so did one naming a passage already left, and one recording nothing at all |
+| `commercial.contract.test.ts` §F boundary | `certifyBillSchema.safeParse({ billId, versionId })` returned **success** — the pin was never asked for |
+| catalog closure — the counter every §I seal reads is itself guarded | new: pins relation, `tgtype` and function for all four revision guards, so a missing **event** (not just a missing trigger) fails a test |
+
+PROBE 34's racing write is deliberately **otherwise well-formed** — its command's actor is the
+approver the row names, and the §F status follows the money it moves — because two earlier drafts
+were refused by unrelated seals and would have looked green while proving nothing about the check
+under test.
+
+### Review size, measured rather than assumed
+
+The orchestrator flagged this unit at its finding-bearing-head limit. The reasoning for correcting
+here rather than splitting is recorded in the convergence audit. What was actually inflating the
+review surface was **1,215 lines of `prisma format` realignment** in `schema.prisma` (672
+insertions / 611 deletions of column whitespace, drowning the 68 lines that carry meaning). That
+churn is reverted; the schema diff is now additions only, and the PR drops from 3,546 changed
+lines to roughly 2,300.
+
+**Gates:** `pnpm check` EXIT 0; the affected suites green (`phase5-t6a-payments` 36/36,
+`commercial-catalog-closure` + `phase5-t5b-certification` + `phase5-t7bii-claim-read` 93/93, web
+commercial 87/87); `upgrade-proof.sh` PASSED with four new hostile inserts **and** the legal path
+accepted, so the seals are precise rather than merely strict; migration applies from scratch on a
+clean database.

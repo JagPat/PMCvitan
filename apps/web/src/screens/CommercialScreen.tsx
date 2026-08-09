@@ -1220,7 +1220,9 @@ export function CommercialScreen() {
                           data-testid={`bill-certify-${claim.bill.id}`}
                           disabled={!transitionOffered(reading, BILL_CERTIFY_FROM) || !claimIsAuthoritative
                             || viewedVersion === null || billTxPending(claim.bill.id)}
-                          onClick={() => certifyBill(claim.bill.id, viewedVersion as string)}
+                          onClick={() => certifyBill(
+                            claim.bill.id, viewedVersion as string, claim.certifyPreflight.lifecycleVersion,
+                          )}
                         >
                           {billTxPending(claim.bill.id) ? 'Working…' : 'Certify'}
                         </Button>

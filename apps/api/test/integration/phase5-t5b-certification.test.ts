@@ -1903,10 +1903,18 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
     // certificate tries to spend it — so a forged authority row cannot be parked in the table at
     // all, waiting for its named approver to acquire standing later. Arm (c)'s grant clause remains
     // as the second line of defence; this is the first.
+    // 7B-iii-h round 5 — the forged row now carries a TRUE reviewed state (the claim's own status
+    // and revision). Not to weaken the probe: the opposite. The issue-side seal added in round 5
+    // refuses a grant recording nothing, and an empty reviewed state would have this row rejected
+    // for THAT reason instead — leaving the authorship rule below untested while the suite still
+    // looked green. Every other seal is satisfied so the only thing left to refuse it is the one
+    // this probe is named for.
+    const reviewed = await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } });
+    const reviewedRev = (await t.prisma.vendorBillRevision.findFirstOrThrow({ where: { projectId, billId } })).revision;
     await expect(t.prisma.$executeRawUnsafe(
-      `INSERT INTO "SodGrant" ("id","projectId","billId","versionId","rule","actorId","approverId","reason","sourceCommandId")
-       VALUES ('forged-grant',$1,$2,$3,'evidence-recorder-may-not-certify',$4,$5,'nobody granted this',$6)`,
-      projectId, billId, version.id, f.memberUser.id, approver, cmd.id,
+      `INSERT INTO "SodGrant" ("id","projectId","billId","versionId","rule","actorId","approverId","reason","sourceCommandId","reviewedStatus","reviewedLifecycleVersion")
+       VALUES ('forged-grant',$1,$2,$3,'evidence-recorder-may-not-certify',$4,$5,'nobody granted this',$6,$7,$8)`,
+      projectId, billId, version.id, f.memberUser.id, approver, cmd.id, reviewed.status, reviewedRev,
     )).rejects.toThrow(/not the act of the approver it names/u);
     expect(await t.prisma.sodGrant.count({ where: { projectId } })).toBe(0);
 

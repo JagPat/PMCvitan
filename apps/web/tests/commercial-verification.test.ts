@@ -381,12 +381,12 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
    */
   it('certify and supersede join the CLAIM-wide transition conflict', () => {
     s().beginVerification('bill-1');
-    s().certifyBill('bill-1', 'ver-1');
+    s().certifyBill('bill-1', 'ver-1', 3);
     s().supersedeCertificate('bill-1', 'wrong quantity', 'cert-1');
     expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'begin-verification')]);
 
     useStore.setState({ outbox: [], commercialPending: [] });
-    s().certifyBill('bill-1', 'ver-1');
+    s().certifyBill('bill-1', 'ver-1', 3);
     s().verifyVendorBill('bill-1');
     expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
   });
@@ -404,20 +404,20 @@ describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => 
     // cannot separate them; what CAN be asserted is that the dispatcher reads the policy per
     // command rather than one blanket answer — a contractor holds none of the three.
     useStore.setState({ role: 'contractor' });
-    s().certifyBill('bill-1', 'ver-1');
+    s().certifyBill('bill-1', 'ver-1', 3);
     s().supersedeCertificate('bill-1', 'why', 'cert-1');
     expect(s().outbox).toHaveLength(0);
   });
 
   it('is inert off the commercial pilot', () => {
     useStore.setState({ capabilities: [] });
-    s().certifyBill('bill-1', 'ver-1');
+    s().certifyBill('bill-1', 'ver-1', 3);
     s().supersedeCertificate('bill-1', 'why', 'cert-1');
     expect(s().outbox).toHaveLength(0);
   });
 
   it('replays each through its OWN route under its original key', async () => {
-    s().certifyBill('bill-1', 'ver-1');
+    s().certifyBill('bill-1', 'ver-1', 3);
     useStore.setState({ online: true });
     await s().flushOutbox();
     await flush();
@@ -445,8 +445,19 @@ describe('7B-iii-f correction — the acts carry the facts they were decided on'
     s()._setGateway({} as unknown as ApiGateway);
   });
 
+  it('round-5: certify carries the claim REVISION it was authored against', () => {
+    // The server contract requires it, and the reason the client half is pinned separately is that
+    // a missing field here does not fail to compile — it arrives as `undefined`, the boundary
+    // rejects it, and the failure surfaces to a certifier as a mysterious refusal rather than to us
+    // as a red test. A version id cannot stand in for it: one version walks the whole payment
+    // lifecycle, so `verified → certified → superseded → verified` matches the same id twice.
+    s().certifyBill('bill-1', 'ver-7', 3);
+    expect((s().outbox[0] as { input: { lifecycleVersion?: number } }).input.lifecycleVersion)
+      .toBe(3);
+  });
+
   it('round-2: certify carries the version READ, and supersede the certificate READ', () => {
-    s().certifyBill('bill-1', 'ver-7');
+    s().certifyBill('bill-1', 'ver-7', 3);
     expect((s().outbox[0] as { input: { versionId?: string } }).input.versionId).toBe('ver-7');
     useStore.setState({ outbox: [], commercialPending: [] });
     s().supersedeCertificate('bill-1', 'wrong quantity', 'cert-3');
