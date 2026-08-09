@@ -204,6 +204,48 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     expect(loaders.loadCommercial, 'the line list could not recover from its own Refresh').toHaveBeenCalled();
   });
 
+  it('S1: a held LIST response cannot regress a bill the claim already reports certified', () => {
+    // The interleaving completion order gets wrong: a LIST request starts while bill-1 is
+    // `verified`; certification commits; a CLAIM request starts and returns `certified`; then the
+    // held list response lands LAST carrying `verified`. Its completion is later, so a counter over
+    // completions calls it fresher — and the row regresses, offering the transitions of a claim
+    // that has already been certified.
+    //
+    // `statusChangedAt` is the moment the SERVER stamped on the transition, so the comparison is
+    // about the bill rather than about the requests.
+    useStore.setState({
+      commercialBills: [{ ...claim().bill, status: 'verified' as const, statusChangedAt: '2026-08-21T00:00:00.000Z' }],
+      commercialBillsLoad: 'ready',   // …and this read COMPLETED last
+      commercialClaims: {
+        'bill-1': { ...claim(), bill: { ...claim().bill, status: 'certified' as const, statusChangedAt: '2026-08-21T09:00:00.000Z' } },
+      },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    expect(
+      r.getByTestId('commercial-claim-status-bill-1').textContent,
+      'a response that merely COMPLETED later regressed the bill to a superseded status',
+    ).toBe('certified');
+  });
+
+  it('S2: a failed line-source read is reported as unavailable, not as an empty project', () => {
+    // RED before: `measurableLineIds` reads the money bundle's attributions, whose
+    // loading/unavailable boundaries were gated by `onMoneyTab` — so a bundle that never arrived
+    // rendered "No labour purchase-order lines are attributed on this project yet", which is a
+    // claim about the PROJECT made from a read that failed.
+    useStore.setState({ commercialView: null, commercialLoad: 'error' });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    expect(
+      r.queryByTestId('commercial-measurements-empty'),
+      'a failed read was reported as a fact about the project',
+    ).toBeNull();
+    expect(r.getByTestId('commercial-measurements-unavailable')).toBeTruthy();
+    expect(r.getByTestId('commercial-measurements-retry')).toBeTruthy();
+  });
+
   it('R3-1: the Measurements tab needs no claim — the line is the subject', () => {
     // RED before: `claimPanel` rendered "Choose a claim", so on a project with no claim yet the
     // engineer could not measure at all and had to lodge a draft first just to select its lines.
@@ -267,10 +309,8 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     useStore.setState({
       commercialBills: [stale],
       commercialBillsLoad: 'ready',
-      commercialBillsStamp: 1,
       commercialClaims: { 'bill-1': fresh },
       commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 }, // the claim read succeeded AFTER the list read
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -401,12 +441,11 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
   it('H4: a STALE claim does not override a freshly refreshed row', () => {
     // the list refreshed successfully to `paid`; the claim refresh failed, leaving `certified`
     useStore.setState({
-      commercialBills: [{ ...claim().bill, status: 'paid' as const }],
+      // the list carries the LATER domain moment — `paid` was stamped after `certified`
+      commercialBills: [{ ...claim().bill, status: 'paid' as const, statusChangedAt: '2026-08-22T00:00:00.000Z' }],
       commercialBillsLoad: 'ready',
-      commercialBillsStamp: 2, // the list's success is the LATER of the two
-      commercialClaims: { 'bill-1': claim() },
+      commercialClaims: { 'bill-1': { ...claim(), bill: { ...claim().bill, statusChangedAt: '2026-08-21T00:00:00.000Z' } } },
       commercialClaimLoad: { 'bill-1': 'error' },
-      commercialClaimStamp: { 'bill-1': 1 },
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -422,10 +461,8 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     useStore.setState({
       commercialBills: [{ ...claim().bill, status: 'verified' as const }],
       commercialBillsLoad: 'ready',
-      commercialBillsStamp: 1,
       commercialClaims: { 'bill-1': claim() },
       commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 },
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -453,8 +490,6 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     useStore.setState({
       commercialClaims: { 'bill-1': claim() },
       commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 },
-      commercialBillsStamp: 1,
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -502,12 +537,10 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
     // The concrete case: a joint refresh in which the LIST comes back first with `paid` while the
     // claim bundle held from an earlier visit still says `certified` and its own read is in flight.
     useStore.setState({
-      commercialBills: [{ ...claim().bill, status: 'paid' as const }],
+      commercialBills: [{ ...claim().bill, status: 'paid' as const, statusChangedAt: '2026-08-22T00:00:00.000Z' }],
       commercialBillsLoad: 'ready',
-      commercialBillsStamp: 2, // the list's success is the later one
-      commercialClaims: { 'bill-1': claim() },
+      commercialClaims: { 'bill-1': { ...claim(), bill: { ...claim().bill, statusChangedAt: '2026-08-21T00:00:00.000Z' } } },
       commercialClaimLoad: { 'bill-1': 'loading' },
-      commercialClaimStamp: { 'bill-1': 1 },
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -883,8 +916,6 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
         } as never,
       },
       commercialClaimLoad: { 'bill-1': 'ready' },
-      commercialClaimStamp: { 'bill-1': 2 },
-      commercialBillsStamp: 1,
       commercialLineRegisters: {
         'LPL-1': {
           labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',

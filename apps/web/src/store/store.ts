@@ -258,9 +258,6 @@ export interface AppState {
   /** §D — per-LINE measurement registers, and the read a measurement becomes VISIBLE in. */
   commercialLineRegisters: Record<string, MeasurementRegisterDto>;
   commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
-  /** Codex I2 — the ordering of the two reads' last SUCCESS; see `ModuleReadState`. */
-  commercialBillsStamp: number;
-  commercialClaimStamp: Record<string, number>;
   /** Task 7B-iii-a (§M) — coalesce keys of commercial commands in flight (disable-while-pending). */
   commercialPending: string[];
   labourPending: string[];
@@ -796,8 +793,6 @@ export function getInitialState(): AppState {
     commercialPendingQty: {},
     commercialLineRegisters: {},
     commercialLineRegisterLoad: {},
-    commercialBillsStamp: 0,
-    commercialClaimStamp: {},
     commercialPending: [],
     labourPending: [],
     labourPendingInputs: {},
@@ -890,7 +885,6 @@ export const useStore = create<Store>()(
     /** Codex I2 — ONE monotonic counter shared by the claim list and the claim bundle, so their
      *  successes are comparable. Two counters would order each read against itself and answer
      *  nothing about which of the two is fresher, which is the whole question. */
-    let commercialReadStamp = 0;
     /** Per-activity latest-request ownership for the reservation plan (correction 3, finding 2). Each
      *  `loadReservationPlan(activityId)` claims the next generation for that activity; only the newest
      *  request in the current project scope may write `reservationPlans[activityId]`, so a slow older
@@ -2823,7 +2817,6 @@ export const useStore = create<Store>()(
           if (!owns(s)) return;
           s.commercialBills = castDraft<CommercialBillRow[]>(bills);
           s.commercialBillsLoad = 'ready';
-          s.commercialBillsStamp = ++commercialReadStamp;
           // …and the list's own keys — a LODGE becomes visible here, and here only: this is the
           // list the lodge form's duplicate guard reads.
           releaseCommercialKeys(s, { read: 'bills' });
@@ -2855,7 +2848,6 @@ export const useStore = create<Store>()(
           if (!owns(s)) return;
           s.commercialClaims[billId] = castDraft<CommercialClaimView>(claim);
           s.commercialClaimLoad[billId] = 'ready';
-          s.commercialClaimStamp[billId] = ++commercialReadStamp;
           // THIS claim's lifecycle transitions are visible now. A lodge is not (the list carries
           // it), and neither is a measurement (its LINE's register carries it) — with two claims
           // open, releasing those here is N1 one resource over.

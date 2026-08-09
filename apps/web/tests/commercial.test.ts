@@ -600,37 +600,6 @@ describe('Task 7B-ii (§M) — the claim list and the per-claim lifecycle', () =
     expect(s().commercialClaimLoad['bill-1']).toBe('ready');
   });
 
-  it('I2: the two reads\' successes are ORDERED, so "which is fresher" is a fact not a guess', async () => {
-    // F4 preferred the claim whenever one existed; H4 narrowed that to "whenever it did not error";
-    // I2 showed the narrowing still wrong. All three were proxies for one question the store can
-    // simply answer — hence one monotonic counter shared by both reads.
-    const g = gw();
-    pilot(g);
-    await s().loadCommercialBills();
-    const afterList = s().commercialBillsStamp;
-    expect(afterList).toBeGreaterThan(0);
-
-    await s().loadCommercialClaim('bill-1');
-    expect(
-      s().commercialClaimStamp['bill-1'],
-      'the claim succeeded second and must order after the list',
-    ).toBeGreaterThan(afterList);
-
-    // …and a later list refresh orders after the claim, which is the case I2 reported.
-    await s().loadCommercialBills();
-    expect(s().commercialBillsStamp).toBeGreaterThan(s().commercialClaimStamp['bill-1']);
-  });
-
-  it('I2: the read ordering is PROJECT-OWNED — a scope teardown resets it', async () => {
-    const g = gw();
-    pilot(g);
-    await s().loadCommercialBills();
-    await s().loadCommercialClaim('bill-1');
-    useStore.setState({ ...emptyProjectData(), ...emptyModuleReadState() });
-    expect(s().commercialBillsStamp).toBe(0);
-    expect(s().commercialClaimStamp).toEqual({});
-  });
-
   it('a claim read that resolves after a project switch is DROPPED', async () => {
     let resolve: (v: unknown) => void = () => {};
     const g = gw({ commercialClaim: vi.fn().mockImplementation(() => new Promise((r) => { resolve = r; })) });
@@ -1023,7 +992,7 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     // `commercialClaimLoad` was satisfied by this test's own setup, so the assertion ran before
     // the read it is about had landed — and the probe passed under a mutation that reintroduces
     // the defect. A probe's synchronisation is part of what it claims.
-    await vi.waitFor(() => { if (s().commercialClaimStamp['bill-1'] === undefined) throw new Error('claim not applied'); },
+    await vi.waitFor(() => { if (s().commercialClaims['bill-1'] === undefined) throw new Error('claim not applied'); },
       { timeout: 5000, interval: 5 });
 
     expect(

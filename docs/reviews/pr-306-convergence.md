@@ -25,6 +25,8 @@ already told the user "saved".**
 | 12 | 4 | Hydration rebuilt the pending KEYS from localStorage and not their reservations, breaking round 4's shared lifecycle at the one moment it is reconstructed |
 | 13 | 4 | A line whose purchase-order version is dead still offered positive writes — `append` refuses them all, and no QUANTITY on the register can say so |
 | 14 | 4 | The certificate floor was still the selected claim's, so a stale or absent claim silently emptied it |
+| 15 | 5 | (JagPat) Row freshness was arbitrated by a counter over read COMPLETIONS, so a held list response landing last regressed a certified bill to `verified` |
+| 16 | 5 | (JagPat) A failed money-bundle read rendered "no labour lines are attributed on this project yet" — a claim about the PROJECT, made from a read that never arrived |
 
 ## Root: sound, incomplete, and approximate are three different things
 
@@ -116,6 +118,28 @@ assuming — the aggregate `certifiedBilledQtyFor` in the measurement service lo
 the row-level rule lives in the participant. Both exist; the row-level one is the one a correction
 hits. Reading it settled what to carry.
 
+## Round 6 — two supplemental findings, and both are mine
+
+**Finding 15 retires a mechanism I inherited and defended.** The row showing a bill's status picked
+between the list copy and the claim copy using `commercialBillsStamp`/`commercialClaimStamp` — a
+monotonic counter over read COMPLETIONS, introduced as I2 with the comment *"All three were proxies
+for one question — WHICH READ IS NEWER — that the store now answers with a fact."* It is a fact
+about the requests, and the question is about the bill. A list request that starts before a
+certification and lands after it completes later while describing an earlier moment, so the row
+regressed to `verified` and offered a certified claim's superseded transitions.
+
+`statusChangedAt` is the moment the server stamped on the transition itself, so comparing it asks
+about the BILL. The stamps are removed rather than left unused: they exist for exactly this
+decision, and a superseded answer labelled "the fact" is the kind of thing a later reader trusts.
+
+**Finding 16 is the third move I failed to make in round 3.** Moving the line source to the money
+bundle needed three things to move with it: the READ (done), the RECOVERY path (finding 11, done in
+round 4), and the HONESTY — the loading/unavailable/stale boundaries, still gated by `onMoneyTab`.
+So a bundle that never arrived was reported as a fact about the project. `viewOf` existed for
+exactly this and was not applied to the new source.
+
+Together they sharpen carry-forward 8: moving a data source is not one edit but three.
+
 ## What carries forward
 
 1. **Sound ≠ complete ≠ approximate.** Keep the sound-but-incomplete guard and label it; delete the
@@ -140,6 +164,11 @@ hits. Reading it settled what to carry.
    the bound and re-deriving it from a neighbour are all ways of not noticing that the read does not
    carry what the write is bounded by. Three rounds; one field each would have ended it.
    (Findings 5, 8, 13, 14.)
-10. **A lifecycle has to hold where state is REBUILT, not only where it is maintained.** Hydration
+10. **Order by the DOMAIN moment, not by when a response arrived.** A counter over completions is a
+   fact about the requests; a status timestamp is a fact about the thing. When they disagree the
+   counter is the one that regresses state. (Finding 15.)
+11. **Moving a data source is three moves: the read, the recovery path, and the honest states.** Two
+   rounds found the second and third separately. (Findings 11, 16.)
+12. **A lifecycle has to hold where state is REBUILT, not only where it is maintained.** Hydration
    is the moment every in-memory invariant is reconstructed from bytes, and it is the easiest place
    for a pairing to come apart. (Finding 12.)

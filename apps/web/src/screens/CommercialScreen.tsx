@@ -148,9 +148,6 @@ export function CommercialScreen() {
     Object.values(pendingQty).filter((p) => p.lineId === lineId).map((p) => p.qty);
   const lineRegisterLoad = useStore(useShallow((s) => s.commercialLineRegisterLoad));
   const loadLineRegister = useStore((s) => s.loadCommercialLineRegister);
-  // Codex I2 — the ordering of the two reads' last SUCCESS, so "which is fresher" is looked up
-  // rather than guessed. See the row-selection comment on the Claims tab.
-  const billsStamp = useStore((s) => s.commercialBillsStamp);
   // Task 7B-iii-a — the §M writes and their disable-while-pending set.
   const role = useStore((s) => s.role);
   /**
@@ -184,7 +181,6 @@ export function CommercialScreen() {
   const submitBill = useStore((s) => s.submitVendorBill);
   const rejectBill = useStore((s) => s.rejectVendorBill);
   const recordBill = useStore((s) => s.recordVendorBill);
-  const claimStamp = useStore(useShallow((s) => s.commercialClaimStamp));
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
   const [tab, setTab] = useState<Tab>('position');
@@ -971,21 +967,28 @@ export function CommercialScreen() {
                     <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-empty">No vendor claim has been recorded yet.</div>
                   )}
                   {v.value.map((row) => {
-                // Codex F4 — the SELECTED row reads whichever of the two reads is FRESHER, because
-                // the list and the claim bundle both carry this bill's status and are fetched
-                // independently. F4 preferred the claim whenever one existed; H4 narrowed that to
-                // "whenever it did not error"; I2 showed the narrowing still wrong — a list refresh
-                // that lands first during a joint refresh is demonstrably newer than a claim held
-                // from an earlier visit, and the row went on showing `certified` while the list had
-                // already returned `paid`.
+                // The SELECTED row reads whichever COPY OF THIS BILL is newer, because the list and
+                // the claim bundle both carry its status and are fetched independently.
                 //
-                // All three were proxies for one question — WHICH READ IS NEWER — that the store now
-                // answers with a fact. Two successes on one monotonic counter are ordered; nothing
-                // is inferred from an error, a status or the mere presence of a bundle.
-                const claimFresher = row.id === selectedBillId
-                  && claim !== null
-                  && (claimStamp[row.id] ?? 0) > billsStamp;
-                const b = claimFresher && claim ? claim.bill : row;
+                // Four answers, and the fourth is the first about the bill rather than about the
+                // requests. F4 preferred the claim whenever one existed; H4 narrowed that to
+                // "whenever it did not error"; I2 replaced both with a monotonic counter over read
+                // COMPLETIONS — and that is still a proxy, because a response completing later does
+                // not describe a later moment. The interleaving that breaks it: a list request
+                // starts while this bill is `verified`, certification commits, a claim request
+                // starts and returns `certified`, and the held list response lands LAST carrying
+                // `verified`. Its completion counter is higher, so the row regressed to `verified`
+                // and offered the transitions of a claim that had already been certified.
+                //
+                // `statusChangedAt` is the domain moment the server stamped on the transition
+                // itself, so comparing it asks about the BILL instead of about the requests. Equal
+                // timestamps mean both copies describe the same moment and neither can regress the
+                // other; the tie goes to the claim bundle, which is the fuller lifecycle the tabs
+                // beside this row already read from.
+                const claimCopy = row.id === selectedBillId ? claim?.bill ?? null : null;
+                const b = claimCopy !== null
+                  && Date.parse(claimCopy.statusChangedAt) >= Date.parse(row.statusChangedAt)
+                  ? claimCopy : row;
                 return (
                   <div key={b.id}>
                   <button
@@ -1130,9 +1133,31 @@ export function CommercialScreen() {
             <div data-testid="commercial-measurements">
               {/* Round 3 — NOT `claimPanel`: a measurement is a fact about a labour PO line, and
                   requiring a claim to reach it made the workflow's first step depend on its last. */}
-              {((): JSX.Element => (
-                (() => {
-                  // Codex N3 — `claim.measurements` is keyed from the LIVE version, and a newly
+              {((): JSX.Element => {
+                // The line source is the MONEY BUNDLE's attributions (round 3), and its
+                // loading/unavailable/stale boundaries were gated by `onMoneyTab` — so on this tab
+                // a failed bundle read rendered "No labour purchase-order lines are attributed on
+                // this project yet", which is a claim about the PROJECT made from a read that never
+                // arrived. Round 3 moved the data source and its recovery path and left its HONESTY
+                // behind; this is that third move. The empty-project statement is only made once
+                // the source it describes has actually loaded.
+                const lineSource = viewOf(commercial, commercialLoad, onPilot);
+                if (lineSource.show !== 'content') {
+                  return lineSource.show === 'loading' ? (
+                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-measurements-loading">
+                      Reading this project's labour commitments…
+                    </div>
+                  ) : (
+                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-measurements-unavailable">
+                      This project's labour commitments are unavailable, so the lines that can be measured
+                      are not known.{' '}
+                      <Button variant="ghost" data-testid="commercial-measurements-retry" onClick={() => void loadCommercial()}>
+                        Retry
+                      </Button>
+                    </div>
+                  );
+                }
+                // Codex N3 — `claim.measurements` is keyed from the LIVE version, and a newly
                   // lodged claim is `draft`, so it has none. That made the workflow circular: the
                   // engineer lodges a labour claim, the Measurements tab shows the material-only
                   // empty state, the only control left is Submit — which disputes the claim for
@@ -1344,9 +1369,8 @@ export function CommercialScreen() {
                       </div>
                     ))}
                   </>
-                  );
-                })()
-              ))()}
+                );
+              })()}
             </div>
           )}
     </div>
