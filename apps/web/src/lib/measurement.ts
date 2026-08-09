@@ -1,5 +1,5 @@
 import { decAdd, decGt, decSub, decSum } from '@/lib/decimal';
-import type { CertifiedConsumptionDto, MeasurementRegisterDto } from '@vitan/shared';
+import type { MeasurementRegisterDto } from '@vitan/shared';
 
 /**
  * §D — what the data ON SCREEN already proves about the next write.
@@ -11,7 +11,10 @@ import type { CertifiedConsumptionDto, MeasurementRegisterDto } from '@vitan/sha
  * persisted and reported "saved" before it is sent, so a control that guesses generously promises
  * a write reconnect will drop.
  *
- * Two things are deliberately NOT here:
+ * Two things are deliberately NOT here. (A third and fourth — whether the line's order is still
+ * LIVE, and what live certificates have frozen against each row — WERE missing and are now carried
+ * by the register itself: round 5's lesson is that three rounds of approximating around a contract
+ * gap cost more than closing the gap did.)
  *
  *  - **The EFFORT cap.** The server bounds a measurement by worked effort SCOPED TO THE ACTIVITY
  *    being measured. `MeasurementRegisterDto.effort` is `EFFORT(poLine)` — the line aggregate — so
@@ -58,6 +61,11 @@ export function exceedsMeasurableCap(
   return decGt(quantity, remainingMeasurable(register, pending));
 }
 
+/** Whether a POSITIVE write is refused outright because the order behind the line is dead. */
+export function lineOrdersNothing(register: MeasurementRegisterDto): boolean {
+  return !register.lineLive;
+}
+
 /**
  * How much of ONE measurement row is still withdrawable: its own quantity, net of the corrections
  * already addressed to it AND of any live certificate consuming it.
@@ -70,14 +78,13 @@ export function exceedsMeasurableCap(
 export function remainingWithdrawable(
   register: MeasurementRegisterDto,
   measurementId: string,
-  certified: readonly CertifiedConsumptionDto[] = [],
 ): string {
   const row = register.rows.find((r) => r.id === measurementId);
   if (!row) return '0';
   const net = register.rows
     .filter((r) => r.correctsId === measurementId)
     .reduce((acc, r) => decAdd(acc, r.quantity), row.quantity);
-  const consumed = certified
+  const consumed = register.certifiedConsumption
     .filter((c) => c.rowId === measurementId)
     .reduce((acc, c) => decAdd(acc, c.consumedQty), '0');
   const free = decSub(net, consumed);
@@ -95,10 +102,11 @@ export function correctionRefused(
   register: MeasurementRegisterDto,
   measurementId: string,
   delta: string,
-  opts: { certified?: readonly CertifiedConsumptionDto[]; pending?: readonly string[] } = {},
+  pending: readonly string[] = [],
 ): boolean {
   if (delta.startsWith('-')) {
-    return decGt(delta.slice(1), remainingWithdrawable(register, measurementId, opts.certified ?? []));
+    return decGt(delta.slice(1), remainingWithdrawable(register, measurementId));
   }
-  return exceedsMeasurableCap(register, delta, opts.pending ?? []);
+  // a positive correction is measured work: the line must still be LIVE and within its authority
+  return !register.lineLive || exceedsMeasurableCap(register, delta, pending);
 }

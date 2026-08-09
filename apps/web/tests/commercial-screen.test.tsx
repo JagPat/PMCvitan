@@ -220,6 +220,7 @@ describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an abse
         'LPL-1': {
           labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
           orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+          lineLive: true, certifiedConsumption: [],
         },
       } as never,
       commercialLineRegisterLoad: { 'LPL-1': 'ready' },
@@ -856,6 +857,16 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
   const labourClaim = (status: string, registerOver: Record<string, unknown> = {}) => {
     const c = claim();
     useStore.setState({
+      // the line is listed because it is an ATTRIBUTED live commitment — which is how the tab
+      // finds lines with no claim selected at all
+      commercialView: {
+        ...bundle(),
+        attributions: [{
+          id: 'att-1', poLineId: null, labourPoLineId: 'LPL-1', costHeadCode: 'CIVIL',
+          reason: 'r', createdAt: '2026-08-01T00:00:00.000Z', createdById: 'u-1',
+          supersededAt: null, supersededById: null, supersedeReason: null,
+        }],
+      } as never,
       commercialClaims: {
         'bill-1': {
           ...c, measurements: {},
@@ -878,6 +889,7 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
         'LPL-1': {
           labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
           orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+          lineLive: true, certifiedConsumption: [],
           ...registerOver,
         },
       } as never,
@@ -980,23 +992,19 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('R2-2: a LIVE certificate\u2019s frozen consumption is a withdrawal floor', () => {
-    // The certificate consumes m1 = 1, so those person-shifts cannot be withdrawn until it is
-    // superseded — the server refuses, and the row's own quantity does not say so.
-    const c = claim();
-    labourClaim('certified', {
+  it('R2-2: the certificate floor is the REGISTER\u2019s global fact, not the open claim\u2019s', () => {
+    // Round 5 — the floor `assertNoCertifiedMeasurement` enforces is global: ANY live certificate,
+    // on ANY claim. Derived from the selected claim it was a lower bound that went silently empty
+    // whenever the certifying claim was not the one open — including when none is. The register
+    // now carries it, so the guard is exact and needs no claim at all.
+    labourClaim('draft', {
       measured: '2',
       rows: [{ id: 'm1', quantity: '2', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null }],
+      certifiedConsumption: [{ rowId: 'm1', consumedQty: '1' }],
     });
-    useStore.setState({
-      commercialClaims: {
-        'bill-1': {
-          ...useStore.getState().commercialClaims['bill-1'],
-          certificate: { ...c.certificate!, supersededAt: null, measurementConsumption: [{ rowId: 'm1', consumedQty: '1' }] },
-        } as never,
-      },
-    });
-    const r = openMeasurements();
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));   // NO claim selected
+
     fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'miscount' } });
     fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
     expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled, '2 recorded − 1 certified leaves 1').toBe(true);
@@ -1005,27 +1013,30 @@ describe('Task 7B-iii-b round 2 — Codex M1–M7', () => {
     expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it('R2-3: a SUPERSEDED certificate consumes nothing', () => {
-    const c = claim();
-    labourClaim('certified', {
-      measured: '2',
+  it('R2-3: a line whose ORDER is dead takes no positive write, and still takes a withdrawal', () => {
+    // `append` refuses every positive row when the purchase-order version is not live, and no
+    // QUANTITY on the register says so — a dead line can still report authority. Round 5 carries
+    // the flag, because a cap expressed only in numbers cannot express "this orders nothing".
+    labourClaim('draft', {
+      measured: '2', lineLive: false,
       rows: [{ id: 'm1', quantity: '2', correctsId: null, activityId: 'ACT-1', citedOutputId: 'OUT-1', reason: null }],
     });
-    useStore.setState({
-      commercialClaims: {
-        'bill-1': {
-          ...useStore.getState().commercialClaims['bill-1'],
-          certificate: {
-            ...c.certificate!, supersededAt: '2026-08-22T00:00:00.000Z',
-            measurementConsumption: [{ rowId: 'm1', consumedQty: '1' }],
-          },
-        } as never,
-      },
-    });
-    const r = openMeasurements();
-    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'miscount' } });
-    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-2' } });
-    // superseding IS the act that frees the evidence, so the full row is withdrawable again
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-measurements'));
+    expect(r.getByTestId('measurement-dead-LPL-1')).toBeTruthy();
+
+    fireEvent.change(r.getByTestId('measure-activity-LPL-1'), { target: { value: 'ACT-1' } });
+    fireEvent.change(r.getByTestId('measure-output-LPL-1'), { target: { value: 'OUT-1' } });
+    fireEvent.change(r.getByTestId('measure-qty-LPL-1'), { target: { value: '1' } });
+    expect((r.getByTestId('measure-submit-LPL-1') as HTMLButtonElement).disabled).toBe(true);
+
+    // a positive CORRECTION is measured work too, so it is refused for the same reason…
+    fireEvent.change(r.getByTestId('correct-reason-m1'), { target: { value: 'more' } });
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '1' } });
+    expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(true);
+    // …while WITHDRAWING recorded work stays available: reducing evidence is always permitted, and
+    // it is the operator's path out of a line that should never have been measured
+    fireEvent.change(r.getByTestId('correct-qty-m1'), { target: { value: '-1' } });
     expect((r.getByTestId('correct-submit-m1') as HTMLButtonElement).disabled).toBe(false);
   });
 

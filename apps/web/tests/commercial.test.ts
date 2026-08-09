@@ -397,6 +397,7 @@ describe('Task 7B-i round 2 — staleness, consistency, and the breach a PMC mus
 const register = (over: Partial<MeasurementRegisterDto> = {}): MeasurementRegisterDto => ({
   labourPoLineId: 'LPL-1', rows: [], measured: '0', effort: '10',
   orderedPersonShiftQty: 10, liveAuthorityPersonShiftQty: 10, defaulted: false,
+  lineLive: true, certifiedConsumption: [],
   ...over,
 });
 
@@ -1183,6 +1184,32 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     await vi.waitFor(() => { if (s().commercialPending.length > 0) throw new Error('still held'); },
       { timeout: 5000, interval: 5 });
     expect(s().commercialPendingQty, 'the reservation outlived the key it belongs to').toEqual({});
+  });
+
+  it('R5-1: a reservation survives a RELOAD, like the key it belongs to', () => {
+    // RED before: hydration rebuilt `commercialPending` from localStorage and not the reservations,
+    // so a correction queued offline came back with its button disabled and its authority silently
+    // freed — the round-4 lifecycle broken at the one moment it is rebuilt from scratch.
+    const gate = deferred();
+    pilot(engGw({ correctMeasurement: vi.fn().mockReturnValue(gate.promise) }));
+    s().correctMeasurement('m1', '5', 'more work', 'LPL-1');
+    expect(s().outbox).toHaveLength(1);
+    const key = s().commercialPending[0]!;
+
+    // a RELOAD: a fresh store over the same persisted queue
+    const projectId = s().activeProjectId;
+    useStore.setState(getInitialState());
+    useStore.setState({ activeProjectId: projectId, capabilities: ['commercial'] });
+    s().hydrateOutbox();
+
+    expect(s().outbox, 'the durable op did not survive the reload').toHaveLength(1);
+    expect(s().commercialPending).toContain(key);
+    expect(
+      s().commercialPendingQty[key],
+      'the key came back and its cap reservation did not, so the reload freed authority the '
+      + 'queued write still holds',
+    ).toEqual({ lineId: 'LPL-1', qty: '5' });
+    gate.resolve({});
   });
 
   it('R3-3: the realtime `changed` path refreshes open line registers', () => {

@@ -4100,6 +4100,18 @@ export const useStore = create<Store>()(
               const ck = coalesceKeyOf(o);
               return isCommercialOp(o) && typeof ck === 'string' ? [ck] : [];
             });
+            // …and their cap RESERVATIONS, by the same rule that wrote them. Round 4 keyed the
+            // reservation to its coalesce key so the two share a lifecycle; hydration rebuilt the
+            // keys and not the reservations, which is that lifecycle broken at the one moment it
+            // is reconstructed from scratch. A correction queued offline then survived a reload
+            // with its button disabled and its authority silently freed.
+            s.commercialPendingQty = Object.fromEntries(
+              s.outbox.flatMap((o) => {
+                const ck = coalesceKeyOf(o);
+                const reservation = capReservationOf(o);
+                return typeof ck === 'string' && reservation ? [[ck, reservation] as const] : [];
+              }),
+            );
             s.labourPendingInputs = Object.fromEntries(
               s.outbox.flatMap((o) => (o.t === 'allocateLabour' && typeof o.coalesceKey === 'string' ? [[o.coalesceKey, o.input] as const] : [])),
             );

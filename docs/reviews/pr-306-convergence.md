@@ -1,7 +1,7 @@
 # PR #306 convergence audit — the pre-check that kept guessing
 
-Four finding-bearing heads (`ee4edb1`, `b488260`, `5d20519`, …). **Twelve findings, all P2**, on a
-unit whose product surface is two buttons and a form.
+Five finding-bearing heads (`ee4edb1`, `b488260`, `5d20519`, `2ffff00`, …). **Fifteen findings, all
+P2**, on a unit whose product surface is two buttons and a form.
 
 Not one is a wrong calculation. Every one is the same shape: **a client-side guard that
 approximates a server rule instead of matching it, in front of a write-ahead outbox that has
@@ -22,6 +22,9 @@ already told the user "saved".**
 | 9 | 2 | **The Measurements tab sat inside `claimPanel`, so the advertised workflow's FIRST step required its LAST** |
 | 10 | 3 | The cap RESERVATION was rebuilt from the live outbox on every read, so a money read landing after the op left the outbox dropped it while the KEY was still retained |
 | 11 | 3 | Refresh on the Measurements tab reloaded the registers and the claim reads, but not the money bundle the LINE LIST is derived from |
+| 12 | 4 | Hydration rebuilt the pending KEYS from localStorage and not their reservations, breaking round 4's shared lifecycle at the one moment it is reconstructed |
+| 13 | 4 | A line whose purchase-order version is dead still offered positive writes — `append` refuses them all, and no QUANTITY on the register can say so |
+| 14 | 4 | The certificate floor was still the selected claim's, so a stale or absent claim silently emptied it |
 
 ## Root: sound, incomplete, and approximate are three different things
 
@@ -84,6 +87,35 @@ round 3, and Refresh — the one control offered when a read fails — reloaded 
 thing the list is derived FROM. **When a surface changes where its data comes from, its recovery
 path has to move with it.**
 
+## Round 5 — the finding was the CONTRACT, three rounds running
+
+Findings 13 and 14 are the third and fourth costumes of one thing, and I should have named it in
+round 2:
+
+| Round | Costume | What the client lacked |
+|---|---|---|
+| 2 (finding 5) | the effort cap | effort scoped to the ACTIVITY |
+| 2 (finding 8) | the certificate floor | consumption from ANY live certificate |
+| 4 (finding 13) | line liveness | whether the order behind the line is live |
+| 4 (finding 14) | the certificate floor again | the same global fact, from a stale claim |
+
+**`MeasurementRegisterDto` did not carry what the write path is bounded by.** Every guard built
+against it could therefore be sound-but-incomplete at best, and I kept answering that with more
+client-side reasoning: delete the term (round 2), label the bound (round 3), re-derive it from the
+claim (round 4). Three rounds of working around a contract gap cost more than closing it.
+
+Round 5 closes it. The register now carries `lineLive` and the GLOBAL `certifiedConsumption`, both
+computed where the write path computes them — `line.live` from the same `committedLinesFor` the
+cap uses, and the consumption from the same `supersededAt: null` filter
+`assertNoCertifiedMeasurement` asks for, so the read and the guard cannot disagree about which
+certificates count. The claim stops being a source for either, which also retires finding 14's
+staleness: one read, one fact, no second opinion.
+
+That the reviewer described the floor as row-level and global was worth checking rather than
+assuming — the aggregate `certifiedBilledQtyFor` in the measurement service looks line-level, and
+the row-level rule lives in the participant. Both exist; the row-level one is the one a correction
+hits. Reading it settled what to carry.
+
 ## What carries forward
 
 1. **Sound ≠ complete ≠ approximate.** Keep the sound-but-incomplete guard and label it; delete the
@@ -104,3 +136,10 @@ path has to move with it.**
    together. (Finding 10.)
 8. **Move the recovery path when you move the data source.** Refresh has to reload what a surface
    is derived FROM, not only the things that surface names. (Findings 7, 11.)
+9. **When the same gap arrives in a second costume, fix the CONTRACT.** Deleting the term, labelling
+   the bound and re-deriving it from a neighbour are all ways of not noticing that the read does not
+   carry what the write is bounded by. Three rounds; one field each would have ended it.
+   (Findings 5, 8, 13, 14.)
+10. **A lifecycle has to hold where state is REBUILT, not only where it is maintained.** Hydration
+   is the moment every in-memory invariant is reconstructed from bytes, and it is the easiest place
+   for a pairing to come apart. (Finding 12.)

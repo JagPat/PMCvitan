@@ -7,7 +7,7 @@ import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, bi
 import type { CommercialClaimView } from '@/store/commercial';
 import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
-import { correctionRefused, exceedsMeasurableCap, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
+import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import styles from './responsive.module.css';
 
 /**
@@ -473,25 +473,6 @@ export function CommercialScreen() {
       .map((a) => a.labourPoLineId as string);
     return [...new Set([...fromClaim, ...fromCommitments])].sort();
   }, [claim, commercial]);
-  /**
-   * §D — the frozen labour evidence a LIVE certificate consumes.
-   *
-   * A different FACT from the register, which knows nothing about certificates, so reading the
-   * claim for it is not a second source for the same thing — it is the second floor §D names.
-   * A superseded certificate consumes nothing: superseding it is exactly the act that frees the
-   * evidence, which is why the filter is on `supersededAt` rather than on the certificate existing.
-   *
-   * SOUND BUT INCOMPLETE, deliberately, and the distinction is the one round 2 turned on. The
-   * server refuses a withdrawal against ANY live certificate consuming the row; this sees only the
-   * SELECTED claim's. Because global consumption ≥ this, every refusal here is a real refusal —
-   * the bound is in the safe direction — while a row certified by a claim the user has not opened
-   * will pass the screen and be refused by the server. That is incompleteness, not approximation:
-   * it never enables something these numbers rule out. Making it complete needs the register to
-   * carry the global floor, which is a server change and belongs with one.
-   */
-  const claimCertified = claim?.certificate && claim.certificate.supersededAt === null
-    ? claim.certificate.measurementConsumption
-    : [];
   const lineKey = measurableLineIds.join(',');
   useEffect(() => {
     if (!onPilot) return;
@@ -1187,6 +1168,16 @@ export function CommercialScreen() {
                     {measurable.map(([lineId, register]) => (
                       <div key={lineId} style={rowCard} data-testid={`commercial-measurement-${lineId}`}>
                         <div style={mono}>{lineId}</div>
+                        {register !== null && lineOrdersNothing(register) && (
+                          // Round 5 — `append` refuses every POSITIVE row on a line whose order
+                          // version is cancelled or superseded, and no quantity says so: a dead
+                          // line can still report authority. The register now carries the flag.
+                          <div style={{ ...muted, marginTop: 8, color: 'var(--amber-text)' }} data-testid={`measurement-dead-${lineId}`}>
+                            This line belongs to a purchase-order version that is no longer live — it orders
+                            nothing, so no further work can be measured against it. A reducing correction is
+                            still available.
+                          </div>
+                        )}
                         {register !== null && lineRegisterLoad[lineId] === 'error' && (
                           // Round 2 — a cached register whose LATEST refresh failed is stale, and
                           // writes derived from it are exactly the ones another measurer may have
@@ -1265,6 +1256,7 @@ export function CommercialScreen() {
                                 // prove it against, so the control waits rather than guessing.
                                 || register === null
                                 || lineRegisterLoad[lineId] === 'error'
+                                || lineOrdersNothing(register)
                                 || exceedsMeasurableCap(register, measureFormFor(lineId).qty.trim(), reservedFor(lineId))
                               }
                               onClick={() => {
@@ -1328,8 +1320,7 @@ export function CommercialScreen() {
                                 // server, which re-checks the same caps; a NEGATIVE one is bounded
                                 // by what its row still has to give AFTER a live certificate's
                                 // frozen consumption.
-                                || correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(),
-                                  { certified: claimCertified, pending: reservedFor(lineId) })
+                                || correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(), reservedFor(lineId))
                               }
                               onClick={() => correctMeasurement(row.id, corrFormFor(row.id).qty.trim(), corrFormFor(row.id).reason.trim(), lineId)}
                             >
@@ -1341,11 +1332,10 @@ export function CommercialScreen() {
                               </div>
                             )}
                             {register !== null && isCorrectionDelta(corrFormFor(row.id).qty)
-                              && correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(),
-                                { certified: claimCertified, pending: reservedFor(lineId) }) && (
+                              && correctionRefused(register, row.id, corrFormFor(row.id).qty.trim(), reservedFor(lineId)) && (
                               <div style={{ ...muted, flexBasis: '100%', color: 'var(--amber-text)' }} data-testid={`correct-over-withdraw-${row.id}`}>
                                 {corrFormFor(row.id).qty.trim().startsWith('-')
-                                  ? `This measurement has ${remainingWithdrawable(register, row.id, claimCertified)} person-shifts left to withdraw — evidence a live certificate rests on requires superseding that certificate first.`
+                                  ? `This measurement has ${remainingWithdrawable(register, row.id)} person-shifts left to withdraw — evidence a live certificate rests on requires superseding that certificate first.`
                                   : `Only ${remainingMeasurable(register, reservedFor(lineId))} person-shifts remain measurable on this line, and a positive correction is measured work too.`}
                               </div>
                             )}
