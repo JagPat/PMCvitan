@@ -385,7 +385,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     const projectId = await freshProject();
     const billId = await verifiedOnly(projectId);
     const claim = await claims.readClaim(projectId, billId, pmc(projectId));
-    expect(claim.certifyPreflight).toEqual({ grantState: 'none', grantId: null, callerActorId: f.memberUser.id });
+    expect(claim.certifyPreflight).toMatchObject({ grantState: 'none', grantId: null, callerActorId: f.memberUser.id });
   });
 
   it('6b: a live authorisation for THIS caller is reported with the id that would be consumed', async () => {
@@ -394,7 +394,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     const billId = await verifiedOnly(projectId);
     const grant = await grantTo(projectId, billId, f.memberUser.id, approver);
     const claim = await claims.readClaim(projectId, billId, pmc(projectId));
-    expect(claim.certifyPreflight).toEqual({ grantState: 'live', grantId: grant.id, callerActorId: f.memberUser.id });
+    expect(claim.certifyPreflight).toMatchObject({ grantState: 'live', grantId: grant.id, callerActorId: f.memberUser.id });
   });
 
   it('6c: it is the CALLER\'s state — an authorisation naming someone else is not theirs', async () => {
@@ -427,7 +427,7 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     }, pmc(projectId));
 
     const after = await claims.readClaim(projectId, billId, pmc(projectId));
-    expect(after.certifyPreflight).toEqual({ grantState: 'stale-version', grantId: null, callerActorId: f.memberUser.id });
+    expect(after.certifyPreflight).toMatchObject({ grantState: 'stale-version', grantId: null, callerActorId: f.memberUser.id });
   });
 
   /**
@@ -444,14 +444,14 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
 
     // without an authorisation the recorder is refused, and their own read says `none`
     expect((await claims.readClaim(projectId, billId, asUser(projectId, recorder))).certifyPreflight)
-      .toEqual({ grantState: 'none', grantId: null, callerActorId: recorder });
+      .toMatchObject({ grantState: 'none', grantId: null, callerActorId: recorder });
     await expect(certification.certify(projectId, { billId }, asUser(projectId, recorder)))
       .rejects.toThrow(/Segregation of duties/u);
 
     // authorised by the OTHER pmc, the read reports it…
     const grant = await grantTo(projectId, billId, recorder, f.memberUser.id);
     const pre = await claims.readClaim(projectId, billId, asUser(projectId, recorder));
-    expect(pre.certifyPreflight).toEqual({ grantState: 'live', grantId: grant.id, callerActorId: recorder });
+    expect(pre.certifyPreflight).toMatchObject({ grantState: 'live', grantId: grant.id, callerActorId: recorder });
 
     // …and the command consumes exactly that one
     const cert = await certification.certify(projectId, { billId }, asUser(projectId, recorder));
@@ -587,6 +587,50 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
       projectId, { billId, reason: 'my correction', certificateId: now }, pmc(projectId),
     );
     expect(ok.id).toBe(now);
+  });
+
+
+  it('round-3: the AUTHORISABLE set comes from the standing rule, org-admin fallback included', async () => {
+    const projectId = await freshProject();
+    await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    const read = await claims.readClaim(projectId, billId, pmc(projectId));
+
+    // the other pmc is offered; the caller is not (§I refuses a self-grant)
+    expect(read.certifyPreflight.authorisableActorIds).toContain(f.ownerUser.id);
+    expect(read.certifyPreflight.authorisableActorIds).not.toContain(f.memberUser.id);
+
+    // …and an ORG owner/admin with NO project membership is offered too, because the server's own
+    // standing rule admits them as pmc through the documented fallback. A picker built from the
+    // member list could never offer them, which is the omission this closes.
+    const orgAdmin = f.strangerUser.id;
+    await t.prisma.orgMembership.upsert({
+      where: { orgId_userId: { orgId: f.orgA.id, userId: orgAdmin } },
+      create: { orgId: f.orgA.id, userId: orgAdmin, role: 'admin' },
+      update: { role: 'admin' },
+    });
+    const withAdmin = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(withAdmin.certifyPreflight.authorisableActorIds).toContain(orgAdmin);
+    // the server agrees: a grant naming them is accepted
+    const g = await grantTo(projectId, billId, orgAdmin, f.memberUser.id);
+    expect(g.actorId).toBe(orgAdmin);
+  });
+
+  it('round-3: a grant is USABLE only for the certification rule with a standing approver', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    const good = await grantTo(projectId, billId, f.memberUser.id, approver);
+    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants)
+      .toEqual([expect.objectContaining({ id: good.id, usableForCertification: true })]);
+
+    // the approver loses pmc standing: the row still LIVES, and is no longer an authority
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: approver } },
+      data: { role: 'engineer' },
+    });
+    expect((await claims.readClaim(projectId, billId, pmc(projectId))).sodGrants)
+      .toEqual([expect.objectContaining({ id: good.id, usableForCertification: false })]);
   });
 
 });

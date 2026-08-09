@@ -905,6 +905,17 @@ export interface SodGrantSummaryDto {
   rule: string;
   reason: string;
   grantedAt: string;
+  /** Whether THIS grant would actually authorise a certification (Codex round 3).
+   *
+   *  A live row is not the same as a usable authority: it may name a DIFFERENT §I rule (the
+   *  payment half, `certifier-may-not-approve`), or its approver may have lost pmc standing since
+   *  granting it. The certification resolver filters on both, so a screen that blocked a
+   *  replacement grant merely because a row existed would leave the named actor refused and no pmc
+   *  able to fix it from the page where the refusal happens.
+   *
+   *  Computed server-side by the same standing rule the command uses, because standing is the orgs
+   *  module's question and a client cannot answer it at all. */
+  usableForCertification: boolean;
 }
 
 /**
@@ -944,6 +955,17 @@ export interface CertifyPreflightDto {
   grantState: 'live' | 'stale-version' | 'approver-lost-standing' | 'none';
   /** The authorisation that would be consumed, when `grantState` is `live`; null otherwise. */
   grantId: string | null;
+  /** WHO this caller may authorise on this project (Codex round 3).
+   *
+   *  Enumerated by the ORGS module's own standing rule, not derived from the project member list:
+   *  an org owner/admin operating this project through the documented pmc fallback holds no
+   *  `Membership` row at all, so a picker built from members could never offer them even though
+   *  the server would accept a grant naming them — and they are exactly the person a two-person
+   *  site is likely to need authorised. Excludes this caller: §I refuses a self-grant.
+   *
+   *  Ids only. Display names come from the project team where it has them, and an id with no
+   *  member row is shown as itself rather than hidden — hiding it would recreate the omission. */
+  authorisableActorIds: string[];
   /** The actor id the SERVER resolved for this caller (Codex F1).
    *
    *  Returned because §I forbids a self-grant and the client otherwise has no way to honour that:

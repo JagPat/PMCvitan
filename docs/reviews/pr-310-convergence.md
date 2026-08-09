@@ -1,8 +1,9 @@
 # PR #310 convergence audit — 7B-iii-f, the certification authority chain
 
-Required after two distinct finding-bearing heads. Head 1 `495718d` returned four
-findings; head 2 `a8e73d4` returned four more. This is the architectural account of
-why, not a list of patches.
+Required after two distinct finding-bearing heads, and updated in place on each
+subsequent one rather than re-attached. Head 1 `495718d` returned four findings; head 2
+`a8e73d4` four more; head 3 `00c42f0` three. This is the architectural account of why,
+not a list of patches.
 
 ## The root
 
@@ -66,6 +67,40 @@ protocol is explicit that a shared root must be *said*, not filed as unrelated. 
 honest statement is: **F3 was half-fixed in round 1.** The contract half landed; the
 consuming half did not, and Codex was right to keep pointing at the same line.
 
+## Round 3 — three findings, and the root sharpens
+
+Head `00c42f0` returned three. They are **not** new roots; they are the SAME root as the
+original head's one genuinely correct decision, applied to two places I did not apply it.
+
+The original head *refused* to approximate the §I evidence-actor term, and said why:
+a client cannot compute a server authority decision, and approximating one either
+over-refuses (blocking what the server allows) or under-refuses (the write-ahead lie).
+That reasoning is in the packet and it was right.
+
+Then I built the authorisation picker by approximating two **other** server authority
+decisions from client data:
+
+| Round-3 finding | The authority I approximated | From what |
+|---|---|---|
+| a live grant for the payment half of §I, or one whose approver lost pmc standing, still blocked a replacement | *is this grant usable?* | the existence of a row in `sodGrants` |
+| an org owner/admin operating through the documented pmc fallback could never be offered, though the server accepts a grant naming them | *who may be authorised?* | `MembersService.list`, which has no row for them |
+
+So the root's second half: **I refuse to approximate an authority decision only when a
+finding has already named that particular one.** The general rule was stated in this
+PR's own packet and not applied two screens over.
+
+The fix is the one the codebase already prescribes — `orgs.participant.ts` says it
+outright: *a read being representable is not the same as it being legitimate; the OWNER
+states the rule.* So `OrgsParticipant.usersWithProjectRoleStanding` enumerates the same
+two arms, in the same precedence, as the singular `hasProjectRoleStanding`, and
+`SodGrantSummaryDto.usableForCertification` is computed by the certification resolver's
+own rule. The client stopped deciding; it now displays.
+
+The third finding is separate and is mine alone: certify's **gate** read the arbitrated
+copy while its **payload** was pinned from the claim bundle, so a fresher list enabled a
+command pinned to a stale version — my own arbitration mechanism used inconsistently
+within one control. Gate and payload now come from one copy.
+
 ## Carry-forward
 
 - A **monotonic per-bill lifecycle version** from the server remains the durable fix
@@ -74,6 +109,14 @@ consuming half did not, and Codex was right to keep pointing at the same line.
 - The §I **evidence-actor** term is still unanswerable before the act, for the reasons
   in the packet. Round 2 does not change that, and no round should try to answer it
   without extracting the draw.
-- **For 7B-iii-d**: it adds six commands to the same outbox. Every one of them needs
-  the viewed-fact question asked *before* review, not after — that is this audit's
-  operative output, and the payments chain is where the money actually leaves.
+- **For 7B-iii-d**, this audit's operative output, now two questions rather than one.
+  It adds six commands to the same outbox and it is where money actually leaves, so
+  before writing any of them, ask of **all six at once**:
+  1. *What fact was the user looking at when they decided?* Carry it, and refuse drift
+     server-side. (Round 2's root — asked once per command, not once per finding.)
+  2. *Which of this screen's decisions are server AUTHORITY decisions?* Every one of
+     them is answered by its owning module and displayed, never derived from whatever
+     the client happens to hold. (Round 3's root.)
+  Both were already stated somewhere in this repository before they were found here —
+  the second is written verbatim in `orgs.participant.ts`. The failure was not knowing
+  them; it was applying them only where a reviewer had pointed.

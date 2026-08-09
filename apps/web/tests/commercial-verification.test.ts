@@ -512,7 +512,7 @@ describe('7B-iii-f correction — a grant is tighter than the first head modelle
       sodGrants: [{
         id: 'g-1', actorId: 'user-ravi', approverId: 'u-self',
         rule: 'evidence-recorder-may-not-certify', reason: 'only store user',
-        grantedAt: '2026-08-21T00:00:00.000Z',
+        grantedAt: '2026-08-21T00:00:00.000Z', usableForCertification: true,
       }],
     };
     expect(dto.sodGrants[0]!.actorId).toBe('user-ravi');

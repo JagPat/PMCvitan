@@ -61,7 +61,7 @@ const claim = (): CommercialClaimView => ({
     approved: '0.00', paid: '0.00', approvable: null, billStatus: 'certified',
   },
   measurements: {},
-  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self' },
+  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self', authorisableActorIds: ['u-ravi'] },
   sodGrants: [],
 });
 
@@ -1370,20 +1370,23 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
    * session carries a role and a name and never an actor id — without it the form could not tell
    * the approver apart from the people they may authorise.
    */
-  const claimWithTeam = (callerActorId: string): CommercialClaimView => {
+  const claimWithTeam = (callerActorId: string, authorisableActorIds = ['u-ravi']): CommercialClaimView => {
     const c = claim();
-    return { ...c, bill: { ...c.bill, status: 'verified' }, certifyPreflight: { ...c.certifyPreflight, callerActorId } };
+    return {
+      ...c, bill: { ...c.bill, status: 'verified' },
+      certifyPreflight: { ...c.certifyPreflight, callerActorId, authorisableActorIds },
+    };
   };
 
-  const openWithMembers = (callerActorId: string) => {
+  const openWithMembers = (callerActorId: string, authorisableActorIds = ['u-ravi']) => {
     useStore.setState(getInitialState());
     useStore.getState()._setGateway(null);
     useStore.setState({
       capabilities: ['commercial'], role: 'pmc',
       commercialView: bundle(), commercialLoad: 'ready',
-      commercialBills: [claimWithTeam(callerActorId).bill],
+      commercialBills: [claimWithTeam(callerActorId, authorisableActorIds).bill],
       commercialBillsLoad: 'ready',
-      commercialClaims: { 'bill-1': claimWithTeam(callerActorId) },
+      commercialClaims: { 'bill-1': claimWithTeam(callerActorId, authorisableActorIds) },
       commercialClaimLoad: { 'bill-1': 'ready' },
       members: [
         { userId: 'u-self', name: 'Approving PMC', email: null, phone: null, role: 'pmc', status: 'active' },
@@ -1413,30 +1416,38 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
     expect(options).toEqual(['u-ravi']);
   });
 
-  it('the caller identity comes from the SERVER, so the exclusion follows it', () => {
-    // the same screen, viewed by Ravi: now the other pmc is the authorisable one
-    const r = openWithMembers('u-ravi');
+  it('round-3: the AUTHORISABLE SET is the server\'s, self-exclusion included', () => {
+    // the same screen viewed by Ravi: the server answers with the other pmc, and the client does
+    // not second-guess it. Round 2 filtered the member list by role, which was the right idea on
+    // the wrong source — an org owner/admin operating through the pmc fallback holds no membership
+    // row at all, so a member-derived picker could never offer them.
+    const r = openWithMembers('u-ravi', ['u-self']);
     const options = Array.from((r.getByTestId('sod-actor-bill-1') as HTMLSelectElement).options)
       .map((o) => o.value).filter((v) => v !== '');
     expect(options).toEqual(['u-self']);
   });
 
-  it('a chosen person who LEAVES the project disarms the button, draft and all', () => {
-    // the eligibility term, not the non-empty one: the draft still holds `u-ravi` after Ravi is
-    // removed from the team, and a form that only checked "is something selected" would queue an
-    // authorisation for someone the server no longer has an active membership for
+  it('round-3: an authorisable actor with NO member row is offered, by id', () => {
+    // the org-admin case exactly: the server says they may be authorised, the project team has no
+    // row for them, and dropping them would recreate the omission this fixes
+    const r = openWithMembers('u-self', ['u-orgadmin']);
+    const opts = Array.from((r.getByTestId('sod-actor-bill-1') as HTMLSelectElement).options)
+      .filter((o) => o.value !== '');
+    expect(opts.map((o) => o.value)).toEqual(['u-orgadmin']);
+    expect(opts[0]!.textContent).toBe('u-orgadmin');   // shown as itself, not hidden
+  });
+
+  it('a chosen person who STOPS being authorisable disarms the button, draft and all', () => {
+    // the eligibility term, not the non-empty one: the draft still holds `u-ravi` after the server
+    // stops listing them, and a form that only checked "is something selected" would queue an
+    // authorisation the server will refuse
     const r = openWithMembers('u-self');
     fireEvent.change(r.getByTestId('sod-actor-bill-1'), { target: { value: 'u-ravi' } });
     fireEvent.change(r.getByTestId('sod-reason-bill-1'), { target: { value: 'only store user' } });
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
 
     act(() => {
-      useStore.setState({
-        members: [
-          { userId: 'u-self', name: 'Approving PMC', email: null, phone: null, role: 'pmc', status: 'active' },
-          { userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'pmc', status: 'removed' },
-        ] as never,
-      });
+      useStore.setState({ commercialClaims: { 'bill-1': claimWithTeam('u-self', []) } });
     });
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
   });
@@ -1459,10 +1470,10 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
     expect(loadTeam).toHaveBeenCalled();
   });
 
-  it('round-2: only someone who could CERTIFY is authorisable', () => {
+  it('round-2/3: someone who could not certify is not offered — and the SERVER decides that', () => {
     // an engineer can never certify, so a grant naming one is an authorisation that cannot be
-    // exercised — the approver watches it land and the named actor is still refused, by a
-    // different rule, at the moment they try
+    // exercised. Round 2 enforced this client-side from the member list; round 3 moved the rule to
+    // its owner, and the screen simply does not offer what the server did not list.
     const r = openWithMembers('u-self');
     const options = Array.from((r.getByTestId('sod-actor-bill-1') as HTMLSelectElement).options)
       .map((o) => o.value);
@@ -1477,7 +1488,7 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
       sodGrants: [{
         id: 'g-1', actorId: 'u-ravi', approverId: 'u-self',
         rule: 'evidence-recorder-may-not-certify', reason: 'only store user',
-        grantedAt: '2026-08-21T00:00:00.000Z',
+        grantedAt: '2026-08-21T00:00:00.000Z', usableForCertification: true,
       }],
     };
     useStore.setState({
@@ -1501,6 +1512,62 @@ describe('7B-iii-f correction — the authorisation form cannot express what the
     // …and BECAUSE it is shown, the guard reads the fact rather than holding a key: a duplicate
     // would be refused by the server's live-scope uniqueness after being reported saved
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('round-3: an UNUSABLE standing grant does not block a replacement', () => {
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    const base = claimWithTeam('u-self');
+    const withUnusable: CommercialClaimView = {
+      ...base,
+      // a live row for the PAYMENT half of §I, or one whose approver lost pmc standing: the named
+      // actor is still refused on Certify, so blocking on its mere existence would leave no pmc
+      // able to fix that from the page where the refusal happens
+      sodGrants: [{
+        id: 'g-x', actorId: 'u-ravi', approverId: 'u-gone',
+        rule: 'certifier-may-not-approve', reason: 'payment half',
+        grantedAt: '2026-08-21T00:00:00.000Z', usableForCertification: false,
+      }],
+    };
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: bundle(), commercialLoad: 'ready',
+      commercialBills: [withUnusable.bill], commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': withUnusable }, commercialClaimLoad: { 'bill-1': 'ready' },
+      members: [{ userId: 'u-ravi', name: 'Ravi', email: null, phone: null, role: 'pmc', status: 'active' }] as never,
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    fireEvent.change(r.getByTestId('sod-actor-bill-1'), { target: { value: 'u-ravi' } });
+    fireEvent.change(r.getByTestId('sod-reason-bill-1'), { target: { value: 'replacement' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('round-3: Certify is not offered while the LIST is fresher than the claim bundle', () => {
+    // the gate arbitrates list-vs-claim; the payload is pinned from the claim bundle. If the list
+    // is the fresher copy the gate would say yes while the pin is stale, and the server refuses a
+    // command the screen already reported saved — my own arbitration, used inconsistently.
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    const c = claimWithTeam('u-self');
+    const staleClaim: CommercialClaimView = {
+      ...c, bill: { ...c.bill, status: 'verified', statusChangedAt: '2026-08-21T00:00:01.000Z' },
+    };
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: bundle(), commercialLoad: 'ready',
+      // the LIST carries a strictly later moment for the same bill
+      commercialBills: [{ ...staleClaim.bill, statusChangedAt: '2026-08-21T00:00:02.000Z' }],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': staleClaim }, commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    expect((r.getByTestId('bill-certify-bill-1') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('Authorise stays disabled until a real person and a reason are chosen', () => {

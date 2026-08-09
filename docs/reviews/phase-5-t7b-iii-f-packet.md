@@ -86,7 +86,7 @@ the next. Server and client mutations listed together:
 - `pnpm check` — **EXIT 0** (web 689/689 across 45 files, API 780/780 across 57 files, lint + typecheck + both builds clean)
 - `commercial-verification.test.ts` **27/27**; `commercial-screen.test.tsx` **64/64**; `commercial.test.ts` green
 - API integration, focused: `phase5-t7bii-claim-read` **16/16** (5 preflight + 4 correction probes); `phase5-t5b-certification` **49/49 unchanged**
-- Full API integration suite on a pristine migrated database, per head: initial `495718d` **86 files / 1033 tests**; round-1 correction `a8e73d4` **86 files / 1037 tests**, both exit 0. round-2 changes **86 files / 1039 tests**, exit 0 (the +2 are this round's certify-version-drift and supersede-certificate-drift probes). Each figure names the code it actually measured rather than being carried forward from a head that did not contain the changes
+- Full API integration suite on a pristine migrated database, per head: initial `495718d` **86 files / 1033 tests**; round-1 correction `a8e73d4` **86 files / 1037 tests**, both exit 0. round-2 changes **86 files / 1039 tests**, exit 0 (the +2 are this round's certify-version-drift and supersede-certificate-drift probes). Round-3 changes: CI's `api` job on this exact SHA is the authority; the local full-suite run was still in flight when the head was pushed and its figure is posted as a PR comment rather than amended in, so this head is not superseded mid-review. Each figure names the code it actually measured rather than being carried forward from a head that did not contain the changes
 - No migration, so `upgrade-proof.sh` is not applicable
 - Browser e2e runs in CI (the local Chromium build does not match the pinned Playwright revision)
 
@@ -110,6 +110,22 @@ Seven mutations, each reddening exactly its own probe. **One probe was rewritten
 passing under mutation:** "Authorise stays disabled" used only valid values, so it never
 exercised the eligibility term; the probe that does is a chosen member *leaving the
 project* with the draft still holding their id.
+
+## Round 3 — three Codex findings on head `00c42f0`
+
+Two are the ORIGINAL head's one correct decision, not applied two screens over. That
+head refused to approximate the §I evidence-actor term because a client cannot compute
+a server authority decision. Then the authorisation picker approximated two others.
+
+| # | Finding | Fix |
+|---|---|---|
+| R3-1 | a live grant for the **payment half** of §I, or one whose approver has since lost pmc standing, still blocked a replacement — the named actor stays refused while no pmc can fix it from the page where the refusal happens | `SodGrantSummaryDto.usableForCertification`, computed by the certification resolver's own rule, standing included |
+| R3-2 | certify's **gate** read the arbitrated copy while its **payload** pinned from the claim bundle, so a fresher list enabled a command pinned to a stale version | gate and payload come from one copy; these acts are offered only while the claim bundle is authoritative |
+| R3-3 | an org owner/admin operating through the documented **pmc fallback** holds no `Membership` row, so the picker could never offer them though the server accepts a grant naming them | `OrgsParticipant.usersWithProjectRoleStanding` — the same two arms, same precedence, as the singular standing check. The rule stays with its owner |
+
+Five mutations, each reddening exactly its own probe. Five API probes were also switched
+from whole-object equality to field assertions: asserting the entire preflight DTO made
+every contract addition break them, three rounds running.
 
 ## Round 2 — four Codex findings on head `a8e73d4`
 

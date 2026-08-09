@@ -906,10 +906,21 @@ export class CommercialCertificationService {
       where: { projectId, billId, versionId, consumedAt: null },
       orderBy: [{ grantedAt: 'asc' }, { id: 'asc' }],
     });
-    return rows.map((r) => ({
-      id: r.id, actorId: r.actorId, approverId: r.approverId,
-      rule: r.rule, reason: r.reason, grantedAt: r.grantedAt.toISOString(),
-    }));
+    // Codex round 3 — a live row is not a usable authority. The certification resolver admits only
+    // the certification RULE and only an approver who still holds pmc standing, so both terms are
+    // answered here, by the same rule, rather than left for a screen to guess at. Standing is the
+    // ORGS module's question and no client can answer it.
+    const out: SodGrantSummaryDto[] = [];
+    for (const r of rows) {
+      const usableForCertification = r.rule === SOD_RULE
+        && await this.orgs.hasProjectRoleStanding(tx, projectId, r.approverId, ['pmc']);
+      out.push({
+        id: r.id, actorId: r.actorId, approverId: r.approverId,
+        rule: r.rule, reason: r.reason, grantedAt: r.grantedAt.toISOString(),
+        usableForCertification,
+      });
+    }
+    return out;
   }
 
   async liveCertificateIn(

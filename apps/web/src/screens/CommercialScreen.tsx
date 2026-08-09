@@ -1190,12 +1190,20 @@ export function CommercialScreen() {
                     // exposure, and certification is the act that creates money.
                     const viewedVersion = claim.bill.versions.find((v) => v.live)?.id ?? null;
                     const viewedCertificate = claim.certificate?.id ?? null;
+                    // Codex round 3 — the GATE and the PAYLOAD must come from ONE copy. The gate
+                    // arbitrates list-vs-claim; the payload is pinned from the CLAIM bundle. When
+                    // the list is the fresher of the two, the gate says yes while the pin is stale,
+                    // and the server refuses a command the screen had already reported saved — the
+                    // write-ahead lie, produced by my own arbitration used inconsistently. So these
+                    // acts are offered only while the claim bundle IS the authoritative copy.
+                    const claimIsAuthoritative = reading?.copy === claim.bill;
                     return (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }} data-testid="commercial-certify-actions">
                         <Button
                           variant="ink"
                           data-testid={`bill-certify-${claim.bill.id}`}
-                          disabled={!transitionOffered(reading, BILL_CERTIFY_FROM) || viewedVersion === null || billTxPending(claim.bill.id)}
+                          disabled={!transitionOffered(reading, BILL_CERTIFY_FROM) || !claimIsAuthoritative
+                            || viewedVersion === null || billTxPending(claim.bill.id)}
                           onClick={() => certifyBill(claim.bill.id, viewedVersion as string)}
                         >
                           {billTxPending(claim.bill.id) ? 'Working…' : 'Certify'}
@@ -1213,6 +1221,7 @@ export function CommercialScreen() {
                           variant="ghost"
                           data-testid={`cert-supersede-${claim.bill.id}`}
                           disabled={!transitionOffered(reading, BILL_STATUSES_PAST_CERTIFICATION)
+                            || !claimIsAuthoritative
                             || !draft.supersedeReason.trim() || viewedCertificate === null
                             || billTxPending(claim.bill.id)}
                           onClick={() => supersedeCertificate(claim.bill.id, draft.supersedeReason.trim(), viewedCertificate as string)}
@@ -1247,23 +1256,29 @@ export function CommercialScreen() {
                     // put three server refusals into the write-ahead outbox (a display name, a
                     // typo, and the self-grant §I forbids) and reported each as saved before
                     // reconnect dropped it. A picker cannot express any of them.
-                    // Codex round-2 — a grant is authority to CERTIFY, so only someone who could
-                    // certify can use one. Authorising an engineer records a live authorisation
-                    // that can never be exercised: the approver sees it land and the named actor is
-                    // still refused, by a different rule, at the moment they try. The policy is the
-                    // source (`commercial.certify`), never a copy of its current answer.
-                    const certifierRoles = ROLE_POLICY['commercial.certify'] as readonly string[];
-                    const candidates = members.filter((m) => m.status === 'active'
-                      && m.userId !== claim.certifyPreflight.callerActorId
-                      && certifierRoles.includes(m.role));
-                    const eligible = candidates.some((m) => m.userId === actorId);
+                    // Codex round 3 — the SERVER'S answer to "who may I authorise", enumerated by
+                    // the ORGS module's own standing rule. Round 2 filtered the project member list
+                    // by `commercial.certify`, which is the right idea applied to the wrong source:
+                    // an org owner/admin operating this project through the documented pmc fallback
+                    // holds no `Membership` row at all, so they could never be offered even though
+                    // the server accepts a grant naming them — and on a two-person site they are
+                    // exactly who needs authorising. A name is shown where the team has one; an id
+                    // without a member row is shown as itself rather than dropped, because dropping
+                    // it would recreate the omission this fixes.
+                    const nameOf = (id: string): string => members.find((m) => m.userId === id)?.name ?? id;
+                    const candidates = claim.certifyPreflight.authorisableActorIds;
+                    const eligible = candidates.includes(actorId);
                     // Codex round-2 — and one that ALREADY STANDS is not granted twice. The bundle
                     // carries the live grants as of round 1; the button did not consult them, so
                     // once the pending key cleared an unchanged draft could queue a duplicate for
                     // the server's live-scope uniqueness to reject — reported saved, then dropped.
                     // Holding the key longer was the wrong shape: the fact is visible, so the guard
                     // reads the fact.
-                    const alreadyStands = claim.sodGrants.some((g) => g.actorId === actorId);
+                    // Codex round 3 — only a USABLE authority blocks a replacement. A live row for
+                    // the payment half of §I, or one whose approver has since lost pmc standing,
+                    // leaves the named actor refused; blocking on its mere existence would leave no
+                    // pmc able to fix that from the page where the refusal happens.
+                    const alreadyStands = claim.sodGrants.some((g) => g.actorId === actorId && g.usableForCertification);
                     return (
                       <div style={{ ...rowCard, marginTop: 8 }} data-testid="commercial-sod-grant">
                         <div style={{ fontWeight: 600 }}>Authorise a segregation-of-duties exception</div>
@@ -1291,8 +1306,8 @@ export function CommercialScreen() {
                             style={{ ...input, flex: '1 1 140px' }}
                           >
                             <option value="">Person to authorise…</option>
-                            {candidates.map((m) => (
-                              <option key={m.userId} value={m.userId}>{m.name}</option>
+                            {candidates.map((id) => (
+                              <option key={id} value={id}>{nameOf(id)}</option>
                             ))}
                           </select>
                           <input
