@@ -1,6 +1,6 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { ROLE_POLICY, type CommercialClaimDto, type MeasurementRegisterDto, type VendorBillDto } from '@vitan/shared';
+import { ROLE_POLICY, type CertifyPreflightDto, type CommercialClaimDto, type MeasurementRegisterDto, type VendorBillDto } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
@@ -89,7 +89,34 @@ export class CommercialClaimQuery {
       const measurements: Record<string, MeasurementRegisterDto> = {};
       for (const [id, register] of registers) measurements[id] = register;
 
-      return { bill, verification, certificate, deductions, payments, measurements };
+      // §I — the CALLER'S own authorisation state on this claim's live version, resolved by the
+      // same `resolveGrant` the certification command uses. Read WITHOUT `FOR UPDATE`: a screen is
+      // asking what is true now and holds nothing, while a certification is an authority decision
+      // and locks. Same predicate, different intent — which is why the lock is a parameter rather
+      // than a second function.
+      //
+      // The live version is the one the grant is pinned to. A claim with NO live version (disputed,
+      // rejected) cannot be certified at all, so there is nothing to authorise and `none` is the
+      // honest answer rather than a lookup against a version the claim has moved past.
+      const liveVersionId = bill.versions.find((v) => v.live)?.id ?? null;
+      // Codex F2 — `user.sub` IS the actor id, so the old `resolveActor` call bought nothing but a
+      // `user.findUnique` on the ROOT client while this transaction holds its own connection: a
+      // read outside the snapshot this method exists to assemble, and a second checkout that can
+      // self-block on a saturated pool. `resolveActor` resolves a display NAME, which no part of
+      // this answer uses.
+      const resolved = liveVersionId === null
+        ? ({ state: 'none' } as const)
+        : await this.certification.resolveGrant(tx, projectId, billId, liveVersionId, user.sub, false);
+      const certifyPreflight: CertifyPreflightDto = {
+        grantState: resolved.state,
+        grantId: resolved.state === 'live' ? resolved.grant.id : null,
+        callerActorId: user.sub,
+      };
+
+      return {
+        bill, verification, certificate, deductions, payments, measurements,
+        certifyPreflight,
+      };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 }

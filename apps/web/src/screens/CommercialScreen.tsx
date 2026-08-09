@@ -5,10 +5,11 @@ import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { BILL_BEGIN_VERIFICATION_FROM, BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
+import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
+import { decGt } from '@/lib/decimal';
 import styles from './responsive.module.css';
 
 /**
@@ -175,6 +176,11 @@ export function CommercialScreen() {
   // 7B-iii-c-i — pmc-only, and DELIBERATELY not the same permission as `commercial.bill`: §E's
   // separation of duties starts here, with the actor who lodges a claim being unable to verify it.
   const mayVerify = may('commercial.verify');
+  // 7B-iii-f — SEPARATE from `commercial.verify` even though both resolve to pmc today: certifying
+  // decides what is OWED. (`commercial.sod.grant` is separate again — authority to EXCUSE the rule
+  // is a stronger thing than authority to perform the act it excuses — and its surface is
+  // 7B-iii-h.)
+  const mayCertify = may('commercial.certify');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
@@ -187,6 +193,9 @@ export function CommercialScreen() {
   // 7B-iii-c-i — the verifier's two.
   const beginVerification = useStore((s) => s.beginVerification);
   const verifyBill = useStore((s) => s.verifyVendorBill);
+  // 7B-iii-f — the certifier's three.
+  const certifyBill = useStore((s) => s.certifyBill);
+  const supersedeCertificate = useStore((s) => s.supersedeCertificate);
   const recordBill = useStore((s) => s.recordVendorBill);
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
@@ -320,6 +329,18 @@ export function CommercialScreen() {
   const setBillReason = (id: string, reason: string): void =>
     setBillDrafts({ scope: scopeKey, byId: { ...billScoped, [id]: reason } });
 
+  // 7B-iii-f — the certifier's drafts, SCOPED exactly like the reason drafts above (J2: a
+  // component-wide draft armed one row's button with another row's text). Two fields because a
+  // supersede reason and a SoD authorisation are different acts with different authority.
+  const [certDrafts, setCertDrafts] = useState<{
+    scope: string; byId: Record<string, { supersedeReason: string }>;
+  }>({ scope: '', byId: {} });
+  const certScoped = certDrafts.scope === scopeKey ? certDrafts.byId : {};
+  const EMPTY_CERT_DRAFT = { supersedeReason: '' };
+  const certDraftFor = (id: string) => certScoped[id] ?? EMPTY_CERT_DRAFT;
+  const setCertDraft = (id: string, patch: Partial<{ supersedeReason: string }>): void =>
+    setCertDrafts({ scope: scopeKey, byId: { ...certScoped, [id]: { ...certDraftFor(id), ...patch } } });
+
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
     { scope: '', byId: {} },
   );
@@ -389,6 +410,7 @@ export function CommercialScreen() {
   useEffect(() => {
     if (inClaimWorkflow && onPilot && billsLoad === 'idle') void loadCommercialBills();
   }, [inClaimWorkflow, onPilot, billsLoad, loadCommercialBills]);
+
 
   /**
    * Codex I1 — REFRESH RE-READS WHAT THIS SCREEN IS SHOWING.
@@ -1124,6 +1146,107 @@ export function CommercialScreen() {
                       </>
                     );
                   })()}
+                  {/* §I — WHAT THE SERVER SAID about this reader's authorisation on this claim.
+                      Reported for whoever can act on it, because a certifier who has just been
+                      authorised otherwise cannot tell whether the authorisation is live and
+                      version-matched, and "granted against an earlier version" is discoverable
+                      only by being refused.
+
+                      Note what is NOT claimed: nothing here says an authorisation is NEEDED. §I
+                      asks about the rows the certificate freezes, which are decided inside the
+                      certification transaction, so that question has no honest answer before the
+                      act — see `CertifyPreflightDto`. The panel reports the state that IS known
+                      and leaves the rest to the server's refusal, which the block below makes
+                      legible instead of guessing at. */}
+                  {mayCertify && claim.certifyPreflight.grantState !== 'none' && (
+                    <div style={{ ...rowCard, ...muted }} data-testid="commercial-sod-state">
+                      {claim.certifyPreflight.grantState === 'live'
+                        && 'A segregation-of-duties authorisation stands for you on this claim, and certifying will consume it.'}
+                      {claim.certifyPreflight.grantState === 'stale-version'
+                        && 'Your authorisation was granted against an earlier version of this claim — it has been amended since, so it needs authorising again.'}
+                      {claim.certifyPreflight.grantState === 'approver-lost-standing'
+                        && 'Your authorisation was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again.'}
+                    </div>
+                  )}
+
+                  {mayCertify && (() => {
+                    const listRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
+                    const reading = arbitrateBillCopy(listRow, claim.bill);
+                    const draft = certDraftFor(claim.bill.id);
+                    // Codex round-2 — the facts this reader is LOOKING AT, carried with the command
+                    // so a replay cannot act on a version/document they never saw. Round 1 pinned
+                    // the grant and stopped there; certification and supersession have the same
+                    // exposure, and certification is the act that creates money.
+                    const viewedVersion = claim.bill.versions.find((v) => v.live)?.id ?? null;
+                    const viewedCertificate = claim.certificate?.id ?? null;
+                    // Round 5 — §0's rule that cash already gone is not corrected by correcting a
+                    // document. The server's paid-vs-approved bound refuses a supersession while
+                    // cash stands against the certificate, and this bundle already carries the
+                    // payment ledger — so offering the button anyway is the write-ahead lie again,
+                    // told with a figure the screen is holding.
+                    const cashStands = decGt(claim.payments.paid, '0');
+                    // Codex round 3 — the GATE and the PAYLOAD must come from ONE copy. The gate
+                    // arbitrates list-vs-claim; the payload is pinned from the CLAIM bundle. When
+                    // the list is the fresher of the two, the gate says yes while the pin is stale,
+                    // and the server refuses a command the screen had already reported saved — the
+                    // write-ahead lie, produced by my own arbitration used inconsistently. So these
+                    // acts are offered only while the claim bundle IS the authoritative copy.
+                    // Round 4 — the claim bundle is good enough to act on unless the LIST is
+                    // strictly newer. Derived from the named source, because the previous spelling
+                    // compared object identity and `arbitrateBillCopy` returns the LIST object when
+                    // the two AGREE — so the ordinary case of opening a current claim read as
+                    // "stale" and disabled certification outright. A correctness guard that
+                    // disables the workflow it guards is worse than the defect it closed.
+                    const claimIsAuthoritative = reading !== null && reading.source !== 'list';
+                    return (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }} data-testid="commercial-certify-actions">
+                        <Button
+                          variant="ink"
+                          data-testid={`bill-certify-${claim.bill.id}`}
+                          disabled={!transitionOffered(reading, BILL_CERTIFY_FROM) || !claimIsAuthoritative
+                            || viewedVersion === null || billTxPending(claim.bill.id)}
+                          onClick={() => certifyBill(claim.bill.id, viewedVersion as string)}
+                        >
+                          {billTxPending(claim.bill.id) ? 'Working…' : 'Certify'}
+                        </Button>
+                        {/* §F — past certification the correction path is a SUPERSEDING certificate,
+                            never an edit, so the reason is required rather than optional. */}
+                        <input
+                          value={draft.supersedeReason}
+                          onChange={(e) => setCertDraft(claim.bill.id, { supersedeReason: e.target.value })}
+                          placeholder="Reason for superseding"
+                          data-testid={`cert-supersede-reason-${claim.bill.id}`}
+                          style={{ ...input, flex: '2 1 160px' }}
+                        />
+                        <Button
+                          variant="ghost"
+                          data-testid={`cert-supersede-${claim.bill.id}`}
+                          disabled={!transitionOffered(reading, BILL_STATUSES_PAST_CERTIFICATION)
+                            || !claimIsAuthoritative
+                            || !draft.supersedeReason.trim() || viewedCertificate === null
+                            || cashStands || billTxPending(claim.bill.id)}
+                          onClick={() => supersedeCertificate(claim.bill.id, draft.supersedeReason.trim(), viewedCertificate as string)}
+                        >
+                          Supersede
+                        </Button>
+                      </div>
+                    );
+                  })()}
+
+                  {/* §I — the AUTHORISATION surface (issue an exception, and the register of
+                      those that stand) is 7B-iii-h, parked whole on
+                      `claude/phase5-task7b-iii-f-sod-parked`. It is split out because the review
+                      lifecycle reported this unit at its head limit and nearly every finding across
+                      five rounds landed on that surface: it mirrors server AUTHORITY decisions, and
+                      round 5 established it also needs a schema change (the reviewed status must be
+                      PERSISTED on the grant, not merely checked at issue).
+
+                      What remains here is honest about the gap: a certifier who recorded the
+                      evidence is refused by §I with a message naming `commercial.sod.grant`, and
+                      cannot self-serve that remedy on this screen until 7B-iii-h lands. That is a
+                      narrower gap than it sounds — the common path is a certifier who did NOT
+                      record the evidence, which works end to end — but it IS a gap, and it is
+                      stated rather than papered over. */}
                   {claim.certificate === null ? (
                     <div style={{ ...rowCard, ...muted }} data-testid="commercial-certificate-none">
                       Not certified yet. A claim before certification is an ordinary state, not an error.

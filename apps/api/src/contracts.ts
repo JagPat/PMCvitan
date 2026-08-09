@@ -1455,8 +1455,34 @@ export type VendorBillStepInput = z.infer<typeof vendorBillStepSchema>;
  * their own authenticated command (`commercial.sod.grant`), and certification CONSUMES it. There is
  * no field here to forge.
  */
-export const certifyBillSchema = z.object({ billId: z.string().min(1) }).strict();
+/**
+ * Codex round-2 — `versionId` is the claim version the certifier READ.
+ *
+ * Round 1 pinned the GRANT to its viewed version and stopped there; certification has the same
+ * exposure and it is the act that creates money. Queue Certify against a verified v1 offline,
+ * another user amends and re-verifies v2, and the replay certifies a claim this certifier never
+ * saw. Optional for the same reason as the grant's: in-process callers hold no rendered version,
+ * and the risk is specific to a command that can sit in a queue across an amendment.
+ */
+export const certifyBillSchema = z
+  .object({ billId: z.string().min(1), versionId: z.string().min(1) })
+  .strict();
 export type CertifyBillInput = z.infer<typeof certifyBillSchema>;
+/**
+ * The SERVICE's shape, deliberately WEAKER than the HTTP one above.
+ *
+ * Codex round 6 — round 2 made the viewed version optional so in-process callers (121 call sites
+ * across the Task-5 suites and operator paths, which hold no rendered version) would compile, and
+ * that weakened the guard for the boundary too: a request omitting the field simply skipped the
+ * drift check, which is the one place the check exists for. A replayed body is an HTTP body.
+ *
+ * The fix is to stop making one contract serve two callers with different threat models. The
+ * BOUNDARY requires the pin, because that is where an unreviewed version can be posted or
+ * replayed; the INTERNAL shape does not, because a caller inside the process has no rendered fact
+ * to pin and is not attacker-reachable. Requiring it in both would have meant editing 121 call
+ * sites to invent a version they never displayed — which is not evidence, it is ceremony.
+ */
+export type CertifyBillCommand = { billId: string; versionId?: string };
 
 /**
  * §I — GRANT permission for ONE otherwise-forbidden act. Issued BY the approver, so the
@@ -1488,9 +1514,19 @@ export type GrantSodExceptionInput = z.infer<typeof grantSodExceptionSchema>;
 
 /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */
 export const supersedeCertificateSchema = z
-  .object({ billId: z.string().min(1), reason: z.string().trim().min(1).max(1000) })
+  .object({
+    billId: z.string().min(1),
+    reason: z.string().trim().min(1).max(1000),
+    /** Codex round-2 — the certificate the corrector was LOOKING AT. Supersession names "the live
+     *  one" at execution, so a queued correction intended for c1 supersedes its replacement c2 if
+     *  c1 was corrected first: a document nobody reviewed, replaced with a reason written about a
+     *  different one. REQUIRED at the boundary from round 6; see `SupersedeCertificateCommand`. */
+    certificateId: z.string().min(1),
+  })
   .strict();
 export type SupersedeCertificateInput = z.infer<typeof supersedeCertificateSchema>;
+/** The SERVICE's shape — weaker than the boundary's, for the reason given on `CertifyBillCommand`. */
+export type SupersedeCertificateCommand = { billId: string; reason: string; certificateId?: string };
 
 /**
  * §H — WITHHOLD money from a certified payable.

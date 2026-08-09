@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { certifyBillSchema, supersedeCertificateSchema } from '../contracts';
 import { COMMERCIAL_COMMANDS, COMMERCIAL_QUERIES, BILL_STATUSES_PAST_CERTIFICATION, DOMAIN_EVENT_TYPES, isPastCertification, VENDOR_BILL_STATUSES } from '@vitan/shared';
 import { commercialManifest } from './commercial.manifest';
 import { COMMERCIAL_MONEY_EVENT, FORECAST_EVENT_TYPES, makeCashForecastProjectionConsumer } from './cash-forecast.projection';
@@ -1446,6 +1447,25 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
         `\`${status}\`: isDerivedBillStatus and isPastCertification disagree — they are one question asked by two callers`,
       ).toBe(isPastCertification(status));
     }
+  });
+
+  /**
+   * Codex round 6 — the BOUNDARY contract is stricter than the internal one, on purpose.
+   *
+   * Round 2 added viewed-fact pinning and made the pin optional so 121 in-process call sites would
+   * compile. Optional means the drift guard is SKIPPED for any request that omits it — and the
+   * request is exactly where the risk lives: a body posted or replayed after another user amended
+   * and re-verified certifies a version its sender never reviewed. One contract cannot serve two
+   * callers with different threat models.
+   */
+  it('§F: certify and supersede REQUIRE the viewed fact at the HTTP boundary', () => {
+    expect(certifyBillSchema.safeParse({ billId: 'b1' }).success,
+      'certify without a viewed version must be refused at the boundary — the drift guard is the point').toBe(false);
+    expect(certifyBillSchema.safeParse({ billId: 'b1', versionId: 'v1' }).success).toBe(true);
+
+    expect(supersedeCertificateSchema.safeParse({ billId: 'b1', reason: 'wrong qty' }).success,
+      'supersede without the reviewed certificate must be refused — the reason was written about a document').toBe(false);
+    expect(supersedeCertificateSchema.safeParse({ billId: 'b1', reason: 'wrong qty', certificateId: 'c1' }).success).toBe(true);
   });
 
 });

@@ -452,6 +452,9 @@ export interface AppActions {
   /** §E/§F writes (7B-iii-c-i) — the verification chain, on the SAME claim lifecycle. */
   beginVerification: (billId: string) => void;
   verifyVendorBill: (billId: string) => void;
+  /** §F/§I writes (7B-iii-f) — the certification authority chain. */
+  certifyBill: (billId: string, versionId: string) => void;
+  supersedeCertificate: (billId: string, reason: string, certificateId: string) => void;
   /** The §J offline/idempotent labour FIELD ops — each ONE server command through the durable
    *  write-ahead outbox (fresh idempotencyKey per action + deterministic coalesceKey while pending,
    *  the materials PR-#208/#209 lifecycle), reconciled through loadLabour after the flush. */
@@ -1634,6 +1637,12 @@ export const useStore = create<Store>()(
       // the durable dispatcher refuse it, not just the screen that hides the button.
       beginVerification: 'commercial.verify',
       verifyVendorBill: 'commercial.verify',
+      // 7B-iii-f — `commercial.certify` is DELIBERATELY separate from `commercial.verify` even
+      // though both resolve to pmc today: certifying decides what is OWED, and the policy is the
+      // source rather than a copy of its current answer. `commercial.sod.grant` is separate again —
+      // it is the authority to EXCUSE the rule, which is a stronger thing than performing the act.
+      certifyBill: 'commercial.certify',
+      supersedeCertificate: 'commercial.certify',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
@@ -2989,6 +2998,20 @@ export const useStore = create<Store>()(
         { t: 'verifyVendorBill', input: { billId }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'verify') },
         `Verify ${billId}`, 'Verification recorded.',
+      );
+    },
+    certifyBill: (billId, versionId) => {
+      dispatchCommercial(
+        { t: 'certifyBill', input: { billId, versionId }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'certify') },
+        `Certify ${billId}`, 'Claim certified.',
+      );
+    },
+    supersedeCertificate: (billId, reason, certificateId) => {
+      dispatchCommercial(
+        { t: 'supersedeCertificate', input: { billId, reason, certificateId }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: billTransitionCoalesceKey(billId, 'supersede') },
+        `Supersede ${billId}`, 'Certificate superseded.',
       );
     },
     reattributeCommitment: (line, costHeadCode, reason) => {

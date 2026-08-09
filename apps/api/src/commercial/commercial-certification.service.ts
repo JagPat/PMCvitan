@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { BILL_STATUSES_PAST_CERTIFICATION, ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
+import { BILL_CERTIFY_FROM, BILL_STATUSES_PAST_CERTIFICATION, ROLE_POLICY, SOD_RULES, type CertificateDto, type SodGrantDto, type VendorBillStatus } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { hashRequest, type CommandScope } from '../platform/commands';
@@ -18,7 +18,7 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
-import type { CertifyBillInput, GrantSodExceptionInput, SupersedeCertificateInput } from '../contracts';
+import type { CertifyBillCommand, GrantSodExceptionInput, SupersedeCertificateCommand } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -120,7 +120,7 @@ export class CommercialCertificationService {
    * having serialized on the status it depends on.
    */
   async certify(
-    projectId: string, input: CertifyBillInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: CertifyBillCommand, user: AuthUser, idempotencyKey?: string,
   ): Promise<CertificateDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertCertify(user);
@@ -202,12 +202,20 @@ export class CommercialCertificationService {
 
         // 3 — the BILL, and every side re-read under it
         const bill = await this.lockBill(tx, projectId, input.billId);
-        if (bill.status !== 'verified') {
+        if (!(BILL_CERTIFY_FROM as readonly string[]).includes(bill.status)) {
           throw new ConflictException(
             `A ${bill.status} claim cannot be certified — certification applies to a VERIFIED claim, because the §E verdict is what makes it safe`,
           );
         }
         const { versionId, lines } = await this.verification.claimLines(tx, projectId, input.billId);
+        // Codex round-2 — certify the claim that was READ, not whichever version is live when a
+        // queued command replays. Round 1 applied this to the grant and left the act it authorises
+        // unguarded; the exposure is the same and the stake is higher.
+        if (input.versionId !== undefined && input.versionId !== versionId) {
+          throw new ConflictException(
+            'This claim was amended after you read it — certifying now would freeze evidence for a version you have not seen. Reload and certify again.',
+          );
+        }
 
         // The lots were chosen from an UNLOCKED read, so an amendment committing in between could
         // have moved the claim onto a purchase-order line whose evidence this transaction never
@@ -560,7 +568,7 @@ export class CommercialCertificationService {
    * live certificates only. That is what releases the evidence for reversal or re-certification.
    */
   async supersede(
-    projectId: string, input: SupersedeCertificateInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: SupersedeCertificateCommand, user: AuthUser, idempotencyKey?: string,
   ): Promise<CertificateDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertCertify(user);
@@ -592,6 +600,13 @@ export class CommercialCertificationService {
           select: { id: true },
         });
         if (!live) throw new NotFoundException(`Vendor bill ${input.billId} has no live certificate`);
+        // Codex round-2 — the same rule for the document being corrected: a queued supersession
+        // names the certificate its reason was written about, or it is refused.
+        if (input.certificateId !== undefined && input.certificateId !== live.id) {
+          throw new ConflictException(
+            'This certificate was already superseded — the correction would replace a different document than the one you reviewed. Reload and supersede again.',
+          );
+        }
 
         // §H — a certificate carrying an UNRELEASED withholding is not correctable in place.
         const { count } = await tx.billCertificate.updateMany({
@@ -691,32 +706,18 @@ export class CommercialCertificationService {
     // question from "select a candidate that is valid" whenever more than one can exist, and the
     // live-grant scope is now deliberately wide enough for more than one. So the standing filter
     // moves INTO the selection, and the stale rows are simply not candidates.
-    const live = await tx.sodGrant.findMany({
-      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
-      select: { id: true, approverId: true, reason: true },
-      orderBy: { grantedAt: 'asc' },
-    });
-    let grant: { id: string; approverId: string; reason: string } | null = null;
-    for (const candidate of live) {
-      // standing is the ORGS module's question, asked under a lock because this IS an authority
-      // decision — a concurrent downgrade must not commit behind an approval it granted
-      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate: true })) {
-        grant = candidate;
-        break;
-      }
-    }
-    if (!grant) {
-      if (live.length > 0) {
+    const resolved = await this.resolveGrant(tx, projectId, billId, versionId, actorId, true);
+    if (resolved.state !== 'live') {
+      // The three refusals are the resolver's three non-live states, spelled once here where the
+      // ACT is refused. `resolveGrant` decides WHICH state holds; this decides what that means for
+      // a certification, and the read path decides what it means for a screen. One rule, two
+      // consequences — rather than the read re-deriving the rule and drifting from it.
+      if (resolved.state === 'approver-lost-standing') {
         throw new ForbiddenException(
           'The authorisation on this claim was granted by someone who no longer holds pmc standing on this project — a pmc with standing must authorise it again',
         );
       }
-      // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
-      // approver looked at should not silently carry over to one they never saw
-      const stale = await tx.sodGrant.count({
-        where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
-      });
-      if (stale > 0) {
+      if (resolved.state === 'stale-version') {
         throw new ConflictException(
           'The authorisation on this claim was granted against an earlier version — the claim has been amended since, so it needs authorising again',
         );
@@ -727,6 +728,7 @@ export class CommercialCertificationService {
         + 'their own reason against this claim.',
       );
     }
+    const grant = resolved.grant;
     const { count } = await tx.sodGrant.updateMany({
       where: { id: grant.id, projectId, consumedAt: null },
       data: { consumedAt: new Date(), consumedByCertificateId: certificateId },
@@ -737,6 +739,56 @@ export class CommercialCertificationService {
     return {
       grantId: grant.id, rule: SOD_RULE, actorId, approverId: grant.approverId, reason: grant.reason,
     };
+  }
+
+  /**
+   * §I — WHICH authorisation, if any, stands for this actor on this claim version.
+   *
+   * Extracted from `assertSegregation` rather than written beside it, because 7B-iii-f needs the
+   * same answer on a READ — a certifier who has just been granted an exception cannot otherwise
+   * tell whether it is live and version-matched, and "granted against an earlier version because
+   * the claim was amended since" is invisible until the certification is refused. The service's
+   * own history is the argument for sharing rather than re-deriving: this rule was twice TWO
+   * implementations of one question, and only the one a finding named ever got fixed.
+   *
+   * `forUpdate` is the CALLER'S INTENT, not a second rule. A certification is an authority
+   * DECISION, so it reads standing under a lock — a concurrent downgrade must not commit behind an
+   * approval it granted. A screen is asking what is true now and locks nothing. The predicate is
+   * identical either way; only whether the answer is held is different.
+   *
+   * The shape is deliberate. "Select an arbitrary candidate, then check it" answers a different
+   * question from "select a candidate that is valid" whenever more than one can exist — Codex
+   * rounds 8, 9 and 10 were three costumes of that one defect — so the standing filter is INSIDE
+   * the selection and stale rows are simply not candidates.
+   */
+  async resolveGrant(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    billId: string,
+    versionId: string,
+    actorId: string,
+    forUpdate: boolean,
+  ): Promise<
+    | { state: 'live'; grant: { id: string; approverId: string; reason: string } }
+    | { state: 'none' | 'stale-version' | 'approver-lost-standing' }
+  > {
+    const live = await tx.sodGrant.findMany({
+      where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
+      select: { id: true, approverId: true, reason: true },
+      orderBy: { grantedAt: 'asc' },
+    });
+    for (const candidate of live) {
+      if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate })) {
+        return { state: 'live', grant: candidate };
+      }
+    }
+    if (live.length > 0) return { state: 'approver-lost-standing' };
+    // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
+    // approver looked at should not silently carry over to one they never saw
+    const stale = await tx.sodGrant.count({
+      where: { projectId, billId, rule: SOD_RULE, actorId, consumedAt: null },
+    });
+    return { state: stale > 0 ? 'stale-version' : 'none' };
   }
 
   /**

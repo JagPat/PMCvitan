@@ -32,6 +32,15 @@ export interface BillLifecycleCopy {
 }
 
 export interface BillReading<T extends BillLifecycleCopy> {
+  /** WHICH read won, named rather than left to be inferred.
+   *
+   *  Round 4 is why this exists. A caller needed "is the claim bundle still good enough to act
+   *  on?" and derived it as `reading.copy === claim.bill` — object identity. But equal stamps with
+   *  the SAME status is agreement, and this function returns the LIST object for it, so the normal
+   *  case (both reads current) read as "the bundle is stale" and disabled Certify permanently.
+   *  A concept the caller needs is stated here; inferring it from which object came back is how a
+   *  correctness fix became a functional regression. */
+  source: 'agreed' | 'list' | 'claim';
   /** The copy to DISPLAY. Never the claim copy when the two are undecidable — that is the one
    *  that can be older, and showing it would present a regression as current truth. */
   copy: T;
@@ -55,20 +64,22 @@ export function arbitrateBillCopy<T extends BillLifecycleCopy>(
   listCopy: T | null,
   claimCopy: T | null,
 ): BillReading<T> | null {
-  if (listCopy === null) return claimCopy === null ? null : { copy: claimCopy, ambiguous: false };
-  if (claimCopy === null) return { copy: listCopy, ambiguous: false };
+  if (listCopy === null) return claimCopy === null ? null : { copy: claimCopy, ambiguous: false, source: 'claim' };
+  if (claimCopy === null) return { copy: listCopy, ambiguous: false, source: 'list' };
   const listAt = Date.parse(listCopy.statusChangedAt);
   const claimAt = Date.parse(claimCopy.statusChangedAt);
   // An unparseable stamp orders nothing. `Date.parse` answers NaN, and every NaN comparison is
   // false, so a naive `>` would silently fall through to the list copy and never say why — the
   // same "decide anyway" mistake as the equal-stamp tie, arrived at by a different route.
   if (Number.isNaN(listAt) || Number.isNaN(claimAt)) {
-    return { copy: listCopy, ambiguous: claimCopy.status !== listCopy.status };
+    const agree = claimCopy.status === listCopy.status;
+    return { copy: listCopy, ambiguous: !agree, source: agree ? 'agreed' : 'list' };
   }
-  if (claimAt > listAt) return { copy: claimCopy, ambiguous: false };
-  if (listAt > claimAt) return { copy: listCopy, ambiguous: false };
+  if (claimAt > listAt) return { copy: claimCopy, ambiguous: false, source: 'claim' };
+  if (listAt > claimAt) return { copy: listCopy, ambiguous: false, source: 'list' };
   // equal stamps: agreement is not a tie, disagreement is undecidable
-  return { copy: listCopy, ambiguous: claimCopy.status !== listCopy.status };
+  const agree = claimCopy.status === listCopy.status;
+  return { copy: listCopy, ambiguous: !agree, source: agree ? 'agreed' : 'list' };
 }
 
 /**

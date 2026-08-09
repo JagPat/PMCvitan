@@ -68,6 +68,8 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   // same op-type set and the same `com:billtx:` key shape: hydration, the pending rebuild, the
   // flush reconcile and the transition-conflict rule all cover them without a second registry.
   'beginVerification', 'verifyVendorBill',
+  // 7B-iii-f — the certification authority chain.
+  'certifyBill', 'supersedeCertificate',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -151,7 +153,13 @@ export const billCoalesceKey = (vendorId: string, vendorBillNumber: string): str
  * the same lesson about one live attribution per PO line — this is its third instance, so the key
  * names the BILL and `isBillTransitionPending` disables all three together.
  */
-export type BillTransitionVerb = 'submit' | 'amend' | 'reject' | 'begin-verification' | 'verify';
+export type BillTransitionVerb =
+  | 'submit' | 'amend' | 'reject' | 'begin-verification' | 'verify'
+  // 7B-iii-f — certify and supersede are transitions on the CLAIM, so they share the key shape and
+  // the conflict rule. A SoD grant is deliberately NOT one: it names a PERSON, two approvers may
+  // authorise two different actors on one claim concurrently, and coalescing them onto the claim
+  // would silently drop the second authorisation.
+  | 'certify' | 'supersede';
 
 export const billTransitionCoalesceKey = (billId: string, verb: BillTransitionVerb): string =>
   `com:billtx:${billId}:${verb}`;

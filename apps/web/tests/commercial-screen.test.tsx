@@ -61,6 +61,7 @@ const claim = (): CommercialClaimView => ({
     approved: '0.00', paid: '0.00', approvable: null, billStatus: 'certified',
   },
   measurements: {},
+  certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self' },
 });
 
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {
@@ -1354,5 +1355,54 @@ describe('Task 7B-iii-c-i (§E/§F) — the verification chain on the Certificat
       pending: ['com:billtx:bill-9:verify'],
     });
     expect(enabled(other, 'bill-begin-verification-bill-1')).toBe(true);
+  });
+});
+
+
+describe('7B-iii-f round 5 — Supersede respects the cash the bundle is holding', () => {
+  /**
+   * §0: cash already gone is not corrected by correcting a document. The server's paid-vs-approved
+   * bound refuses a supersession while cash stands against the certificate, and the claim bundle
+   * ALREADY carries the payment ledger — so offering the button anyway is the write-ahead lie told
+   * with a figure the screen has in hand.
+   */
+  const paidClaim = (paid: string): CommercialClaimView => {
+    const c = claim();
+    return {
+      ...c,
+      bill: { ...c.bill, status: 'part-paid', statusChangedAt: '2026-08-21T00:00:01.000Z' },
+      certificate: {
+        id: 'cert-1', billId: 'bill-1', versionId: 'ver-1', certifiedAmount: '100.00',
+        certifiedAt: '2026-08-21T00:00:00.000Z', certifiedById: 'u-self',
+        supersededAt: null, supersededById: null, supersedeReason: null, sodException: null,
+      } as never,
+      payments: { ...c.payments, paid },
+    };
+  };
+  const open = (paid: string) => {
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    const c = paidClaim(paid);
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: bundle(), commercialLoad: 'ready',
+      commercialBills: [c.bill], commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': c }, commercialClaimLoad: { 'bill-1': 'ready' },
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    fireEvent.change(r.getByTestId('cert-supersede-reason-bill-1'), { target: { value: 'wrong quantity' } });
+    return r;
+  };
+  afterEach(cleanup);
+
+  it('is withheld while cash stands against the certificate', () => {
+    expect((open('40.00').getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('…and is offered once it does not — the guard is precise, not merely strict', () => {
+    expect((open('0.00').getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled).toBe(false);
   });
 });

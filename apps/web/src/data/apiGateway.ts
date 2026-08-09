@@ -1020,6 +1020,14 @@ export class ApiGateway {
   rejectVendorBill(input: RejectVendorBillInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/bills/reject', input, idempotencyKey);
   }
+  /** §F/§I — CERTIFY a verified claim: freeze its evidence and create the payable. */
+  certifyBill(input: CertifyBillInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/bills/certify', input, idempotencyKey);
+  }
+  /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */
+  supersedeCertificate(input: SupersedeCertificateInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/certificates/supersede', input, idempotencyKey);
+  }
 
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command
   //    routed through the durable write-ahead outbox with the two-key split (see OutboxOp), so a
@@ -1350,6 +1358,11 @@ export interface AmendVendorBillInput {
   lines: VendorBillLineInput[];
 }
 export interface VendorBillStepInput { billId: string }
+/** §F/§I — `versionId` is the claim version the certifier READ (Codex round-2): the server
+ *  refuses a mismatch rather than freezing evidence for a version they never saw. */
+export interface CertifyBillInput { billId: string; versionId: string }
+/** §F — `certificateId` is the document the correction was WRITTEN ABOUT (Codex round-2). */
+export interface SupersedeCertificateInput { billId: string; reason: string; certificateId: string }
 export interface RejectVendorBillInput { billId: string; reason: string }
 
 export interface RecordLabourAttendanceInput {
@@ -1452,6 +1465,8 @@ export type OutboxOp =
   | { t: 'beginVerification'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'verifyVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'submitVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'certifyBill'; input: CertifyBillInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'supersedeCertificate'; input: SupersedeCertificateInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'rejectVendorBill'; input: RejectVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
@@ -1552,6 +1567,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.beginVerification(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'verifyVendorBill':
       return gw.verifyVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'certifyBill':
+      return gw.certifyBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'supersedeCertificate':
+      return gw.supersedeCertificate(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'submitVendorBill':
       return gw.submitVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'amendVendorBill':

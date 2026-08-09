@@ -81,6 +81,10 @@ export const BILL_REJECTABLE_FROM = ['draft', 'submitted', 'under-verification',
  */
 export const BILL_BEGIN_VERIFICATION_FROM = ['submitted'] as const;
 export const BILL_VERIFY_FROM = ['under-verification'] as const;
+/** §F/§I — certification applies to a VERIFIED claim, because the §E verdict is what makes it
+ *  safe. (Supersession's admissible set is `BILL_STATUSES_PAST_CERTIFICATION`, which already
+ *  exists and is already read by the service.) */
+export const BILL_CERTIFY_FROM = ['verified'] as const;
 
 /**
  * §F — the duplicate-claim key as the SERVER computes it: case- and whitespace-normalized.

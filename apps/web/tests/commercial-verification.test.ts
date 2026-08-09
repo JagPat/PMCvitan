@@ -38,14 +38,17 @@ describe('§F — one arbitration rule for both surfaces that act on a claim lif
   it('prefers the copy with the later server stamp, in EITHER direction', () => {
     const later = copy('verified', '2026-08-21T00:00:02.000Z');
     const earlier = copy('submitted', '2026-08-21T00:00:01.000Z');
-    expect(arbitrateBillCopy(earlier, later)).toEqual({ copy: later, ambiguous: false });
-    expect(arbitrateBillCopy(later, earlier)).toEqual({ copy: later, ambiguous: false });
+    expect(arbitrateBillCopy(earlier, later)).toMatchObject({ copy: later, ambiguous: false, source: 'claim' });
+    expect(arbitrateBillCopy(later, earlier)).toMatchObject({ copy: later, ambiguous: false, source: 'list' });
   });
 
   it('EQUAL stamp + SAME status is agreement, not a tie', () => {
     const a = copy('submitted', '2026-08-21T00:00:01.000Z');
     const b = copy('submitted', '2026-08-21T00:00:01.000Z');
     expect(arbitrateBillCopy(a, b)?.ambiguous).toBe(false);
+    // …and it says so: round 4's regression came from inferring "is the bundle current?" from
+    // WHICH OBJECT came back, when agreement deliberately returns the list one
+    expect(arbitrateBillCopy(a, b)?.source).toBe('agreed');
   });
 
   /**
@@ -75,8 +78,8 @@ describe('§F — one arbitration rule for both surfaces that act on a claim lif
 
   it('ONE copy is authoritative; NO copy offers nothing', () => {
     const only = copy('submitted', '2026-08-21T00:00:01.000Z');
-    expect(arbitrateBillCopy(only, null)).toEqual({ copy: only, ambiguous: false });
-    expect(arbitrateBillCopy(null, only)).toEqual({ copy: only, ambiguous: false });
+    expect(arbitrateBillCopy(only, null)).toMatchObject({ copy: only, ambiguous: false, source: 'list' });
+    expect(arbitrateBillCopy(null, only)).toMatchObject({ copy: only, ambiguous: false, source: 'claim' });
     // and a control with no reading at all acts on nothing
     expect(arbitrateBillCopy(null, null)).toBeNull();
     expect(transitionOffered(null, BILL_VERIFY_FROM)).toBe(false);
@@ -340,4 +343,115 @@ describe('Q-a — a read releases a key only if it could have OBSERVED the write
     expect(s().commercialClaims['bill-1']?.bill.status).toBe('under-verification');
     expect(s().commercialClaimLoad['bill-1']).toBe('ready');
   });
+});
+
+describe('Task 7B-iii-f (§F/§I) — the certification authority chain', () => {
+  let calls: string[];
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    calls = [];
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc', activeProjectId: 'p-1', online: false,
+    });
+    s()._setGateway({
+      certifyBill: vi.fn(async (i: { billId: string }) => { calls.push(`certify:${i.billId}`); }),
+      supersedeCertificate: vi.fn(async (i: { billId: string }) => { calls.push(`supersede:${i.billId}`); }),
+      // the flush reconcile re-reads commercial truth after any commercial write settles; these
+      // are read boundaries, not what these probes are about
+      commercialMoneyPosition: vi.fn(async () => { throw new Error('read boundary'); }),
+      commercialBills: vi.fn(async () => { throw new Error('read boundary'); }),
+      commercialClaim: vi.fn(async () => { throw new Error('read boundary'); }),
+      // Every replay chains a snapshot, and a throwing one is a TRANSIENT error that stops the
+      // flush — so without this the probe would have silently only ever exercised the first
+      // command. It answers a snapshot for a DIFFERENT project, which `acceptSnapshot` discards as
+      // out-of-scope on its first check: the replay path is what is under test here, not snapshot
+      // application, and a stub that applied would be reaching past the boundary.
+      snapshot: vi.fn(async () => ({ project: { id: 'not-this-project' } })),
+    } as unknown as ApiGateway);
+  });
+
+  const keys = () => s().outbox.flatMap((o) => {
+    const k = (o as { coalesceKey?: unknown }).coalesceKey;
+    return typeof k === 'string' ? [k] : [];
+  });
+
+  /**
+   * Certify and supersede are transitions on the CLAIM, so they join the existing conflict rule and
+   * a pending verify blocks them — the claim is the constrained resource, not the verb.
+   */
+  it('certify and supersede join the CLAIM-wide transition conflict', () => {
+    s().beginVerification('bill-1');
+    s().certifyBill('bill-1', 'ver-1');
+    s().supersedeCertificate('bill-1', 'wrong quantity', 'cert-1');
+    expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'begin-verification')]);
+
+    useStore.setState({ outbox: [], commercialPending: [] });
+    s().certifyBill('bill-1', 'ver-1');
+    s().verifyVendorBill('bill-1');
+    expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
+  });
+
+  /**
+   * An authorisation is NOT a claim transition, and keying it on the claim would be a real defect:
+   * an approver authorising Ravi has not authorised Sunil, the server records a separate grant for
+   * each, and coalescing the second away would leave the approver believing they had granted
+   * something they had not. Labour round 5 inverted — there the key was too NARROW for a shared
+   * resource; here it would be too WIDE for independent ones.
+   */
+
+  it('each command carries its OWN authority, and they are not interchangeable', () => {
+    // `commercial.certify` and `commercial.sod.grant` both resolve to pmc today, so a role probe
+    // cannot separate them; what CAN be asserted is that the dispatcher reads the policy per
+    // command rather than one blanket answer — a contractor holds none of the three.
+    useStore.setState({ role: 'contractor' });
+    s().certifyBill('bill-1', 'ver-1');
+    s().supersedeCertificate('bill-1', 'why', 'cert-1');
+    expect(s().outbox).toHaveLength(0);
+  });
+
+  it('is inert off the commercial pilot', () => {
+    useStore.setState({ capabilities: [] });
+    s().certifyBill('bill-1', 'ver-1');
+    s().supersedeCertificate('bill-1', 'why', 'cert-1');
+    expect(s().outbox).toHaveLength(0);
+  });
+
+  it('replays each through its OWN route under its original key', async () => {
+    s().certifyBill('bill-1', 'ver-1');
+    useStore.setState({ online: true });
+    await s().flushOutbox();
+    await flush();
+    expect(calls).toEqual(['certify:bill-1']);
+  });
+
+
+  it('the three op types are commercial ops, so hydration and the reconcile cover them', () => {
+    for (const t of ['certifyBill', 'supersedeCertificate']) {
+      expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
+    }
+  });
+});
+
+describe('7B-iii-f correction — the acts carry the facts they were decided on', () => {
+  /**
+   * The root the corrections turn on: a queued command replays against whatever is live when the
+   * outbox drains, not against what the user was looking at when they decided. Round 1 pinned one
+   * command and left its two siblings — fixing the instance a finding named instead of the class
+   * it belongs to, which is the root `docs/reviews/pr-310-convergence.md` names.
+   */
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({ capabilities: ['commercial'], role: 'pmc', activeProjectId: 'p-1', online: false });
+    s()._setGateway({} as unknown as ApiGateway);
+  });
+
+  it('round-2: certify carries the version READ, and supersede the certificate READ', () => {
+    s().certifyBill('bill-1', 'ver-7');
+    expect((s().outbox[0] as { input: { versionId?: string } }).input.versionId).toBe('ver-7');
+    useStore.setState({ outbox: [], commercialPending: [] });
+    s().supersedeCertificate('bill-1', 'wrong quantity', 'cert-3');
+    expect((s().outbox[0] as { input: { certificateId?: string } }).input.certificateId).toBe('cert-3');
+  });
+
+
 });
