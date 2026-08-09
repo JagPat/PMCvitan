@@ -1000,6 +1000,14 @@ export class ApiGateway {
   recordVendorBill(input: RecordVendorBillInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/bills', input, idempotencyKey);
   }
+  /** §F — open the §E three-way check on a submitted claim. */
+  beginVerification(input: VendorBillStepInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/bills/begin-verification', input, idempotencyKey);
+  }
+  /** §E — run the three-way check and record its verdict; `matched` verifies, anything else disputes. */
+  verifyVendorBill(input: VendorBillStepInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/bills/verify', input, idempotencyKey);
+  }
   /** §F — submit a lodged claim for verification. */
   submitVendorBill(input: VendorBillStepInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/bills/submit', input, idempotencyKey);
@@ -1441,6 +1449,8 @@ export type OutboxOp =
   // measurement id alone; the cap needs the line a positive correction spends authority on.
   | { t: 'correctMeasurement'; input: CorrectMeasurementInput; labourPoLineId: string; idempotencyKey: string; coalesceKey: string }
   | { t: 'recordVendorBill'; input: RecordVendorBillInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'beginVerification'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'verifyVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'submitVendorBill'; input: VendorBillStepInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'rejectVendorBill'; input: RejectVendorBillInput; idempotencyKey: string; coalesceKey: string }
@@ -1538,6 +1548,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.correctMeasurement(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'recordVendorBill':
       return gw.recordVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'beginVerification':
+      return gw.beginVerification(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'verifyVendorBill':
+      return gw.verifyVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'submitVendorBill':
       return gw.submitVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'amendVendorBill':

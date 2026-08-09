@@ -64,6 +64,10 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   // pending rebuild and the flush reconcile cover them without a second registry to keep in sync.
   'takeMeasurement', 'correctMeasurement', 'recordVendorBill',
   'submitVendorBill', 'amendVendorBill', 'rejectVendorBill',
+  // 7B-iii-c-i — the verification chain. Two more transitions on the SAME claim, so they join the
+  // same op-type set and the same `com:billtx:` key shape: hydration, the pending rebuild, the
+  // flush reconcile and the transition-conflict rule all cover them without a second registry.
+  'beginVerification', 'verifyVendorBill',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -147,7 +151,9 @@ export const billCoalesceKey = (vendorId: string, vendorBillNumber: string): str
  * the same lesson about one live attribution per PO line — this is its third instance, so the key
  * names the BILL and `isBillTransitionPending` disables all three together.
  */
-export const billTransitionCoalesceKey = (billId: string, verb: 'submit' | 'amend' | 'reject'): string =>
+export type BillTransitionVerb = 'submit' | 'amend' | 'reject' | 'begin-verification' | 'verify';
+
+export const billTransitionCoalesceKey = (billId: string, verb: BillTransitionVerb): string =>
   `com:billtx:${billId}:${verb}`;
 
 /** Whether ANY lifecycle transition is pending for this claim, whichever verb it is. */
@@ -170,7 +176,9 @@ export const isBillTransitionPending = (key: string, billId: string): boolean =>
  */
 export function commercialWriteBlocked(coalesceKey: string, pending: readonly string[]): boolean {
   if (pending.includes(coalesceKey)) return true;
-  const tx = /^com:billtx:(.+):(?:submit|amend|reject)$/u.exec(coalesceKey);
+  // the verb list is derived from the KEY SHAPE, not restated: a new transition that forgot to
+  // appear here would be a transition the dispatcher does not treat as conflicting, which is M7
+  const tx = /^com:billtx:(.+):[a-z-]+$/u.exec(coalesceKey);
   if (tx) return pending.some((k) => isBillTransitionPending(k, tx[1]!));
   // Codex M7 — the SAME conflict rule for corrections. The key deliberately carries the delta, so
   // −1 and −2 against one measurement are different keys; without this the screen disabled the
@@ -206,13 +214,34 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
  * landed. `com:billtx:` is deliberately owned by BOTH the list and that claim's own bundle: each
  * carries the claim's status, and the screen already arbitrates between them by stamp.
  */
-export type CommercialRead =
+export type CommercialRead = {
+  /**
+   * Codex Q-a — whether this read could have OBSERVED the writes that have settled. A per-resource
+   * token orders reads against EACH OTHER and says nothing about causality: refresh a resource,
+   * queue a write against it, let the write commit, and the older refresh can still land first and
+   * release the key over pre-write truth. False for any read that STARTED before a commercial write
+   * settled; such a read applies its value and releases nothing, and the reconcile starts a fresh
+   * read that does. Holding a key too long is recoverable (Retry); releasing it early re-enables a
+   * control over truth the user cannot see, and the write-ahead outbox turns that second click into
+   * a command reported saved and then dropped on a terminal 409.
+   *
+   * 7B-iii-c-i — this was a FIELD OF ONE VARIANT when Q-a found it on the register. That made it a
+   * property of one read rather than of reading, and the other three cleared keys with no causality
+   * term at all: a stale claim bundle landing after a `submit` settled cleared the key while still
+   * showing `draft`, so Submit re-enabled itself. The verification chain adds two more transitions
+   * released by exactly those reads, so the term is hoisted to where every variant must carry it —
+   * the compiler is what makes forgetting it impossible, which is the only enforcement that holds.
+   */
+  observedWrite: boolean;
+} & (
   | { read: 'money' }
   | { read: 'bills' }
   | { read: 'claim'; billId: string }
-  | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[]; observedWrite: boolean };
+  | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] }
+);
 
 export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
+  if (!r.observedWrite) return false;
   switch (r.read) {
     case 'money':
       return coalesceKey.startsWith('com:budget:') || coalesceKey.startsWith('com:head:')
@@ -222,14 +251,6 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
     case 'claim':
       return isBillTransitionPending(coalesceKey, r.billId);
     case 'lineRegister': {
-      // Codex Q-a — a read may only release a key if it could have OBSERVED the write. The
-      // per-line token orders reads against each other and says nothing about causality: refresh
-      // LPL-1, queue a measurement, let it commit, and the older refresh can still land first and
-      // release the key over a pre-write register. `observedWrite` is false for any read that
-      // STARTED before a commercial write settled, and such a read releases nothing — the reconcile
-      // starts a fresh one that does. Holding a key too long is recoverable (Retry); releasing it
-      // early is a second command against evidence the user cannot see.
-      if (!r.observedWrite) return false;
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;
       const corr = /^com:mcorr:(.+):[^:]*$/u.exec(coalesceKey);

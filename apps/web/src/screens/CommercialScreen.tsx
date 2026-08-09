@@ -5,9 +5,10 @@ import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
+import { BILL_BEGIN_VERIFICATION_FROM, BILL_REJECTABLE_FROM, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
+import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import styles from './responsive.module.css';
 
 /**
@@ -171,6 +172,9 @@ export function CommercialScreen() {
   // rather than a formality (Codex J1).
   const mayMeasure = may('commercial.measure');
   const mayBill = may('commercial.bill');
+  // 7B-iii-c-i — pmc-only, and DELIBERATELY not the same permission as `commercial.bill`: §E's
+  // separation of duties starts here, with the actor who lodges a claim being unable to verify it.
+  const mayVerify = may('commercial.verify');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
@@ -180,6 +184,9 @@ export function CommercialScreen() {
   const correctMeasurement = useStore((s) => s.correctMeasurement);
   const submitBill = useStore((s) => s.submitVendorBill);
   const rejectBill = useStore((s) => s.rejectVendorBill);
+  // 7B-iii-c-i — the verifier's two.
+  const beginVerification = useStore((s) => s.beginVerification);
+  const verifyBill = useStore((s) => s.verifyVendorBill);
   const recordBill = useStore((s) => s.recordVendorBill);
   const loadCommercialBills = useStore((s) => s.loadCommercialBills);
   const loadCommercialClaim = useStore((s) => s.loadCommercialClaim);
@@ -967,46 +974,18 @@ export function CommercialScreen() {
                     <div style={{ ...rowCard, ...muted }} data-testid="commercial-claims-empty">No vendor claim has been recorded yet.</div>
                   )}
                   {v.value.map((row) => {
-                // The SELECTED row reads whichever COPY OF THIS BILL is newer, because the list and
-                // the claim bundle both carry its status and are fetched independently.
-                //
-                // Four answers, and the fourth is the first about the bill rather than about the
-                // requests. F4 preferred the claim whenever one existed; H4 narrowed that to
-                // "whenever it did not error"; I2 replaced both with a monotonic counter over read
-                // COMPLETIONS — and that is still a proxy, because a response completing later does
-                // not describe a later moment. The interleaving that breaks it: a list request
-                // starts while this bill is `verified`, certification commits, a claim request
-                // starts and returns `certified`, and the held list response lands LAST carrying
-                // `verified`. Its completion counter is higher, so the row regressed to `verified`
-                // and offered the transitions of a claim that had already been certified.
-                //
-                // `statusChangedAt` is the domain moment the server stamped on the transition
-                // itself, so comparing it asks about the BILL instead of about the requests.
-                //
-                // But it is NOT a lifecycle version. Every transition writes `new Date()` at
-                // millisecond precision, so two DIFFERENT transitions can carry the same stamp:
-                // certify at T, approve at T, and a claim read taken between them ties with a list
-                // read taken after. My first rule broke that tie with `>=` toward the claim copy —
-                // imposing a total order on data that does not have one, and regressing the row to
-                // `certified` in exactly that sequence.
-                //
-                // Equal stamp + SAME status is not a tie at all; the copies agree. Equal stamp +
-                // DIFFERING status is genuinely undecidable from what the reads carry, so this
-                // refuses to decide: it shows the LIST row (never the claim copy, which is the one
-                // that can be older), says the two disagree, and disables this bill's transitions
-                // until a canonical read resolves it. A fresh pair of reads converges, because the
-                // ambiguity is a property of reading at two times, not of the timestamps.
-                //
-                // The durable fix is a monotonic per-bill lifecycle version from the server; that
-                // is a schema change and is named in the convergence audit rather than smuggled
-                // into the end of an over-budget unit. Refusing to decide is sound without it.
-                const claimCopy = row.id === selectedBillId ? claim?.bill ?? null : null;
-                const sameMoment = claimCopy !== null
-                  && Date.parse(claimCopy.statusChangedAt) === Date.parse(row.statusChangedAt);
-                const ambiguous = sameMoment && claimCopy !== null && claimCopy.status !== row.status;
-                const b = claimCopy !== null && !ambiguous
-                  && Date.parse(claimCopy.statusChangedAt) >= Date.parse(row.statusChangedAt)
-                  ? claimCopy : row;
+                // The SELECTED row reads whichever COPY OF THIS BILL is authoritative, because the
+                // list and the claim bundle both carry its status and are fetched independently.
+                // `arbitrateBillCopy` owns that rule and the reasoning behind it — including why an
+                // equal stamp with a differing status is refused rather than broken toward either
+                // copy. It is a shared function rather than an expression here because the
+                // Certification tab acts on the same lifecycle and the ambiguity term is the part a
+                // second surface forgets.
+                const reading = arbitrateBillCopy(row, row.id === selectedBillId ? claim?.bill ?? null : null);
+                // `row` is non-null here, so the reading is too; the fallback satisfies the type
+                // without a non-null assertion and is the identity in this branch.
+                const b = reading?.copy ?? row;
+                const ambiguous = reading?.ambiguous ?? false;
                 return (
                   <div key={b.id}>
                   <button
@@ -1042,7 +1021,7 @@ export function CommercialScreen() {
                       <Button
                         variant="ink"
                         data-testid={`bill-submit-${b.id}`}
-                        disabled={ambiguous || !(BILL_SUBMITTABLE_FROM as readonly string[]).includes(b.status) || billTxPending(b.id)}
+                        disabled={!transitionOffered(reading, BILL_SUBMITTABLE_FROM) || billTxPending(b.id)}
                         onClick={() => submitBill(b.id)}
                       >
                         {billTxPending(b.id) ? 'Working…' : 'Submit'}
@@ -1057,7 +1036,7 @@ export function CommercialScreen() {
                       <Button
                         variant="ghost"
                         data-testid={`bill-reject-${b.id}`}
-                        disabled={ambiguous || !(BILL_REJECTABLE_FROM as readonly string[]).includes(b.status) || !billReasonFor(b.id).trim() || billTxPending(b.id)}
+                        disabled={!transitionOffered(reading, BILL_REJECTABLE_FROM) || !billReasonFor(b.id).trim() || billTxPending(b.id)}
                         onClick={() => rejectBill(b.id, billReasonFor(b.id).trim())}
                       >
                         Reject
@@ -1096,6 +1075,55 @@ export function CommercialScreen() {
                       </div>
                     )}
                   </div>
+                  {/* §E/§F — the verification CHAIN, on the tab that shows what it decides.
+                      `begin-verification` opens the three-way check on a submitted claim; `verify`
+                      runs it and records the verdict, which moves the claim to `verified` or
+                      `disputed` depending on what the check finds. Neither takes an operator
+                      verdict as input: §E DERIVES it, so there is nothing to type here.
+
+                      Gated on `arbitrateBillCopy` for the same reason the Claims tab is, and
+                      through the same function. This panel renders `claim.bill` — the copy that
+                      CAN be the older one — so asking it alone would offer "Begin verification"
+                      on a claim the list already shows as verified, and the write-ahead outbox
+                      would report that saved before dropping it on a terminal 409. */}
+                  {(() => {
+                    const listRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
+                    const reading = arbitrateBillCopy(listRow, claim.bill);
+                    return (
+                      <>
+                        {/* Outside the authority gate on purpose: an undecidable pair means the
+                            status and verdict above may not be current, and that is true for
+                            whoever is reading them. Hiding it from the actor who lodged the claim
+                            would leave them the only person on this page not told. */}
+                        {reading?.ambiguous && (
+                          <div style={{ ...rowCard, ...muted, borderColor: 'var(--amber-border)', background: 'var(--amber-chip)', color: 'var(--amber-text)' }} data-testid="commercial-verification-ambiguous">
+                            two reads disagree about this claim&rsquo;s status and carry the same
+                            timestamp — refresh to resolve
+                          </div>
+                        )}
+                        {mayVerify && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }} data-testid="commercial-verification-actions">
+                            <Button
+                              variant="ink"
+                              data-testid={`bill-begin-verification-${claim.bill.id}`}
+                              disabled={!transitionOffered(reading, BILL_BEGIN_VERIFICATION_FROM) || billTxPending(claim.bill.id)}
+                              onClick={() => beginVerification(claim.bill.id)}
+                            >
+                              {billTxPending(claim.bill.id) ? 'Working…' : 'Begin verification'}
+                            </Button>
+                            <Button
+                              variant="ink"
+                              data-testid={`bill-verify-${claim.bill.id}`}
+                              disabled={!transitionOffered(reading, BILL_VERIFY_FROM) || billTxPending(claim.bill.id)}
+                              onClick={() => verifyBill(claim.bill.id)}
+                            >
+                              Record verdict
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                   {claim.certificate === null ? (
                     <div style={{ ...rowCard, ...muted }} data-testid="commercial-certificate-none">
                       Not certified yet. A claim before certification is an ordinary state, not an error.

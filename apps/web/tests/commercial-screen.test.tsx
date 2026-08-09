@@ -1229,3 +1229,130 @@ describe('Task 7B-iii-b round 2 — the shared value rules (M5, M6, M7)', () => 
   });
 
 });
+
+describe('Task 7B-iii-c-i (§E/§F) — the verification chain on the Certification tab', () => {
+  /**
+   * `begin-verification` and `verify` live on Certification rather than Claims because that is the
+   * tab showing what they decide: the §E triple and its verdict. Claims is the entry point to a
+   * lifecycle; Certification is the lifecycle being worked.
+   *
+   * The gating is the part worth rendering rather than unit-testing. This panel is built from
+   * `claim.bill` — the copy that CAN be older than the list's — so a control asking it alone would
+   * offer a transition the server has already moved past, and the write-ahead outbox would report
+   * that saved before dropping it on a terminal 409 nobody sees.
+   */
+  const at = (ms: number) => new Date(Date.UTC(2026, 7, 21, 0, 0, 0, ms)).toISOString();
+  type BillStatus = CommercialClaimView['bill']['status'];
+  const withStatus = (status: BillStatus, statusChangedAt: string): CommercialClaimView => {
+    const c = claim();
+    return { ...c, bill: { ...c.bill, status, statusChangedAt } };
+  };
+
+  const openCertification = (opts: {
+    listStatus: BillStatus; listAt: string;
+    claimStatus: BillStatus; claimAt: string;
+    role?: 'pmc' | 'engineer';
+    pending?: string[];
+  }) => {
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    useStore.setState({
+      capabilities: ['commercial'],
+      role: opts.role ?? 'pmc',
+      commercialView: bundle(),
+      commercialLoad: 'ready',
+      commercialBills: [withStatus(opts.listStatus, opts.listAt).bill],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': withStatus(opts.claimStatus, opts.claimAt) },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialPending: opts.pending ?? [],
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-certification'));
+    return r;
+  };
+  const enabled = (r: ReturnType<typeof render>, id: string) =>
+    !(r.getByTestId(id) as HTMLButtonElement).disabled;
+
+  afterEach(cleanup);
+
+  it('offers each transition exactly where the SERVER admits it', () => {
+    for (const [status, begins, verifies] of ([
+      ['draft', false, false],
+      ['submitted', true, false],
+      ['under-verification', false, true],
+      ['verified', false, false],
+      ['disputed', false, false],
+    ] as const satisfies ReadonlyArray<readonly [BillStatus, boolean, boolean]>)) {
+      const r = openCertification({ listStatus: status, listAt: at(1), claimStatus: status, claimAt: at(1) });
+      expect(enabled(r, 'bill-begin-verification-bill-1'), `begin @ ${status}`).toBe(begins);
+      expect(enabled(r, 'bill-verify-bill-1'), `verify @ ${status}`).toBe(verifies);
+      cleanup();
+    }
+  });
+
+  it('reads the ARBITRATED status, not the claim copy it renders', () => {
+    // the list carries the LATER moment: this claim is already under verification, and the panel's
+    // own copy is the stale one. Asking `claim.bill.status` would offer "Begin verification" again.
+    const r = openCertification({
+      listStatus: 'under-verification', listAt: at(2),
+      claimStatus: 'submitted', claimAt: at(1),
+    });
+    expect(enabled(r, 'bill-begin-verification-bill-1')).toBe(false);
+    expect(enabled(r, 'bill-verify-bill-1')).toBe(true);
+  });
+
+  it('refuses BOTH transitions while the two reads are undecidable, and says why', () => {
+    // equal stamp, differing status — `new Date()` is millisecond-precision, so this is a state two
+    // real transitions can produce, and neither copy can be shown to be the later one
+    const r = openCertification({
+      listStatus: 'under-verification', listAt: at(1),
+      claimStatus: 'submitted', claimAt: at(1),
+    });
+    expect(r.getByTestId('commercial-verification-ambiguous')).toBeTruthy();
+    expect(enabled(r, 'bill-begin-verification-bill-1')).toBe(false);
+    expect(enabled(r, 'bill-verify-bill-1')).toBe(false);
+  });
+
+  it('is ABSENT for an engineer, who may lodge and submit but not verify', () => {
+    const r = openCertification({
+      listStatus: 'submitted', listAt: at(1), claimStatus: 'submitted', claimAt: at(1),
+      role: 'engineer',
+    });
+    expect(r.queryByTestId('commercial-verification-actions')).toBeNull();
+    // …and the claim's own §E triple is still readable: this is a separation of authority, not of
+    // visibility. A verifier's decision is exactly what the claiming actor needs to see.
+    expect(r.getByTestId('verification-verdict')).toBeTruthy();
+  });
+
+  it('warns EVERY reader when the two reads disagree, not just the one who can act', () => {
+    // the status and verdict rendered above may not be current, and that is true for whoever is
+    // reading them — an authority gate on the WARNING would leave the actor who lodged the claim
+    // the only person on the page not told
+    const r = openCertification({
+      listStatus: 'under-verification', listAt: at(1),
+      claimStatus: 'submitted', claimAt: at(1),
+      role: 'engineer',
+    });
+    expect(r.getByTestId('commercial-verification-ambiguous')).toBeTruthy();
+    expect(r.queryByTestId('commercial-verification-actions')).toBeNull();
+  });
+
+  it('disables the whole chain while ANY transition on this claim is pending', () => {
+    const r = openCertification({
+      listStatus: 'submitted', listAt: at(1), claimStatus: 'submitted', claimAt: at(1),
+      pending: ['com:billtx:bill-1:begin-verification'],
+    });
+    expect(enabled(r, 'bill-begin-verification-bill-1')).toBe(false);
+    expect(enabled(r, 'bill-verify-bill-1')).toBe(false);
+    // a pending transition on a DIFFERENT claim constrains nothing here
+    cleanup();
+    const other = openCertification({
+      listStatus: 'submitted', listAt: at(1), claimStatus: 'submitted', claimAt: at(1),
+      pending: ['com:billtx:bill-9:verify'],
+    });
+    expect(enabled(other, 'bill-begin-verification-bill-1')).toBe(true);
+  });
+});
