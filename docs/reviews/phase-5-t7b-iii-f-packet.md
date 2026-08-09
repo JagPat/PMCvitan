@@ -19,8 +19,8 @@ clear, which is exactly the dead end 7B-iii-b was split to avoid.
 
 | | |
 |---|---|
-| Files | 12 |
-| Changed lines | 592 |
+| Files | 14 |
+| Changed lines | 700 (including the round-1 correction) |
 | Budget | 20 files / 1,500 lines — inside, marker not used |
 | Schema / migration | none |
 | New server behaviour | none (one grant rule extracted and shared; two inline `from:` literals replaced by shared constants the services read) |
@@ -86,9 +86,30 @@ the next. Server and client mutations listed together:
 - `pnpm check` — **EXIT 0** (web 683/683 across 45 files, API 780/780 across 57 files, lint + typecheck + both builds clean)
 - `commercial-verification.test.ts` **25/25**; `commercial.test.ts` + `commercial-screen.test.tsx` green (133/133 together)
 - API integration, focused: `phase5-t7bii-claim-read` **12/12** (5 new preflight probes); `phase5-t5b-certification` **49/49 unchanged**
-- Full API integration suite on a pristine migrated database — **86 files / 1033 tests**, exit 0
+- Full API integration suite on a pristine migrated database — 86 files / 1033 tests at the initial head; re-running over the correction head, result recorded on the PR before promotion
 - No migration, so `upgrade-proof.sh` is not applicable
 - Browser e2e runs in CI (the local Chromium build does not match the pinned Playwright revision)
+
+## Round 1 — four Codex findings on head `495718d`, all real, all mine
+
+Three share one root, and naming it is the point: **I modelled a SoD authorisation
+as a bare (claim, person) fact, when §I makes it a version-pinned authority naming a
+real identity.** Each looseness put a command the server is certain to refuse into the
+durable write-ahead outbox — reported saved, dropped on reconnect. That is the failure
+shape the last four units have been closing, reintroduced by me in the unit that
+closes it for certification.
+
+| # | Finding | Fix |
+|---|---|---|
+| F1 | the excused person was **free text** — a display name, a typo, or the approver's own id all queued a grant | a picker over the ACTIVE team minus the caller. The caller's own id must come from the server (`certifyPreflight.callerActorId`), because the session carries a role and a name and never an actor id — smaller and more honest than threading a user id through every sign-in path |
+| F2 | `resolveActor(this.prisma, …)` ran a root-client `user.findUnique` **inside** the repeatable-read claim transaction — a read outside the snapshot the method exists to assemble, and a second connection checkout that can self-block | the call is gone; `actorId` is `user.sub`, and the display name it resolved was unused |
+| F3 | **my own doctrine, broken in the PR that hoisted it.** `certifyPreflight` answers for the CALLER, so an approver reloading after authorising Ravi saw nothing of Ravi's grant while its pending key cleared, re-arming the form for a duplicate | fix the CONTRACT, not the key — the bundle carries the claim's live `sodGrants`, so the read genuinely shows what it clears. §I's rule is that the exception is NAMED rather than silent, so a register that hid it was wrong on its own terms |
+| F4 | a grant is version-pinned so permission never carries to a claim the approver never saw — but the server resolved "live" at EXECUTION, and through the outbox those are different moments | the command carries the viewed `versionId`; the server REFUSES drift rather than re-pinning. Optional in the schema and checked when present, so in-process callers are unchanged — the asymmetry is stated in the contract |
+
+Seven mutations, each reddening exactly its own probe. **One probe was rewritten after
+passing under mutation:** "Authorise stays disabled" used only valid values, so it never
+exercised the eligibility term; the probe that does is a chosen member *leaving the
+project* with the draft still holding their id.
 
 ## What is deliberately not here
 
