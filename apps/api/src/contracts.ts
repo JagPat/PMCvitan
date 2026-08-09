@@ -1505,12 +1505,33 @@ export const grantSodExceptionSchema = z
     // HTTP boundary. Every in-process caller — the Task-5 suites, the operator paths — constructs
     // this object directly, and a default that lives only in the pipe leaves them writing a NULL
     // rule. The default belongs with the rule, in the service.
+    /**
+     * §I — the claim VERSION and the STATUS the approver had in front of them (7B-iii-h).
+     *
+     * REQUIRED at this boundary, and the asymmetry with the service's own shape is deliberate:
+     * round 6 of PR #310 established that making a viewed-fact pin optional so in-process callers
+     * compile skips the guard exactly where the risk lives — a posted or replayed body. The
+     * boundary is attacker-reachable; an in-process caller is not, and carries no rendered fact.
+     *
+     * The VERSION says which claim; the STATUS says what was true about it. One version walks
+     * `submitted → under-verification → verified` without changing id, so the version alone would
+     * let an authorisation issued before the §E verdict excuse the certification of a verdict its
+     * approver never saw.
+     */
+    versionId: z.string().min(1),
+    status: z.string().min(1),
     rule: z
       .enum([SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove])
       .optional(),
   })
   .strict();
 export type GrantSodExceptionInput = z.infer<typeof grantSodExceptionSchema>;
+/** The SERVICE's shape — weaker than the boundary's, for the reason given on `CertifyBillCommand`. */
+export type GrantSodExceptionCommand = {
+  billId: string; actorId: string; reason: string;
+  versionId?: string; status?: string;
+  rule?: GrantSodExceptionInput['rule'];
+};
 
 /** §F — past certification the correction path is a SUPERSEDING certificate, never an edit. */
 export const supersedeCertificateSchema = z

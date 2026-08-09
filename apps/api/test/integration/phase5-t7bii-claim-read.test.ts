@@ -538,4 +538,128 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
 
 
 
+
+  // ── 7B-iii-h — the §I grant records the STATE it was justified against ───────────────────────
+
+  const grantAt = async (
+    projectId: string, billId: string, actorId: string, approverId: string,
+    pins: { versionId?: string; status?: string } = {},
+  ) => certification.grantSodException(
+    projectId, { billId, actorId, reason: 'two-person practice', ...pins }, asUser(projectId, approverId),
+  );
+
+  it('h1: a grant RECORDS the reviewed state, and it still holds when the authority is spent', async () => {
+    const projectId = await freshProject();
+    const recorder = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');            // recorded BY `recorder`
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+
+    const grant = await grantAt(projectId, billId, recorder, f.memberUser.id);
+    const row = await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } });
+    expect(row.reviewedStatus, 'the state the approver reviewed is RECORDED, not merely checked').toBe('verified');
+
+    // THE LEGAL PATH (the round-4 lesson): a guard that only ever refuses is indistinguishable
+    // from one that never permits, so the ordinary case is asserted first.
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, recorder))).certifyPreflight)
+      .toMatchObject({ grantState: 'live', grantId: grant.id });
+    const cert = await certification.certify(projectId, { billId }, asUser(projectId, recorder));
+    expect(cert.sodException?.grantId).toBe(grant.id);
+  });
+
+  it('h2: an authorisation given BEFORE the §E verdict cannot be spent after it', async () => {
+    const projectId = await freshProject();
+    const recorder = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const recorded = await bills.record(projectId, {
+      vendorId: line.vendorId, vendorBillNumber: `V-H2-${seq++}`, documentDate: '2026-08-20',
+      lines: [{ poLineId: line.poLineId, quantity: '100', rate: '1' }],
+    }, pmc(projectId));
+    await bills.submit(projectId, { billId: recorded.id }, pmc(projectId));
+
+    // authorised while the claim is SUBMITTED — the verdict does not exist yet. The pins are sent
+    // exactly as the client sends them; they are also what makes a later re-authorisation a
+    // DIFFERENT command rather than an idempotent replay of this one.
+    const submittedVersion = (await claims.readClaim(projectId, recorded.id, pmc(projectId)))
+      .bill.versions.find((v) => v.live)!.id;
+    const grant = await grantAt(projectId, recorded.id, recorder, f.memberUser.id,
+      { versionId: submittedVersion, status: 'submitted' });
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('submitted');
+
+    // the claim verifies — SAME version, different state
+    await bills.beginVerification(projectId, { billId: recorded.id }, pmc(projectId));
+    await verification.verify(projectId, { billId: recorded.id }, pmc(projectId));
+    const versions = (await claims.readClaim(projectId, recorded.id, pmc(projectId))).bill.versions;
+    expect(versions.find((v) => v.live)!.id, 'the version must NOT have moved, or this probe is about the wrong thing')
+      .toBe(grant.versionId);
+
+    // the authority is not spendable on a verdict its approver never reviewed
+    expect((await claims.readClaim(projectId, recorded.id, asUser(projectId, recorder))).certifyPreflight.grantState)
+      .toBe('stale-review');
+    await expect(certification.certify(projectId, { billId: recorded.id }, asUser(projectId, recorder)))
+      .rejects.toThrow(/Segregation of duties/u);
+
+    // …and re-authorising against what is true NOW restores it — the guard is precise, not merely
+    // strict. A different reviewed state is a different command, not a replay of the first.
+    await grantAt(projectId, recorded.id, recorder, f.memberUser.id,
+      { versionId: submittedVersion, status: 'verified' });
+    expect((await claims.readClaim(projectId, recorded.id, asUser(projectId, recorder))).certifyPreflight.grantState)
+      .toBe('live');
+  });
+
+  it('h3: a grant naming someone who cannot CERTIFY is refused at the command', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
+      create: { projectId, userId: f.strangerUser.id, role: 'engineer', status: 'active' },
+      update: { role: 'engineer', status: 'active' },
+    });
+    // an engineer holds no certify path, so the authority could never be exercised
+    await expect(grantAt(projectId, billId, f.strangerUser.id, approver))
+      .rejects.toThrow(/cannot certify on this project/u);
+    // the legal path: a certifier is granted normally
+    const ok = await grantAt(projectId, billId, f.memberUser.id, approver);
+    expect(ok.actorId).toBe(f.memberUser.id);
+  });
+
+  it('h4: the pins are REQUIRED at the boundary and optional in-process', async () => {
+    const { grantSodExceptionSchema } = await import('../../src/contracts');
+    expect(grantSodExceptionSchema.safeParse({ billId: 'b', actorId: 'a', reason: 'r' }).success,
+      'an authorisation without the reviewed facts must be refused at the boundary').toBe(false);
+    expect(grantSodExceptionSchema.safeParse({
+      billId: 'b', actorId: 'a', reason: 'r', versionId: 'v', status: 'verified',
+    }).success).toBe(true);
+  });
+
+
+  it('h5: the migration\'s legacy diagnostic FIRES on an unconsumed grant, and is quiet without one', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+
+    // The migration adds `reviewedStatus` as NULLABLE and refuses to guess what a pre-existing
+    // approver reviewed, so it STOPS the deploy rather than silently revoking live authority. This
+    // exercises the diagnostic's LOGIC against real rows; that it runs at deploy time is a property
+    // of the migration file, which CI applies from scratch on every head.
+    const diagnostic = `
+      DO $$
+      DECLARE v_live integer;
+      BEGIN
+        SELECT count(*) INTO v_live FROM "SodGrant" WHERE "consumedAt" IS NULL;
+        IF v_live > 0 THEN
+          RAISE EXCEPTION 'phase5_t7biiih: % unconsumed SodGrant row(s) predate the reviewedStatus column.', v_live;
+        END IF;
+      END $$;`;
+
+    // quiet when there is nothing to warn about — a diagnostic that always fires is not a diagnostic
+    await expect(t.prisma.$executeRawUnsafe(diagnostic)).resolves.toBeDefined();
+
+    await grantAt(projectId, billId, f.memberUser.id, approver);
+    await expect(t.prisma.$executeRawUnsafe(diagnostic)).rejects.toThrow(/phase5_t7biiih: 1 unconsumed/u);
+  });
+
 });

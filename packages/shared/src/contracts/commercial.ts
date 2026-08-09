@@ -916,9 +916,12 @@ export interface CertifyPreflightDto {
   /** `live` — an authorisation stands for this caller on this version, and certification would
    *  consume it. `stale-version` — one stands, but against a version this claim has amended past.
    *  `approver-lost-standing` — one stands, but no granting approver still holds pmc standing.
-   *  `none` — no unconsumed authorisation names this caller on this claim. NONE of these four says
-   *  whether one is NEEDED; see above. */
-  grantState: 'live' | 'stale-version' | 'approver-lost-standing' | 'none';
+   *  `stale-review` — one stands for this version, but against a claim STATE the claim has since
+   *  moved past (one version walks the §E lifecycle without changing id, so an authorisation given
+   *  over a `submitted` claim must not be spent on a `verified` one), or it predates the reviewed-
+   *  state record entirely. `none` — no unconsumed authorisation names this caller on this claim.
+   *  NONE of these says whether one is NEEDED; see above. */
+  grantState: 'live' | 'stale-version' | 'stale-review' | 'approver-lost-standing' | 'none';
   /** The authorisation that would be consumed, when `grantState` is `live`; null otherwise. */
   grantId: string | null;
   /** The actor id the SERVER resolved for this caller (Codex F1).

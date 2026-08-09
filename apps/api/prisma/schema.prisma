@@ -3577,6 +3577,19 @@ model SodGrant {
   approverId String
   reason     String
 
+  /// §I — the claim STATUS the approver had in front of them when they authorised.
+  ///
+  /// Phase 5 Task 7B-iii-h. The version alone does not identify what was reviewed: one version
+  /// walks `submitted → under-verification → verified` WITHOUT changing id, so a grant authorised
+  /// before the §E verdict existed would otherwise survive into `verified` and excuse the
+  /// certification of a verdict its approver never saw. A grant's justification has to carry
+  /// immutable evidence of what it was justified against.
+  ///
+  /// NULLABLE only for rows written before this column existed — their reviewed state is not
+  /// recorded and cannot be invented, so `resolveGrant` treats them as UNUSABLE rather than
+  /// guessing. New grants always carry it.
+  reviewedStatus String?
+
   grantedAt       DateTime @default(now())
   sourceCommandId String
 

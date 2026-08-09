@@ -18,7 +18,7 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
-import type { CertifyBillCommand, GrantSodExceptionInput, SupersedeCertificateCommand } from '../contracts';
+import type { CertifyBillCommand, GrantSodExceptionCommand, SupersedeCertificateCommand } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -770,19 +770,34 @@ export class CommercialCertificationService {
     forUpdate: boolean,
   ): Promise<
     | { state: 'live'; grant: { id: string; approverId: string; reason: string } }
-    | { state: 'none' | 'stale-version' | 'approver-lost-standing' }
+    | { state: 'none' | 'stale-version' | 'approver-lost-standing' | 'stale-review' }
   > {
     const live = await tx.sodGrant.findMany({
       where: { projectId, billId, versionId, rule: SOD_RULE, actorId, consumedAt: null },
-      select: { id: true, approverId: true, reason: true },
+      select: { id: true, approverId: true, reason: true, reviewedStatus: true },
       orderBy: { grantedAt: 'asc' },
     });
+    // 7B-iii-h — the reviewed state must still HOLD, checked where the authority is SPENT.
+    //
+    // Checking it only at issue proves nothing here: the version does not change as a claim moves
+    // through the §E lifecycle, so an authorisation given over a `submitted` claim would otherwise
+    // be consumed to certify a verdict that did not exist when it was written. A grant whose
+    // `reviewedStatus` is NULL predates the column and records no evidence of what was reviewed —
+    // unusable rather than guessed, because guessing here puts words in an approver's mouth.
+    const bill = await tx.vendorBill.findFirst({ where: { projectId, id: billId }, select: { status: true } });
+    const currentStatus = bill?.status ?? null;
     for (const candidate of live) {
+      if (candidate.reviewedStatus === null || candidate.reviewedStatus !== currentStatus) continue;
       if (await this.orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate })) {
         return { state: 'live', grant: candidate };
       }
     }
-    if (live.length > 0) return { state: 'approver-lost-standing' };
+    // the two non-live reasons are distinguished, because they need different remedies: a stale
+    // review needs re-authorising against what is true now, a lost approver needs a different pmc
+    if (live.length > 0) {
+      const anyStanding = live.some((c) => c.reviewedStatus !== null && c.reviewedStatus === currentStatus);
+      return { state: anyStanding ? 'approver-lost-standing' : 'stale-review' };
+    }
     // version-pinned: an amendment is a DIFFERENT claim, and permission to certify the one the
     // approver looked at should not silently carry over to one they never saw
     const stale = await tx.sodGrant.count({
@@ -797,7 +812,7 @@ export class CommercialCertificationService {
    * in with somebody else's name.
    */
   async grantSodException(
-    projectId: string, input: GrantSodExceptionInput, user: AuthUser, idempotencyKey?: string,
+    projectId: string, input: GrantSodExceptionCommand, user: AuthUser, idempotencyKey?: string,
   ): Promise<SodGrantDto> {
     await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
     this.assertGrant(user);
@@ -818,6 +833,34 @@ export class CommercialCertificationService {
           select: { id: true },
         });
         if (!version) throw new NotFoundException(`Vendor bill ${input.billId} has no live claim version`);
+        // 7B-iii-h — the approver authorises the claim they READ, not whichever one is live when a
+        // queued command replays. Version AND status: one version walks the §E lifecycle without
+        // changing id, so the version alone would let an authorisation issued before the verdict
+        // existed excuse the certification of a verdict its approver never saw.
+        const reviewed = await this.lockBill(tx, projectId, input.billId);
+        if (input.versionId !== undefined && input.versionId !== version.id) {
+          throw new ConflictException(
+            'This claim was amended after you read it — the authorisation would apply to a version you have not seen. Reload and authorise again.',
+          );
+        }
+        if (input.status !== undefined && input.status !== reviewed.status) {
+          throw new ConflictException(
+            `This claim moved to ${reviewed.status} after you read it — the authorisation would apply to a state you have not reviewed. Reload and authorise again.`,
+          );
+        }
+        // 7B-iii-h — the EXCUSED actor must be able to certify at all. A grant naming someone
+        // without `commercial.certify` standing is an authority that can never be exercised: it is
+        // recorded, displayed, and the named actor is still refused by a different rule when they
+        // try. Refused at the COMMAND, not merely hidden in a picker — the picker is not the only
+        // way here, which is the whole reason the durable layer carries its own guard.
+        const excusedMayCertify = await this.orgs.hasProjectRoleStanding(
+          tx, projectId, input.actorId, ROLE_POLICY['commercial.certify'] as readonly string[], { forUpdate: true },
+        );
+        if (!excusedMayCertify) {
+          throw new ForbiddenException(
+            'That person cannot certify on this project, so an exception would authorise nothing they could act on',
+          );
+        }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
         // certification will use — the participant, because standing is the orgs module's rule
         const entitled = await this.orgs.hasProjectRoleStanding(
@@ -833,6 +876,9 @@ export class CommercialCertificationService {
             // to certify has not thereby authorised anyone to approve that claim's payment, and the
             // consumption sites select on this column for exactly that reason.
             projectId, billId: input.billId, versionId: version.id, rule: input.rule ?? SOD_RULE,
+            // …and the state it was justified against, RECORDED rather than merely checked: a
+            // check at issue proves nothing at consumption, which is where the authority is spent.
+            reviewedStatus: reviewed.status,
             actorId: input.actorId, approverId: actor.actorId, reason: input.reason,
             sourceCommandId: ctx.commandId!,
           },
