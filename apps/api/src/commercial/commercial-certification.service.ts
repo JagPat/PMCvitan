@@ -787,17 +787,24 @@ export class CommercialCertificationService {
         if (input.actorId === actor.actorId) {
           throw new ForbiddenException('A segregation-of-duties exception cannot be authorised by the actor it excuses');
         }
+        // 7B-iii-h — the approver authorises the claim they READ, not whichever one is live when a
+        // queued command replays. Version AND state: one version walks the §E lifecycle without
+        // changing id, so the version alone would let an authorisation issued before the verdict
+        // existed excuse the certification of a verdict its approver never saw.
+        //
+        // The LOCK COMES FIRST (Codex round 2). The live-version lookup used to sit above it, so
+        // the pin was compared against a row read before the lock was held. Today `amend` also
+        // takes `lockProjectReadiness`, which happens to serialize the two — but a version pin
+        // whose correctness rests on a lock taken elsewhere for another reason is not a pin that
+        // has been made correct, and the next command added here would inherit the accident
+        // rather than the rule.
+        const reviewed = await this.lockBill(tx, projectId, input.billId);
         // the grant names the claim's LIVE version, so it is pinned to what the approver looked at
         const version = await tx.vendorBillVersion.findFirst({
           where: { projectId, billId: input.billId, supersededAt: null },
           select: { id: true },
         });
         if (!version) throw new NotFoundException(`Vendor bill ${input.billId} has no live claim version`);
-        // 7B-iii-h — the approver authorises the claim they READ, not whichever one is live when a
-        // queued command replays. Version AND status: one version walks the §E lifecycle without
-        // changing id, so the version alone would let an authorisation issued before the verdict
-        // existed excuse the certification of a verdict its approver never saw.
-        const reviewed = await this.lockBill(tx, projectId, input.billId);
         if (input.versionId !== undefined && input.versionId !== version.id) {
           throw new ConflictException(
             'This claim was amended after you read it — the authorisation would apply to a version you have not seen. Reload and authorise again.',
@@ -848,7 +855,10 @@ export class CommercialCertificationService {
             projectId, billId: input.billId, versionId: version.id, rule,
             // …and the state it was justified against, RECORDED rather than merely checked: a
             // check at issue proves nothing at consumption, which is where the authority is spent.
+            // The STATUS says what the claim read; the monotonic lifecycle version says WHICH
+            // passage through that reading it was, because the label itself recycles.
             reviewedStatus: reviewed.status,
+            reviewedLifecycleVersion: reviewed.lifecycleVersion,
             actorId: input.actorId, approverId: actor.actorId, reason: input.reason,
             sourceCommandId: ctx.commandId!,
           },
@@ -976,9 +986,9 @@ export class CommercialCertificationService {
   /** §0b — the BILL is taken FIRST, before any foreign row, so the lock order stays total. */
   private async lockBill(
     tx: Prisma.TransactionClient, projectId: string, billId: string,
-  ): Promise<{ id: string; status: string; vendorId: string }> {
-    const rows = await tx.$queryRaw<Array<{ id: string; status: string; vendorId: string }>>`
-      SELECT "id", "status", "vendorId" FROM "VendorBill"
+  ): Promise<{ id: string; status: string; vendorId: string; lifecycleVersion: number }> {
+    const rows = await tx.$queryRaw<Array<{ id: string; status: string; vendorId: string; lifecycleVersion: number }>>`
+      SELECT "id", "status", "vendorId", "lifecycleVersion" FROM "VendorBill"
        WHERE "projectId" = ${projectId} AND "id" = ${billId} FOR UPDATE`;
     const bill = rows[0];
     if (!bill) throw new NotFoundException('Vendor bill not found in this project');

@@ -196,7 +196,7 @@ describe('CLOSURE 10 database half — the commercial seals, read from the live 
       relation: 'SodGrant',
       tgtype: 21,
       fn: 'phase5_t7biiih_grant_reviewed_state_sealed',
-      prosrcSha256: '87c72ccbfddb97b27cfd10b65272a0f2ecf4b61e3c492b90323ee96433580338',
+      prosrcSha256: 'de0c1dbf64f75e696397ce487aad8c4334490b9895b70d2d1ccc704ed6b4c79f',
       constraintTrigger: true,
     },
   };

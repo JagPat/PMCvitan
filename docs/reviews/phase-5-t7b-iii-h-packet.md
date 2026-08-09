@@ -201,3 +201,64 @@ this file has now paid for three times.
 actor". A stranger holds no membership and so cannot certify, which this unit's command now
 refuses at issue, so the fixture names a certifier — keeping the probe about the consume
 seal it is titled for.
+
+---
+
+## Correction round 2 — three findings, and the deferral that came due
+
+Full audit: `docs/reviews/pr-312-convergence.md`. Three roots, only one of them new.
+
+| # | Finding | Fix |
+|---|---|---|
+| R2-2 (P1) | a RECYCLED status label revives a spent-past authorisation | `VendorBill.lifecycleVersion` — a monotonic per-claim counter, bumped by a trigger, recorded on the grant and the second term of every reviewed identity |
+| R2-1 (P2) | the legacy diagnostic counted EVERY unconsumed grant, so its own instructed repair aborted the retry | the predicate is `reviewedStatus IS NULL` — which is what "legacy" actually means |
+| R2-3 (P2) | the live-version lookup sat above the bill lock | the lock comes first, and the version is read under it |
+
+### R2-2 is the carried deferral, paid
+
+§F **derives** the payment status from the folds, and the derivation returns to labels it
+has left. Certify ₹100 withholding ₹10 → `certified`; approve and pay the ₹90 → `paid`;
+release ₹5 → `certified` again. An authorisation given at the first `certified`, when
+nothing was approved, matches the label at the second — by which time ₹90 has been
+authorised and has left the practice.
+
+JagPat's directive on PR #306 had already named the general form ("expose a monotonic server
+lifecycle version, or treat … as ambiguous"), and it was carried as a deferral. Codex reached
+the same requirement independently. Two independent readers naming one missing primitive is
+the signal to stop deferring it, so `lifecycleVersion` ships here.
+
+**It is bumped by a trigger, not by the services.** There are six writers of
+`VendorBill.status` across four services; a line in each is precisely the instruction this
+PR's audit is about nobody remembering. The same trigger refuses any direct write of the
+column, so a stale pin cannot be made to match by moving the claim rather than the
+authorisation.
+
+`reviewedLifecycleVersion` joins the append-only frozen set and the live-scope unique index
+for the reasons already written into both — and in the index it is **load-bearing rather than
+symmetric**: a re-authorisation after a recycle carries the identical status, so without the
+counter in the scope the inert row would collide with its own legitimate replacement, and the
+fix for the hole would have created the deadlock the index exists to prevent. PROBE 27's legal
+path is what proves that half.
+
+### Correction-2 evidence
+
+| Probe | Reproduced RED at `a805d47` |
+|---|---|
+| PROBE 27 — a recycled label does not revive a spent-past authorisation | the approval **succeeded**; with the version term mutated out of `reviewHolds` it succeeds again, so the probe is load-bearing on the fix and not on its neighbours |
+| PROBE 28 — the counter is monotonic across every status writer, unmoved by non-status writes, and not rewindable | the column did not exist |
+| h5 — the diagnostic is quiet with a well-formed live grant | it **fired**, aborting the replay its own remedy instructs |
+| h10 — the live version is read under the bill lock | the read was 664 characters ABOVE the lock |
+
+**Gates on this head:** `pnpm check` EXIT 0 (web 685/685, API 781/781); the full API integration
+suite on a pristine migrated database; `upgrade-proof.sh` PASSED with the whole ledger applied
+from scratch; the migration verified applying from scratch on a clean database.
+
+**Two things stated rather than implied.** (1) h10 is a STRUCTURAL probe of the read order, and
+the interleaving Codex describes is **not reachable today** — `grantSodException` and `amend`
+both take `lockProjectReadiness` and are already serialized. What was wrong is that the pin's
+correctness rested on a lock taken elsewhere for another reason; that is worth fixing and it is
+not the same as having closed a live hole. (2) The DB consume seal still checks the admissible
+reviewed *state* and not the lifecycle version, because at COMMIT the act being sealed has
+already moved the claim on. The division is the one this phase has used throughout — the seal
+states what is invariant, the service states what is fresh — and PROBE 27 is where the
+freshness rule is proven.

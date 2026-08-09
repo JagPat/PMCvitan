@@ -2145,7 +2145,7 @@ $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\
 # 7B-iii-h — the grant also records the claim STATE its approver reviewed, and `verified` is the
 # only state a certification proceeds from. Written here so every §I assertion below is refused by
 # the seal it is NAMED for rather than by the reviewed-state seal standing in front of it.
-$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"sourceCommandId\") VALUES('UPT5B-G4','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','verified','UPT5B-CMDG')"
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UPT5B-G4','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','verified',b.\"lifecycleVersion\",'UPT5B-CMDG' FROM \"VendorBill\" b WHERE b.\"id\"='UPT4-B3'"
 assert_rejects "commercial T5B R7-F1: a certificate consuming a grant it did not spend (the override must be the approver's act, exercised HERE)" \
   "BEGIN; INSERT INTO \"BillCertificate\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"certifiedAmount\",\"certifiedById\",\"sourceCommandId\") VALUES('UPT5B-CU','p1','UPT4-B3','UPT4-BV3',3.00,'USER-1','UPT5B-CMDU'); INSERT INTO \"CertifiedAcceptanceConsumption\"(\"id\",\"projectId\",\"certificateId\",\"stockTransactionId\",\"consumedQty\") VALUES('UPT5B-AU','p1','UPT5B-CU','UP45-ACC',3); INSERT INTO \"SodException\"(\"id\",\"projectId\",\"certificateId\",\"grantId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\") VALUES('UPT5B-SU','p1','UPT5B-CU','UPT5B-G4','evidence-recorder-may-not-certify','USER-1','USER-2','two-person practice','UPT5B-CMDU'); UPDATE \"VendorBill\" SET \"status\"='certified', \"statusChangedAt\"=now() WHERE \"id\"='UPT4-B3'; COMMIT;"
 # Codex round-11 P2 — the certify RECEIPT must be the CERTIFIER'S own. Round 8 bound the grant
@@ -2186,7 +2186,7 @@ assert_rejects "commercial T5B R7-F1: a grant that excuses its OWN author (a sig
 # belongs to every guard on that row, or a direct writer simply rewrites the justification.
 mint5b_grant() { $PSQL >/dev/null -c "BEGIN; INSERT INTO \"CommandExecution\"(\"id\",\"scopeKind\",\"organizationId\",\"projectId\",\"actorId\",\"commandType\",\"idempotencyKey\",\"requestHash\",\"status\") VALUES('$1','project','org-legacy','p1','USER-2','commercial.sod.grant','$1','x','reserved'); UPDATE \"CommandExecution\" SET \"status\"='succeeded', \"resultRef\"='$2', \"completedAt\"=now() WHERE \"id\"='$1'; COMMIT;"; }
 mint5b_grant UPT5B-CMDGF UPT5B-GF
-$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"sourceCommandId\") VALUES('UPT5B-GF','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','a live authorisation','submitted','UPT5B-CMDGF')" \
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") VALUES('UPT5B-GF','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','a live authorisation','submitted',0,'UPT5B-CMDGF')" \
   && printf 'ok      %s\n' "commercial T7BIIIH: a LIVE grant may record any reviewed state — the seal bites at consumption" \
   || { printf 'FAILED  %s\n' "commercial T7BIIIH: a live grant recording an early state was rejected at issue"; FAIL=1; }
 assert_rejects "commercial T7BIIIH: REWRITING what an approver is recorded as having reviewed" \
@@ -2194,7 +2194,7 @@ assert_rejects "commercial T7BIIIH: REWRITING what an approver is recorded as ha
   'IMMUTABLE'
 mint5b_grant UPT5B-CMDGS UPT5B-GS
 assert_rejects "commercial T7BIIIH: spending an authorisation given over a SUBMITTED claim on a certification" \
-  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"sourceCommandId\",\"consumedAt\",\"consumedByCertificateId\") VALUES('UPT5B-GS','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','authorised before the verdict','submitted','UPT5B-CMDGS',now(),'UPT5B-C4')" \
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\",\"consumedAt\",\"consumedByCertificateId\") VALUES('UPT5B-GS','p1','UPT4-B3','UPT4-BV3','evidence-recorder-may-not-certify','USER-1','USER-2','authorised before the verdict','submitted',0,'UPT5B-CMDGS',now(),'UPT5B-C4')" \
   'authority can be spent from'
 mint5b_grant UPT5B-CMDGN UPT5B-GN
 assert_rejects "commercial T7BIIIH: spending a LEGACY grant that records no reviewed state at all" \
@@ -2499,7 +2499,7 @@ assert_rejects "commercial T6A: an SoD exception naming BOTH a certificate and a
 # "which act exercised this authority?" unanswerable (Codex round 2, the widened CHECK)
 mint5c UP6A-CMD-GRANT commercial.sod.grant UP6A-G-BOTH
 assert_rejects "commercial T6A: an SoD grant consumed by BOTH a certificate and an approval" \
-  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\",\"reviewedStatus\",\"consumedAt\",\"consumedByCertificateId\",\"consumedByApprovalId\") VALUES('UP6A-G-BOTH','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','both kinds','UP6A-CMD-GRANT','certified',now(),'$UP5C_LIVE','UP6A-A-OK')"
+  "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"sourceCommandId\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"consumedAt\",\"consumedByCertificateId\",\"consumedByApprovalId\") VALUES('UP6A-G-BOTH','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','both kinds','UP6A-CMD-GRANT','certified',0,now(),'$UP5C_LIVE','UP6A-A-OK')"
 
 # §I is a BICONDITIONAL. `UP6A-A-OK` was approved by USER-1 while USER-2 certified — the rule
 # permits that act outright, so an override attached to it records an authorisation nobody needed.
@@ -2515,7 +2515,7 @@ assert_rejects "commercial T6A: an SoD exception on an approval the rule would n
 # column skipped it entirely and an approver's authority could be burned against an act it never
 # excused.
 mint5c UP6A-CMD-GRANT2 commercial.sod.grant UP6A-G-LIVE
-$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"sourceCommandId\") VALUES('UP6A-G-LIVE','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','only pmc on site','certified','UP6A-CMD-GRANT2')" \
+$PSQL >/dev/null -c "INSERT INTO \"SodGrant\"(\"id\",\"projectId\",\"billId\",\"versionId\",\"rule\",\"actorId\",\"approverId\",\"reason\",\"reviewedStatus\",\"reviewedLifecycleVersion\",\"sourceCommandId\") SELECT 'UP6A-G-LIVE','p1','$UP5C_BILL','$UP5C_VER','certifier-may-not-approve','USER-2','USER-1','only pmc on site','certified',b.\"lifecycleVersion\",'UP6A-CMD-GRANT2' FROM \"VendorBill\" b WHERE b.\"id\"='$UP5C_BILL'" \
   && printf 'ok      %s\n' "commercial T6A R3: a live payment-side grant is ACCEPTED (the approver's own receipt backs it)" \
   || { printf 'FAILED  %s\n' "commercial T6A R3: a well-formed payment-side grant was rejected"; FAIL=1; }
 assert_rejects "commercial T6A R3: burning a grant against an approval that carries no matching override" \

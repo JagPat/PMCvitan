@@ -639,30 +639,48 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
   });
 
 
-  it('h5: the migration\'s legacy diagnostic FIRES on an unconsumed grant, and is quiet without one', async () => {
+  it('h5: the legacy diagnostic fires on a LEGACY grant, and never on a well-formed live one', async () => {
     const projectId = await freshProject();
     const approver = await secondPmc(projectId);
     const billId = await verifiedOnly(projectId);
 
     // The migration adds `reviewedStatus` as NULLABLE and refuses to guess what a pre-existing
-    // approver reviewed, so it STOPS the deploy rather than silently revoking live authority. This
-    // exercises the diagnostic's LOGIC against real rows; that it runs at deploy time is a property
-    // of the migration file, which CI applies from scratch on every head.
-    const diagnostic = `
-      DO $$
-      DECLARE v_live integer;
-      BEGIN
-        SELECT count(*) INTO v_live FROM "SodGrant" WHERE "consumedAt" IS NULL;
-        IF v_live > 0 THEN
-          RAISE EXCEPTION 'phase5_t7biiih: % unconsumed SodGrant row(s) predate the reviewedStatus column.', v_live;
-        END IF;
-      END $$;`;
+    // approver reviewed, so it STOPS the deploy rather than silently revoking live authority.
+    //
+    // The diagnostic is read OUT OF THE MIGRATION FILE rather than restated here. An inline copy
+    // proves a copy: the first version of this probe asserted a hand-written `DO` block that
+    // matched the file when written and would not have noticed the file drifting from it — which
+    // is the same two-implementations-of-one-rule shape the correction round below is all about.
+    const sql = readFileSync(
+      join(__dirname, '../../prisma/migrations/20270705000000_phase5_t7biiih_sod_reviewed_status/migration.sql'),
+      'utf8',
+    );
+    const diagnostic = /DO \$\$\s*\n\s*DECLARE\s+v_live[\s\S]*?END \$\$;/u.exec(sql)?.[0];
+    expect(diagnostic, 'the migration must still carry its legacy diagnostic').toBeDefined();
 
     // quiet when there is nothing to warn about — a diagnostic that always fires is not a diagnostic
-    await expect(t.prisma.$executeRawUnsafe(diagnostic)).resolves.toBeDefined();
+    await expect(t.prisma.$executeRawUnsafe(diagnostic!)).resolves.toBeDefined();
 
-    await grantAt(projectId, billId, f.memberUser.id, approver);
-    await expect(t.prisma.$executeRawUnsafe(diagnostic)).rejects.toThrow(/phase5_t7biiih: 1 unconsumed/u);
+    // …and STILL quiet with a perfectly well-formed live grant standing. Codex round 2 (P2): a
+    // database that has already taken this migration and then accepted a legitimate authorisation
+    // must survive a replay, because replay is exactly what the diagnostic's own remedy instructs
+    // ("re-issue, then redeploy"). Counting every unconsumed row made the repair path unreachable
+    // the moment the repair succeeded.
+    const live = await grantAt(projectId, billId, f.memberUser.id, approver);
+    await expect(t.prisma.$executeRawUnsafe(diagnostic!)).resolves.toBeDefined();
+
+    // …and it fires for the state it is FOR: a row that predates the column and records nothing.
+    // Reaching that state needs the append-only bypass, which is itself the point — a legacy row
+    // is one this release cannot create, only inherit.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" DISABLE TRIGGER "SodGrant_append_only"');
+      await tx.$executeRawUnsafe(
+        'UPDATE "SodGrant" SET "reviewedStatus"=NULL WHERE "projectId"=$1 AND "id"=$2', projectId, live.id,
+      );
+      await tx.$executeRawUnsafe('SET CONSTRAINTS ALL IMMEDIATE');
+      await tx.$executeRawUnsafe('ALTER TABLE "SodGrant" ENABLE TRIGGER "SodGrant_append_only"');
+    });
+    await expect(t.prisma.$executeRawUnsafe(diagnostic!)).rejects.toThrow(/phase5_t7biiih: 1 unconsumed/u);
   });
 
   // ── the correction round: the evidence column joins the SEALS that already surround it ───────
@@ -761,6 +779,46 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     // an unknown rule admits NOTHING — a third §I rule added without teaching this function is
     // refused rather than silently waved through, which is the direction a seal should fail
     expect(await admissible('some-future-rule')).toEqual([]);
+  });
+
+  it('h10: the version the pin is checked against is read UNDER the lock that protects it', async () => {
+    // Codex round 2 (P2). The live-version lookup sat ABOVE `lockBill`, so the pin was compared to
+    // a row read before the lock was held.
+    //
+    // Stated honestly, because the alternative is claiming more than I fixed: the interleaving
+    // Codex describes is NOT reachable today, because `grantSodException` and `amend` both take
+    // `lockProjectReadiness` first and are therefore already serialized against each other. What
+    // was wrong is that the correctness of a version pin rested on a lock taken for a different
+    // reason somewhere else — and a rule enforced by an accident elsewhere is not enforced. This
+    // is a STRUCTURAL probe of the read order, which is the thing that was actually wrong.
+    const source = readFileSync(
+      join(__dirname, '../../src/commercial/commercial-certification.service.ts'), 'utf8',
+    );
+    const grantBody = /async grantSodException\([\s\S]*?const row = await tx\.sodGrant\.create/u.exec(source)?.[0];
+    expect(grantBody, 'grantSodException must still be findable, or this probe is checking nothing').toBeDefined();
+    const lockAt = grantBody!.indexOf('this.lockBill(');
+    const versionAt = grantBody!.indexOf('vendorBillVersion.findFirst');
+    expect(lockAt, 'the bill lock must be taken').toBeGreaterThan(-1);
+    expect(versionAt, 'the live version must still be resolved server-side').toBeGreaterThan(-1);
+    expect(
+      versionAt,
+      'the live version must be read AFTER the bill lock — a pin compared against a row read before the lock is a pin against a row that may already have been superseded',
+    ).toBeGreaterThan(lockAt);
+
+    // …and the behaviour that read order exists to protect still works: an amended claim refuses a
+    // pin naming the version the approver actually read.
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const billId = await verifiedClaim(projectId, line.vendorId, line.poLineId, '100');
+    const readVersion = (await claims.readClaim(projectId, billId, pmc(projectId)))
+      .bill.versions.find((v) => v.live)!.id;
+    await bills.amend(projectId, {
+      billId, lines: [{ poLineId: line.poLineId, quantity: '90', rate: '1' }], reason: 'vendor corrected the quantity',
+    }, pmc(projectId));
+    await expect(grantAt(projectId, billId, f.memberUser.id, approver, { versionId: readVersion }))
+      .rejects.toThrow(/amended after you read it/u);
   });
 
   it('h9: the column addition is RERUNNABLE, so the diagnostic abort does not poison the retry', async () => {

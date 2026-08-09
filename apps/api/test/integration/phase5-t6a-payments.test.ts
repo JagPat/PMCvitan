@@ -1051,4 +1051,98 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // the admissible set and not a single hard-coded status
     await expect(regress('part-paid')).resolves.toBeUndefined();
   });
+
+  it('PROBE 27 (§I): a RECYCLED status label does not bring a spent-past authorisation back to life', async () => {
+    // Codex round 2 (P1), and the deeper half of the same defect this unit exists for.
+    //
+    // Round 1 recorded the claim STATE a grant was justified against, and compared that state to
+    // what is true now. But `certified` is not a point in time — §F DERIVES it from the folds, and
+    // the derivation genuinely returns to a label it has left before. So an authorisation given
+    // when nothing on the claim was approved could be spent after somebody had approved AND PAID
+    // the whole payable, purely because a later release put the label back.
+    //
+    // A status is a description; it is not an identity. What the reviewed identity needs is a fact
+    // that only ever moves FORWARD — which is what `lifecycleVersion` is.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+
+    // ₹100 certified, ₹10 withheld → ₹90 payable, and the claim reads `certified`
+    const retention = await deductions.record(
+      projectId, { billId, type: 'retention', amount: '10.00' }, pmc(projectId),
+    );
+    const reads = async (): Promise<string> =>
+      (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).status;
+    expect(await reads()).toBe('certified');
+
+    // authorised HERE: nothing on this claim is approved, and ₹90 stands payable
+    const grant = await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).reviewedStatus)
+      .toBe('certified');
+
+    // …then the OTHER pmc approves and pays the whole payable. Nothing about this is irregular.
+    const approval = await payments.approve(projectId, { billId, amount: '90.00' }, approver(projectId));
+    await payments.record(projectId, { approvalId: approval.id, amount: '90.00', method: 'neft' }, pmc(projectId));
+    expect(await reads()).toBe('paid');
+
+    // …and a release raises the payable again, so §F derives the claim BACK to `certified`. The
+    // label is identical to the one the approver reviewed; the claim underneath is not — ₹90 has
+    // been authorised and has left the practice since.
+    await deductions.release(
+      projectId, { deductionId: retention.id, amount: '5.00', reason: 'defects made good' }, pmc(projectId),
+    );
+    expect(await reads(), 'the fixture must RECYCLE the label, or this probe is about nothing').toBe('certified');
+
+    await expect(payments.approve(projectId, { billId, amount: '5.00' }, pmc(projectId)))
+      .rejects.toThrow(/granted against a claim state that no longer holds/u);
+
+    // THE LEGAL PATH: re-authorised against the claim as it stands now, the certifier may approve
+    // the newly payable ₹5 — the guard is precise, not a permanent block.
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'still the only pmc on site', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    const second = await payments.approve(projectId, { billId, amount: '5.00' }, pmc(projectId));
+    expect(second.amount).toBe('5.00');
+    // and the stale one is still unspent — inert history, not a lock
+    expect((await t.prisma.sodGrant.findFirstOrThrow({ where: { projectId, id: grant.id } })).consumedAt)
+      .toBeNull();
+  });
+
+  it('PROBE 28 (§F): the lifecycle version is monotonic across EVERY status writer', async () => {
+    // The bump is a BEFORE UPDATE trigger rather than a line in each service, because there are six
+    // separate writers of `VendorBill.status` across four services and "remember to also bump it"
+    // is precisely the instruction this review lineage keeps proving nobody remembers. One site,
+    // and no writer can opt out of it.
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const other = await secondPmc(projectId);
+    const version = async (): Promise<number> =>
+      (await t.prisma.vendorBill.findFirstOrThrow({ where: { projectId, id: billId } })).lifecycleVersion;
+
+    // it already moved, because reaching `certified` is several forward transitions
+    const atCertified = await version();
+    expect(atCertified).toBeGreaterThan(0);
+
+    const approval = await payments.approve(projectId, { billId, amount: '100.00' }, approver(projectId));
+    const atApproved = await version();
+    expect(atApproved, 'a DERIVED transition bumps it too').toBeGreaterThan(atCertified);
+
+    await payments.record(projectId, { approvalId: approval.id, amount: '100.00', method: 'neft' }, pmc(projectId));
+    const atPaid = await version();
+    expect(atPaid).toBeGreaterThan(atApproved);
+
+    // …and a write that does NOT move the status does not move the version either: it counts
+    // lifecycle transitions, not writes, or an approver's pin would go stale for no reason
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'unrelated', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, other));
+    expect(await version()).toBe(atPaid);
+
+    // a direct writer cannot walk it backwards, so a stale pin cannot be made to match again
+    await expect(t.prisma.$executeRawUnsafe(
+      'UPDATE "VendorBill" SET "lifecycleVersion"=1 WHERE "projectId"=$1 AND "id"=$2', projectId, billId,
+    )).rejects.toThrow(/only ever moves forward/u);
+  });
 });

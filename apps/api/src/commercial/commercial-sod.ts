@@ -50,7 +50,9 @@ export async function resolveSodGrant(
 ): Promise<SodGrantResolution> {
   const live = await tx.sodGrant.findMany({
     where: { projectId, billId, versionId, rule, actorId, consumedAt: null },
-    select: { id: true, approverId: true, reason: true, reviewedStatus: true },
+    select: {
+      id: true, approverId: true, reason: true, reviewedStatus: true, reviewedLifecycleVersion: true,
+    },
     orderBy: { grantedAt: 'asc' },
   });
 
@@ -59,16 +61,27 @@ export async function resolveSodGrant(
   // Checking it only at issue proves nothing here: the claim version does NOT change as a claim
   // moves through its lifecycle, so an authorisation given over a `submitted` claim would otherwise
   // be spent on a `verified` one, and one given while nothing was approved would be spent after
-  // somebody had approved ₹10. A grant whose `reviewedStatus` is NULL predates the column and
-  // records no evidence of what was reviewed — unusable rather than guessed, because guessing here
+  // somebody had approved ₹10. A grant whose reviewed evidence is NULL predates these columns and
+  // records nothing about what was reviewed — unusable rather than guessed, because guessing here
   // puts words in an approver's mouth.
-  const bill = await tx.vendorBill.findFirst({ where: { projectId, id: billId }, select: { status: true } });
+  //
+  // The identity is the STATUS **and** the monotonic `lifecycleVersion`, and the second term is the
+  // load-bearing one (Codex round 2). A status label is a description, not an identity: §F derives
+  // the payment status from the folds and the derivation genuinely RETURNS to a label it has left —
+  // `certified → paid → certified`, when a release raises the payable again. Comparing the label
+  // alone would bring an authorisation given when nothing was approved back to life after ₹90 had
+  // been authorised and paid. A counter that only moves forward cannot be re-entered.
+  const bill = await tx.vendorBill.findFirst({
+    where: { projectId, id: billId }, select: { status: true, lifecycleVersion: true },
+  });
   const currentStatus = bill?.status ?? null;
-  const reviewHolds = (reviewedStatus: string | null): boolean =>
-    reviewedStatus !== null && reviewedStatus === currentStatus;
+  const currentVersion = bill?.lifecycleVersion ?? null;
+  const reviewHolds = (c: { reviewedStatus: string | null; reviewedLifecycleVersion: number | null }): boolean =>
+    c.reviewedStatus !== null && c.reviewedStatus === currentStatus
+    && c.reviewedLifecycleVersion !== null && c.reviewedLifecycleVersion === currentVersion;
 
   for (const candidate of live) {
-    if (!reviewHolds(candidate.reviewedStatus)) continue;
+    if (!reviewHolds(candidate)) continue;
     // standing is the ORGS module's question, asked through the owner rather than re-derived here
     if (await orgs.hasProjectRoleStanding(tx, projectId, candidate.approverId, ['pmc'], { forUpdate })) {
       return { state: 'live', grant: candidate };
@@ -78,7 +91,7 @@ export async function resolveSodGrant(
   // the two non-live reasons are distinguished because they need different remedies: a stale review
   // needs re-authorising against what is true now, a lost approver needs a different pmc
   if (live.length > 0) {
-    return { state: live.some((c) => reviewHolds(c.reviewedStatus)) ? 'approver-lost-standing' : 'stale-review' };
+    return { state: live.some(reviewHolds) ? 'approver-lost-standing' : 'stale-review' };
   }
 
   // version-pinned: an amendment is a DIFFERENT claim, and permission over the one the approver

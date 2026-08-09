@@ -20,15 +20,68 @@
 -- migration would have made itself unrepairable by the very diagnostic that exists to repair it.
 ALTER TABLE "SodGrant" ADD COLUMN IF NOT EXISTS "reviewedStatus" TEXT;
 
+-- ── …AND A STATUS IS A DESCRIPTION, NOT AN IDENTITY ──────────────────────────────────────────
+--
+-- Codex round 2 (P1), and it is the deeper half of the defect this whole unit exists for.
+--
+-- Recording the reviewed STATUS closed the case where a claim moves on. It does not close the case
+-- where a claim moves on and COMES BACK: §F DERIVES the payment status from the folds, and the
+-- derivation genuinely returns to a label it has left. Certify ₹100 with ₹10 withheld → `certified`;
+-- approve and pay the ₹90 → `paid`; release ₹5 of the withholding → `certified` again. An
+-- authorisation given at the first `certified`, when nothing was approved, matches the label at the
+-- second — by which time ₹90 has been authorised and has left the practice.
+--
+-- The reviewed identity therefore needs a fact that only ever moves FORWARD. `lifecycleVersion` is
+-- that fact: a per-claim counter, bumped whenever the status changes, never reused.
+--
+-- BUMPED BY A TRIGGER, not by the services. There are six separate writers of `VendorBill.status`
+-- across four services, and "remember to also bump the counter" is exactly the instruction this
+-- review lineage has now proved three times that nobody remembers. A trigger is the one site none
+-- of them can opt out of, and a seventh writer added tomorrow inherits it without being told.
+ALTER TABLE "VendorBill" ADD COLUMN IF NOT EXISTS "lifecycleVersion" INTEGER NOT NULL DEFAULT 0;
+
+CREATE OR REPLACE FUNCTION phase5_t7biiih_bill_lifecycle_version() RETURNS trigger AS $$
+BEGIN
+  -- It counts TRANSITIONS, not writes. A write that leaves the status alone must not move it, or
+  -- every unrelated edit would silently stale an approver's pin and the remedy — re-authorise —
+  -- would be demanded for nothing.
+  IF NEW."status" IS DISTINCT FROM OLD."status" THEN
+    NEW."lifecycleVersion" := OLD."lifecycleVersion" + 1;
+  ELSIF NEW."lifecycleVersion" IS DISTINCT FROM OLD."lifecycleVersion" THEN
+    -- and it is not a field anyone may set. A counter a writer can rewind is not monotonic, and a
+    -- stale pin could be made to match again by moving the claim rather than the authorisation.
+    RAISE EXCEPTION 'The claim lifecycle version only ever moves forward, and only when the status does (%)', OLD."id";
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "VendorBill_lifecycle_version" ON "VendorBill";
+CREATE TRIGGER "VendorBill_lifecycle_version" BEFORE UPDATE ON "VendorBill"
+  FOR EACH ROW EXECUTE FUNCTION phase5_t7biiih_bill_lifecycle_version();
+
+-- The grant records it alongside the status. NULLABLE for the same reason `reviewedStatus` is:
+-- a row written before this column existed attests to nothing, and inventing a version for it would
+-- be inventing the very evidence the register exists to carry.
+ALTER TABLE "SodGrant" ADD COLUMN IF NOT EXISTS "reviewedLifecycleVersion" INTEGER;
+
 -- Diagnostic-first, per this repository's established pattern: an UNCONSUMED legacy grant is one
 -- whose behaviour this change alters (it stops authorising anything until re-issued), so the
 -- deploy STOPS and names them rather than silently revoking live authority. Consumed grants are
 -- history and are unaffected — they already did their work under the old rule.
+--
+-- `reviewedStatus IS NULL` is the WHOLE predicate, not a convenience. "Legacy" here means precisely
+-- "written before this column existed"; an unconsumed grant that CARRIES a reviewed state is a
+-- perfectly good authorisation this release created. Counting every unconsumed row instead made the
+-- migration abort on any database that had already taken it and then done the very thing the abort
+-- instructs — re-issue the authorisations and redeploy — so the remedy destroyed itself on success.
+-- The rerunnability guard one statement above and this predicate are the same requirement asked of
+-- two statements in one file.
 DO $$
 DECLARE
   v_live integer;
 BEGIN
-  SELECT count(*) INTO v_live FROM "SodGrant" WHERE "consumedAt" IS NULL;
+  SELECT count(*) INTO v_live FROM "SodGrant" WHERE "consumedAt" IS NULL AND "reviewedStatus" IS NULL;
   IF v_live > 0 THEN
     RAISE EXCEPTION
       'phase5_t7biiih: % unconsumed SodGrant row(s) predate the reviewedStatus column. They record no evidence of what their approver reviewed, so this release makes them unusable rather than inventing one. Have a pmc re-issue each authorisation against the claim state they can see now, then redeploy. See docs/RUNBOOK.md.',
@@ -48,9 +101,15 @@ END $$;
 -- SAME approver could not re-authorise against the state that is now true — the remedy for a
 -- stale review would be unreachable, which is worse than the hole it closes. A grant against a
 -- different reviewed state is a different authorisation, so it is a different row.
+--
+-- `reviewedLifecycleVersion` joins it for the SAME reason, and here it is load-bearing rather than
+-- symmetric: the whole point of the counter is the case where the status label RECYCLES. A
+-- re-authorisation after `certified → paid → certified` carries the identical status, so with the
+-- status alone in the scope the inert row and its legitimate replacement would collide — and the
+-- deadlock this index exists to prevent would be created by the fix for the hole it closes.
 DROP INDEX IF EXISTS "SodGrant_live_scope_key";
 CREATE UNIQUE INDEX "SodGrant_live_scope_key"
-  ON "SodGrant"("projectId", "billId", "versionId", "rule", "actorId", "approverId", "reviewedStatus")
+  ON "SodGrant"("projectId", "billId", "versionId", "rule", "actorId", "approverId", "reviewedStatus", "reviewedLifecycleVersion")
   WHERE "consumedAt" IS NULL;
 
 -- ── …AND THE COLUMN JOINS EVERY SEAL THAT ALREADY SURROUNDS THIS ROW ─────────────────────────
@@ -79,6 +138,7 @@ BEGIN
      OR NEW."approverId" IS DISTINCT FROM OLD."approverId" OR NEW."reason" IS DISTINCT FROM OLD."reason"
      OR NEW."grantedAt" IS DISTINCT FROM OLD."grantedAt"
      OR NEW."reviewedStatus" IS DISTINCT FROM OLD."reviewedStatus"
+     OR NEW."reviewedLifecycleVersion" IS DISTINCT FROM OLD."reviewedLifecycleVersion"
      OR NEW."sourceCommandId" IS DISTINCT FROM OLD."sourceCommandId" THEN
     RAISE EXCEPTION 'A segregation-of-duties grant is IMMUTABLE — only its one-way consumption may be stamped (%)', OLD."id";
   END IF;
@@ -131,7 +191,11 @@ BEGIN
   -- human authorisation, and inferring a reviewed state would be putting words in an approver's
   -- mouth. Unusable is the safe direction, and the migration's diagnostic stops the deploy on any
   -- LIVE legacy grant so nobody discovers this at the moment they try to certify.
-  IF NEW."reviewedStatus" IS NULL THEN
+  --
+  -- BOTH halves of the evidence, because half of it attests to nothing: the status says what the
+  -- claim read and the lifecycle version says WHICH passage through that reading it was, and a
+  -- label without the counter is exactly the recycling hole `certified → paid → certified` opens.
+  IF NEW."reviewedStatus" IS NULL OR NEW."reviewedLifecycleVersion" IS NULL THEN
     RAISE EXCEPTION 'Grant % records no reviewed state, so nothing attests to what its approver was looking at — an authority without that evidence is a permission slip, not a justification; a pmc with standing must issue it again against the claim as it stands', NEW."id";
   END IF;
 

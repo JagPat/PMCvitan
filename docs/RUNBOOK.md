@@ -921,9 +921,21 @@ rule, and nothing in this release re-judges them.
    it, and that refusal is the point: the column records what a person reviewed, so an operator
    filling it in is putting words in their mouth.
 
-3. Re-run the deploy. The migration is retry-safe — the column addition is `IF NOT EXISTS`, the
-   index is rebuilt from scratch each run, and every function and trigger is `CREATE OR REPLACE` /
-   `DROP … IF EXISTS`.
+3. Re-run the deploy. The migration is retry-safe end to end: every column addition is
+   `IF NOT EXISTS`, the index is rebuilt from scratch each run, every function and trigger is
+   `CREATE OR REPLACE` / `DROP … IF EXISTS`, **and the diagnostic above counts only rows whose
+   `reviewedStatus IS NULL`** — so the authorisations a pmc re-issues in step 2 do not themselves
+   re-trigger the abort. A repair that destroyed itself on success would not be a repair.
+
+**One column this migration adds that needs no operator action, mentioned because it appears in
+the diff.** `VendorBill.lifecycleVersion` is a per-claim counter, bumped by the
+`VendorBill_lifecycle_version` trigger whenever a claim's status changes. It starts at 0 on every
+existing row and needs no back-fill: nothing reads it historically, and it only has to be
+*monotonic from here*. It exists because a status LABEL recycles — §F derives the payment status
+from the folds, and `certified → paid → certified` is an ordinary sequence — so anything pinning
+"the claim the approver was looking at" needs a fact that cannot be true twice. The trigger also
+refuses any direct write of the column: a counter a writer can rewind is not monotonic, and a
+stale authorisation could otherwise be revived by moving the claim rather than the authorisation.
 
 **If you cannot reach the approvers before the deploy window closes,** the safe move is to leave the
 release unapplied. There is no partial state to be stuck in: the migration runs in one transaction
