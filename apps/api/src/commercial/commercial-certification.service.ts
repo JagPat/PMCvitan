@@ -19,7 +19,7 @@ import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
 import {
-  assertReviewedRevision, payableGrantActor, resolveApprovalContext, resolveSodGrant,
+  assertReviewedRevision, payableGrantOffer, resolveSodGrant,
   type ApprovalContext, type SodGrantResolution,
 } from './commercial-sod';
 import type { CertifyBillCommand, GrantSodExceptionCommand, SupersedeCertificateCommand } from '../contracts';
@@ -797,9 +797,17 @@ export class CommercialCertificationService {
    * worse than naming none, because the reader acts on it.
    */
   private unspendableGrantReason(
-    context: ApprovalContext | null, named: string, caller: string,
-    authority: { standing: false } | { standing: true; ceiling: Prisma.Decimal | null } | null,
+    offer: {
+      context: ApprovalContext | null;
+      authority: { standing: false } | { standing: true; ceiling: Prisma.Decimal | null } | null;
+      liveGrantStands: boolean;
+    },
+    named: string, caller: string,
   ): string {
+    const { context, authority } = offer;
+    if (offer.liveGrantStands) {
+      return 'An authorisation for the person who certified this claim already stands on it and would be the one an approval consumes, so a second would never be used — spend or supersede the existing one instead';
+    }
     if (!context) {
       return 'This claim has no live certification, so there is no payment approval to authorise — the `certifier-may-not-approve` rule only applies once a claim has been certified';
     }
@@ -911,22 +919,15 @@ export class CommercialCertificationService {
         // findings for enumerating these preconditions, twice inside the correction written to fix
         // an enumeration failure, because a hand-listed subset always looks complete from inside.
         // A condition added to `approve()` reaches this command through the shared context.
-        const payable = rule === SOD_RULES.certifierMayNotApprove
-          ? await resolveApprovalContext(tx, this.deductions, projectId, input.billId)
+        const offer = rule === SOD_RULES.certifierMayNotApprove
+          ? await payableGrantOffer(
+            tx, { folds: this.deductions, orgs: this.orgs }, projectId, input.billId,
+            actor.actorId, rule, ROLE_POLICY['commercial.approve-payment'],
+            { status: reviewed.status, lifecycleVersion: reviewed.lifecycleVersion },
+          )
           : null;
-        if (rule === SOD_RULES.certifierMayNotApprove) {
-          // …including the CEILING, which `approve()` also applies (Codex round 1, P1). Read
-          // through the same participant `assertApprovalAuthority` uses, for the CERTIFIER, since
-          // they are the only actor this rule can excuse.
-          const authority = payable === null ? null : await this.orgs.approvalAuthorityFor(
-            tx, projectId, payable.certifiedById, ROLE_POLICY['commercial.approve-payment'],
-          );
-          const nameable = payableGrantActor(payable, actor.actorId, authority);
-          if (nameable === null || nameable !== input.actorId) {
-            throw new ConflictException(
-              this.unspendableGrantReason(payable, input.actorId, actor.actorId, authority),
-            );
-          }
+        if (offer !== null && (offer.actorId === null || offer.actorId !== input.actorId)) {
+          throw new ConflictException(this.unspendableGrantReason(offer, input.actorId, actor.actorId));
         }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
         // certification will use — the participant, because standing is the orgs module's rule
@@ -972,7 +973,7 @@ export class CommercialCertificationService {
           // arm never fires; it is written this way so that if that ever changes, the grant is
           // refused at issue instead of becoming quietly unspendable.
           const spendable = await resolveSodGrant(
-            tx, this.orgs, projectId, input.billId, payable!.certificateVersionId, rule, row.actorId, true,
+            tx, this.orgs, projectId, input.billId, offer!.context!.certificateVersionId, rule, row.actorId, true,
             { status: reviewed.status, lifecycleVersion: reviewed.lifecycleVersion },
           );
           if (spendable.state !== 'live') {
@@ -993,6 +994,9 @@ export class CommercialCertificationService {
               'An authorisation for that person already stands on this claim and would be the one an approval consumes, so a second would never be used. Spend or supersede the existing one instead',
             );
           }
+          // (`payableGrantOffer` refuses this case before the insert, so reaching here means the
+          //  world moved mid-transaction. Kept as the backstop it always was rather than removed
+          //  as redundant: it is what makes the guarantee hold under a concurrent grant.)
         }
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.sod.grant', entity: 'SodGrant', entityId: row.id,

@@ -148,7 +148,7 @@ export class CommercialClaimQuery {
       // candidate list certification's picker uses, INTERSECTED with the predicate — so a certifier
       // who does not hold approve standing yields an empty list without that being a second check
       // written here, which is exactly how the client's own version of this rule went wrong.
-      const nameable = await this.payments.payableGrantActorFor(tx, projectId, billId, user.sub);
+      const nameable = await this.payments.payableGrantActorFor(tx, projectId, billId, user.sub, asOf);
       const grantCandidates = nameable === null ? [] : (await this.orgs.projectRoleCandidates(
         tx, projectId, ROLE_POLICY['commercial.approve-payment'],
       )).filter((c) => c.userId === nameable);

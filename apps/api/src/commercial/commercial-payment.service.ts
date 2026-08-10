@@ -24,7 +24,7 @@ import { announceMoneyMoved } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
 import {
-  assertReviewedRevision, payableGrantActor, resolveApprovalContext,
+  assertReviewedRevision, payableGrantOffer, resolveApprovalContext,
   resolveSodGrant as resolveGrantForRule, type SodGrantResolution,
 } from './commercial-sod';
 import type { ApprovePaymentCommand, RecordPaymentInput, ReversePaymentInput } from '../contracts';
@@ -678,15 +678,12 @@ export class CommercialPaymentService {
    */
   async payableGrantActorFor(
     tx: Prisma.TransactionClient, projectId: string, billId: string, callerActorId: string,
+    asOf: { status: string; lifecycleVersion: number },
   ): Promise<string | null> {
-    const context = await resolveApprovalContext(tx, this.deductions, projectId, billId);
-    if (context === null) return null;
-    // the CERTIFIER's own approval authority — standing AND ceiling — because they are the only
-    // actor this rule can excuse and `approve()` applies both to them (Codex round 1, P1)
-    const authority = await this.orgs.approvalAuthorityFor(
-      tx, projectId, context.certifiedById, ROLE_POLICY['commercial.approve-payment'],
-    );
-    return payableGrantActor(context, callerActorId, authority);
+    return (await payableGrantOffer(
+      tx, { folds: this.deductions, orgs: this.orgs }, projectId, billId, callerActorId,
+      SOD_RULE, ROLE_POLICY['commercial.approve-payment'], asOf,
+    )).actorId;
   }
 
   private async resolveSodGrant(

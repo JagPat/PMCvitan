@@ -105,11 +105,67 @@ export function payableGrantActor(
   context: ApprovalContext | null,
   callerActorId: string,
   authority: { standing: false } | { standing: true; ceiling: Prisma.Decimal | null } | null,
+  /** whether an authorisation for the certifier ALREADY stands on this claim — see
+   *  `payableGrantOffer`, which is the only thing that should be computing this argument */
+  liveGrantStands: boolean,
 ): string | null {
   if (!context) return null;
   if (context.certifiedById === callerActorId) return null;
   if (!authority?.standing) return null;
+  if (liveGrantStands) return null;
   return payableHeadroom(context, authority).greaterThan(0) ? context.certifiedById : null;
+}
+
+/**
+ * §I (7B-v) — the WHOLE issuability question, resolved once for every consumer.
+ *
+ * Codex round 2 (P2) is why this exists rather than the bare predicate above. Round 1 added an
+ * `already stands` refusal to the COMMAND — a second authorisation can never be the one an approval
+ * selects — and did not teach the READ the same rule, so the form kept offering a candidate the
+ * command had just started rejecting. That is precisely the drift this unit was written to end,
+ * introduced by one of its own corrections: a shared predicate stops being shared the moment a
+ * caller adds a condition beside it instead of inside it.
+ *
+ * So the resolution — the folds, the certifier's approval authority, and whether an authorisation
+ * already stands — lives HERE, and both the command and the claim read call this one function. A
+ * condition added inside it reaches every consumer; a condition added beside it in a caller is the
+ * bug this signature exists to make awkward.
+ */
+export async function payableGrantOffer(
+  tx: Prisma.TransactionClient,
+  deps: { folds: ApprovalContextFolds; orgs: OrgsParticipant },
+  projectId: string,
+  billId: string,
+  callerActorId: string,
+  rule: string,
+  approveRoles: readonly string[],
+  asOf: { status: string; lifecycleVersion: number },
+): Promise<{
+  actorId: string | null;
+  context: ApprovalContext | null;
+  authority: { standing: false } | { standing: true; ceiling: Prisma.Decimal | null } | null;
+  liveGrantStands: boolean;
+}> {
+  const context = await resolveApprovalContext(tx, deps.folds, projectId, billId);
+  if (context === null) {
+    return { actorId: null, context: null, authority: null, liveGrantStands: false };
+  }
+  // the CERTIFIER's own authority — standing AND ceiling — because they are the only actor this
+  // rule can excuse and `approve()` applies both to them
+  const authority = await deps.orgs.approvalAuthorityFor(
+    tx, projectId, context.certifiedById, approveRoles,
+  );
+  // …and whether one already stands. Resolved through the SAME function the spend path consumes
+  // with, against the certificate's version, so "an approval would select it" is not re-derived.
+  const existing = await resolveSodGrant(
+    tx, deps.orgs, projectId, billId, context.certificateVersionId, rule,
+    context.certifiedById, false, asOf,
+  );
+  const liveGrantStands = existing.state === 'live';
+  return {
+    actorId: payableGrantActor(context, callerActorId, authority, liveGrantStands),
+    context, authority, liveGrantStands,
+  };
 }
 
 /**

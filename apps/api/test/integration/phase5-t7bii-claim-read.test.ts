@@ -306,6 +306,22 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     expect((await claims.readClaim(projectId, uncertified, asUser(projectId, grantor)))
       .approvePreflight.grantCandidates).toEqual([]);
 
+    // …an authorisation that ALREADY STANDS removes the candidate, because a second could never
+    // be the one an approval selects (Codex round 2, P2). Round 1 taught the COMMAND to refuse
+    // that and left the READ offering it, so the form enabled an action the server had just
+    // started rejecting — the drift a shared predicate exists to prevent, introduced by one of
+    // this unit's own corrections. Both now ask `payableGrantOffer`.
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'stands already', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor));
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, grantor)))
+      .approvePreflight.grantCandidates,
+    'an authorisation stands, so there is nobody left to authorise').toEqual([]);
+    // …and once it is SPENT the candidate returns, so the read is precise rather than merely strict
+    await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, grantor)))
+      .approvePreflight.grantCandidates.map((c) => c.userId)).toEqual([f.memberUser.id]);
+
     // …a certifier at or above their APPROVAL CEILING can have no positive amount accepted
     // either, so the read offers nobody (Codex round 1, P1 — the ceiling is one of `approve()`'s
     // money bounds, and the predicate folds it into the same headroom as §G bound 4)
@@ -325,7 +341,8 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     await certification.grantSodException(projectId, {
       billId, actorId: f.memberUser.id, reason: 'only pmc on site', rule: 'certifier-may-not-approve',
     }, asUser(projectId, grantor));
-    await payments.approve(projectId, { billId, amount: '100.00' }, pmc(projectId));
+    // 90, not 100: the already-stands step above spent 10 of this claim's payable
+    await payments.approve(projectId, { billId, amount: '90.00' }, pmc(projectId));
     expect((await claims.readClaim(projectId, billId, asUser(projectId, grantor)))
       .approvePreflight.grantCandidates).toEqual([]);
   });
