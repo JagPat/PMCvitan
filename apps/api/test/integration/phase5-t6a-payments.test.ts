@@ -136,6 +136,18 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     return f.ownerUser.id;
   };
 
+  /** 7B-v — a THIRD pmc, so §I's payment half can be probed with the grantor, the certifier and
+   *  the named actor all distinct. With only two, "names a non-certifier" and "the grantor is the
+   *  certifier" collapse into one case and the two refusals cannot be told apart. */
+  const thirdPmc = async (projectId: string): Promise<string> => {
+    await t.prisma.membership.upsert({
+      where: { projectId_userId: { projectId, userId: f.strangerUser.id } },
+      create: { projectId, userId: f.strangerUser.id, role: 'pmc', status: 'active' },
+      update: { role: 'pmc', status: 'active' },
+    });
+    return f.strangerUser.id;
+  };
+
   /** The store user records evidence and never certifies — §I's ordinary separation. */
   const store = async (projectId: string): Promise<AuthUser> => asUser(projectId, await secondPmc(projectId));
 
@@ -1125,11 +1137,17 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     const atCertified = await version();
     expect(atCertified).toBeGreaterThan(0);
 
-    const approval = await payments.approve(projectId, { billId, amount: '100.00' }, approver(projectId));
+    // 7B-v changed these two amounts from the full 100.00, deliberately and not cosmetically.
+    // This probe's SUBJECT is the revision counter, and it used a payment-rule grant merely as a
+    // convenient write that moves no status. Approving and paying the whole payable leaves zero
+    // approvable, which now makes that grant unspendable and correctly refused — so the incidental
+    // write is made LEGAL rather than the guard weakened to keep an old line running. Every
+    // assertion below is unchanged.
+    const approval = await payments.approve(projectId, { billId, amount: '90.00' }, approver(projectId));
     const atApproved = await version();
     expect(atApproved, 'a DERIVED transition bumps it too').toBeGreaterThan(atCertified);
 
-    await payments.record(projectId, { approvalId: approval.id, amount: '100.00', method: 'neft' }, pmc(projectId));
+    await payments.record(projectId, { approvalId: approval.id, amount: '90.00', method: 'neft' }, pmc(projectId));
     const atPaid = await version();
     expect(atPaid).toBeGreaterThan(atApproved);
 
@@ -1597,5 +1615,86 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
     // THE LEGAL PATH: the claim as it actually stands is accepted, so the seal is precise rather
     // than merely strict.
     await expect(forge('forged-true', { rev: at })).resolves.toBeDefined();
+  });
+
+  /**
+   * 7B-v (§I) — a payment-rule grant must name someone an approval could actually SPEND it on.
+   *
+   * `approve()` consults a grant only when `certificate.certifiedById === actor`, so a
+   * `certifier-may-not-approve` grant naming anybody else authorises nothing: the named approver
+   * was never blocked, their approval succeeds without consulting it, and the row sits unconsumed
+   * for ever. The command checked only that the named actor holds approve STANDING, which every
+   * pmc on the project does.
+   */
+  it('PROBE 38 (§I): a payment-rule grant cannot name someone the rule does not block', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);           // certified by `pmc(projectId)`
+    const grantor = await secondPmc(projectId);               // the authorising pmc
+    const bystander = await thirdPmc(projectId);              // full approve standing, did NOT certify
+
+    // (a) a THIRD PARTY authorises a pmc who did not certify. Every check the command performed
+    // before 7B-v passes: not a self-grant, `bystander` holds approve standing, the pins match.
+    // The row it wrote could never be consumed — `bystander` was never blocked, so their approval
+    // succeeds without consulting it.
+    await expect(certification.grantSodException(projectId, {
+      billId, actorId: bystander, reason: 'names an approver the rule never blocked',
+      rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor))).rejects.toThrow(/only the person who certified/iu);
+
+    // (b) the CERTIFIER authorises someone else. Also unspendable, for a different reason worth
+    // stating separately: the rule blocks the GRANTOR here, so the only nameable person is the
+    // grantor themselves — which §I forbids. Nobody can be named on this claim by this caller.
+    await expect(certification.grantSodException(projectId, {
+      billId, actorId: bystander, reason: 'the certifier cannot authorise around themselves',
+      rule: 'certifier-may-not-approve',
+    }, pmc(projectId))).rejects.toThrow(/you certified this claim/iu);
+
+    // nothing was recorded by either refusal, so neither costs any cleanup
+    expect(await t.prisma.sodGrant.count({
+      where: { projectId, billId, rule: 'certifier-may-not-approve' },
+    })).toBe(0);
+
+    // THE LEGAL PATH, so the guard is precise rather than merely strict: the grantor names the
+    // person the rule actually blocks, and the approval that was refused now succeeds.
+    await expect(certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site this week',
+      rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor))).resolves.toBeDefined();
+    const approval = await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect(approval.sodException!.rule).toBe('certifier-may-not-approve');
+  });
+
+  /**
+   * 7B-v (§I) — the OTHER two reasons an approval could not spend the grant, refused at issue by
+   * the same predicate rather than by a second list beside it.
+   */
+  it('PROBE 39 (§I): a payment-rule grant needs a live certification and room to approve', async () => {
+    const projectId = await freshProject();
+    const grantor = await secondPmc(projectId);
+
+    // (a) BEFORE certification there is no approval to excuse. The window is derived from the
+    // fact `approve()` needs — a live certified position — not from a status list that has to be
+    // kept in step with §F.
+    const line = await issuedMaterialLine(projectId, { qty: '100' });
+    await acceptOnLine(projectId, line, '100');
+    const uncertified = await verifiedClaim(projectId, line.vendorId,
+      [{ poLineId: line.poLineId, quantity: '100' }]);
+    await expect(certification.grantSodException(projectId, {
+      billId: uncertified, actorId: f.memberUser.id, reason: 'too early',
+      rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor))).rejects.toThrow(/no live certification/iu);
+
+    // (b) once the whole payable is approved, §G bound 4 admits no positive amount, so an
+    // authorisation to approve is an authority over nothing.
+    const billId = await certifiedClaim(projectId);
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'first', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor));
+    await payments.approve(projectId, { billId, amount: '100.00' }, pmc(projectId));
+
+    await expect(certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'nothing left to authorise',
+      rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor))).rejects.toThrow(/nothing remains approvable/iu);
   });
 });

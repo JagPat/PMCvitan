@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client';
+import { Prisma as PrismaRuntime, type Prisma } from '@prisma/client';
 import type { SodGrantState as GrantStateName } from '@vitan/shared';
 import { ConflictException } from '@nestjs/common';
 import type { OrgsParticipant } from '../orgs/orgs.participant';
@@ -17,6 +17,97 @@ export function assertReviewedRevision(pinned: number | undefined, actual: numbe
       'This claim has moved on since you read it — money on it has changed, so this act would be recorded against a claim you have not seen. Reload and try again.',
     );
   }
+}
+
+/**
+ * §I (7B-v) — everything `approve()` reads BEFORE it decides, in one place.
+ *
+ * Extracted rather than copied, and the distinction is the whole point of this unit. A
+ * `certifier-may-not-approve` grant exists to excuse ONE act: an approval `approve()` would
+ * otherwise refuse. So "may this grant be ISSUED?" and "could this grant be SPENT?" are the same
+ * question, and a second answer to it is a second implementation that will drift — which is
+ * exactly what happened to §I's two halves before `resolveSodGrant` unified them.
+ *
+ * `approve()` composes its decision from this context. The grant command asks the SAME function
+ * whether an approval could consume what it is about to write. Neither restates the other's
+ * preconditions, because restating them is the root this surface has paid five findings for:
+ * every enumeration of them looked complete from the inside and was not.
+ */
+export interface ApprovalContext {
+  certificateId: string;
+  /** the version the grant must pin, because that is the one `approve()` resolves against */
+  certificateVersionId: string;
+  /** the ONLY actor `certifier-may-not-approve` blocks, and so the only one it can excuse */
+  certifiedById: string;
+  netPayable: Prisma.Decimal;
+  approvedSoFar: Prisma.Decimal;
+  /** §G bound 4's headroom. At zero no positive approval can ever be accepted. */
+  remaining: Prisma.Decimal;
+}
+
+/**
+ * The §H folds this needs, taken structurally rather than by importing the query service, so the
+ * shared predicate does not create a cycle between the two services that read it.
+ */
+export interface ApprovalContextFolds {
+  positionFor(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<{ certificateId: string; netPayable: Prisma.Decimal } | null>;
+  approvedFor(
+    tx: Prisma.TransactionClient, projectId: string, billId: string,
+  ): Promise<Prisma.Decimal>;
+}
+
+/** `null` when the claim carries no live certification — there is nothing to approve, so nothing
+ *  to authorise either. Read under whatever lock the caller already holds. */
+export async function resolveApprovalContext(
+  tx: Prisma.TransactionClient,
+  folds: ApprovalContextFolds,
+  projectId: string,
+  billId: string,
+): Promise<ApprovalContext | null> {
+  const position = await folds.positionFor(tx, projectId, billId);
+  if (!position) return null;
+  const certificate = await tx.billCertificate.findFirstOrThrow({
+    where: { projectId, id: position.certificateId },
+    select: { certifiedById: true, versionId: true },
+  });
+  const approvedSoFar = await folds.approvedFor(tx, projectId, billId);
+  const netPayable = new PrismaRuntime.Decimal(position.netPayable);
+  return {
+    certificateId: position.certificateId,
+    certificateVersionId: certificate.versionId,
+    certifiedById: certificate.certifiedById,
+    netPayable,
+    approvedSoFar,
+    remaining: netPayable.sub(approvedSoFar),
+  };
+}
+
+/**
+ * §I (7B-v) — the ONE actor a `certifier-may-not-approve` grant may name right now, or `null`.
+ *
+ * There is at most one, and that is a fact about the rule rather than a simplification:
+ * `approve()` consults a grant only when `certificate.certifiedById === actor`, so an
+ * authorisation naming anybody else is never even looked at. Before this existed the command
+ * checked that the named actor held approve STANDING — true of every pmc on the project — and
+ * wrote a row nobody could spend.
+ *
+ * `null` therefore covers every reason at once, without any of them being a listed condition:
+ * no live certification (nothing to approve), no headroom left (§G bound 4 admits no positive
+ * amount), or the certifier is the caller (§I forbids a self-grant). A precondition added to
+ * `approve()` lands here once and reaches the command and the read together.
+ *
+ * The COMMAND requires the actor it is given to equal this; the READ offers it, or offers nobody.
+ * If the command would refuse, the form cannot have offered it.
+ */
+export function payableGrantActor(
+  context: ApprovalContext | null, callerActorId: string,
+): string | null {
+  if (!context) return null;
+  if (context.remaining.lessThanOrEqualTo(0)) return null;
+  if (context.certifiedById === callerActorId) return null;
+  return context.certifiedById;
 }
 
 /**
