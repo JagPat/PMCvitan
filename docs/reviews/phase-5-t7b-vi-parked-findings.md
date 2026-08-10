@@ -38,10 +38,15 @@ derived-identity helper lands once rather than per command.
 
 ## What ships meanwhile
 
-PR #317 keeps the approve chain and drops the advance surface entirely — no read, no control, no
-key, no store slice. §H advances remain fully available through the API (`POST commercial/advances`
-and the `commercial.advances` read), which is how the pilot acceptance chain exercises them. The
-§M surface simply does not offer the control until 7B-vi lands.
+PR #317 keeps the approve chain and drops the advance surface entirely — no read route, no control,
+no key, no store slice. **Only the COMMAND survives**: `POST commercial/advances` pays an advance
+and the recovery ceiling is enforced on the server, so no §G bound or §H rule is outstanding.
+
+The LIST read does not survive. `GET commercial/advances` and `listAdvances` were removed with the
+control, so nothing can currently hydrate or reconcile advance rows — which means **7B-vi owes the
+read as well as the control**, and the read must land first, for the reason it existed in the first
+place: the advance coalesce key has no settling read without it, and a key with no release path is
+stuck by construction. Getting that ordering wrong is what made this surface a defect in 7B-iv.
 
 Nothing known-broken ships, and nothing is reconstructed from memory: the work is whole on this
 branch at the head that was reviewed.

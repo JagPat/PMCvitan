@@ -81,10 +81,13 @@ A withholding is taken from a payable and given back as a RELEASE row, never an 
 across every claim. An advance itself has no bound — it is a commercial decision about a
 relationship — and what IS bounded is the recovery.
 
-**Delivered on the server; the §M advance CONTROL is not shipped.** Paying an advance and reading
-the advance ledger are available through the API, and the recovery ceiling is enforced there. The
-browser surface for paying one is parked as 7B-vi: its coalesce identity enumerated a subset of the
-row-defining facts, so two advances differing only in method or reference collapsed to one action.
+**PAYING an advance is delivered; READING the ledger is parked with the surface.** `POST
+commercial/advances` exists and the recovery ceiling is enforced on the server, so no §G bound and
+no §H rule is outstanding. What 7B-vi owes is the whole advance SURFACE — the list route
+(`GET commercial/advances` and `listAdvances` were removed with the control, so there is currently
+no way to hydrate or reconcile advance rows), the browser control, and a coalesce identity that
+does not enumerate a subset of the row-defining facts: the parked one collapsed two advances
+differing only in method or reference into a single action.
 
 ### §I — separation of duties, modelled rather than banned
 Two rules, deliberately distinct: `evidence-recorder-may-not-certify` and
@@ -214,6 +217,9 @@ credentials, no external schema assumptions and no external calls.
   head with its findings named: `docs/reviews/phase-5-t7b-v-parked-findings.md` and
   `phase-5-t7b-vi-parked-findings.md` — **both land on `main` in this PR**, having been written on
   the park branches where a reader of `main` could not reach them. A hand-off that lives only on
-  the branch it hands off from is not a hand-off. The lineage's own lesson is recorded in
+  the branch it hands off from is not a hand-off. The closing PR's own review found three claims in
+  this packet that the repository did not support; the root is in `docs/reviews/pr-318-convergence.md`
+  — **a record may only claim what the repository actually contains**, which is PR #317's gate-fidelity
+  lesson one level up. The lineage's own lesson is recorded in
   `pr-317-convergence.md`: **derive an identity from the whole payload, never enumerate its fields**
   — a rule this unit broke four times, twice inside the correction for it.
