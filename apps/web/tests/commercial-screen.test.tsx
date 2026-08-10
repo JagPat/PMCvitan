@@ -63,7 +63,7 @@ const claim = (): CommercialClaimView => ({
   },
   measurements: {},
   certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self', lifecycleVersion: 0, sodCandidates: [] },
-  approvePreflight: { grantState: 'none', grantId: null, callerIsCertifier: false },
+  approvePreflight: { grantState: 'none', grantId: null, callerIsCertifier: false, grantCandidates: [] },
 });
 
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {
@@ -1477,6 +1477,9 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
 
   const openWith = (o: {
     candidates?: Array<{ userId: string; name: string }>;
+    /** 7B-v — whom the PAYMENT rule may name. Defaults to nobody, so a fixture must opt in: the
+     *  server decides this, and a form that offered it by default would be modelling the rule. */
+    approveGrantCandidates?: Array<{ userId: string; name: string }>;
     pending?: string[];
     role?: string;
     status?: string;
@@ -1489,6 +1492,7 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
         ...c.certifyPreflight,
         sodCandidates: o.candidates ?? [{ userId: 'u-2', name: 'Asha' }, { userId: 'u-5', name: 'Org Admin' }],
       },
+      approvePreflight: { ...c.approvePreflight, grantCandidates: o.approveGrantCandidates ?? [] },
     };
     useStore.setState(getInitialState());
     useStore.getState()._setGateway(null);
@@ -1544,25 +1548,48 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
   });
 
   /**
-   * 7B-iv round 3 — CERTIFICATION rule only, with the parked gap ASSERTED rather than discovered.
+   * 7B-v — BOTH rules are issued here now, and the payment half is gated by ONE server answer.
    *
-   * The payment rule drew five findings over two rounds, each an incomplete precondition set; the
-   * last needs a server guard, so it is parked as 7B-v. A form that offers an authority it cannot
-   * gate completely is worse than one that does not: it promises a remedy and writes a grant
-   * nobody can spend.
+   * This replaces the probe that asserted the 7B-iv PARK. That probe was right to exist: the
+   * payment rule had drawn five findings, each an incomplete precondition set, and a form offering
+   * an authority it cannot gate completely promises a remedy and writes a grant nobody can spend.
+   * What closed the park is not a longer list of client-side checks — it is that the browser no
+   * longer decides. `approvePreflight.grantCandidates` is non-empty exactly when the command would
+   * accept, so the form cannot offer what the server refuses, or refuse what it would accept.
    */
-  it('issues the certification rule only, and says the payment rule is not issued here yet', () => {
+  it('offers the payment rule exactly when the server says an authorisation is issuable', () => {
+    // NOBODY nameable — the default fixture. The rule can be selected, and the form refuses.
     const r = openWith({});
-    expect(r.queryByTestId('sod-rule'), 'the rule selector is parked with 7B-v').toBeNull();
-    // the gap is STATED on the surface, not silently absent
-    expect(r.getByTestId('commercial-sod-grant').textContent)
-      .toMatch(/is not issued here yet/iu);
-    // …and the form still works for the rule it does issue
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled,
+      'no candidate means the server would refuse, so the button must not offer it').toBe(true);
+    expect(r.getByTestId('sod-grant-not-certifiable').textContent)
+      .toMatch(/cannot be issued on this claim as it stands/iu);
+
+    // …and the SAME form still issues the certification rule, which has its own candidate list
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'evidence-recorder-may-not-certify' } });
     fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
     fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
-    // (which rule the dispatched payload names is asserted in commercial-verification.test.ts,
-    //  against the store rather than through a screen harness with no gateway)
+  });
+
+  it('offers the ONE person the payment rule can excuse, when the server names them', () => {
+    const r = openWith({ approveGrantCandidates: [{ userId: 'u-cert', name: 'Priya' }] });
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
+    // exactly one option beside the placeholder — the rule blocks one person, so it excuses one
+    const options = Array.from((r.getByTestId('sod-actor') as HTMLSelectElement).options)
+      .map((o) => o.value).filter((v) => v !== '');
+    expect(options).toEqual(['u-cert']);
+
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-cert' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
+
+    // switching rules CLEARS the name: the two rules excuse different acts and so admit different
+    // people, and carrying `u-cert` across would offer the other rule someone it refuses
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'evidence-recorder-may-not-certify' } });
+    expect((r.getByTestId('sod-actor') as HTMLSelectElement).value).toBe('');
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
   });
 
 
@@ -1579,6 +1606,7 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
     pending?: string[]; role?: string; approvable?: string | null;
     certificateId?: string; staleBundle?: boolean; bundleAhead?: boolean;
     certifiedByCaller?: boolean; approveGrant?: string;
+    approveGrantCandidates?: Array<{ userId: string; name: string }>;
   } = {}) => {
     const c = claim();
     const base: CommercialClaimView = {
@@ -1598,6 +1626,9 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
         grantState: (o.approveGrant ?? 'none') as never,
         grantId: o.approveGrant === 'live' ? 'grant-1' : null,
         callerIsCertifier: o.certifiedByCaller === true,
+        // 7B-v — whom the payment rule may name, server-decided. Default empty (nobody), so a
+        // fixture must opt IN to the payment-rule form being offered at all.
+        grantCandidates: o.approveGrantCandidates ?? [],
       },
       deductions: {
         ...c.deductions,

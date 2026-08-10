@@ -142,11 +142,22 @@ export class CommercialClaimQuery {
       const approveResolved = liveVersionId === null
         ? ({ state: 'none' } as const)
         : await this.payments.resolveApproveGrant(tx, projectId, billId, liveVersionId, user.sub, asOf);
+      // 7B-v — whom this caller may AUTHORISE under the payment rule, from the module that owns it.
+      // At most one person: `approve()` consults such a grant only when the actor is the certifier,
+      // so everyone else is someone the rule never blocked. The name comes from the SAME orgs
+      // candidate list certification's picker uses, INTERSECTED with the predicate — so a certifier
+      // who does not hold approve standing yields an empty list without that being a second check
+      // written here, which is exactly how the client's own version of this rule went wrong.
+      const nameable = await this.payments.payableGrantActorFor(tx, projectId, billId, user.sub);
+      const grantCandidates = nameable === null ? [] : (await this.orgs.projectRoleCandidates(
+        tx, projectId, ROLE_POLICY['commercial.approve-payment'],
+      )).filter((c) => c.userId === nameable);
       const approvePreflight: ApprovePreflightDto = {
         grantState: approveResolved.state,
         grantId: approveResolved.state === 'live' ? approveResolved.grant.id : null,
         // the pairing §I forbids, decided here because the session carries no actor id
         callerIsCertifier: certificate !== null && certificate.certifiedById === user.sub,
+        grantCandidates,
       };
 
       return {

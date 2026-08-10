@@ -23,7 +23,10 @@ import { CommercialStatusService } from './commercial-status.service';
 import { announceMoneyMoved } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import { assertReviewedRevision, resolveApprovalContext, resolveSodGrant as resolveGrantForRule, type SodGrantResolution } from './commercial-sod';
+import {
+  assertReviewedRevision, payableGrantActor, resolveApprovalContext,
+  resolveSodGrant as resolveGrantForRule, type SodGrantResolution,
+} from './commercial-sod';
 import type { ApprovePaymentCommand, RecordPaymentInput, ReversePaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -661,6 +664,24 @@ export class CommercialPaymentService {
     asOf: { status: string; lifecycleVersion: number },
   ): Promise<SodGrantResolution> {
     return resolveGrantForRule(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, false, asOf);
+  }
+
+  /**
+   * §I (7B-v) — the ONE actor a `certifier-may-not-approve` grant may name on this claim right
+   * now, as the READ sees it. `null` when no such authorisation is issuable at all.
+   *
+   * Exposed beside `resolveApproveGrant` and for the same reason: the answer belongs to the module
+   * that owns this rule, so the screen and the command cannot disagree about it. The grant command
+   * requires the actor it is given to equal this; the read offers it, or offers nobody. If the
+   * command would refuse, the form cannot have offered it — which is the property that makes the
+   * client stop modelling the window, the headroom and the excused identity for itself.
+   */
+  async payableGrantActorFor(
+    tx: Prisma.TransactionClient, projectId: string, billId: string, callerActorId: string,
+  ): Promise<string | null> {
+    return payableGrantActor(
+      await resolveApprovalContext(tx, this.deductions, projectId, billId), callerActorId,
+    );
   }
 
   private async resolveSodGrant(

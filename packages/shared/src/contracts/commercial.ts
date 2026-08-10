@@ -916,6 +916,24 @@ export interface ApprovePreflightDto {
   /** Whether the CALLER is the actor who certified this claim — the pairing the rule forbids.
    *  Server-resolved because the session carries a role and a name, never an actor id. */
   callerIsCertifier: boolean;
+  /** 7B-v (§I) — whom THIS caller may name in a `certifier-may-not-approve` authorisation on this
+   *  claim, right now. At most ONE, and empty when no such authorisation is issuable at all.
+   *
+   *  `certifyPreflight.sodCandidates` exists because filtering a roster by role in the browser is a
+   *  second implementation of a standing rule. This field exists for a stronger version of the same
+   *  argument, and it is worth stating because the field looks like a convenience and is not.
+   *
+   *  A payment-rule authorisation is issuable only if an approval could CONSUME it, and `approve()`
+   *  consults such a grant only when `certificate.certifiedById === actor`. So the answer depends on
+   *  the live certified position, on §G bound 4's remaining headroom, and on who signed the
+   *  certificate — three server facts, none of which a browser can derive, and each of which was a
+   *  separate parked finding when the client tried. Answering them here collapses all three into one
+   *  question the SAME predicate answers for the command: if the command would refuse it, this list
+   *  cannot have offered it.
+   *
+   *  A form should therefore offer the payment rule exactly when this is non-empty, and must not
+   *  reconstruct WHY it is empty — a refusal carries the reason, and the reasons change. */
+  grantCandidates: readonly SodCandidateDto[];
 }
 
 
