@@ -1656,7 +1656,16 @@ units are driven from this plan, and a deferral recorded only in a review packet
 | Probe | The question, and how it must be settled | Owner |
 |---|---|---|
 | **grant-guard** | Issue a `certifier-may-not-approve` grant naming an approver who is NOT the live certificate's `certifiedById`. **Today it is ACCEPTED** — `commercial.sod.grant` checks only standing, while `approve()` consumes the grant only when `certificate.certifiedById === actor`, so an unspendable authorisation is recorded. 7B-v proves that acceptance RED first, then makes it a refusal. | **7B-v** |
+| **grant-spendability** | The other four 7B-v preconditions, as ONE predicate rather than a list — a payment-rule grant is issuable only if it could be CONSUMED at spend time: the act is legal (past certification, not `BILL_CERTIFY_FROM` — ledger A), a positive amount remains approvable (F2), and the pins still match the server's reading (F1). Enumerating them is the root that cost 7B-iv five rounds; derive them from what `approve()` does. | **7B-v** |
+| **grant-conflict-set** | A grant pins `(status, lifecycleVersion)`, and every FOLD write moves the revision — not only §F transitions (ledger B). Queued behind a withholding, approval, payment or reversal, it is refused `stale-version` after the outbox reported it saved. | **7B-v** |
 | **advance-read** | Ask for the advance list and reconcile the advance coalesce key against it. **Today there is no read** — `GET commercial/advances` and `listAdvances` were removed with the control, so the key has no settling read. 7B-vi proves the stuck key RED first, then lands the read BEFORE the control. | **7B-vi** |
+| **advance-identity** | Two advances to one counterparty differing only in `method` or `reference` must both dispatch. The parked key is `(vendor, amount, reason)` and collapses them. **Do NOT add the two missing fields** — that is a fifth enumeration; derive the identity from the WHOLE command payload so a sixth field joins automatically. | **7B-vi** |
+
+**This table must stay COMPLETE against the parked ledgers.** Every open finding in
+`phase-5-t7b-v-parked-findings.md` (A, B, F1, F2, F3) and `phase-5-t7b-vi-parked-findings.md` (the
+read, the coalesce identity) appears above. A criterion table that names a subset lets a unit close
+its named probe and drop the rest — which is the enumeration failure this phase paid for repeatedly,
+one level up.
 
 **Why these are EXERCISED, not grepped.** PR #318 first wrote them as source-text assertions in
 `scripts/`, and three review rounds showed each could be defeated by a legitimate refactor — a route

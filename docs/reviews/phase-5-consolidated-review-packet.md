@@ -141,9 +141,13 @@ principle exists.
 | the money position is answerable at any moment | `commercial.money-position` from ONE repeatable-read transaction; the §J forecast projection |
 | the pilot is opt-in and inert elsewhere | §D capability gating, proven in the acceptance chain's non-pilot project (no nav, reads 404) |
 
-**Two §M surfaces are outstanding and neither weakens a criterion above:** the authority rules and
-conservation bounds are the SERVER's and are enforced whichever route reaches them. 7B-v and 7B-vi
-are about which acts a browser offers, not about what the product permits.
+**Two §M surfaces are outstanding, and one of them has a SERVER half.** No §G bound and no §F
+derivation is affected — those are enforced whichever route reaches them, so no criterion above is
+weakened. But **7B-v is not browser-only**: `commercial.sod.grant` will record a
+`certifier-may-not-approve` grant naming someone who is not the certificate's `certifiedById`, and
+`approve()` can never consume it. Narrowing the picker without that command guard would leave the
+API still writing unspendable authorisations. 7B-vi is the read plus the control, read first. See §I
+and §H above, and the two parked ledgers.
 
 ## 4. The pilot acceptance chain
 
