@@ -1636,6 +1636,61 @@ SECTION is right and the probe is the defect.
     hostile insert is rejected.
 
 
+## Follow-on acceptance criteria for 7B-v and 7B-vi
+
+These are handed off under a **bounded-review deferral** — the closing packet's docs-only review
+passed three finding-bearing heads a second time, which is exactly the condition the cap exists for:
+remaining open questions move from prose to named probes rather than drawing another round of
+commentary. The head carries `Review-Deferred-To-Probes: phase-5-task-7b-vi`, naming the LATER of
+the two owning stops so nothing is settled before both units have run.
+
+`docs/STATUS.md` is **not** in that head, and that is the mechanism working rather than a gap: a
+head carrying the deferral trailer may not edit STATUS, because the gate reads the default branch's
+copy and a PR that rewrites it has moved its own phase truth out from under the check. The STATUS
+flip lands on its own immediately afterwards, which is the remedy `scripts/review-efficiency.mjs`
+names in the refusal itself. `docs/reviews/pr-318-convergence.md` records how that was got wrong
+first — the deadlock was initially resolved by opening a replacement PR, which reset the
+finding-head counter instead of satisfying the rule.
+
+Either way, what the rows below mean for the next units is unchanged: they are **reproduce-first
+acceptance criteria owned by named units**, settled at those units' own review stops in the
+repository's usual way. The deferral schedules where they are answered; it does not dismiss any of
+them, and the exact-head gate still fails closed on every current-head finding.
+
+**Each probe below is a REPRODUCE-FIRST acceptance criterion owned by a named unit**, written RED
+by that unit before its fix, against live PostgreSQL. They are listed here because the follow-on
+units are driven from this plan, and a deferral recorded only in a review packet can be skipped.
+
+| Probe | The question, and how it must be settled | Owner |
+|---|---|---|
+| **grant-guard** | Issue a `certifier-may-not-approve` grant naming an approver who is NOT the live certificate's `certifiedById`. **Today it is ACCEPTED** — `commercial.sod.grant` checks only standing, while `approve()` consumes the grant only when `certificate.certifiedById === actor`, so an unspendable authorisation is recorded. 7B-v proves that acceptance RED first, then makes it a refusal. | **7B-v** |
+| **grant-spendability** | The other four 7B-v preconditions, as ONE predicate rather than a list — a payment-rule grant is issuable only if it could be CONSUMED at spend time: the act is legal (past certification, not `BILL_CERTIFY_FROM` — ledger A), a positive amount remains approvable (F2), and the pins still match the server's reading (F1). Enumerating them is the root that cost 7B-iv five rounds; derive them from what `approve()` does. | **7B-v** |
+| **grant-conflict-set** | A grant pins `(status, lifecycleVersion)`, and every FOLD write moves the revision — not only §F transitions (ledger B). Queued behind a withholding, approval, payment or reversal, it is refused `stale-version` after the outbox reported it saved. | **7B-v** |
+| **advance-read** | Ask for the advance list and reconcile the advance coalesce key against it. **Today there is no read** — `GET commercial/advances` and `listAdvances` were removed with the control, so the key has no settling read. 7B-vi proves the stuck key RED first, then lands the read BEFORE the control. | **7B-vi** |
+| **advance-identity** | Two advances to one counterparty differing only in `method` or `reference` must both dispatch. The parked key is `(vendor, amount, reason)` and collapses them. **Do NOT add the two missing fields** — that is a fifth enumeration; derive the identity from the WHOLE command payload so a sixth field joins automatically. | **7B-vi** |
+
+**This table must stay COMPLETE against the parked ledgers.** Every open finding in
+`phase-5-t7b-v-parked-findings.md` (A, B, F1, F2, F3) and `phase-5-t7b-vi-parked-findings.md` (the
+read, the coalesce identity) appears above. A criterion table that names a subset lets a unit close
+its named probe and drop the rest — which is the enumeration failure this phase paid for repeatedly,
+one level up.
+
+**Why these are EXERCISED, not grepped.** PR #318 first wrote them as source-text assertions in
+`scripts/`, and three review rounds showed each could be defeated by a legitimate refactor — a route
+restored through a constant, a predicate derived via a helper. A probe that greps for the shape of a
+fix cannot adjudicate whether the fix happened; only running the command can. That is also why they
+belong to the units that own live-PG suites rather than to a closing packet.
+
+**Each unit updates the record in the same change as its fix** — the packet section and the parked
+ledger that currently describe its gap as open. The reproduce-first discipline is what couples them:
+a fix with no RED-first probe does not land, and a probe that goes green with the record still saying
+"open" is a contradiction the unit has to resolve before its review stop.
+
+**7B-v must not start by enumerating preconditions.** The prescription in
+`docs/reviews/phase-5-t7b-v-parked-findings.md` is to derive them as ONE predicate from what the
+server does when the grant is SPENT. Enumeration is the root that cost 7B-iv five review rounds and
+thirteen findings, and it failed twice more inside its own corrections.
+
 ## §N. What the twenty rounds established (do not re-derive)
 
 The prior review is the most valuable artefact this phase has. Its findings are all
