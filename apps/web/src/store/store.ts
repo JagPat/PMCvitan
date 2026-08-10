@@ -2910,13 +2910,9 @@ export const useStore = create<Store>()(
      * of claim A, and would let a slow A that nothing newer asked for be discarded — the same class
      * of defect the reservation-plan generation fixed in PR #208, avoided here rather than found.
      */
-    /**
-     * 7B-iv (§H) — load the advances, and SETTLE the advance key.
-     *
-     * This read is the whole reason the advance control can exist on the §M surface: its coalesce
-     * key names a vendor, no claim read carries one, and until this landed the key had no release
-     * path at all. Same latest-request ownership and scope guard as every other commercial read.
-     */
+    /** 7B-iv (§H) — load the advances, and SETTLE the advance key: no claim read carries a
+     *  counterparty, so until this landed the key had no release path. Same latest-request
+     *  ownership and scope guard as every other commercial read. */
     loadCommercialAdvances: () => {
       if (!gateway) return Promise.resolve();
       if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
@@ -3127,7 +3123,7 @@ export const useStore = create<Store>()(
     payAdvance: (vendorId, amount, reason, method, reference) => {
       dispatchCommercial(
         { t: 'payAdvance', input: { vendorId, amount, reason, method, reference }, idempotencyKey: newIdempotencyKey(),
-          coalesceKey: advanceCoalesceKey(vendorId) },
+          coalesceKey: advanceCoalesceKey(vendorId, amount, reason) },
         `Advance to ${vendorId}`, 'Advance paid.',
       );
     },
@@ -4215,9 +4211,8 @@ export const useStore = create<Store>()(
             ...Object.keys(get().commercialLineRegisters),
             ...Object.keys(get().commercialLineRegisterLoad),
           ])) get().loadCommercialLineRegister(lineId);
-          // …and the advances, which an advance settles on. It is the ONLY read that can clear
-          // `com:advance:<vendor>` — no claim read carries a counterparty — so leaving it out of
-          // the reconcile would reproduce the stuck key this read was added to fix.
+          // …and the advances: the ONLY read that clears an advance key, so leaving it out of the
+          // reconcile would reproduce the stuck key this read was added to fix.
           if (get().commercialAdvancesLoad !== 'idle') get().loadCommercialAdvances();
         }
       }

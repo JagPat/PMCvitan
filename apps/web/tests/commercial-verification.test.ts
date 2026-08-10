@@ -506,14 +506,9 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
     expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
   });
 
-  /**
-   * 7B-iv — the advances read is PROJECT-OWNED, so scope teardown must clear it.
-   *
-   * Both halves matter and the LOAD STATE is the one that strands the surface: the Payments tab
-   * loader fires only while it is `idle`, so a status carried over from the previous project means
-   * the new project's advances are never fetched — the user sees project A's counterparty
-   * positions on project B's screen, and no read will ever correct it.
-   */
+  /** 7B-iv — the advances read is PROJECT-OWNED. The LOAD STATE is the half that strands the
+   *  surface: the tab loader fires only while `idle`, so a carried-over status means B's advances
+   *  are never fetched and A's positions stay on screen. */
   it('a project switch clears the advances read AND its load state', () => {
     const torn = { ...emptyProjectData(), ...emptyModuleReadState() } as Record<string, unknown>;
     expect(torn.commercialAdvances, 'A\'s positions must not survive into B').toBeNull();
@@ -549,14 +544,9 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
     expect(keys()).toHaveLength(2);
   });
 
-  /**
-   * 7B-iv round 2, finding B — a TRANSITION is not the whole set of things that move what a grant
-   * pins. `resolveGrantForRule` pins `(status, lifecycleVersion)`, and the revision advances on
-   * every FOLD write too. Queued behind one, the grant is written against a superseded revision and
-   * the server refuses it `stale-version` after the outbox reported it saved.
-   *
-   * Asserted for BOTH rules, because the pinning is rule-INDEPENDENT: it is `asOf`, not the rule.
-   */
+  /** Round 2 finding B — a grant pins `(status, lifecycleVersion)` and every FOLD write moves the
+   *  revision, so one queued behind a money write is refused `stale-version` after the outbox said
+   *  saved. Asserted for BOTH rules: the pinning is `asOf`, not the rule. */
   it.each([
     ['a withholding', deductionCoalesceKey('bill-1')],
     ['an approval', approveCoalesceKey('bill-1')],
@@ -737,23 +727,38 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
    * time, and this time the fix is the missing read rather than a cleverer key.
    */
   it('an advance is vendor-scoped and conflicts with no claim', () => {
-    expect(commercialWriteBlocked(advanceCoalesceKey('v-1'),
+    const a = (v: string, amt = '25000.00', r = 'mobilisation') => advanceCoalesceKey(v, amt, r);
+    expect(commercialWriteBlocked(a('v-1'),
       [approveCoalesceKey('bill-1'), billTransitionCoalesceKey('bill-1', 'certify')])).toBe(false);
-    expect(commercialWriteBlocked(advanceCoalesceKey('v-1'), [advanceCoalesceKey('v-1')])).toBe(true);
+    // an EXACT retry still coalesces — that is what the key is for
+    expect(commercialWriteBlocked(a('v-1'), [a('v-1')])).toBe(true);
     // …and two counterparties are independent
-    expect(commercialWriteBlocked(advanceCoalesceKey('v-1'), [advanceCoalesceKey('v-2')])).toBe(false);
+    expect(commercialWriteBlocked(a('v-1'), [a('v-2')])).toBe(false);
+  });
+
+  /** Round 4 — two DIFFERENT advances to one counterparty are two facts, not a retry. §H makes an
+   *  advance append-only with no ceiling; a vendor-only key made the second undispatchable while
+   *  the first was in flight — PR #208's finding 1 in a new place. */
+  it('a SECOND, different advance to the same counterparty is not coalesced away', () => {
+    const first = advanceCoalesceKey('v-1', '25000.00', 'mobilisation');
+    expect(commercialWriteBlocked(advanceCoalesceKey('v-1', '1.00', 'mobilisation'), [first]),
+      'a different amount is a different advance').toBe(false);
+    expect(commercialWriteBlocked(advanceCoalesceKey('v-1', '25000.00', 'second tranche'), [first]),
+      'a different reason is a different advance').toBe(false);
+    // …and the release path still works for the widened key
+    expect(readClearsKey(first, { read: 'advances', observedWrite: true } as never)).toBe(true);
   });
 
   it('an advance key is RELEASED by the advances read, and by nothing else', () => {
     const observed = { observedWrite: true };
-    expect(readClearsKey(advanceCoalesceKey('v-1'), { read: 'advances', ...observed } as never)).toBe(true);
+    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'), { read: 'advances', ...observed } as never)).toBe(true);
     // no claim read can name a counterparty, which is why this read had to exist
-    expect(readClearsKey(advanceCoalesceKey('v-1'),
+    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'),
       { read: 'claim', billId: 'bill-1', ...observed } as never)).toBe(false);
-    expect(readClearsKey(advanceCoalesceKey('v-1'), { read: 'money', ...observed } as never)).toBe(false);
-    expect(readClearsKey(advanceCoalesceKey('v-1'), { read: 'bills', ...observed } as never)).toBe(false);
+    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'), { read: 'money', ...observed } as never)).toBe(false);
+    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'), { read: 'bills', ...observed } as never)).toBe(false);
     // …and a read that STARTED before the write settled releases nothing (Q-a's causality term)
-    expect(readClearsKey(advanceCoalesceKey('v-1'),
+    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'),
       { read: 'advances', observedWrite: false } as never)).toBe(false);
   });
 

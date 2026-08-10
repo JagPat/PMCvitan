@@ -1544,17 +1544,12 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
   });
 
   /**
-   * 7B-iv round 3 — this form issues the CERTIFICATION rule ONLY, and the parked gap is asserted
-   * rather than left to be discovered.
+   * 7B-iv round 3 — CERTIFICATION rule only, with the parked gap ASSERTED rather than discovered.
    *
-   * The payment rule was offered here for two rounds and drew five findings, every one an
-   * incomplete precondition set: the window, the conflict set, the revision pin, the remaining
-   * approvable headroom, and WHO the rule can excuse. The last needs a server guard —
-   * `approve()` consumes a grant only when `certificate.certifiedById === actor` — so it is
-   * parked WHOLE as 7B-v with its findings named, and this pins what ships meanwhile.
-   *
-   * A form that offers an authority it cannot gate completely is worse than one that does not
-   * offer it: it tells the approver a remedy exists and then writes a grant nobody can spend.
+   * The payment rule drew five findings over two rounds, each an incomplete precondition set; the
+   * last needs a server guard, so it is parked as 7B-v. A form that offers an authority it cannot
+   * gate completely is worse than one that does not: it promises a remedy and writes a grant
+   * nobody can spend.
    */
   it('issues the certification rule only, and says the payment rule is not issued here yet', () => {
     const r = openWith({});
@@ -1568,6 +1563,36 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
     // (which rule the dispatched payload names is asserted in commercial-verification.test.ts,
     //  against the store rather than through a screen harness with no gateway)
+  });
+
+  /** Round 4 — the advance LEDGER, not only the balance. Every other way cash leaves has a
+   *  certificate or approval explaining it; an advance has neither, so its row IS that evidence. */
+  it('renders each advance row, not only the aggregated position', () => {
+    const r = openWith({});
+    useStore.setState({
+      commercialAdvances: {
+        advances: [
+          { id: 'adv-1', vendorId: 'v-1', amount: '25000.00', reason: 'mobilisation',
+            method: 'neft', reference: 'UTR-9', paidAt: '2026-08-21T09:00:00.000Z', paidById: 'u-1' },
+          { id: 'adv-2', vendorId: 'v-1', amount: '1.00', reason: 'second tranche',
+            method: 'cash', reference: null, paidAt: '2026-08-22T09:00:00.000Z', paidById: 'u-1' },
+        ],
+        positions: [{ vendorId: 'v-1', advanced: '25001.00', recovered: '0.00', recoverable: '25001.00' }],
+      },
+      commercialAdvancesLoad: 'ready',
+    } as never);
+    fireEvent.click(r.getByTestId('commercial-tab-payments'));
+    // the position still shows — the ledger is in ADDITION to it, not instead
+    expect(r.getByTestId('advance-positions').textContent).toMatch(/25001\.00/u);
+    // …and both rows are individually legible, with the evidence that explains each one
+    const first = r.getByTestId('advance-row-adv-1').textContent ?? '';
+    expect(first).toMatch(/25000\.00/u);
+    expect(first, 'the reason is the story attached to the money').toMatch(/mobilisation/u);
+    expect(first, 'method and reference are how it left').toMatch(/neft/u);
+    expect(first).toMatch(/UTR-9/u);
+    expect(first, 'when it left').toMatch(/2026-08-21/u);
+    // a second, smaller advance to the SAME counterparty is its own row, not folded away
+    expect(r.getByTestId('advance-row-adv-2').textContent).toMatch(/second tranche/u);
   });
 
   it('is absent entirely for a role without the granting authority', () => {

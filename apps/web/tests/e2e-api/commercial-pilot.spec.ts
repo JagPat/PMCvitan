@@ -5,15 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * Phase 5 Task 7B-iv (§M) — the pilot COMMERCIAL acceptance chain, in a REAL browser over live
- * PostgreSQL, in BOTH capability states. Rationale in `docs/reviews/phase-5-consolidated-review-packet.md` §4.
- *
- * Every test provisions its OWN vendor, claim and counterparty under a unique tag, so the suite is
- * self-contained and re-runnable consecutively in legacy AND outbox sender modes.
- *
- * SERIAL by necessity, not preference: §L refuses to enable `commercial` while any LIVE PO line is
- * unattributed, and before the capability is on an issue attributes nothing — so under
- * `fullyParallel` another worker can create exactly the state activation is designed to refuse.
+ * Phase 5 Task 7B-iv (§M) — the pilot COMMERCIAL acceptance chain: REAL browser, live PostgreSQL,
+ * BOTH capability states. Each test provisions its own vendor/claim/counterparty under a unique
+ * tag, so the suite is re-runnable in legacy AND outbox modes. SERIAL by necessity: §L refuses to
+ * enable `commercial` while any LIVE PO line is unattributed, and a parallel worker can create
+ * exactly that state.
  */
 test.describe.configure({ mode: 'serial' });
 

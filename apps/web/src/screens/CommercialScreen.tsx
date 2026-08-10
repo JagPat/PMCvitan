@@ -1291,20 +1291,10 @@ export function CommercialScreen() {
                     const grantListRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
                     const grantReading = arbitrateBillCopy(grantListRow, claim.bill);
                     const grantAuthoritative = grantReading !== null && grantReading.source !== 'list';
-                    // 7B-iv round 3 — this form issues the CERTIFICATION rule only. The payment
-                    // rule is PARKED WHOLE as 7B-v (`docs/reviews/phase-5-t7b-v-parked-findings.md`)
-                    // with its five findings named.
-                    //
-                    // Rounds 2 and 3 produced five findings here, every one an incomplete
-                    // precondition set for a rule that authorises an act it does not perform: the
-                    // window, the conflict set, the revision pin, the remaining approvable
-                    // headroom, and WHO the rule can excuse. Round 2's audit enumerated three of
-                    // those and called it the rule — the same error one level up.
-                    //
-                    // The decisive one is F3: `approve()` consumes a grant only when
-                    // `certificate.certifiedById === actor`, so the picker must narrow to the
-                    // certifier AND the command must guard it. That is a SERVER authority change,
-                    // and this unit is read + UI over cleared facts — the 7B-iii-h/g seam exactly.
+                    // 7B-iv round 3 — CERTIFICATION rule only; the payment rule is PARKED as 7B-v
+                    // with its five findings named (`docs/reviews/phase-5-t7b-v-parked-findings.md`).
+                    // Each was an incomplete precondition set, and the decisive one needs a SERVER
+                    // guard — `approve()` consumes a grant only when `certifiedById === actor`.
                     const spendable = transitionOffered(grantReading, BILL_CERTIFY_FROM);
                     // ── who may be named, decided by the module that owns the rule ─────────────
                     //
@@ -1517,20 +1507,16 @@ export function CommercialScreen() {
           {tab === 'payments' && (
             <div data-testid="commercial-payments">
               {/* ── the ADVANCE, deliberately OUTSIDE `claimPanel` ────────────────────────────
-                  An advance names a VENDOR and settles cash paid BEFORE any claim exists, so
-                  deriving its counterparty from an open claim made the workflow unreachable in
-                  exactly the case it is for. It needs none of the claim preconditions, which is
-                  why the gate table above has no row for it.
-
-                  It could not ship in 7B-iii-d at all: its key names a vendor, no claim read
-                  carries one, and there was no advances read — so the key had no release path and
-                  one advance killed the control until a reload. 7B-iv adds the read first. */}
+                  It names a VENDOR and settles cash paid BEFORE any claim exists, so it needs none
+                  of the claim preconditions — hence no row in the gate table. It could not ship in
+                  7B-iii-d: no claim read carries a counterparty, so its key had no release path
+                  until 7B-iv added the advances read. */}
               {mayAdvance && (() => {
                 const av = advanceDraft;
                 const ready = av.vendorId.trim() !== '' && isMoneyString(av.amount.trim())
                   && decIsPositive(av.amount.trim()) && av.method.trim() !== '' && av.reason.trim() !== '';
                 const blocked = av.vendorId.trim() !== ''
-                  && commercialWriteBlocked(advanceCoalesceKey(av.vendorId.trim()), commercialPending);
+                  && commercialWriteBlocked(advanceCoalesceKey(av.vendorId.trim(), av.amount.trim(), av.reason), commercialPending);
                 return (
                   <div style={rowCard} data-testid="commercial-advance">
                     <div style={{ fontWeight: 600 }}>Advance to a counterparty</div>
@@ -1540,6 +1526,20 @@ export function CommercialScreen() {
                           <div key={pos.vendorId}>
                             {pos.vendorId} — advanced <span style={num}>{pos.advanced}</span>,
                             still recoverable <span style={num}>{pos.recoverable}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* Round 4 — the ROWS, not only the position. Every other way cash leaves has a
+                        certificate or approval explaining it; an advance has neither, so its row IS
+                        that evidence. A balance drops when, how, and under what reference. */}
+                    {advances !== null && advances.advances.length > 0 && (
+                      <div style={{ marginTop: 6 }} data-testid="advance-rows">
+                        {advances.advances.map((a) => (
+                          <div key={a.id} style={{ ...muted, marginTop: 4 }} data-testid={`advance-row-${a.id}`}>
+                            {a.vendorId} <span style={num}>{a.amount}</span> — {a.reason}
+                            {' · '}{a.method}{a.reference === null ? '' : ` · ${a.reference}`}
+                            {' · '}{a.paidAt.slice(0, 10)}
                           </div>
                         ))}
                       </div>
@@ -1769,10 +1769,10 @@ export function CommercialScreen() {
                         {mayApprove && selfApproving && (
                           <div style={{ ...muted, marginTop: 6 }} data-testid="approve-self">
                             You certified this claim, so §I does not let you also approve its
-                            payment. Another pmc with standing can authorise it on the
-                            Certification tab — choosing “to APPROVE a claim they certified”, since
-                            an authorisation to certify does not excuse this. §I forbids a
-                            self-grant, so it cannot be issued by you.
+                            payment. The exception that would excuse it is not issuable in the app
+                            yet — it lands with 7B-v — so it has to be recorded through the API by
+                            another pmc with standing. An authorisation to CERTIFY does not excuse
+                            this, and §I forbids a self-grant, so it cannot be issued by you.
                           </div>
                         )}
                         {mayApprove && !bundleCurrent && (

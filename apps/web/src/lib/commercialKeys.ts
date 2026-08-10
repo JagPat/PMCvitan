@@ -232,10 +232,11 @@ export const sodGrantCoalesceKey = (billId: string, actorId: string, rule: strin
 export const deductionCoalesceKey = (billId: string): string => `com:deduct:${billId}`;
 /** claim-scoped already: an approval races the ONE net payable (§G bound 4) */
 export const approveCoalesceKey = (billId: string): string => `com:approve:${billId}`;
-/** vendor-scoped: an advance names no claim, so it conflicts with nothing on one — only with
- *  another advance to the same counterparty. Settled by the `advances` read (7B-iv), which is the
- *  read that carries its effect; before that read existed the key could never clear. */
-export const advanceCoalesceKey = (vendorId: string): string => `com:advance:${vendorId}`;
+/** §H — an advance is APPEND-ONLY with no server ceiling, so two advances to one counterparty are
+ *  two facts, not a retry. Round 4: a vendor-only key was PR #208's finding 1 in a new place, and
+ *  the value joins the identity as `budgetCoalesceKey` does. Settled by the `advances` read. */
+export const advanceCoalesceKey = (vendorId: string, amount: string, reason: string): string =>
+  `com:advance:${vendorId}:${amount}:${reason.trim()}`;
 export const deductionReleaseCoalesceKey = (billId: string, deductionId: string): string =>
   `com:release:${billId}:${deductionId}`;
 export const payCoalesceKey = (billId: string, approvalId: string): string =>
@@ -317,18 +318,10 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // prefix, because the key gained a third part (7B-iv) and a greedy `(.+)` silently captured
   // `<bill>:<actor>` as the bill, so no transition ever matched and the guard went quiet. Ids
   // carry no colons, which is what makes the narrow class correct rather than merely tighter.
-  //
   // 7B-iv round 2 — a TRANSITION is not the whole set of things that move what a grant pins.
-  // `resolveGrantForRule` pins `(status, lifecycleVersion)` for EITHER rule, and the revision
-  // advances on every fold write as well as every §F transition. So a grant queued behind a
-  // pending withholding, approval, payment or reversal is written against a revision that write
-  // is about to supersede, and the server refuses it as `stale-version` after the outbox reported
-  // it saved — the same shape this rule was added to prevent, one class short.
-  //
-  // Widened for BOTH rules rather than only the payment one the finding named: the pinning is
-  // rule-INDEPENDENT (it is `asOf`, not the rule), so fixing only `certifier-may-not-approve`
-  // would leave the identical defect on a re-certification grant, which is this lineage's
-  // already-named coverage root — a rule reaching the cases in mind, not the set.
+  // `resolveGrantForRule` pins `(status, lifecycleVersion)` and the revision advances on every
+  // FOLD write too, so a grant queued behind one is refused `stale-version` after the outbox
+  // reported it saved. Widened for BOTH rules: the pinning is `asOf`, not the rule.
   const grant = /^com:sodgrant:([^:]+):/u.exec(coalesceKey);
   if (grant) return pending.some((k) => isClaimMoneyPending(k, grant[1]!));
   // ── 7B-iii-d — a WITHHOLDING moves a fold, so a lifecycle transition on its claim blocks it ──
