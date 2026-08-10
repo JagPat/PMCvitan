@@ -80,10 +80,39 @@ narrowing to the certifier is the same rule's other half, not the whole of it.
 That third fix carries a real handoff correction, not just a wording change: getting the read/control
 ordering wrong is what made this surface a defect in 7B-iv in the first place.
 
+## Round 4 — the open questions move from prose to probes
+
+Three finding-bearing heads on a docs-only diff triggers the plan's bounded-review rule: the next
+head converts each still-open question into a **named probe** rather than answering it with more
+prose. Nothing is dismissed; only the place of verification moves.
+
+The rule fits this PR exactly, and that is worth saying rather than treating it as a formality.
+Every finding here was a mechanically checkable fact about the repository that I asserted in prose
+— and prose **cannot fail**. Three rounds of more careful writing produced three more rounds of
+findings. `scripts/phase5-handoff-facts.test.mjs` makes the same claims executable:
+
+| Probe | The question it settles | Which finding it retires |
+|---|---|---|
+| ledgers reachable | do the cited parked notes exist here? | 2 |
+| ledger names its park BRANCH | does any note still say "this branch"? (whole-text, wrap-safe) | 4 (self-caught) |
+| 7B-vi is OPEN | does the advance LIST read exist? | 3, and the §M/§5 repeats |
+| 7B-v is OPEN | is the payment-rule grant guarded to the certifier at ISSUE? | 5 |
+| packet claims no parked surface | does any packet section still assert a parked surface is delivered? | the CLASS behind 3–4 |
+
+Two probes deliberately pin an **absence**, and their failure messages say what to do when the gap
+closes: invert the probe and update the packet section and ledger with it. That coupling is the
+point — the record can no longer drift from the code silently, because the drift breaks a test.
+
+**Deferred to: `phase-5-task-7b-v`** (the §I guard) and, for the advance read, `phase-5-task-7b-vi`.
+
+Each probe was mutation-tested rather than merely run green: re-adding `@Get('commercial/advances')`,
+re-introducing a wrapped "this branch", and restoring the false §M claim each turn exactly one probe
+red, and the tree restores green. A probe that cannot fail is the same defect as prose.
+
 ## Verification
 
-No probe is meaningful for a docs claim; the verification is the command that establishes the fact,
-and each is recorded above with its result. `automation` 200/200 on the corrected STATUS.
+The verification for a docs claim is the command that establishes the fact; each is recorded above
+with its result, and the five that matter are now executable. `automation` 205/205 (200 + 5).
 
 **A fourth instance, self-caught, worth recording because of HOW it was nearly missed.** Fixing
 finding 2 I corrected each note's opening "This branch is `<sha>`", ran `grep "this branch"` over
