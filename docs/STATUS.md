@@ -16,7 +16,7 @@ task: 7
 task_state: in_progress
 work_item: phase-5-closing-packet
 reviewed_merge: 86d45cf
-open_pr: none
+open_pr: 318
 next_task: phase-5-task-7b-v
 blocking_directive: none
 updated: 2026-08-10
