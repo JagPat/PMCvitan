@@ -1,7 +1,8 @@
 # PR #318 — convergence audit (Phase-5 closing packet)
 
-Two finding-bearing heads, three findings on a **docs-only** PR. Written because they are one root,
-not three incidents, and because the root is worth more than any of the individual fixes.
+Four finding-bearing heads, five findings on a **docs-only** PR, plus one self-caught. Written
+because they are one root rather than separate incidents, and because the root is worth more than
+any of the individual fixes.
 
 | # | Head | Finding | Caught by |
 |---|---|---|---|
