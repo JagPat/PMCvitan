@@ -1649,20 +1649,25 @@ settling the whole deferral while the advance question is still deliberately ope
 absence probe. It names the LATER of the two owners, so the deferral is settled only when every
 deferred question has been. 7B-v still closes its own probe at its own stop.
 
-**These probes are executable and live in `scripts/phase5-handoff-facts.test.mjs`, run by
-`pnpm test:automation`.** They are listed here because the follow-on units are driven from this
-plan, and a deferral recorded only in a review packet can be skipped.
+**Each probe below is a REPRODUCE-FIRST acceptance criterion owned by a named unit**, written RED
+by that unit before its fix, against live PostgreSQL. They are listed here because the follow-on
+units are driven from this plan, and a deferral recorded only in a review packet can be skipped.
 
-| Probe | Question it settles | Owner |
+| Probe | The question, and how it must be settled | Owner |
 |---|---|---|
-| `7B-v is OPEN` | is `commercial.sod.grant` guarded so a `certifier-may-not-approve` grant must name the actual certifier? Today it is NOT — only standing is checked, while `approve()` consumes the grant only when `certificate.certifiedById === actor`, so an unspendable grant can be recorded | **7B-v** |
-| `7B-vi is OPEN` | does the advance LIST read exist? Today it does NOT — `GET commercial/advances` and `listAdvances` were removed with the control, so the advance coalesce key has no settling read | **7B-vi** |
-| ledgers reachable · park BRANCH named · packet claims no parked surface | is the hand-off record itself still true? | both |
+| **grant-guard** | Issue a `certifier-may-not-approve` grant naming an approver who is NOT the live certificate's `certifiedById`. **Today it is ACCEPTED** — `commercial.sod.grant` checks only standing, while `approve()` consumes the grant only when `certificate.certifiedById === actor`, so an unspendable authorisation is recorded. 7B-v proves that acceptance RED first, then makes it a refusal. | **7B-v** |
+| **advance-read** | Ask for the advance list and reconcile the advance coalesce key against it. **Today there is no read** — `GET commercial/advances` and `listAdvances` were removed with the control, so the key has no settling read. 7B-vi proves the stuck key RED first, then lands the read BEFORE the control. | **7B-vi** |
 
-**The two `is OPEN` probes pin an ABSENCE deliberately.** The unit that closes the gap INVERTS its
-probe and updates the packet section and parked ledger in the same change — their failure messages
-say exactly that. This is the coupling the deferral buys: the record cannot drift from the code
-silently, because the drift breaks a test.
+**Why these are EXERCISED, not grepped.** PR #318 first wrote them as source-text assertions in
+`scripts/`, and three review rounds showed each could be defeated by a legitimate refactor — a route
+restored through a constant, a predicate derived via a helper. A probe that greps for the shape of a
+fix cannot adjudicate whether the fix happened; only running the command can. That is also why they
+belong to the units that own live-PG suites rather than to a closing packet.
+
+**Each unit updates the record in the same change as its fix** — the packet section and the parked
+ledger that currently describe its gap as open. The reproduce-first discipline is what couples them:
+a fix with no RED-first probe does not land, and a probe that goes green with the record still saying
+"open" is a contradiction the unit has to resolve before its review stop.
 
 **7B-v must not start by enumerating preconditions.** The prescription in
 `docs/reviews/phase-5-t7b-v-parked-findings.md` is to derive them as ONE predicate from what the

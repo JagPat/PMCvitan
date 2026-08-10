@@ -11,8 +11,8 @@ are marked at every point they touch below. Every §G bound and §F derivation t
 enforced on the server and delivered. **§I is the exception and it is not only a browser gap:**
 `commercial.sod.grant` does not check that a `certifier-may-not-approve` grant names the actual
 certifier, so an unspendable grant can be recorded. That server guard is 7B-v's, alongside the
-picker. See §I below, `docs/reviews/phase-5-t7b-v-parked-findings.md`, and the probe that pins it
-open in `scripts/phase5-handoff-facts.test.mjs`.
+picker. See §I below and `docs/reviews/phase-5-t7b-v-parked-findings.md`; 7B-v proves the gap RED
+against live PostgreSQL before closing it, per the plan's deferred-probe row.
 
 Phase 5's outcome, in the spec's own terms: *budget, commitment, measurement, bill verification,
 certification, payment approval, payment status and cash forecast trace to operational evidence.* A

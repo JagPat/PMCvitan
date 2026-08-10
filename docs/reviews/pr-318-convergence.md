@@ -87,22 +87,37 @@ Three finding-bearing heads on a docs-only diff triggers the plan's bounded-revi
 head converts each still-open question into a **named probe** rather than answering it with more
 prose. Nothing is dismissed; only the place of verification moves.
 
-The rule fits this PR exactly, and that is worth saying rather than treating it as a formality.
-Every finding here was a mechanically checkable fact about the repository that I asserted in prose
-— and prose **cannot fail**. Three rounds of more careful writing produced three more rounds of
-findings. `scripts/phase5-handoff-facts.test.mjs` makes the same claims executable:
+The rule fits this PR exactly: every finding here was a mechanically checkable fact I asserted in
+prose, and prose **cannot fail**. Three rounds of more careful writing produced three more rounds of
+findings.
 
-| Probe | The question it settles | Which finding it retires |
+**The first attempt at the fix was wrong, twice over, and the correction is the interesting part.**
+I wrote the probes as source-text assertions in `scripts/phase5-handoff-facts.test.mjs`. Three
+further review rounds then showed:
+
+1. **They could not adjudicate what they claimed.** Each was a grep for the *shape of a fix*: an
+   `@Get` spelling, a `certifiedById` substring, a byte window over a method body. A route restored
+   through a constant, or a predicate derived via a helper, closes the gap while the probe stays
+   green. A probe that greps for a fix cannot tell you the fix happened; only running the command
+   can.
+2. **Adding them made the diff non-docs-only** — and the bounded deferral rule is defined over a
+   docs-only diff. Taken strictly that is self-defeating, since any compliant response adds a test
+   file. The resolution is not to argue the rule but to notice what it is *for*: moving verification
+   out of prose. It does not require the verification to live in THIS PR.
+
+So the probes are removed from this PR, which is docs-only again, and each open question is recorded
+in the phase plan as a **reproduce-first acceptance criterion owned by the unit that can settle it**
+— exercised against live PostgreSQL, RED before the fix, by 7B-v and 7B-vi respectively. That is
+strictly stronger than what was here, and it is the repository's ordinary discipline rather than a
+mechanism invented for a closing packet.
+
+| Deferred question | Settled by | Owner |
 |---|---|---|
-| ledgers reachable | do the cited parked notes exist here? | 2 |
-| ledger names its park BRANCH | does any note still say "this branch"? (whole-text, wrap-safe) | 4 (self-caught) |
-| 7B-vi is OPEN | does the advance LIST read exist? | 3, and the §M/§5 repeats |
-| 7B-v is OPEN | is the payment-rule grant guarded to the certifier at ISSUE? | 5 |
-| packet claims no parked surface | does any packet section still assert a parked surface is delivered? | the CLASS behind 3–4 |
+| is `commercial.sod.grant` guarded so a payment-rule grant must name the actual certifier? | issuing one that names someone else and proving it ACCEPTED today, then refused | **7B-v** |
+| does the advance list read exist, so its coalesce key can settle? | reconciling the key against the read and proving it stuck today | **7B-vi** |
 
-Two probes deliberately pin an **absence**, and their failure messages say what to do when the gap
-closes: invert the probe and update the packet section and ledger with it. That coupling is the
-point — the record can no longer drift from the code silently, because the drift breaks a test.
+Both are recorded in the phase plan, because the follow-on units are driven from the plan and a
+deferral recorded only in a review packet can be skipped — Codex's finding, and correct.
 
 **Deferred to: `phase-5-task-7b-vi`** — the LATER of the two owners, deliberately. The deferral
 covers the §I guard (7B-v) and the advance read (7B-vi); naming the earlier stop would let 7B-v's
