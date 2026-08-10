@@ -904,11 +904,13 @@ export class CommercialCertificationService {
         // findings for enumerating these preconditions, twice inside the correction written to fix
         // an enumeration failure, because a hand-listed subset always looks complete from inside.
         // A condition added to `approve()` reaches this command through the shared context.
+        const payable = rule === SOD_RULES.certifierMayNotApprove
+          ? await resolveApprovalContext(tx, this.deductions, projectId, input.billId)
+          : null;
         if (rule === SOD_RULES.certifierMayNotApprove) {
-          const context = await resolveApprovalContext(tx, this.deductions, projectId, input.billId);
-          const nameable = payableGrantActor(context, actor.actorId);
+          const nameable = payableGrantActor(payable, actor.actorId);
           if (nameable === null || nameable !== input.actorId) {
-            throw new ConflictException(this.unspendableGrantReason(context, input.actorId, actor.actorId));
+            throw new ConflictException(this.unspendableGrantReason(payable, input.actorId, actor.actorId));
           }
         }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
@@ -948,8 +950,14 @@ export class CommercialCertificationService {
         // issue automatically. Every enumeration in this lineage lacked exactly that property —
         // each looked complete and none could notice what it had not been told about.
         if (rule === SOD_RULES.certifierMayNotApprove) {
+          // …against the CERTIFICATE's version, which is the one `approve()` resolves with — NOT
+          // the row's own, which would make the version pin self-consistent by construction and
+          // check nothing. Today the live bill version and the certificate's provably cannot
+          // diverge inside this window (`amend` refuses any status past certification), so this
+          // arm never fires; it is written this way so that if that ever changes, the grant is
+          // refused at issue instead of becoming quietly unspendable.
           const spendable = await resolveSodGrant(
-            tx, this.orgs, projectId, input.billId, row.versionId, rule, row.actorId, true,
+            tx, this.orgs, projectId, input.billId, payable!.certificateVersionId, rule, row.actorId, true,
             { status: reviewed.status, lifecycleVersion: reviewed.lifecycleVersion },
           );
           if (spendable.state !== 'live') {
