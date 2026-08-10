@@ -549,6 +549,30 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
     expect(keys()).toHaveLength(2);
   });
 
+  /**
+   * 7B-iv round 2, finding B — a TRANSITION is not the whole set of things that move what a grant
+   * pins. `resolveGrantForRule` pins `(status, lifecycleVersion)`, and the revision advances on
+   * every FOLD write too. Queued behind one, the grant is written against a superseded revision and
+   * the server refuses it `stale-version` after the outbox reported it saved.
+   *
+   * Asserted for BOTH rules, because the pinning is rule-INDEPENDENT: it is `asOf`, not the rule.
+   */
+  it.each([
+    ['a withholding', deductionCoalesceKey('bill-1')],
+    ['an approval', approveCoalesceKey('bill-1')],
+    ['a payment', payCoalesceKey('bill-1', 'appr-1')],
+    ['a reversal', reverseCoalesceKey('bill-1', 'pay-1')],
+  ])('a pending %s BLOCKS a new authorisation on that claim, under either rule', (_what, moneyKey) => {
+    for (const rule of [SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove]) {
+      expect(commercialWriteBlocked(sodGrantCoalesceKey('bill-1', 'u-2', rule), [moneyKey]),
+        `${rule}: the fold write in flight is about to move the revision this grant pins`).toBe(true);
+    }
+    // …and it is the CLAIM that is the resource: another claim's money write is not a conflict
+    expect(commercialWriteBlocked(
+      sodGrantCoalesceKey('bill-2', 'u-2', SOD_RULES.certifierMayNotApprove), [moneyKey],
+    ), 'blocking on an unrelated claim would strand a legitimate authorisation').toBe(false);
+  });
+
   /** ONE-DIRECTIONAL by design: a certify arriving before its authorisation is refused by the
    *  server for a reason that is true and legible, not silently mis-pinned. */
   it('a pending authorisation does NOT block a claim transition', () => {

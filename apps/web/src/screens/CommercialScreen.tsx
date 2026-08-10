@@ -1291,7 +1291,21 @@ export function CommercialScreen() {
                     const grantListRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
                     const grantReading = arbitrateBillCopy(grantListRow, claim.bill);
                     const grantAuthoritative = grantReading !== null && grantReading.source !== 'list';
-                    const certifiable = transitionOffered(grantReading, BILL_CERTIFY_FROM);
+                    // 7B-iv round 2 — the WINDOW is the rule's, not certification's.
+                    //
+                    // Adding `certifier-may-not-approve` as a second option to this form left it
+                    // behind the first rule's precondition, and the two windows are disjoint at the
+                    // exact state that matters: a payment exception is needed once the claim is
+                    // CERTIFIED, which is precisely when `BILL_CERTIFY_FROM` has closed. So the one
+                    // grant a one-person pilot cannot do without had no browser path at all.
+                    //
+                    // Each rule is gated on the act it authorises still being reachable — certify
+                    // from `verified`, approve from past-certification — because an authorisation
+                    // that can never be spent is the thing this gate exists to refuse.
+                    const payRule = draft.sodRule === SOD_RULES.certifierMayNotApprove;
+                    const spendable = transitionOffered(
+                      grantReading, payRule ? BILL_STATUSES_PAST_CERTIFICATION : BILL_CERTIFY_FROM,
+                    );
                     // ── who may be named, decided by the module that owns the rule ─────────────
                     //
                     // Round 1, finding 6. The first draft filtered the team roster in the browser
@@ -1353,7 +1367,7 @@ export function CommercialScreen() {
                             data-testid={`sod-grant-${claim.bill.id}`}
                             disabled={draft.sodActorId === '' || !draft.sodReason.trim()
                               || viewedVersion === null || blocked
-                              || !certifiable || !grantAuthoritative}
+                              || !spendable || !grantAuthoritative}
                             onClick={() => {
                               grantSodException(claim.bill.id, draft.sodActorId, draft.sodReason.trim(), {
                                 versionId: viewedVersion as string,
@@ -1366,11 +1380,11 @@ export function CommercialScreen() {
                             {blocked ? 'Working…' : 'Authorise'}
                           </Button>
                         </div>
-                        {!blocked && !certifiable && (
+                        {!blocked && !spendable && (
                           <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-not-certifiable">
-                            Certification is only legal once this claim is verified, so an
-                            authorisation recorded now could never be spent. Authorise it once the
-                            claim is verified.
+                            {payRule
+                              ? 'Approval is only legal once this claim is certified, so an authorisation recorded now could never be spent. Authorise it once the claim is certified.'
+                              : 'Certification is only legal once this claim is verified, so an authorisation recorded now could never be spent. Authorise it once the claim is verified.'}
                           </div>
                         )}
                         {blocked && (

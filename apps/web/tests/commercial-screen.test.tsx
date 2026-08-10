@@ -1567,6 +1567,12 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
     fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'single-pmc site' } });
+    // The person-and-reason check is asserted on the CERTIFY rule, on the claim state that rule is
+    // legal in. Round 2: this originally asserted the PAYMENT rule became issuable here, which was
+    // the defect itself — a payment grant pins `verified`, and certification moves both the status
+    // and the revision before approval is ever reached, so it could never be spent. Which state
+    // each rule is issuable in is asserted by the two probes below.
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'evidence-recorder-may-not-certify' } });
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -1589,6 +1595,41 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
     expect(r.getByTestId('sod-grant-not-certifiable').textContent).toMatch(/only legal once this claim is verified/iu);
+  });
+
+  /**
+   * 7B-iv round 2, finding A — the WINDOW belongs to the rule, not to certification.
+   *
+   * Adding the payment rule as a second option left it behind the first rule's precondition, and
+   * the two windows are disjoint exactly where it matters: a `certifier-may-not-approve` exception
+   * is needed once the claim is CERTIFIED, which is precisely when `BILL_CERTIFY_FROM` has closed.
+   * So the one grant a one-person pilot cannot do without was unreachable in the browser — while
+   * the payments surface went on naming it as the remedy.
+   */
+  it('issues a PAYMENT-rule authorisation on a certified claim, where certification has closed', () => {
+    const r = openWith({ status: 'certified' });
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'single-pmc site' } });
+    // the CERTIFY rule is correctly refused here — certification is no longer legal…
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled,
+      'certification has closed, so a certify grant could never be spent').toBe(true);
+    expect(r.getByTestId('sod-grant-not-certifiable').textContent).toMatch(/once this claim is verified/iu);
+    // …and the PAYMENT rule is offered, because approval is exactly what is legal now
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled,
+      'the payment exception is needed precisely in this state').toBe(false);
+    expect(r.queryByTestId('sod-grant-not-certifiable')).toBeNull();
+  });
+
+  /** …and the converse, so the widening is not simply "always enabled": before certification the
+   *  payment rule has nothing to authorise, and says so in its OWN terms rather than certify's. */
+  it('refuses a PAYMENT-rule authorisation before certification, in its own words', () => {
+    const r = openWith({ status: 'verified' });
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'single-pmc site' } });
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('sod-grant-not-certifiable').textContent).toMatch(/once this claim is certified/iu);
   });
 
   it('is absent entirely for a role without the granting authority', () => {
