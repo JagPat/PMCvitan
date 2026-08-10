@@ -62,3 +62,13 @@ ordering wrong is what made this surface a defect in 7B-iv in the first place.
 
 No probe is meaningful for a docs claim; the verification is the command that establishes the fact,
 and each is recorded above with its result. `automation` 200/200 on the corrected STATUS.
+
+**A fourth instance, self-caught, worth recording because of HOW it was nearly missed.** Fixing
+finding 2 I corrected each note's opening "This branch is `<sha>`", ran `grep "this branch"` over
+both, got no output, and treated that as clean. It was not: one instance wrapped across a line
+break, so a single-line grep could not match it. A multiline search found it immediately.
+
+That is this document's own root reappearing one level down — **the check has to be able to observe
+the thing it claims to rule out.** A grep that cannot match wrapped prose returning empty is not
+evidence of absence, exactly as memory of an intent is not evidence of a route. Same discipline,
+same failure mode, caught this time only because the root had just been written down.

@@ -48,5 +48,5 @@ read as well as the control**, and the read must land first, for the reason it e
 place: the advance coalesce key has no settling read without it, and a key with no release path is
 stuck by construction. Getting that ordering wrong is what made this surface a defect in 7B-iv.
 
-Nothing known-broken ships, and nothing is reconstructed from memory: the work is whole on this
-branch at the head that was reviewed.
+Nothing known-broken ships, and nothing is reconstructed from memory: the work is whole on
+`claude/phase5-task7b-vi-advance-parked` at the head that was reviewed.
