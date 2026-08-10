@@ -12,7 +12,13 @@ enforced on the server and delivered. **§I is the exception and it is not only 
 `commercial.sod.grant` does not check that a `certifier-may-not-approve` grant names the actual
 certifier, so an unspendable grant can be recorded. That server guard is 7B-v's, alongside the
 picker. See §I below and `docs/reviews/phase-5-t7b-v-parked-findings.md`; 7B-v proves the gap RED
-against live PostgreSQL before closing it, per the plan's deferred-probe row.
+against live PostgreSQL before closing it, as the plan's `grant-guard` acceptance criterion.
+
+Those criteria are **ordinary follow-on unit scope**, not a bounded-review deferral — the plan says
+so in the section that carries them. The distinction is not pedantic: a deferral is a formal
+trailer-and-ledger mechanism this repository applies to docs-only review rounds, so labelling
+7B-v's scope that way would send a later reviewer looking for a `Review-Deferred-To-Probes` trailer
+that is deliberately absent, and read its absence as an omission rather than as the correct state.
 
 Phase 5's outcome, in the spec's own terms: *budget, commitment, measurement, bill verification,
 certification, payment approval, payment status and cash forecast trace to operational evidence.* A
@@ -136,7 +142,7 @@ principle exists.
 | Criterion | Evidence |
 |---|---|
 | a claim cannot be paid without traceable operational evidence | §E verification derived on every call; §G bounds 1–2 re-derived under lock; the pilot chain walks receipt → acceptance → claim → verification |
-| authority for money leaving is explicit and attributable | §G bounds 3–5; §I's two rules, both exercised in the browser chain with attributable grants |
+| authority for money leaving is explicit and attributable | §G bounds 3–5; §I's two rules, both enforced on the server and both exercised with attributable grants in the pilot chain. **Where each grant is ISSUED differs and the row must not blur it:** the certification rule's grant is issued in the browser from the §I form; the payment rule's is issued over the API, because at this head that form offers only `evidence-recorder-may-not-certify` (7B-v). What the browser chain proves for the payment rule is the approval the grant unlocks, not the issuing of it |
 | a correction is a new fact, never an edit | append-only claim versions, release rows, payment reversals, superseding certificates |
 | the money position is answerable at any moment | `commercial.money-position` from ONE repeatable-read transaction; the §J forecast projection |
 | the pilot is opt-in and inert elsewhere | §D capability gating, proven in the acceptance chain's non-pilot project (no nav, reads 404) |

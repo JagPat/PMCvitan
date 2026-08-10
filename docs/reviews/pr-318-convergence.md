@@ -1,10 +1,10 @@
 # PR #318 — convergence audit (Phase-5 closing packet)
 
-**Ten finding-bearing heads, twenty-one findings, on a closing packet** — eight heads as #318, two
-more as its replacement #319, which carries the same content and this same audit. Written because they are a
-small number of roots rather than sixteen incidents, and because the roots are worth more than any
-individual fix. The complete ledger, so the next unit inherits cause → remedy → proof rather than a
-summary:
+**Eleven finding-bearing heads, twenty-four findings, on a closing packet** — eight heads as #318,
+three more as its replacement #319, which carries the same content and this same audit. Written
+because they are a small number of roots rather than twenty-four incidents, and because the roots
+are worth more than any individual fix. The complete ledger, so the next unit inherits cause →
+remedy → proof rather than a summary:
 
 | # | Head | Finding | Caught by | Remedy |
 |---|---|---|---|---|
@@ -30,11 +30,47 @@ summary:
 | 19 | `a74526f` | STATUS's **7B-iv** row still listed the advances read among its contents | grep the claim | row states what actually merged |
 | 20 | `a74526f` | the packet called 7B-v "which acts a browser offers" | its own §I contradicted it | 7B-v has a **server** half |
 | 21 | `a74526f` | the criteria table named 2 probes; the ledgers list 7 open items | counting the ledgers | table completed + kept-complete rule |
+| 22 | `c04209e` | packet still cited "the plan's deferred-probe row" after the plan renamed it | reading packet against plan | cites `grant-guard`; states why the distinction matters |
+| 23 | `c04209e` | the verification paragraph still said "two open questions"; the table now has five | counting the plan table | names all five, with why the count matters |
+| 24 | `c04209e` | §25 row claimed both §I rules "exercised in the browser chain" | the packet's own §I + the spec | separates ENFORCED from where each grant is ISSUED |
 
-Findings 19–21 are the sharpest of the twenty-one, because each would have cost a following unit
+Findings 19–21 are the sharpest of the twenty-four, because each would have cost a following unit
 real work rather than costing a reader accuracy: 7B-vi told the advance read already shipped, 7B-v
 told its server guard was a UI concern, and both told a subset of their own parked findings. **A
 hand-off that under-states scope is not a smaller error than one that over-states it.**
+
+## Round 7 — the root has a sharper form: a correction updates the statement, not the references to it
+
+All three of round 7's findings are one shape, and it is a *specialisation* of the root below
+rather than a new one. Each is a *stale cross-reference left behind by a correction to the thing it
+points at*:
+
+| Finding | What was corrected | What still pointed at the old version |
+|---|---|---|
+| 22 | the plan section was RENAMED from a deferral to follow-on acceptance criteria (finding 18) | the packet header still cited "the plan's deferred-probe row" |
+| 23 | the criteria table GREW from 2 rows to 5 (finding 21) | the verification paragraph still said "two open questions" |
+| 24 | §I was corrected to say the form issues only the certification rule (finding 20) | the §25 acceptance table, two sections away, still claimed both rules were browser-exercised |
+
+So every one of these was created *by* a fix in the immediately preceding round. That is worth
+stating plainly: **rounds 6 and 7 were not independent lapses — round 7 is the wake of round 6.**
+Finding 23 is the starkest, because it is finding 21's own correction leaving a stale count of the
+table it had just completed.
+
+The operational lesson is narrower and more useful than "check your claims", which this document
+had already said and which did not prevent this:
+
+> **After correcting a claim, grep for the OLD wording, not just the new one.**
+
+Every round so far verified that the *replacement text* was true. None searched for what still
+referred to the *replaced* text. Those are different searches, and only the second finds an orphaned
+reference — the new wording is by construction absent from the places that were never updated.
+
+That search was run before this round's fixes rather than after, over `docs/` for all three changed
+things: the renamed section, the table's size, and the browser-issuance claim. It returned exactly
+three live instances, matching the three findings and no fourth. The other hits were convergence
+documents recording these events as history, which is what they are for and which stays correct —
+so the sweep also had to distinguish a live claim from a historical record, and that distinction is
+the reason the check could not simply be "grep and replace everywhere".
 
 ## The root: a claim about the repository is a fact, and facts are checked, not recalled
 
@@ -228,9 +264,13 @@ cannot certify itself.
 ## Verification
 
 The verification for a docs claim is the command that establishes the fact, and each is recorded
-above with its result. **No probe ships in this PR** — the two open questions are reproduce-first
+above with its result. **No probe ships in this PR** — the open questions are reproduce-first
 acceptance criteria owned by 7B-v and 7B-vi, to be written RED against live PostgreSQL by the units
-that can exercise them. `test:automation` 200/200, which is the suite unchanged.
+that can exercise them. There are **five**, and the count matters because a reader who takes it as
+two will treat the rest as already settled: `grant-guard`, `grant-spendability` and
+`grant-conflict-set` for 7B-v — covering parked findings A, B, F1, F2 and F3 — and `advance-read`
+and `advance-identity` for 7B-vi. The plan's table is the authority and is kept complete against
+both parked ledgers. `test:automation` 200/200, which is the suite unchanged.
 
 **A fourth instance, self-caught, worth recording because of HOW it was nearly missed.** Fixing
 finding 2 I corrected each note's opening "This branch is `<sha>`", ran `grep "this branch"` over
