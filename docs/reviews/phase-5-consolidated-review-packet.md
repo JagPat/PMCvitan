@@ -1,8 +1,14 @@
 # Phase 5 — Commercial Control — Consolidated Review Packet
 
-The final Phase-5 review stop (plan `docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md`).
-This packet maps the plan's design decisions §A–§M and the design spec's §25 pilot acceptance
-criteria to delivered, independently reviewed evidence across Tasks 1–7.
+The Phase-5 review stop for the COMMERCIAL SPINE (plan
+`docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md`). It maps the plan's design
+decisions §A–§M and the design spec's §25 pilot acceptance criteria to delivered, independently
+reviewed evidence across Tasks 1–7.
+
+**It does not close the phase.** Two §M browser surfaces are parked with their findings named —
+7B-v (the §I payment-rule authorisation form) and 7B-vi (the §H vendor advance control) — and both
+are marked at every point they touch below. Every §G bound, §I rule and §F derivation they concern
+is enforced on the SERVER and delivered; what is outstanding is which acts the browser offers.
 
 Phase 5's outcome, in the spec's own terms: *budget, commitment, measurement, bill verification,
 certification, payment approval, payment status and cash forecast trace to operational evidence.* A
@@ -23,7 +29,9 @@ money anyone may approve.
 | 7A | §J cash forecast + the EIGHTH rebuildable projection | merged and cleared |
 | 7B-i/7B-i-a/7B-ii-a/7B-ii-b | The §M hub: money position, then the claim lifecycle tabs (READ ONLY) | merged and cleared |
 | 7B-iii-a/b/e/c-i/c-ii/f/g/h/d | The §M write actions and the two-key outbox lifecycle, split by actor workflow | merged and cleared |
-| 7B-iv | Approve + advance (contract first), the pilot acceptance chain, this packet | **THIS review stop** |
+| 7B-iv | The approver's authority (contract first), the pilot acceptance chain | merged and cleared (five review rounds; two surfaces split out) |
+| 7B-v | The §I PAYMENT-rule authorisation surface | **parked whole with five named findings — NOT delivered** |
+| 7B-vi | The §H vendor advance surface | **parked whole with one named finding — NOT delivered** |
 
 Every PR rode the exact-head `codex-current-head` gate — draft → CI green → orchestrator promotes →
 Codex reviews the exact SHA → clean +1 → auto-merge. No human technical approval substituted for the
@@ -73,11 +81,25 @@ A withholding is taken from a payable and given back as a RELEASE row, never an 
 across every claim. An advance itself has no bound — it is a commercial decision about a
 relationship — and what IS bounded is the recovery.
 
+**Delivered on the server; the §M advance CONTROL is not shipped.** Paying an advance and reading
+the advance ledger are available through the API, and the recovery ceiling is enforced there. The
+browser surface for paying one is parked as 7B-vi: its coalesce identity enumerated a subset of the
+row-defining facts, so two advances differing only in method or reference collapsed to one action.
+
 ### §I — separation of duties, modelled rather than banned
 Two rules, deliberately distinct: `evidence-recorder-may-not-certify` and
 `certifier-may-not-approve`. A grant issued for one is refused for the other. Every exception is
 attributable, records the claim state its approver reviewed, and is refused if the claim has moved
 since. A self-grant is impossible.
+
+**Both rules are enforced and both grants are issuable through the API. Only ONE is issuable in the
+browser.** The §M grant form issues `evidence-recorder-may-not-certify`; the payment-rule form is
+parked as 7B-v after five findings, the decisive one being that `approve()` consumes a grant only
+when `certificate.certifiedById === actor`, so the picker must narrow to the certifier and the
+COMMAND must guard it — a server change. The payments tab reports the payment-rule refusal
+accurately and names the API as its remedy. An accurate refusal with no in-app remedy is a gap; a
+form that offers the authority and writes a grant nobody can spend is a defect. Phase 5 takes the
+gap, and 7B-v closes it.
 
 ### §J — the cash forecast as the eighth rebuildable projection
 Projected rather than folded on call, because the Inbox, dashboard and portfolio ask it for every
@@ -105,22 +127,29 @@ cleverer.
 | the money position is answerable at any moment | `commercial.money-position` from ONE repeatable-read transaction; the §J forecast projection |
 | the pilot is opt-in and inert elsewhere | §D capability gating, proven in the acceptance chain's non-pilot project (no nav, reads 404) |
 
+**Two §M surfaces are outstanding and neither weakens a criterion above:** the authority rules and
+conservation bounds are the SERVER's and are enforced whichever route reaches them. 7B-v and 7B-vi
+are about which acts a browser offers, not about what the product permits.
+
 ## 4. The pilot acceptance chain
 
 `apps/web/tests/e2e-api/commercial-pilot.spec.ts` — real browser, live PostgreSQL, both capability
 states. **32/32 outbox · 32/32 consecutively (re-runnable) · 32/32 legacy.**
 
-The browser drives verification → certification → withholding → approval → payment → reversal, plus
-a vendor advance. The fixture stops at `submitted` deliberately: everything after it is what §M
-exists to put in front of a person, and API-driving the interesting half would prove the API rather
-than the surface.
+The browser drives verification → certification → withholding → approval → payment → reversal. The
+fixture stops at `submitted` deliberately: everything after it is what §M exists to put in front of
+a person, and API-driving the interesting half would prove the API rather than the surface.
+
+The advance leg left with 7B-vi. §H advances stay exercised through the API, but the browser chain
+no longer covers a control the browser does not offer — a chain that walked a parked surface would
+be asserting a capability the product does not have.
 
 Four product rules the chain surfaced, none of them test detail: **§L** activation demands a plan
 and a real operator identity; **§B** a PO cannot be issued with an unattributed line; **§I twice** —
 the evidence recorder may not certify and the certifier may not approve, so a one-person site needs
-both exceptions, each granted by a second pmc against the claim state as it stood at that moment;
-and **ordering** — `materials` must be enabled before `commercial`, the phase dependency appearing
-in the operator's runbook.
+both exceptions, each granted by a second pmc (through the API, per §I above) against the claim
+state as it stood at that moment; and **ordering** — `materials` must be enabled before
+`commercial`, the phase dependency appearing in the operator's runbook.
 
 Every §F transition is confirmed landed against the server before the next control is touched: a
 write-ahead surface reports a click as saved, so "the button was clickable" is not evidence the
@@ -179,5 +208,10 @@ credentials, no external schema assumptions and no external calls.
 
 - `pnpm check` EXIT 0.
 - Full API unit suite and the commercial integration suites green on live PostgreSQL.
-- `commercial-pilot.spec.ts` 32/32 outbox · 32/32 re-run · 32/32 legacy.
+- `commercial-pilot.spec.ts` green in CI on the merged head (`api-e2e`, `e2e`).
 - No migration in 7B-iv; the contract additions are additive.
+- **Phase 5 is not closed by this packet.** 7B-v and 7B-vi remain, each parked whole at its reviewed
+  head with its findings named: `docs/reviews/phase-5-t7b-v-parked-findings.md` and
+  `phase-5-t7b-vi-parked-findings.md`. The lineage's own lesson is recorded in
+  `pr-317-convergence.md`: **derive an identity from the whole payload, never enumerate its fields**
+  — a rule this unit broke four times, twice inside the correction for it.
