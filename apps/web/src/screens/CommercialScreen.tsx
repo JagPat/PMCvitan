@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, isClaimMoneyPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, advanceCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, DEDUCTION_TYPES, DEDUCTION_TYPES_REQUIRING_REASON, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto, SodGrantState } from '@vitan/shared';
@@ -209,10 +209,8 @@ export function CommercialScreen() {
   // once and reusing the answer would bake that coincidence into the screen.
   const mayDeduct = may('commercial.deduct');
   const mayRelease = may('commercial.deduct.release');
-  const mayApprove = may('commercial.approve-payment');
   const mayPay = may('commercial.record-payment');
   const mayReverse = may('commercial.reverse-payment');
-  const mayAdvance = may('commercial.pay-advance');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
@@ -220,10 +218,8 @@ export function CommercialScreen() {
   const grantSodException = useStore((s) => s.grantSodException);
   const recordDeduction = useStore((s) => s.recordDeduction);
   const releaseDeduction = useStore((s) => s.releaseDeduction);
-  const approvePayment = useStore((s) => s.approvePayment);
   const recordPayment = useStore((s) => s.recordPayment);
   const reversePayment = useStore((s) => s.reversePayment);
-  const payAdvance = useStore((s) => s.payAdvance);
   // 7B-iii-b — the engineer's writes.
   const takeMeasurement = useStore((s) => s.takeMeasurement);
   const correctMeasurement = useStore((s) => s.correctMeasurement);
@@ -389,7 +385,6 @@ export function CommercialScreen() {
     byId: Record<string, {
       deductType: string; deductAmount: string; deductReason: string;
       releaseId: string; releaseAmount: string; releaseReason: string;
-      approveAmount: string;
       payApprovalId: string; payAmount: string; payMethod: string; payReference: string;
       reversePaymentId: string; reverseAmount: string; reverseReason: string;
       advanceAmount: string; advanceMethod: string; advanceReason: string;
@@ -399,7 +394,6 @@ export function CommercialScreen() {
   const EMPTY_PAY_DRAFT = {
     deductType: '', deductAmount: '', deductReason: '',
     releaseId: '', releaseAmount: '', releaseReason: '',
-    approveAmount: '',
     payApprovalId: '', payAmount: '', payMethod: '', payReference: '',
     reversePaymentId: '', reverseAmount: '', reverseReason: '',
     advanceAmount: '', advanceMethod: '', advanceReason: '',
@@ -407,13 +401,6 @@ export function CommercialScreen() {
   const payDraftFor = (id: string) => paySc[id] ?? EMPTY_PAY_DRAFT;
   const setPayDraft = (id: string, patch: Partial<typeof EMPTY_PAY_DRAFT>): void =>
     setPayDrafts({ scope: scopeKey, byId: { ...paySc, [id]: { ...payDraftFor(id), ...patch } } });
-
-  const [advDraft, setAdvDraft] = useState<{
-    scope: string; v: { vendorId: string; amount: string; method: string; reason: string };
-  }>({ scope: '', v: { vendorId: '', amount: '', method: '', reason: '' } });
-  const advanceDraft = advDraft.scope === scopeKey
-    ? advDraft.v : { vendorId: '', amount: '', method: '', reason: '' };
-  const setAdvanceDraft = (v: typeof advanceDraft): void => setAdvDraft({ scope: scopeKey, v });
 
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
     { scope: '', byId: {} },
@@ -1471,49 +1458,6 @@ export function CommercialScreen() {
 
           {tab === 'payments' && (
             <div data-testid="commercial-payments">
-              {/* ── the ADVANCE, deliberately OUTSIDE `claimPanel` ────────────────────────────
-                  Round 2's finding, and it is a scope error rather than a missing check. An
-                  advance names a VENDOR and exists for cash paid BEFORE any claim; deriving the
-                  vendor from an open claim made the workflow unreachable in exactly the case it
-                  is for — a counterparty with no claim yet. It needs none of the claim
-                  preconditions, which is why the table has no row for it. */}
-              {mayAdvance && (() => {
-                const av = advanceDraft;
-                const ready = av.vendorId.trim() !== '' && isMoneyString(av.amount.trim())
-                  && decIsPositive(av.amount.trim()) && av.method.trim() !== '' && av.reason.trim() !== '';
-                const blocked = av.vendorId.trim() !== ''
-                  && commercialWriteBlocked(advanceCoalesceKey(av.vendorId.trim()), commercialPending);
-                return (
-                  <div style={rowCard} data-testid="commercial-advance">
-                    <div style={{ fontWeight: 600 }}>Advance to a counterparty</div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                      {/* A vendor ID typed, not chosen. No commercial read carries a counterparty
-                          roster, and the §F lodge form above takes the id the same way — inventing
-                          a picker here would mean inventing a read, which is a different unit. */}
-                      <input style={input} data-testid="advance-vendor" placeholder="Vendor id"
-                        value={av.vendorId}
-                        onChange={(e) => setAdvanceDraft({ ...av, vendorId: e.target.value })} />
-                      <input style={input} data-testid="advance-amount" placeholder="Amount"
-                        value={av.amount}
-                        onChange={(e) => setAdvanceDraft({ ...av, amount: e.target.value })} />
-                      <input style={input} data-testid="advance-method" placeholder="Method"
-                        value={av.method}
-                        onChange={(e) => setAdvanceDraft({ ...av, method: e.target.value })} />
-                      <input style={{ ...input, flex: 1 }} data-testid="advance-reason"
-                        placeholder="Why this counterparty is being advanced"
-                        value={av.reason}
-                        onChange={(e) => setAdvanceDraft({ ...av, reason: e.target.value })} />
-                      <Button variant="ink" data-testid="advance-pay"
-                        disabled={!ready || blocked}
-                        onClick={() => {
-                          payAdvance(av.vendorId.trim(), av.amount.trim(), av.reason.trim(), av.method.trim(), null);
-                          setAdvanceDraft({ vendorId: '', amount: '', method: '', reason: '' });
-                        }}
-                      >{blocked ? 'Working…' : 'Pay advance'}</Button>
-                    </div>
-                  </div>
-                );
-              })()}
               {claimPanel((claim) => (
                 <div style={rowCard} data-testid="commercial-payment-ledger">
                   <div style={{ fontWeight: 600 }}>Approvals and payments</div>
@@ -1553,11 +1497,6 @@ export function CommercialScreen() {
                     // approval that authorised them rather than off the ledger.
                     const paymentsMade = approvals.flatMap((a) => a.payments ?? []);
                     const withheld = claim.deductions?.deductions ?? [];
-                    const childIds = [
-                      ...withheld.map((x) => x.id), ...approvals.map((a) => a.id),
-                      ...paymentsMade.map((pmt) => pmt.id),
-                    ];
-
                     // ── ONE PRECONDITION TABLE FOR ALL SIX CONTROLS ────────────────────────────
                     //
                     // Two review rounds and thirteen findings said the same thing: I wrote these
@@ -1577,32 +1516,23 @@ export function CommercialScreen() {
                     const fits = (typed: string, remaining: string | null): boolean =>
                       remaining !== null && shaped(typed) && !decGt(typed.trim(), remaining);
 
-                    // the claim copy these controls act on — the same arbitration the certification
-                    // actions use. A bundle older than the list carries a stale `lifecycleVersion`,
-                    // and an approval PINS it.
-                    const payReading = arbitrateBillCopy(
-                      (bills ?? []).find((r) => r.id === claim.bill.id) ?? null, claim.bill,
-                    );
-                    const payAuthoritative = payReading !== null && payReading.source !== 'list';
-                    // §I — the actor who certified may not approve the payment unless an
-                    // authorisation stands. Both facts are already in the bundle; this refuses the
-                    // pairing rather than modelling who COULD be authorised (7B-iii-g F6).
-                    const selfApproving = claim.certificate !== null
-                      && claim.certificate.certifiedById === claim.certifyPreflight.callerActorId
-                      && claim.certifyPreflight.grantState !== 'live';
-                    const approvable = claim.payments.approvable ?? null;
-                    const netPayable = claim.deductions?.netPayable ?? null;
-                    // A withholding has ONE ceiling — except `advance-recovery`, which has two.
-                    // It draws on this claim's payable AND on a VENDOR-scoped pool: what the
-                    // counterparty still owes back across every claim. The bundle carries that
-                    // figure, and its own contract says why — "so an operator can see the ceiling
-                    // BEFORE a recovery is refused by it rather than only in the refusal".
+                    // ── WHAT A WITHHOLDING MAY CONSUME ────────────────────────────────────────
                     //
-                    // Caught by walking this table's rows against the contract rather than by a
-                    // reviewer, which is the mechanism working: it is the SAME root as round 1's
-                    // F4–F7 and round 2's R2-1, arriving a third time on the one type whose bound
-                    // is not bill-scoped. `bothOf` is null-propagating on purpose — an undeterminable
-                    // ceiling must refuse, never default to the other one.
+                    // Not `netPayable`, and the difference is a §F seal rather than a preference.
+                    // A withholding LOWERS `NET_PAYABLE`, and the derived-status seal re-runs after
+                    // the insert requiring `APPROVED <= NET_PAYABLE`. So withholding the whole
+                    // payable on a claim that already carries a ₹30 approval leaves the claim in
+                    // breach and the write is rejected AT COMMIT. What is free to withhold is what
+                    // is left AFTER standing approvals — which is exactly `approvable`, already
+                    // derived server-side from the same snapshot.
+                    //
+                    // …and `advance-recovery` is the one type with a SECOND ceiling: it draws on a
+                    // VENDOR-scoped pool, what the counterparty still owes back across every claim.
+                    // The bundle carries it, and its contract says why — "so an operator can see
+                    // the ceiling BEFORE a recovery is refused by it rather than only in the
+                    // refusal". `bothOf` is null-propagating on purpose: an undeterminable ceiling
+                    // must refuse, never fall back to the other one.
+                    const approvable = claim.payments.approvable ?? null;
                     const recoverable = claim.deductions?.advance?.recoverable ?? null;
                     const bothOf = (a: string | null, b: string | null): string | null =>
                       a === null || b === null ? null : (decGt(a, b) ? b : a);
@@ -1618,32 +1548,22 @@ export function CommercialScreen() {
                     const approvalIsLive = selectedApproval !== null
                       && selectedApproval.certificateId === liveCertificateId;
 
-                    const foldPending =
-                      commercialPending.some((k) => isClaimMoneyPending(k, claim.bill.id, childIds));
-
                     // Which rules apply where. THREE are universal — shape, balance, and the
                     // pending-conflict on the resource each command constrains — and every row
-                    // below carries all three. TWO are deliberately narrow, and the blanks say so
-                    // here rather than reading as a fourth missed sweep:
-                    //
-                    //   `payAuthoritative` — approve ONLY. Approve pins `lifecycleVersion` and the
-                    //     server refuses a stale pin, so detecting staleness prevents a refusal the
-                    //     client can foresee. The other four pin nothing; the server re-derives
-                    //     their bound from live truth. Applying it to them would ALSO be false
-                    //     comfort: a deduction can move `NET_PAYABLE` without moving the §F status
-                    //     this arbitration reads, so it is not a balance-freshness guarantee and
-                    //     must not be dressed as one.
-                    //   `selfApproving` — approve ONLY. §I governs who may approve; it says nothing
-                    //     about recording a withholding or settling an approved payment.
+                    // carries all three. ONE is narrow, and the blank says so rather than reading
+                    // as another missed sweep: only `pay` is blocked by a lifecycle TRANSITION,
+                    // because only `pay` rests on a document a transition can invalidate. A
+                    // supersede replaces the certificate an approval hangs off, and the payment
+                    // service re-reads that certificate and refuses; a withholding, a release and
+                    // a reversal name rows a supersede does not move.
                     const gate = {
-                      approve: {
-                        blocked: foldPending,
-                        ready: shaped(d.approveAmount) && fits(d.approveAmount, approvable)
-                          && payAuthoritative && !selfApproving,
-                      },
                       pay: {
-                        blocked: d.payApprovalId !== ''
-                          && commercialWriteBlocked(payCoalesceKey(d.payApprovalId), commercialPending),
+                        blocked: (d.payApprovalId !== ''
+                          && commercialWriteBlocked(payCoalesceKey(d.payApprovalId), commercialPending))
+                          // …and behind a pending supersede, whose key names the BILL. The FIFO
+                          // outbox would replay the supersede first, leaving this payment drawing
+                          // on an authority the server has already retired.
+                          || commercialPending.some((k) => isBillTransitionPending(k, claim.bill.id)),
                         ready: approvalIsLive && shaped(d.payAmount) && d.payMethod.trim() !== ''
                           && fits(d.payAmount, selectedApproval === null ? null
                             : decSub(selectedApproval.amount, selectedApproval.paid)),
@@ -1662,7 +1582,7 @@ export function CommercialScreen() {
                         // four controls and this was the fifth.
                         ready: d.deductType !== '' && shaped(d.deductAmount)
                           && fits(d.deductAmount, d.deductType === 'advance-recovery'
-                            ? bothOf(netPayable, recoverable) : netPayable)
+                            ? bothOf(approvable, recoverable) : approvable)
                           && !(reasonRequired && d.deductReason.trim() === ''),
                       },
                       release: {
@@ -1677,38 +1597,6 @@ export function CommercialScreen() {
 
                     return (
                       <div data-testid="commercial-payer-actions" style={{ marginTop: 12 }}>
-                        {mayApprove && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                            <input
-                              style={input} data-testid="approve-amount" placeholder="Approve amount"
-                              value={d.approveAmount}
-                              onChange={(e) => setPayDraft(claim.bill.id, { approveAmount: e.target.value })}
-                            />
-                            <Button
-                              variant="ink" data-testid={`approve-${claim.bill.id}`}
-                              disabled={gate.approve.blocked || !gate.approve.ready}
-                              onClick={() => {
-                                approvePayment(claim.bill.id, d.approveAmount.trim(),
-                                  claim.certifyPreflight.lifecycleVersion);
-                                setPayDraft(claim.bill.id, { approveAmount: '' });
-                              }}
-                            >{gate.approve.blocked ? 'Working…' : 'Approve'}</Button>
-                          </div>
-                        )}
-                        {mayApprove && selfApproving && (
-                          <div style={{ ...muted, marginTop: 6 }} data-testid="approve-self">
-                            You certified this claim, so §I does not let you also approve its
-                            payment. A pmc with standing can authorise the exception.
-                          </div>
-                        )}
-                        {mayApprove && gate.approve.blocked && (
-                          <div style={{ ...muted, marginTop: 6 }} data-testid="approve-blocked">
-                            This claim's money is moving. An approval records the revision it was
-                            authorised against, and the change in flight moves it — approve once it
-                            has landed.
-                          </div>
-                        )}
-
                         {mayPay && approvals.length > 0 && (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
                             <select

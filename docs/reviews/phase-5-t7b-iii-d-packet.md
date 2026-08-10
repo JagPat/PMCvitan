@@ -2,8 +2,15 @@
 
 ## What this unit is
 
-The last of the four 7B-iii units, and the point where money leaves. Six commands on the Payments
-tab: record and release a withholding, approve, pay, reverse, and pay an advance.
+The last of the four 7B-iii units, and the point where money leaves. **Four** commands on the
+Payments tab: record and release a withholding, record a payment, reverse one.
+
+> **Scope note (round 3).** This unit opened with six commands. `approve` and `pay advance` moved to
+> **7B-iii-d-ii** after Codex's third review, because three of its five findings proved to be facts
+> the contract does not expose — the `certifier-may-not-approve` grant state, the claim's current
+> revision on the bill list, and any read at all that carries a vendor's advances. Both of those
+> controls need a server change first; the four that remain are gated entirely on figures the claim
+> bundle already carries. The seam and its evidence are in `docs/reviews/pr-316-convergence.md`.
 
 ## Review unit
 
@@ -251,3 +258,45 @@ them would also be false comfort — a deduction can move `NET_PAYABLE` without 
 that arbitration reads, so it is not a balance-freshness guarantee and must not be dressed as one.
 
 **Gates:** `pnpm check` EXIT 0 — web 727/727, API 781/781; `commercial-screen` 87/87.
+
+---
+
+## Correction round 3 — five findings, two of which the client cannot answer
+
+| # | Finding | Disposition |
+|---|---|---|
+| F3 (P2) | a withholding capped at `netPayable` can still leave `APPROVED > NET_PAYABLE`, and the §F seal rejects it AT COMMIT | **fixed here** — the ceiling is `approvable` (`netPayable − approved`), and `advance-recovery` additionally caps at the counterparty pool |
+| F5 (P2) | a payment queued behind a pending supersede draws on a certificate the FIFO outbox is about to retire | **fixed here** — `pay` is blocked by a pending `com:billtx:<bill>` transition, which only the screen can connect to an approval-keyed command |
+| F2 (P2) | the self-approval gate read `certifyPreflight.grantState`, which resolves `evidence-recorder-may-not-certify`, not the payment rule | **moved to d-ii** — no DTO carries a `certifier-may-not-approve` grant |
+| F4 (P2) | status arbitration cannot see a fold write that moves `lifecycleVersion` without moving the label | **moved to d-ii** — `VendorBillDto` carries no revision |
+| F1 (P2) | `com:advance:<vendor>` has no settling read once the control sits outside `claimPanel` | **moved to d-ii** — `POST /commercial/advances` is write-only; no read carries a vendor's advances |
+
+### Why two findings became a split rather than a patch
+
+F2, F4 and F1 are the same shape: the gate compares a fact that is *near to hand* instead of the one
+the server tests, and the right fact is **not in the contract**. Refining the proxy would ship a
+guess about authority on the one control that authorises money to leave — the write-ahead lie this
+chain exists to prevent, and the exact thing `7B-iii-g` F6 forbids.
+
+They also land on exactly two controls, which is what makes the seam real rather than convenient:
+approve is the only command that pins a revision and the only one the certifier rule governs;
+advance is the only one that names no claim. Everything left in this unit is decidable from the
+claim bundle.
+
+`7B-iii-d-ii` is contract-first, following `7B-iii-c-ii`'s precedent in this same lineage: expose an
+`approvePreflight` carrying the payment-rule grant, `VendorBillDto.lifecycleVersion`, and a vendor
+advances read — then build the two controls on them.
+
+### Reproduce-first
+
+Both retained findings were verified RED against the pre-fix gate before the fix:
+
+- **F3** — with 40.00 payable and 30.00 already approved, a 30.01 retention was **offered**; now
+  refused, and 30.00 accepted. The round-2 probe that asserted the 40.00 ceiling is updated to the
+  corrected quantity rather than deleted: the rule did not change, the quantity it names became
+  exact.
+- **F5** — with `com:billtx:bill-1:supersede` pending, a payment on `appr-1` was **offered**; now
+  refused, while a supersede on another claim still constrains nothing.
+
+**Gates:** `pnpm check` EXIT 0 — web 717/717, API 781/781; `commercial-screen` + `commercial-verification` 119/119.
+**Review unit:** 9 files / 1,130 changed lines — within both budgets.

@@ -85,6 +85,68 @@ undeterminable ceiling refuses rather than falling back to the other one.
 
 ---
 
+## Round 3 — the root restated, and why the unit SPLITS
+
+Three finding-bearing heads: 7 + 6 + 5 = **eighteen findings**. Round 2 said the root was *"I applied
+each rule to the controls I was thinking about, not to the set"*, and installed a precondition table
+so a rule is a row. That was right about **coverage** and it worked — the table caught the root's
+third arrival by itself. It was not the whole story, because round 3's five findings are not missing
+rows. Every one of them is a row **comparing the wrong quantity**.
+
+| # | The gate compared… | The server actually checks… |
+|---|---|---|
+| F2 | `certifyPreflight.grantState` | a `certifier-may-not-approve` grant — a DIFFERENT §I rule |
+| F4 | `status` / `statusChangedAt` | the claim's monotonic `lifecycleVersion` |
+| F3 | `netPayable` | `netPayable − approved`, because the §F seal re-runs after the insert |
+| F5 | the payment's own key | every write that retires the certificate the approval hangs off |
+| F1 | "the claim read settles it" | a read that carries **this vendor**, which no claim read does once the control left the claim panel |
+
+### The sharper root: I built each gate from the nearest available signal, not from the predicate
+
+The table made every rule *present*. It did not make any rule *faithful*. In each case a fact that
+was close at hand stood in for the fact the server actually tests — a sibling rule's grant, a status
+stamp, a gross balance, a narrower key. Proxies are invisible in a precondition table, because the
+row is there and it looks right.
+
+**The corollary is the part worth keeping:** when the nearest signal is a proxy, refining the proxy
+is the wrong move. The right move is to make the server hand over the predicate — which is exactly
+what `7B-iii-c-ii` did one unit earlier, exposing the SoD preflight in the claim contract *before*
+the client surface was built. That lesson was recorded and then not applied here.
+
+### So the unit splits, and the seam is drawn by the findings themselves
+
+Two of the five **cannot be fixed on the client at all**:
+
+- **F2** — no DTO carries a `certifier-may-not-approve` grant. `certifyPreflight` resolves
+  `evidence-recorder-may-not-certify`. Any client answer is a guess in both directions: a live
+  certification grant would wrongly *enable* a self-approval, and a real payment grant stays
+  invisible so the button wrongly *stays disabled*.
+- **F4** — `VendorBillDto` carries no revision, so no comparison the client can make sees a fold
+  write that moves `lifecycleVersion` without moving the status label.
+
+And **F1** turns out to be the same shape: `POST /commercial/advances` is write-only, so there is no
+read that carries a vendor's advances. Round 2 moved the advance control out of the claim panel so
+it would work with no claim — and by doing so removed the only read that could ever settle its key.
+The fix is not a cleverer release path; it is a read that does not exist yet.
+
+All three land on exactly two controls — **approve** and **advance** — and that is not a coincidence.
+Approve is the only command that pins a revision and the only one the certifier rule governs;
+advance is the only one that names no claim. **The seam is where the client's information runs out.**
+
+| Unit | Controls | Why it is one concern |
+|---|---|---|
+| **7B-iii-d** (this PR) | deduct · release · pay · reverse | every precondition is a figure the claim bundle already carries, and every key settles on the claim read |
+| **7B-iii-d-ii** | approve · advance | both need a server fact this contract does not expose: the payment-rule grant state, the claim's current revision, and a read that carries a vendor's advances |
+
+Shipping approve with a gate built on the wrong §I rule would be the write-ahead lie on the one
+control that authorises money to leave. Deferring it is not descoping — it is refusing to guess at
+authority, which is this repository's rule (`7B-iii-g` F6) and the reason `certifyPreflight` exists.
+
+**Checkable form, added to round 2's:** *a gate may only compare the quantity the server compares.
+If that quantity is not in the contract, the contract is the fix — never a nearer-to-hand stand-in.*
+
+---
+
 ## What this head does NOT do
 
 It does not add a client-side model of §I standing. The certifier-self-approval gate compares

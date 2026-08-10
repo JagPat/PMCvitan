@@ -75,8 +75,7 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   // without a second list to keep in step.
   'grantSodException',
   // 7B-iii-d — the payer's chain. Same registry, same reason.
-  'recordDeduction', 'releaseDeduction', 'approvePayment', 'recordPayment', 'reversePayment',
-  'payAdvance',
+  'recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -207,42 +206,14 @@ export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
  *   record deduction   the CLAIM — a withholding draws on certified headroom (§G bound 3)
  *   release deduction  the WITHHOLDING — two releases race one unreleased balance; releases
  *                      against DIFFERENT withholdings are independent and must not coalesce
- *   approve            the CLAIM — approvals race one net payable (§G bound 4)
  *   record payment     the APPROVAL — payments race one authorised amount (§G bound 5)
  *   reverse            the PAYMENT — two reversals race one paid amount
- *   pay advance        the VENDOR — an advance names no claim at all, so it conflicts with nothing
- *                      on any claim and only with another advance to the same counterparty
  */
 export const deductionCoalesceKey = (billId: string): string => `com:deduct:${billId}`;
 export const deductionReleaseCoalesceKey = (deductionId: string): string => `com:release:${deductionId}`;
-export const approveCoalesceKey = (billId: string): string => `com:approve:${billId}`;
 export const payCoalesceKey = (approvalId: string): string => `com:pay:${approvalId}`;
 export const reverseCoalesceKey = (paymentId: string): string => `com:payrev:${paymentId}`;
-export const advanceCoalesceKey = (vendorId: string): string => `com:advance:${vendorId}`;
 
-/**
- * Whether a pending key moves money on THIS claim — the predicate the approve conflict is written
- * from, so a seventh fold-moving action added later is covered by naming it here once.
- *
- * `com:pay:` and `com:payrev:` are keyed by approval and payment id rather than by claim, so they
- * cannot be matched by prefix on the bill. They are handled by the caller, which holds the claim's
- * own approval and payment ids — stated here because a rule that silently cannot see two of its
- * six members is worse than one that says so.
- */
-export const isClaimMoneyPending = (
-  key: string, billId: string, childIds: readonly string[] = [],
-): boolean =>
-  key === deductionCoalesceKey(billId)
-  || key === approveCoalesceKey(billId)
-  || isBillTransitionPending(key, billId)
-  // Round 1, finding 1. The first draft said "the screen closes the child-keyed half" and then
-  // closed two thirds of it: payments and reversals were handled and RELEASES were not, because a
-  // release key names a withholding and I was thinking about the payment ledger. A rule that
-  // documents its own blind spot still has to cover the whole of it — so the caller passes the
-  // ids this claim actually owns (withholdings, approvals, payments) and all three child-keyed
-  // commands are matched here rather than two of them here and one nowhere.
-  || childIds.some((id) => key === deductionReleaseCoalesceKey(id)
-    || key === payCoalesceKey(id) || key === reverseCoalesceKey(id));
 
 /**
  * Whether a commercial write must be refused because an EQUIVALENT or CONFLICTING one is pending.
@@ -296,22 +267,11 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // legible ("no authorisation stands"), not silently mis-pinned.
   const grant = /^com:sodgrant:(.+):[^:]*$/u.exec(coalesceKey);
   if (grant) return pending.some((k) => isBillTransitionPending(k, grant[1]!));
-  // ── 7B-iii-d — APPROVE pins the claim's revision, and every fold write moves it ─────────────
+  // ── 7B-iii-d — a WITHHOLDING moves a fold, so a lifecycle transition on its claim blocks it ──
   //
-  // R5-1 generalised. An approval carries `lifecycleVersion`, and the server refuses it if the
-  // claim moved; a withholding recorded or released, or a lifecycle transition, moves it. Queued
-  // behind any of those, an approval is written against a revision that is already gone — refused
-  // when it lands, after the outbox reported it saved.
-  //
-  // A pending payment or reversal moves the fold too, but their keys name an APPROVAL and a
-  // PAYMENT rather than the claim, so this predicate cannot see them from the key alone. The
-  // SCREEN closes that half, because it holds the claim's own approval and payment ids; that
-  // division is stated here rather than left for a reader to discover.
-  const approve = /^com:approve:(.+)$/u.exec(coalesceKey);
-  if (approve) return pending.some((k) => isClaimMoneyPending(k, approve[1]!));
-  // …and a WITHHOLDING moves the same fold, so it is blocked by a lifecycle transition on its
-  // claim for the same reason. It is NOT blocked by a pending approval: approving does not change
-  // what may be withheld, and refusing it would be a conflict the bounds do not have.
+  // `com:pay:` and `com:payrev:` name an APPROVAL and a PAYMENT rather than the claim, so this
+  // predicate cannot map them back to a bill from the key alone. The SCREEN closes that half,
+  // because it holds the claim's own ids — stated here rather than left to be discovered.
   const deduct = /^com:deduct:(.+)$/u.exec(coalesceKey);
   if (deduct) return pending.some((k) => isBillTransitionPending(k, deduct[1]!));
   return false;
@@ -390,14 +350,9 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
         // withholding-keyed ones are released by the caller passing the ids this read returned,
         // because a key naming a child row cannot be matched from the bill id alone.
         || coalesceKey === deductionCoalesceKey(r.billId)
-        || coalesceKey === approveCoalesceKey(r.billId)
         || (r.settledIds ?? []).some((id) => coalesceKey === deductionReleaseCoalesceKey(id)
           || coalesceKey === payCoalesceKey(id) || coalesceKey === reverseCoalesceKey(id))
-        // Round 1, finding 3 — and it is 7B-iii-g's F2 recurring on a key I added one unit later.
-        // An advance is VENDOR-keyed, so no claim read can name it and the money read never knew
-        // it existed: the key was set and nothing on earth cleared it, leaving the control dead
-        // until a reload. The claim read carries the vendor, so it is the read that can settle it.
-        || coalesceKey === advanceCoalesceKey(r.vendorId ?? '\u0000');
+        ;
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;

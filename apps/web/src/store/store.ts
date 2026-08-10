@@ -73,7 +73,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, advanceCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -452,17 +452,19 @@ export interface AppActions {
   /** §E/§F writes (7B-iii-c-i) — the verification chain, on the SAME claim lifecycle. */
   beginVerification: (billId: string) => void;
   verifyVendorBill: (billId: string) => void;
-  /** §G/§H writes (7B-iii-d) — the payer's chain. Six commands, six DISTINCT permissions.
+  /** §G/§H writes (7B-iii-d) — the payer's SETTLEMENT chain. Four commands, four DISTINCT
+   *  permissions, and each names the DOCUMENT it acts on, so an id cannot silently mean a
+   *  different row later.
    *
-   *  Only `approvePayment` takes a viewed-fact pin, and the asymmetry is the server's contract:
-   *  the others name the document they act on, and an id cannot silently mean a different row
-   *  later. An approval names only the claim, whose money moves underneath it. */
+   *  `approvePayment` and `payAdvance` are deliberately NOT here. Both need a server fact this
+   *  contract does not expose — the `certifier-may-not-approve` grant state and the claim's
+   *  current revision for one, a read that carries a vendor's advances for the other — and a
+   *  control whose authority is guessed client-side is the write-ahead lie this chain exists to
+   *  prevent. They land in 7B-iii-d-ii, contract first. */
   recordDeduction: (billId: string, type: string, amount: string, reason: string | null) => void;
   releaseDeduction: (deductionId: string, amount: string, reason: string) => void;
-  approvePayment: (billId: string, amount: string, lifecycleVersion: number) => void;
   recordPayment: (approvalId: string, amount: string, method: string, reference: string | null) => void;
   reversePayment: (paymentId: string, amount: string, reason: string) => void;
-  payAdvance: (vendorId: string, amount: string, reason: string, method: string, reference: string | null) => void;
   /** §I write (7B-iii-g) — the APPROVER authorises one actor for one otherwise-forbidden act.
    *
    *  Carries the three facts the approver was LOOKING AT, all from the one authoritative claim
@@ -1676,10 +1678,8 @@ export const useStore = create<Store>()(
       // a copy of its current answer, and a later widening of one must not silently widen five.
       recordDeduction: 'commercial.deduct',
       releaseDeduction: 'commercial.deduct.release',
-      approvePayment: 'commercial.approve-payment',
       recordPayment: 'commercial.record-payment',
       reversePayment: 'commercial.reverse-payment',
-      payAdvance: 'commercial.pay-advance',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
@@ -3075,13 +3075,6 @@ export const useStore = create<Store>()(
         `Release ${deductionId}`, 'Withholding released.',
       );
     },
-    approvePayment: (billId, amount, lifecycleVersion) => {
-      dispatchCommercial(
-        { t: 'approvePayment', input: { billId, amount, lifecycleVersion }, idempotencyKey: newIdempotencyKey(),
-          coalesceKey: approveCoalesceKey(billId) },
-        `Approve on ${billId}`, 'Payment approved.',
-      );
-    },
     recordPayment: (approvalId, amount, method, reference) => {
       dispatchCommercial(
         { t: 'recordPayment', input: { approvalId, amount, method, reference }, idempotencyKey: newIdempotencyKey(),
@@ -3095,15 +3088,6 @@ export const useStore = create<Store>()(
         { t: 'reversePayment', input: { paymentId, amount, reason }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: reverseCoalesceKey(paymentId) },
         `Reverse ${paymentId}`, 'Payment reversed.',
-      );
-    },
-    payAdvance: (vendorId, amount, reason, method, reference) => {
-      dispatchCommercial(
-        { t: 'payAdvance', input: { vendorId, amount, reason, method, reference }, idempotencyKey: newIdempotencyKey(),
-          // an advance names no claim, so it conflicts with nothing on one — only with another
-          // advance to the same counterparty
-          coalesceKey: advanceCoalesceKey(vendorId) },
-        `Advance to ${vendorId}`, 'Advance paid.',
       );
     },
     grantSodException: (billId, actorId, reason, viewed) => {
