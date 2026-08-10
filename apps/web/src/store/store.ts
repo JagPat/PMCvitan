@@ -2972,12 +2972,15 @@ export const useStore = create<Store>()(
     // response) and a DETERMINISTIC coalesce key (dedupe an equivalent action while pending).
 
     setCommercialBudget: (costHeadCode, amount, reason) => {
+      // 7B-vi — the key is derived from the SAME object the command carries, so the identity
+      // cannot drift from the payload the way a hand-listed subset does.
+      const input = { costHeadCode, amount, reason };
       dispatchCommercial(
         {
           t: 'setCommercialBudget',
-          input: { costHeadCode, amount, reason },
+          input,
           idempotencyKey: newIdempotencyKey(),
-          coalesceKey: budgetCoalesceKey(costHeadCode, amount),
+          coalesceKey: budgetCoalesceKey(input),
         },
         `Budget for ${costHeadCode}`,
         'Budget set.',

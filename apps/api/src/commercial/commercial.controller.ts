@@ -403,6 +403,23 @@ export class CommercialController {
    * payment. Its own permission — an advance commits cash with no certificate behind it, which is a
    * different risk from paying a claim that was certified, approved and bounded.
    */
+  /**
+   * 7B-vi (§H) — the advances this project has paid, and each counterparty's position.
+   *
+   * `commercial.read` rather than a narrower permission, and that is not a widening: the vendor's
+   * `advanced`/`recovered`/`recoverable` position is ALREADY on every claim's deduction ledger,
+   * which this same policy governs. A separate permission would guard a fact the reader can
+   * already see one route over.
+   */
+  @Get('commercial/advances')
+  @RolesFor('commercial.read')
+  listAdvances(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.deductions.listAdvances(projectId, user);
+  }
+
   @Post('commercial/advances')
   @RolesFor('commercial.pay-advance')
   payAdvance(

@@ -705,6 +705,21 @@ export interface VendorAdvancePositionDto {
   recoverable: string;
 }
 
+/**
+ * 7B-vi (§H) — every advance this project has paid, with each counterparty's position.
+ *
+ * The READ lands before the control, and that ordering is the finding rather than a preference.
+ * 7B-iv shipped an advance control whose write-ahead outbox key had NO settling read: nothing could
+ * hydrate or reconcile advance rows, so a key with no release path was stuck by construction. The
+ * split removed the control and left `POST commercial/advances` — this restores the half that makes
+ * the other half reconcilable.
+ */
+export interface VendorAdvanceListDto {
+  advances: VendorAdvanceDto[];
+  /** one row per counterparty that has ever been advanced on this project */
+  positions: VendorAdvancePositionDto[];
+}
+
 /** Phase 5 Task 6C (§H) — cash paid to a counterparty ahead of any certified claim. */
 export interface VendorAdvanceDto {
   id: string;

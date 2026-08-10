@@ -31,8 +31,64 @@ import { normalizedBillNumber } from '@vitan/shared';
  * So: the value is part of the identity (two different amounts are two different actions), and
  * the disable-while-pending test is prefix-matched on the stable part.
  */
-export const budgetCoalesceKey = (costHeadCode: string, amount: string): string =>
-  `com:budget:${costHeadCode}:${amount}`;
+export const budgetCoalesceKey = (input: { costHeadCode: string; amount: string; reason: string }): string =>
+  payloadCoalesceKey('budget', input.costHeadCode, input);
+
+/**
+ * ── 7B-vi (§H) — DERIVE the coalesce identity, do not enumerate it ───────────────────────────
+ *
+ * `pr-317-convergence.md` records this lineage failing FOUR times at hand-listing the facts that
+ * define a row: round 2 listed three preconditions and called it the rule, round 3 found three
+ * more, round 4 widened the advance key by listing amount and reason, round 5 found the two that
+ * list omitted (`method`, `reference`). A hand-picked subset always looks complete from the inside
+ * — that is the property that makes this root recur, and why the fix cannot be a longer list.
+ *
+ * So: for a command whose identity IS its payload, two dispatches are the same action only if they
+ * are the same INPUT. The tail is a deterministic, injective serialisation of the WHOLE object, so
+ * **a field added to the command joins the identity automatically** — the property every
+ * enumeration here lacked.
+ *
+ * The SCOPE prefix is kept and is not decoration. Several conflict predicates prefix-match these
+ * keys (`isBudgetPendingForHead` asks "any budget set for this head, at any amount"), and an
+ * opaque hash would silently break every one of them. Stable prefix for the predicates, derived
+ * tail for the identity — neither half can be dropped without losing something real.
+ *
+ * Applied to BOTH commands that have this shape, not only the one a finding named. `setBudget`
+ * carries `reason` and `budgetCoalesceKey` omitted it, so two corrections of one head at the same
+ * amount coalesced and the second was dropped: the same defect, found by asking the question the
+ * parked ledger told the next unit to ask rather than by another round of review.
+ */
+export const payloadCoalesceKey = (action: string, scope: string, input: unknown): string =>
+  `com:${action}:${scope}:${canonicalPayload(input)}`;
+
+/**
+ * A stable, INJECTIVE serialisation: object keys sorted so field order cannot change the identity,
+ * and every string JSON-escaped so no value can impersonate a separator. Joining raw values with
+ * `:` would make `{a:'x:y',b:'z'}` and `{a:'x',b:'y:z'}` the same key — a collision that would
+ * silently drop a legitimate second command, which is the exact failure this helper exists to end.
+ *
+ * `undefined` is dropped rather than encoded, so an optional field left unset and one absent from
+ * the object are the same action. `null` is KEPT: an explicitly cleared reference is a different
+ * input from one never given.
+ */
+export const canonicalPayload = (value: unknown): string => {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(canonicalPayload).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalPayload(v)}`).join(',')}}`;
+};
+
+/**
+ * §H — an advance is APPEND-ONLY with no server ceiling, so two advances to one counterparty are
+ * two FACTS, not a retry. Its identity is therefore its whole payload: `method` and `reference`
+ * join automatically, and so would a sixth field. Settled by the `commercial.advances` read, which
+ * is why that read lands in this unit BEFORE the control it settles.
+ */
+export const advanceCoalesceKey = (input: {
+  vendorId: string; amount: string; reason: string; method: string; reference?: string | null;
+}): string => payloadCoalesceKey('advance', input.vendorId, input);
 
 /** Whether ANY budget set for this cost head is still pending, at any amount (labour r7). */
 export const isBudgetPendingForHead = (key: string, costHeadCode: string): boolean =>

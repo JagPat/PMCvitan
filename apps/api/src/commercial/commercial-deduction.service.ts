@@ -512,6 +512,41 @@ export class CommercialDeductionService {
    * direction. `phase5_t6c_recoverable_check` takes the same row for the same reason.
    */
 
+  /**
+   * 7B-vi (§H) — every advance on this project, with each counterparty's position.
+   *
+   * ONE repeatable-read snapshot, for the reason every §H read opens one: `recoverable` is a FOLD
+   * over the advances less every recovery taken across that counterparty's claims, so rows and
+   * positions read separately can state a set of advances and a ceiling that were never true
+   * together.
+   *
+   * This read is what makes the §M advance control reconcilable at all. Its write-ahead key needs
+   * a read that can NAME the row it settles; without one the key is held for ever and the button
+   * never re-enables — 7B-iii-g's F2, which is why this lands before the control rather than
+   * beside it.
+   */
+  async listAdvances(projectId: string, user: AuthUser): Promise<VendorAdvanceListDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertRead(user);
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.vendorAdvance.findMany({
+        where: { projectId }, orderBy: { paidAt: 'desc' },
+      });
+      const vendorIds = [...new Set(rows.map((r) => r.vendorId))].sort();
+      const positions = [];
+      for (const vendorId of vendorIds) {
+        const { advanced, recovered, recoverable } = await this.deductions.recoverableFor(tx, projectId, vendorId);
+        positions.push({
+          vendorId,
+          advanced: advanced.toFixed(2),
+          recovered: recovered.toFixed(2),
+          recoverable: recoverable.toFixed(2),
+        });
+      }
+      return { advances: rows.map((a) => this.toAdvanceDto(a)), positions };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
+
   private toAdvanceDto(a: {
     id: string; vendorId: string; amount: Prisma.Decimal; reason: string; method: string;
     reference: string | null; paidAt: Date; paidById: string;

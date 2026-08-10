@@ -752,9 +752,14 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     pilot(writeGw({ setCommercialBudget: vi.fn().mockReturnValue(held.promise) }));
     s().setCommercialBudget('CIVIL', '100.00', 'v1');
     const first = s().outbox[0] as { idempotencyKey: string; coalesceKey: string };
-    expect(first.coalesceKey).toBe('com:budget:CIVIL:100.00');
+    // 7B-vi — the coalesce key is DERIVED from the whole command input, so it is asserted through
+    // the same function the store uses rather than pinned as a literal. Pinning the string would
+    // have to be edited every time a field joins the command, which is precisely the maintenance
+    // burden that made hand-listed identities drift from their payloads.
+    const expectedKey = budgetCoalesceKey({ costHeadCode: 'CIVIL', amount: '100.00', reason: 'v1' });
+    expect(first.coalesceKey).toBe(expectedKey);
     expect(first.idempotencyKey).not.toBe(first.coalesceKey);
-    expect(s().commercialPending).toEqual(['com:budget:CIVIL:100.00']);
+    expect(s().commercialPending).toEqual([expectedKey]);
 
     // PR #208 finding 1 — an EQUIVALENT action while pending is coalesced away (one queued op,
     // one disabled button), NOT queued a second time.
@@ -770,7 +775,14 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     s().setCommercialBudget('CIVIL', '100.00', 'v1');
 
     // the KEY carries the amount, so 200 is genuinely a different action…
-    expect(budgetCoalesceKey('CIVIL', '200.00')).not.toBe(budgetCoalesceKey('CIVIL', '100.00'));
+    const budget = (amount: string, reason = 'r'): string =>
+      budgetCoalesceKey({ costHeadCode: 'CIVIL', amount, reason });
+    expect(budget('200.00')).not.toBe(budget('100.00'));
+    // 7B-vi — and the REASON is part of the identity too. `setBudgetSchema` carries it and the old
+    // key omitted it, so correcting a head's reason at the same amount coalesced with the first
+    // and was silently dropped. Found by asking the question the 7B-vi ledger told this unit to
+    // ask — "does any other append-only command have this shape?" — rather than by a review round.
+    expect(budget('100.00', 'first note')).not.toBe(budget('100.00', 'corrected note'));
     // …but the disable TEST is prefix-matched on the head, so editing the input mid-flight does
     // NOT re-arm the button. RED if the screen tested `commercialPending.includes(key(head,amount))`:
     // the user retypes the figure and a second revision is written against the same head.
@@ -812,7 +824,8 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     expect(money, 'an uncertain response left the money position unrefreshed').toHaveBeenCalled();
     // …and the op is RETAINED with its key, so the button stays disabled while it retries
     expect(s().outbox).toHaveLength(1);
-    expect(s().commercialPending).toEqual(['com:budget:CIVIL:100.00']);
+    expect(s().commercialPending)
+      .toEqual([budgetCoalesceKey({ costHeadCode: 'CIVIL', amount: '100.00', reason: 'v1' })]);
   });
 
   it('labour r8: a resolved key clears when the fresh money APPLIES, not in the success gap', async () => {
