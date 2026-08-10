@@ -3,7 +3,10 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { CommercialScreen } from '@/screens/CommercialScreen';
 import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
-import { SOD_GRANT_STATES } from '@vitan/shared';
+import { SOD_GRANT_STATES, SOD_RULES } from '@vitan/shared';
+
+/** every §I rule, from the shared map — so a third rule fails the surface probe below */
+const SOD_RULES_ALL = Object.values(SOD_RULES);
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 
 /**
@@ -1543,6 +1546,30 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     expect(btn().disabled).toBe(false);
   });
 
+  /**
+   * 7B-iv — the browser can issue BOTH §I rules, not just the certification one.
+   *
+   * The payments surface refuses a certifier approving their own claim and tells the reader a pmc
+   * can authorise the exception — which was, until this, an action with no path in the app: the
+   * only grant form issued `evidence-recorder-may-not-certify`, so a one-person site was pointed at
+   * a remedy it could not reach. Naming a remedy the product does not offer is worse than offering
+   * no remedy, because it reads as a step the user has failed to find.
+   */
+  it('offers BOTH §I rules, so the payment exception has a path in the app', () => {
+    const r = openWith({});
+    const offered = Array.from(r.getByTestId('sod-rule').querySelectorAll('option'))
+      .map((o) => (o as HTMLOptionElement).value);
+    // read from the SHARED list rather than the two strings this form happens to render, so a
+    // third rule added to §I fails here instead of silently having no surface
+    expect(offered.sort()).toEqual([...SOD_RULES_ALL].sort());
+    // …and the form still refuses without a person and a reason, whichever rule is chosen
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'single-pmc site' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   /** R5-1 in the SCREEN — the same rule the dispatcher refuses with, so the two cannot disagree. */
   it('blocks authorising while a change to the claim is in flight, and says why', () => {
     const r = openWith({ pending: ['com:billtx:bill-1:certify'] });
@@ -1575,13 +1602,14 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
 
   const openPayments = (o: {
     pending?: string[]; role?: string; approvable?: string | null;
-    certificateId?: string; staleBundle?: boolean;
+    certificateId?: string; staleBundle?: boolean; bundleAhead?: boolean;
     certifiedByCaller?: boolean; approveGrant?: string;
   } = {}) => {
     const c = claim();
     const base: CommercialClaimView = {
       ...c,
-      bill: { ...c.bill, status: 'certified', statusChangedAt: at(1) },
+      // a realistic revision, so "ahead" and "behind" read as the monotonic counter they are
+      bill: { ...c.bill, status: 'certified', statusChangedAt: at(1), lifecycleVersion: 4 },
       // a WELL-FORMED payer fixture: a live certificate, a net payable to withhold against, and an
       // approval that names that certificate. The first draft omitted all three and the new gates
       // correctly refused every control — the fixture catching up with the contract.
@@ -1589,7 +1617,7 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
         ...(c.certificate ?? {}), id: o.certificateId ?? 'cert-1',
         certifiedById: 'u-other',
       } as never,
-      certifyPreflight: { ...c.certifyPreflight, callerActorId: 'u-self' },
+      certifyPreflight: { ...c.certifyPreflight, callerActorId: 'u-self', lifecycleVersion: 4 },
       // §I's PAYMENT rule — a different question from `certifyPreflight`, answered by the server
       approvePreflight: {
         grantState: (o.approveGrant ?? 'none') as never,
@@ -1634,6 +1662,12 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
       commercialClaimLoad: { 'bill-1': 'ready' },
       commercialPending: o.pending ?? [],
     });
+    if (o.bundleAhead === true) {
+      // the LIST is BEHIND: its row carries an older revision than the open bundle
+      useStore.setState({
+        commercialBills: [{ ...base.bill, lifecycleVersion: base.bill.lifecycleVersion - 1 }],
+      });
+    }
     if (o.staleBundle === true) {
       // 7B-iv — staleness stated EXACTLY. The list carries the claim's revision now, so the
       // fixture moves the revision rather than the status stamp: that is the quantity the server
@@ -1837,6 +1871,22 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
     fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '10.00' } });
     expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled,
       'authorised to certify is not authorised to approve').toBe(true);
+  });
+
+  /**
+   * 7B-iv — the revision is MONOTONIC, so the comparison is ORDERED, not an equality.
+   *
+   * Only a list row AHEAD of the bundle proves the bundle stale. Equality was wrong in the other
+   * direction: a withholding lands, the claim bundle reloads to the new revision, and the list
+   * read is still in flight or has failed and kept its older row — the bundle is then the FRESHER
+   * reading, carrying exactly the revision the server expects, and every control was disabled.
+   */
+  it('acts on a claim bundle that has outrun an older list row', () => {
+    const r = openPayments({ bundleAhead: true });
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'the bundle is ahead of the list, which makes it fresher and not stale').toBe(false);
   });
 
   /**

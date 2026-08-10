@@ -56,6 +56,7 @@ import type {
   LabourPresenceDto,
   CommercialMoneyPositionDto,
   CommercialClaimDto,
+  SodRule,
   VendorAdvanceListDto,
   MeasurementRegisterDto,
   VendorBillListDto,
@@ -1420,6 +1421,10 @@ export interface GrantSodExceptionInput {
   versionId: string;
   status: string;
   lifecycleVersion: number;
+  /** WHICH §I rule is being excused. Two exist and a grant for one is refused for the other, so
+   *  an authorisation surface that cannot name the rule can only ever issue half of them — which
+   *  is what left a one-person site with an approval it could never unblock from the app. */
+  rule: SodRule;
 }
 /**
  * ── 7B-iii-d (§G/§H) — the payer's chain. Six commands, and the shapes are the server's ────────

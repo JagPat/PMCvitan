@@ -351,6 +351,10 @@ test('PILOT §M chain: browser VERIFIES → CERTIFIES → WITHHOLDS → APPROVES
     versionId: (nowAsGrantor.bill.versions as Array<{ id: string; live: boolean }>).find((v) => v.live)!.id,
     status: nowAsGrantor.bill.status,
     lifecycleVersion: nowAsGrantor.certifyPreflight.lifecycleVersion,
+    // the SAME rule the browser's §I form now offers (7B-iv). Issued here over the API only
+    // because §I forbids a self-grant and this spec drives ONE browser session — the grantor is a
+    // different person, not a different interface. That the surface exists is proven in the screen
+    // and store suites; what this chain proves is that the grant makes the approval live.
     rule: 'certifier-may-not-approve',
     reason: 'single-pmc pilot site: authorised to approve a claim they certified',
   });

@@ -5,7 +5,7 @@ import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
 import { isClaimMoneyPending, advanceCoalesceKey, isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, DEDUCTION_TYPES, DEDUCTION_TYPES_REQUIRING_REASON, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
+import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, DEDUCTION_TYPES, DEDUCTION_TYPES_REQUIRING_REASON, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY, SOD_RULES, type SodRule } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto, SodGrantState } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
@@ -375,13 +375,20 @@ export function CommercialScreen() {
   // component-wide draft armed one row's button with another row's text). Two fields because a
   // supersede reason and a SoD authorisation are different acts with different authority.
   const [certDrafts, setCertDrafts] = useState<{
-    scope: string; byId: Record<string, { supersedeReason: string; sodActorId: string; sodReason: string }>;
+    scope: string;
+    byId: Record<string, {
+      supersedeReason: string; sodActorId: string; sodReason: string; sodRule: SodRule;
+    }>;
   }>({ scope: '', byId: {} });
   const certScoped = certDrafts.scope === scopeKey ? certDrafts.byId : {};
-  const EMPTY_CERT_DRAFT = { supersedeReason: '', sodActorId: '', sodReason: '' };
+  const EMPTY_CERT_DRAFT = {
+    supersedeReason: '', sodActorId: '', sodReason: '',
+    sodRule: SOD_RULES.evidenceRecorderMayNotCertify as SodRule,
+  };
   const certDraftFor = (id: string) => certScoped[id] ?? EMPTY_CERT_DRAFT;
   const setCertDraft = (
-    id: string, patch: Partial<{ supersedeReason: string; sodActorId: string; sodReason: string }>,
+    id: string,
+    patch: Partial<{ supersedeReason: string; sodActorId: string; sodReason: string; sodRule: SodRule }>,
   ): void =>
     setCertDrafts({ scope: scopeKey, byId: { ...certScoped, [id]: { ...certDraftFor(id), ...patch } } });
 
@@ -1304,14 +1311,25 @@ export function CommercialScreen() {
                     // the version, status and revision this authorisation pins.
                     const blocked = draft.sodActorId !== ''
                       && commercialWriteBlocked(
-                        sodGrantCoalesceKey(claim.bill.id, draft.sodActorId), commercialPending,
+                        sodGrantCoalesceKey(claim.bill.id, draft.sodActorId, draft.sodRule), commercialPending,
                       );
                     return (
                       <div style={rowCard} data-testid="commercial-sod-grant">
                         <div style={{ ...muted, marginBottom: 7 }}>
-                          Authorise someone to certify this claim, against the claim as it stands now.
+                          Authorise someone against this claim as it stands now. §I has two separate
+                          rules and a grant for one does not excuse the other, so the act being
+                          authorised is chosen rather than assumed.
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          <select
+                            style={input}
+                            data-testid="sod-rule"
+                            value={draft.sodRule}
+                            onChange={(e) => setCertDraft(claim.bill.id, { sodRule: e.target.value as SodRule })}
+                          >
+                            <option value={SOD_RULES.evidenceRecorderMayNotCertify}>…to CERTIFY their own evidence</option>
+                            <option value={SOD_RULES.certifierMayNotApprove}>…to APPROVE a claim they certified</option>
+                          </select>
                           <select
                             style={input}
                             data-testid="sod-actor"
@@ -1341,7 +1359,7 @@ export function CommercialScreen() {
                                 versionId: viewedVersion as string,
                                 status: grantReading!.copy.status,
                                 lifecycleVersion: claim.certifyPreflight.lifecycleVersion,
-                              });
+                              }, draft.sodRule);
                               setCertDraft(claim.bill.id, { sodActorId: '', sodReason: '' });
                             }}
                           >
@@ -1644,9 +1662,16 @@ export function CommercialScreen() {
                     // agreement. A missing list row is one reading, not a disagreement — the same
                     // rule `arbitrateBillCopy` applies, and refusing there would disable the whole
                     // surface for the moment before the list lands.
+                    // …and the comparison is ORDERED, not an equality. The revision is monotonic,
+                    // so which side is larger is the whole answer: only a list row AHEAD of the
+                    // bundle proves the bundle stale. Equality was the wrong test in one direction
+                    // — a withholding lands, the claim bundle reloads to the new revision, and the
+                    // list read is still in flight or has failed and kept its older row. The
+                    // bundle is then the FRESHER reading and carries exactly the revision the
+                    // server expects, yet every control was disabled.
                     const listRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
                     const bundleCurrent = listRow === null
-                      || listRow.lifecycleVersion === claim.certifyPreflight.lifecycleVersion;
+                      || listRow.lifecycleVersion <= claim.certifyPreflight.lifecycleVersion;
 
                     const bothOf = (a: string | null, b: string | null): string | null =>
                       a === null || b === null ? null : (decGt(a, b) ? b : a);
@@ -1738,7 +1763,10 @@ export function CommercialScreen() {
                         {mayApprove && selfApproving && (
                           <div style={{ ...muted, marginTop: 6 }} data-testid="approve-self">
                             You certified this claim, so §I does not let you also approve its
-                            payment. A pmc with standing can authorise the exception.
+                            payment. Another pmc with standing can authorise it on the
+                            Certification tab — choosing “to APPROVE a claim they certified”, since
+                            an authorisation to certify does not excuse this. §I forbids a
+                            self-grant, so it cannot be issued by you.
                           </div>
                         )}
                         {mayApprove && !bundleCurrent && (

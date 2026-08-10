@@ -185,8 +185,11 @@ export const isBillTransitionPending = (key: string, billId: string): boolean =>
  * What it got wrong is treating that independence as independence from the CLAIM — see
  * `commercialWriteBlocked`.
  */
-export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
-  `com:sodgrant:${billId}:${actorId}`;
+/** …and by RULE, because §I has two and authorising a person to certify is a DIFFERENT act from
+ *  authorising them to approve. Keying both the same would coalesce the second away while the
+ *  first is pending, silently dropping an authorisation the approver believes they issued. */
+export const sodGrantCoalesceKey = (billId: string, actorId: string, rule: string): string =>
+  `com:sodgrant:${billId}:${actorId}:${rule}`;
 
 /**
  * ── 7B-iii-d — the payer's chain, and the ONE fact that shapes all six keys ──────────────────
@@ -310,7 +313,11 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // ONE-DIRECTIONAL by design: a pending grant does not block a transition, because a certify that
   // arrives before its authorisation is refused by the server for a reason that is true and
   // legible ("no authorisation stands"), not silently mis-pinned.
-  const grant = /^com:sodgrant:(.+):[^:]*$/u.exec(coalesceKey);
+  // `com:sodgrant:<bill>:<actor>:<rule>` — anchored on the FIRST segment rather than a greedy
+  // prefix, because the key gained a third part (7B-iv) and a greedy `(.+)` silently captured
+  // `<bill>:<actor>` as the bill, so no transition ever matched and the guard went quiet. Ids
+  // carry no colons, which is what makes the narrow class correct rather than merely tighter.
+  const grant = /^com:sodgrant:([^:]+):/u.exec(coalesceKey);
   if (grant) return pending.some((k) => isBillTransitionPending(k, grant[1]!));
   // ── 7B-iii-d — a WITHHOLDING moves a fold, so a lifecycle transition on its claim blocks it ──
   //
@@ -318,7 +325,16 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // predicate cannot map them back to a bill from the key alone. The SCREEN closes that half,
   // because it holds the claim's own ids — stated here rather than left to be discovered.
   const deduct = /^com:deduct:(.+)$/u.exec(coalesceKey);
-  if (deduct) return pending.some((k) => isBillTransitionPending(k, deduct[1]!));
+  if (deduct) {
+    return pending.some((k) => isBillTransitionPending(k, deduct[1]!)
+      // …and behind a pending APPROVAL on the same claim. Round 4 established that a conflict
+      // between two commands is not one-directional unless the BOUNDS make it so, and closed
+      // supersede/pay both ways; this pair was left half-closed. The seal is real: a withholding
+      // LOWERS `NET_PAYABLE`, the derived-status seal re-runs requiring `APPROVED <= NET_PAYABLE`,
+      // and the FIFO outbox sends the approval first — so a withholding queued behind an approval
+      // of the full payable is rejected AT COMMIT, after the outbox reported it saved.
+      || k === approveCoalesceKey(deduct[1]!));
+  }
   // …and an APPROVAL yields to every fold write on its claim, because it pins the revision they move
   const approve = /^com:approve:(.+)$/u.exec(coalesceKey);
   if (approve) return pending.some((k) => isClaimMoneyPending(k, approve[1]!));

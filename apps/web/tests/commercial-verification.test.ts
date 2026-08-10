@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { SOD_RULES } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
+import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import {
   billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey, commercialWriteBlocked,
@@ -495,23 +497,55 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
    */
   it('a pending claim transition BLOCKS a new authorisation on that claim', () => {
     expect(commercialWriteBlocked(
-      sodGrantCoalesceKey('bill-1', 'u-2'), [billTransitionCoalesceKey('bill-1', 'certify')],
+      sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.evidenceRecorderMayNotCertify), [billTransitionCoalesceKey('bill-1', 'certify')],
     ), 'a certify in flight is about to move every fact the grant pins').toBe(true);
     // …and the dispatcher REFUSES it, not merely the screen. An op it accepts has already been
     // persisted and reported as saved (Codex J1).
     s().certifyBill('bill-1', 'ver-1', 4);
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
   });
 
-  it('…but two authorisations for DIFFERENT people on one claim are independent', () => {
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
-    s().grantSodException('bill-1', 'u-3', 'covering leave', viewed);
+  /**
+   * 7B-iv — the advances read is PROJECT-OWNED, so scope teardown must clear it.
+   *
+   * Both halves matter and the LOAD STATE is the one that strands the surface: the Payments tab
+   * loader fires only while it is `idle`, so a status carried over from the previous project means
+   * the new project's advances are never fetched — the user sees project A's counterparty
+   * positions on project B's screen, and no read will ever correct it.
+   */
+  it('a project switch clears the advances read AND its load state', () => {
+    const torn = { ...emptyProjectData(), ...emptyModuleReadState() } as Record<string, unknown>;
+    expect(torn.commercialAdvances, 'A\'s positions must not survive into B').toBeNull();
+    expect(torn.commercialAdvancesLoad, 'a carried-over status leaves the loader dead').toBe('idle');
+  });
+
+  /**
+   * 7B-iv — §I has TWO rules, and authorising a person to CERTIFY is a different act from
+   * authorising them to APPROVE. The key carries the rule for the same reason it carries the
+   * person: coalescing them would drop the second authorisation while the first is pending, and
+   * the approver would be told it saved.
+   */
+  it('the two §I rules are independent authorisations, not one', () => {
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.certifierMayNotApprove);
     expect(keys()).toEqual([
-      sodGrantCoalesceKey('bill-1', 'u-2'), sodGrantCoalesceKey('bill-1', 'u-3'),
+      sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.evidenceRecorderMayNotCertify),
+      sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.certifierMayNotApprove),
+    ]);
+    // …and the payload SAYS which rule, rather than relying on a server default
+    const rules = (s().outbox as unknown as Array<{ input: { rule: string } }>).map((o) => o.input.rule);
+    expect(rules).toEqual([SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove]);
+  });
+
+  it('…but two authorisations for DIFFERENT people on one claim are independent', () => {
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
+    s().grantSodException('bill-1', 'u-3', 'covering leave', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
+    expect(keys()).toEqual([
+      sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.evidenceRecorderMayNotCertify), sodGrantCoalesceKey('bill-1', 'u-3', SOD_RULES.evidenceRecorderMayNotCertify),
     ]);
     // and an EQUIVALENT one while pending still coalesces — the per-person key is a coalesce key
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     expect(keys()).toHaveLength(2);
   });
 
@@ -519,12 +553,12 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
    *  server for a reason that is true and legible, not silently mis-pinned. */
   it('a pending authorisation does NOT block a claim transition', () => {
     expect(commercialWriteBlocked(
-      billTransitionCoalesceKey('bill-1', 'certify'), [sodGrantCoalesceKey('bill-1', 'u-2')],
+      billTransitionCoalesceKey('bill-1', 'certify'), [sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.evidenceRecorderMayNotCertify)],
     )).toBe(false);
   });
 
   it('the authorisation carries the three facts its approver was looking at', () => {
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     expect((s().outbox[0] as unknown as { input: Record<string, unknown> }).input).toMatchObject({
       billId: 'bill-1', actorId: 'u-2', reason: 'only pmc on site',
       versionId: 'ver-1', status: 'verified', lifecycleVersion: 4,
@@ -533,7 +567,7 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
 
   it('a role without the granting authority queues NOTHING, even bypassing the screen', () => {
     useStore.setState({ role: 'engineer' });
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     expect(s().outbox).toHaveLength(0);
   });
 
@@ -559,7 +593,7 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
 
   it('the op type joins the ONE registry, so hydration and the flush cover it', () => {
     expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain('grantSodException');
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     const op = s().outbox[0] as { t: string; idempotencyKey: string; coalesceKey: string };
     expect(normalizeCommercialOutbox([op]).ops).toHaveLength(1);
   });
@@ -583,6 +617,24 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
    * outbox would replay the transition first and the server would then refuse a withholding taken
    * against a certificate that no longer stands.
    */
+  /**
+   * 7B-iv — the deduct/approve conflict is BIDIRECTIONAL, and round 4 already paid for this
+   * lesson on supersede/pay: a conflict between two commands is not one-directional unless the
+   * BOUNDS make it so. Here both orderings end at the server. A withholding lowers `NET_PAYABLE`
+   * and the derived-status seal requires `APPROVED <= NET_PAYABLE`, so an approval of the full
+   * payable followed by a withholding is rejected AT COMMIT — after the outbox reported it saved.
+   */
+  it('a withholding yields to a pending APPROVAL on the same claim', () => {
+    expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
+      [approveCoalesceKey('bill-1')])).toBe(true);
+    // …and an approval on ANOTHER claim constrains nothing here
+    expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
+      [approveCoalesceKey('bill-2')])).toBe(false);
+    // the pair is closed BOTH ways — the approve direction was already true
+    expect(commercialWriteBlocked(approveCoalesceKey('bill-1'),
+      [deductionCoalesceKey('bill-1')])).toBe(true);
+  });
+
   it('a withholding yields to a claim transition on its own claim', () => {
     expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
       [billTransitionCoalesceKey('bill-1', 'certify')])).toBe(true);

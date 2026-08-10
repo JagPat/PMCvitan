@@ -18,6 +18,7 @@ import type {
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
+import type { VendorAdvanceListDto } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import type { AllocateLabourInput } from '../data/apiGateway';
 
@@ -88,6 +89,10 @@ export interface ProjectDataState {
   commercialView: CommercialView | null;
   commercialBills: CommercialBillRow[] | null;
   commercialClaims: Record<string, CommercialClaimView>;
+  /** 7B-iv (§H) — the advances read. PROJECT-OWNED like every other commercial resource: an
+   *  advance names a counterparty on THIS project, and rendering one project's positions on
+   *  another's Payments tab is the exact confusion scope teardown exists to prevent. */
+  commercialAdvances: VendorAdvanceListDto | null;
   /** §D — the cap reservation each pending write holds, keyed by its COALESCE KEY so the
    *  reservation and the key share one lifecycle. */
   commercialPendingQty: Record<string, { lineId: string; qty: string }>;
@@ -147,6 +152,7 @@ export function emptyProjectData(): ProjectDataState {
     // Task 7B-ii — the claim list and every opened claim's lifecycle are PROJECT data: a claim id
     // is project-contained, so carrying either across a switch would render another site's money.
     commercialBills: null,
+    commercialAdvances: null,
     commercialClaims: {},
     commercialPendingQty: {},
     commercialLineRegisters: {},
@@ -188,6 +194,7 @@ export interface ModuleReadState {
   // per-claim map is torn down wholesale rather than pruned: every key in it names a claim in the
   // scope being left, so nothing in it can be valid in the next one.
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
+  commercialAdvancesLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
   /** §D — the per-LINE register read's status, keyed by labour PO line id. */
   commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
@@ -208,6 +215,10 @@ export function emptyModuleReadState(): ModuleReadState {
     labourLoad: 'idle',
     commercialLoad: 'idle',
     commercialBillsLoad: 'idle',
+    // …and its LOAD STATE, which is the half that strands the surface. The tab loader fires only
+    // while this is `idle`, so a status carried over from the previous project means the new
+    // project's advances are never fetched at all — stale data AND a dead loader.
+    commercialAdvancesLoad: 'idle',
     commercialClaimLoad: {},
     commercialLineRegisterLoad: {},
   };

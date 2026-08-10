@@ -65,7 +65,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
-import type { VendorAdvanceListDto } from '@vitan/shared';
+import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
@@ -486,6 +486,10 @@ export interface AppActions {
   grantSodException: (
     billId: string, actorId: string, reason: string,
     viewed: { versionId: string; status: string; lifecycleVersion: number },
+    /** WHICH §I rule is excused. Required rather than defaulted: the two rules govern different
+     *  acts, and a caller that does not say which one it means is a caller that will eventually
+     *  mean the wrong one. */
+    rule: SodRule,
   ) => void;
   /** §F/§I writes (7B-iii-f) — the certification authority chain. */
   /** …and the claim REVISION the certifier read, from the same authoritative claim reading that
@@ -3142,15 +3146,15 @@ export const useStore = create<Store>()(
         `Reverse ${paymentId}`, 'Payment reversed.',
       );
     },
-    grantSodException: (billId, actorId, reason, viewed) => {
+    grantSodException: (billId, actorId, reason, viewed, rule) => {
       dispatchCommercial(
         { t: 'grantSodException',
-          input: { billId, actorId, reason, ...viewed },
+          input: { billId, actorId, reason, rule, ...viewed },
           idempotencyKey: newIdempotencyKey(),
           // per PERSON, not per claim: two approvers may authorise two different actors on one
           // claim concurrently and both are real. What the key does NOT do is exempt the grant
           // from the claim's transition conflict — see `commercialWriteBlocked` (R5-1).
-          coalesceKey: sodGrantCoalesceKey(billId, actorId) },
+          coalesceKey: sodGrantCoalesceKey(billId, actorId, rule) },
         `Authorise ${actorId} on ${billId}`, 'Authorisation recorded.',
       );
     },
