@@ -9,7 +9,7 @@ import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, DEDUCTION_TYPES, DEDUC
 import type { CostHeadPositionDto, MeasurementRegisterDto, SodGrantState } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
-import { decGt } from '@/lib/decimal';
+import { decGt, decSub, decIsPositive } from '@/lib/decimal';
 import styles from './responsive.module.css';
 
 /**
@@ -407,6 +407,13 @@ export function CommercialScreen() {
   const payDraftFor = (id: string) => paySc[id] ?? EMPTY_PAY_DRAFT;
   const setPayDraft = (id: string, patch: Partial<typeof EMPTY_PAY_DRAFT>): void =>
     setPayDrafts({ scope: scopeKey, byId: { ...paySc, [id]: { ...payDraftFor(id), ...patch } } });
+
+  const [advDraft, setAdvDraft] = useState<{
+    scope: string; v: { vendorId: string; amount: string; method: string; reason: string };
+  }>({ scope: '', v: { vendorId: '', amount: '', method: '', reason: '' } });
+  const advanceDraft = advDraft.scope === scopeKey
+    ? advDraft.v : { vendorId: '', amount: '', method: '', reason: '' };
+  const setAdvanceDraft = (v: typeof advanceDraft): void => setAdvDraft({ scope: scopeKey, v });
 
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
     { scope: '', byId: {} },
@@ -1464,6 +1471,49 @@ export function CommercialScreen() {
 
           {tab === 'payments' && (
             <div data-testid="commercial-payments">
+              {/* ── the ADVANCE, deliberately OUTSIDE `claimPanel` ────────────────────────────
+                  Round 2's finding, and it is a scope error rather than a missing check. An
+                  advance names a VENDOR and exists for cash paid BEFORE any claim; deriving the
+                  vendor from an open claim made the workflow unreachable in exactly the case it
+                  is for — a counterparty with no claim yet. It needs none of the claim
+                  preconditions, which is why the table has no row for it. */}
+              {mayAdvance && (() => {
+                const av = advanceDraft;
+                const ready = av.vendorId.trim() !== '' && isMoneyString(av.amount.trim())
+                  && decIsPositive(av.amount.trim()) && av.method.trim() !== '' && av.reason.trim() !== '';
+                const blocked = av.vendorId.trim() !== ''
+                  && commercialWriteBlocked(advanceCoalesceKey(av.vendorId.trim()), commercialPending);
+                return (
+                  <div style={rowCard} data-testid="commercial-advance">
+                    <div style={{ fontWeight: 600 }}>Advance to a counterparty</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      {/* A vendor ID typed, not chosen. No commercial read carries a counterparty
+                          roster, and the §F lodge form above takes the id the same way — inventing
+                          a picker here would mean inventing a read, which is a different unit. */}
+                      <input style={input} data-testid="advance-vendor" placeholder="Vendor id"
+                        value={av.vendorId}
+                        onChange={(e) => setAdvanceDraft({ ...av, vendorId: e.target.value })} />
+                      <input style={input} data-testid="advance-amount" placeholder="Amount"
+                        value={av.amount}
+                        onChange={(e) => setAdvanceDraft({ ...av, amount: e.target.value })} />
+                      <input style={input} data-testid="advance-method" placeholder="Method"
+                        value={av.method}
+                        onChange={(e) => setAdvanceDraft({ ...av, method: e.target.value })} />
+                      <input style={{ ...input, flex: 1 }} data-testid="advance-reason"
+                        placeholder="Why this counterparty is being advanced"
+                        value={av.reason}
+                        onChange={(e) => setAdvanceDraft({ ...av, reason: e.target.value })} />
+                      <Button variant="ink" data-testid="advance-pay"
+                        disabled={!ready || blocked}
+                        onClick={() => {
+                          payAdvance(av.vendorId.trim(), av.amount.trim(), av.reason.trim(), av.method.trim(), null);
+                          setAdvanceDraft({ vendorId: '', amount: '', method: '', reason: '' });
+                        }}
+                      >{blocked ? 'Working…' : 'Pay advance'}</Button>
+                    </div>
+                  </div>
+                );
+              })()}
               {claimPanel((claim) => (
                 <div style={rowCard} data-testid="commercial-payment-ledger">
                   <div style={{ fontWeight: 600 }}>Approvals and payments</div>
@@ -1495,68 +1545,107 @@ export function CommercialScreen() {
                       screen asks the same function so the two cannot disagree. */}
                   {(() => {
                     const d = payDraftFor(claim.bill.id);
-                    // The contract requires these three arrays. They are read defensively anyway:
-                    // this bundle arrives over the network, and a partial body on a MONEY surface
-                    // must degrade to "no controls offered", never to a thrown render that takes
-                    // the whole ledger off screen.
+                    // The contract requires these arrays. They are read defensively anyway: this
+                    // bundle arrives over the network, and a partial body on a MONEY surface must
+                    // degrade to "no controls offered", never to a thrown render.
                     const approvals = claim.payments.approvals ?? [];
                     // §G bound 5 — a payment draws on ONE approval, so payments hang off the
-                    // approval that authorised them rather than off the ledger. Flattened here for
-                    // the reversal picker, which needs the payments and not their authority.
+                    // approval that authorised them rather than off the ledger.
                     const paymentsMade = approvals.flatMap((a) => a.payments ?? []);
                     const withheld = claim.deductions?.deductions ?? [];
-                    const money2 = (v: string): boolean => /^\d+(\.\d{1,2})?$/u.test(v.trim()) && Number(v) > 0;
-                    // ── round 1's shared root: SHAPE is not a balance ────────────────────────────
-                    //
-                    // Four of the seven findings were one mistake made four times. Every control
-                    // asked "is this a number?" and none asked "is there this much left?", while
-                    // the bundle on screen already carried the figure. The server refuses the
-                    // overdraw, so the write-ahead outbox reported saved and then dropped it — the
-                    // write-ahead lie, which this screen guards against everywhere else.
-                    //
-                    // `within` compares in paise, because 0.1 + 0.2 is not 0.3 and money that
-                    // rounds is money that goes missing.
-                    const paise = (v: string): number => Math.round(Number(v) * 100);
-                    const within = (typed: string, remaining: string): boolean =>
-                      paise(typed) <= paise(remaining);
-                    const minus = (a: string, b: string): string =>
-                      ((paise(a) - paise(b)) / 100).toFixed(2);
-                    // the half `commercialWriteBlocked` cannot see from a key alone: payment and
-                    // reversal keys name an APPROVAL and a PAYMENT, and only this screen holds the
-                    // claim's own ids. Stated in `isClaimMoneyPending`; closed here.
-                    // ── every child row this claim owns, so the fold rule can see ALL of them ──
-                    //
-                    // Round 1, finding 1: the first draft passed payments and reversals and left
-                    // RELEASES out, so an approval queued behind a pending release carried a
-                    // revision the release was about to move. `isClaimMoneyPending` owns the rule;
-                    // this supplies the ids it cannot derive from a key.
                     const childIds = [
                       ...withheld.map((x) => x.id), ...approvals.map((a) => a.id),
                       ...paymentsMade.map((pmt) => pmt.id),
                     ];
-                    const approveBlocked =
-                      commercialPending.some((k) => isClaimMoneyPending(k, claim.bill.id, childIds));
-                    const deductBlocked = commercialWriteBlocked(deductionCoalesceKey(claim.bill.id), commercialPending);
-                    const unreleased = withheld.filter((x) => Number(x.unreleased) > 0);
-                    // §G bound 4 — `approvable` is NET_PAYABLE less what is already approved, and
-                    // it is null when no certification stands. Null is not zero: it means the claim
-                    // has nothing to approve against at all (round 1, finding 4).
+
+                    // ── ONE PRECONDITION TABLE FOR ALL SIX CONTROLS ────────────────────────────
+                    //
+                    // Two review rounds and thirteen findings said the same thing: I wrote these
+                    // gates CONTROL BY CONTROL, so every rule I discovered reached the controls I
+                    // was holding in mind and no others. Round 1 even called four of its findings
+                    // "one mistake made four times", fixed it in four places, and left the fifth
+                    // control out of the sweep it had just named.
+                    //
+                    // So the gates are computed HERE, together, keyed by control. A rule is written
+                    // once as a row; a control missing one is a visible hole in a table instead of
+                    // an absence nobody can see. Full audit: `docs/reviews/pr-316-convergence.md`.
+                    //
+                    // Money is compared with `lib/decimal.ts`'s bigint-scaled helpers, not through
+                    // `Number`: round 1's helper lost paisa on large values, and the exact tool was
+                    // one import away.
+                    const shaped = (v: string): boolean => isMoneyString(v.trim()) && decIsPositive(v.trim());
+                    const fits = (typed: string, remaining: string | null): boolean =>
+                      remaining !== null && shaped(typed) && !decGt(typed.trim(), remaining);
+
+                    // the claim copy these controls act on — the same arbitration the certification
+                    // actions use. A bundle older than the list carries a stale `lifecycleVersion`,
+                    // and an approval PINS it.
+                    const payReading = arbitrateBillCopy(
+                      (bills ?? []).find((r) => r.id === claim.bill.id) ?? null, claim.bill,
+                    );
+                    const payAuthoritative = payReading !== null && payReading.source !== 'list';
+                    // §I — the actor who certified may not approve the payment unless an
+                    // authorisation stands. Both facts are already in the bundle; this refuses the
+                    // pairing rather than modelling who COULD be authorised (7B-iii-g F6).
+                    const selfApproving = claim.certificate !== null
+                      && claim.certificate.certifiedById === claim.certifyPreflight.callerActorId
+                      && claim.certifyPreflight.grantState !== 'live';
                     const approvable = claim.payments.approvable ?? null;
-                    // Each remaining balance is DERIVED from the row the user selected, so the
-                    // control refuses exactly what the ledger on screen already proves cannot apply.
+                    const netPayable = claim.deductions?.netPayable ?? null;
+
                     const selectedApproval = approvals.find((a) => a.id === d.payApprovalId) ?? null;
-                    const payRemaining = selectedApproval === null
-                      ? '0.00' : minus(selectedApproval.amount, selectedApproval.paid);
                     const selectedPayment = paymentsMade.find((pmt) => pmt.id === d.reversePaymentId) ?? null;
-                    const reverseRemaining = selectedPayment === null
-                      ? '0.00' : minus(selectedPayment.amount, selectedPayment.reversed ?? '0.00');
                     const selectedWithholding = withheld.find((x) => x.id === d.releaseId) ?? null;
-                    const releaseRemaining = selectedWithholding?.unreleased ?? '0.00';
-                    // §H — `penalty` and `other` are JUDGEMENTS, so the server requires a reason.
-                    // The shared list is read rather than restated: a fifth type added there and
-                    // forgotten here would be a form that queues a command the server refuses.
                     const reasonRequired = (DEDUCTION_TYPES_REQUIRING_REASON as readonly string[])
                       .includes(d.deductType);
+                    // an approval whose certificate is no longer the live one cannot be paid: the
+                    // service refuses it, and the bundle already names the live certificate
+                    const liveCertificateId = claim.certificate?.id ?? null;
+                    const approvalIsLive = selectedApproval !== null
+                      && selectedApproval.certificateId === liveCertificateId;
+
+                    const foldPending =
+                      commercialPending.some((k) => isClaimMoneyPending(k, claim.bill.id, childIds));
+
+                    const gate = {
+                      approve: {
+                        blocked: foldPending,
+                        ready: shaped(d.approveAmount) && fits(d.approveAmount, approvable)
+                          && payAuthoritative && !selfApproving,
+                      },
+                      pay: {
+                        blocked: d.payApprovalId !== ''
+                          && commercialWriteBlocked(payCoalesceKey(d.payApprovalId), commercialPending),
+                        ready: approvalIsLive && shaped(d.payAmount) && d.payMethod.trim() !== ''
+                          && fits(d.payAmount, selectedApproval === null ? null
+                            : decSub(selectedApproval.amount, selectedApproval.paid)),
+                      },
+                      reverse: {
+                        blocked: d.reversePaymentId !== ''
+                          && commercialWriteBlocked(reverseCoalesceKey(d.reversePaymentId), commercialPending),
+                        ready: selectedPayment !== null && shaped(d.reverseAmount)
+                          && d.reverseReason.trim() !== ''
+                          && fits(d.reverseAmount, decSub(selectedPayment.amount, selectedPayment.reversed ?? '0')),
+                      },
+                      deduct: {
+                        blocked: commercialWriteBlocked(deductionCoalesceKey(claim.bill.id), commercialPending),
+                        // §G bound 3 — a withholding draws on what is still payable, and the bundle
+                        // carries that figure. Round 2's finding: the round-1 balance sweep named
+                        // four controls and this was the fifth.
+                        ready: d.deductType !== '' && shaped(d.deductAmount)
+                          && fits(d.deductAmount, netPayable)
+                          && !(reasonRequired && d.deductReason.trim() === ''),
+                      },
+                      release: {
+                        blocked: d.releaseId !== ''
+                          && commercialWriteBlocked(deductionReleaseCoalesceKey(d.releaseId), commercialPending),
+                        ready: selectedWithholding !== null && shaped(d.releaseAmount)
+                          && d.releaseReason.trim() !== ''
+                          && fits(d.releaseAmount, selectedWithholding.unreleased),
+                      },
+                    };
+                    const unreleased = withheld.filter((x) => decIsPositive(x.unreleased));
+
                     return (
                       <div data-testid="commercial-payer-actions" style={{ marginTop: 12 }}>
                         {mayApprove && (
@@ -1568,18 +1657,22 @@ export function CommercialScreen() {
                             />
                             <Button
                               variant="ink" data-testid={`approve-${claim.bill.id}`}
-                              disabled={!money2(d.approveAmount) || approveBlocked
-                                || approvable === null || paise(approvable) <= 0
-                                || !within(d.approveAmount, approvable)}
+                              disabled={gate.approve.blocked || !gate.approve.ready}
                               onClick={() => {
                                 approvePayment(claim.bill.id, d.approveAmount.trim(),
                                   claim.certifyPreflight.lifecycleVersion);
                                 setPayDraft(claim.bill.id, { approveAmount: '' });
                               }}
-                            >{approveBlocked ? 'Working…' : 'Approve'}</Button>
+                            >{gate.approve.blocked ? 'Working…' : 'Approve'}</Button>
                           </div>
                         )}
-                        {mayApprove && approveBlocked && (
+                        {mayApprove && selfApproving && (
+                          <div style={{ ...muted, marginTop: 6 }} data-testid="approve-self">
+                            You certified this claim, so §I does not let you also approve its
+                            payment. A pmc with standing can authorise the exception.
+                          </div>
+                        )}
+                        {mayApprove && gate.approve.blocked && (
                           <div style={{ ...muted, marginTop: 6 }} data-testid="approve-blocked">
                             This claim's money is moving. An approval records the revision it was
                             authorised against, and the change in flight moves it — approve once it
@@ -1609,9 +1702,7 @@ export function CommercialScreen() {
                               onChange={(e) => setPayDraft(claim.bill.id, { payReference: e.target.value })} />
                             <Button
                               variant="ink" data-testid={`pay-${claim.bill.id}`}
-                              disabled={d.payApprovalId === '' || !money2(d.payAmount) || !d.payMethod.trim()
-                                || commercialWriteBlocked(payCoalesceKey(d.payApprovalId), commercialPending)
-                                || !within(d.payAmount, payRemaining)}
+                              disabled={gate.pay.blocked || !gate.pay.ready}
                               onClick={() => {
                                 recordPayment(d.payApprovalId, d.payAmount.trim(), d.payMethod.trim(),
                                   d.payReference.trim() === '' ? null : d.payReference.trim());
@@ -1641,9 +1732,7 @@ export function CommercialScreen() {
                               onChange={(e) => setPayDraft(claim.bill.id, { reverseReason: e.target.value })} />
                             <Button
                               variant="ink" data-testid={`reverse-${claim.bill.id}`}
-                              disabled={d.reversePaymentId === '' || !money2(d.reverseAmount) || !d.reverseReason.trim()
-                                || commercialWriteBlocked(reverseCoalesceKey(d.reversePaymentId), commercialPending)
-                                || !within(d.reverseAmount, reverseRemaining)}
+                              disabled={gate.reverse.blocked || !gate.reverse.ready}
                               onClick={() => {
                                 reversePayment(d.reversePaymentId, d.reverseAmount.trim(), d.reverseReason.trim());
                                 setPayDraft(claim.bill.id, { reversePaymentId: '', reverseAmount: '', reverseReason: '' });
@@ -1670,43 +1759,13 @@ export function CommercialScreen() {
                               onChange={(e) => setPayDraft(claim.bill.id, { deductReason: e.target.value })} />
                             <Button
                               variant="ink" data-testid={`deduct-${claim.bill.id}`}
-                              disabled={d.deductType === '' || !money2(d.deductAmount) || deductBlocked
-                                || (reasonRequired && d.deductReason.trim() === '')}
+                              disabled={gate.deduct.blocked || !gate.deduct.ready}
                               onClick={() => {
                                 recordDeduction(claim.bill.id, d.deductType, d.deductAmount.trim(),
                                   d.deductReason.trim() === '' ? null : d.deductReason.trim());
                                 setPayDraft(claim.bill.id, { deductType: '', deductAmount: '', deductReason: '' });
                               }}
-                            >{deductBlocked ? 'Working…' : 'Withhold'}</Button>
-                          </div>
-                        )}
-
-                        {mayAdvance && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                            {/* An advance names the COUNTERPARTY, not this claim — it is money paid
-                                before any claim exists to draw it down. It is offered here because
-                                this is where the payer works, and it is keyed by vendor, so it
-                                conflicts with nothing on any claim. */}
-                            <input style={input} data-testid="advance-amount" placeholder="Advance amount"
-                              value={d.advanceAmount}
-                              onChange={(e) => setPayDraft(claim.bill.id, { advanceAmount: e.target.value })} />
-                            <input style={input} data-testid="advance-method" placeholder="Method"
-                              value={d.advanceMethod}
-                              onChange={(e) => setPayDraft(claim.bill.id, { advanceMethod: e.target.value })} />
-                            <input style={{ ...input, flex: 1 }} data-testid="advance-reason"
-                              placeholder="Why this counterparty is being advanced"
-                              value={d.advanceReason}
-                              onChange={(e) => setPayDraft(claim.bill.id, { advanceReason: e.target.value })} />
-                            <Button
-                              variant="ink" data-testid={`advance-${claim.bill.id}`}
-                              disabled={!money2(d.advanceAmount) || !d.advanceMethod.trim() || !d.advanceReason.trim()
-                                || commercialWriteBlocked(advanceCoalesceKey(claim.bill.vendorId), commercialPending)}
-                              onClick={() => {
-                                payAdvance(claim.bill.vendorId, d.advanceAmount.trim(), d.advanceReason.trim(),
-                                  d.advanceMethod.trim(), null);
-                                setPayDraft(claim.bill.id, { advanceAmount: '', advanceMethod: '', advanceReason: '' });
-                              }}
-                            >Pay advance</Button>
+                            >{gate.deduct.blocked ? 'Working…' : 'Withhold'}</Button>
                           </div>
                         )}
 
@@ -1730,9 +1789,7 @@ export function CommercialScreen() {
                               onChange={(e) => setPayDraft(claim.bill.id, { releaseReason: e.target.value })} />
                             <Button
                               variant="ink" data-testid={`release-${claim.bill.id}`}
-                              disabled={d.releaseId === '' || !money2(d.releaseAmount) || !d.releaseReason.trim()
-                                || commercialWriteBlocked(deductionReleaseCoalesceKey(d.releaseId), commercialPending)
-                                || !within(d.releaseAmount, releaseRemaining)}
+                              disabled={gate.release.blocked || !gate.release.ready}
                               onClick={() => {
                                 releaseDeduction(d.releaseId, d.releaseAmount.trim(), d.releaseReason.trim());
                                 setPayDraft(claim.bill.id, { releaseId: '', releaseAmount: '', releaseReason: '' });

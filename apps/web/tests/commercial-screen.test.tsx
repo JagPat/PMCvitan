@@ -1553,13 +1553,27 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
 
   const openPayments = (o: {
     pending?: string[]; role?: string; approvable?: string | null;
+    certificateId?: string; staleBundle?: boolean; certifiedByCaller?: boolean;
+    grantState?: string;
   } = {}) => {
     const c = claim();
     const base: CommercialClaimView = {
       ...c,
       bill: { ...c.bill, status: 'certified', statusChangedAt: at(1) },
+      // a WELL-FORMED payer fixture: a live certificate, a net payable to withhold against, and an
+      // approval that names that certificate. The first draft omitted all three and the new gates
+      // correctly refused every control — the fixture catching up with the contract.
+      certificate: {
+        ...(c.certificate ?? {}), id: o.certificateId ?? 'cert-1',
+        certifiedById: o.certifiedByCaller === true ? 'u-self' : 'u-other',
+      } as never,
+      certifyPreflight: {
+        ...c.certifyPreflight, callerActorId: 'u-self',
+        grantState: (o.grantState ?? 'none') as never,
+      },
       deductions: {
         ...c.deductions,
+        netPayable: '40.00',
         deductions: [
           { ...(c.deductions.deductions[0] ?? {}), id: 'ded-1', type: 'retention',
             amount: '10.00', unreleased: '10.00', releases: [] },
@@ -1574,7 +1588,7 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
         // certification stands, which is not the same as zero.
         approvable: o.approvable === undefined ? '30.00' : o.approvable,
         approvals: [{
-          id: 'appr-1', amount: '50.00', paid: '20.00',
+          id: 'appr-1', certificateId: 'cert-1', amount: '50.00', paid: '20.00',
           payments: [{ id: 'pay-1', amount: '20.00', reversed: '5.00', method: 'neft' }],
         }],
       } as never,
@@ -1592,6 +1606,14 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
       commercialClaimLoad: { 'bill-1': 'ready' },
       commercialPending: o.pending ?? [],
     });
+    if (o.staleBundle === true) {
+      // Round 2 — a LIST copy strictly NEWER than the bundle's means the claim the payer is
+      // reading has already moved on the server. An approval pins the revision it read, so acting
+      // from the older copy is the write-ahead lie: saved locally, refused on arrival.
+      useStore.setState({
+        commercialBills: [{ ...base.bill, status: 'approved-for-payment', statusChangedAt: at(9) }],
+      });
+    }
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
     fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
@@ -1702,6 +1724,71 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
       'a penalty is a judgement, and a judgement states itself').toBe(true);
     fireEvent.change(r.getByTestId('deduct-reason'), { target: { value: 'late by three weeks' } });
     expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * Round 2 — the six findings the precondition table exists to make impossible. Each is a rule
+   * that already applied to some other control and had not reached this one; the table is now the
+   * one place a rule is written. Audit: `docs/reviews/pr-316-convergence.md`.
+   */
+  it('refuses a withholding larger than what is still payable', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    // netPayable is 40.00 — §G bound 3 draws on what is still payable
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '40.01' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '40.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('will not pay from an authorisation whose certificate is no longer live', () => {
+    const r = openPayments({ certificateId: 'cert-2' }); // the approval names cert-1
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled,
+      'a superseded authority is not authority').toBe(true);
+  });
+
+  it('will not approve from a claim copy the list has already moved past', () => {
+    const r = openPayments({ staleBundle: true });
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled,
+      'an approval PINS the revision, and a stale bundle carries a stale one').toBe(true);
+  });
+
+  /** §I — the actor who certified may not approve, unless an authorisation stands. Both facts are
+   *  already in the bundle; this refuses the pairing rather than modelling who COULD be authorised. */
+  it('will not let the certifier approve their own claim without an authorisation', () => {
+    const r = openPayments({ certifiedByCaller: true });
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('approve-self').textContent).toMatch(/you certified this claim/iu);
+    r.unmount();
+    // …and a live §I authorisation restores it, because the exception is MODELLED, not banned
+    const r2 = openPayments({ certifiedByCaller: true, grantState: 'live' });
+    fireEvent.change(r2.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((r2.getByTestId('approve-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /** An advance names a VENDOR and exists for cash paid BEFORE any claim. Deriving the vendor from
+   *  an open claim made the workflow unreachable in exactly the case it is for. */
+  it('offers an advance with no claim selected at all', () => {
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc',
+      commercialView: { ...bundle(), vendors: [{ id: 'v-1', name: 'Asha Builders' }] } as never,
+      commercialLoad: 'ready', commercialBills: [], commercialBillsLoad: 'ready',
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-payments'));
+    expect(r.getByTestId('commercial-advance'), 'an advance needs no claim').toBeTruthy();
+    fireEvent.change(r.getByTestId('advance-vendor'), { target: { value: 'v-1' } });
+    fireEvent.change(r.getByTestId('advance-amount'), { target: { value: '100.00' } });
+    fireEvent.change(r.getByTestId('advance-method'), { target: { value: 'neft' } });
+    fireEvent.change(r.getByTestId('advance-reason'), { target: { value: 'mobilisation' } });
+    expect((r.getByTestId('advance-pay') as HTMLButtonElement).disabled).toBe(false);
   });
 
   /** Round 1, finding 1 — the release third of the child-keyed division, which the first draft

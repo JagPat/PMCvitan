@@ -143,3 +143,47 @@ Worth recording separately, because they are not new ideas being learned:
   coalesce key needs a settling read named in the same change.*
 
 **Gates:** `pnpm check` EXIT 0 — web 721/721, API 781/781.
+
+---
+
+## Correction round 2 — six findings, and the audit the protocol owes at two heads
+
+Full audit: **`docs/reviews/pr-316-convergence.md`**. Summarised here, since a reviewer should not
+have to open a second file to know whether the fix is structural.
+
+| # | Finding | Fix |
+|---|---|---|
+| R2-1 (P1) | a withholding was gated on shape only — §G bound 3 draws on what is still payable, and the bundle carries `netPayable` | the precondition table's `deduct` row compares against `netPayable` |
+| R2-2 (P1) | a payment could be raised from an approval whose certificate had been superseded — a dead authority is not authority | `approvalIsLive` compares the selected approval's `certificateId` with the claim's live certificate |
+| R2-3 (P1) | round 1's paise helper converted through `Number`, losing precision on large values | `lib/decimal.ts`'s bigint-scaled `decGt`/`decSub` — the module that already solved this |
+| R2-4 (P1) | approve was offered from a claim copy the list had already moved past; an approval PINS the revision it read | `arbitrateBillCopy` must not report `source: 'list'` before approve is offered |
+| R2-5 (P2) | the actor who certified could approve their own claim | refuses the pairing of `certifyPreflight.callerActorId` with the certificate's `certifiedById` unless a **live** grant stands — the §I exception is modelled, not banned |
+| R2-6 (P2) | the advance control sat inside `claimPanel`, so a counterparty with **no claim yet** — the case an advance is for — could not be paid | lifted out of the claim panel into the tab body, with a project-scoped draft |
+
+### The root, and what changed because of it
+
+Thirteen findings across two heads. Nine share one root: **I applied each rule to the controls I was
+thinking about, not to the set.** Six controls × ~five preconditions is thirty rule-applications,
+written control by control — so each rule reached the controls in front of me and no others. Four
+rules provably arrived twice, and **two of those were rules from the previous unit's own review**
+(7B-iii-g's F2 stuck-key rule, and its `arbitrateBillCopy` freshness gate).
+
+Round 1 named this itself — its packet called F4–F7 "one mistake made four times" — and then left
+the fifth control out of the sweep it had just named. A sentence is not a mechanism.
+
+**The mechanism:** one precondition table computed in a single block keyed by control, so a rule is
+a **row** rather than a per-control edit. A control missing a rule is now a visible hole in a table
+instead of an absence nobody can see. Checkable form for the next unit: *when a rule is discovered,
+apply it by editing the table row it belongs to — never by editing the control that revealed it.*
+
+### One finding is a scope error, not a missing check
+
+R2-6 is different in kind and is recorded as such: the advance is not a claim operation. It names a
+vendor and settles cash paid before any claim exists. The precondition table made it obvious,
+because the advance row needs **none** of the claim preconditions — which is the table doing the
+work it was added to do. Its vendor is typed rather than chosen: no commercial read carries a
+counterparty roster, and the §F lodge form on this same screen takes the id the same way. Inventing
+a picker would mean inventing a read, which is a different unit.
+
+**Gates:** `pnpm check` EXIT 0 — web 726/726, API 781/781; `commercial-screen` 86/86.
+**Review unit:** 9 files / 1,257 changed lines — within both budgets, still one unit.
