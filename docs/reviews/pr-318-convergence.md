@@ -1,16 +1,30 @@
 # PR #318 — convergence audit (Phase-5 closing packet)
 
-Four finding-bearing heads, five findings on a **docs-only** PR, plus one self-caught. Written
-because they are one root rather than separate incidents, and because the root is worth more than
-any of the individual fixes.
+**Eight finding-bearing heads, sixteen findings, on a closing packet.** Written because they are a
+small number of roots rather than sixteen incidents, and because the roots are worth more than any
+individual fix. The complete ledger, so the next unit inherits cause → remedy → proof rather than a
+summary:
 
-| # | Head | Finding | Caught by |
-|---|---|---|---|
-| 1 | `6961c60` | `STATUS.md` declared `open_pr: none` while PR #318 was open | the `automation` tripwire |
-| 2 | `2473a71` | the packet cited two parked-finding notes that existed only on their park branches | `rg --files docs/reviews` |
-| 3 | `01d16ce` | the packet and the 7B-vi note claimed an advance READ route that had been removed | `rg "@(Get\|Post)\('commercial/advances"` |
-| 4 | `c63504d` | §M and §5 STILL claimed the advance read, after §H was corrected | reading the packet whole |
-| 5 | `c63504d` | §I called the server side complete; the payment-rule grant's certifier guard is missing | reading `commercial.sod.grant` |
+| # | Head | Finding | Caught by | Remedy |
+|---|---|---|---|---|
+| 1 | `6961c60` | `STATUS.md` said `open_pr: none` while #318 was open | `automation` tripwire | `open_pr: 318` next commit |
+| 2 | `2473a71` | packet cited parked notes existing only on their branches | `rg --files docs/reviews` | both ledgers landed here |
+| 3 | `01d16ce` | packet + 7B-vi note claimed an advance READ route that was removed | `rg "@(Get\|Post)\('commercial/advances"` | §H corrected |
+| 4 | `c63504d` | §M and §5 STILL claimed it, after §H was fixed | reading the packet whole | grep the CLAIM, fix all three |
+| 5 | `c63504d` | §I called the server side complete; the certifier-at-issue guard is missing | reading `commercial.sod.grant` | recorded as open, owned by 7B-v |
+| — | `01d16ce` | a wrapped "this branch" survived a single-line grep | self-caught, multiline search | whole-text check |
+| 6 | `aa2a9eb` | the 7B-v probe was VACUOUS — `slice(-1)` on a missing literal | reading the probe | locate explicitly; mutation-tested |
+| 7 | `aa2a9eb` | deferred probes were not in the phase plan that drives the units | `rg` over `docs/superpowers/plans` | plan rows added |
+| 8 | `aa2a9eb` | packet header claimed §I fully server-enforced | its own §I contradicted it | header corrected |
+| 9 | `aa2a9eb` | STATUS 7B-vi row still said the read ships | grep the claim | corrected |
+| 10 | `aa2a9eb` | P1: merge record would resolve to `task:7`, not 7B-v | reading `assessRunnerState` | **see Round 5** |
+| 11 | `df55e6c` | grant-body window 4,000 vs a 7,247-char body | measured it | extent DERIVED; mutation-tested |
+| 12 | `df55e6c` | advance route matched one quoting style | reading the regex | matched by shape |
+| 13 | `df55e6c` | `import.meta.dirname` needs 20.11; package says `>=20` | reading `engines` | `fileURLToPath` |
+| 14 | `df55e6c` | deferral named the EARLIER of two owners | reading the trailer | names 7B-vi, the later stop |
+| 15 | `f460cab` | probes grep for the SHAPE OF A FIX and cannot adjudicate it | three rounds of evidence | **probes removed — Round 4** |
+| 16 | `f460cab` | adding probes made the diff non-docs-only | reading the deferral rule | **probes removed — Round 4** |
+| 17 | `0906e42` | a deferral head may not edit `docs/STATUS.md` | `scripts/review-efficiency.mjs` | **STATUS removed — Round 5** |
 
 ## The root: a claim about the repository is a fact, and facts are checked, not recalled
 
@@ -138,7 +152,39 @@ Each probe was mutation-tested rather than merely run green: re-adding `@Get('co
 re-introducing a wrapped "this branch", and restoring the false §M claim each turn exactly one probe
 red, and the tree restores green. A probe that cannot fail is the same defect as prose.
 
-## Round 5 — why `docs/STATUS.md` is NOT in this PR
+## Round 6 — the closing packet gets a clean review head, and STATUS comes back
+
+Round 5 removed STATUS so the deferral could be verified. Codex's next P1 showed what that cost:
+with STATUS left at `in_progress` and a stale `open_pr`, `buildPostMergeContinuation` clears the
+stale PR and `assessRunnerState` returns `task:7` — the parent task — before it can reach
+`next_task`. **A scheduled follow-up is not an executable hand-off for a loop meant to run without
+anyone standing by.** That is correct, and it is the reason the review-mechanism-vs-bookkeeping split
+could not simply be lived with.
+
+Inside one PR the constraints have no common solution, and each half was verified rather than
+assumed:
+
+| Option | Fails |
+|---|---|
+| STATUS in, deferral in | the gate refuses: a deferral head's phase is unverifiable if it edits STATUS |
+| STATUS out, deferral in | the hand-off resolves to `task:7`, not 7B-v (this round's P1) |
+| STATUS in, deferral out | the deferral is mandatory at this head count |
+
+The deferral is mandatory only because of accumulated **review history** — not because anything is
+unresolved. Every one of the seventeen findings above is fixed, and the ledger records each with its
+remedy. So the unit takes the orchestrator's own repeated advice and gets a clean review head: the
+same settled content, reopened, carrying STATUS.
+
+The hand-off state is verified, not hoped for: `task_state: merged` · `open_pr: none` ·
+`next_task: phase-5-task-7b-v` passes `test:automation` 200/200 **and** `assessRunnerState` resolves
+it to `next_task:phase-5-task-7b-v`. It costs one drift-shepherd message while the PR is open
+(`open_pr: none` against a live PR) — a message, not a gate, and true the moment it merges.
+
+**Nothing is escaped by the reopen and that is the test worth applying to it:** no finding is
+unaddressed, no probe is dropped that was ever load-bearing, and this audit travels with the content
+as the complete record of all seventeen.
+
+## Round 5 — why `docs/STATUS.md` was removed, and what it cost
 
 The gate refused the deferral for a reason worth recording rather than working around: it runs from
 the trusted default branch and reads `main`'s STATUS, so **a PR that edits STATUS has no verifiable
@@ -165,8 +211,10 @@ cannot certify itself.
 
 ## Verification
 
-The verification for a docs claim is the command that establishes the fact; each is recorded above
-with its result, and the five that matter are now executable. `automation` 205/205 (200 + 5).
+The verification for a docs claim is the command that establishes the fact, and each is recorded
+above with its result. **No probe ships in this PR** — the two open questions are reproduce-first
+acceptance criteria owned by 7B-v and 7B-vi, to be written RED against live PostgreSQL by the units
+that can exercise them. `test:automation` 200/200, which is the suite unchanged.
 
 **A fourth instance, self-caught, worth recording because of HOW it was nearly missed.** Fixing
 finding 2 I corrected each note's opening "This branch is `<sha>`", ran `grep "this branch"` over
