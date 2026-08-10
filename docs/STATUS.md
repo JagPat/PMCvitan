@@ -16,7 +16,7 @@ task: 7
 task_state: in_progress
 work_item: phase-5-task-7b-v
 reviewed_merge: 64ce353
-open_pr: PRNUM
+open_pr: 321
 next_task: phase-5-task-7b-vi
 blocking_directive: none
 updated: 2026-08-10
