@@ -63,6 +63,26 @@ scope, and the table made it obvious because the advance row needs none of the c
 **Checkable form, for the next unit:** *when a rule is discovered, apply it by editing the table row
 it belongs to — never by editing the control that revealed it.*
 
+### The mechanism caught the third recurrence before a reviewer did
+
+Round 2's head was pushed, CI went green, and the gate then failed on an unrelated CI-settle race.
+While that was being diagnosed I walked the table's rows against the shared contract — which is the
+checkable form above, executed — and the same root surfaced a **third** time:
+
+> `advance-recovery` is the one withholding type with **two** ceilings. Every other type is bounded
+> by this claim's payable; a recovery is bounded by that **and** by a VENDOR-scoped pool, what the
+> counterparty still owes back across every claim. R2-1 fixed the `deduct` row against `netPayable`
+> and stopped there — the row was correct for three of the four types.
+
+The bundle already carried `advance.recoverable`, and its contract comment states the exact purpose
+the gate was failing to serve: *"so an operator can see the ceiling BEFORE a recovery is refused by
+it rather than only in the refusal."*
+
+This is the audit's own claim being tested rather than asserted. The first two arrivals were found
+by a reviewer; the third was found by the mechanism, in the same session it was installed, on the
+one row where a rule that reads as uniform is not. `bothOf` is null-propagating on purpose: an
+undeterminable ceiling refuses rather than falling back to the other one.
+
 ---
 
 ## What this head does NOT do

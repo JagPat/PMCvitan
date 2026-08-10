@@ -1574,6 +1574,9 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
       deductions: {
         ...c.deductions,
         netPayable: '40.00',
+        // §H — an `advance-recovery` is bounded by a SECOND, vendor-scoped pool. 25 is deliberately
+        // LOWER than the 40 payable, so the two ceilings are distinguishable.
+        advance: { vendorId: 'v-1', advanced: '100.00', recovered: '75.00', recoverable: '25.00' },
         deductions: [
           { ...(c.deductions.deductions[0] ?? {}), id: 'ded-1', type: 'retention',
             amount: '10.00', unreleased: '10.00', releases: [] },
@@ -1739,6 +1742,29 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
     expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '40.00' } });
     expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * The same root, arriving a THIRD time — found by walking the precondition table's rows against
+   * the contract rather than by a reviewer, which is the mechanism this correction installed doing
+   * its job. Every other withholding is bounded by this claim's payable; `advance-recovery` is
+   * bounded by that AND by what the counterparty still owes back across every claim. The bundle
+   * carries `advance.recoverable` for precisely this purpose, per its own contract comment.
+   */
+  it('bounds an advance-recovery by the counterparty pool as well as the payable', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'advance-recovery' } });
+    // 30 is inside the 40 payable but OUTSIDE the 25 still recoverable
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'a recovery takes back money that actually left').toBe(true);
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '25.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(false);
+    // …and the claim-scoped ceiling still applies to the OTHER types, unchanged
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '40.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'a retention is bounded by the payable, not by the advance pool').toBe(false);
   });
 
   it('will not pay from an authorisation whose certificate is no longer live', () => {

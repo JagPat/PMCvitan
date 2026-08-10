@@ -1592,6 +1592,20 @@ export function CommercialScreen() {
                       && claim.certifyPreflight.grantState !== 'live';
                     const approvable = claim.payments.approvable ?? null;
                     const netPayable = claim.deductions?.netPayable ?? null;
+                    // A withholding has ONE ceiling — except `advance-recovery`, which has two.
+                    // It draws on this claim's payable AND on a VENDOR-scoped pool: what the
+                    // counterparty still owes back across every claim. The bundle carries that
+                    // figure, and its own contract says why — "so an operator can see the ceiling
+                    // BEFORE a recovery is refused by it rather than only in the refusal".
+                    //
+                    // Caught by walking this table's rows against the contract rather than by a
+                    // reviewer, which is the mechanism working: it is the SAME root as round 1's
+                    // F4–F7 and round 2's R2-1, arriving a third time on the one type whose bound
+                    // is not bill-scoped. `bothOf` is null-propagating on purpose — an undeterminable
+                    // ceiling must refuse, never default to the other one.
+                    const recoverable = claim.deductions?.advance?.recoverable ?? null;
+                    const bothOf = (a: string | null, b: string | null): string | null =>
+                      a === null || b === null ? null : (decGt(a, b) ? b : a);
 
                     const selectedApproval = approvals.find((a) => a.id === d.payApprovalId) ?? null;
                     const selectedPayment = paymentsMade.find((pmt) => pmt.id === d.reversePaymentId) ?? null;
@@ -1607,6 +1621,20 @@ export function CommercialScreen() {
                     const foldPending =
                       commercialPending.some((k) => isClaimMoneyPending(k, claim.bill.id, childIds));
 
+                    // Which rules apply where. THREE are universal — shape, balance, and the
+                    // pending-conflict on the resource each command constrains — and every row
+                    // below carries all three. TWO are deliberately narrow, and the blanks say so
+                    // here rather than reading as a fourth missed sweep:
+                    //
+                    //   `payAuthoritative` — approve ONLY. Approve pins `lifecycleVersion` and the
+                    //     server refuses a stale pin, so detecting staleness prevents a refusal the
+                    //     client can foresee. The other four pin nothing; the server re-derives
+                    //     their bound from live truth. Applying it to them would ALSO be false
+                    //     comfort: a deduction can move `NET_PAYABLE` without moving the §F status
+                    //     this arbitration reads, so it is not a balance-freshness guarantee and
+                    //     must not be dressed as one.
+                    //   `selfApproving` — approve ONLY. §I governs who may approve; it says nothing
+                    //     about recording a withholding or settling an approved payment.
                     const gate = {
                       approve: {
                         blocked: foldPending,
@@ -1633,7 +1661,8 @@ export function CommercialScreen() {
                         // carries that figure. Round 2's finding: the round-1 balance sweep named
                         // four controls and this was the fifth.
                         ready: d.deductType !== '' && shaped(d.deductAmount)
-                          && fits(d.deductAmount, netPayable)
+                          && fits(d.deductAmount, d.deductType === 'advance-recovery'
+                            ? bothOf(netPayable, recoverable) : netPayable)
                           && !(reasonRequired && d.deductReason.trim() === ''),
                       },
                       release: {

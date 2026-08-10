@@ -187,3 +187,67 @@ a picker would mean inventing a read, which is a different unit.
 
 **Gates:** `pnpm check` EXIT 0 — web 726/726, API 781/781; `commercial-screen` 86/86.
 **Review unit:** 9 files / 1,257 changed lines — within both budgets, still one unit.
+
+---
+
+## Round 2b — the mechanism's first catch, and a CI-settle race that was my own doing
+
+Two things happened after the round-2 head went up, and both belong in the record.
+
+### The precondition table caught the root's THIRD arrival
+
+Walking the table's rows against the shared contract — the checkable form, executed rather than
+promised — surfaced the same root a third time:
+
+| Rule | Applied first at | Missed at | Found by |
+|---|---|---|---|
+| compare the typed amount against **every** ceiling the bound has | `deduct` vs `netPayable` (round 2) | **`advance-recovery`'s second, vendor-scoped ceiling** | the mechanism, same session |
+
+`advance-recovery` is the one withholding type with **two** bounds: this claim's payable *and* the
+counterparty pool (`advanced − recovered`) folded across every claim. R2-1 fixed the row against
+`netPayable` and stopped, which was correct for three of the four types. The bundle already carried
+`advance.recoverable`, whose own contract comment states the purpose the gate was failing to serve —
+*"so an operator can see the ceiling BEFORE a recovery is refused by it rather than only in the
+refusal."*
+
+Reproduce-first: a 30.00 recovery against a 40.00 payable and a 25.00 pool was **offered** before the
+fix (RED), refused after; 25.00 is accepted; and a `retention` of 40.00 stays accepted, so the
+claim-scoped ceiling is not over-applied to the other three types. `bothOf` is null-propagating on
+purpose — an undeterminable ceiling refuses rather than falling back to the other one.
+
+This is the audit's claim being **tested**, not asserted: the first two arrivals were found by a
+reviewer, the third by the mechanism installed to find them.
+
+### The gate failure on `d8753b1` was mine, and it was not a finding
+
+`codex-current-head` failed with `ci: Checks did not settle: api`, Codex attempt **0/2** — the review
+never ran. Cause, from the run metadata rather than inference:
+
+- I PATCHed the PR body at **03:46:42**, 57 seconds after pushing.
+- That `pull_request: edited` event spawned a second CI run at **03:46:45**, which correctly skipped
+  every job (same SHA already covered) and reported `quality-gate: success` at **03:47:29**.
+- The orchestrator fired on that run, found `api` still `in_progress` in the real run, and failed
+  closed.
+
+`api` takes **11–13 minutes** on this repository (four recent successful runs measured). The gate was
+evaluated about two minutes into it. Every other job had already passed.
+
+`ci: Checks did not settle` is deliberately **not** in `isRetryableTerminalReviewFailure` — only Codex
+timeouts and evidence-changed are — so a recovery dispatch would be refused by design, and the gate's
+own instruction is that a new head restarts the loop. This head is that new head, and it carries real
+content rather than an empty commit: the `advance-recovery` ceiling above and the deliberate-blank
+documentation below.
+
+**Operating rule this adds:** the standing instruction not to push doc-only edits mid-promotion
+extends to **PR body edits**, which trigger the same workflow. Do not touch the PR until CI settles.
+
+### The table now says which blanks are deliberate
+
+`payAuthoritative` and `selfApproving` apply to `approve` alone, and the table says so rather than
+leaving two empty cells that read as a fourth missed sweep. Approve pins `lifecycleVersion` and the
+server refuses a stale pin (`commercial-payment.service.ts` `assertReviewedRevision`); the other four
+pin nothing and the server re-derives their bound from live truth. Applying the freshness gate to
+them would also be false comfort — a deduction can move `NET_PAYABLE` without moving the §F status
+that arbitration reads, so it is not a balance-freshness guarantee and must not be dressed as one.
+
+**Gates:** `pnpm check` EXIT 0 — web 727/727, API 781/781; `commercial-screen` 87/87.
