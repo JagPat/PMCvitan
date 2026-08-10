@@ -8,6 +8,8 @@ not three incidents, and because the root is worth more than any of the individu
 | 1 | `6961c60` | `STATUS.md` declared `open_pr: none` while PR #318 was open | the `automation` tripwire |
 | 2 | `2473a71` | the packet cited two parked-finding notes that existed only on their park branches | `rg --files docs/reviews` |
 | 3 | `01d16ce` | the packet and the 7B-vi note claimed an advance READ route that had been removed | `rg "@(Get\|Post)\('commercial/advances"` |
+| 4 | `c63504d` | §M and §5 STILL claimed the advance read, after §H was corrected | reading the packet whole |
+| 5 | `c63504d` | §I called the server side complete; the payment-rule grant's certifier guard is missing | reading `commercial.sod.grant` |
 
 ## The root: a claim about the repository is a fact, and facts are checked, not recalled
 
@@ -43,6 +45,26 @@ This is the same shape as the lesson PR #317 paid five rounds for, one level up.
 *a gate may only compare the quantity the server compares*. Here it is *a record may only claim what
 the repository actually contains*. Both are the same discipline: **check the world, do not model it
 from memory.**
+
+## Round 3 — fixing the instance, not the class, on the document about not doing that
+
+Findings 4 and 5 arrived because round 2's fix corrected **§H, where the finding pointed**, and left
+§M and §5 making the same advance-read claim in their own words. Same document, same paragraph-level
+claim, three places — and I searched none of them.
+
+That is `pr-317-convergence.md`'s root — *fix the instance not the class* — recurring inside the
+audit written about a neighbouring root. The remedy is mechanical and was available: when a finding
+says a claim is false, **grep the claim, not the line**. The corrected pass did exactly that
+(`rg -nE "advances read|advance ledger|commercial/advances|advance rows"`) and found all three at
+once.
+
+Finding 5 is worth separating out because it is not a wording defect. `commercial.sod.grant` checks
+that the excused actor holds standing for the act the rule names, but not that — for
+`certifier-may-not-approve` — they ARE the certifier, while `approve()` consumes such a grant only
+when `certificate.certifiedById === actor`. So a pmc can record a payment-rule grant naming any
+approver and it is never spendable. **That is a live server-side gap**, and the packet had called
+the §I server side delivered. 7B-v owns it, and the hand-off now says so — the browser picker
+narrowing to the certifier is the same rule's other half, not the whole of it.
 
 ## Fixes
 

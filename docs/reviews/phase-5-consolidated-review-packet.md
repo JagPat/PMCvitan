@@ -95,14 +95,18 @@ Two rules, deliberately distinct: `evidence-recorder-may-not-certify` and
 attributable, records the claim state its approver reviewed, and is refused if the claim has moved
 since. A self-grant is impossible.
 
-**Both rules are enforced and both grants are issuable through the API. Only ONE is issuable in the
-browser.** The §M grant form issues `evidence-recorder-may-not-certify`; the payment-rule form is
-parked as 7B-v after five findings, the decisive one being that `approve()` consumes a grant only
-when `certificate.certifiedById === actor`, so the picker must narrow to the certifier and the
-COMMAND must guard it — a server change. The payments tab reports the payment-rule refusal
-accurately and names the API as its remedy. An accurate refusal with no in-app remedy is a gap; a
-form that offers the authority and writes a grant nobody can spend is a defect. Phase 5 takes the
-gap, and 7B-v closes it.
+**Both rules are ENFORCED where they are spent. What is parked is issuing a payment-rule grant
+that is guaranteed spendable — on the server as well as in the browser.** `commercial.sod.grant`
+checks that the excused actor holds standing for the act the rule names, but not that, for
+`certifier-may-not-approve`, they ARE the certifier. `approve()` consumes such a grant only when
+`certificate.certifiedById === actor`, so a grant naming anyone else is recorded, displayed, and
+never spendable. **That guard is 7B-v's, and it is a SERVER change** — the browser picker narrowing
+to the certifier is the same rule's other half, not the whole of it.
+
+The §M grant form issues `evidence-recorder-may-not-certify` only. The payments tab reports the
+payment-rule refusal accurately and names the API as its remedy. An accurate refusal with no in-app
+remedy is a gap; a form that offers the authority and writes a grant nobody can spend is a defect.
+Phase 5 takes the gap, and 7B-v closes both halves.
 
 ### §J — the cash forecast as the eighth rebuildable projection
 Projected rather than folded on call, because the Inbox, dashboard and portfolio ask it for every
@@ -117,8 +121,11 @@ refuses while any live line is unattributed.
 Seven tabs over six tasks of facts, with the two-key outbox lifecycle (a fresh `idempotencyKey` per
 deliberate action, a deterministic `coalesceKey` while pending), latest-request ownership, scope
 teardown, flush reconcile and hydration normalisation. Every key settles on a read that carries its
-effect — and where no such read existed (the advance), the read was added rather than the key made
-cleverer.
+effect — and where no such read existed (the advance), the answer was to add the read rather than
+make the key cleverer. **That read is PARKED with 7B-vi, not delivered**: `GET commercial/advances`
+and `listAdvances` were removed with the control in the 7B-iv split, so the principle stands and
+its one instance is still owed. 7B-vi lands the read before the control, for exactly the reason the
+principle exists.
 
 ## 3. §25 pilot acceptance criteria → evidence
 
@@ -174,10 +181,11 @@ because it does not).
 Fidelity is the root that changed this phase's shape. Three of its findings could not be fixed on
 the client at all — the quantity the gate needed was not in the contract — and all three landed on
 exactly two controls. That drew the 7B-iii-d / 7B-iv seam: **the seam is where the client's
-information runs out.** 7B-iv answers it contract-first with `VendorBillDto.lifecycleVersion`, an
-`approvePreflight` carrying the payment rule's grant state, and the vendor advances read — after
-which each gate compares exactly what the server compares, and the freshness guard rounds 3 and 4
-argued over becomes complete rather than partial.
+information runs out.** 7B-iv answers it contract-first with `VendorBillDto.lifecycleVersion` and an
+`approvePreflight` carrying the payment rule's grant state — after which the approve gate compares
+exactly what the server compares, and the freshness guard rounds 3 and 4 argued over becomes
+complete rather than partial. The third fact, the vendor advances read, was built and then **parked
+with 7B-vi**; the seam it belongs to is that unit's, not this one's.
 
 The rule the phase leaves behind: *a gate may only compare the quantity the server compares; if that
 quantity is not in the contract, the contract is the fix, never a nearer-to-hand stand-in.*

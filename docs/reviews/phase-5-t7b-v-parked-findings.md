@@ -38,8 +38,12 @@ could actually be consumed:
 3. the actor IS the certifier the rule blocks (`claim.certificate.certifiedById`),
 4. the pins still match the server's current reading (status **and** revision).
 
-F3 additionally requires a **server guard** — the picker narrowing is not the authority, and a
-command that accepts an unspendable grant is the defect whether or not a form offers it. That server
+F3 additionally requires a **server guard**, and PR #318's review confirmed it is still open on
+`main`: `commercial.sod.grant` checks the excused actor's STANDING for the act, but not that — for
+`certifier-may-not-approve` — they are the certifier, while `approve()` consumes the grant only when
+`certificate.certifiedById === actor`. A pmc can therefore record a payment-rule grant naming any
+approver and it is never spendable. The picker narrowing is not the authority, and a command that
+accepts an unspendable grant is the defect whether or not a form offers it. That server
 change is why this could not stay inside PR #317, which is read + UI over already-cleared facts. It
 is the 7B-iii-h / 7B-iii-g seam exactly.
 
