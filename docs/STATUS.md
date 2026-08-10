@@ -17,7 +17,7 @@ task_state: in_progress
 work_item: phase-5-task-7b-iv
 reviewed_merge: 949fa6a
 open_pr: 317
-next_task: phase-6-external-collaboration
+next_task: none
 blocking_directive: none
 updated: 2026-08-10
 ```
@@ -197,7 +197,21 @@ item. Queue items are already-authorized upkeep of delivered scope (never
 new product scope), and each rides the same draft → CI → exact-head Codex
 gate as feature work. Work them top-down, one focused PR per item:
 
-1. `lifecycle-rule-unit-2` — the five-head restructure rule currently
+1. `live-pilot-validation` — **OWNER DIRECTIVE (2026-08-10): the app is to be
+   exercised LIVE before any further phase work.** Phase 6 (external
+   collaboration — supplier/contractor portals, guest-company promotion) is
+   explicitly DEFERRED to a later version and is not `next_task`; the canonical
+   phase order in the design spec is unchanged, but the ORDER OF WORK is the
+   owner's call and this is it. Standing item while the pilot runs: exercise the
+   delivered Materials, Labour and Commercial workflows on a real project, triage
+   what live use surfaces, and fix defects in delivered scope one focused PR at a
+   time through the same draft → CI → exact-head Codex gate. **Nothing here is
+   new product scope**; a defect that can only be fixed by adding scope is
+   reported to the owner rather than built. Rationale worth keeping: five phases
+   of canonical facts have been proven against tests and a browser, and the next
+   thing that can teach us something we do not already know is a real site using
+   them — not a sixth phase built on assumptions the pilot has not yet tested.
+2. `lifecycle-rule-unit-2` — the five-head restructure rule currently
    REPORTS a crossing (PR #265) but does not act on one. Unit 2 adds the
    apparatus that must exist before it may block without stalling the loop:
    an attributable declaration channel, a reply window, a durable request
@@ -207,11 +221,11 @@ gate as feature work. Work them top-down, one focused PR per item:
    `docs/reviews/lifecycle-rule-split.md`, including the two unresolved P1s
    that must be designed in from the start. **Not scheduled ahead of Phase 5
    — the owner decides the order.**
-2. `dependabot-security-updates` — GitHub reports open vulnerability alerts
+3. `dependabot-security-updates` — GitHub reports open vulnerability alerts
    on the default branch (5 as of 2026-07-29: 3 high, 1 moderate, 1 low).
    Raise the affected dependencies with the full gate battery; one PR per
    coherent dependency group.
-3. `upgrade-proof-evidence-audit` — PR #284 found that five of its own
+4. `upgrade-proof-evidence-audit` — PR #284 found that five of its own
    upgrade-proof "hostile insert rejected" assertions referenced a certificate
    the script never creates, so each was rejected by a FOREIGN KEY before
    reaching the CHECK it named: they would have passed with every constraint
@@ -221,7 +235,7 @@ gate as feature work. Work them top-down, one focused PR per item:
    otherwise-identical case is accepted. Sweep `apps/api/scripts/upgrade-proof.sh`
    back through Phases 1–4 for assertions whose fixture rows do not exist, or
    whose target is in a state that makes a different rule fire. One PR.
-4. `e2e-flake-burndown` — the documented flake families the review packets
+5. `e2e-flake-burndown` — the documented flake families the review packets
    record honestly (`daily-log-lost-response` visibility, the
    timing-sensitive `pillar-chain` inspection steps,
    `inspections-module-query`, `project-scope` browser history). Convert

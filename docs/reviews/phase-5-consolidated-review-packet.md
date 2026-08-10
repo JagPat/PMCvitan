@@ -152,7 +152,23 @@ freshness guard that rounds 3 and 4 argued over becomes complete rather than par
 The rule the phase leaves behind: *a gate may only compare the quantity the server compares; if that
 quantity is not in the contract, the contract is the fix, never a nearer-to-hand stand-in.*
 
-## 6. Gates at this head
+## 6. What comes next — owner directive, 2026-08-10
+
+**Phase 6 (external collaboration) is DEFERRED to a later version and is not the next task.** The
+canonical phase order in the design spec is unchanged; the ORDER OF WORK is the owner's call, and
+the call is that the app be exercised LIVE before further phase work.
+
+That is recorded in `docs/STATUS.md` as `next_task: none` with `live-pilot-validation` at the head
+of the Maintenance queue, so the autonomous loop cannot drift into deferred scope. The standing work
+while the pilot runs is upkeep of delivered scope: exercise Materials, Labour and Commercial on a
+real project, triage what live use surfaces, and fix defects one focused PR at a time through the
+same gate. A defect that can only be fixed by adding scope is reported rather than built.
+
+The reasoning is worth keeping with the evidence: five phases of canonical facts are proven against
+tests and a browser, and the next thing that can teach us something we do not already know is a real
+site using them — not a sixth phase resting on assumptions the pilot has not tested.
+
+## 7. Gates at this head
 
 - `pnpm check` EXIT 0.
 - Full API unit suite and the commercial integration suites green on live PostgreSQL.
