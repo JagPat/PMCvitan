@@ -229,10 +229,20 @@ export const advanceCoalesceKey = (vendorId: string): string => `com:advance:${v
  * own approval and payment ids — stated here because a rule that silently cannot see two of its
  * six members is worse than one that says so.
  */
-export const isClaimMoneyPending = (key: string, billId: string): boolean =>
+export const isClaimMoneyPending = (
+  key: string, billId: string, childIds: readonly string[] = [],
+): boolean =>
   key === deductionCoalesceKey(billId)
   || key === approveCoalesceKey(billId)
-  || isBillTransitionPending(key, billId);
+  || isBillTransitionPending(key, billId)
+  // Round 1, finding 1. The first draft said "the screen closes the child-keyed half" and then
+  // closed two thirds of it: payments and reversals were handled and RELEASES were not, because a
+  // release key names a withholding and I was thinking about the payment ledger. A rule that
+  // documents its own blind spot still has to cover the whole of it — so the caller passes the
+  // ids this claim actually owns (withholdings, approvals, payments) and all three child-keyed
+  // commands are matched here rather than two of them here and one nowhere.
+  || childIds.some((id) => key === deductionReleaseCoalesceKey(id)
+    || key === payCoalesceKey(id) || key === reverseCoalesceKey(id));
 
 /**
  * Whether a commercial write must be refused because an EQUIVALENT or CONFLICTING one is pending.
@@ -352,7 +362,7 @@ export type CommercialRead = {
    *  returned. A key naming a CHILD row cannot be matched from the bill id alone, and inferring
    *  "any release on this claim" from a prefix would release a key for a withholding this read
    *  never saw. The ids the read carries are the ids it can honestly settle. */
-  | { read: 'claim'; billId: string; settledIds?: readonly string[] }
+  | { read: 'claim'; billId: string; settledIds?: readonly string[]; vendorId?: string }
   | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] }
 );
 
@@ -382,7 +392,12 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
         || coalesceKey === deductionCoalesceKey(r.billId)
         || coalesceKey === approveCoalesceKey(r.billId)
         || (r.settledIds ?? []).some((id) => coalesceKey === deductionReleaseCoalesceKey(id)
-          || coalesceKey === payCoalesceKey(id) || coalesceKey === reverseCoalesceKey(id));
+          || coalesceKey === payCoalesceKey(id) || coalesceKey === reverseCoalesceKey(id))
+        // Round 1, finding 3 — and it is 7B-iii-g's F2 recurring on a key I added one unit later.
+        // An advance is VENDOR-keyed, so no claim read can name it and the money read never knew
+        // it existed: the key was set and nothing on earth cleared it, leaving the control dead
+        // until a reload. The claim read carries the vendor, so it is the read that can settle it.
+        || coalesceKey === advanceCoalesceKey(r.vendorId ?? '\u0000');
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;

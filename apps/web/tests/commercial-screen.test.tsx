@@ -1551,7 +1551,9 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
 describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
   const at = (n: number) => `2026-08-21T00:00:0${n}.000Z`;
 
-  const openPayments = (o: { pending?: string[]; role?: string } = {}) => {
+  const openPayments = (o: {
+    pending?: string[]; role?: string; approvable?: string | null;
+  } = {}) => {
     const c = claim();
     const base: CommercialClaimView = {
       ...c,
@@ -1568,9 +1570,12 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
         // §G bound 5 — a payment draws on ONE approval, so it hangs off the approval that
         // authorised it rather than off the ledger. The first draft of this fixture put them on
         // the ledger and the contract corrected it.
+        // §G bound 4 — `approvable` is NET_PAYABLE less what is already approved. Null means no
+        // certification stands, which is not the same as zero.
+        approvable: o.approvable === undefined ? '30.00' : o.approvable,
         approvals: [{
           id: 'appr-1', amount: '50.00', paid: '20.00',
-          payments: [{ id: 'pay-1', amount: '20.00', method: 'neft' }],
+          payments: [{ id: 'pay-1', amount: '20.00', reversed: '5.00', method: 'neft' }],
         }],
       } as never,
     };
@@ -1626,8 +1631,85 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
     expect(btn().disabled, 'money is a number, not a word').toBe(true);
     fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '0' } });
     expect(btn().disabled, 'approving nothing authorises nothing').toBe(true);
-    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '50.00' } });
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '30.00' } });
     expect(btn().disabled).toBe(false);
+  });
+
+  /**
+   * Round 1's shared root — four of seven findings were ONE mistake made four times: every control
+   * asked "is this a number?" and none asked "is there this much left?", while the bundle on screen
+   * already carried the figure. The server refuses the overdraw, so the outbox reported saved and
+   * then dropped it. These four probes are that root, closed per control.
+   */
+  it('refuses an approval larger than what is approvable, and any approval with none', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '30.01' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled,
+      'one paisa over what §G bound 4 allows is still an overdraw').toBe(true);
+    r.unmount();
+
+    for (const approvable of [null, '0.00']) {
+      const r2 = openPayments({ approvable });
+      fireEvent.change(r2.getByTestId('approve-amount'), { target: { value: '1.00' } });
+      expect((r2.getByTestId('approve-bill-1') as HTMLButtonElement).disabled,
+        `approvable=${String(approvable)}`).toBe(true);
+      r2.unmount();
+    }
+  });
+
+  it('caps a payment at what its own authorisation has left', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    // 50 approved, 20 already paid — 30 remains, and the ledger on screen says so
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '30.01' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '30.00' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('caps a reversal at what that payment has left to return', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('reverse-payment'), { target: { value: 'pay-1' } });
+    fireEvent.change(r.getByTestId('reverse-reason'), { target: { value: 'bank returned it' } });
+    // 20 paid, 5 already reversed — 15 remains
+    fireEvent.change(r.getByTestId('reverse-amount'), { target: { value: '15.01' } });
+    expect((r.getByTestId('reverse-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('reverse-amount'), { target: { value: '15.00' } });
+    expect((r.getByTestId('reverse-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('caps a release at what the withholding still holds', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('release-deduction'), { target: { value: 'ded-1' } });
+    fireEvent.change(r.getByTestId('release-reason'), { target: { value: 'work made good' } });
+    fireEvent.change(r.getByTestId('release-amount'), { target: { value: '10.01' } });
+    expect((r.getByTestId('release-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('release-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('release-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /** §H — `penalty` and `other` are JUDGEMENTS, so the server requires a reason. Read from the
+   *  shared list, so a fifth type added there is covered without editing this form. */
+  it('requires a reason for a judgment withholding and not for a mechanical one', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'retention is mechanical — the contract does not demand a reason').toBe(false);
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'penalty' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'a penalty is a judgement, and a judgement states itself').toBe(true);
+    fireEvent.change(r.getByTestId('deduct-reason'), { target: { value: 'late by three weeks' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /** Round 1, finding 1 — the release third of the child-keyed division, which the first draft
+   *  documented and then left out. */
+  it('blocks an approval while a RELEASE on this claim is pending', () => {
+    const r = openPayments({ pending: ['com:release:ded-1'] });
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('a payment names the authorisation it draws on, and a reversal the payment it returns', () => {

@@ -103,3 +103,43 @@ controls offered", never to a thrown render that takes the whole ledger off scre
 
 - [x] `pnpm check` EXIT 0 — web 714/714, API 781/781.
 - [x] No schema, migration, or API change.
+
+---
+
+## Correction round 1 — seven findings, and four of them are one mistake made four times
+
+| # | Finding | Fix |
+|---|---|---|
+| F1 (P1) | an approval was **not** blocked by a pending `com:release:` — `isClaimMoneyPending` cannot map a release key back to its bill, and the screen closed only the payment and reversal thirds of the child-keyed division | the rule takes the claim's child ids and matches **all three** child-keyed commands; the screen supplies withholdings alongside approvals and payments |
+| F2 (P2) | `penalty` and `other` require a reason server-side; the form enabled without one | reads the shared `DEDUCTION_TYPES_REQUIRING_REASON`, so a fifth type added there is covered without editing the form |
+| F3 (P2) | `com:advance:<vendor>` had **no release path at all** — no read could name it, so the key was set and never cleared | released by the claim read, which carries the vendor |
+| F4 (P2) | approve enabled with no live payable (`approvable` null or zero) | gated on `approvable`, and null is treated as "nothing to approve against", not zero |
+| F5 (P2) | a payment could exceed its approval's remaining | capped at `amount − paid` for the selected approval |
+| F6 (P2) | a reversal could exceed its payment's remaining | capped at `amount − reversed` for the selected payment |
+| F7 (P2) | a release could exceed the withholding's unreleased balance | capped at `unreleased` for the selected withholding |
+
+### The shared root, stated plainly
+
+**F4–F7 are one mistake made four times: every control validated SHAPE and none validated
+BALANCE**, while the bundle already on screen carried the figure. "Is this a number?" is not "is
+there this much left?". The server refuses the overdraw, so the write-ahead outbox reported the
+command saved and then dropped it — the write-ahead lie this screen guards against everywhere else,
+reintroduced on the one surface where the number is money leaving.
+
+Comparison is in **paise**, via a shared `within`/`minus` pair: `0.1 + 0.2` is not `0.3`, and money
+that rounds is money that goes missing.
+
+### Two findings are gaps in rules I wrote myself
+
+Worth recording separately, because they are not new ideas being learned:
+
+- **F1** — the first head *documented* that `commercialWriteBlocked` cannot see child-keyed
+  commands and that the screen closes that half, then closed **two thirds of it**. Releases were
+  left out because I was thinking about the payment ledger. A rule that names its own blind spot
+  still has to cover the whole of it.
+- **F3** — this is **7B-iii-g's F2 recurring on a key I added one unit later**. That finding was
+  "a key with no release path is not pending, it is stuck"; I fixed it for `com:sodgrant:` and did
+  not sweep it for the six keys introduced here. The checkable form is now explicit: *every new
+  coalesce key needs a settling read named in the same change.*
+
+**Gates:** `pnpm check` EXIT 0 — web 721/721, API 781/781.

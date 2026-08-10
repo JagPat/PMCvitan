@@ -2917,6 +2917,7 @@ export const useStore = create<Store>()(
           releaseCommercialKeys(s, {
             read: 'claim', billId,
             observedWrite: commercialWritesSettled === settledAtStart,
+            vendorId: claim.bill?.vendorId,
             settledIds: [
               ...(claim.deductions?.deductions ?? []).map((d) => d.id),
               ...(claim.payments?.approvals ?? []).map((a) => a.id),

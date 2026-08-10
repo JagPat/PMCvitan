@@ -3,9 +3,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, advanceCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, isClaimMoneyPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, advanceCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, DEDUCTION_TYPES, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
+import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, DEDUCTION_TYPES, DEDUCTION_TYPES_REQUIRING_REASON, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto, SodGrantState } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
@@ -1506,16 +1506,57 @@ export function CommercialScreen() {
                     const paymentsMade = approvals.flatMap((a) => a.payments ?? []);
                     const withheld = claim.deductions?.deductions ?? [];
                     const money2 = (v: string): boolean => /^\d+(\.\d{1,2})?$/u.test(v.trim()) && Number(v) > 0;
+                    // ── round 1's shared root: SHAPE is not a balance ────────────────────────────
+                    //
+                    // Four of the seven findings were one mistake made four times. Every control
+                    // asked "is this a number?" and none asked "is there this much left?", while
+                    // the bundle on screen already carried the figure. The server refuses the
+                    // overdraw, so the write-ahead outbox reported saved and then dropped it — the
+                    // write-ahead lie, which this screen guards against everywhere else.
+                    //
+                    // `within` compares in paise, because 0.1 + 0.2 is not 0.3 and money that
+                    // rounds is money that goes missing.
+                    const paise = (v: string): number => Math.round(Number(v) * 100);
+                    const within = (typed: string, remaining: string): boolean =>
+                      paise(typed) <= paise(remaining);
+                    const minus = (a: string, b: string): string =>
+                      ((paise(a) - paise(b)) / 100).toFixed(2);
                     // the half `commercialWriteBlocked` cannot see from a key alone: payment and
                     // reversal keys name an APPROVAL and a PAYMENT, and only this screen holds the
                     // claim's own ids. Stated in `isClaimMoneyPending`; closed here.
-                    const childMoneyPending = commercialPending.some((k) =>
-                      approvals.some((a) => k === payCoalesceKey(a.id))
-                      || paymentsMade.some((pmt) => k === reverseCoalesceKey(pmt.id)));
-                    const approveBlocked = childMoneyPending
-                      || commercialWriteBlocked(approveCoalesceKey(claim.bill.id), commercialPending);
+                    // ── every child row this claim owns, so the fold rule can see ALL of them ──
+                    //
+                    // Round 1, finding 1: the first draft passed payments and reversals and left
+                    // RELEASES out, so an approval queued behind a pending release carried a
+                    // revision the release was about to move. `isClaimMoneyPending` owns the rule;
+                    // this supplies the ids it cannot derive from a key.
+                    const childIds = [
+                      ...withheld.map((x) => x.id), ...approvals.map((a) => a.id),
+                      ...paymentsMade.map((pmt) => pmt.id),
+                    ];
+                    const approveBlocked =
+                      commercialPending.some((k) => isClaimMoneyPending(k, claim.bill.id, childIds));
                     const deductBlocked = commercialWriteBlocked(deductionCoalesceKey(claim.bill.id), commercialPending);
                     const unreleased = withheld.filter((x) => Number(x.unreleased) > 0);
+                    // §G bound 4 — `approvable` is NET_PAYABLE less what is already approved, and
+                    // it is null when no certification stands. Null is not zero: it means the claim
+                    // has nothing to approve against at all (round 1, finding 4).
+                    const approvable = claim.payments.approvable ?? null;
+                    // Each remaining balance is DERIVED from the row the user selected, so the
+                    // control refuses exactly what the ledger on screen already proves cannot apply.
+                    const selectedApproval = approvals.find((a) => a.id === d.payApprovalId) ?? null;
+                    const payRemaining = selectedApproval === null
+                      ? '0.00' : minus(selectedApproval.amount, selectedApproval.paid);
+                    const selectedPayment = paymentsMade.find((pmt) => pmt.id === d.reversePaymentId) ?? null;
+                    const reverseRemaining = selectedPayment === null
+                      ? '0.00' : minus(selectedPayment.amount, selectedPayment.reversed ?? '0.00');
+                    const selectedWithholding = withheld.find((x) => x.id === d.releaseId) ?? null;
+                    const releaseRemaining = selectedWithholding?.unreleased ?? '0.00';
+                    // §H — `penalty` and `other` are JUDGEMENTS, so the server requires a reason.
+                    // The shared list is read rather than restated: a fifth type added there and
+                    // forgotten here would be a form that queues a command the server refuses.
+                    const reasonRequired = (DEDUCTION_TYPES_REQUIRING_REASON as readonly string[])
+                      .includes(d.deductType);
                     return (
                       <div data-testid="commercial-payer-actions" style={{ marginTop: 12 }}>
                         {mayApprove && (
@@ -1527,7 +1568,9 @@ export function CommercialScreen() {
                             />
                             <Button
                               variant="ink" data-testid={`approve-${claim.bill.id}`}
-                              disabled={!money2(d.approveAmount) || approveBlocked}
+                              disabled={!money2(d.approveAmount) || approveBlocked
+                                || approvable === null || paise(approvable) <= 0
+                                || !within(d.approveAmount, approvable)}
                               onClick={() => {
                                 approvePayment(claim.bill.id, d.approveAmount.trim(),
                                   claim.certifyPreflight.lifecycleVersion);
@@ -1567,7 +1610,8 @@ export function CommercialScreen() {
                             <Button
                               variant="ink" data-testid={`pay-${claim.bill.id}`}
                               disabled={d.payApprovalId === '' || !money2(d.payAmount) || !d.payMethod.trim()
-                                || commercialWriteBlocked(payCoalesceKey(d.payApprovalId), commercialPending)}
+                                || commercialWriteBlocked(payCoalesceKey(d.payApprovalId), commercialPending)
+                                || !within(d.payAmount, payRemaining)}
                               onClick={() => {
                                 recordPayment(d.payApprovalId, d.payAmount.trim(), d.payMethod.trim(),
                                   d.payReference.trim() === '' ? null : d.payReference.trim());
@@ -1598,7 +1642,8 @@ export function CommercialScreen() {
                             <Button
                               variant="ink" data-testid={`reverse-${claim.bill.id}`}
                               disabled={d.reversePaymentId === '' || !money2(d.reverseAmount) || !d.reverseReason.trim()
-                                || commercialWriteBlocked(reverseCoalesceKey(d.reversePaymentId), commercialPending)}
+                                || commercialWriteBlocked(reverseCoalesceKey(d.reversePaymentId), commercialPending)
+                                || !within(d.reverseAmount, reverseRemaining)}
                               onClick={() => {
                                 reversePayment(d.reversePaymentId, d.reverseAmount.trim(), d.reverseReason.trim());
                                 setPayDraft(claim.bill.id, { reversePaymentId: '', reverseAmount: '', reverseReason: '' });
@@ -1620,12 +1665,13 @@ export function CommercialScreen() {
                               value={d.deductAmount}
                               onChange={(e) => setPayDraft(claim.bill.id, { deductAmount: e.target.value })} />
                             <input style={{ ...input, flex: 1 }} data-testid="deduct-reason"
-                              placeholder="Reason (optional)"
+                              placeholder={reasonRequired ? 'Reason (required for this kind)' : 'Reason (optional)'}
                               value={d.deductReason}
                               onChange={(e) => setPayDraft(claim.bill.id, { deductReason: e.target.value })} />
                             <Button
                               variant="ink" data-testid={`deduct-${claim.bill.id}`}
-                              disabled={d.deductType === '' || !money2(d.deductAmount) || deductBlocked}
+                              disabled={d.deductType === '' || !money2(d.deductAmount) || deductBlocked
+                                || (reasonRequired && d.deductReason.trim() === '')}
                               onClick={() => {
                                 recordDeduction(claim.bill.id, d.deductType, d.deductAmount.trim(),
                                   d.deductReason.trim() === '' ? null : d.deductReason.trim());
@@ -1685,7 +1731,8 @@ export function CommercialScreen() {
                             <Button
                               variant="ink" data-testid={`release-${claim.bill.id}`}
                               disabled={d.releaseId === '' || !money2(d.releaseAmount) || !d.releaseReason.trim()
-                                || commercialWriteBlocked(deductionReleaseCoalesceKey(d.releaseId), commercialPending)}
+                                || commercialWriteBlocked(deductionReleaseCoalesceKey(d.releaseId), commercialPending)
+                                || !within(d.releaseAmount, releaseRemaining)}
                               onClick={() => {
                                 releaseDeduction(d.releaseId, d.releaseAmount.trim(), d.releaseReason.trim());
                                 setPayDraft(claim.bill.id, { releaseId: '', releaseAmount: '', releaseReason: '' });

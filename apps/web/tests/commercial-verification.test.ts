@@ -644,6 +644,20 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
     expect(commercialWriteBlocked(advanceCoalesceKey('v-1'), [advanceCoalesceKey('v-1')])).toBe(true);
   });
 
+  /** Round 1, finding 3 — and it is 7B-iii-g's F2 recurring on a key I added one unit later. An
+   *  advance is VENDOR-keyed, so no claim read could name it and the money read never knew it
+   *  existed: the key was set and nothing cleared it, leaving the control dead until a reload. */
+  it('an advance key is RELEASED by the read that carries its vendor', () => {
+    expect(readClearsKey(advanceCoalesceKey('v-1'),
+      { read: 'claim', billId: 'bill-1', observedWrite: true, vendorId: 'v-1' } as never)).toBe(true);
+    expect(readClearsKey(advanceCoalesceKey('v-1'),
+      { read: 'claim', billId: 'bill-1', observedWrite: true, vendorId: 'v-2' } as never),
+      'another counterparty settles nothing here').toBe(false);
+    // …and a read carrying no vendor at all releases nothing, rather than everything
+    expect(readClearsKey(advanceCoalesceKey('v-1'),
+      { read: 'claim', billId: 'bill-1', observedWrite: true } as never)).toBe(false);
+  });
+
   it('every one of the six settles on the claim read that carries its ledger', () => {
     const read = (ids: string[]) =>
       ({ read: 'claim', billId: 'bill-1', observedWrite: true, settledIds: ids }) as never;
