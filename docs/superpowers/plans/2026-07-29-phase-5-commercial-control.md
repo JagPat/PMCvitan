@@ -1636,6 +1636,33 @@ SECTION is right and the probe is the defect.
     hostile insert is rejected.
 
 
+## Deferred hand-off probes (PR #318, bounded-review deferral)
+
+PR #318 — the Phase-5 closing packet — reached the bounded-review limit on a **docs-only** diff:
+four finding-bearing heads, every finding the same shape (the record claimed something about this
+repository that the repository did not support). Prose cannot fail, so the open questions were
+converted into named probes and the head carried `Review-Deferred-To-Probes: phase-5-task-7b-v`.
+
+**These probes are executable and live in `scripts/phase5-handoff-facts.test.mjs`, run by
+`pnpm test:automation`.** They are listed here because the follow-on units are driven from this
+plan, and a deferral recorded only in a review packet can be skipped.
+
+| Probe | Question it settles | Owner |
+|---|---|---|
+| `7B-v is OPEN` | is `commercial.sod.grant` guarded so a `certifier-may-not-approve` grant must name the actual certifier? Today it is NOT — only standing is checked, while `approve()` consumes the grant only when `certificate.certifiedById === actor`, so an unspendable grant can be recorded | **7B-v** |
+| `7B-vi is OPEN` | does the advance LIST read exist? Today it does NOT — `GET commercial/advances` and `listAdvances` were removed with the control, so the advance coalesce key has no settling read | **7B-vi** |
+| ledgers reachable · park BRANCH named · packet claims no parked surface | is the hand-off record itself still true? | both |
+
+**The two `is OPEN` probes pin an ABSENCE deliberately.** The unit that closes the gap INVERTS its
+probe and updates the packet section and parked ledger in the same change — their failure messages
+say exactly that. This is the coupling the deferral buys: the record cannot drift from the code
+silently, because the drift breaks a test.
+
+**7B-v must not start by enumerating preconditions.** The prescription in
+`docs/reviews/phase-5-t7b-v-parked-findings.md` is to derive them as ONE predicate from what the
+server does when the grant is SPENT. Enumeration is the root that cost 7B-iv five review rounds and
+thirteen findings, and it failed twice more inside its own corrections.
+
 ## §N. What the twenty rounds established (do not re-derive)
 
 The prior review is the most valuable artefact this phase has. Its findings are all

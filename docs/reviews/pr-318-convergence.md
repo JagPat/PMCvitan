@@ -105,6 +105,19 @@ closes: invert the probe and update the packet section and ledger with it. That 
 point — the record can no longer drift from the code silently, because the drift breaks a test.
 
 **Deferred to: `phase-5-task-7b-v`** (the §I guard) and, for the advance read, `phase-5-task-7b-vi`.
+The probes are also recorded in the **phase plan** (`§ Deferred hand-off probes`), because the
+follow-on units are driven from the plan and a deferral recorded only in a review packet can be
+skipped — Codex's finding, and correct.
+
+**One finding on this head could NOT be applied as suggested, and that is recorded rather than
+silently dropped.** The P1 asked for the merge record to land in a state that resolves to
+`phase-5-task-7b-v`. It cannot: `assessRunnerState` reaches `next_task` only from
+`task_state: merged`, and a second validator refuses `merged` while `open_pr` names a live PR — *"a
+MERGED between-work STATUS must clear open_pr — a merged PR is not the next step"*. A PR that is
+itself the open PR therefore cannot land in the hand-off state; the flip is a separate post-merge
+commit **by design**, which is the irreducible half of the folded-STATUS process change already
+recorded in the 7B-iv row. The diagnosis is right — `in_progress` does resolve to `task:7` after the
+continuation clears `open_pr` — and the remedy is the post-merge flip, which is scheduled.
 
 Each probe was mutation-tested rather than merely run green: re-adding `@Get('commercial/advances')`,
 re-introducing a wrapped "this branch", and restoring the false §M claim each turn exactly one probe

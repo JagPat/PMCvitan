@@ -77,10 +77,18 @@ test('7B-v is OPEN: the payment-rule grant is not guarded to the certifier at IS
   // The guard belongs at ISSUE, in `commercial.sod.grant` — `approve()` already has its half, and
   // adding a second check there would fix nothing. 7B-v turns this probe around.
   const cert = read('apps/api/src/commercial/commercial-certification.service.ts');
-  const grantBody = cert.slice(cert.indexOf("commandType: 'commercial.sod.grant'"));
-  assert.ok(grantBody.length > 0, 'the grant command moved — re-derive where its guard belongs');
+  // `indexOf` returns -1 when the literal moves, and `slice(-1)` is the LAST CHARACTER rather than
+  // an empty string — so a length check alone would pass, and the absence assertion below would
+  // pass vacuously, in exactly the refactor this probe exists to catch. Locate explicitly.
+  const at = cert.indexOf("commandType: 'commercial.sod.grant'");
   assert.ok(
-    !/certifiedById/u.test(grantBody.slice(0, 4000)),
+    at >= 0,
+    'the grant command literal moved or was hoisted — this probe can no longer see the command it '
+    + 'adjudicates; re-derive where the 7B-v guard belongs before trusting a green run',
+  );
+  const grantBody = cert.slice(at, at + 4000);
+  assert.ok(
+    !/certifiedById/u.test(grantBody),
     'the grant command now consults certifiedById — 7B-v has landed its guard, so invert this probe '
     + 'and update the packet §I plus the 7B-v ledger, which both record it as OPEN',
   );

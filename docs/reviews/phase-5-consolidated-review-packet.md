@@ -7,8 +7,12 @@ reviewed evidence across Tasks 1–7.
 
 **It does not close the phase.** Two §M browser surfaces are parked with their findings named —
 7B-v (the §I payment-rule authorisation form) and 7B-vi (the §H vendor advance control) — and both
-are marked at every point they touch below. Every §G bound, §I rule and §F derivation they concern
-is enforced on the SERVER and delivered; what is outstanding is which acts the browser offers.
+are marked at every point they touch below. Every §G bound and §F derivation they concern is
+enforced on the server and delivered. **§I is the exception and it is not only a browser gap:**
+`commercial.sod.grant` does not check that a `certifier-may-not-approve` grant names the actual
+certifier, so an unspendable grant can be recorded. That server guard is 7B-v's, alongside the
+picker. See §I below, `docs/reviews/phase-5-t7b-v-parked-findings.md`, and the probe that pins it
+open in `scripts/phase5-handoff-facts.test.mjs`.
 
 Phase 5's outcome, in the spec's own terms: *budget, commitment, measurement, bill verification,
 certification, payment approval, payment status and cash forecast trace to operational evidence.* A
