@@ -152,39 +152,51 @@ freshness guard that rounds 3 and 4 argued over becomes complete rather than par
 The rule the phase leaves behind: *a gate may only compare the quantity the server compares; if that
 quantity is not in the contract, the contract is the fix, never a nearer-to-hand stand-in.*
 
-## 6. What comes next — owner decision, 2026-08-10
+## 6. What comes next — final owner direction, 2026-08-10
 
-**Phase 6 is deliberately DEFERRED — not completed, and not to be recorded as completed.** External
-collaboration (supplier/contractor portals, guest `Company` → own `Organization` promotion) moves to
-a later version.
+**The release target is a complete, production-usable STANDALONE Vitan platform for the owner's own
+internal organisation.** The two external phases are NOT equivalent and are not treated the same —
+the distinction is which kind of "external" each one means:
 
-**`phase-7-planning` is the next task.** That is technically valid rather than merely permitted:
-Phase 7 consumes the canonical operational and commercial facts Phases 0–5 produce, and needs
-neither the Phase-6 portal UI nor guest-company promotion. Phase 6's own ordering rationale — that
-stable internal workflows, permissions and audit trails must precede exposing the product to other
-companies — is a prerequisite *of Phase 6*, not of Phase 7.
+| Phase | What "external" means | Disposition |
+|---|---|---|
+| **6** — external collaboration | external *people and companies* using Vitan itself: supplier/contractor portals, guest `Company` → own `Organization` promotion | **REQUIRED**, sequenced AFTER the standalone-V1 live-pilot gate — the owner's instruction is that it follows the app being tested live |
+| **7** — external-system integration | external *software*: accounting, GST, bank, RedBracket adapters (§23's Stage-2 boundary) | **DEFERRED** to a future version; no external app integration is required currently |
 
-**Phase 7 is contract-first, and its planning item begins with DISCOVERY.** Inventory the actual
-RedBracket/accounting ownership and API contracts before any adapter is designed; then versioned,
-idempotent reconciliation with audit history, and never a shared database (§23's Stage-2 rules).
+Neither is recorded as completed. The order is: **standalone V1 → live-pilot gate → Phase 6 →
+Phase 7 later.**
 
-**The blocker is recorded, not designed around.** Two statements in the spec bound this directly:
+### What replaces them: `standalone-v1-planning`
 
-- §23 — the exact mapping *"requires a separate audit of RedBracket's authenticated product/API; the
-  public URLs currently expose no usable product model."*
-- §3 — *"direct synchronization with RedBracket before PMCvitan is stable on pilot sites"* is
-  explicitly out of scope.
+Not a feature phase — an **evidence-led gap audit of the actual product**, closing what it finds in
+focused review units under the same draft → CI → exact-head Codex gate. It verifies the internal
+product **end to end as one system**:
 
-If discovery finds those contracts unavailable or unstable, Phase-7 planning **records that as the
-explicit blocker and stops there.** It does not invent an adapter contract.
+- project/user administration and password login;
+- project-scoped dashboard, inbox and schedule;
+- decisions, drawings, inspections, activities and daily logs;
+- materials, labour and commercial workflows;
+- cross-module projections and reporting;
+- honest loading, error and offline states;
+- production migration, backup, restore, health, observability and security runbooks;
+- onboarding and user documentation;
+- a real internal live-pilot acceptance gate.
 
-One piece of Phase 7 is unblocked today and needs no external contract: §23 requires Stage 1 to
-expose stable versioned APIs/events and `ExternalSystemLink` records (provider, external
-tenant/entity IDs, sync direction, last version, status, error metadata). That model does not exist
-in the schema yet, and it is our side of the boundary.
+**It does not reopen cleared architecture and does not duplicate delivered modules.** It names only
+concrete missing integration, UX, operational-readiness or acceptance gaps.
 
-**A final integrated whole-product live-pilot release gate is retained after the chosen
-implementation scope** — which is also what §3 requires before any RedBracket synchronization.
+### Integration capability is preserved; integrations are not built
+
+What stays, and stays tested: versioned public contracts and events, the transactional outbox,
+adapter/connector boundaries, idempotency and reconciliation semantics, auditability, and
+configuration seams. What this release adds: **no vendor-specific adapter, no external credentials,
+no external schema assumptions, no live external calls.**
+
+### The release signal
+
+For the **whole standalone product on a real internal project**, with durable data and
+rollback/backup evidence — explicitly not merely the Phase-5 browser chain this packet documents.
+That chain proves one workflow in one browser; a release gate has to prove the system.
 
 ## 7. Gates at this head
 
