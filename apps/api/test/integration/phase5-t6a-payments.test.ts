@@ -1665,6 +1665,80 @@ describe('Phase 5 Task 6A — §F/§G/§I payment authority (live PG)', () => {
   });
 
   /**
+   * 7B-v round 1 (P1) — the CEILING is one of `approve()`'s money bounds, so it is one of the
+   * grant's preconditions.
+   *
+   * This is the unit's own root, committed inside the fix for it. `payableGrantActor` was written
+   * to be derived from what `approve()` does and was derived from the first three things it checks;
+   * `assertApprovalAuthority` compares the actor's CUMULATIVE approved total to their ceiling, so a
+   * certifier at or above their limit can never have any positive amount accepted. The fix folds
+   * both bounds into ONE number — `min(remaining, ceiling - approvedSoFar)` — rather than adding a
+   * fourth clause, which is the difference between deriving and enumerating.
+   */
+  it('PROBE 40 (§I): a payment-rule grant needs the certifier to be under their approval ceiling', async () => {
+    const projectId = await freshProject();
+    const grantor = await secondPmc(projectId);
+    const billId = await certifiedClaim(projectId);          // 100 payable, certified by `pmc`
+
+    // the certifier holds approve standing but CANNOT approve any positive amount
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { approvalLimit: new Prisma.Decimal('0') },
+    });
+    await expect(certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'ceiling leaves nothing approvable',
+      rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor))).rejects.toThrow(/approval ceiling/iu);
+
+    // (the READ's agreement is asserted in `phase5-t7bii-claim-read.test.ts`, which owns that
+    //  surface — it is the same predicate, so proving it twice here would prove nothing extra)
+
+    // RAISE the ceiling above what is approved and the SAME grant becomes issuable — precise
+    // rather than merely strict
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { approvalLimit: new Prisma.Decimal('50') },
+    });
+    await expect(certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'now within the ceiling',
+      rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor))).resolves.toBeDefined();
+  });
+
+  /**
+   * 7B-v round 1 (P1) — the post-create check must resolve THE ROW JUST WRITTEN.
+   *
+   * `resolveSodGrant` returns the OLDEST live candidate and the live-scope uniqueness admits a
+   * second row for the same actor when the approver differs. So an authorisation from another pmc
+   * satisfied the check while the new row was never the one an approval would select: it sat live,
+   * displayed as an authority, and went stale unspent.
+   */
+  it('PROBE 41 (§I): a second authorisation that could never be the one consumed is refused', async () => {
+    const projectId = await freshProject();
+    const grantor = await secondPmc(projectId);
+    const third = await thirdPmc(projectId);
+    const billId = await certifiedClaim(projectId);
+
+    await expect(certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'first', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor))).resolves.toBeDefined();
+
+    // a DIFFERENT pmc authorising the same person on the same claim: the live-scope uniqueness
+    // permits the row, and the older one is what `approve()` would consume
+    await expect(certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'second, would never be used',
+      rule: 'certifier-may-not-approve',
+    }, asUser(projectId, third))).rejects.toThrow(/already stands/iu);
+
+    // exactly one authorisation exists, and the approval consumes it
+    expect(await t.prisma.sodGrant.count({
+      where: { projectId, billId, rule: 'certifier-may-not-approve', consumedAt: null },
+    })).toBe(1);
+    const approval = await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect(approval.sodException!.approverId).toBe(grantor);
+  });
+
+  /**
    * 7B-v (§I) — the OTHER two reasons an approval could not spend the grant, refused at issue by
    * the same predicate rather than by a second list beside it.
    */

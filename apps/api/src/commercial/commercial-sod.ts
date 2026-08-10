@@ -102,12 +102,39 @@ export async function resolveApprovalContext(
  * If the command would refuse, the form cannot have offered it.
  */
 export function payableGrantActor(
-  context: ApprovalContext | null, callerActorId: string,
+  context: ApprovalContext | null,
+  callerActorId: string,
+  authority: { standing: false } | { standing: true; ceiling: Prisma.Decimal | null } | null,
 ): string | null {
   if (!context) return null;
-  if (context.remaining.lessThanOrEqualTo(0)) return null;
   if (context.certifiedById === callerActorId) return null;
-  return context.certifiedById;
+  if (!authority?.standing) return null;
+  return payableHeadroom(context, authority).greaterThan(0) ? context.certifiedById : null;
+}
+
+/**
+ * The largest approval this actor could get accepted right now — **the** number, not two bounds
+ * kept side by side.
+ *
+ * Codex round 1 (P1) found the ceiling missing here, and the finding is the unit's own root
+ * committed inside the fix for it: this predicate was written to be "derived from what `approve()`
+ * does", and it was derived from the first three things `approve()` checks. §G bound 4 is not the
+ * only thing standing between an actor and an accepted approval — `assertApprovalAuthority`
+ * compares the actor's CUMULATIVE approved total against their ceiling, so a certifier with a zero
+ * or exhausted limit can never have any positive amount accepted, and a grant naming them is
+ * exactly the unspendable authorisation this unit exists to refuse.
+ *
+ * Folding the two into one quantity is the difference between a derivation and a longer list.
+ * `approve()` accepts an amount `a > 0` iff `a <= remaining` AND `approvedSoFar + a <= ceiling`,
+ * so a positive amount exists iff `min(remaining, ceiling - approvedSoFar) > 0`. One number, and a
+ * third money bound added to `approve()` narrows it here rather than needing a fourth clause.
+ */
+function payableHeadroom(
+  context: ApprovalContext, authority: { standing: true; ceiling: Prisma.Decimal | null },
+): Prisma.Decimal {
+  if (authority.ceiling === null) return context.remaining;
+  const byCeiling = new PrismaRuntime.Decimal(authority.ceiling).sub(context.approvedSoFar);
+  return byCeiling.lessThan(context.remaining) ? byCeiling : context.remaining;
 }
 
 /**

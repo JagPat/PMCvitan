@@ -679,9 +679,14 @@ export class CommercialPaymentService {
   async payableGrantActorFor(
     tx: Prisma.TransactionClient, projectId: string, billId: string, callerActorId: string,
   ): Promise<string | null> {
-    return payableGrantActor(
-      await resolveApprovalContext(tx, this.deductions, projectId, billId), callerActorId,
+    const context = await resolveApprovalContext(tx, this.deductions, projectId, billId);
+    if (context === null) return null;
+    // the CERTIFIER's own approval authority — standing AND ceiling — because they are the only
+    // actor this rule can excuse and `approve()` applies both to them (Codex round 1, P1)
+    const authority = await this.orgs.approvalAuthorityFor(
+      tx, projectId, context.certifiedById, ROLE_POLICY['commercial.approve-payment'],
     );
+    return payableGrantActor(context, callerActorId, authority);
   }
 
   private async resolveSodGrant(

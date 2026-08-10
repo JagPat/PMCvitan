@@ -1514,6 +1514,41 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     return r;
   };
 
+  /** 7B-v round 1 — a FRESH bundle arriving under a made selection, which is what both P2 findings
+   *  turn on: the candidate lists and the claim's revision are the SERVER's, and they move. */
+  const setClaimCandidates = (o: {
+    candidates?: Array<{ userId: string; name: string }>;
+    approveGrantCandidates?: Array<{ userId: string; name: string }>;
+  }): void => {
+    act(() => {
+      const cur = useStore.getState().commercialClaims['bill-1'] as CommercialClaimView;
+      useStore.setState({
+        commercialClaims: {
+          'bill-1': {
+            ...cur,
+            certifyPreflight: o.candidates
+              ? { ...cur.certifyPreflight, sodCandidates: o.candidates } : cur.certifyPreflight,
+            approvePreflight: o.approveGrantCandidates
+              ? { ...cur.approvePreflight, grantCandidates: o.approveGrantCandidates }
+              : cur.approvePreflight,
+          },
+        },
+      });
+    });
+  };
+
+  /** A §F FOLD write elsewhere: the list row's revision advances, the STATUS does not move. */
+  const bumpListRevision = (): void => {
+    act(() => {
+      const rows = useStore.getState().commercialBills!;
+      useStore.setState({
+        commercialBills: rows.map((b) => (b.id === 'bill-1'
+          ? { ...b, lifecycleVersion: (b.lifecycleVersion ?? 0) + 1 } : b)),
+      });
+    });
+  };
+
+
   /**
    * The picker NARROWS; the server DECIDES. It must not enumerate authority — that would be a
    * second implementation of the standing question, which is root A of this unit's own audit —
@@ -1592,6 +1627,56 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
   });
 
+
+  /**
+   * 7B-v round 1 (P2) — a chosen person must still be one the SERVER offers.
+   *
+   * A fresh bundle can move the candidate set under a made selection: a supersede-and-re-certify
+   * moves the payment rule's one nameable actor, and a membership change moves the certification
+   * rule's list. The old guard only checked the draft was non-empty, so a stale id stayed
+   * selectable and the command refused it after the write-ahead outbox reported it saved.
+   */
+  it('will not authorise a person the refreshed bundle no longer offers', () => {
+    const r = openWith({ approveGrantCandidates: [{ userId: 'u-priya', name: 'Priya' }] });
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-priya' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
+
+    // the claim is superseded and re-certified by someone else — the server now names Ravi
+    setClaimCandidates({ approveGrantCandidates: [{ userId: 'u-ravi', name: 'Ravi' }] });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled,
+      'Priya is no longer the person the rule can excuse').toBe(true);
+
+    // …and the SAME rule applies to the certification list, because both lists are server-owned
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'evidence-recorder-may-not-certify' } });
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
+    setClaimCandidates({ candidates: [{ userId: 'u-9', name: 'Someone else' }] });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  /**
+   * 7B-v round 1 (P2) — the form must agree on the claim's REVISION, not only its status copy.
+   *
+   * `arbitrateBillCopy` compares status and `statusChangedAt`. Every §F FOLD write — a deduction,
+   * a release, an approval, a reversal — moves `VendorBillRevision` WITHOUT moving the label, so
+   * the two copies still "agreed" while the bundle was already behind, and the grant carried a
+   * stale `lifecycleVersion` the server refuses `stale-review` after the outbox reported it saved.
+   */
+  it('will not authorise from a bundle the list row has already moved past', () => {
+    const r = openWith({ approveGrantCandidates: [{ userId: 'u-priya', name: 'Priya' }] });
+    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
+    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-priya' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
+
+    // a fold write elsewhere advances the claim's revision WITHOUT changing its status
+    bumpListRevision();
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled,
+      'the bundle is behind the list row, so what this would pin is stale').toBe(true);
+  });
 
   it('is absent entirely for a role without the granting authority', () => {
     const r = openWith({ role: 'engineer' });

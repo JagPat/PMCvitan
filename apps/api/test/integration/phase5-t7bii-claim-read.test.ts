@@ -306,6 +306,20 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     expect((await claims.readClaim(projectId, uncertified, asUser(projectId, grantor)))
       .approvePreflight.grantCandidates).toEqual([]);
 
+    // …a certifier at or above their APPROVAL CEILING can have no positive amount accepted
+    // either, so the read offers nobody (Codex round 1, P1 — the ceiling is one of `approve()`'s
+    // money bounds, and the predicate folds it into the same headroom as §G bound 4)
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { approvalLimit: '0' },
+    });
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, grantor)))
+      .approvePreflight.grantCandidates).toEqual([]);
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { approvalLimit: null },
+    });
+
     // …and once the whole payable is approved, §G bound 4 admits no positive amount, so an
     // authorisation to approve would be an authority over nothing
     await certification.grantSodException(projectId, {

@@ -798,6 +798,7 @@ export class CommercialCertificationService {
    */
   private unspendableGrantReason(
     context: ApprovalContext | null, named: string, caller: string,
+    authority: { standing: false } | { standing: true; ceiling: Prisma.Decimal | null } | null,
   ): string {
     if (!context) {
       return 'This claim has no live certification, so there is no payment approval to authorise — the `certifier-may-not-approve` rule only applies once a claim has been certified';
@@ -810,6 +811,12 @@ export class CommercialCertificationService {
     }
     if (context.certifiedById !== named) {
       return 'Only the person who certified this claim can be authorised under `certifier-may-not-approve` — the rule blocks nobody else, so an exception naming anyone else authorises an approval they can already make and could never be consumed';
+    }
+    if (authority !== null && !authority.standing) {
+      return 'The person who certified this claim cannot approve payments on this project, so an exception would authorise nothing they could act on';
+    }
+    if (authority !== null && authority.standing && authority.ceiling !== null) {
+      return `The person who certified this claim has an approval ceiling of ${new Prisma.Decimal(authority.ceiling).toFixed(2)} and ${context.approvedSoFar.toFixed(2)} is already approved on it, so no approval this authorisation could excuse would be accepted — it needs a higher-limit approver instead`;
     }
     return 'This claim cannot carry a payment-rule authorisation as it currently stands — reload and try again';
   }
@@ -908,9 +915,17 @@ export class CommercialCertificationService {
           ? await resolveApprovalContext(tx, this.deductions, projectId, input.billId)
           : null;
         if (rule === SOD_RULES.certifierMayNotApprove) {
-          const nameable = payableGrantActor(payable, actor.actorId);
+          // …including the CEILING, which `approve()` also applies (Codex round 1, P1). Read
+          // through the same participant `assertApprovalAuthority` uses, for the CERTIFIER, since
+          // they are the only actor this rule can excuse.
+          const authority = payable === null ? null : await this.orgs.approvalAuthorityFor(
+            tx, projectId, payable.certifiedById, ROLE_POLICY['commercial.approve-payment'],
+          );
+          const nameable = payableGrantActor(payable, actor.actorId, authority);
           if (nameable === null || nameable !== input.actorId) {
-            throw new ConflictException(this.unspendableGrantReason(payable, input.actorId, actor.actorId));
+            throw new ConflictException(
+              this.unspendableGrantReason(payable, input.actorId, actor.actorId, authority),
+            );
           }
         }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
@@ -963,6 +978,19 @@ export class CommercialCertificationService {
           if (spendable.state !== 'live') {
             throw new ConflictException(
               `This authorisation would not be usable as soon as it was written (${spendable.state}) — the claim has moved since you read it, so it needs issuing again against what stands now`,
+            );
+          }
+          // …and it must resolve to THIS row (Codex round 1, P1). `resolveSodGrant` returns the
+          // OLDEST live candidate, and the live-scope uniqueness admits a second row for the same
+          // actor when the approver differs — so an existing authorisation from another pmc would
+          // satisfy the check above while the row just written is never the one an approval
+          // selects. It would sit live, be displayed as an authority, and go stale unspent.
+          //
+          // Refused rather than silently written: an authorisation already stands, so a second is
+          // not a stronger permission, it is a dead record of one.
+          if (spendable.grant.id !== row.id) {
+            throw new ConflictException(
+              'An authorisation for that person already stands on this claim and would be the one an approval consumes, so a second would never be used. Spend or supersede the existing one instead',
             );
           }
         }

@@ -1268,7 +1268,21 @@ export function CommercialScreen() {
                     // certification acts on.
                     const grantListRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
                     const grantReading = arbitrateBillCopy(grantListRow, claim.bill);
-                    const grantAuthoritative = grantReading !== null && grantReading.source !== 'list';
+                    // …and AGREE ON THE REVISION, not only on the status copy (Codex round 1, P2).
+                    // `arbitrateBillCopy` compares status and `statusChangedAt`, so a concurrent
+                    // deduction, release, approval or reversal — every one a fold write that moves
+                    // `VendorBillRevision` WITHOUT moving the label — left the two copies agreeing
+                    // while the bundle was already behind. The grant then carried a stale
+                    // `lifecycleVersion` and the server refused it `stale-review` AFTER the
+                    // write-ahead outbox had reported it saved.
+                    //
+                    // The payments tab already compares the number the server compares
+                    // (`bundleCurrent`); this is the same rule on the form that pins the same
+                    // value, applied to BOTH §I rules because the pinning is `asOf`, not the rule.
+                    const grantRevisionCurrent = grantListRow === null
+                      || grantListRow.lifecycleVersion <= claim.certifyPreflight.lifecycleVersion;
+                    const grantAuthoritative = grantReading !== null && grantReading.source !== 'list'
+                      && grantRevisionCurrent;
                     // 7B-v — BOTH §I rules are issued here now, and the payment half asks the
                     // server rather than deriving anything.
                     //
@@ -1360,7 +1374,16 @@ export function CommercialScreen() {
                           <Button
                             variant="ink"
                             data-testid={`sod-grant-${claim.bill.id}`}
-                            disabled={draft.sodActorId === '' || !draft.sodReason.trim()
+                            // the chosen person must still be one the server OFFERS (Codex round 1,
+                            // P2). A fresh bundle can change the candidate set under a made
+                            // selection — a supersede-and-re-certify moves the payment rule's one
+                            // nameable actor, and a membership change moves the certification
+                            // rule's list — leaving a stale id in the draft that the command
+                            // refuses after the outbox reported it saved. Membership subsumes the
+                            // old non-empty check, since '' is never a candidate, and it is applied
+                            // to BOTH rules because both lists are server-owned and both can move.
+                            disabled={!candidates.some((c) => c.userId === draft.sodActorId)
+                              || !draft.sodReason.trim()
                               || viewedVersion === null || blocked
                               || !spendable || !grantAuthoritative}
                             onClick={() => {
