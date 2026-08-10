@@ -1,6 +1,7 @@
 # PR #318 — convergence audit (Phase-5 closing packet)
 
-**Eight finding-bearing heads, sixteen findings, on a closing packet.** Written because they are a
+**Ten finding-bearing heads, twenty-one findings, on a closing packet** — eight heads as #318, two
+more as its replacement #319, which carries the same content and this same audit. Written because they are a
 small number of roots rather than sixteen incidents, and because the roots are worth more than any
 individual fix. The complete ledger, so the next unit inherits cause → remedy → proof rather than a
 summary:
@@ -25,6 +26,15 @@ summary:
 | 15 | `f460cab` | probes grep for the SHAPE OF A FIX and cannot adjudicate it | three rounds of evidence | **probes removed — Round 4** |
 | 16 | `f460cab` | adding probes made the diff non-docs-only | reading the deferral rule | **probes removed — Round 4** |
 | 17 | `0906e42` | a deferral head may not edit `docs/STATUS.md` | `scripts/review-efficiency.mjs` | **STATUS removed — Round 5** |
+| 18 | `6c586c9` (#319) | the plan still said this head carries `Review-Deferred-To-Probes` | reading plan vs Round 6 table | restated as follow-on acceptance criteria |
+| 19 | `a74526f` | STATUS's **7B-iv** row still listed the advances read among its contents | grep the claim | row states what actually merged |
+| 20 | `a74526f` | the packet called 7B-v "which acts a browser offers" | its own §I contradicted it | 7B-v has a **server** half |
+| 21 | `a74526f` | the criteria table named 2 probes; the ledgers list 7 open items | counting the ledgers | table completed + kept-complete rule |
+
+Findings 19–21 are the sharpest of the twenty-one, because each would have cost a following unit
+real work rather than costing a reader accuracy: 7B-vi told the advance read already shipped, 7B-v
+told its server guard was a UI concern, and both told a subset of their own parked findings. **A
+hand-off that under-states scope is not a smaller error than one that over-states it.**
 
 ## The root: a claim about the repository is a fact, and facts are checked, not recalled
 
