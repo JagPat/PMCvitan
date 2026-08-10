@@ -1638,16 +1638,24 @@ SECTION is right and the probe is the defect.
 
 ## Follow-on acceptance criteria for 7B-v and 7B-vi
 
-These are **not** a bounded-review deferral, and the distinction matters for how the next reviews
-treat them. PR #318 did carry `Review-Deferred-To-Probes` while it was a docs-only diff; the closing
-packet then had to restore `docs/STATUS.md` to make its post-merge hand-off executable, and a head
-that edits STATUS may not carry that trailer — the two are mutually exclusive, which is why #318 was
-replaced by a clean STATUS-carrying head. The full reasoning is in `docs/reviews/pr-318-convergence.md`.
+These are handed off under a **bounded-review deferral** — the closing packet's docs-only review
+passed three finding-bearing heads a second time, which is exactly the condition the cap exists for:
+remaining open questions move from prose to named probes rather than drawing another round of
+commentary. The head carries `Review-Deferred-To-Probes: phase-5-task-7b-vi`, naming the LATER of
+the two owning stops so nothing is settled before both units have run.
 
-So the questions below are **ordinary follow-on acceptance criteria owned by named units**, settled
-at those units' own review stops in the repository's usual way. Nothing about them is parked behind a
-review mechanism: they are simply the next two units' scope, written down where the units are driven
-from.
+`docs/STATUS.md` is **not** in that head, and that is the mechanism working rather than a gap: a
+head carrying the deferral trailer may not edit STATUS, because the gate reads the default branch's
+copy and a PR that rewrites it has moved its own phase truth out from under the check. The STATUS
+flip lands on its own immediately afterwards, which is the remedy `scripts/review-efficiency.mjs`
+names in the refusal itself. `docs/reviews/pr-318-convergence.md` records how that was got wrong
+first — the deadlock was initially resolved by opening a replacement PR, which reset the
+finding-head counter instead of satisfying the rule.
+
+Either way, what the rows below mean for the next units is unchanged: they are **reproduce-first
+acceptance criteria owned by named units**, settled at those units' own review stops in the
+repository's usual way. The deferral schedules where they are answered; it does not dismiss any of
+them, and the exact-head gate still fails closed on every current-head finding.
 
 **Each probe below is a REPRODUCE-FIRST acceptance criterion owned by a named unit**, written RED
 by that unit before its fix, against live PostgreSQL. They are listed here because the follow-on

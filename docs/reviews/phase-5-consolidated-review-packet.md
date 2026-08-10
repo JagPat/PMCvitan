@@ -14,11 +14,16 @@ certifier, so an unspendable grant can be recorded. That server guard is 7B-v's,
 picker. See §I below and `docs/reviews/phase-5-t7b-v-parked-findings.md`; 7B-v proves the gap RED
 against live PostgreSQL before closing it, as the plan's `grant-guard` acceptance criterion.
 
-Those criteria are **ordinary follow-on unit scope**, not a bounded-review deferral — the plan says
-so in the section that carries them. The distinction is not pedantic: a deferral is a formal
-trailer-and-ledger mechanism this repository applies to docs-only review rounds, so labelling
-7B-v's scope that way would send a later reviewer looking for a `Review-Deferred-To-Probes` trailer
-that is deliberately absent, and read its absence as an omission rather than as the correct state.
+Those criteria are handed to their units under a **bounded-review deferral**: this closing packet's
+docs-only review passed three finding-bearing heads, so its remaining open questions move from prose
+to named probes, and the head carries `Review-Deferred-To-Probes: phase-5-task-7b-vi` — the later of
+the two owning stops. The plan's follow-on table is the ledger half; the two parked notes carry the
+findings themselves.
+
+What the deferral does **not** do is dismiss anything. It schedules where each question is answered,
+by which unit, with a probe that must be RED first; the exact-head gate still fails closed on every
+current-head finding. `docs/reviews/pr-318-convergence.md` records why this landed as a deferral
+after an earlier round argued it was not one — that reversal is itself part of the record.
 
 Phase 5's outcome, in the spec's own terms: *budget, commitment, measurement, bill verification,
 certification, payment approval, payment status and cash forecast trace to operational evidence.* A

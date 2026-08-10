@@ -33,11 +33,58 @@ remedy → proof rather than a summary:
 | 22 | `c04209e` | packet still cited "the plan's deferred-probe row" after the plan renamed it | reading packet against plan | cites `grant-guard`; states why the distinction matters |
 | 23 | `c04209e` | the verification paragraph still said "two open questions"; the table now has five | counting the plan table | names all five, with why the count matters |
 | 24 | `c04209e` | §25 row claimed both §I rules "exercised in the browser chain" | the packet's own §I + the spec | separates ENFORCED from where each grant is ISSUED |
+| — | `9279115` | the deferral deadlock recurred; Round 6's reopen had reset a counter, not solved it | the gate's own refusal text | **STATUS out + deferral in + a follow-up flip — Round 8** |
 
 Findings 19–21 are the sharpest of the twenty-four, because each would have cost a following unit
 real work rather than costing a reader accuracy: 7B-vi told the advance read already shipped, 7B-v
 told its server guard was a UI concern, and both told a subset of their own parked findings. **A
 hand-off that under-states scope is not a smaller error than one that over-states it.**
+
+## Round 8 — the deadlock had a fourth option, and Round 6 reset a counter instead of taking it
+
+The gate refused this head for the reason Round 6 described: three finding-bearing heads on a
+docs-only diff make `Review-Deferred-To-Probes` mandatory, and a head carrying it may not edit
+`docs/STATUS.md`. Round 6 met that by **opening a replacement PR**, which reset the finding-head
+count. #319 then earned three heads of its own and arrived at the identical wall — which is the
+evidence that the move was a delay, not a solution. A second reopen would have been a treadmill.
+
+**Round 6's option table was incomplete, and that is the finding.** It listed three options and
+judged each terminal:
+
+| Option | Round 6's verdict | Actually |
+|---|---|---|
+| STATUS in, deferral in | gate refuses | correct |
+| STATUS out, deferral in | hand-off resolves to `task:7` | **true only if STATUS never lands** |
+| STATUS in, deferral out | deferral is mandatory | correct |
+
+The second row treated "STATUS out" as a final state. It is a step. **STATUS out, deferral in, and
+the STATUS flip lands on its own immediately after** closes the hand-off gap within one PR's
+lifetime, and it is the option this repository's own gate names in the refusal it prints:
+
+> Land the STATUS change on its own, or defer to a phase the current STATUS already shows has work
+> ahead.
+
+I had read the STATUS-versus-deferral conflict in `scripts/review-efficiency.mjs` and built the
+option table from it. I had not read the sentence attached to it, which states the remedy. **The
+constraint and its remedy live two lines apart; I took the constraint and constructed a dilemma out
+of a rule that ships with its own way out.**
+
+That is worth more than the fix. Reading a gate to learn *what it forbids* and reading it to learn
+*what it wants instead* are different acts, and only the first is instinctive when the gate is in
+the way. A refusal is not only an obstacle — it is usually the most precise statement anyone has
+written of what the correct shape is.
+
+**Recorded as a reversal rather than a rewrite**, the same way `pr-317-convergence.md` keeps
+Round 4's wrong call: Round 6 below is left exactly as it was written. It was defensible on the
+evidence then in hand and wrong on the next head, and a decision log that quietly deletes its wrong
+calls teaches nothing. Round 6's *other* conclusion stands unchanged — the hand-off must be
+executable, not merely scheduled. What changes is how that is achieved: two landings in sequence
+rather than one PR that must satisfy two mutually exclusive rules.
+
+The follow-up is not optional and is not "later": the STATUS flip to
+`merged` · `open_pr: none` · `next_task: phase-5-task-7b-v` — the state Round 6 verified against
+`test:automation` 200/200 and `assessRunnerState` — lands as its own head immediately after this one
+merges. Until it does, the loop's hand-off still resolves to `task:7`, exactly as Round 6 found.
 
 ## Round 7 — the root has a sharper form: a correction updates the statement, not the references to it
 
@@ -271,6 +318,13 @@ two will treat the rest as already settled: `grant-guard`, `grant-spendability` 
 `grant-conflict-set` for 7B-v — covering parked findings A, B, F1, F2 and F3 — and `advance-read`
 and `advance-identity` for 7B-vi. The plan's table is the authority and is kept complete against
 both parked ledgers. `test:automation` 200/200, which is the suite unchanged.
+
+This head carries `Review-Deferred-To-Probes: phase-5-task-7b-vi` — the LATER of the two owning
+stops, per finding 14, so nothing is treated as settled before both units have run. It does **not**
+carry `docs/STATUS.md`; the flip lands on its own head immediately after this merges, for the reason
+Round 8 records. Both halves of the deferral obligation are met: the trailer here, and the ledger in
+the plan's follow-on table plus the two parked notes, which is where the units that owe the probes
+are actually driven from.
 
 **A fourth instance, self-caught, worth recording because of HOW it was nearly missed.** Fixing
 finding 2 I corrected each note's opening "This branch is `<sha>`", ran `grep "this branch"` over
