@@ -152,21 +152,39 @@ freshness guard that rounds 3 and 4 argued over becomes complete rather than par
 The rule the phase leaves behind: *a gate may only compare the quantity the server compares; if that
 quantity is not in the contract, the contract is the fix, never a nearer-to-hand stand-in.*
 
-## 6. What comes next — owner directive, 2026-08-10
+## 6. What comes next — owner decision, 2026-08-10
 
-**Phase 6 (external collaboration) is DEFERRED to a later version and is not the next task.** The
-canonical phase order in the design spec is unchanged; the ORDER OF WORK is the owner's call, and
-the call is that the app be exercised LIVE before further phase work.
+**Phase 6 is deliberately DEFERRED — not completed, and not to be recorded as completed.** External
+collaboration (supplier/contractor portals, guest `Company` → own `Organization` promotion) moves to
+a later version.
 
-That is recorded in `docs/STATUS.md` as `next_task: none` with `live-pilot-validation` at the head
-of the Maintenance queue, so the autonomous loop cannot drift into deferred scope. The standing work
-while the pilot runs is upkeep of delivered scope: exercise Materials, Labour and Commercial on a
-real project, triage what live use surfaces, and fix defects one focused PR at a time through the
-same gate. A defect that can only be fixed by adding scope is reported rather than built.
+**`phase-7-planning` is the next task.** That is technically valid rather than merely permitted:
+Phase 7 consumes the canonical operational and commercial facts Phases 0–5 produce, and needs
+neither the Phase-6 portal UI nor guest-company promotion. Phase 6's own ordering rationale — that
+stable internal workflows, permissions and audit trails must precede exposing the product to other
+companies — is a prerequisite *of Phase 6*, not of Phase 7.
 
-The reasoning is worth keeping with the evidence: five phases of canonical facts are proven against
-tests and a browser, and the next thing that can teach us something we do not already know is a real
-site using them — not a sixth phase resting on assumptions the pilot has not tested.
+**Phase 7 is contract-first, and its planning item begins with DISCOVERY.** Inventory the actual
+RedBracket/accounting ownership and API contracts before any adapter is designed; then versioned,
+idempotent reconciliation with audit history, and never a shared database (§23's Stage-2 rules).
+
+**The blocker is recorded, not designed around.** Two statements in the spec bound this directly:
+
+- §23 — the exact mapping *"requires a separate audit of RedBracket's authenticated product/API; the
+  public URLs currently expose no usable product model."*
+- §3 — *"direct synchronization with RedBracket before PMCvitan is stable on pilot sites"* is
+  explicitly out of scope.
+
+If discovery finds those contracts unavailable or unstable, Phase-7 planning **records that as the
+explicit blocker and stops there.** It does not invent an adapter contract.
+
+One piece of Phase 7 is unblocked today and needs no external contract: §23 requires Stage 1 to
+expose stable versioned APIs/events and `ExternalSystemLink` records (provider, external
+tenant/entity IDs, sync direction, last version, status, error metadata). That model does not exist
+in the schema yet, and it is our side of the boundary.
+
+**A final integrated whole-product live-pilot release gate is retained after the chosen
+implementation scope** — which is also what §3 requires before any RedBracket synchronization.
 
 ## 7. Gates at this head
 
