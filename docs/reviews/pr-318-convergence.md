@@ -133,10 +133,16 @@ mechanism invented for a closing packet.
 Both are recorded in the phase plan, because the follow-on units are driven from the plan and a
 deferral recorded only in a review packet can be skipped — Codex's finding, and correct.
 
-**Deferred to: `phase-5-task-7b-vi`** — the LATER of the two owners, deliberately. Naming the
-earlier stop would let 7B-v's review be read as settling the whole deferral while the advance
-question is still open. Each unit settles its own question at its own stop; the deferral closes at
-the last one.
+**At the time, the trailer named `phase-5-task-7b-vi`** — the LATER of the two owners, deliberately:
+naming the earlier stop would have let 7B-v's review be read as settling the whole deferral while the
+advance question was still open.
+
+**That trailer is GONE from the replacement head, and deliberately so.** Round 6 restored
+`docs/STATUS.md` to make the hand-off executable, and a head that edits STATUS may not carry a
+deferral — the two are mutually exclusive. The questions did not disappear with the trailer: they are
+recorded in the phase plan as ordinary follow-on acceptance criteria owned by 7B-v and 7B-vi, settled
+at those units' own review stops. That is a weaker mechanism only in name; a reproduce-first probe
+against live PostgreSQL is stronger evidence than a trailer.
 
 **One finding on this head could NOT be applied as suggested, and that is recorded rather than
 silently dropped.** The P1 asked for the merge record to land in a state that resolves to

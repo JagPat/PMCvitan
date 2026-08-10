@@ -1636,18 +1636,18 @@ SECTION is right and the probe is the defect.
     hostile insert is rejected.
 
 
-## Deferred hand-off probes (PR #318, bounded-review deferral)
+## Follow-on acceptance criteria for 7B-v and 7B-vi
 
-PR #318 — the Phase-5 closing packet — reached the bounded-review limit on a **docs-only** diff:
-four finding-bearing heads, every finding the same shape (the record claimed something about this
-repository that the repository did not support). Prose cannot fail, so the open questions were
-converted into named probes and the head carries `Review-Deferred-To-Probes: phase-5-task-7b-vi`.
+These are **not** a bounded-review deferral, and the distinction matters for how the next reviews
+treat them. PR #318 did carry `Review-Deferred-To-Probes` while it was a docs-only diff; the closing
+packet then had to restore `docs/STATUS.md` to make its post-merge hand-off executable, and a head
+that edits STATUS may not carry that trailer — the two are mutually exclusive, which is why #318 was
+replaced by a clean STATUS-carrying head. The full reasoning is in `docs/reviews/pr-318-convergence.md`.
 
-**Why the trailer names 7B-vi and not 7B-v**, though 7B-v runs first: the deferral covers questions
-owned by BOTH units, and naming the EARLIER stop would let that stop be treated as settling the
-whole deferral while the advance question is still deliberately open. It names the LATER of the two
-owners, so the deferral is settled only when every deferred question has been. 7B-v still settles
-its own question at its own stop.
+So the questions below are **ordinary follow-on acceptance criteria owned by named units**, settled
+at those units' own review stops in the repository's usual way. Nothing about them is parked behind a
+review mechanism: they are simply the next two units' scope, written down where the units are driven
+from.
 
 **Each probe below is a REPRODUCE-FIRST acceptance criterion owned by a named unit**, written RED
 by that unit before its fix, against live PostgreSQL. They are listed here because the follow-on
