@@ -212,6 +212,8 @@ credentials, no external schema assumptions and no external calls.
 - No migration in 7B-iv; the contract additions are additive.
 - **Phase 5 is not closed by this packet.** 7B-v and 7B-vi remain, each parked whole at its reviewed
   head with its findings named: `docs/reviews/phase-5-t7b-v-parked-findings.md` and
-  `phase-5-t7b-vi-parked-findings.md`. The lineage's own lesson is recorded in
+  `phase-5-t7b-vi-parked-findings.md` — **both land on `main` in this PR**, having been written on
+  the park branches where a reader of `main` could not reach them. A hand-off that lives only on
+  the branch it hands off from is not a hand-off. The lineage's own lesson is recorded in
   `pr-317-convergence.md`: **derive an identity from the whole payload, never enumerate its fields**
   — a rule this unit broke four times, twice inside the correction for it.
