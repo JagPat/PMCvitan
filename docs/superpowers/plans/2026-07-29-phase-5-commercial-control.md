@@ -1644,10 +1644,10 @@ repository that the repository did not support). Prose cannot fail, so the open 
 converted into named probes and the head carries `Review-Deferred-To-Probes: phase-5-task-7b-vi`.
 
 **Why the trailer names 7B-vi and not 7B-v**, though 7B-v runs first: the deferral covers questions
-owned by BOTH units, and a trailer naming the EARLIER stop would let that stop be treated as
-settling the whole deferral while the advance question is still deliberately open with a green
-absence probe. It names the LATER of the two owners, so the deferral is settled only when every
-deferred question has been. 7B-v still closes its own probe at its own stop.
+owned by BOTH units, and naming the EARLIER stop would let that stop be treated as settling the
+whole deferral while the advance question is still deliberately open. It names the LATER of the two
+owners, so the deferral is settled only when every deferred question has been. 7B-v still settles
+its own question at its own stop.
 
 **Each probe below is a REPRODUCE-FIRST acceptance criterion owned by a named unit**, written RED
 by that unit before its fix, against live PostgreSQL. They are listed here because the follow-on

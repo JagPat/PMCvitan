@@ -119,13 +119,10 @@ mechanism invented for a closing packet.
 Both are recorded in the phase plan, because the follow-on units are driven from the plan and a
 deferral recorded only in a review packet can be skipped — Codex's finding, and correct.
 
-**Deferred to: `phase-5-task-7b-vi`** — the LATER of the two owners, deliberately. The deferral
-covers the §I guard (7B-v) and the advance read (7B-vi); naming the earlier stop would let 7B-v's
-review be read as settling the whole deferral while the advance question is still open with a green
-absence probe. Each unit closes its own probe at its own stop; the deferral closes at the last one.
-The probes are also recorded in the **phase plan** (`§ Deferred hand-off probes`), because the
-follow-on units are driven from the plan and a deferral recorded only in a review packet can be
-skipped — Codex's finding, and correct.
+**Deferred to: `phase-5-task-7b-vi`** — the LATER of the two owners, deliberately. Naming the
+earlier stop would let 7B-v's review be read as settling the whole deferral while the advance
+question is still open. Each unit settles its own question at its own stop; the deferral closes at
+the last one.
 
 **One finding on this head could NOT be applied as suggested, and that is recorded rather than
 silently dropped.** The P1 asked for the merge record to land in a state that resolves to
