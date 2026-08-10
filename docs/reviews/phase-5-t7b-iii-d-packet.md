@@ -300,3 +300,40 @@ Both retained findings were verified RED against the pre-fix gate before the fix
 
 **Gates:** `pnpm check` EXIT 0 — web 717/717, API 781/781; `commercial-screen` + `commercial-verification` 119/119.
 **Review unit:** 9 files / 1,130 changed lines — within both budgets.
+
+---
+
+## Correction round 4 — three findings, all client-fixable, all reproduced RED
+
+| # | Finding | Fix |
+|---|---|---|
+| R4-1 (P2) | every settlement ceiling was computed from the claim bundle without checking the bundle is still current | the `arbitrateBillCopy` guard now gates **all four** controls; round 3 left it off on an argument that was true but did not support its conclusion (see below) |
+| R4-2 (P2) | a supersede could be queued while a payment on the same claim was pending; FIFO applies the payment first and the server then refuses the supersede | `cashStands` now counts cash the outbox will apply, not only cash the bundle saw |
+| R4-3 (P2) | a release key could never settle if its withholding vanished (full release, then supersede — no live certificate, so no id comes back) | child keys carry their bill (`com:release:<bill>:<row>`), so the claim read settles them whether or not the row survived; `settledIds` is deleted |
+
+### R4-1 was a reasoning error and is recorded as one
+
+Round 3 left this guard off deliberately and wrote the argument down: it is not a *complete*
+staleness detector, since a withholding can move `NET_PAYABLE` without moving the §F status the
+arbitration reads. True — and it does not support the conclusion. **Incomplete is not useless.** When
+the list has moved past the bundle, the bundle is stale beyond doubt and every ceiling below comes
+from its ledger. The correct handling of a partial signal is to use it and refuse to claim more for
+it than it gives, which is what the code now says in place of the old justification.
+
+### R4-3 fixes the stuck-key rule at the root rather than for a third instance
+
+`7B-iii-g` F2, round 1 F3, and now this are one rule arriving three times. The first two were fixed
+by naming a settling read; that kept failing because the read had to identify the key by the ROW it
+named, and a row does not always survive its own command. Scoping the key to the claim — the shape
+`com:sodgrant:<bill>:<actor>` had all along — makes **absence** settle it, which is what absence
+means once the parent is gone.
+
+### Reproduce-first
+
+All three verified RED against the pre-fix code, then GREEN:
+
+- **R4-1** — with the list newer than the bundle, all four controls were **offered**; now all four refused.
+- **R4-2** — with `com:pay:bill-1:appr-1` pending and `paid = 0.00`, Supersede was **offered**; now refused, while a payment queued on another claim still constrains nothing.
+- **R4-3** — a claim read carrying no rows settled nothing; now it settles every key scoped to that claim, and a read of another claim settles none of them.
+
+**Gates:** `pnpm check` EXIT 0 — web 720/720, API 781/781; commercial suites 122/122.

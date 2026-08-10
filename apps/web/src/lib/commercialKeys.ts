@@ -209,10 +209,29 @@ export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
  *   record payment     the APPROVAL — payments race one authorised amount (§G bound 5)
  *   reverse            the PAYMENT — two reversals race one paid amount
  */
+/**
+ * Round 4 — every child key carries the CLAIM it settles under, following `com:sodgrant:`.
+ *
+ * The first three rounds keyed these on the child row alone and released them by asking the fresh
+ * claim read for the ids it returned. That works while the row survives, and a row does not always
+ * survive: a full release followed by a supersede is a legal FIFO sequence in which the release
+ * commits, the supersede commits because nothing is retained, and the next claim read carries no
+ * live certificate — so the withholding is simply gone, no id comes back, and the key is held for
+ * ever. The op settled and the button never re-enables.
+ *
+ * A key whose settling read cannot NAME it is stuck by construction, which is 7B-iii-g's F2 for
+ * the third time. Carrying the bill fixes it at the root: the read that covers the claim clears
+ * every key scoped to that claim, whether or not the row it named is still there — because ABSENCE
+ * is the effect when the parent is gone. `<billId>:<rowId>` keeps two withholdings on one claim
+ * independent, so nothing coalesces that should not.
+ */
 export const deductionCoalesceKey = (billId: string): string => `com:deduct:${billId}`;
-export const deductionReleaseCoalesceKey = (deductionId: string): string => `com:release:${deductionId}`;
-export const payCoalesceKey = (approvalId: string): string => `com:pay:${approvalId}`;
-export const reverseCoalesceKey = (paymentId: string): string => `com:payrev:${paymentId}`;
+export const deductionReleaseCoalesceKey = (billId: string, deductionId: string): string =>
+  `com:release:${billId}:${deductionId}`;
+export const payCoalesceKey = (billId: string, approvalId: string): string =>
+  `com:pay:${billId}:${approvalId}`;
+export const reverseCoalesceKey = (billId: string, paymentId: string): string =>
+  `com:payrev:${billId}:${paymentId}`;
 
 
 /**
@@ -318,11 +337,7 @@ export type CommercialRead = {
 } & (
   | { read: 'money' }
   | { read: 'bills' }
-  /** 7B-iii-d — `settledIds` carries the withholding, approval and payment ids this read actually
-   *  returned. A key naming a CHILD row cannot be matched from the bill id alone, and inferring
-   *  "any release on this claim" from a prefix would release a key for a withholding this read
-   *  never saw. The ids the read carries are the ids it can honestly settle. */
-  | { read: 'claim'; billId: string; settledIds?: readonly string[]; vendorId?: string }
+  | { read: 'claim'; billId: string }
   | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] }
 );
 
@@ -346,13 +361,12 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
         || coalesceKey.startsWith(`com:sodgrant:${r.billId}:`)
         // 7B-iii-d — the payer's chain settles here too: the claim bundle carries the deduction
         // ledger AND the payment ledger, so a fresh claim read is exactly when these become
-        // visible. The claim-keyed ones match directly; the approval-, payment- and
-        // withholding-keyed ones are released by the caller passing the ids this read returned,
-        // because a key naming a child row cannot be matched from the bill id alone.
+        // visible. Every one of them is scoped to the bill (round 4), so this read clears them
+        // whether or not the row each named survived the write — see the key comment above.
         || coalesceKey === deductionCoalesceKey(r.billId)
-        || (r.settledIds ?? []).some((id) => coalesceKey === deductionReleaseCoalesceKey(id)
-          || coalesceKey === payCoalesceKey(id) || coalesceKey === reverseCoalesceKey(id))
-        ;
+        || coalesceKey.startsWith(`com:release:${r.billId}:`)
+        || coalesceKey.startsWith(`com:pay:${r.billId}:`)
+        || coalesceKey.startsWith(`com:payrev:${r.billId}:`);
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;

@@ -1422,7 +1422,7 @@ describe('7B-iii-f round 5 — Supersede respects the cash the bundle is holding
       payments: { ...c.payments, paid },
     };
   };
-  const open = (paid: string) => {
+  const open = (paid: string, pending: string[] = []) => {
     useStore.setState(getInitialState());
     useStore.getState()._setGateway(null);
     const c = paidClaim(paid);
@@ -1431,6 +1431,7 @@ describe('7B-iii-f round 5 — Supersede respects the cash the bundle is holding
       commercialView: bundle(), commercialLoad: 'ready',
       commercialBills: [c.bill], commercialBillsLoad: 'ready',
       commercialClaims: { 'bill-1': c }, commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialPending: pending,
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -1447,6 +1448,26 @@ describe('7B-iii-f round 5 — Supersede respects the cash the bundle is holding
 
   it('…and is offered once it does not — the guard is precise, not merely strict', () => {
     expect((open('0.00').getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * Round 4, R4-2 — a conflict between two commands is not one-directional unless the bounds make
+   * it so.
+   *
+   * Round 3 closed this pair one way only: a pending supersede blocks a payment. The reverse
+   * ordering ends in a server refusal just as surely — the FIFO outbox applies the payment first,
+   * and the supersede is then refused because cash now stands against the certificate. `paid` is
+   * 0.00 here and cannot see it, because the payment has not landed yet. The PENDING KEY can.
+   */
+  it('is withheld while a payment on this claim is still QUEUED, which `paid` cannot see', () => {
+    expect((open('0.00', ['com:pay:bill-1:appr-1'])
+      .getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled,
+      'cash the outbox will apply first is still cash standing against this certificate').toBe(true);
+  });
+
+  it('…and a payment queued on ANOTHER claim constrains this one not at all', () => {
+    expect((open('0.00', ['com:pay:bill-9:appr-9'])
+      .getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -1553,7 +1574,7 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
 
   const openPayments = (o: {
     pending?: string[]; role?: string; approvable?: string | null;
-    certificateId?: string;
+    certificateId?: string; staleBundle?: boolean;
   } = {}) => {
     const c = claim();
     const base: CommercialClaimView = {
@@ -1605,6 +1626,13 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
       commercialClaimLoad: { 'bill-1': 'ready' },
       commercialPending: o.pending ?? [],
     });
+    if (o.staleBundle === true) {
+      // a LIST copy strictly NEWER than the bundle's: the claim has moved on the server, so every
+      // ceiling the bundle's ledger carries is known to be old
+      useStore.setState({
+        commercialBills: [{ ...base.bill, status: 'approved-for-payment', statusChangedAt: at(9) }],
+      });
+    }
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
     fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
@@ -1761,6 +1789,36 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
     fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.00' } });
     expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
       'what no approval has claimed is free to withhold').toBe(false);
+  });
+
+  /**
+   * Round 4, R4-1 — a ceiling computed from a bundle the list has moved past.
+   *
+   * Round 3 left this guard off the settlement controls, arguing it is not a COMPLETE staleness
+   * detector — a withholding can move `NET_PAYABLE` without moving the §F status this arbitration
+   * reads. True, and it does not support the conclusion: incomplete is not useless. When the list
+   * IS strictly newer, the bundle is stale beyond doubt and every ceiling below comes from its
+   * ledger.
+   */
+  it('will not settle anything from a claim copy the list has already moved past', () => {
+    const r = openPayments({ staleBundle: true });
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'the payable this is measured against is known to be old').toBe(true);
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled,
+      'so is the approval balance').toBe(true);
+    fireEvent.change(r.getByTestId('reverse-payment'), { target: { value: 'pay-1' } });
+    fireEvent.change(r.getByTestId('reverse-amount'), { target: { value: '5.00' } });
+    fireEvent.change(r.getByTestId('reverse-reason'), { target: { value: 'bank returned it' } });
+    expect((r.getByTestId('reverse-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('release-deduction'), { target: { value: 'ded-1' } });
+    fireEvent.change(r.getByTestId('release-amount'), { target: { value: '5.00' } });
+    fireEvent.change(r.getByTestId('release-reason'), { target: { value: 'work made good' } });
+    expect((r.getByTestId('release-bill-1') as HTMLButtonElement).disabled).toBe(true);
   });
 
   /**

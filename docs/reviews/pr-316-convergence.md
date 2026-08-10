@@ -147,6 +147,49 @@ If that quantity is not in the contract, the contract is the fix — never a nea
 
 ---
 
+## Round 4 — three findings, and a fourth kind of mistake
+
+Four finding-bearing heads: 7 + 6 + 5 + 3 = **twenty-one findings**, and the count is falling. Round
+4's three are not coverage (round 2) and not fidelity (round 3). They are all cases where I reasoned
+about a command **against a world that holds still**.
+
+| # | What I assumed would not change | What actually happens |
+|---|---|---|
+| R4-1 | the bundle I compute a ceiling from is current | the list can refresh past it, and every figure below is then known-old |
+| R4-2 | a supersede blocks a payment, so the pair is handled | the FIFO outbox can apply a queued PAYMENT first, and the supersede is then refused |
+| R4-3 | the row a key names is still there when the settling read lands | a full release followed by a supersede leaves no live certificate, so no id comes back and the key is held for ever |
+
+The write-ahead outbox exists *precisely because* the world does not hold still between queueing a
+command and its landing. Three rounds of gates were written as though it did.
+
+### R4-1 is a reasoning error, not an oversight, and worth stating as one
+
+Round 3 deliberately left the freshness guard off the settlement controls, and wrote the argument
+down: the guard is not a complete staleness detector, because a withholding can move `NET_PAYABLE`
+without moving the §F status the arbitration reads. **That argument is true and it does not support
+the conclusion.** Incomplete is not useless. When the list *has* moved past the bundle, the bundle is
+stale beyond doubt, and every ceiling those controls compare against comes from its ledger.
+
+I rejected a partial signal because it was not a total one. The correct handling of a partial signal
+is to use it and to refuse to claim more for it than it gives — which is what the code now says.
+
+### R4-3 is the stuck-key rule for the THIRD time, and this fix is at the root
+
+`7B-iii-g` F2 (a key with no release path), round 1 F3 (the advance key), and now this. The first two
+were fixed by naming a settling read. That kept failing because the read was asked to identify the
+key by the ROW it named, and a row does not always survive its own command.
+
+The fix is to make the key carry the scope that settles it — `com:release:<bill>:<row>`, following
+`com:sodgrant:<bill>:<actor>`, which had this shape all along. The claim read then clears every key
+scoped to that claim **whether or not the row survived**, because absence IS the effect once the
+parent is gone. `settledIds` is deleted rather than extended; a mechanism that has to be handed a
+list of what to forgive is the wrong mechanism.
+
+**Checkable form, added to rounds 2 and 3:** *a gate is a claim about the world at LANDING time, not
+at render time. For each one ask: what else may be queued, and what may have moved since this read?*
+
+---
+
 ## What this head does NOT do
 
 It does not add a client-side model of §I standing. The certifier-self-approval gate compares
