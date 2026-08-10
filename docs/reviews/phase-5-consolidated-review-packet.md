@@ -108,20 +108,19 @@ cleverer.
 ## 4. The pilot acceptance chain
 
 `apps/web/tests/e2e-api/commercial-pilot.spec.ts` — real browser, live PostgreSQL, both capability
-states, 32/32 in outbox mode, 32/32 consecutively (re-runnable), 32/32 in legacy mode.
+states. **32/32 outbox · 32/32 consecutively (re-runnable) · 32/32 legacy.**
 
 The browser drives verification → certification → withholding → approval → payment → reversal, plus
-a vendor advance that names no claim. What the chain surfaced is worth recording, because every item
-is a product rule the spec had to obey rather than a test detail:
+a vendor advance. The fixture stops at `submitted` deliberately: everything after it is what §M
+exists to put in front of a person, and API-driving the interesting half would prove the API rather
+than the surface.
 
-- **§L** activation demands a plan and a real operator identity.
-- **§B** a PO cannot be issued with an unattributed line.
-- **§I twice** — the evidence recorder may not certify, and the certifier may not approve. A
-  one-person pilot site needs BOTH exceptions, each granted by a second pmc against the claim state
-  as it stood at that moment (a different state each time, because certifying and withholding both
-  move the revision).
-- **ordering** — `materials` must be enabled before `commercial`, because a commercial claim is
-  bounded by Phase 3's facts. The phase dependency showing up in the operator's runbook.
+Four product rules the chain surfaced, none of them test detail: **§L** activation demands a plan
+and a real operator identity; **§B** a PO cannot be issued with an unattributed line; **§I twice** —
+the evidence recorder may not certify and the certifier may not approve, so a one-person site needs
+both exceptions, each granted by a second pmc against the claim state as it stood at that moment;
+and **ordering** — `materials` must be enabled before `commercial`, the phase dependency appearing
+in the operator's runbook.
 
 Every §F transition is confirmed landed against the server before the next control is touched: a
 write-ahead surface reports a click as saved, so "the button was clickable" is not evidence the
@@ -131,74 +130,50 @@ claim moved.
 
 The 7B frontend was split four ways and then 7B-iii nine ways, on measured evidence each time. The
 splits worked where they were drawn by a dependency and not by a module boundary — the lesson
-7B-iii-b paid twenty-five findings over seven heads to learn, and which is written into STATUS as
-three rules.
+7B-iii-b paid twenty-five findings over seven heads to learn, written into STATUS as three rules.
 
-The last unit, 7B-iii-d, took four finding-bearing heads and twenty-one findings, and its
-convergence audit (`docs/reviews/pr-316-convergence.md`) names three distinct roots in sequence:
-coverage (a rule reached the controls I was holding in mind, not the set), **fidelity** (each gate
-compared the nearest available signal rather than the predicate the server tests), and **temporal
-assumption** (each gate was reasoned out against a world that holds still, when the write-ahead
-outbox exists precisely because it does not).
+The last unit, 7B-iii-d, took four finding-bearing heads and twenty-one findings; its convergence
+audit (`docs/reviews/pr-316-convergence.md`) names three roots in sequence: coverage (a rule reached
+the controls I was holding in mind, not the set), **fidelity** (each gate compared the nearest
+available signal rather than the predicate the server tests), and **temporal assumption** (each gate
+was reasoned out against a world that holds still, when the write-ahead outbox exists precisely
+because it does not).
 
-The fidelity root is the one that changed this phase's shape. Three of its findings could not be
-fixed on the client at all, because the quantity the gate needed was not in the contract — and all
-three landed on exactly two controls. That is what drew the 7B-iii-d / 7B-iv seam: **the seam is
-where the client's information runs out.** 7B-iv answers it contract-first, exposing
-`VendorBillDto.lifecycleVersion`, an `approvePreflight` carrying the payment rule's grant state, and
-the vendor advances read — after which each gate compares exactly what the server compares, and the
-freshness guard that rounds 3 and 4 argued over becomes complete rather than partial.
+Fidelity is the root that changed this phase's shape. Three of its findings could not be fixed on
+the client at all — the quantity the gate needed was not in the contract — and all three landed on
+exactly two controls. That drew the 7B-iii-d / 7B-iv seam: **the seam is where the client's
+information runs out.** 7B-iv answers it contract-first with `VendorBillDto.lifecycleVersion`, an
+`approvePreflight` carrying the payment rule's grant state, and the vendor advances read — after
+which each gate compares exactly what the server compares, and the freshness guard rounds 3 and 4
+argued over becomes complete rather than partial.
 
 The rule the phase leaves behind: *a gate may only compare the quantity the server compares; if that
 quantity is not in the contract, the contract is the fix, never a nearer-to-hand stand-in.*
 
-## 6. What comes next — final clarified owner direction, 2026-08-10
+## 6. What comes next
 
-**The release target is a complete, production-usable Vitan platform for the owner's organisation
-AND authorized external collaborators using Vitan itself.** The two "external" phases are not
-equivalent, and the distinction is which kind of external each one means:
+Authoritative version in `docs/STATUS.md`; the decision in brief.
 
-| Phase | What "external" means | Disposition |
-|---|---|---|
-| **6** — external collaboration | external *people and companies* using Vitan itself: supplier/contractor collaboration, tightly scoped access, guest `Company` → own `Organization` promotion where planned | **IN THIS RELEASE, and next** |
-| **7** — external-system integration | external *software*: accounting, GST, bank, RedBracket or any vendor-specific adapter or live external API (§23's Stage-2 boundary) | **DEFERRED** future-version scope; not completed |
+The two "external" phases are not equivalent, and which kind of external each means decides the
+order. **Phase 6 — external COLLABORATION** (external people and companies using Vitan itself:
+scoped supplier/contractor access, guest `Company` → own `Organization` promotion) **is in this
+release and is next.** **Phase 7 — external-SYSTEM integration** (accounting, GST, bank,
+RedBracket; §23's Stage-2 boundary) **is deferred future-version scope.** Neither is completed.
 
-Order: **Phase 5 → Phase 6 → standalone-V1 completion gate + integrated live-pilot release.**
+Order: **Phase 5 → Phase 6 → standalone-V1 completion gate + integrated live-pilot release.** The
+gate runs after Phase 6 so collaborator access and tenancy are inside what it certifies, and it
+covers the whole product rather than this packet's browser chain.
 
-### Phase 6's authority rule, stated before any of it is designed
+**Phase 6's authority rule, recorded before any of it is designed:** a collaborator surface widens
+who can SEE and SUPPLY — never who can certify a claim or release money. Internal authority for
+verification, certification, approval and payment stays attributable and cannot be delegated
+accidentally. That is §I and the §G bounds applied to a wider audience, which is the sense in which
+Phase 5 was Phase 6's prerequisite.
 
-Phase 6 exposes **only project/company-authorized collaboration facts and actions.** The internal
-authority for verification, certification, approval and payment stays attributable and **cannot be
-delegated accidentally.** A collaborator surface widens who can SEE and SUPPLY — never who can
-certify a claim or release money.
-
-That is not a new rule; it is §I and the §G bounds applied to a wider audience. Phase 5 already
-makes every one of those acts attributable to a resolved actor and refuses the forbidden pairings,
-so Phase 6 inherits the guarantee rather than re-deriving it — which is exactly what "stable
-internal workflows, permissions and audit trails are prerequisites for exposing the product to other
-companies" meant in the phase intent map.
-
-### Then the standalone-V1 completion gate
-
-It runs **after** Phase 6, precisely so collaborator access and tenancy are inside what it
-certifies. An evidence-led audit of the actual product, not a feature phase:
-
-- administration and password login; project-scoped dashboard, inbox and schedule;
-- decisions, drawings, inspections, activities and daily logs;
-- materials, labour and commercial control;
-- **collaborator access and tenancy**;
-- cross-module reporting and projections; offline and error states;
-- production migration, backup, restore, health, security and observability;
-- onboarding and user documentation; and a real-project acceptance run.
-
-It does not reopen cleared architecture and does not duplicate delivered modules.
-
-### Integration capability is preserved; integrations are not built
-
-What stays and stays tested: versioned public contracts and events, the transactional outbox,
-adapter/connector boundaries, idempotency and reconciliation semantics, auditability, configuration
-seams. What this release adds: **no vendor-specific adapter, no external credentials, no external
-schema assumptions, no external calls.** That is what keeps Phase 7 cheap when it is wanted.
+**Integration capability is preserved; integrations are not built.** Versioned contracts and events,
+the outbox, adapter boundaries, idempotency and reconciliation, auditability and configuration seams
+all stay and stay tested — while this release adds no vendor-specific adapter, no external
+credentials, no external schema assumptions and no external calls.
 
 ## 7. Gates at this head
 

@@ -6,32 +6,14 @@ import { join } from 'node:path';
 
 /**
  * Phase 5 Task 7B-iv (§M) — the pilot COMMERCIAL acceptance chain, in a REAL browser over live
- * PostgreSQL, in BOTH capability states.
+ * PostgreSQL, in BOTH capability states. Rationale in `docs/reviews/phase-5-consolidated-review-packet.md` §4.
  *
- * The chain a practice actually walks: a bounded vendor claim exists (API fixture: procure →
- * accept → lodge → submit), and the BROWSER then drives the money — open verification, verify
- * against the §E triple, certify, withhold retention, APPROVE, PAY, REVERSE — plus a vendor
- * ADVANCE, which names no claim at all. A second PLAIN project proves the INERT non-pilot state:
- * no Commercial nav, and the reads 404.
+ * Every test provisions its OWN vendor, claim and counterparty under a unique tag, so the suite is
+ * self-contained and re-runnable consecutively in legacy AND outbox sender modes.
  *
- * Why the fixture stops at `submitted`: everything from verification onward is what §M exists to
- * put in front of a person, and a chain that API-drives the interesting half proves the API, not
- * the surface. The steps before it are Phase 3's, already cleared, and re-driving them through the
- * browser would test the materials pilot a second time.
- *
- * Determinism: every test provisions its OWN vendor, claim and counterparty under a unique tag, so
- * the suite is self-contained and re-runnable consecutively in legacy AND outbox sender modes. No
- * step depends on rows another test left behind.
- */
-
-/**
- * SERIAL, and the reason is §L rather than convenience. Activation refuses to enable `commercial`
- * while any LIVE purchase-order line is unattributed — and before the capability is on, issuing a
- * PO attributes nothing (there is no commercial surface yet). Under `fullyParallel` a second
- * worker can therefore issue an order into the shared pilot project between this file's
- * `beforeAll` and its enablement, leaving exactly the state activation is designed to refuse.
- * One worker, in order, makes the ordering the operator's runbook describes the ordering the
- * suite actually walks.
+ * SERIAL by necessity, not preference: §L refuses to enable `commercial` while any LIVE PO line is
+ * unattributed, and before the capability is on an issue attributes nothing — so under
+ * `fullyParallel` another worker can create exactly the state activation is designed to refuse.
  */
 test.describe.configure({ mode: 'serial' });
 
@@ -67,8 +49,7 @@ async function get(request: APIRequestContext, token: string, path: string): Pro
   return res.json();
 }
 
-/** The established flow, taken verbatim from the cleared materials/labour pilots rather than
- *  re-derived: the project-switcher may already show the target, so clicking it blind is a race. */
+/** Verbatim from the cleared materials/labour pilots: the switcher may already show the target. */
 async function signInToProject(page: Page, email: string, projectName: string): Promise<void> {
   await page.goto('/');
   await page.getByRole('button', { name: /team member/i }).click();
@@ -118,11 +99,8 @@ async function createActivity(request: APIRequestContext, token: string, project
   return (res.activities as Array<{ id: string; name: string }>).find((a) => a.name === name)!.id;
 }
 
-/**
- * FIXTURE (API-only): a project with a cost head and budget, a fully received-and-accepted material
- * PO line, and a SUBMITTED vendor claim bounded by it — the state a payer's day begins in. The
- * browser drives everything from verification onward.
- */
+/** FIXTURE (API-only): cost head, budget, a received-and-accepted material PO line, and a SUBMITTED
+ *  claim bounded by it — the state a payer's day begins in. The browser drives the rest. */
 async function claimAwaitingVerification(
   request: APIRequestContext, token: string, projectId: string, activityId: string, tag: string,
 ): Promise<{ billId: string; vendorId: string; headCode: string }> {
@@ -162,11 +140,9 @@ async function claimAwaitingVerification(
   const po = await post(request, token, `/projects/${projectId}/pos`, {
     comparisonId: cmp.comparison.id, lines: [{ requisitionLineId: lineId, purchaseQty: qty }],
   });
-  // §B/§C — ISSUING is what turns an order into a COMMITMENT, so the cost head that carries it is
-  // named in the SAME call. Not a later attribution: `commercial/attributions` RE-classifies a
-  // commitment that already has one, and a commitment with no head at all is money the budget
-  // cannot see. The server refuses an unattributed issue, which is how this fixture learned the
-  // shape — the rule is the product's, not the test's.
+  // §B/§C — ISSUING makes an order a COMMITMENT, so its cost head is named in the SAME call.
+  // `commercial/attributions` RE-classifies one that already has a head; it cannot create the
+  // first. The server refuses an unattributed issue — the rule is the product's, not the test's.
   const draftLine = (await get(request, token, `/projects/${projectId}/pos/${po.id}`)).versions.at(-1).lines[0];
   await post(request, token, `/projects/${projectId}/pos/${po.id}/issue`, {
     costHeads: [{ poLineId: draftLine.id, costHeadCode: headCode }],
@@ -203,17 +179,13 @@ test.beforeAll(async ({ request }) => {
   pilotId = await ensureProject(request, home, orgId, PILOT_NAME);
   plainId = await ensureProject(request, home, orgId, PLAIN_NAME);
 
-  // §D/§L — the pilot is enabled on the PILOT project only, through the operator CLI: the sole
-  // path. `commercial` is the one capability whose activation is NOT a no-op: a project can
-  // already hold live purchase orders, and flipping the flag without attributing them would leave
-  // `COMMITTED` reading ₹0 against real vendor obligations. So the CLI demands an activation PLAN,
-  // and this spec supplies one — the operator experience §L specifies, exercised rather than
-  // described. A fresh pilot project holds no live lines, so the mapping arrays are empty and the
-  // plan carries only the head the fixture attributes against.
-  // …and `materials` FIRST, because a commercial claim is bounded by ordered authority and
-  // accepted delivery — Phase 3's facts. The procurement and stock routes this fixture walks are
-  // gated on that capability, so a commercial pilot without it has nothing to make a claim about.
-  // That ordering is the phase dependency showing up in the operator's runbook, not a test detail.
+  // §D/§L — enabled on the PILOT project only, through the operator CLI (the sole path).
+  // `commercial` activation is NOT a no-op: it must attribute every live PO line, so the CLI
+  // demands a PLAN. Supplying one exercises the operator experience §L specifies rather than
+  // describing it. A fresh project holds no live lines, so the mapping arrays are empty.
+  // …and `materials` FIRST: a commercial claim is bounded by ordered authority and accepted
+  // delivery (Phase 3's facts), and those routes are gated on that capability. The phase
+  // dependency showing up in the operator's runbook, not a test detail.
   try {
     execSync(
       `pnpm --filter api capability:enable --project ${pilotId} --capability materials --operator ci@vitan.in --reason "Task 7B-iv acceptance"`,
@@ -266,13 +238,9 @@ test('PILOT §M chain: browser VERIFIES → CERTIFIES → WITHHOLDS → APPROVES
   await page.getByTestId(`commercial-claim-row-${billId}`).click();
 
   /**
-   * Each §F transition is confirmed to have LANDED before the next control is touched.
-   *
-   * Not politeness: every one of these carries a viewed-fact pin, and the server refuses a pin the
-   * claim has moved past. A surface that reports a queued command as saved will happily let a
-   * second click ride on a first that was refused, so "the button was clickable" is not evidence
-   * the claim moved. Asserting the SERVER's status between steps is what makes this a chain rather
-   * than five hopeful clicks.
+   * Each §F transition is confirmed LANDED before the next control is touched. Every one carries a
+   * viewed-fact pin the server refuses if the claim has moved, and a write-ahead surface will let a
+   * second click ride on a first that was refused — so "the button was clickable" is not evidence.
    */
   const landed = async (status: string) => {
     await expect(async () => {
@@ -291,22 +259,17 @@ test('PILOT §M chain: browser VERIFIES → CERTIFIES → WITHHOLDS → APPROVES
   await landed('verified');
 
   /**
-   * §I — and this is the rule working, not an obstacle to route around.
-   *
-   * The pmc driving this browser also RECORDED the evidence (the stock acceptance in the fixture),
-   * and `evidence-recorder-may-not-certify` forbids the pairing. A two-person practice would hand
-   * the claim to someone else; a one-person site needs the exception MODELLED rather than banned,
-   * so a second pmc authorises it against this exact claim state and the act is attributable to
-   * them. Granted here through the API because §I forbids a SELF-grant — the browser user cannot
-   * be both parties, which is the whole point.
+   * §I working, not an obstacle to route around. This browser's pmc also RECORDED the evidence, and
+   * `evidence-recorder-may-not-certify` forbids the pairing — so a second pmc authorises it against
+   * this exact claim state, attributably. Over the API because §I forbids a SELF-grant: the browser
+   * user cannot be both parties, which is the whole point.
    */
-  // the actor id comes from the claim's own preflight — the field §I added precisely because a
-  // session carries a role and a name but never an identity an authorisation form can name
+  // the actor id comes from the claim's own preflight — the field §I added because a session
+  // carries a role and a name but never an identity an authorisation form can name
   const callerActorId = (await get(request, pmcPilot, `/projects/${pilotId}/commercial/claims/${billId}`))
     .certifyPreflight.callerActorId;
-  // …and the grantor's OWN reading supplies the three viewed facts the grant is pinned to (7B-iii-h:
-  // an authorisation records the claim state it was justified against, so it cannot silently carry
-  // over onto a claim its approver never saw). Read as the GRANTOR, because it is their review.
+  // …and the grantor's OWN reading supplies the three viewed facts the grant pins (7B-iii-h: an
+  // authorisation records the claim state it was justified against). Read as the GRANTOR.
   const asGrantor = await get(request, secondPmcToken, `/projects/${pilotId}/commercial/claims/${billId}`);
   const liveVersionId = (asGrantor.bill.versions as Array<{ id: string; live: boolean }>).find((v) => v.live)!.id;
   await post(request, secondPmcToken, `/projects/${pilotId}/commercial/bills/sod-grant`, {
@@ -333,17 +296,12 @@ test('PILOT §M chain: browser VERIFIES → CERTIFIES → WITHHOLDS → APPROVES
   await expect(page.getByTestId('payments-approvable')).toContainText('9000.00', { timeout: 15_000 });
 
   /**
-   * §I again, and its OTHER rule — which is exactly what this unit exposed to the client.
-   *
-   * The browser user has now CERTIFIED this claim, so `certifier-may-not-approve` forbids them
-   * approving its payment. On a two-person practice the claim moves to someone else; on a
-   * one-person pilot site the exception is granted, by the same second pmc, against the claim
-   * state as it stands NOW — which is a different state from the certification grant, because
-   * certifying and withholding both moved the revision.
-   *
-   * Before 7B-iv the screen could not see this at all: it read `certifyPreflight`, whose rule is
-   * `evidence-recorder-may-not-certify`, so a live CERTIFY grant would have enabled this button
-   * and the server would have refused the approval after the outbox reported it saved.
+   * §I again, its OTHER rule — the one this unit exposed to the client. The browser user has now
+   * CERTIFIED, so `certifier-may-not-approve` forbids them approving; the second pmc grants it
+   * against the claim state as it stands NOW, which differs from the certification grant because
+   * certifying and withholding both moved the revision. Before 7B-iv the screen read
+   * `certifyPreflight` here — a different rule — so a live CERTIFY grant would have enabled this
+   * button and the server would have refused the payment after the outbox reported it saved.
    */
   const nowAsGrantor = await get(request, secondPmcToken, `/projects/${pilotId}/commercial/claims/${billId}`);
   await post(request, secondPmcToken, `/projects/${pilotId}/commercial/bills/sod-grant`, {
