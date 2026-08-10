@@ -86,6 +86,7 @@ describe('commercial contract closure (Phase 5 Task 2 convergence)', () => {
     'commercial.cash-forecast': "Get('commercial/cash-forecast')",
     'commercial.money-position': "Get('commercial/money-position')",
     'commercial.claim': "Get('commercial/claims/:billId')",
+    'commercial.advances': "Get('commercial/advances')",
   };
 
   it('every declared command has an executeCommand site with that exact commandType', () => {

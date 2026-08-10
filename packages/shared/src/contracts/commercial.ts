@@ -133,6 +133,12 @@ export const COMMERCIAL_QUERIES = [
   // Same reason as `money-position` one page over: five separate reads of one claim can contradict
   // each other, and each of those reads already takes a snapshot for that reason internally.
   'commercial.claim',
+  // Phase 5 Task 7B-iv (§H) — every advance on the project, with each counterparty's position.
+  // Task 6C shipped the advance COMMAND with no read at all, and the §M surface found what that
+  // costs: an advance names a vendor, no claim read can carry it, and the control's pending key
+  // therefore had nothing that could ever settle it. A write whose effect no read carries is not
+  // finished, and the fix is the read rather than a cleverer key.
+  'commercial.advances',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -431,6 +437,17 @@ export interface VendorBillDto {
   disputeReason: string | null;
   createdAt: string;
   createdById: string;
+  /**
+   * 7B-iv — the claim's monotonic revision, on the LIST as well as in the bundle.
+   *
+   * An approval echoes the revision it was authorised against and the server refuses it if the
+   * claim has moved. Without this field the only comparable signal was `status`/`statusChangedAt`,
+   * and those are the wrong quantity: a withholding recorded or released moves `NET_PAYABLE` and
+   * advances the revision WITHOUT moving the label, so two reads could agree on the status while
+   * the pin the client is about to send was already dead. Carrying the revision lets a reader
+   * compare the exact number the server compares, instead of a proxy for it.
+   */
+  lifecycleVersion: number;
   versions: VendorBillVersionDto[];
 }
 
@@ -694,6 +711,21 @@ export interface VendorAdvancePositionDto {
   recoverable: string;
 }
 
+/**
+ * The `commercial.advances` read (7B-iv): every advance on this project, with the position each
+ * counterparty stands at.
+ *
+ * It exists because a WRITE with no read is a control whose effect nobody can see — and, concretely,
+ * because the advance command's pending key had no settling read at all: an advance is VENDOR-keyed
+ * and no claim read can name it, so the control disabled itself for ever after one use. A key whose
+ * effect no read carries is stuck by construction, and the fix is the read, not a cleverer key.
+ */
+export interface VendorAdvanceListDto {
+  advances: VendorAdvanceDto[];
+  /** one row per counterparty that has ever been advanced on this project */
+  positions: VendorAdvancePositionDto[];
+}
+
 /** Phase 5 Task 6C (§H) — cash paid to a counterparty ahead of any certified claim. */
 export interface VendorAdvanceDto {
   id: string;
@@ -881,6 +913,30 @@ export interface CommercialClaimDto {
   measurements: Record<string, MeasurementRegisterDto>;
   /** §I — what authorisation stands for THE CALLER on this claim's live version. */
   certifyPreflight: CertifyPreflightDto;
+  /** §I — the same question for the OTHER rule. See `ApprovePreflightDto`. */
+  approvePreflight: ApprovePreflightDto;
+}
+
+/**
+ * 7B-iv (§I) — what authorisation stands for THE CALLER to APPROVE this claim's payment.
+ *
+ * §I has TWO rules and they are not interchangeable: `evidence-recorder-may-not-certify` governs
+ * certification, `certifier-may-not-approve` governs payment approval, and a grant issued for one
+ * is refused for the other by the shared predicate. `certifyPreflight` answers only the first, so
+ * a client that consulted it to gate APPROVAL was wrong in both directions — a live certification
+ * grant would have enabled a self-approval the server refuses, and a real payment grant stayed
+ * invisible so the control stayed disabled for someone who was in fact authorised.
+ *
+ * Answered by the server for the reason `certifyPreflight` is: the alternative is the browser
+ * modelling an authority rule, which is a second implementation and a worse one.
+ */
+export interface ApprovePreflightDto {
+  /** the caller's standing under `certifier-may-not-approve`, resolved against the live version */
+  grantState: SodGrantState;
+  grantId: string | null;
+  /** Whether the CALLER is the actor who certified this claim — the pairing the rule forbids.
+   *  Server-resolved because the session carries a role and a name, never an actor id. */
+  callerIsCertifier: boolean;
 }
 
 

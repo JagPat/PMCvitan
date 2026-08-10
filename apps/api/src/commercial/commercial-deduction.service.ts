@@ -6,7 +6,7 @@ import {
   type BillDeductionDto,
   type BillDeductionLedgerDto,
   type DeductionType,
-  type VendorAdvanceDto,
+  type VendorAdvanceDto, type VendorAdvanceListDto,
   type VendorBillStatus,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
@@ -511,6 +511,56 @@ export class CommercialDeductionService {
    * after the bill so the order stays total and no honest transaction waits on it in the other
    * direction. `phase5_t6c_recoverable_check` takes the same row for the same reason.
    */
+  /**
+   * 7B-iv (§H) — every advance on this project, with each counterparty's position.
+   *
+   * Task 6C shipped `commercial.advance.pay` with NO read at all, and the §M surface then found
+   * what that costs: an advance is VENDOR-keyed, no claim read can name it, and the control's
+   * pending key therefore had nothing that could ever settle it — one advance and the button was
+   * dead until a reload. A write whose effect no read carries is not finished.
+   *
+   * ONE repeatable-read transaction, for the reason every §M read takes one: the rows and the
+   * positions folded from them must come from a single instant, or a recovery committing between
+   * the two shows a list that contradicts its own totals.
+   */
+  async listAdvances(projectId: string, user: AuthUser): Promise<VendorAdvanceListDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertRead(user);
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.vendorAdvance.findMany({
+        where: { projectId }, orderBy: { paidAt: 'desc' },
+      });
+      const vendorIds = [...new Set(rows.map((r) => r.vendorId))].sort();
+      const positions = [];
+      for (const vendorId of vendorIds) {
+        const { advanced, recovered, recoverable } = await this.deductions.recoverableFor(tx, projectId, vendorId);
+        positions.push({
+          vendorId,
+          advanced: advanced.toFixed(2),
+          recovered: recovered.toFixed(2),
+          recoverable: recoverable.toFixed(2),
+        });
+      }
+      return { advances: rows.map((a) => this.toAdvanceDto(a)), positions };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
+
+  private toAdvanceDto(a: {
+    id: string; vendorId: string; amount: Prisma.Decimal; reason: string; method: string;
+    reference: string | null; paidAt: Date; paidById: string;
+  }): VendorAdvanceDto {
+    return {
+      id: a.id,
+      vendorId: a.vendorId,
+      amount: a.amount.toFixed(2),
+      reason: a.reason,
+      method: a.method,
+      reference: a.reference,
+      paidAt: a.paidAt.toISOString(),
+      paidById: a.paidById,
+    };
+  }
+
   private async advanceById(projectId: string, id: string): Promise<VendorAdvanceDto> {
     const a = await this.prisma.vendorAdvance.findFirstOrThrow({ where: { projectId, id } });
     return {

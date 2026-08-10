@@ -39,7 +39,7 @@ const claim = (): CommercialClaimView => ({
   bill: {
     id: 'bill-1', vendorId: 'v-1', vendorBillNumber: 'V-1', status: 'certified',
     documentDate: '2026-08-20', statusChangedAt: '2026-08-21T00:00:00.000Z',
-    statusReason: null, disputeReason: null,
+    statusReason: null, disputeReason: null, lifecycleVersion: 0,
     createdAt: '2026-08-20T00:00:00.000Z', createdById: 'u-1',
     versions: [{
       id: 'ver-1', version: 1, supersedesVersion: null, claimedAmount: '100.00', lines: [],
@@ -63,6 +63,7 @@ const claim = (): CommercialClaimView => ({
   },
   measurements: {},
   certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self', lifecycleVersion: 0, sodCandidates: [] },
+  approvePreflight: { grantState: 'none', grantId: null, callerIsCertifier: false },
 });
 
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {

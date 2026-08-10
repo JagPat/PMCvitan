@@ -776,7 +776,7 @@ export class CommercialBillService {
     const rows = await this.prisma.vendorBill.findMany({
       where: { projectId },
       orderBy: { createdAt: 'desc' },
-      include: { versions: { orderBy: { version: 'asc' }, include: { lines: { orderBy: { id: 'asc' } } } } },
+      include: { versions: { orderBy: { version: 'asc' }, include: { lines: { orderBy: { id: 'asc' } } } }, revisionRow: true },
     });
     return { bills: rows.map((b) => serialize(b)) };
   }
@@ -798,14 +798,16 @@ export class CommercialBillService {
   ): Promise<VendorBillDto> {
     const row = await db.vendorBill.findFirst({
       where: { projectId, id: billId },
-      include: { versions: { orderBy: { version: 'asc' }, include: { lines: { orderBy: { id: 'asc' } } } } },
+      include: { versions: { orderBy: { version: 'asc' }, include: { lines: { orderBy: { id: 'asc' } } } }, revisionRow: true },
     });
     if (!row) throw new NotFoundException('Vendor bill not found in this project');
     return serialize(row);
   }
 }
 
-type BillRow = Prisma.VendorBillGetPayload<{ include: { versions: { include: { lines: true } } } }>;
+type BillRow = Prisma.VendorBillGetPayload<{
+  include: { versions: { include: { lines: true } }; revisionRow: true };
+}>;
 
 function serializeLine(l: BillRow['versions'][number]['lines'][number]): VendorBillLineDto {
   return {
@@ -835,6 +837,9 @@ function serialize(b: BillRow): VendorBillDto {
     disputeReason: b.disputeReason,
     createdAt: b.createdAt.toISOString(),
     createdById: b.createdById,
+    // 7B-iv — the revision the approval bound compares. A claim always has its row (the trigger
+    // opens one at insert), and 0 is the honest reading of a claim nothing has moved yet.
+    lifecycleVersion: b.revisionRow?.revision ?? 0,
     versions: b.versions.map<VendorBillVersionDto>((v) => ({
       id: v.id,
       version: v.version,
