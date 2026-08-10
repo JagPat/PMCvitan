@@ -1,7 +1,7 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import { ROLE_POLICY, type CertifyPreflightDto, type CommercialClaimDto, type MeasurementRegisterDto, type VendorBillDto } from '@vitan/shared';
+import { ROLE_POLICY, type ApprovePreflightDto, type CertifyPreflightDto, type CommercialClaimDto, type MeasurementRegisterDto, type VendorBillDto } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import { CapabilitiesService, COMMERCIAL_CAPABILITY } from '../platform/capabilities.service';
@@ -136,9 +136,22 @@ export class CommercialClaimQuery {
         )).filter((c) => c.userId !== user.sub),
       };
 
+      // §I's OTHER rule. Resolved from the SAME snapshot and the SAME live version, through the
+      // module that owns `certifier-may-not-approve`, so the payment surface can never gate itself
+      // on the certification answer — which is what it did before this field existed.
+      const approveResolved = liveVersionId === null
+        ? ({ state: 'none' } as const)
+        : await this.payments.resolveApproveGrant(tx, projectId, billId, liveVersionId, user.sub, asOf);
+      const approvePreflight: ApprovePreflightDto = {
+        grantState: approveResolved.state,
+        grantId: approveResolved.state === 'live' ? approveResolved.grant.id : null,
+        // the pairing §I forbids, decided here because the session carries no actor id
+        callerIsCertifier: certificate !== null && certificate.certifiedById === user.sub,
+      };
+
       return {
         bill, verification, certificate, deductions, payments, measurements,
-        certifyPreflight,
+        certifyPreflight, approvePreflight,
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }

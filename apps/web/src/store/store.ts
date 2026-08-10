@@ -65,6 +65,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
+import type { SodRule } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
@@ -73,7 +74,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -456,16 +457,18 @@ export interface AppActions {
    *  permissions, and each names the DOCUMENT it acts on, so an id cannot silently mean a
    *  different row later.
    *
-   *  `approvePayment` and `payAdvance` are deliberately NOT here. Both need a server fact this
-   *  contract does not expose — the `certifier-may-not-approve` grant state and the claim's
-   *  current revision for one, a read that carries a vendor's advances for the other — and a
+   *  `approvePayment` was deliberately NOT here: it needs server facts this contract did not
+   *  expose — the `certifier-may-not-approve` grant state and the claim's current revision — and a
    *  control whose authority is guessed client-side is the write-ahead lie this chain exists to
-   *  prevent. They land in 7B-iii-d-ii, contract first. */
+   *  prevent. 7B-iv adds them contract-first and the control with them. (`payAdvance` is 7B-vi.) */
   recordDeduction: (billId: string, type: string, amount: string, reason: string | null) => void;
   /** Round 4 — each takes the CLAIM as well as the row it acts on. The row is what the SERVER is
    *  told; the claim is what makes the key settleable, because the read that settles it covers a
    *  claim and a row can be gone by the time that read lands. */
   releaseDeduction: (billId: string, deductionId: string, amount: string, reason: string) => void;
+  /** the ONE command carrying a viewed-fact pin — the server refuses it if the claim has moved */
+  approvePayment: (billId: string, amount: string, lifecycleVersion: number) => void;
+  /** §H — names a VENDOR, not a claim: money paid before any claim exists */
   recordPayment: (billId: string, approvalId: string, amount: string, method: string, reference: string | null) => void;
   reversePayment: (billId: string, paymentId: string, amount: string, reason: string) => void;
   /** §I write (7B-iii-g) — the APPROVER authorises one actor for one otherwise-forbidden act.
@@ -477,6 +480,10 @@ export interface AppActions {
   grantSodException: (
     billId: string, actorId: string, reason: string,
     viewed: { versionId: string; status: string; lifecycleVersion: number },
+    /** WHICH §I rule is excused. Required rather than defaulted: the two rules govern different
+     *  acts, and a caller that does not say which one it means is a caller that will eventually
+     *  mean the wrong one. */
+    rule: SodRule,
   ) => void;
   /** §F/§I writes (7B-iii-f) — the certification authority chain. */
   /** …and the claim REVISION the certifier read, from the same authoritative claim reading that
@@ -1681,6 +1688,7 @@ export const useStore = create<Store>()(
       // a copy of its current answer, and a later widening of one must not silently widen five.
       recordDeduction: 'commercial.deduct',
       releaseDeduction: 'commercial.deduct.release',
+      approvePayment: 'commercial.approve-payment',
       recordPayment: 'commercial.record-payment',
       reversePayment: 'commercial.reverse-payment',
     } as const;
@@ -2892,6 +2900,7 @@ export const useStore = create<Store>()(
      * of claim A, and would let a slow A that nothing newer asked for be discarded — the same class
      * of defect the reservation-plan generation fixed in PR #208, avoided here rather than found.
      */
+
     loadCommercialClaim: (billId: string) => {
       if (!gateway) return Promise.resolve();
       if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
@@ -3071,6 +3080,13 @@ export const useStore = create<Store>()(
         `Release ${deductionId}`, 'Withholding released.',
       );
     },
+    approvePayment: (billId, amount, lifecycleVersion) => {
+      dispatchCommercial(
+        { t: 'approvePayment', input: { billId, amount, lifecycleVersion }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: approveCoalesceKey(billId) },
+        `Approve on ${billId}`, 'Payment approved.',
+      );
+    },
     recordPayment: (billId, approvalId, amount, method, reference) => {
       dispatchCommercial(
         { t: 'recordPayment', input: { approvalId, amount, method, reference }, idempotencyKey: newIdempotencyKey(),
@@ -3086,15 +3102,15 @@ export const useStore = create<Store>()(
         `Reverse ${paymentId}`, 'Payment reversed.',
       );
     },
-    grantSodException: (billId, actorId, reason, viewed) => {
+    grantSodException: (billId, actorId, reason, viewed, rule) => {
       dispatchCommercial(
         { t: 'grantSodException',
-          input: { billId, actorId, reason, ...viewed },
+          input: { billId, actorId, reason, rule, ...viewed },
           idempotencyKey: newIdempotencyKey(),
           // per PERSON, not per claim: two approvers may authorise two different actors on one
           // claim concurrently and both are real. What the key does NOT do is exempt the grant
           // from the claim's transition conflict — see `commercialWriteBlocked` (R5-1).
-          coalesceKey: sodGrantCoalesceKey(billId, actorId) },
+          coalesceKey: sodGrantCoalesceKey(billId, actorId, rule) },
         `Authorise ${actorId} on ${billId}`, 'Authorisation recorded.',
       );
     },

@@ -211,6 +211,73 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     return billId;
   };
 
+
+  // ── 7B-iv — the three facts the §M payer surface could not otherwise ask for ─────────────────
+
+  /**
+   * F4. The bill LIST must carry the revision an approval pins.
+   *
+   * A withholding moves `NET_PAYABLE` and advances the claim's revision WITHOUT moving the §F
+   * status label. A client comparing its open bundle against the list on `status`/`statusChangedAt`
+   * therefore sees two reads that agree while the pin it is about to send is already dead — the
+   * server refuses the approval after the write-ahead outbox reported it saved. Comparing the
+   * revision itself is the only comparison that answers the question the server asks.
+   */
+  it('7B-iv-1: a withholding advances the LIST revision without moving the status label', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);
+    const before = (await bills.list(projectId, pmc(projectId))).bills.find((b) => b.id === billId)!;
+
+    await deductions.record(projectId, {
+      billId, type: 'retention', amount: '10', reason: 'contractual retention',
+    }, pmc(projectId));
+
+    const after = (await bills.list(projectId, pmc(projectId))).bills.find((b) => b.id === billId)!;
+    expect(after.status, 'the label is the same, which is exactly the trap').toBe(before.status);
+    expect(after.statusChangedAt).toBe(before.statusChangedAt);
+    expect(after.lifecycleVersion, 'and the revision is NOT').toBeGreaterThan(before.lifecycleVersion);
+    // …and the list agrees with the bundle, so a client may compare the two directly
+    const claim = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(after.lifecycleVersion).toBe(claim.certifyPreflight.lifecycleVersion);
+  });
+
+  /**
+   * F2. §I has TWO rules, and a grant for one is not a grant for the other.
+   *
+   * `certifyPreflight` resolves `evidence-recorder-may-not-certify`. The payment service consumes
+   * only `certifier-may-not-approve`. A client that gated APPROVAL on the certification answer was
+   * wrong in both directions, and no field in the contract carried the right one.
+   */
+  it('7B-iv-2: a CERTIFY authorisation does not show up as permission to APPROVE', async () => {
+    const projectId = await freshProject();
+    const approver = await secondPmc(projectId);
+    const billId = await verifiedOnly(projectId);
+    await grantTo(projectId, billId, f.memberUser.id, approver);
+
+    const claim = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(claim.certifyPreflight.grantState, 'the certification rule IS authorised').toBe('live');
+    expect(claim.approvePreflight.grantState,
+      'and the payment rule is a different question with a different answer').toBe('none');
+    expect(claim.approvePreflight.grantId).toBeNull();
+  });
+
+  /**
+   * …and the pairing §I actually forbids is reported, because the session carries a role and a
+   * name but never an actor id — so the client cannot tell the certifier from anyone else.
+   */
+  it('7B-iv-3: the caller who certified this claim is told that they did', async () => {
+    const projectId = await freshProject();
+    const billId = await certifiedClaim(projectId);   // certified BY the pmc caller
+    const mine = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(mine.approvePreflight.callerIsCertifier).toBe(true);
+
+    // …and another reader of the same claim is not the certifier
+    await secondPmc(projectId);
+    const theirs = await claims.readClaim(projectId, billId, asUser(projectId, f.ownerUser.id));
+    expect(theirs.approvePreflight.callerIsCertifier).toBe(false);
+  });
+
+
   // ── 1 — composition: the bundle IS the six narrow reads ──────────────────────────────────────
 
   it('1: the bundle agrees field-for-field with the six reads it replaces', async () => {

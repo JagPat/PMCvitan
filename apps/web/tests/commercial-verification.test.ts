@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { SOD_RULES } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import {
   billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey, commercialWriteBlocked,
   COMMERCIAL_OUTBOX_OP_TYPES, normalizeCommercialOutbox,
   deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey,
-  reverseCoalesceKey,
+  reverseCoalesceKey, approveCoalesceKey,
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
@@ -495,36 +496,74 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
    */
   it('a pending claim transition BLOCKS a new authorisation on that claim', () => {
     expect(commercialWriteBlocked(
-      sodGrantCoalesceKey('bill-1', 'u-2'), [billTransitionCoalesceKey('bill-1', 'certify')],
+      sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.evidenceRecorderMayNotCertify), [billTransitionCoalesceKey('bill-1', 'certify')],
     ), 'a certify in flight is about to move every fact the grant pins').toBe(true);
     // …and the dispatcher REFUSES it, not merely the screen. An op it accepts has already been
     // persisted and reported as saved (Codex J1).
     s().certifyBill('bill-1', 'ver-1', 4);
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
   });
 
-  it('…but two authorisations for DIFFERENT people on one claim are independent', () => {
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
-    s().grantSodException('bill-1', 'u-3', 'covering leave', viewed);
+
+  /**
+   * 7B-iv — §I has TWO rules, and authorising a person to CERTIFY is a different act from
+   * authorising them to APPROVE. The key carries the rule for the same reason it carries the
+   * person: coalescing them would drop the second authorisation while the first is pending, and
+   * the approver would be told it saved.
+   */
+  it('the two §I rules are independent authorisations, not one', () => {
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.certifierMayNotApprove);
     expect(keys()).toEqual([
-      sodGrantCoalesceKey('bill-1', 'u-2'), sodGrantCoalesceKey('bill-1', 'u-3'),
+      sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.evidenceRecorderMayNotCertify),
+      sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.certifierMayNotApprove),
+    ]);
+    // …and the payload SAYS which rule, rather than relying on a server default
+    const rules = (s().outbox as unknown as Array<{ input: { rule: string } }>).map((o) => o.input.rule);
+    expect(rules).toEqual([SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove]);
+  });
+
+  it('…but two authorisations for DIFFERENT people on one claim are independent', () => {
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
+    s().grantSodException('bill-1', 'u-3', 'covering leave', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
+    expect(keys()).toEqual([
+      sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.evidenceRecorderMayNotCertify), sodGrantCoalesceKey('bill-1', 'u-3', SOD_RULES.evidenceRecorderMayNotCertify),
     ]);
     // and an EQUIVALENT one while pending still coalesces — the per-person key is a coalesce key
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     expect(keys()).toHaveLength(2);
+  });
+
+  /** Round 2 finding B — a grant pins `(status, lifecycleVersion)` and every FOLD write moves the
+   *  revision, so one queued behind a money write is refused `stale-version` after the outbox said
+   *  saved. Asserted for BOTH rules: the pinning is `asOf`, not the rule. */
+  it.each([
+    ['a withholding', deductionCoalesceKey('bill-1')],
+    ['an approval', approveCoalesceKey('bill-1')],
+    ['a payment', payCoalesceKey('bill-1', 'appr-1')],
+    ['a reversal', reverseCoalesceKey('bill-1', 'pay-1')],
+  ])('a pending %s BLOCKS a new authorisation on that claim, under either rule', (_what, moneyKey) => {
+    for (const rule of [SOD_RULES.evidenceRecorderMayNotCertify, SOD_RULES.certifierMayNotApprove]) {
+      expect(commercialWriteBlocked(sodGrantCoalesceKey('bill-1', 'u-2', rule), [moneyKey]),
+        `${rule}: the fold write in flight is about to move the revision this grant pins`).toBe(true);
+    }
+    // …and it is the CLAIM that is the resource: another claim's money write is not a conflict
+    expect(commercialWriteBlocked(
+      sodGrantCoalesceKey('bill-2', 'u-2', SOD_RULES.certifierMayNotApprove), [moneyKey],
+    ), 'blocking on an unrelated claim would strand a legitimate authorisation').toBe(false);
   });
 
   /** ONE-DIRECTIONAL by design: a certify arriving before its authorisation is refused by the
    *  server for a reason that is true and legible, not silently mis-pinned. */
   it('a pending authorisation does NOT block a claim transition', () => {
     expect(commercialWriteBlocked(
-      billTransitionCoalesceKey('bill-1', 'certify'), [sodGrantCoalesceKey('bill-1', 'u-2')],
+      billTransitionCoalesceKey('bill-1', 'certify'), [sodGrantCoalesceKey('bill-1', 'u-2', SOD_RULES.evidenceRecorderMayNotCertify)],
     )).toBe(false);
   });
 
   it('the authorisation carries the three facts its approver was looking at', () => {
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     expect((s().outbox[0] as unknown as { input: Record<string, unknown> }).input).toMatchObject({
       billId: 'bill-1', actorId: 'u-2', reason: 'only pmc on site',
       versionId: 'ver-1', status: 'verified', lifecycleVersion: 4,
@@ -533,7 +572,7 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
 
   it('a role without the granting authority queues NOTHING, even bypassing the screen', () => {
     useStore.setState({ role: 'engineer' });
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     expect(s().outbox).toHaveLength(0);
   });
 
@@ -559,7 +598,7 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
 
   it('the op type joins the ONE registry, so hydration and the flush cover it', () => {
     expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain('grantSodException');
-    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
+    s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed, SOD_RULES.evidenceRecorderMayNotCertify);
     const op = s().outbox[0] as { t: string; idempotencyKey: string; coalesceKey: string };
     expect(normalizeCommercialOutbox([op]).ops).toHaveLength(1);
   });
@@ -583,6 +622,24 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
    * outbox would replay the transition first and the server would then refuse a withholding taken
    * against a certificate that no longer stands.
    */
+  /**
+   * 7B-iv — the deduct/approve conflict is BIDIRECTIONAL, and round 4 already paid for this
+   * lesson on supersede/pay: a conflict between two commands is not one-directional unless the
+   * BOUNDS make it so. Here both orderings end at the server. A withholding lowers `NET_PAYABLE`
+   * and the derived-status seal requires `APPROVED <= NET_PAYABLE`, so an approval of the full
+   * payable followed by a withholding is rejected AT COMMIT — after the outbox reported it saved.
+   */
+  it('a withholding yields to a pending APPROVAL on the same claim', () => {
+    expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
+      [approveCoalesceKey('bill-1')])).toBe(true);
+    // …and an approval on ANOTHER claim constrains nothing here
+    expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
+      [approveCoalesceKey('bill-2')])).toBe(false);
+    // the pair is closed BOTH ways — the approve direction was already true
+    expect(commercialWriteBlocked(approveCoalesceKey('bill-1'),
+      [deductionCoalesceKey('bill-1')])).toBe(true);
+  });
+
   it('a withholding yields to a claim transition on its own claim', () => {
     expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
       [billTransitionCoalesceKey('bill-1', 'certify')])).toBe(true);
@@ -651,9 +708,33 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
     expect(s().outbox, 'an engineer holds none of the four').toHaveLength(0);
   });
 
-  it('all four join the ONE op-type registry', () => {
-    for (const t of ['recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment']) {
+
+
+  
+  /** An APPROVAL pins the claim's revision, so every fold write on that claim invalidates it —
+   *  and all four settlement keys are claim-scoped now, so the rule sees every one from the key. */
+  it('a pending fold write on this claim BLOCKS an approval, whichever fold it moves', () => {
+    for (const pending of [
+      deductionCoalesceKey('bill-1'),
+      billTransitionCoalesceKey('bill-1', 'certify'),
+      'com:release:bill-1:ded-1',
+      'com:pay:bill-1:appr-1',
+      'com:payrev:bill-1:pay-1',
+    ]) {
+      expect(commercialWriteBlocked(approveCoalesceKey('bill-1'), [pending]), pending).toBe(true);
+    }
+    // …and a fold write on ANOTHER claim blocks nothing here
+    expect(commercialWriteBlocked(approveCoalesceKey('bill-1'),
+      [deductionCoalesceKey('bill-2'), 'com:pay:bill-2:appr-9'])).toBe(false);
+  });
+
+  it('all five join the ONE op-type registry', () => {
+    for (const t of ['recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
+      'approvePayment']) {
       expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
     }
+    // `payAdvance` leaves with the advance surface (7B-vi) — asserted so a re-add without its
+    // control cannot pass silently.
+    expect(COMMERCIAL_OUTBOX_OP_TYPES).not.toContain('payAdvance');
   });
 });

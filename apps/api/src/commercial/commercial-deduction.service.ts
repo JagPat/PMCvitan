@@ -511,6 +511,23 @@ export class CommercialDeductionService {
    * after the bill so the order stays total and no honest transaction waits on it in the other
    * direction. `phase5_t6c_recoverable_check` takes the same row for the same reason.
    */
+
+  private toAdvanceDto(a: {
+    id: string; vendorId: string; amount: Prisma.Decimal; reason: string; method: string;
+    reference: string | null; paidAt: Date; paidById: string;
+  }): VendorAdvanceDto {
+    return {
+      id: a.id,
+      vendorId: a.vendorId,
+      amount: a.amount.toFixed(2),
+      reason: a.reason,
+      method: a.method,
+      reference: a.reference,
+      paidAt: a.paidAt.toISOString(),
+      paidById: a.paidById,
+    };
+  }
+
   private async advanceById(projectId: string, id: string): Promise<VendorAdvanceDto> {
     const a = await this.prisma.vendorAdvance.findFirstOrThrow({ where: { projectId, id } });
     return {

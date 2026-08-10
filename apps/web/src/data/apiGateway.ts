@@ -56,6 +56,7 @@ import type {
   LabourPresenceDto,
   CommercialMoneyPositionDto,
   CommercialClaimDto,
+  SodRule,
   MeasurementRegisterDto,
   VendorBillListDto,
 } from '@vitan/shared';
@@ -1040,9 +1041,17 @@ export class ApiGateway {
   releaseDeduction(input: ReleaseDeductionInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/deductions/release', input, idempotencyKey);
   }
+  /** §G bound 4 — authorise money to leave, against the claim's net payable. */
+  approvePayment(input: ApprovePaymentInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/payments/approve', input, idempotencyKey);
+  }
   /** §G bound 5 — record money that has left, against ONE approval. */
   recordPayment(input: RecordPaymentInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/payments/record', input, idempotencyKey);
+  }
+  /** §H — an advance to a counterparty, before any claim exists to draw it down. */
+  payAdvance(input: PayAdvanceInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/advances', input, idempotencyKey);
   }
   /** §F — a reversal is its own fact; the payment it names is never edited. */
   reversePayment(input: ReversePaymentInput, idempotencyKey?: string): Promise<unknown> {
@@ -1406,6 +1415,10 @@ export interface GrantSodExceptionInput {
   versionId: string;
   status: string;
   lifecycleVersion: number;
+  /** WHICH §I rule is being excused. Two exist and a grant for one is refused for the other, so
+   *  an authorisation surface that cannot name the rule can only ever issue half of them — which
+   *  is what left a one-person site with an approval it could never unblock from the app. */
+  rule: SodRule;
 }
 /**
  * ── 7B-iii-d (§G/§H) — the payer's chain. Six commands, and the shapes are the server's ────────
@@ -1421,12 +1434,19 @@ export interface RecordDeductionInput {
 }
 /** §H — a correction to a withholding is a RELEASE row, never an edit; the ledger is append-only. */
 export interface ReleaseDeductionInput { deductionId: string; amount: string; reason: string }
+/** §G bound 4 — approving is the authority that money MAY leave, against `NET_PAYABLE`. It is the
+ *  ONE command carrying a viewed-fact pin: the server refuses it if the claim has moved since. */
+export interface ApprovePaymentInput { billId: string; amount: string; lifecycleVersion: number }
 /** §G bound 5 — a payment draws on ONE approval, and never more than it authorised. */
 export interface RecordPaymentInput {
   approvalId: string; amount: string; method: string; reference?: string | null;
 }
 /** §F — cash already gone is not corrected by correcting a document; a reversal is its own fact. */
 export interface ReversePaymentInput { paymentId: string; amount: string; reason: string }
+/** §H — an advance names a VENDOR, not a claim: it is money paid before any claim exists. */
+export interface PayAdvanceInput {
+  vendorId: string; amount: string; reason: string; method: string; reference?: string | null;
+}
 /** §F — `certificateId` is the document the correction was WRITTEN ABOUT (Codex round-2). */
 export interface SupersedeCertificateInput { billId: string; reason: string; certificateId: string }
 export interface RejectVendorBillInput { billId: string; reason: string }
@@ -1536,6 +1556,8 @@ export type OutboxOp =
   | { t: 'grantSodException'; input: GrantSodExceptionInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'recordDeduction'; input: RecordDeductionInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'releaseDeduction'; input: ReleaseDeductionInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'approvePayment'; input: ApprovePaymentInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'payAdvance'; input: PayAdvanceInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'recordPayment'; input: RecordPaymentInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'reversePayment'; input: ReversePaymentInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
@@ -1648,6 +1670,10 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.recordDeduction(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'releaseDeduction':
       return gw.releaseDeduction(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'approvePayment':
+      return gw.approvePayment(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'payAdvance':
+      return gw.payAdvance(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'recordPayment':
       return gw.recordPayment(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'reversePayment':

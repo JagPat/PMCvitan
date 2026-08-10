@@ -23,7 +23,7 @@ import { CommercialStatusService } from './commercial-status.service';
 import { announceMoneyMoved } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import { assertReviewedRevision, resolveSodGrant as resolveGrantForRule } from './commercial-sod';
+import { assertReviewedRevision, resolveSodGrant as resolveGrantForRule, type SodGrantResolution } from './commercial-sod';
 import type { ApprovePaymentCommand, RecordPaymentInput, ReversePaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -649,6 +649,21 @@ export class CommercialPaymentService {
    * is one, and only the REFUSALS are stated here, because what a non-live state means is a
    * property of the act being refused rather than of the resolution.
    */
+  /**
+   * 7B-iv — the SAME resolution, READ-ONLY, for the claim bundle's `approvePreflight`.
+   *
+   * Exposed here rather than re-resolved by the reader because the rule constant lives in this
+   * module: a caller that picked its own `SodRule` could ask the certification question and gate
+   * approval on the answer, which is exactly the defect this preflight exists to close. No lock —
+   * a preflight reports, it does not decide, and the command re-resolves under the bill lock.
+   */
+  async resolveApproveGrant(
+    tx: Prisma.TransactionClient, projectId: string, billId: string, versionId: string, actorId: string,
+    asOf: { status: string; lifecycleVersion: number },
+  ): Promise<SodGrantResolution> {
+    return resolveGrantForRule(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, false, asOf);
+  }
+
   private async resolveSodGrant(
     tx: Prisma.TransactionClient, projectId: string, billId: string, versionId: string, actorId: string,
     asOf: { status: string; lifecycleVersion: number },

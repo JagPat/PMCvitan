@@ -39,7 +39,7 @@ const claim = (): CommercialClaimView => ({
   bill: {
     id: 'bill-1', vendorId: 'v-1', vendorBillNumber: 'V-1', status: 'certified',
     documentDate: '2026-08-20', statusChangedAt: '2026-08-21T00:00:00.000Z',
-    statusReason: null, disputeReason: null,
+    statusReason: null, disputeReason: null, lifecycleVersion: 0,
     createdAt: '2026-08-20T00:00:00.000Z', createdById: 'u-1',
     versions: [{
       id: 'ver-1', version: 1, supersedesVersion: null, claimedAmount: '100.00', lines: [],
@@ -63,6 +63,7 @@ const claim = (): CommercialClaimView => ({
   },
   measurements: {},
   certifyPreflight: { grantState: 'none', grantId: null, callerActorId: 'u-self', lifecycleVersion: 0, sodCandidates: [] },
+  approvePreflight: { grantState: 'none', grantId: null, callerIsCertifier: false },
 });
 
 describe('Task 7B-ii (§M) — the rendered claim tabs never dereference an absent claim', () => {
@@ -1542,26 +1543,28 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     expect(btn().disabled).toBe(false);
   });
 
-  /** R5-1 in the SCREEN — the same rule the dispatcher refuses with, so the two cannot disagree. */
-  it('blocks authorising while a change to the claim is in flight, and says why', () => {
-    const r = openWith({ pending: ['com:billtx:bill-1:certify'] });
+  /**
+   * 7B-iv round 3 — CERTIFICATION rule only, with the parked gap ASSERTED rather than discovered.
+   *
+   * The payment rule drew five findings over two rounds, each an incomplete precondition set; the
+   * last needs a server guard, so it is parked as 7B-v. A form that offers an authority it cannot
+   * gate completely is worse than one that does not: it promises a remedy and writes a grant
+   * nobody can spend.
+   */
+  it('issues the certification rule only, and says the payment rule is not issued here yet', () => {
+    const r = openWith({});
+    expect(r.queryByTestId('sod-rule'), 'the rule selector is parked with 7B-v').toBeNull();
+    // the gap is STATED on the surface, not silently absent
+    expect(r.getByTestId('commercial-sod-grant').textContent)
+      .toMatch(/is not issued here yet/iu);
+    // …and the form still works for the rule it does issue
     fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
     fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
-    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
-    expect(r.getByTestId('sod-grant-blocked').textContent).toMatch(/version, state and revision/iu);
+    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
+    // (which rule the dispatched payload names is asserted in commercial-verification.test.ts,
+    //  against the store rather than through a screen harness with no gateway)
   });
 
-  /** Round 1, finding 5 — certification is legal only from `verified`, so an authorisation
-   *  recorded earlier could NEVER be spent: it is `stale-review` the moment the claim reaches the
-   *  state it was meant for. Recording one is worse than refusing it, because the approver is told
-   *  an authority exists that does not. */
-  it('will not authorise a claim certification is not yet legal on, and says why', () => {
-    const r = openWith({ status: 'submitted' });
-    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
-    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
-    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
-    expect(r.getByTestId('sod-grant-not-certifiable').textContent).toMatch(/only legal once this claim is verified/iu);
-  });
 
   it('is absent entirely for a role without the granting authority', () => {
     const r = openWith({ role: 'engineer' });
@@ -1574,12 +1577,14 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
 
   const openPayments = (o: {
     pending?: string[]; role?: string; approvable?: string | null;
-    certificateId?: string; staleBundle?: boolean;
+    certificateId?: string; staleBundle?: boolean; bundleAhead?: boolean;
+    certifiedByCaller?: boolean; approveGrant?: string;
   } = {}) => {
     const c = claim();
     const base: CommercialClaimView = {
       ...c,
-      bill: { ...c.bill, status: 'certified', statusChangedAt: at(1) },
+      // a realistic revision, so "ahead" and "behind" read as the monotonic counter they are
+      bill: { ...c.bill, status: 'certified', statusChangedAt: at(1), lifecycleVersion: 4 },
       // a WELL-FORMED payer fixture: a live certificate, a net payable to withhold against, and an
       // approval that names that certificate. The first draft omitted all three and the new gates
       // correctly refused every control — the fixture catching up with the contract.
@@ -1587,7 +1592,13 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
         ...(c.certificate ?? {}), id: o.certificateId ?? 'cert-1',
         certifiedById: 'u-other',
       } as never,
-      certifyPreflight: { ...c.certifyPreflight, callerActorId: 'u-self' },
+      certifyPreflight: { ...c.certifyPreflight, callerActorId: 'u-self', lifecycleVersion: 4 },
+      // §I's PAYMENT rule — a different question from `certifyPreflight`, answered by the server
+      approvePreflight: {
+        grantState: (o.approveGrant ?? 'none') as never,
+        grantId: o.approveGrant === 'live' ? 'grant-1' : null,
+        callerIsCertifier: o.certifiedByCaller === true,
+      },
       deductions: {
         ...c.deductions,
         netPayable: '40.00',
@@ -1626,11 +1637,19 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
       commercialClaimLoad: { 'bill-1': 'ready' },
       commercialPending: o.pending ?? [],
     });
-    if (o.staleBundle === true) {
-      // a LIST copy strictly NEWER than the bundle's: the claim has moved on the server, so every
-      // ceiling the bundle's ledger carries is known to be old
+    if (o.bundleAhead === true) {
+      // the LIST is BEHIND: its row carries an older revision than the open bundle
       useStore.setState({
-        commercialBills: [{ ...base.bill, status: 'approved-for-payment', statusChangedAt: at(9) }],
+        commercialBills: [{ ...base.bill, lifecycleVersion: base.bill.lifecycleVersion - 1 }],
+      });
+    }
+    if (o.staleBundle === true) {
+      // 7B-iv — staleness stated EXACTLY. The list carries the claim's revision now, so the
+      // fixture moves the revision rather than the status stamp: that is the quantity the server
+      // compares, and it is precisely the case the old status arbitration could not see — the
+      // label and its timestamp are byte-identical here.
+      useStore.setState({
+        commercialBills: [{ ...base.bill, lifecycleVersion: base.bill.lifecycleVersion + 1 }],
       });
     }
     const r = render(<CommercialScreen />);
@@ -1789,6 +1808,60 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
     fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.00' } });
     expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
       'what no approval has claimed is free to withhold').toBe(false);
+  });
+
+  /**
+   * 7B-iv — §I has TWO rules, and the screen now asks the one the payment service consumes.
+   *
+   * Before the server exposed `approvePreflight`, this control read `certifyPreflight.grantState`
+   * — which resolves `evidence-recorder-may-not-certify`. That is a different question, and the
+   * gate was wrong in BOTH directions: a live certification grant enabled a self-approval the
+   * server refuses, and a real payment grant stayed invisible so an authorised approver was
+   * blocked. The client cannot answer either half; it can only ask the right field.
+   */
+  it('will not let the certifier approve their own claim without a PAYMENT authorisation', () => {
+    const r = openPayments({ certifiedByCaller: true });
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('approve-self').textContent).toMatch(/you certified this claim/iu);
+    r.unmount();
+    // …and a live PAYMENT authorisation restores it, because the exception is MODELLED, not banned
+    const ok = openPayments({ certifiedByCaller: true, approveGrant: 'live' });
+    fireEvent.change(ok.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((ok.getByTestId('approve-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('…and a CERTIFY authorisation is not permission to approve', () => {
+    // the certification grant is live; the payment rule's answer is still `none`
+    const r = openPayments({ certifiedByCaller: true });
+    useStore.setState((s) => ({
+      commercialClaims: {
+        ...s.commercialClaims,
+        'bill-1': {
+          ...s.commercialClaims['bill-1']!,
+          certifyPreflight: { ...s.commercialClaims['bill-1']!.certifyPreflight, grantState: 'live' },
+        },
+      },
+    }) as never);
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled,
+      'authorised to certify is not authorised to approve').toBe(true);
+  });
+
+  /**
+   * 7B-iv — the revision is MONOTONIC, so the comparison is ORDERED, not an equality.
+   *
+   * Only a list row AHEAD of the bundle proves the bundle stale. Equality was wrong in the other
+   * direction: a withholding lands, the claim bundle reloads to the new revision, and the list
+   * read is still in flight or has failed and kept its older row — the bundle is then the FRESHER
+   * reading, carrying exactly the revision the server expects, and every control was disabled.
+   */
+  it('acts on a claim bundle that has outrun an older list row', () => {
+    const r = openPayments({ bundleAhead: true });
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'the bundle is ahead of the list, which makes it fresher and not stale').toBe(false);
   });
 
   /**

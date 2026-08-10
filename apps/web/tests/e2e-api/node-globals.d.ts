@@ -17,3 +17,15 @@ declare const process: { env: Record<string, string | undefined> };
 declare module 'node:child_process' {
   export function execSync(command: string, options?: { stdio?: 'pipe' | 'inherit' | 'ignore' }): Buffer;
 }
+// The commercial-pilot spec writes a §L activation plan to a temp file — `commercial` is the one
+// capability whose activation takes INPUT. Same minimal-surface rule as above.
+declare module 'node:fs' {
+  export function mkdtempSync(prefix: string): string;
+  export function writeFileSync(path: string, data: string): void;
+}
+declare module 'node:os' {
+  export function tmpdir(): string;
+}
+declare module 'node:path' {
+  export function join(...parts: string[]): string;
+}

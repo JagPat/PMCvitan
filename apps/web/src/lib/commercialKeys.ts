@@ -76,6 +76,7 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   'grantSodException',
   // 7B-iii-d — the payer's chain. Same registry, same reason.
   'recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
+  'approvePayment',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -184,8 +185,11 @@ export const isBillTransitionPending = (key: string, billId: string): boolean =>
  * What it got wrong is treating that independence as independence from the CLAIM — see
  * `commercialWriteBlocked`.
  */
-export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
-  `com:sodgrant:${billId}:${actorId}`;
+/** …and by RULE, because §I has two and authorising a person to certify is a DIFFERENT act from
+ *  authorising them to approve. Keying both the same would coalesce the second away while the
+ *  first is pending, silently dropping an authorisation the approver believes they issued. */
+export const sodGrantCoalesceKey = (billId: string, actorId: string, rule: string): string =>
+  `com:sodgrant:${billId}:${actorId}:${rule}`;
 
 /**
  * ── 7B-iii-d — the payer's chain, and the ONE fact that shapes all six keys ──────────────────
@@ -226,6 +230,8 @@ export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
  * independent, so nothing coalesces that should not.
  */
 export const deductionCoalesceKey = (billId: string): string => `com:deduct:${billId}`;
+/** claim-scoped already: an approval races the ONE net payable (§G bound 4) */
+export const approveCoalesceKey = (billId: string): string => `com:approve:${billId}`;
 export const deductionReleaseCoalesceKey = (billId: string, deductionId: string): string =>
   `com:release:${billId}:${deductionId}`;
 export const payCoalesceKey = (billId: string, approvalId: string): string =>
@@ -233,6 +239,25 @@ export const payCoalesceKey = (billId: string, approvalId: string): string =>
 export const reverseCoalesceKey = (billId: string, paymentId: string): string =>
   `com:payrev:${billId}:${paymentId}`;
 
+
+/**
+ * Whether a pending key moves money on THIS claim — the predicate the approve conflict is written
+ * from, so a fold-moving action added later is covered by naming it here once.
+ *
+ * Every §F fold source advances the claim's monotonic revision, and an approval PINS that revision.
+ * Queued behind any of them, an approval is written against a revision that is already gone.
+ *
+ * All four settlement keys are claim-scoped (round 4), so unlike the first three rounds this
+ * predicate can see every one of them from the key alone — there is no half left for the screen to
+ * close, which is what scoping the keys bought.
+ */
+export const isClaimMoneyPending = (key: string, billId: string): boolean =>
+  key === deductionCoalesceKey(billId)
+  || key === approveCoalesceKey(billId)
+  || isBillTransitionPending(key, billId)
+  || key.startsWith(`com:release:${billId}:`)
+  || key.startsWith(`com:pay:${billId}:`)
+  || key.startsWith(`com:payrev:${billId}:`);
 
 /**
  * Whether a commercial write must be refused because an EQUIVALENT or CONFLICTING one is pending.
@@ -284,15 +309,35 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // ONE-DIRECTIONAL by design: a pending grant does not block a transition, because a certify that
   // arrives before its authorisation is refused by the server for a reason that is true and
   // legible ("no authorisation stands"), not silently mis-pinned.
-  const grant = /^com:sodgrant:(.+):[^:]*$/u.exec(coalesceKey);
-  if (grant) return pending.some((k) => isBillTransitionPending(k, grant[1]!));
+  // `com:sodgrant:<bill>:<actor>:<rule>` — anchored on the FIRST segment rather than a greedy
+  // prefix, because the key gained a third part (7B-iv) and a greedy `(.+)` silently captured
+  // `<bill>:<actor>` as the bill, so no transition ever matched and the guard went quiet. Ids
+  // carry no colons, which is what makes the narrow class correct rather than merely tighter.
+  // 7B-iv round 2 — a TRANSITION is not the whole set of things that move what a grant pins.
+  // `resolveGrantForRule` pins `(status, lifecycleVersion)` and the revision advances on every
+  // FOLD write too, so a grant queued behind one is refused `stale-version` after the outbox
+  // reported it saved. Widened for BOTH rules: the pinning is `asOf`, not the rule.
+  const grant = /^com:sodgrant:([^:]+):/u.exec(coalesceKey);
+  if (grant) return pending.some((k) => isClaimMoneyPending(k, grant[1]!));
   // ── 7B-iii-d — a WITHHOLDING moves a fold, so a lifecycle transition on its claim blocks it ──
   //
   // `com:pay:` and `com:payrev:` name an APPROVAL and a PAYMENT rather than the claim, so this
   // predicate cannot map them back to a bill from the key alone. The SCREEN closes that half,
   // because it holds the claim's own ids — stated here rather than left to be discovered.
   const deduct = /^com:deduct:(.+)$/u.exec(coalesceKey);
-  if (deduct) return pending.some((k) => isBillTransitionPending(k, deduct[1]!));
+  if (deduct) {
+    return pending.some((k) => isBillTransitionPending(k, deduct[1]!)
+      // …and behind a pending APPROVAL on the same claim. Round 4 established that a conflict
+      // between two commands is not one-directional unless the BOUNDS make it so, and closed
+      // supersede/pay both ways; this pair was left half-closed. The seal is real: a withholding
+      // LOWERS `NET_PAYABLE`, the derived-status seal re-runs requiring `APPROVED <= NET_PAYABLE`,
+      // and the FIFO outbox sends the approval first — so a withholding queued behind an approval
+      // of the full payable is rejected AT COMMIT, after the outbox reported it saved.
+      || k === approveCoalesceKey(deduct[1]!));
+  }
+  // …and an APPROVAL yields to every fold write on its claim, because it pins the revision they move
+  const approve = /^com:approve:(.+)$/u.exec(coalesceKey);
+  if (approve) return pending.some((k) => isClaimMoneyPending(k, approve[1]!));
   return false;
 }
 
@@ -366,7 +411,8 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
         || coalesceKey === deductionCoalesceKey(r.billId)
         || coalesceKey.startsWith(`com:release:${r.billId}:`)
         || coalesceKey.startsWith(`com:pay:${r.billId}:`)
-        || coalesceKey.startsWith(`com:payrev:${r.billId}:`);
+        || coalesceKey.startsWith(`com:payrev:${r.billId}:`)
+        || coalesceKey === approveCoalesceKey(r.billId);
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;
