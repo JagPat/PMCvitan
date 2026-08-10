@@ -1268,12 +1268,38 @@ export function CommercialScreen() {
                     // certification acts on.
                     const grantListRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
                     const grantReading = arbitrateBillCopy(grantListRow, claim.bill);
-                    const grantAuthoritative = grantReading !== null && grantReading.source !== 'list';
-                    // 7B-iv round 3 — CERTIFICATION rule only; the payment rule is PARKED as 7B-v
-                    // with its five findings named (`docs/reviews/phase-5-t7b-v-parked-findings.md`).
-                    // Each was an incomplete precondition set, and the decisive one needs a SERVER
-                    // guard — `approve()` consumes a grant only when `certifiedById === actor`.
-                    const spendable = transitionOffered(grantReading, BILL_CERTIFY_FROM);
+                    // …and AGREE ON THE REVISION, not only on the status copy (Codex round 1, P2).
+                    // `arbitrateBillCopy` compares status and `statusChangedAt`, so a concurrent
+                    // deduction, release, approval or reversal — every one a fold write that moves
+                    // `VendorBillRevision` WITHOUT moving the label — left the two copies agreeing
+                    // while the bundle was already behind. The grant then carried a stale
+                    // `lifecycleVersion` and the server refused it `stale-review` AFTER the
+                    // write-ahead outbox had reported it saved.
+                    //
+                    // The payments tab already compares the number the server compares
+                    // (`bundleCurrent`); this is the same rule on the form that pins the same
+                    // value, applied to BOTH §I rules because the pinning is `asOf`, not the rule.
+                    const grantRevisionCurrent = grantListRow === null
+                      || grantListRow.lifecycleVersion <= claim.certifyPreflight.lifecycleVersion;
+                    const grantAuthoritative = grantReading !== null && grantReading.source !== 'list'
+                      && grantRevisionCurrent;
+                    // 7B-v — BOTH §I rules are issued here now, and the payment half asks the
+                    // server rather than deriving anything.
+                    //
+                    // The parked unit's five findings were five attempts to work out, in a form,
+                    // when a payment-rule authorisation would be spendable: the window it is legal
+                    // in, whether any amount remains approvable, whether the pins still hold, and
+                    // who the rule can actually excuse. Each fix enumerated the preconditions it
+                    // could think of and the next round found more.
+                    //
+                    // `approvePreflight.grantCandidates` ends that by construction: it is non-empty
+                    // exactly when `grantSodException` would ACCEPT a grant naming the person in it,
+                    // because both come from one predicate on the server. The browser models none of
+                    // the four conditions, so it cannot get one of them wrong or miss a fifth.
+                    const paymentRule = draft.sodRule === SOD_RULES.certifierMayNotApprove;
+                    const spendable = paymentRule
+                      ? claim.approvePreflight.grantCandidates.length > 0
+                      : transitionOffered(grantReading, BILL_CERTIFY_FROM);
                     // ── who may be named, decided by the module that owns the rule ─────────────
                     //
                     // Round 1, finding 6. The first draft filtered the team roster in the browser
@@ -1287,7 +1313,13 @@ export function CommercialScreen() {
                     // rule, and a second one. The list is now computed server-side beside the
                     // predicate itself and arrives on the claim read — which also means the form
                     // needs no team data the screen never asked for (finding 3).
-                    const candidates = claim.certifyPreflight.sodCandidates;
+                    //
+                    // 7B-v — and the payment half takes the same answer from the rule that owns it.
+                    // Both lists are server-computed beside their own predicate; neither is a roster
+                    // filtered here.
+                    const candidates = paymentRule
+                      ? claim.approvePreflight.grantCandidates
+                      : claim.certifyPreflight.sodCandidates;
                     // R5-1 — the SAME function the dispatcher refuses with, so the screen and the
                     // outbox cannot answer differently. A pending claim transition is about to move
                     // the version, status and revision this authorisation pins.
@@ -1298,12 +1330,29 @@ export function CommercialScreen() {
                     return (
                       <div style={rowCard} data-testid="commercial-sod-grant">
                         <div style={{ ...muted, marginBottom: 7 }}>
-                          Authorise someone to CERTIFY evidence they recorded, against this claim as
-                          it stands now. §I's other rule — authorising a certifier to APPROVE the
-                          claim they certified — is not issued here yet; the payments tab still
-                          reports that refusal accurately, and its remedy lands with 7B-v.
+                          Authorise one otherwise-forbidden act on this claim, against it as it
+                          stands now. §I has two rules and they excuse different acts, so the
+                          authorisation names which one.
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                          <select
+                            style={input}
+                            data-testid="sod-rule"
+                            value={draft.sodRule}
+                            onChange={(e) => setCertDraft(claim.bill.id, {
+                              sodRule: e.target.value as SodRule,
+                              // the two rules excuse different acts, so they admit different people
+                              // — carrying a name across would offer one the other's rule refuses
+                              sodActorId: '',
+                            })}
+                          >
+                            <option value={SOD_RULES.evidenceRecorderMayNotCertify}>
+                              …to CERTIFY evidence they recorded
+                            </option>
+                            <option value={SOD_RULES.certifierMayNotApprove}>
+                              …to APPROVE payment of a claim they certified
+                            </option>
+                          </select>
                           <select
                             style={input}
                             data-testid="sod-actor"
@@ -1325,7 +1374,16 @@ export function CommercialScreen() {
                           <Button
                             variant="ink"
                             data-testid={`sod-grant-${claim.bill.id}`}
-                            disabled={draft.sodActorId === '' || !draft.sodReason.trim()
+                            // the chosen person must still be one the server OFFERS (Codex round 1,
+                            // P2). A fresh bundle can change the candidate set under a made
+                            // selection — a supersede-and-re-certify moves the payment rule's one
+                            // nameable actor, and a membership change moves the certification
+                            // rule's list — leaving a stale id in the draft that the command
+                            // refuses after the outbox reported it saved. Membership subsumes the
+                            // old non-empty check, since '' is never a candidate, and it is applied
+                            // to BOTH rules because both lists are server-owned and both can move.
+                            disabled={!candidates.some((c) => c.userId === draft.sodActorId)
+                              || !draft.sodReason.trim()
                               || viewedVersion === null || blocked
                               || !spendable || !grantAuthoritative}
                             onClick={() => {
@@ -1342,9 +1400,18 @@ export function CommercialScreen() {
                         </div>
                         {!blocked && !spendable && (
                           <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-not-certifiable">
-                            Certification is only legal once this claim is verified, so an
-                            authorisation recorded now could never be spent. Authorise it once the
-                            claim is verified.
+                            {paymentRule
+                              // 7B-v — deliberately NOT a diagnosis. The server knows which of the
+                              // several reasons applies and says so when asked; guessing here is
+                              // how the browser ended up modelling this rule in the first place,
+                              // and a screen that names the wrong reason is worse than one that
+                              // names none, because the reader acts on it.
+                              ? 'A payment authorisation cannot be issued on this claim as it stands'
+                                + ' — it needs a live certification, an amount still left to'
+                                + ' approve, and a certifier other than you to authorise.'
+                              : 'Certification is only legal once this claim is verified, so an'
+                                + ' authorisation recorded now could never be spent. Authorise it'
+                                + ' once the claim is verified.'}
                           </div>
                         )}
                         {blocked && (
@@ -1354,7 +1421,7 @@ export function CommercialScreen() {
                             all three — authorise again once it has landed.
                           </div>
                         )}
-                        {candidates.length === 0 && (
+                        {candidates.length === 0 && !paymentRule && (
                           <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-nobody">
                             There is nobody else on this project with pmc standing to authorise.
                           </div>
@@ -1681,10 +1748,11 @@ export function CommercialScreen() {
                         {mayApprove && selfApproving && (
                           <div style={{ ...muted, marginTop: 6 }} data-testid="approve-self">
                             You certified this claim, so §I does not let you also approve its
-                            payment. The exception that would excuse it is not issuable in the app
-                            yet — it lands with 7B-v — so it has to be recorded through the API by
-                            another pmc with standing. An authorisation to CERTIFY does not excuse
-                            this, and §I forbids a self-grant, so it cannot be issued by you.
+                            payment. Another pmc with standing can authorise the exception on the
+                            certification tab — choosing “…to APPROVE payment of a claim they
+                            certified”, which is the only rule that excuses this. An authorisation
+                            to CERTIFY does not, and §I forbids a self-grant, so it cannot be
+                            issued by you.
                           </div>
                         )}
                         {mayApprove && !bundleCurrent && (

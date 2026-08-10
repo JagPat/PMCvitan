@@ -18,7 +18,10 @@ import { CommercialMeasurementQuery } from './commercial-measurement.query';
 import { CommercialDeductionQuery } from './commercial-deduction.query';
 import { CommercialVerificationService } from './commercial-verification.service';
 import { CommercialBillService } from './commercial-bill.service';
-import { assertReviewedRevision, resolveSodGrant, type SodGrantResolution } from './commercial-sod';
+import {
+  assertReviewedRevision, payableGrantOffer, resolveSodGrant,
+  type ApprovalContext, type SodGrantResolution,
+} from './commercial-sod';
 import type { CertifyBillCommand, GrantSodExceptionCommand, SupersedeCertificateCommand } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -783,6 +786,50 @@ export class CommercialCertificationService {
   }
 
   /**
+   * 7B-v — WHY a payment-rule authorisation is not issuable, in the practice's own terms.
+   *
+   * Derived from the same context the DECISION is, so this cannot say "issuable" where
+   * `payableGrantActor` says otherwise. It is presentation, never a second predicate.
+   *
+   * The last arm is deliberately general and stays TRUE whatever the reason. If a precondition is
+   * added to `payableGrantActor` and no sentence is added here, the refusal degrades to an accurate
+   * vague statement rather than a confidently wrong specific one — and naming the wrong cause is
+   * worse than naming none, because the reader acts on it.
+   */
+  private unspendableGrantReason(
+    offer: {
+      context: ApprovalContext | null;
+      authority: { standing: false } | { standing: true; ceiling: Prisma.Decimal | null } | null;
+      liveGrantStands: boolean;
+    },
+    named: string, caller: string,
+  ): string {
+    const { context, authority } = offer;
+    if (offer.liveGrantStands) {
+      return 'An authorisation for the person who certified this claim already stands on it and would be the one an approval consumes, so a second would never be used — spend or supersede the existing one instead';
+    }
+    if (!context) {
+      return 'This claim has no live certification, so there is no payment approval to authorise — the `certifier-may-not-approve` rule only applies once a claim has been certified';
+    }
+    if (context.remaining.lessThanOrEqualTo(0)) {
+      return `Nothing remains approvable on this claim — ${context.netPayable.toFixed(2)} is payable and ${context.approvedSoFar.toFixed(2)} is already approved, so no approval this authorisation could excuse would be accepted`;
+    }
+    if (context.certifiedById === caller) {
+      return 'You certified this claim, and `certifier-may-not-approve` blocks nobody else on it — so the only authorisation it could carry is one you would be granting yourself, which §I forbids. A different pmc with standing on this project must issue it';
+    }
+    if (context.certifiedById !== named) {
+      return 'Only the person who certified this claim can be authorised under `certifier-may-not-approve` — the rule blocks nobody else, so an exception naming anyone else authorises an approval they can already make and could never be consumed';
+    }
+    if (authority !== null && !authority.standing) {
+      return 'The person who certified this claim cannot approve payments on this project, so an exception would authorise nothing they could act on';
+    }
+    if (authority !== null && authority.standing && authority.ceiling !== null) {
+      return `The person who certified this claim has an approval ceiling of ${new Prisma.Decimal(authority.ceiling).toFixed(2)} and ${context.approvedSoFar.toFixed(2)} is already approved on it, so no approval this authorisation could excuse would be accepted — it needs a higher-limit approver instead`;
+    }
+    return 'This claim cannot carry a payment-rule authorisation as it currently stands — reload and try again';
+  }
+
+  /**
    * §I — GRANT permission for one otherwise-forbidden certification. The AUTHENTICATED actor is the
    * authority: there is no `approverId` field, because a field is exactly what a certifier can fill
    * in with somebody else's name.
@@ -859,6 +906,29 @@ export class CommercialCertificationService {
               : 'That person cannot certify on this project, so an exception would authorise nothing they could act on',
           );
         }
+        // 7B-v — STANDING is necessary and not sufficient, and the gap between those was a grant
+        // nobody could spend. `approve()` consults a `certifier-may-not-approve` grant ONLY when
+        // `certificate.certifiedById === actor`, so naming any other approver — every pmc on the
+        // project passes the standing check above — wrote an authorisation that is recorded,
+        // displayed, and never consumed: the named person was not blocked, so their approval
+        // succeeds without it and the row stays live for ever.
+        //
+        // Asked as ONE derived question rather than a list of preconditions. `payableGrantActor`
+        // reads the SAME context `approve()` decides from, so "issuable" and "spendable" cannot
+        // drift apart. That matters more than the individual check: this surface has now paid five
+        // findings for enumerating these preconditions, twice inside the correction written to fix
+        // an enumeration failure, because a hand-listed subset always looks complete from inside.
+        // A condition added to `approve()` reaches this command through the shared context.
+        const offer = rule === SOD_RULES.certifierMayNotApprove
+          ? await payableGrantOffer(
+            tx, { folds: this.deductions, orgs: this.orgs }, projectId, input.billId,
+            actor.actorId, rule, ROLE_POLICY['commercial.approve-payment'],
+            { status: reviewed.status, lifecycleVersion: reviewed.lifecycleVersion },
+          )
+          : null;
+        if (offer !== null && (offer.actorId === null || offer.actorId !== input.actorId)) {
+          throw new ConflictException(this.unspendableGrantReason(offer, input.actorId, actor.actorId));
+        }
         // the authority must hold standing AT THE MOMENT OF GRANTING, read under the same lock the
         // certification will use — the participant, because standing is the orgs module's rule
         const entitled = await this.orgs.hasProjectRoleStanding(
@@ -886,6 +956,48 @@ export class CommercialCertificationService {
             sourceCommandId: ctx.commandId!,
           },
         });
+        // 7B-v — and now ASK THE SPEND PATH. The row exists in this transaction, so the resolver
+        // the consuming act uses can be run against it directly: if it does not come back `live`,
+        // this authorisation could not be exercised and the transaction rolls back.
+        //
+        // This is the part that makes the design hold up rather than merely be correct today. The
+        // version pin, the status pin and the revision pin are checked by the ACTUAL resolver
+        // instead of being restated here, so a pin added to `resolveSodGrant` later is enforced at
+        // issue automatically. Every enumeration in this lineage lacked exactly that property —
+        // each looked complete and none could notice what it had not been told about.
+        if (rule === SOD_RULES.certifierMayNotApprove) {
+          // …against the CERTIFICATE's version, which is the one `approve()` resolves with — NOT
+          // the row's own, which would make the version pin self-consistent by construction and
+          // check nothing. Today the live bill version and the certificate's provably cannot
+          // diverge inside this window (`amend` refuses any status past certification), so this
+          // arm never fires; it is written this way so that if that ever changes, the grant is
+          // refused at issue instead of becoming quietly unspendable.
+          const spendable = await resolveSodGrant(
+            tx, this.orgs, projectId, input.billId, offer!.context!.certificateVersionId, rule, row.actorId, true,
+            { status: reviewed.status, lifecycleVersion: reviewed.lifecycleVersion },
+          );
+          if (spendable.state !== 'live') {
+            throw new ConflictException(
+              `This authorisation would not be usable as soon as it was written (${spendable.state}) — the claim has moved since you read it, so it needs issuing again against what stands now`,
+            );
+          }
+          // …and it must resolve to THIS row (Codex round 1, P1). `resolveSodGrant` returns the
+          // OLDEST live candidate, and the live-scope uniqueness admits a second row for the same
+          // actor when the approver differs — so an existing authorisation from another pmc would
+          // satisfy the check above while the row just written is never the one an approval
+          // selects. It would sit live, be displayed as an authority, and go stale unspent.
+          //
+          // Refused rather than silently written: an authorisation already stands, so a second is
+          // not a stronger permission, it is a dead record of one.
+          if (spendable.grant.id !== row.id) {
+            throw new ConflictException(
+              'An authorisation for that person already stands on this claim and would be the one an approval consumes, so a second would never be used. Spend or supersede the existing one instead',
+            );
+          }
+          // (`payableGrantOffer` refuses this case before the insert, so reaching here means the
+          //  world moved mid-transaction. Kept as the backstop it always was rather than removed
+          //  as redundant: it is what makes the guarantee hold under a concurrent grant.)
+        }
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.sod.grant', entity: 'SodGrant', entityId: row.id,
         });

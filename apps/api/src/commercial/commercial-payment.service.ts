@@ -23,7 +23,10 @@ import { CommercialStatusService } from './commercial-status.service';
 import { announceMoneyMoved } from './cash-forecast.projection';
 import { CommercialBillService } from './commercial-bill.service';
 import { OrgsParticipant } from '../orgs/orgs.participant';
-import { assertReviewedRevision, resolveSodGrant as resolveGrantForRule, type SodGrantResolution } from './commercial-sod';
+import {
+  assertReviewedRevision, payableGrantOffer, resolveApprovalContext,
+  resolveSodGrant as resolveGrantForRule, type SodGrantResolution,
+} from './commercial-sod';
 import type { ApprovePaymentCommand, RecordPaymentInput, ReversePaymentInput } from '../contracts';
 
 const ZERO = new Prisma.Decimal(0);
@@ -165,32 +168,31 @@ export class CommercialPaymentService {
         // so a queued approval cannot be written as having reviewed a passage it never saw
         assertReviewedRevision(input.lifecycleVersion, bill.lifecycleVersion);
 
-        // §H's own fold, under the lock. It answers both "is anything payable" and "how much".
-        const position = await this.deductions.positionFor(tx, projectId, input.billId);
-        if (!position) {
+        // §H's own folds and the certificate this approval draws on, under the lock — ONE context,
+        // shared with the grant command (7B-v). It answers "is anything payable", "how much is
+        // left", and "who certified", which is every question BOTH callers ask. Sharing it is not
+        // tidiness: a payment-rule grant is issuable exactly when an approval could spend it, so a
+        // second reading of these facts beside this one is a second answer that will drift.
+        const context = await resolveApprovalContext(tx, this.deductions, projectId, input.billId);
+        if (!context) {
           throw new ConflictException('This claim has no live certification — an approval authorises payment of a payable, and an uncertified claim is not one yet');
         }
 
         // §I — the actor who CERTIFIED may not approve. The rule is evaluated server-side against
         // the certificate this approval draws on, and it is the payment half of the same rule that
         // already keeps the measurer or acceptor away from certification.
-        const certificate = await tx.billCertificate.findFirstOrThrow({
-          where: { projectId, id: position.certificateId },
-          select: { certifiedById: true, versionId: true },
-        });
+        //
         // …and when it IS the certifier, the override is CONSUMED, never asserted. Resolved before
         // the row is written so a refusal costs nothing; the grant is spent afterwards, against the
         // approval id it authorises.
-        const override = certificate.certifiedById === actor.actorId
-          ? await this.resolveSodGrant(tx, projectId, input.billId, certificate.versionId, actor.actorId,
+        const override = context.certifiedById === actor.actorId
+          ? await this.resolveSodGrant(tx, projectId, input.billId, context.certificateVersionId, actor.actorId,
             { status: bill.status, lifecycleVersion: bill.lifecycleVersion })
           : null;
 
         // §G BOUND 4, re-derived under the lock and stated as the REMAINING headroom, because a
         // refusal that only says "too much" leaves the practice guessing at the number.
-        const approvedSoFar = await this.deductions.approvedFor(tx, projectId, input.billId);
-        const netPayable = new Prisma.Decimal(position.netPayable);
-        const remaining = netPayable.sub(approvedSoFar);
+        const { approvedSoFar, netPayable, remaining } = context;
         if (amount.greaterThan(remaining)) {
           throw new ConflictException(
             `Approving ${amount.toFixed(2)} would take the approved total past the ${netPayable.toFixed(2)} payable on this claim — ${approvedSoFar.toFixed(2)} is already approved, so ${remaining.toFixed(2)} remains. A certification carrying unreleased withholdings cannot authorise more than it leaves payable`,
@@ -205,7 +207,7 @@ export class CommercialPaymentService {
 
         const approval = await tx.paymentApproval.create({
           data: {
-            projectId, billId: input.billId, certificateId: position.certificateId,
+            projectId, billId: input.billId, certificateId: context.certificateId,
             // the claim REVISION this authorisation was made against, read under the bill lock —
             // the §I consume seal matches it against the grant's, so an authority and the act it
             // excuses cannot name two different passages of the same claim
@@ -662,6 +664,26 @@ export class CommercialPaymentService {
     asOf: { status: string; lifecycleVersion: number },
   ): Promise<SodGrantResolution> {
     return resolveGrantForRule(tx, this.orgs, projectId, billId, versionId, SOD_RULE, actorId, false, asOf);
+  }
+
+  /**
+   * §I (7B-v) — the ONE actor a `certifier-may-not-approve` grant may name on this claim right
+   * now, as the READ sees it. `null` when no such authorisation is issuable at all.
+   *
+   * Exposed beside `resolveApproveGrant` and for the same reason: the answer belongs to the module
+   * that owns this rule, so the screen and the command cannot disagree about it. The grant command
+   * requires the actor it is given to equal this; the read offers it, or offers nobody. If the
+   * command would refuse, the form cannot have offered it — which is the property that makes the
+   * client stop modelling the window, the headroom and the excused identity for itself.
+   */
+  async payableGrantActorFor(
+    tx: Prisma.TransactionClient, projectId: string, billId: string, callerActorId: string,
+    asOf: { status: string; lifecycleVersion: number },
+  ): Promise<string | null> {
+    return (await payableGrantOffer(
+      tx, { folds: this.deductions, orgs: this.orgs }, projectId, billId, callerActorId,
+      SOD_RULE, ROLE_POLICY['commercial.approve-payment'], asOf,
+    )).actorId;
   }
 
   private async resolveSodGrant(

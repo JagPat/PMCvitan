@@ -277,6 +277,76 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     expect(theirs.approvePreflight.callerIsCertifier).toBe(false);
   });
 
+  /**
+   * 7B-v (§I) — the read says WHO this caller may authorise under the payment rule, and the answer
+   * is the same predicate the command enforces.
+   *
+   * This is the field that lets the browser stop modelling the rule. Three parked findings on the
+   * client half — the window it may be offered in, whether any amount remains approvable, and who
+   * the rule can actually excuse — were three attempts to derive server facts in a form. They are
+   * one question here, and a form that offers the rule exactly when this list is non-empty cannot
+   * get any of them wrong.
+   */
+  it('7B-v-1: the payment-rule authorisation names at most the certifier, and only when spendable', async () => {
+    const projectId = await freshProject();
+    const grantor = await secondPmc(projectId);
+    const billId = await certifiedClaim(projectId);   // certified BY `pmc(projectId)`
+
+    // the authorising pmc is offered exactly one name — the person the rule blocks
+    const asGrantor = await claims.readClaim(projectId, billId, asUser(projectId, grantor));
+    expect(asGrantor.approvePreflight.grantCandidates.map((c) => c.userId)).toEqual([f.memberUser.id]);
+
+    // the CERTIFIER is offered nobody: the only person the rule blocks on this claim is them, and
+    // §I forbids authorising yourself. Empty rather than a name the command would refuse.
+    const asCertifier = await claims.readClaim(projectId, billId, pmc(projectId));
+    expect(asCertifier.approvePreflight.grantCandidates).toEqual([]);
+
+    // BEFORE certification there is no approval to excuse, so there is nobody to name
+    const uncertified = await verifiedOnly(projectId);
+    expect((await claims.readClaim(projectId, uncertified, asUser(projectId, grantor)))
+      .approvePreflight.grantCandidates).toEqual([]);
+
+    // …an authorisation that ALREADY STANDS removes the candidate, because a second could never
+    // be the one an approval selects (Codex round 2, P2). Round 1 taught the COMMAND to refuse
+    // that and left the READ offering it, so the form enabled an action the server had just
+    // started rejecting — the drift a shared predicate exists to prevent, introduced by one of
+    // this unit's own corrections. Both now ask `payableGrantOffer`.
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'stands already', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor));
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, grantor)))
+      .approvePreflight.grantCandidates,
+    'an authorisation stands, so there is nobody left to authorise').toEqual([]);
+    // …and once it is SPENT the candidate returns, so the read is precise rather than merely strict
+    await payments.approve(projectId, { billId, amount: '10.00' }, pmc(projectId));
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, grantor)))
+      .approvePreflight.grantCandidates.map((c) => c.userId)).toEqual([f.memberUser.id]);
+
+    // …a certifier at or above their APPROVAL CEILING can have no positive amount accepted
+    // either, so the read offers nobody (Codex round 1, P1 — the ceiling is one of `approve()`'s
+    // money bounds, and the predicate folds it into the same headroom as §G bound 4)
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { approvalLimit: '0' },
+    });
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, grantor)))
+      .approvePreflight.grantCandidates).toEqual([]);
+    await t.prisma.membership.update({
+      where: { projectId_userId: { projectId, userId: f.memberUser.id } },
+      data: { approvalLimit: null },
+    });
+
+    // …and once the whole payable is approved, §G bound 4 admits no positive amount, so an
+    // authorisation to approve would be an authority over nothing
+    await certification.grantSodException(projectId, {
+      billId, actorId: f.memberUser.id, reason: 'only pmc on site', rule: 'certifier-may-not-approve',
+    }, asUser(projectId, grantor));
+    // 90, not 100: the already-stands step above spent 10 of this claim's payable
+    await payments.approve(projectId, { billId, amount: '90.00' }, pmc(projectId));
+    expect((await claims.readClaim(projectId, billId, asUser(projectId, grantor)))
+      .approvePreflight.grantCandidates).toEqual([]);
+  });
+
 
   // ── 1 — composition: the bundle IS the six narrow reads ──────────────────────────────────────
 
