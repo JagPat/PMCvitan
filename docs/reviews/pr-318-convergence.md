@@ -138,6 +138,31 @@ Each probe was mutation-tested rather than merely run green: re-adding `@Get('co
 re-introducing a wrapped "this branch", and restoring the false §M claim each turn exactly one probe
 red, and the tree restores green. A probe that cannot fail is the same defect as prose.
 
+## Round 5 — why `docs/STATUS.md` is NOT in this PR
+
+The gate refused the deferral for a reason worth recording rather than working around: it runs from
+the trusted default branch and reads `main`'s STATUS, so **a PR that edits STATUS has no verifiable
+phase truth** — and reading the head's STATUS would mean pulling PR-authored content into a
+write-capable workflow, a boundary this loop deliberately does not cross. The file list is metadata
+the gate already holds, and it is sufficient: if STATUS is in the diff, the phase is unverifiable.
+
+It looked at first like a deadlock between two enforced rules — every open autonomous PR must be
+named in STATUS, and a PR carrying a deferral must not touch STATUS. It is not. The STATUS coherence
+suite validates the file's own internal consistency, not whether `open_pr` matches a live PR; that
+is the drift shepherd, which posts a message rather than failing a gate. Verified by running
+`test:automation` against `main`'s STATUS with this PR open: 200/200.
+
+So the bookkeeping leaves this PR and lands where it always had to — the **post-merge flip**, which a
+work PR cannot do for itself and which this phase's own process note already records as the
+irreducible half of the folded-STATUS change. That flip carries all of it: `task_state: merged`,
+`open_pr: none`, `reviewed_merge`, `next_task: phase-5-task-7b-v`, **and** the 7B-vi row's
+advance-read correction. The correction itself is not lost meanwhile — it is in the packet and the
+7B-vi ledger, both of which are in this PR.
+
+The general form, for whoever meets this next: **a review-mechanism trailer and a bookkeeping edit
+are different kinds of change and do not belong in one head.** The gate is telling you the record
+cannot certify itself.
+
 ## Verification
 
 The verification for a docs claim is the command that establishes the fact; each is recorded above
