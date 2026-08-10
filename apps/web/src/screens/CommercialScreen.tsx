@@ -3,9 +3,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
+import { isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, advanceCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
-import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
+import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, DEDUCTION_TYPES, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto, SodGrantState } from '@vitan/shared';
 import { correctionRefused, exceedsMeasurableCap, lineOrdersNothing, remainingMeasurable, remainingWithdrawable } from '@/lib/measurement';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
@@ -205,11 +205,25 @@ export function CommercialScreen() {
   // Both resolve to pmc today; naming them separately is what keeps that a fact about the policy
   // rather than an assumption baked into the screen.
   const mayGrant = may('commercial.sod.grant');
+  // 7B-iii-d — SIX distinct permissions, asked separately. They all resolve to pmc today; asking
+  // once and reusing the answer would bake that coincidence into the screen.
+  const mayDeduct = may('commercial.deduct');
+  const mayRelease = may('commercial.deduct.release');
+  const mayApprove = may('commercial.approve-payment');
+  const mayPay = may('commercial.record-payment');
+  const mayReverse = may('commercial.reverse-payment');
+  const mayAdvance = may('commercial.pay-advance');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
   const grantSodException = useStore((s) => s.grantSodException);
+  const recordDeduction = useStore((s) => s.recordDeduction);
+  const releaseDeduction = useStore((s) => s.releaseDeduction);
+  const approvePayment = useStore((s) => s.approvePayment);
+  const recordPayment = useStore((s) => s.recordPayment);
+  const reversePayment = useStore((s) => s.reversePayment);
+  const payAdvance = useStore((s) => s.payAdvance);
   // 7B-iii-b — the engineer's writes.
   const takeMeasurement = useStore((s) => s.takeMeasurement);
   const correctMeasurement = useStore((s) => s.correctMeasurement);
@@ -367,6 +381,32 @@ export function CommercialScreen() {
     id: string, patch: Partial<{ supersedeReason: string; sodActorId: string; sodReason: string }>,
   ): void =>
     setCertDrafts({ scope: scopeKey, byId: { ...certScoped, [id]: { ...certDraftFor(id), ...patch } } });
+
+  // 7B-iii-d — the payer's forms, scoped per claim like every other draft on this screen: a
+  // component-wide draft armed one row's button with another row's text (7B-iii-a's lesson).
+  const [payDrafts, setPayDrafts] = useState<{
+    scope: string;
+    byId: Record<string, {
+      deductType: string; deductAmount: string; deductReason: string;
+      releaseId: string; releaseAmount: string; releaseReason: string;
+      approveAmount: string;
+      payApprovalId: string; payAmount: string; payMethod: string; payReference: string;
+      reversePaymentId: string; reverseAmount: string; reverseReason: string;
+      advanceAmount: string; advanceMethod: string; advanceReason: string;
+    }>;
+  }>({ scope: '', byId: {} });
+  const paySc = payDrafts.scope === scopeKey ? payDrafts.byId : {};
+  const EMPTY_PAY_DRAFT = {
+    deductType: '', deductAmount: '', deductReason: '',
+    releaseId: '', releaseAmount: '', releaseReason: '',
+    approveAmount: '',
+    payApprovalId: '', payAmount: '', payMethod: '', payReference: '',
+    reversePaymentId: '', reverseAmount: '', reverseReason: '',
+    advanceAmount: '', advanceMethod: '', advanceReason: '',
+  };
+  const payDraftFor = (id: string) => paySc[id] ?? EMPTY_PAY_DRAFT;
+  const setPayDraft = (id: string, patch: Partial<typeof EMPTY_PAY_DRAFT>): void =>
+    setPayDrafts({ scope: scopeKey, byId: { ...paySc, [id]: { ...payDraftFor(id), ...patch } } });
 
   const [attrDrafts, setAttrDrafts] = useState<{ scope: string; byId: Record<string, { head: string; reason: string }> }>(
     { scope: '', byId: {} },
@@ -1444,6 +1484,218 @@ export function CommercialScreen() {
                       <span style={num}>{a.amount}</span> approved · paid <span style={num}>{a.paid}</span>
                     </div>
                   ))}
+
+                  {/* ── 7B-iii-d — the payer's chain ────────────────────────────────────────────
+                      Every control here moves a §F FOLD, so every one of them advances the claim's
+                      monotonic revision. That is why `approve` — the only command carrying a
+                      viewed-fact pin — is disabled while ANY of the others is in flight: queued
+                      behind one, its `lifecycleVersion` names a passage of the claim that is
+                      already gone, and the server refuses it after the outbox reported it saved.
+                      `commercialWriteBlocked` owns that rule and the dispatcher enforces it; this
+                      screen asks the same function so the two cannot disagree. */}
+                  {(() => {
+                    const d = payDraftFor(claim.bill.id);
+                    // The contract requires these three arrays. They are read defensively anyway:
+                    // this bundle arrives over the network, and a partial body on a MONEY surface
+                    // must degrade to "no controls offered", never to a thrown render that takes
+                    // the whole ledger off screen.
+                    const approvals = claim.payments.approvals ?? [];
+                    // §G bound 5 — a payment draws on ONE approval, so payments hang off the
+                    // approval that authorised them rather than off the ledger. Flattened here for
+                    // the reversal picker, which needs the payments and not their authority.
+                    const paymentsMade = approvals.flatMap((a) => a.payments ?? []);
+                    const withheld = claim.deductions?.deductions ?? [];
+                    const money2 = (v: string): boolean => /^\d+(\.\d{1,2})?$/u.test(v.trim()) && Number(v) > 0;
+                    // the half `commercialWriteBlocked` cannot see from a key alone: payment and
+                    // reversal keys name an APPROVAL and a PAYMENT, and only this screen holds the
+                    // claim's own ids. Stated in `isClaimMoneyPending`; closed here.
+                    const childMoneyPending = commercialPending.some((k) =>
+                      approvals.some((a) => k === payCoalesceKey(a.id))
+                      || paymentsMade.some((pmt) => k === reverseCoalesceKey(pmt.id)));
+                    const approveBlocked = childMoneyPending
+                      || commercialWriteBlocked(approveCoalesceKey(claim.bill.id), commercialPending);
+                    const deductBlocked = commercialWriteBlocked(deductionCoalesceKey(claim.bill.id), commercialPending);
+                    const unreleased = withheld.filter((x) => Number(x.unreleased) > 0);
+                    return (
+                      <div data-testid="commercial-payer-actions" style={{ marginTop: 12 }}>
+                        {mayApprove && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                            <input
+                              style={input} data-testid="approve-amount" placeholder="Approve amount"
+                              value={d.approveAmount}
+                              onChange={(e) => setPayDraft(claim.bill.id, { approveAmount: e.target.value })}
+                            />
+                            <Button
+                              variant="ink" data-testid={`approve-${claim.bill.id}`}
+                              disabled={!money2(d.approveAmount) || approveBlocked}
+                              onClick={() => {
+                                approvePayment(claim.bill.id, d.approveAmount.trim(),
+                                  claim.certifyPreflight.lifecycleVersion);
+                                setPayDraft(claim.bill.id, { approveAmount: '' });
+                              }}
+                            >{approveBlocked ? 'Working…' : 'Approve'}</Button>
+                          </div>
+                        )}
+                        {mayApprove && approveBlocked && (
+                          <div style={{ ...muted, marginTop: 6 }} data-testid="approve-blocked">
+                            This claim's money is moving. An approval records the revision it was
+                            authorised against, and the change in flight moves it — approve once it
+                            has landed.
+                          </div>
+                        )}
+
+                        {mayPay && approvals.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                            <select
+                              style={input} data-testid="pay-approval" value={d.payApprovalId}
+                              onChange={(e) => setPayDraft(claim.bill.id, { payApprovalId: e.target.value })}
+                            >
+                              <option value="">Against which authorisation…</option>
+                              {approvals.map((a) => (
+                                <option key={a.id} value={a.id}>{a.amount} approved · {a.paid} paid</option>
+                              ))}
+                            </select>
+                            <input style={input} data-testid="pay-amount" placeholder="Amount"
+                              value={d.payAmount}
+                              onChange={(e) => setPayDraft(claim.bill.id, { payAmount: e.target.value })} />
+                            <input style={input} data-testid="pay-method" placeholder="Method"
+                              value={d.payMethod}
+                              onChange={(e) => setPayDraft(claim.bill.id, { payMethod: e.target.value })} />
+                            <input style={input} data-testid="pay-reference" placeholder="Reference (optional)"
+                              value={d.payReference}
+                              onChange={(e) => setPayDraft(claim.bill.id, { payReference: e.target.value })} />
+                            <Button
+                              variant="ink" data-testid={`pay-${claim.bill.id}`}
+                              disabled={d.payApprovalId === '' || !money2(d.payAmount) || !d.payMethod.trim()
+                                || commercialWriteBlocked(payCoalesceKey(d.payApprovalId), commercialPending)}
+                              onClick={() => {
+                                recordPayment(d.payApprovalId, d.payAmount.trim(), d.payMethod.trim(),
+                                  d.payReference.trim() === '' ? null : d.payReference.trim());
+                                setPayDraft(claim.bill.id, { payApprovalId: '', payAmount: '', payMethod: '', payReference: '' });
+                              }}
+                            >Record payment</Button>
+                          </div>
+                        )}
+
+                        {mayReverse && paymentsMade.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                            <select
+                              style={input} data-testid="reverse-payment" value={d.reversePaymentId}
+                              onChange={(e) => setPayDraft(claim.bill.id, { reversePaymentId: e.target.value })}
+                            >
+                              <option value="">Which payment…</option>
+                              {paymentsMade.map((pmt) => (
+                                <option key={pmt.id} value={pmt.id}>{pmt.amount} · {pmt.method}</option>
+                              ))}
+                            </select>
+                            <input style={input} data-testid="reverse-amount" placeholder="Amount"
+                              value={d.reverseAmount}
+                              onChange={(e) => setPayDraft(claim.bill.id, { reverseAmount: e.target.value })} />
+                            <input style={{ ...input, flex: 1 }} data-testid="reverse-reason"
+                              placeholder="Why it came back"
+                              value={d.reverseReason}
+                              onChange={(e) => setPayDraft(claim.bill.id, { reverseReason: e.target.value })} />
+                            <Button
+                              variant="ink" data-testid={`reverse-${claim.bill.id}`}
+                              disabled={d.reversePaymentId === '' || !money2(d.reverseAmount) || !d.reverseReason.trim()
+                                || commercialWriteBlocked(reverseCoalesceKey(d.reversePaymentId), commercialPending)}
+                              onClick={() => {
+                                reversePayment(d.reversePaymentId, d.reverseAmount.trim(), d.reverseReason.trim());
+                                setPayDraft(claim.bill.id, { reversePaymentId: '', reverseAmount: '', reverseReason: '' });
+                              }}
+                            >Reverse</Button>
+                          </div>
+                        )}
+
+                        {mayDeduct && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                            <select
+                              style={input} data-testid="deduct-type" value={d.deductType}
+                              onChange={(e) => setPayDraft(claim.bill.id, { deductType: e.target.value })}
+                            >
+                              <option value="">What kind of withholding…</option>
+                              {DEDUCTION_TYPES.map((t) => (<option key={t} value={t}>{t}</option>))}
+                            </select>
+                            <input style={input} data-testid="deduct-amount" placeholder="Amount"
+                              value={d.deductAmount}
+                              onChange={(e) => setPayDraft(claim.bill.id, { deductAmount: e.target.value })} />
+                            <input style={{ ...input, flex: 1 }} data-testid="deduct-reason"
+                              placeholder="Reason (optional)"
+                              value={d.deductReason}
+                              onChange={(e) => setPayDraft(claim.bill.id, { deductReason: e.target.value })} />
+                            <Button
+                              variant="ink" data-testid={`deduct-${claim.bill.id}`}
+                              disabled={d.deductType === '' || !money2(d.deductAmount) || deductBlocked}
+                              onClick={() => {
+                                recordDeduction(claim.bill.id, d.deductType, d.deductAmount.trim(),
+                                  d.deductReason.trim() === '' ? null : d.deductReason.trim());
+                                setPayDraft(claim.bill.id, { deductType: '', deductAmount: '', deductReason: '' });
+                              }}
+                            >{deductBlocked ? 'Working…' : 'Withhold'}</Button>
+                          </div>
+                        )}
+
+                        {mayAdvance && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                            {/* An advance names the COUNTERPARTY, not this claim — it is money paid
+                                before any claim exists to draw it down. It is offered here because
+                                this is where the payer works, and it is keyed by vendor, so it
+                                conflicts with nothing on any claim. */}
+                            <input style={input} data-testid="advance-amount" placeholder="Advance amount"
+                              value={d.advanceAmount}
+                              onChange={(e) => setPayDraft(claim.bill.id, { advanceAmount: e.target.value })} />
+                            <input style={input} data-testid="advance-method" placeholder="Method"
+                              value={d.advanceMethod}
+                              onChange={(e) => setPayDraft(claim.bill.id, { advanceMethod: e.target.value })} />
+                            <input style={{ ...input, flex: 1 }} data-testid="advance-reason"
+                              placeholder="Why this counterparty is being advanced"
+                              value={d.advanceReason}
+                              onChange={(e) => setPayDraft(claim.bill.id, { advanceReason: e.target.value })} />
+                            <Button
+                              variant="ink" data-testid={`advance-${claim.bill.id}`}
+                              disabled={!money2(d.advanceAmount) || !d.advanceMethod.trim() || !d.advanceReason.trim()
+                                || commercialWriteBlocked(advanceCoalesceKey(claim.bill.vendorId), commercialPending)}
+                              onClick={() => {
+                                payAdvance(claim.bill.vendorId, d.advanceAmount.trim(), d.advanceReason.trim(),
+                                  d.advanceMethod.trim(), null);
+                                setPayDraft(claim.bill.id, { advanceAmount: '', advanceMethod: '', advanceReason: '' });
+                              }}
+                            >Pay advance</Button>
+                          </div>
+                        )}
+
+                        {mayRelease && unreleased.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                            <select
+                              style={input} data-testid="release-deduction" value={d.releaseId}
+                              onChange={(e) => setPayDraft(claim.bill.id, { releaseId: e.target.value })}
+                            >
+                              <option value="">Which withholding…</option>
+                              {unreleased.map((x) => (
+                                <option key={x.id} value={x.id}>{x.type} · {x.unreleased} held</option>
+                              ))}
+                            </select>
+                            <input style={input} data-testid="release-amount" placeholder="Amount"
+                              value={d.releaseAmount}
+                              onChange={(e) => setPayDraft(claim.bill.id, { releaseAmount: e.target.value })} />
+                            <input style={{ ...input, flex: 1 }} data-testid="release-reason"
+                              placeholder="Why it is being returned"
+                              value={d.releaseReason}
+                              onChange={(e) => setPayDraft(claim.bill.id, { releaseReason: e.target.value })} />
+                            <Button
+                              variant="ink" data-testid={`release-${claim.bill.id}`}
+                              disabled={d.releaseId === '' || !money2(d.releaseAmount) || !d.releaseReason.trim()
+                                || commercialWriteBlocked(deductionReleaseCoalesceKey(d.releaseId), commercialPending)}
+                              onClick={() => {
+                                releaseDeduction(d.releaseId, d.releaseAmount.trim(), d.releaseReason.trim());
+                                setPayDraft(claim.bill.id, { releaseId: '', releaseAmount: '', releaseReason: '' });
+                              }}
+                            >Release</Button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               ))}
             </div>

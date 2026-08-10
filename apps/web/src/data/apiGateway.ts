@@ -1032,6 +1032,30 @@ export class ApiGateway {
   grantSodException(input: GrantSodExceptionInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/bills/sod-grant', input, idempotencyKey);
   }
+  /** §H — withhold against a certified claim. */
+  recordDeduction(input: RecordDeductionInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/deductions/record', input, idempotencyKey);
+  }
+  /** §H — return part of a withholding. Append-only: a release row, never an edit. */
+  releaseDeduction(input: ReleaseDeductionInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/deductions/release', input, idempotencyKey);
+  }
+  /** §G bound 4 — authorise money to leave, against the claim's net payable. */
+  approvePayment(input: ApprovePaymentInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/payments/approve', input, idempotencyKey);
+  }
+  /** §G bound 5 — record money that has left, against ONE approval. */
+  recordPayment(input: RecordPaymentInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/payments/record', input, idempotencyKey);
+  }
+  /** §F — a reversal is its own fact; the payment it names is never edited. */
+  reversePayment(input: ReversePaymentInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/payments/reverse', input, idempotencyKey);
+  }
+  /** §G — an advance to a counterparty, before any claim exists to draw it down. */
+  payAdvance(input: PayAdvanceInput, idempotencyKey?: string): Promise<unknown> {
+    return this.cmd('/commercial/advances', input, idempotencyKey);
+  }
 
   // ── Phase 4 Task 6 (§J) — the LABOUR operational field COMMANDS. Each is ONE server command
   //    routed through the durable write-ahead outbox with the two-key split (see OutboxOp), so a
@@ -1391,6 +1415,32 @@ export interface GrantSodExceptionInput {
   status: string;
   lifecycleVersion: number;
 }
+/**
+ * ── 7B-iii-d (§G/§H) — the payer's chain. Six commands, and the shapes are the server's ────────
+ *
+ * Only `approve` carries a viewed-fact pin, and that asymmetry is the server's contract rather
+ * than an omission here: the other five NAME the document they act on (`deductionId`,
+ * `approvalId`, `paymentId`), and an id IS the viewed fact — it cannot silently mean a different
+ * row later. An approval names only the claim, whose money moves underneath it, so it pins the
+ * claim's monotonic revision instead.
+ */
+export interface RecordDeductionInput {
+  billId: string; type: string; amount: string; reason?: string | null;
+}
+/** §H — a correction to a withholding is a RELEASE row, never an edit; the ledger is append-only. */
+export interface ReleaseDeductionInput { deductionId: string; amount: string; reason: string }
+/** §G bound 4 — approving is the authority that money MAY leave, against `NET_PAYABLE`. */
+export interface ApprovePaymentInput { billId: string; amount: string; lifecycleVersion: number }
+/** §G bound 5 — a payment draws on ONE approval, and never more than it authorised. */
+export interface RecordPaymentInput {
+  approvalId: string; amount: string; method: string; reference?: string | null;
+}
+/** §F — cash already gone is not corrected by correcting a document; a reversal is its own fact. */
+export interface ReversePaymentInput { paymentId: string; amount: string; reason: string }
+/** §G — an advance names a VENDOR, not a claim: it is money paid before any claim exists. */
+export interface PayAdvanceInput {
+  vendorId: string; amount: string; reason: string; method: string; reference?: string | null;
+}
 /** §F — `certificateId` is the document the correction was WRITTEN ABOUT (Codex round-2). */
 export interface SupersedeCertificateInput { billId: string; reason: string; certificateId: string }
 export interface RejectVendorBillInput { billId: string; reason: string }
@@ -1498,6 +1548,12 @@ export type OutboxOp =
   | { t: 'certifyBill'; input: CertifyBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'supersedeCertificate'; input: SupersedeCertificateInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'grantSodException'; input: GrantSodExceptionInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'recordDeduction'; input: RecordDeductionInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'releaseDeduction'; input: ReleaseDeductionInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'approvePayment'; input: ApprovePaymentInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'recordPayment'; input: RecordPaymentInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'reversePayment'; input: ReversePaymentInput; idempotencyKey: string; coalesceKey: string }
+  | { t: 'payAdvance'; input: PayAdvanceInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'amendVendorBill'; input: AmendVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'rejectVendorBill'; input: RejectVendorBillInput; idempotencyKey: string; coalesceKey: string }
   | { t: 'uploadMedia'; input: UploadMediaInput }
@@ -1604,6 +1660,18 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.supersedeCertificate(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'grantSodException':
       return gw.grantSodException(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'recordDeduction':
+      return gw.recordDeduction(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'releaseDeduction':
+      return gw.releaseDeduction(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'approvePayment':
+      return gw.approvePayment(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'recordPayment':
+      return gw.recordPayment(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'reversePayment':
+      return gw.reversePayment(op.input, op.idempotencyKey).then(() => gw.snapshot());
+    case 'payAdvance':
+      return gw.payAdvance(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'submitVendorBill':
       return gw.submitVendorBill(op.input, op.idempotencyKey).then(() => gw.snapshot());
     case 'amendVendorBill':

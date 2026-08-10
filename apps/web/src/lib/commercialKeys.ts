@@ -74,6 +74,9 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   // the others: one registry, so hydration, the pending rebuild and the flush reconcile cover it
   // without a second list to keep in step.
   'grantSodException',
+  // 7B-iii-d — the payer's chain. Same registry, same reason.
+  'recordDeduction', 'releaseDeduction', 'approvePayment', 'recordPayment', 'reversePayment',
+  'payAdvance',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -186,6 +189,52 @@ export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
   `com:sodgrant:${billId}:${actorId}`;
 
 /**
+ * ── 7B-iii-d — the payer's chain, and the ONE fact that shapes all six keys ──────────────────
+ *
+ * Every one of these six commands is a §F FOLD SOURCE. Recording or releasing a withholding moves
+ * `NET_PAYABLE`; approving moves `APPROVED`; paying and reversing move `PAID`. §F derives the
+ * claim's status from those three folds, and 7B-iii-h made the claim's monotonic revision advance
+ * on every write that touches any of them.
+ *
+ * That is not a detail about status labels. It means **any of these six invalidates a queued
+ * `approve`**, because an approval PINS `lifecycleVersion` and the server refuses it if the claim
+ * has moved. R5-1 was the same shape one unit ago, for §I grants and claim transitions; here it is
+ * the general case, so the conflict rule is written from the FOLD rather than from a verb list.
+ *
+ * Each key names its ACTION and the conflict rule names its RESOURCE — this repository's rule, now
+ * at its fifth instance. The resources differ, and getting them right is the whole design:
+ *
+ *   record deduction   the CLAIM — a withholding draws on certified headroom (§G bound 3)
+ *   release deduction  the WITHHOLDING — two releases race one unreleased balance; releases
+ *                      against DIFFERENT withholdings are independent and must not coalesce
+ *   approve            the CLAIM — approvals race one net payable (§G bound 4)
+ *   record payment     the APPROVAL — payments race one authorised amount (§G bound 5)
+ *   reverse            the PAYMENT — two reversals race one paid amount
+ *   pay advance        the VENDOR — an advance names no claim at all, so it conflicts with nothing
+ *                      on any claim and only with another advance to the same counterparty
+ */
+export const deductionCoalesceKey = (billId: string): string => `com:deduct:${billId}`;
+export const deductionReleaseCoalesceKey = (deductionId: string): string => `com:release:${deductionId}`;
+export const approveCoalesceKey = (billId: string): string => `com:approve:${billId}`;
+export const payCoalesceKey = (approvalId: string): string => `com:pay:${approvalId}`;
+export const reverseCoalesceKey = (paymentId: string): string => `com:payrev:${paymentId}`;
+export const advanceCoalesceKey = (vendorId: string): string => `com:advance:${vendorId}`;
+
+/**
+ * Whether a pending key moves money on THIS claim — the predicate the approve conflict is written
+ * from, so a seventh fold-moving action added later is covered by naming it here once.
+ *
+ * `com:pay:` and `com:payrev:` are keyed by approval and payment id rather than by claim, so they
+ * cannot be matched by prefix on the bill. They are handled by the caller, which holds the claim's
+ * own approval and payment ids — stated here because a rule that silently cannot see two of its
+ * six members is worse than one that says so.
+ */
+export const isClaimMoneyPending = (key: string, billId: string): boolean =>
+  key === deductionCoalesceKey(billId)
+  || key === approveCoalesceKey(billId)
+  || isBillTransitionPending(key, billId);
+
+/**
  * Whether a commercial write must be refused because an EQUIVALENT or CONFLICTING one is pending.
  *
  * `dispatchCommercial` used exact key equality, which is right for most actions and wrong for the
@@ -237,6 +286,24 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // legible ("no authorisation stands"), not silently mis-pinned.
   const grant = /^com:sodgrant:(.+):[^:]*$/u.exec(coalesceKey);
   if (grant) return pending.some((k) => isBillTransitionPending(k, grant[1]!));
+  // ── 7B-iii-d — APPROVE pins the claim's revision, and every fold write moves it ─────────────
+  //
+  // R5-1 generalised. An approval carries `lifecycleVersion`, and the server refuses it if the
+  // claim moved; a withholding recorded or released, or a lifecycle transition, moves it. Queued
+  // behind any of those, an approval is written against a revision that is already gone — refused
+  // when it lands, after the outbox reported it saved.
+  //
+  // A pending payment or reversal moves the fold too, but their keys name an APPROVAL and a
+  // PAYMENT rather than the claim, so this predicate cannot see them from the key alone. The
+  // SCREEN closes that half, because it holds the claim's own approval and payment ids; that
+  // division is stated here rather than left for a reader to discover.
+  const approve = /^com:approve:(.+)$/u.exec(coalesceKey);
+  if (approve) return pending.some((k) => isClaimMoneyPending(k, approve[1]!));
+  // …and a WITHHOLDING moves the same fold, so it is blocked by a lifecycle transition on its
+  // claim for the same reason. It is NOT blocked by a pending approval: approving does not change
+  // what may be withheld, and refusing it would be a conflict the bounds do not have.
+  const deduct = /^com:deduct:(.+)$/u.exec(coalesceKey);
+  if (deduct) return pending.some((k) => isBillTransitionPending(k, deduct[1]!));
   return false;
 }
 
@@ -281,7 +348,11 @@ export type CommercialRead = {
 } & (
   | { read: 'money' }
   | { read: 'bills' }
-  | { read: 'claim'; billId: string }
+  /** 7B-iii-d — `settledIds` carries the withholding, approval and payment ids this read actually
+   *  returned. A key naming a CHILD row cannot be matched from the bill id alone, and inferring
+   *  "any release on this claim" from a prefix would release a key for a withholding this read
+   *  never saw. The ids the read carries are the ids it can honestly settle. */
+  | { read: 'claim'; billId: string; settledIds?: readonly string[] }
   | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] }
 );
 
@@ -302,7 +373,16 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
       // and the button stays disabled until a hydration or a scope change rebuilds the pending set
       // from an outbox that no longer holds it.
       return isBillTransitionPending(coalesceKey, r.billId)
-        || coalesceKey.startsWith(`com:sodgrant:${r.billId}:`);
+        || coalesceKey.startsWith(`com:sodgrant:${r.billId}:`)
+        // 7B-iii-d — the payer's chain settles here too: the claim bundle carries the deduction
+        // ledger AND the payment ledger, so a fresh claim read is exactly when these become
+        // visible. The claim-keyed ones match directly; the approval-, payment- and
+        // withholding-keyed ones are released by the caller passing the ids this read returned,
+        // because a key naming a child row cannot be matched from the bill id alone.
+        || coalesceKey === deductionCoalesceKey(r.billId)
+        || coalesceKey === approveCoalesceKey(r.billId)
+        || (r.settledIds ?? []).some((id) => coalesceKey === deductionReleaseCoalesceKey(id)
+          || coalesceKey === payCoalesceKey(id) || coalesceKey === reverseCoalesceKey(id));
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;

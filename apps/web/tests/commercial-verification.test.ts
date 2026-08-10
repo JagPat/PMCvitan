@@ -4,6 +4,8 @@ import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import {
   billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey, commercialWriteBlocked,
   COMMERCIAL_OUTBOX_OP_TYPES, normalizeCommercialOutbox,
+  deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey,
+  reverseCoalesceKey, advanceCoalesceKey,
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
@@ -560,5 +562,116 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
     s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
     const op = s().outbox[0] as { t: string; idempotencyKey: string; coalesceKey: string };
     expect(normalizeCommercialOutbox([op]).ops).toHaveLength(1);
+  });
+});
+
+describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each command constrains", () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc', activeProjectId: 'p-1', online: false,
+    });
+    s()._setGateway({} as unknown as ApiGateway);
+  });
+  const keys = () => s().outbox.flatMap((o) => {
+    const k = (o as { coalesceKey?: unknown }).coalesceKey;
+    return typeof k === 'string' ? [k] : [];
+  });
+
+  /**
+   * THE finding this unit's key design exists for, and it is R5-1 generalised.
+   *
+   * All six of these commands are §F FOLD SOURCES: a withholding moves NET_PAYABLE, an approval
+   * moves APPROVED, a payment and a reversal move PAID. 7B-iii-h made the claim's monotonic
+   * revision advance on every write that touches any of them — so each of them invalidates a
+   * queued `approve`, which PINS `lifecycleVersion` and is refused by the server if the claim moved.
+   */
+  it('a pending fold write on this claim BLOCKS an approval, whichever fold it moves', () => {
+    for (const pending of [
+      deductionCoalesceKey('bill-1'),
+      billTransitionCoalesceKey('bill-1', 'certify'),
+      approveCoalesceKey('bill-1'),
+    ]) {
+      expect(commercialWriteBlocked(approveCoalesceKey('bill-1'), [pending]), pending).toBe(true);
+    }
+    // …and the dispatcher refuses it, not merely the screen (Codex J1)
+    s().recordDeduction('bill-1', 'retention', '10.00', null);
+    s().approvePayment('bill-1', '50.00', 4);
+    expect(keys()).toEqual([deductionCoalesceKey('bill-1')]);
+  });
+
+  it('…but a fold write on ANOTHER claim blocks nothing here', () => {
+    expect(commercialWriteBlocked(approveCoalesceKey('bill-1'), [deductionCoalesceKey('bill-2')]))
+      .toBe(false);
+  });
+
+  /** A withholding is blocked by a lifecycle transition for the same reason — but NOT by a pending
+   *  approval: approving does not change what may be withheld, and refusing it would invent a
+   *  conflict the §G bounds do not have. */
+  it('a withholding yields to a claim transition and not to an approval', () => {
+    expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
+      [billTransitionCoalesceKey('bill-1', 'certify')])).toBe(true);
+    expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'), [approveCoalesceKey('bill-1')]))
+      .toBe(false);
+  });
+
+  /** Each of the other four names the ROW it constrains, so two actions on DIFFERENT rows are
+   *  independent and two on the SAME row coalesce. That is the §G bound in key form: bound 5 caps
+   *  paid at what ONE approval authorised, so the approval is the resource. */
+  it('release, pay and reverse are keyed by the row they draw down', () => {
+    s().releaseDeduction('ded-1', '5.00', 'work made good');
+    s().releaseDeduction('ded-2', '5.00', 'work made good');
+    s().releaseDeduction('ded-1', '5.00', 'work made good'); // equivalent, coalesced
+    expect(keys()).toEqual([deductionReleaseCoalesceKey('ded-1'), deductionReleaseCoalesceKey('ded-2')]);
+
+    useStore.setState({ outbox: [], commercialPending: [] });
+    s().recordPayment('appr-1', '10.00', 'neft', null);
+    s().recordPayment('appr-2', '10.00', 'neft', null);
+    expect(keys()).toEqual([payCoalesceKey('appr-1'), payCoalesceKey('appr-2')]);
+
+    useStore.setState({ outbox: [], commercialPending: [] });
+    s().reversePayment('pay-1', '10.00', 'bank returned it');
+    s().reversePayment('pay-1', '10.00', 'bank returned it');
+    expect(keys()).toEqual([reverseCoalesceKey('pay-1')]);
+  });
+
+  /** An advance names no claim, so it conflicts with nothing on one — only with another advance to
+   *  the same counterparty. Asserted rather than assumed, because "it is money, so it must
+   *  conflict" is the plausible wrong answer. */
+  it('an advance is vendor-scoped and conflicts with no claim', () => {
+    expect(commercialWriteBlocked(advanceCoalesceKey('v-1'),
+      [approveCoalesceKey('bill-1'), billTransitionCoalesceKey('bill-1', 'certify')])).toBe(false);
+    expect(commercialWriteBlocked(advanceCoalesceKey('v-1'), [advanceCoalesceKey('v-1')])).toBe(true);
+  });
+
+  it('every one of the six settles on the claim read that carries its ledger', () => {
+    const read = (ids: string[]) =>
+      ({ read: 'claim', billId: 'bill-1', observedWrite: true, settledIds: ids }) as never;
+    expect(readClearsKey(deductionCoalesceKey('bill-1'), read([]))).toBe(true);
+    expect(readClearsKey(approveCoalesceKey('bill-1'), read([]))).toBe(true);
+    expect(readClearsKey(deductionReleaseCoalesceKey('ded-1'), read(['ded-1']))).toBe(true);
+    expect(readClearsKey(payCoalesceKey('appr-1'), read(['appr-1']))).toBe(true);
+    expect(readClearsKey(reverseCoalesceKey('pay-1'), read(['pay-1']))).toBe(true);
+    // …and a row this read did NOT carry is not settled by it: inferring it from a prefix would
+    // release a key for a withholding the user cannot yet see
+    expect(readClearsKey(deductionReleaseCoalesceKey('ded-9'), read(['ded-1']))).toBe(false);
+  });
+
+  it('each command takes its OWN permission, so widening one does not widen six', () => {
+    useStore.setState({ role: 'engineer' });
+    s().recordDeduction('bill-1', 'retention', '10.00', null);
+    s().releaseDeduction('ded-1', '5.00', 'r');
+    s().approvePayment('bill-1', '50.00', 4);
+    s().recordPayment('appr-1', '10.00', 'neft', null);
+    s().reversePayment('pay-1', '10.00', 'r');
+    s().payAdvance('v-1', '10.00', 'mobilisation', 'neft', null);
+    expect(s().outbox, 'an engineer holds none of the six').toHaveLength(0);
+  });
+
+  it('all six join the ONE op-type registry', () => {
+    for (const t of ['recordDeduction', 'releaseDeduction', 'approvePayment', 'recordPayment',
+      'reversePayment', 'payAdvance']) {
+      expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
+    }
   });
 });

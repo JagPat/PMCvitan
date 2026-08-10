@@ -73,7 +73,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, advanceCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -452,6 +452,17 @@ export interface AppActions {
   /** §E/§F writes (7B-iii-c-i) — the verification chain, on the SAME claim lifecycle. */
   beginVerification: (billId: string) => void;
   verifyVendorBill: (billId: string) => void;
+  /** §G/§H writes (7B-iii-d) — the payer's chain. Six commands, six DISTINCT permissions.
+   *
+   *  Only `approvePayment` takes a viewed-fact pin, and the asymmetry is the server's contract:
+   *  the others name the document they act on, and an id cannot silently mean a different row
+   *  later. An approval names only the claim, whose money moves underneath it. */
+  recordDeduction: (billId: string, type: string, amount: string, reason: string | null) => void;
+  releaseDeduction: (deductionId: string, amount: string, reason: string) => void;
+  approvePayment: (billId: string, amount: string, lifecycleVersion: number) => void;
+  recordPayment: (approvalId: string, amount: string, method: string, reference: string | null) => void;
+  reversePayment: (paymentId: string, amount: string, reason: string) => void;
+  payAdvance: (vendorId: string, amount: string, reason: string, method: string, reference: string | null) => void;
   /** §I write (7B-iii-g) — the APPROVER authorises one actor for one otherwise-forbidden act.
    *
    *  Carries the three facts the approver was LOOKING AT, all from the one authoritative claim
@@ -1660,6 +1671,15 @@ export const useStore = create<Store>()(
       // already names. Mapped here rather than left out, because this map is what makes the DURABLE
       // dispatcher refuse it: the screen hiding a form is not a guarantee (Codex J1).
       grantSodException: 'commercial.sod.grant',
+      // 7B-iii-d — SIX distinct permissions. They all resolve to pmc today and are named
+      // separately anyway, exactly as `certify` and `sod.grant` are: the policy is the source, not
+      // a copy of its current answer, and a later widening of one must not silently widen five.
+      recordDeduction: 'commercial.deduct',
+      releaseDeduction: 'commercial.deduct.release',
+      approvePayment: 'commercial.approve-payment',
+      recordPayment: 'commercial.record-payment',
+      reversePayment: 'commercial.reverse-payment',
+      payAdvance: 'commercial.pay-advance',
     } as const;
     const dispatchCommercial = (op: OutboxOp & { idempotencyKey: string; coalesceKey: string }, label: string, okMsg: string): void => {
       if (!gateway || !get().capabilities.includes('commercial')) return;
@@ -2890,7 +2910,21 @@ export const useStore = create<Store>()(
           // THIS claim's lifecycle transitions are visible now. A lodge is not (the list carries
           // it), and neither is a measurement (its LINE's register carries it) — with two claims
           // open, releasing those here is N1 one resource over.
-          releaseCommercialKeys(s, { read: 'claim', billId, observedWrite: commercialWritesSettled === settledAtStart });
+          // 7B-iii-d — the ids this read ACTUALLY returned. A release, a payment and a reversal are
+          // keyed by the child row they act on, so they cannot be matched from the bill id; and
+          // inferring "any release on this claim" from a prefix would clear a key for a withholding
+          // this read never saw. What the read carries is what it can honestly settle.
+          releaseCommercialKeys(s, {
+            read: 'claim', billId,
+            observedWrite: commercialWritesSettled === settledAtStart,
+            settledIds: [
+              ...(claim.deductions?.deductions ?? []).map((d) => d.id),
+              ...(claim.payments?.approvals ?? []).map((a) => a.id),
+              // payments hang off the approval that authorised them (§G bound 5), not off the
+              // ledger — so they are reached through it
+              ...(claim.payments?.approvals ?? []).flatMap((a) => (a.payments ?? []).map((pmt) => pmt.id)),
+            ],
+          });
         });
       }).catch(() => set((s) => { if (owns(s)) s.commercialClaimLoad[billId] = 'error'; }));
     },
@@ -3022,6 +3056,53 @@ export const useStore = create<Store>()(
         { t: 'certifyBill', input: { billId, versionId, lifecycleVersion }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: billTransitionCoalesceKey(billId, 'certify') },
         `Certify ${billId}`, 'Claim certified.',
+      );
+    },
+    recordDeduction: (billId, type, amount, reason) => {
+      dispatchCommercial(
+        { t: 'recordDeduction', input: { billId, type, amount, reason }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: deductionCoalesceKey(billId) },
+        `Withhold on ${billId}`, 'Withholding recorded.',
+      );
+    },
+    releaseDeduction: (deductionId, amount, reason) => {
+      dispatchCommercial(
+        { t: 'releaseDeduction', input: { deductionId, amount, reason }, idempotencyKey: newIdempotencyKey(),
+          // keyed on the WITHHOLDING: two releases race one unreleased balance, while releases
+          // against different withholdings are independent and must not coalesce
+          coalesceKey: deductionReleaseCoalesceKey(deductionId) },
+        `Release ${deductionId}`, 'Withholding released.',
+      );
+    },
+    approvePayment: (billId, amount, lifecycleVersion) => {
+      dispatchCommercial(
+        { t: 'approvePayment', input: { billId, amount, lifecycleVersion }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: approveCoalesceKey(billId) },
+        `Approve on ${billId}`, 'Payment approved.',
+      );
+    },
+    recordPayment: (approvalId, amount, method, reference) => {
+      dispatchCommercial(
+        { t: 'recordPayment', input: { approvalId, amount, method, reference }, idempotencyKey: newIdempotencyKey(),
+          // keyed on the APPROVAL — §G bound 5 caps paid at what THAT approval authorised
+          coalesceKey: payCoalesceKey(approvalId) },
+        `Pay ${approvalId}`, 'Payment recorded.',
+      );
+    },
+    reversePayment: (paymentId, amount, reason) => {
+      dispatchCommercial(
+        { t: 'reversePayment', input: { paymentId, amount, reason }, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: reverseCoalesceKey(paymentId) },
+        `Reverse ${paymentId}`, 'Payment reversed.',
+      );
+    },
+    payAdvance: (vendorId, amount, reason, method, reference) => {
+      dispatchCommercial(
+        { t: 'payAdvance', input: { vendorId, amount, reason, method, reference }, idempotencyKey: newIdempotencyKey(),
+          // an advance names no claim, so it conflicts with nothing on one — only with another
+          // advance to the same counterparty
+          coalesceKey: advanceCoalesceKey(vendorId) },
+        `Advance to ${vendorId}`, 'Advance paid.',
       );
     },
     grantSodException: (billId, actorId, reason, viewed) => {

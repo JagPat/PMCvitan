@@ -1547,3 +1547,120 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     expect(r.queryByTestId('commercial-sod-grant')).toBeNull();
   });
 });
+
+describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
+  const at = (n: number) => `2026-08-21T00:00:0${n}.000Z`;
+
+  const openPayments = (o: { pending?: string[]; role?: string } = {}) => {
+    const c = claim();
+    const base: CommercialClaimView = {
+      ...c,
+      bill: { ...c.bill, status: 'certified', statusChangedAt: at(1) },
+      deductions: {
+        ...c.deductions,
+        deductions: [
+          { ...(c.deductions.deductions[0] ?? {}), id: 'ded-1', type: 'retention',
+            amount: '10.00', unreleased: '10.00', releases: [] },
+        ],
+      } as never,
+      payments: {
+        ...c.payments,
+        // §G bound 5 — a payment draws on ONE approval, so it hangs off the approval that
+        // authorised it rather than off the ledger. The first draft of this fixture put them on
+        // the ledger and the contract corrected it.
+        approvals: [{
+          id: 'appr-1', amount: '50.00', paid: '20.00',
+          payments: [{ id: 'pay-1', amount: '20.00', method: 'neft' }],
+        }],
+      } as never,
+    };
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    useStore.setState({
+      capabilities: ['commercial'],
+      role: (o.role ?? 'pmc') as never,
+      commercialView: bundle(),
+      commercialLoad: 'ready',
+      commercialBills: [base.bill],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': base },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialPending: o.pending ?? [],
+    });
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-payments'));
+    return r;
+  };
+
+  /**
+   * The unit's key design, seen from the screen. Every one of these six moves a §F fold, so each
+   * advances the claim's revision — and an approval PINS that revision. Queued behind any of them
+   * it is refused when it lands, after the outbox reported it saved.
+   */
+  it('will not approve while any fold write on this claim is in flight, and says why', () => {
+    const r = openPayments({ pending: ['com:deduct:bill-1'] });
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '50.00' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('approve-blocked').textContent).toMatch(/records the revision/iu);
+  });
+
+  /** The half `commercialWriteBlocked` cannot see from a key alone — a payment key names an
+   *  APPROVAL and a reversal key names a PAYMENT, so only the screen, holding this claim's own
+   *  ids, can close it. Stated in the rule; asserted here. */
+  it('…including a payment or reversal, whose keys name a child row rather than the claim', () => {
+    for (const pending of ['com:pay:appr-1', 'com:payrev:pay-1']) {
+      const r = openPayments({ pending: [pending] });
+      fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '50.00' } });
+      expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled, pending).toBe(true);
+      r.unmount(); // each iteration is its own render; two live trees make every query ambiguous
+    }
+  });
+
+  it('offers approval once nothing is in flight, and refuses a non-money amount', () => {
+    const r = openPayments();
+    const btn = () => r.getByTestId('approve-bill-1') as HTMLButtonElement;
+    expect(btn().disabled, 'no amount typed').toBe(true);
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: 'lots' } });
+    expect(btn().disabled, 'money is a number, not a word').toBe(true);
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '0' } });
+    expect(btn().disabled, 'approving nothing authorises nothing').toBe(true);
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '50.00' } });
+    expect(btn().disabled).toBe(false);
+  });
+
+  it('a payment names the authorisation it draws on, and a reversal the payment it returns', () => {
+    const r = openPayments();
+    const pay = () => r.getByTestId('pay-bill-1') as HTMLButtonElement;
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    expect(pay().disabled, 'a payment against no authorisation is not offered').toBe(true);
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    expect(pay().disabled).toBe(false);
+
+    const rev = () => r.getByTestId('reverse-bill-1') as HTMLButtonElement;
+    fireEvent.change(r.getByTestId('reverse-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('reverse-reason'), { target: { value: 'bank returned it' } });
+    expect(rev().disabled, 'a reversal must name the payment it returns').toBe(true);
+    fireEvent.change(r.getByTestId('reverse-payment'), { target: { value: 'pay-1' } });
+    expect(rev().disabled).toBe(false);
+  });
+
+  it('a release names a withholding that still holds money, and states why it is returned', () => {
+    const r = openPayments();
+    const btn = () => r.getByTestId('release-bill-1') as HTMLButtonElement;
+    fireEvent.change(r.getByTestId('release-deduction'), { target: { value: 'ded-1' } });
+    fireEvent.change(r.getByTestId('release-amount'), { target: { value: '5.00' } });
+    expect(btn().disabled, 'returning money without saying why is not a record').toBe(true);
+    fireEvent.change(r.getByTestId('release-reason'), { target: { value: 'work made good' } });
+    expect(btn().disabled).toBe(false);
+  });
+
+  it('the whole payer surface is absent for a role holding none of the six permissions', () => {
+    const r = openPayments({ role: 'engineer' });
+    for (const id of ['approve-bill-1', 'pay-bill-1', 'reverse-bill-1', 'deduct-bill-1', 'release-bill-1']) {
+      expect(r.queryByTestId(id), id).toBeNull();
+    }
+  });
+});
