@@ -152,51 +152,53 @@ freshness guard that rounds 3 and 4 argued over becomes complete rather than par
 The rule the phase leaves behind: *a gate may only compare the quantity the server compares; if that
 quantity is not in the contract, the contract is the fix, never a nearer-to-hand stand-in.*
 
-## 6. What comes next — final owner direction, 2026-08-10
+## 6. What comes next — final clarified owner direction, 2026-08-10
 
-**The release target is a complete, production-usable STANDALONE Vitan platform for the owner's own
-internal organisation.** The two external phases are NOT equivalent and are not treated the same —
-the distinction is which kind of "external" each one means:
+**The release target is a complete, production-usable Vitan platform for the owner's organisation
+AND authorized external collaborators using Vitan itself.** The two "external" phases are not
+equivalent, and the distinction is which kind of external each one means:
 
 | Phase | What "external" means | Disposition |
 |---|---|---|
-| **6** — external collaboration | external *people and companies* using Vitan itself: supplier/contractor portals, guest `Company` → own `Organization` promotion | **REQUIRED**, sequenced AFTER the standalone-V1 live-pilot gate — the owner's instruction is that it follows the app being tested live |
-| **7** — external-system integration | external *software*: accounting, GST, bank, RedBracket adapters (§23's Stage-2 boundary) | **DEFERRED** to a future version; no external app integration is required currently |
+| **6** — external collaboration | external *people and companies* using Vitan itself: supplier/contractor collaboration, tightly scoped access, guest `Company` → own `Organization` promotion where planned | **IN THIS RELEASE, and next** |
+| **7** — external-system integration | external *software*: accounting, GST, bank, RedBracket or any vendor-specific adapter or live external API (§23's Stage-2 boundary) | **DEFERRED** future-version scope; not completed |
 
-Neither is recorded as completed. The order is: **standalone V1 → live-pilot gate → Phase 6 →
-Phase 7 later.**
+Order: **Phase 5 → Phase 6 → standalone-V1 completion gate + integrated live-pilot release.**
 
-### What replaces them: `standalone-v1-planning`
+### Phase 6's authority rule, stated before any of it is designed
 
-Not a feature phase — an **evidence-led gap audit of the actual product**, closing what it finds in
-focused review units under the same draft → CI → exact-head Codex gate. It verifies the internal
-product **end to end as one system**:
+Phase 6 exposes **only project/company-authorized collaboration facts and actions.** The internal
+authority for verification, certification, approval and payment stays attributable and **cannot be
+delegated accidentally.** A collaborator surface widens who can SEE and SUPPLY — never who can
+certify a claim or release money.
 
-- project/user administration and password login;
-- project-scoped dashboard, inbox and schedule;
+That is not a new rule; it is §I and the §G bounds applied to a wider audience. Phase 5 already
+makes every one of those acts attributable to a resolved actor and refuses the forbidden pairings,
+so Phase 6 inherits the guarantee rather than re-deriving it — which is exactly what "stable
+internal workflows, permissions and audit trails are prerequisites for exposing the product to other
+companies" meant in the phase intent map.
+
+### Then the standalone-V1 completion gate
+
+It runs **after** Phase 6, precisely so collaborator access and tenancy are inside what it
+certifies. An evidence-led audit of the actual product, not a feature phase:
+
+- administration and password login; project-scoped dashboard, inbox and schedule;
 - decisions, drawings, inspections, activities and daily logs;
-- materials, labour and commercial workflows;
-- cross-module projections and reporting;
-- honest loading, error and offline states;
-- production migration, backup, restore, health, observability and security runbooks;
-- onboarding and user documentation;
-- a real internal live-pilot acceptance gate.
+- materials, labour and commercial control;
+- **collaborator access and tenancy**;
+- cross-module reporting and projections; offline and error states;
+- production migration, backup, restore, health, security and observability;
+- onboarding and user documentation; and a real-project acceptance run.
 
-**It does not reopen cleared architecture and does not duplicate delivered modules.** It names only
-concrete missing integration, UX, operational-readiness or acceptance gaps.
+It does not reopen cleared architecture and does not duplicate delivered modules.
 
 ### Integration capability is preserved; integrations are not built
 
-What stays, and stays tested: versioned public contracts and events, the transactional outbox,
-adapter/connector boundaries, idempotency and reconciliation semantics, auditability, and
-configuration seams. What this release adds: **no vendor-specific adapter, no external credentials,
-no external schema assumptions, no live external calls.**
-
-### The release signal
-
-For the **whole standalone product on a real internal project**, with durable data and
-rollback/backup evidence — explicitly not merely the Phase-5 browser chain this packet documents.
-That chain proves one workflow in one browser; a release gate has to prove the system.
+What stays and stays tested: versioned public contracts and events, the transactional outbox,
+adapter/connector boundaries, idempotency and reconciliation semantics, auditability, configuration
+seams. What this release adds: **no vendor-specific adapter, no external credentials, no external
+schema assumptions, no external calls.** That is what keeps Phase 7 cheap when it is wanted.
 
 ## 7. Gates at this head
 
