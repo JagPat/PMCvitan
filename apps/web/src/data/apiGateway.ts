@@ -57,7 +57,6 @@ import type {
   CommercialMoneyPositionDto,
   CommercialClaimDto,
   SodRule,
-  VendorAdvanceListDto,
   MeasurementRegisterDto,
   VendorBillListDto,
 } from '@vitan/shared';
@@ -943,11 +942,6 @@ export class ApiGateway {
   // hand-written mock returned an array, so the mock agreed with the bug instead of the server.
   commercialBills(): Promise<VendorBillListDto> {
     return this.req<VendorBillListDto>(`/projects/${this.projectId}/commercial/bills`);
-  }
-
-  /** 7B-iv (§H) — the advances read. The settling read the advance command shipped without. */
-  commercialAdvances(): Promise<VendorAdvanceListDto> {
-    return this.req<VendorAdvanceListDto>(`/projects/${this.projectId}/commercial/advances`);
   }
 
   commercialClaim(billId: string): Promise<CommercialClaimDto> {

@@ -76,7 +76,7 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   'grantSodException',
   // 7B-iii-d — the payer's chain. Same registry, same reason.
   'recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
-  'approvePayment', 'payAdvance',
+  'approvePayment',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -232,11 +232,6 @@ export const sodGrantCoalesceKey = (billId: string, actorId: string, rule: strin
 export const deductionCoalesceKey = (billId: string): string => `com:deduct:${billId}`;
 /** claim-scoped already: an approval races the ONE net payable (§G bound 4) */
 export const approveCoalesceKey = (billId: string): string => `com:approve:${billId}`;
-/** §H — an advance is APPEND-ONLY with no server ceiling, so two advances to one counterparty are
- *  two facts, not a retry. Round 4: a vendor-only key was PR #208's finding 1 in a new place, and
- *  the value joins the identity as `budgetCoalesceKey` does. Settled by the `advances` read. */
-export const advanceCoalesceKey = (vendorId: string, amount: string, reason: string): string =>
-  `com:advance:${vendorId}:${amount}:${reason.trim()}`;
 export const deductionReleaseCoalesceKey = (billId: string, deductionId: string): string =>
   `com:release:${billId}:${deductionId}`;
 export const payCoalesceKey = (billId: string, approvalId: string): string =>
@@ -388,9 +383,6 @@ export type CommercialRead = {
   | { read: 'money' }
   | { read: 'bills' }
   | { read: 'claim'; billId: string }
-  /** 7B-iv — the read an ADVANCE settles on. It exists because the advance command shipped without
-   *  one, leaving `com:advance:<vendor>` with no release path at all. */
-  | { read: 'advances' }
   | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] }
 );
 
@@ -421,8 +413,6 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
         || coalesceKey.startsWith(`com:pay:${r.billId}:`)
         || coalesceKey.startsWith(`com:payrev:${r.billId}:`)
         || coalesceKey === approveCoalesceKey(r.billId);
-    case 'advances':
-      return coalesceKey.startsWith('com:advance:');
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;

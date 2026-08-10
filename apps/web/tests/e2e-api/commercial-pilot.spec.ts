@@ -353,39 +353,6 @@ test('PILOT §M chain: browser VERIFIES → CERTIFIES → WITHHOLDS → APPROVES
   }).toPass({ timeout: 20_000 });
 });
 
-test('PILOT: an ADVANCE names a counterparty and no claim, and its key settles on the read that carries it', async ({ page, request }) => {
-  const tag = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const vendor = await post(request, home, `/orgs/${orgId}/vendors`, { name: `Advance Vendor ${tag}` });
-  await post(request, pmcPilot, `/projects/${pilotId}/vendors`, { vendorId: vendor.id });
-
-  await signInToProject(page, PMC, PILOT_NAME);
-  await openCommercial(page);
-  await page.getByTestId('commercial-tab-payments').click();
-
-  // reachable with NO claim selected at all — the case an advance exists for
-  await expect(page.getByTestId('commercial-advance')).toBeVisible();
-  await page.getByTestId('advance-vendor').fill(vendor.id);
-  await page.getByTestId('advance-amount').fill('25000.00');
-  await page.getByTestId('advance-method').fill('neft');
-  await page.getByTestId('advance-reason').fill('mobilisation');
-  const pay = page.getByTestId('advance-pay');
-  await expect(pay).toBeEnabled();
-  await pay.click();
-
-  // the position appears, which is the effect landing…
-  await expect(page.getByTestId('advance-positions')).toContainText('25000.00', { timeout: 20_000 });
-  // …and the KEY settled with it. Proving that needs a re-filled form: the control is also
-  // disabled by an empty draft (the successful action clears it), so asserting on the emptied form
-  // would pass whether or not the key cleared. A stuck key shows as "Working…" — which is exactly
-  // what this surface did before the advances read existed, on every advance after the first.
-  await page.getByTestId('advance-vendor').fill(vendor.id);
-  await page.getByTestId('advance-amount').fill('1.00');
-  await page.getByTestId('advance-method').fill('neft');
-  await page.getByTestId('advance-reason').fill('second mobilisation');
-  await expect(pay, 'a settled key leaves the control ready for the next advance').toBeEnabled({ timeout: 20_000 });
-  await expect(pay).toHaveText(/pay advance/i);
-});
-
 test('NON-PILOT: the Commercial surface is ABSENT, and its reads 404', async ({ page, request }) => {
   await signInToProject(page, PMC, PLAIN_NAME);
   await expect(

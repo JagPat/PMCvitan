@@ -1,12 +1,13 @@
 # PR #317 — convergence audit (Phase 5 Task 7B-iv)
 
-Four finding-bearing heads, twelve findings. Written because repeated isolated patching is exactly
-what this repository's convergence rule exists to stop — and because most of these are recurrences
-of roots already named in this lineage, worth saying plainly rather than filing as new.
+Five finding-bearing heads, thirteen findings — the review lifecycle's limit. Written because
+repeated isolated patching is exactly what this repository's convergence rule exists to stop, and
+because nearly all of these are recurrences of roots already named in this lineage.
 
-**Round 3 parked the §I payment-rule grant surface as 7B-v** rather than patching it a third time
-(`docs/reviews/phase-5-t7b-v-parked-findings.md`). **Round 4's real root is in §"Round 4":** four
-rounds on one unit is a unit that was three workflows wide.
+**The unit is now SPLIT**, at the seam this document named at round 4: 7B-iv was three workflows
+wide. The §I payment-rule grant surface is parked as **7B-v** and the vendor advance as **7B-vi**,
+each whole at its reviewed head with its findings named. What remains is one workflow — the
+approver's authority.
 
 | # | Head | Finding | Root |
 |---|---|---|---|
@@ -19,6 +20,10 @@ rounds on one unit is a unit that was three workflows wide.
 | F1 | `46464da` | the grant gate arbitrates on status, ignoring the revision it pins | **coverage** / fidelity |
 | F2 | `46464da` | the payment window admits claims with zero approvable left | **coverage** |
 | F3 | `46464da` | the picker offers actors the rule cannot excuse (needs a SERVER guard) | **coverage** |
+| F1 | `0b4376a` | the self-approval remedy names an option the park removed | **coverage**, inside the park |
+| F2 | `0b4376a` | the advance surface shows totals, never the rows | scope (advance as supporting character) |
+| F3 | `0b4376a` | the advance key coalesces two distinct advances by vendor | **enumeration** |
+| — | `be2ba1c` | the widened advance key still omits method/reference | **enumeration**, inside its own fix |
 
 ## Root 1 — coverage, for the third time in this lineage
 
@@ -92,20 +97,62 @@ and its coalesce key was vendor-only, so a second legitimate advance to one coun
 undispatchable — PR #208's finding 1 in a new place. The value now joins the identity exactly as
 `budgetCoalesceKey` does.
 
-**Why the advance was not parked too.** The round-3 park earned its place on five findings plus a
-required server change. These two are client-only, small, and precedented in the same file, and my
-own added comment prose could fund them without touching a line of logic or an assertion — far less
-risky than surgery across the fourteen files the advance touches.
+**Why the advance was not parked too — a call round 5 REVERSED, left here rather than rewritten.**
+The reasoning was that the round-3 park earned its place on five findings plus a server change,
+while these two were client-only, small and precedented, and comment prose could fund them without
+touching logic. That was defensible on the evidence then available and wrong on the next head: the
+key fix reproduced the same enumeration root one round later, which is exactly what "two findings
+on one surface" was signalling. Recorded as a reversal because a decision log that quietly deletes
+its wrong calls teaches nothing.
 
 **The honest root of all of it.** Four rounds and twelve findings on one unit is not four unrelated
 lapses; it is a unit that was three workflows wide. Merging `7B-iii-d-ii` into `7B-iv` was my
 recommendation, and produced a PR carrying contract facts, an approval chain, a vendor advance, a
 browser chain and a packet. The parks and trims correct that scoping call, not the code.
 
+## Round 5 — the enumeration failed again, in the fix for the enumeration failure
+
+One finding: the advance key I had just widened to `(vendor, amount, reason)` still omits `method`
+and `reference`, so two advances differing only in those collapse to one key and the second is
+dropped.
+
+That is the same root for the fourth time, and this time inside its own correction. Round 2 listed
+three preconditions and called it the rule; round 3 found three more; round 4 listed two
+row-defining facts; round 5 found the two that list omitted. **This document told itself two rounds
+ago that "enumerating a fourth time is the move that has now failed twice", and round 4 enumerated
+anyway.** Writing the rule down did not prevent the behaviour, because a hand-listed subset always
+*looks* complete from the inside — that is the property that makes this root recur.
+
+The fix is not to add the two missing fields. It is the one this document already prescribed:
+**derive the identity, do not enumerate it.** For an append-only fact with no server ceiling, two
+dispatches are the same action only if they are the same payload, so the coalesce identity should
+be a deterministic function of the WHOLE command input. A sixth field then joins automatically,
+which is the property every enumeration here lacked. That work is 7B-vi's.
+
+### The split, taken rather than argued with
+
+This head reached the review lifecycle's limit — **5 finding-bearing heads, 13 findings** — and the
+orchestrator advised splitting. The unit is now split at the seam this document named two rounds
+ago: **7B-iv was three workflows wide.** The vendor advance is parked whole as **7B-vi**
+(`claude/phase5-task7b-vi-advance-parked`, at the reviewed head `be2ba1c`) with its finding named
+and the derived-identity prescription recorded, exactly as 7B-v was.
+
+What remains in #317 is one workflow — the approver's authority: the two contract facts
+(`lifecycleVersion`, `approvePreflight`), the approve control gated on them, and the pilot chain.
+17 files, 1,147 lines. §H advances stay fully available through the API, which is how the chain
+exercises them; the §M surface simply does not offer that control until 7B-vi lands.
+
+**The decision was pre-registered.** Before this round's findings arrived, the standing instruction
+for "if round 5 produces findings" already said to split rather than patch a fifth time — written
+down precisely so the choice would not be made under pressure with a nearly-full budget. Following
+it cost nothing that arguing for one more patch would have saved.
+
 ## Verification
 
-Round 4's F2 and F3 were reproduced RED at `0b4376a` before either fix, each failing on its own
-finding, then GREEN — web 734/734. Round 2's findings were reproduced RED at `2a2f66a` before either fix — 6 failing assertions, each
+Round 5 is answered by the split: the advance surface and its open finding leave whole, so nothing
+known-broken ships and no fifth enumeration was attempted. Round 4's F1 (the remedy copy) stays
+fixed here — it is the approve chain's. Round 4's F2 and F3 were reproduced RED at `0b4376a` before
+either fix, each on its own finding, and leave with the parked surface. Round 2's findings were reproduced RED at `2a2f66a` before either fix — 6 failing assertions, each
 on its own finding — then GREEN. Round 2's finding B (the grant conflict set) **stays fixed** in
 this PR: it applies to the certification rule too, and its probes are unchanged. Round 2's finding A
 leaves with the parked surface, since it was the payment rule's window.

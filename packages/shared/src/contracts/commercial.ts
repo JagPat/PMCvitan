@@ -133,12 +133,6 @@ export const COMMERCIAL_QUERIES = [
   // Same reason as `money-position` one page over: five separate reads of one claim can contradict
   // each other, and each of those reads already takes a snapshot for that reason internally.
   'commercial.claim',
-  // Phase 5 Task 7B-iv (§H) — every advance on the project, with each counterparty's position.
-  // Task 6C shipped the advance COMMAND with no read at all, and the §M surface found what that
-  // costs: an advance names a vendor, no claim read can carry it, and the control's pending key
-  // therefore had nothing that could ever settle it. A write whose effect no read carries is not
-  // finished, and the fix is the read rather than a cleverer key.
-  'commercial.advances',
 ] as const;
 export type CommercialQuery = (typeof COMMERCIAL_QUERIES)[number];
 
@@ -709,21 +703,6 @@ export interface VendorAdvancePositionDto {
   /** `advanced − recovered`, the ceiling a further recovery is bounded by. Never negative — the
    *  bound is enforced on the deduction WRITE, so no reader has to clamp it. */
   recoverable: string;
-}
-
-/**
- * The `commercial.advances` read (7B-iv): every advance on this project, with the position each
- * counterparty stands at.
- *
- * It exists because a WRITE with no read is a control whose effect nobody can see — and, concretely,
- * because the advance command's pending key had no settling read at all: an advance is VENDOR-keyed
- * and no claim read can name it, so the control disabled itself for ever after one use. A key whose
- * effect no read carries is stuck by construction, and the fix is the read, not a cleverer key.
- */
-export interface VendorAdvanceListDto {
-  advances: VendorAdvanceDto[];
-  /** one row per counterparty that has ever been advanced on this project */
-  positions: VendorAdvancePositionDto[];
 }
 
 /** Phase 5 Task 6C (§H) — cash paid to a counterparty ahead of any certified claim. */

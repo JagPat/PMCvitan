@@ -277,33 +277,6 @@ describe('Phase 5 Task 7B-ii — the §M claim lifecycle read (live PG)', () => 
     expect(theirs.approvePreflight.callerIsCertifier).toBe(false);
   });
 
-  /**
-   * F1. An advance had NO read at all.
-   *
-   * Task 6C shipped the command alone. On the §M surface that meant the control's pending key had
-   * nothing that could ever settle it — one advance and the button stayed disabled until a reload,
-   * because an advance names a vendor and no claim read can carry it. A write whose effect no read
-   * carries is not finished.
-   */
-  it('7B-iv-4: an advance is READABLE, with the position a recovery draws on', async () => {
-    const projectId = await freshProject();
-    const line = await issuedMaterialLine(projectId, { qty: '100' });
-
-    const empty = await deductions.listAdvances(projectId, pmc(projectId));
-    expect(empty.advances, 'a project with no advances reports none, not an error').toEqual([]);
-    expect(empty.positions).toEqual([]);
-
-    await deductions.payAdvance(projectId, {
-      vendorId: line.vendorId, amount: '250', reason: 'mobilisation', method: 'neft', reference: null,
-    }, pmc(projectId));
-
-    const read = await deductions.listAdvances(projectId, pmc(projectId));
-    expect(read.advances).toHaveLength(1);
-    expect(read.advances[0]).toMatchObject({ vendorId: line.vendorId, amount: '250.00', reason: 'mobilisation' });
-    expect(read.positions).toEqual([
-      { vendorId: line.vendorId, advanced: '250.00', recovered: '0.00', recoverable: '250.00' },
-    ]);
-  });
 
   // ── 1 — composition: the bundle IS the six narrow reads ──────────────────────────────────────
 

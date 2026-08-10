@@ -1,13 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SOD_RULES } from '@vitan/shared';
 import { useStore, getInitialState } from '@/store/store';
-import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
 import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import {
   billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey, commercialWriteBlocked,
   COMMERCIAL_OUTBOX_OP_TYPES, normalizeCommercialOutbox,
   deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey,
-  reverseCoalesceKey, approveCoalesceKey, advanceCoalesceKey,
+  reverseCoalesceKey, approveCoalesceKey,
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
@@ -506,14 +505,6 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
     expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'certify')]);
   });
 
-  /** 7B-iv — the advances read is PROJECT-OWNED. The LOAD STATE is the half that strands the
-   *  surface: the tab loader fires only while `idle`, so a carried-over status means B's advances
-   *  are never fetched and A's positions stay on screen. */
-  it('a project switch clears the advances read AND its load state', () => {
-    const torn = { ...emptyProjectData(), ...emptyModuleReadState() } as Record<string, unknown>;
-    expect(torn.commercialAdvances, 'A\'s positions must not survive into B').toBeNull();
-    expect(torn.commercialAdvancesLoad, 'a carried-over status leaves the loader dead').toBe('idle');
-  });
 
   /**
    * 7B-iv — §I has TWO rules, and authorising a person to CERTIFY is a different act from
@@ -717,51 +708,9 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
     expect(s().outbox, 'an engineer holds none of the four').toHaveLength(0);
   });
 
-  /**
-   * 7B-iv — the advance, and the read that finally settles it.
-   *
-   * An advance names a VENDOR and conflicts with nothing on any claim — asserted rather than
-   * assumed, because "it is money, so it must conflict" is the plausible wrong answer. Its key had
-   * NO release path until `commercial.advances` existed: no claim read carries a counterparty, so
-   * one advance disabled the control until a reload. That is the stuck-key rule for the fourth
-   * time, and this time the fix is the missing read rather than a cleverer key.
-   */
-  it('an advance is vendor-scoped and conflicts with no claim', () => {
-    const a = (v: string, amt = '25000.00', r = 'mobilisation') => advanceCoalesceKey(v, amt, r);
-    expect(commercialWriteBlocked(a('v-1'),
-      [approveCoalesceKey('bill-1'), billTransitionCoalesceKey('bill-1', 'certify')])).toBe(false);
-    // an EXACT retry still coalesces — that is what the key is for
-    expect(commercialWriteBlocked(a('v-1'), [a('v-1')])).toBe(true);
-    // …and two counterparties are independent
-    expect(commercialWriteBlocked(a('v-1'), [a('v-2')])).toBe(false);
-  });
 
-  /** Round 4 — two DIFFERENT advances to one counterparty are two facts, not a retry. §H makes an
-   *  advance append-only with no ceiling; a vendor-only key made the second undispatchable while
-   *  the first was in flight — PR #208's finding 1 in a new place. */
-  it('a SECOND, different advance to the same counterparty is not coalesced away', () => {
-    const first = advanceCoalesceKey('v-1', '25000.00', 'mobilisation');
-    expect(commercialWriteBlocked(advanceCoalesceKey('v-1', '1.00', 'mobilisation'), [first]),
-      'a different amount is a different advance').toBe(false);
-    expect(commercialWriteBlocked(advanceCoalesceKey('v-1', '25000.00', 'second tranche'), [first]),
-      'a different reason is a different advance').toBe(false);
-    // …and the release path still works for the widened key
-    expect(readClearsKey(first, { read: 'advances', observedWrite: true } as never)).toBe(true);
-  });
 
-  it('an advance key is RELEASED by the advances read, and by nothing else', () => {
-    const observed = { observedWrite: true };
-    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'), { read: 'advances', ...observed } as never)).toBe(true);
-    // no claim read can name a counterparty, which is why this read had to exist
-    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'),
-      { read: 'claim', billId: 'bill-1', ...observed } as never)).toBe(false);
-    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'), { read: 'money', ...observed } as never)).toBe(false);
-    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'), { read: 'bills', ...observed } as never)).toBe(false);
-    // …and a read that STARTED before the write settled releases nothing (Q-a's causality term)
-    expect(readClearsKey(advanceCoalesceKey('v-1', '25000.00', 'mobilisation'),
-      { read: 'advances', observedWrite: false } as never)).toBe(false);
-  });
-
+  
   /** An APPROVAL pins the claim's revision, so every fold write on that claim invalidates it —
    *  and all four settlement keys are claim-scoped now, so the rule sees every one from the key. */
   it('a pending fold write on this claim BLOCKS an approval, whichever fold it moves', () => {
@@ -779,10 +728,13 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
       [deductionCoalesceKey('bill-2'), 'com:pay:bill-2:appr-9'])).toBe(false);
   });
 
-  it('all six join the ONE op-type registry', () => {
+  it('all five join the ONE op-type registry', () => {
     for (const t of ['recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
-      'approvePayment', 'payAdvance']) {
+      'approvePayment']) {
       expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
     }
+    // `payAdvance` leaves with the advance surface (7B-vi) — asserted so a re-add without its
+    // control cannot pass silently.
+    expect(COMMERCIAL_OUTBOX_OP_TYPES).not.toContain('payAdvance');
   });
 });

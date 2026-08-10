@@ -1565,35 +1565,6 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
     //  against the store rather than through a screen harness with no gateway)
   });
 
-  /** Round 4 — the advance LEDGER, not only the balance. Every other way cash leaves has a
-   *  certificate or approval explaining it; an advance has neither, so its row IS that evidence. */
-  it('renders each advance row, not only the aggregated position', () => {
-    const r = openWith({});
-    useStore.setState({
-      commercialAdvances: {
-        advances: [
-          { id: 'adv-1', vendorId: 'v-1', amount: '25000.00', reason: 'mobilisation',
-            method: 'neft', reference: 'UTR-9', paidAt: '2026-08-21T09:00:00.000Z', paidById: 'u-1' },
-          { id: 'adv-2', vendorId: 'v-1', amount: '1.00', reason: 'second tranche',
-            method: 'cash', reference: null, paidAt: '2026-08-22T09:00:00.000Z', paidById: 'u-1' },
-        ],
-        positions: [{ vendorId: 'v-1', advanced: '25001.00', recovered: '0.00', recoverable: '25001.00' }],
-      },
-      commercialAdvancesLoad: 'ready',
-    } as never);
-    fireEvent.click(r.getByTestId('commercial-tab-payments'));
-    // the position still shows — the ledger is in ADDITION to it, not instead
-    expect(r.getByTestId('advance-positions').textContent).toMatch(/25001\.00/u);
-    // …and both rows are individually legible, with the evidence that explains each one
-    const first = r.getByTestId('advance-row-adv-1').textContent ?? '';
-    expect(first).toMatch(/25000\.00/u);
-    expect(first, 'the reason is the story attached to the money').toMatch(/mobilisation/u);
-    expect(first, 'method and reference are how it left').toMatch(/neft/u);
-    expect(first).toMatch(/UTR-9/u);
-    expect(first, 'when it left').toMatch(/2026-08-21/u);
-    // a second, smaller advance to the SAME counterparty is its own row, not folded away
-    expect(r.getByTestId('advance-row-adv-2').textContent).toMatch(/second tranche/u);
-  });
 
   it('is absent entirely for a role without the granting authority', () => {
     const r = openWith({ role: 'engineer' });
