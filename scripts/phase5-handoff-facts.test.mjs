@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Phase-5 HAND-OFF FACTS — the open questions PR #318 kept answering with prose.
@@ -15,7 +16,10 @@ import { join } from 'node:path';
  * expected to be edited by the unit that closes the gap, and the assertion messages say so.
  */
 
-const root = join(import.meta.dirname, '..');
+// `import.meta.dirname` lands in Node 20.11, and this package declares `>=20` — on 20.0–20.10 it
+// is undefined and `join(undefined, '..')` throws before a single probe runs. CI happens to use
+// Node 22, so the gate would never have shown it.
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(join(root, p), 'utf8');
 
 test('the parked hand-off ledgers are reachable on this branch, not only on their park branches', () => {
@@ -53,13 +57,22 @@ test('7B-vi is OPEN: the advance LIST read does not exist (pins the gap, not the
   //
   // WHEN 7B-vi LANDS THE READ, THIS PROBE MUST BE INVERTED, and the packet's §H/§M/§5 lines and
   // the 7B-vi ledger updated with it. That coupling is the point: the record moves with the code.
-  const controller = read('apps/api/src/commercial/commercial.controller.ts');
+  // Matched by SHAPE over every commercial controller, not by one string spelling: a route
+  // restored as a constant, an array decorator, double quotes, backticks, or in a sibling
+  // read-only controller would otherwise leave this absence probe green while the read exists.
+  const controllers = readdirSync(join(root, 'apps/api/src/commercial'))
+    .filter((f) => f.endsWith('.controller.ts'))
+    .map((f) => read(join('apps/api/src/commercial', f)));
+  const QUOTE = '[\'"`]';
+  const advanceRoute = (verb) => new RegExp(
+    `@${verb}\\(\\s*(?:\\[[^\\]]*)?${QUOTE}[^'"\`]*commercial/advances`, 'u',
+  );
   assert.ok(
-    controller.includes("@Post('commercial/advances')"),
+    controllers.some((c) => advanceRoute('Post').test(c)),
     'paying an advance is delivered; if this fails the §H claim in the packet is wrong',
   );
   assert.ok(
-    !/@Get\('commercial\/advances'\)/u.test(controller),
+    !controllers.some((c) => advanceRoute('Get').test(c)),
     'the advance LIST read now exists — invert this probe and update the packet §H/§M/§5 + the 7B-vi ledger',
   );
   assert.ok(
@@ -86,7 +99,16 @@ test('7B-v is OPEN: the payment-rule grant is not guarded to the certifier at IS
     'the grant command literal moved or was hoisted — this probe can no longer see the command it '
     + 'adjudicates; re-derive where the 7B-v guard belongs before trusting a green run',
   );
-  const grantBody = cert.slice(at, at + 4000);
+  // The extent is DERIVED: from the command literal to the next method at class indent. The
+  // previous version used a 4,000-character window against a body measuring 7,247 — so a guard
+  // added in the natural place, after the existing standing check, left this probe GREEN and the
+  // hand-off still saying the gap was open. An arbitrary window is not a boundary.
+  const end = cert.indexOf('\n  async ', at);
+  const grantBody = cert.slice(at, end < 0 ? undefined : end);
+  assert.ok(
+    grantBody.length > 1000,
+    'the grant command body could not be bounded — re-derive this probe before trusting it',
+  );
   assert.ok(
     !/certifiedById/u.test(grantBody),
     'the grant command now consults certifiedById — 7B-v has landed its guard, so invert this probe '

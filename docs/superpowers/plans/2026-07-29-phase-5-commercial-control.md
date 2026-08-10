@@ -1641,7 +1641,13 @@ SECTION is right and the probe is the defect.
 PR #318 — the Phase-5 closing packet — reached the bounded-review limit on a **docs-only** diff:
 four finding-bearing heads, every finding the same shape (the record claimed something about this
 repository that the repository did not support). Prose cannot fail, so the open questions were
-converted into named probes and the head carried `Review-Deferred-To-Probes: phase-5-task-7b-v`.
+converted into named probes and the head carries `Review-Deferred-To-Probes: phase-5-task-7b-vi`.
+
+**Why the trailer names 7B-vi and not 7B-v**, though 7B-v runs first: the deferral covers questions
+owned by BOTH units, and a trailer naming the EARLIER stop would let that stop be treated as
+settling the whole deferral while the advance question is still deliberately open with a green
+absence probe. It names the LATER of the two owners, so the deferral is settled only when every
+deferred question has been. 7B-v still closes its own probe at its own stop.
 
 **These probes are executable and live in `scripts/phase5-handoff-facts.test.mjs`, run by
 `pnpm test:automation`.** They are listed here because the follow-on units are driven from this

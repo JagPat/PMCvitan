@@ -104,7 +104,10 @@ Two probes deliberately pin an **absence**, and their failure messages say what 
 closes: invert the probe and update the packet section and ledger with it. That coupling is the
 point — the record can no longer drift from the code silently, because the drift breaks a test.
 
-**Deferred to: `phase-5-task-7b-v`** (the §I guard) and, for the advance read, `phase-5-task-7b-vi`.
+**Deferred to: `phase-5-task-7b-vi`** — the LATER of the two owners, deliberately. The deferral
+covers the §I guard (7B-v) and the advance read (7B-vi); naming the earlier stop would let 7B-v's
+review be read as settling the whole deferral while the advance question is still open with a green
+absence probe. Each unit closes its own probe at its own stop; the deferral closes at the last one.
 The probes are also recorded in the **phase plan** (`§ Deferred hand-off probes`), because the
 follow-on units are driven from the plan and a deferral recorded only in a review packet can be
 skipped — Codex's finding, and correct.
