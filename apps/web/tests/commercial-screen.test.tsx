@@ -3,10 +3,7 @@ import { render, cleanup, fireEvent, act } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
 import { CommercialScreen } from '@/screens/CommercialScreen';
 import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
-import { SOD_GRANT_STATES, SOD_RULES } from '@vitan/shared';
-
-/** every §I rule, from the shared map — so a third rule fails the surface probe below */
-const SOD_RULES_ALL = Object.values(SOD_RULES);
+import { SOD_GRANT_STATES } from '@vitan/shared';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 
 /**
@@ -1547,89 +1544,30 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
   });
 
   /**
-   * 7B-iv — the browser can issue BOTH §I rules, not just the certification one.
+   * 7B-iv round 3 — this form issues the CERTIFICATION rule ONLY, and the parked gap is asserted
+   * rather than left to be discovered.
    *
-   * The payments surface refuses a certifier approving their own claim and tells the reader a pmc
-   * can authorise the exception — which was, until this, an action with no path in the app: the
-   * only grant form issued `evidence-recorder-may-not-certify`, so a one-person site was pointed at
-   * a remedy it could not reach. Naming a remedy the product does not offer is worse than offering
-   * no remedy, because it reads as a step the user has failed to find.
+   * The payment rule was offered here for two rounds and drew five findings, every one an
+   * incomplete precondition set: the window, the conflict set, the revision pin, the remaining
+   * approvable headroom, and WHO the rule can excuse. The last needs a server guard —
+   * `approve()` consumes a grant only when `certificate.certifiedById === actor` — so it is
+   * parked WHOLE as 7B-v with its findings named, and this pins what ships meanwhile.
+   *
+   * A form that offers an authority it cannot gate completely is worse than one that does not
+   * offer it: it tells the approver a remedy exists and then writes a grant nobody can spend.
    */
-  it('offers BOTH §I rules, so the payment exception has a path in the app', () => {
+  it('issues the certification rule only, and says the payment rule is not issued here yet', () => {
     const r = openWith({});
-    const offered = Array.from(r.getByTestId('sod-rule').querySelectorAll('option'))
-      .map((o) => (o as HTMLOptionElement).value);
-    // read from the SHARED list rather than the two strings this form happens to render, so a
-    // third rule added to §I fails here instead of silently having no surface
-    expect(offered.sort()).toEqual([...SOD_RULES_ALL].sort());
-    // …and the form still refuses without a person and a reason, whichever rule is chosen
-    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
-    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.queryByTestId('sod-rule'), 'the rule selector is parked with 7B-v').toBeNull();
+    // the gap is STATED on the surface, not silently absent
+    expect(r.getByTestId('commercial-sod-grant').textContent)
+      .toMatch(/is not issued here yet/iu);
+    // …and the form still works for the rule it does issue
     fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
-    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'single-pmc site' } });
-    // The person-and-reason check is asserted on the CERTIFY rule, on the claim state that rule is
-    // legal in. Round 2: this originally asserted the PAYMENT rule became issuable here, which was
-    // the defect itself — a payment grant pins `verified`, and certification moves both the status
-    // and the revision before approval is ever reached, so it could never be spent. Which state
-    // each rule is issuable in is asserted by the two probes below.
-    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'evidence-recorder-may-not-certify' } });
+    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
     expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  /** R5-1 in the SCREEN — the same rule the dispatcher refuses with, so the two cannot disagree. */
-  it('blocks authorising while a change to the claim is in flight, and says why', () => {
-    const r = openWith({ pending: ['com:billtx:bill-1:certify'] });
-    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
-    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
-    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
-    expect(r.getByTestId('sod-grant-blocked').textContent).toMatch(/version, state and revision/iu);
-  });
-
-  /** Round 1, finding 5 — certification is legal only from `verified`, so an authorisation
-   *  recorded earlier could NEVER be spent: it is `stale-review` the moment the claim reaches the
-   *  state it was meant for. Recording one is worse than refusing it, because the approver is told
-   *  an authority exists that does not. */
-  it('will not authorise a claim certification is not yet legal on, and says why', () => {
-    const r = openWith({ status: 'submitted' });
-    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
-    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'only pmc on site' } });
-    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
-    expect(r.getByTestId('sod-grant-not-certifiable').textContent).toMatch(/only legal once this claim is verified/iu);
-  });
-
-  /**
-   * 7B-iv round 2, finding A — the WINDOW belongs to the rule, not to certification.
-   *
-   * Adding the payment rule as a second option left it behind the first rule's precondition, and
-   * the two windows are disjoint exactly where it matters: a `certifier-may-not-approve` exception
-   * is needed once the claim is CERTIFIED, which is precisely when `BILL_CERTIFY_FROM` has closed.
-   * So the one grant a one-person pilot cannot do without was unreachable in the browser — while
-   * the payments surface went on naming it as the remedy.
-   */
-  it('issues a PAYMENT-rule authorisation on a certified claim, where certification has closed', () => {
-    const r = openWith({ status: 'certified' });
-    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
-    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'single-pmc site' } });
-    // the CERTIFY rule is correctly refused here — certification is no longer legal…
-    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled,
-      'certification has closed, so a certify grant could never be spent').toBe(true);
-    expect(r.getByTestId('sod-grant-not-certifiable').textContent).toMatch(/once this claim is verified/iu);
-    // …and the PAYMENT rule is offered, because approval is exactly what is legal now
-    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
-    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled,
-      'the payment exception is needed precisely in this state').toBe(false);
-    expect(r.queryByTestId('sod-grant-not-certifiable')).toBeNull();
-  });
-
-  /** …and the converse, so the widening is not simply "always enabled": before certification the
-   *  payment rule has nothing to authorise, and says so in its OWN terms rather than certify's. */
-  it('refuses a PAYMENT-rule authorisation before certification, in its own words', () => {
-    const r = openWith({ status: 'verified' });
-    fireEvent.change(r.getByTestId('sod-actor'), { target: { value: 'u-2' } });
-    fireEvent.change(r.getByTestId('sod-reason'), { target: { value: 'single-pmc site' } });
-    fireEvent.change(r.getByTestId('sod-rule'), { target: { value: 'certifier-may-not-approve' } });
-    expect((r.getByTestId('sod-grant-bill-1') as HTMLButtonElement).disabled).toBe(true);
-    expect(r.getByTestId('sod-grant-not-certifiable').textContent).toMatch(/once this claim is certified/iu);
+    // (which rule the dispatched payload names is asserted in commercial-verification.test.ts,
+    //  against the store rather than through a screen harness with no gateway)
   });
 
   it('is absent entirely for a role without the granting authority', () => {

@@ -1291,21 +1291,21 @@ export function CommercialScreen() {
                     const grantListRow = (bills ?? []).find((r) => r.id === claim.bill.id) ?? null;
                     const grantReading = arbitrateBillCopy(grantListRow, claim.bill);
                     const grantAuthoritative = grantReading !== null && grantReading.source !== 'list';
-                    // 7B-iv round 2 — the WINDOW is the rule's, not certification's.
+                    // 7B-iv round 3 — this form issues the CERTIFICATION rule only. The payment
+                    // rule is PARKED WHOLE as 7B-v (`docs/reviews/phase-5-t7b-v-parked-findings.md`)
+                    // with its five findings named.
                     //
-                    // Adding `certifier-may-not-approve` as a second option to this form left it
-                    // behind the first rule's precondition, and the two windows are disjoint at the
-                    // exact state that matters: a payment exception is needed once the claim is
-                    // CERTIFIED, which is precisely when `BILL_CERTIFY_FROM` has closed. So the one
-                    // grant a one-person pilot cannot do without had no browser path at all.
+                    // Rounds 2 and 3 produced five findings here, every one an incomplete
+                    // precondition set for a rule that authorises an act it does not perform: the
+                    // window, the conflict set, the revision pin, the remaining approvable
+                    // headroom, and WHO the rule can excuse. Round 2's audit enumerated three of
+                    // those and called it the rule — the same error one level up.
                     //
-                    // Each rule is gated on the act it authorises still being reachable — certify
-                    // from `verified`, approve from past-certification — because an authorisation
-                    // that can never be spent is the thing this gate exists to refuse.
-                    const payRule = draft.sodRule === SOD_RULES.certifierMayNotApprove;
-                    const spendable = transitionOffered(
-                      grantReading, payRule ? BILL_STATUSES_PAST_CERTIFICATION : BILL_CERTIFY_FROM,
-                    );
+                    // The decisive one is F3: `approve()` consumes a grant only when
+                    // `certificate.certifiedById === actor`, so the picker must narrow to the
+                    // certifier AND the command must guard it. That is a SERVER authority change,
+                    // and this unit is read + UI over cleared facts — the 7B-iii-h/g seam exactly.
+                    const spendable = transitionOffered(grantReading, BILL_CERTIFY_FROM);
                     // ── who may be named, decided by the module that owns the rule ─────────────
                     //
                     // Round 1, finding 6. The first draft filtered the team roster in the browser
@@ -1330,20 +1330,12 @@ export function CommercialScreen() {
                     return (
                       <div style={rowCard} data-testid="commercial-sod-grant">
                         <div style={{ ...muted, marginBottom: 7 }}>
-                          Authorise someone against this claim as it stands now. §I has two separate
-                          rules and a grant for one does not excuse the other, so the act being
-                          authorised is chosen rather than assumed.
+                          Authorise someone to CERTIFY evidence they recorded, against this claim as
+                          it stands now. §I's other rule — authorising a certifier to APPROVE the
+                          claim they certified — is not issued here yet; the payments tab still
+                          reports that refusal accurately, and its remedy lands with 7B-v.
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                          <select
-                            style={input}
-                            data-testid="sod-rule"
-                            value={draft.sodRule}
-                            onChange={(e) => setCertDraft(claim.bill.id, { sodRule: e.target.value as SodRule })}
-                          >
-                            <option value={SOD_RULES.evidenceRecorderMayNotCertify}>…to CERTIFY their own evidence</option>
-                            <option value={SOD_RULES.certifierMayNotApprove}>…to APPROVE a claim they certified</option>
-                          </select>
                           <select
                             style={input}
                             data-testid="sod-actor"
@@ -1382,9 +1374,9 @@ export function CommercialScreen() {
                         </div>
                         {!blocked && !spendable && (
                           <div style={{ ...muted, marginTop: 7 }} data-testid="sod-grant-not-certifiable">
-                            {payRule
-                              ? 'Approval is only legal once this claim is certified, so an authorisation recorded now could never be spent. Authorise it once the claim is certified.'
-                              : 'Certification is only legal once this claim is verified, so an authorisation recorded now could never be spent. Authorise it once the claim is verified.'}
+                            Certification is only legal once this claim is verified, so an
+                            authorisation recorded now could never be spent. Authorise it once the
+                            claim is verified.
                           </div>
                         )}
                         {blocked && (
