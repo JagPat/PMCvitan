@@ -1422,7 +1422,7 @@ describe('7B-iii-f round 5 — Supersede respects the cash the bundle is holding
       payments: { ...c.payments, paid },
     };
   };
-  const open = (paid: string) => {
+  const open = (paid: string, pending: string[] = []) => {
     useStore.setState(getInitialState());
     useStore.getState()._setGateway(null);
     const c = paidClaim(paid);
@@ -1431,6 +1431,7 @@ describe('7B-iii-f round 5 — Supersede respects the cash the bundle is holding
       commercialView: bundle(), commercialLoad: 'ready',
       commercialBills: [c.bill], commercialBillsLoad: 'ready',
       commercialClaims: { 'bill-1': c }, commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialPending: pending,
     });
     const r = render(<CommercialScreen />);
     fireEvent.click(r.getByTestId('commercial-tab-claims'));
@@ -1447,6 +1448,26 @@ describe('7B-iii-f round 5 — Supersede respects the cash the bundle is holding
 
   it('…and is offered once it does not — the guard is precise, not merely strict', () => {
     expect((open('0.00').getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * Round 4, R4-2 — a conflict between two commands is not one-directional unless the bounds make
+   * it so.
+   *
+   * Round 3 closed this pair one way only: a pending supersede blocks a payment. The reverse
+   * ordering ends in a server refusal just as surely — the FIFO outbox applies the payment first,
+   * and the supersede is then refused because cash now stands against the certificate. `paid` is
+   * 0.00 here and cannot see it, because the payment has not landed yet. The PENDING KEY can.
+   */
+  it('is withheld while a payment on this claim is still QUEUED, which `paid` cannot see', () => {
+    expect((open('0.00', ['com:pay:bill-1:appr-1'])
+      .getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled,
+      'cash the outbox will apply first is still cash standing against this certificate').toBe(true);
+  });
+
+  it('…and a payment queued on ANOTHER claim constrains this one not at all', () => {
+    expect((open('0.00', ['com:pay:bill-9:appr-9'])
+      .getByTestId('cert-supersede-bill-1') as HTMLButtonElement).disabled).toBe(false);
   });
 });
 
@@ -1545,5 +1566,282 @@ describe('§I (7B-iii-g) — the approver can act where the refusal is reported'
   it('is absent entirely for a role without the granting authority', () => {
     const r = openWith({ role: 'engineer' });
     expect(r.queryByTestId('commercial-sod-grant')).toBeNull();
+  });
+});
+
+describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
+  const at = (n: number) => `2026-08-21T00:00:0${n}.000Z`;
+
+  const openPayments = (o: {
+    pending?: string[]; role?: string; approvable?: string | null;
+    certificateId?: string; staleBundle?: boolean;
+  } = {}) => {
+    const c = claim();
+    const base: CommercialClaimView = {
+      ...c,
+      bill: { ...c.bill, status: 'certified', statusChangedAt: at(1) },
+      // a WELL-FORMED payer fixture: a live certificate, a net payable to withhold against, and an
+      // approval that names that certificate. The first draft omitted all three and the new gates
+      // correctly refused every control — the fixture catching up with the contract.
+      certificate: {
+        ...(c.certificate ?? {}), id: o.certificateId ?? 'cert-1',
+        certifiedById: 'u-other',
+      } as never,
+      certifyPreflight: { ...c.certifyPreflight, callerActorId: 'u-self' },
+      deductions: {
+        ...c.deductions,
+        netPayable: '40.00',
+        // §H — an `advance-recovery` is bounded by a SECOND, vendor-scoped pool. 25 is deliberately
+        // LOWER than the 40 payable, so the two ceilings are distinguishable.
+        advance: { vendorId: 'v-1', advanced: '100.00', recovered: '75.00', recoverable: '25.00' },
+        deductions: [
+          { ...(c.deductions.deductions[0] ?? {}), id: 'ded-1', type: 'retention',
+            amount: '10.00', unreleased: '10.00', releases: [] },
+        ],
+      } as never,
+      payments: {
+        ...c.payments,
+        // §G bound 5 — a payment draws on ONE approval, so it hangs off the approval that
+        // authorised it rather than off the ledger. The first draft of this fixture put them on
+        // the ledger and the contract corrected it.
+        // §G bound 4 — `approvable` is NET_PAYABLE less what is already approved. Null means no
+        // certification stands, which is not the same as zero.
+        approvable: o.approvable === undefined ? '30.00' : o.approvable,
+        approvals: [{
+          id: 'appr-1', certificateId: 'cert-1', amount: '50.00', paid: '20.00',
+          payments: [{ id: 'pay-1', amount: '20.00', reversed: '5.00', method: 'neft' }],
+        }],
+      } as never,
+    };
+    useStore.setState(getInitialState());
+    useStore.getState()._setGateway(null);
+    useStore.setState({
+      capabilities: ['commercial'],
+      role: (o.role ?? 'pmc') as never,
+      commercialView: bundle(),
+      commercialLoad: 'ready',
+      commercialBills: [base.bill],
+      commercialBillsLoad: 'ready',
+      commercialClaims: { 'bill-1': base },
+      commercialClaimLoad: { 'bill-1': 'ready' },
+      commercialPending: o.pending ?? [],
+    });
+    if (o.staleBundle === true) {
+      // a LIST copy strictly NEWER than the bundle's: the claim has moved on the server, so every
+      // ceiling the bundle's ledger carries is known to be old
+      useStore.setState({
+        commercialBills: [{ ...base.bill, status: 'approved-for-payment', statusChangedAt: at(9) }],
+      });
+    }
+    const r = render(<CommercialScreen />);
+    fireEvent.click(r.getByTestId('commercial-tab-claims'));
+    fireEvent.click(r.getByTestId('commercial-claim-row-bill-1'));
+    fireEvent.click(r.getByTestId('commercial-tab-payments'));
+    return r;
+  };
+
+  it('caps a payment at what its own authorisation has left', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    // 50 approved, 20 already paid — 30 remains, and the ledger on screen says so
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '30.01' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '30.00' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('caps a reversal at what that payment has left to return', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('reverse-payment'), { target: { value: 'pay-1' } });
+    fireEvent.change(r.getByTestId('reverse-reason'), { target: { value: 'bank returned it' } });
+    // 20 paid, 5 already reversed — 15 remains
+    fireEvent.change(r.getByTestId('reverse-amount'), { target: { value: '15.01' } });
+    expect((r.getByTestId('reverse-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('reverse-amount'), { target: { value: '15.00' } });
+    expect((r.getByTestId('reverse-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('caps a release at what the withholding still holds', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('release-deduction'), { target: { value: 'ded-1' } });
+    fireEvent.change(r.getByTestId('release-reason'), { target: { value: 'work made good' } });
+    fireEvent.change(r.getByTestId('release-amount'), { target: { value: '10.01' } });
+    expect((r.getByTestId('release-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('release-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('release-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /** §H — `penalty` and `other` are JUDGEMENTS, so the server requires a reason. Read from the
+   *  shared list, so a fifth type added there is covered without editing this form. */
+  it('requires a reason for a judgment withholding and not for a mechanical one', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'retention is mechanical — the contract does not demand a reason').toBe(false);
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'penalty' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'a penalty is a judgement, and a judgement states itself').toBe(true);
+    fireEvent.change(r.getByTestId('deduct-reason'), { target: { value: 'late by three weeks' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * Round 2 — the six findings the precondition table exists to make impossible. Each is a rule
+   * that already applied to some other control and had not reached this one; the table is now the
+   * one place a rule is written. Audit: `docs/reviews/pr-316-convergence.md`.
+   */
+  it('refuses a withholding larger than the claim leaves free', () => {
+    const r = openPayments();
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    // Round 2 wrote this against `netPayable` (40.00) and round 3 corrected the ceiling to what is
+    // free AFTER standing approvals (30.00) — see the F3 probe below for why the difference is a
+    // §F seal rather than a preference. The rule is unchanged; the quantity it names is exact.
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.01' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /**
+   * The same root, arriving a THIRD time — found by walking the precondition table's rows against
+   * the contract rather than by a reviewer, which is the mechanism this correction installed doing
+   * its job. Every other withholding is bounded by this claim's payable; `advance-recovery` is
+   * bounded by that AND by what the counterparty still owes back across every claim. The bundle
+   * carries `advance.recoverable` for precisely this purpose, per its own contract comment.
+   */
+  it('bounds an advance-recovery by the counterparty pool as well as the claim', () => {
+    const r = openPayments();          // approvable 30.00, recoverable 25.00
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'advance-recovery' } });
+    // 30 is inside what the CLAIM leaves free but outside the 25 still recoverable
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'a recovery takes back money that actually left').toBe(true);
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '25.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled).toBe(false);
+    // …and the CLAIM-scoped ceiling still binds the other types, which the pool does not touch:
+    // 30 is free on this claim, and a retention may take all of it
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'a retention is bounded by the claim, not by the advance pool').toBe(false);
+  });
+
+  it('will not pay from an authorisation whose certificate is no longer live', () => {
+    const r = openPayments({ certificateId: 'cert-2' }); // the approval names cert-1
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled,
+      'a superseded authority is not authority').toBe(true);
+  });
+
+  it('a payment names the authorisation it draws on, and a reversal the payment it returns', () => {
+    const r = openPayments();
+    const pay = () => r.getByTestId('pay-bill-1') as HTMLButtonElement;
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    expect(pay().disabled, 'a payment against no authorisation is not offered').toBe(true);
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    expect(pay().disabled).toBe(false);
+
+    const rev = () => r.getByTestId('reverse-bill-1') as HTMLButtonElement;
+    fireEvent.change(r.getByTestId('reverse-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('reverse-reason'), { target: { value: 'bank returned it' } });
+    expect(rev().disabled, 'a reversal must name the payment it returns').toBe(true);
+    fireEvent.change(r.getByTestId('reverse-payment'), { target: { value: 'pay-1' } });
+    expect(rev().disabled).toBe(false);
+  });
+
+  it('a release names a withholding that still holds money, and states why it is returned', () => {
+    const r = openPayments();
+    const btn = () => r.getByTestId('release-bill-1') as HTMLButtonElement;
+    fireEvent.change(r.getByTestId('release-deduction'), { target: { value: 'ded-1' } });
+    fireEvent.change(r.getByTestId('release-amount'), { target: { value: '5.00' } });
+    expect(btn().disabled, 'returning money without saying why is not a record').toBe(true);
+    fireEvent.change(r.getByTestId('release-reason'), { target: { value: 'work made good' } });
+    expect(btn().disabled).toBe(false);
+  });
+
+  it('the whole payer surface is absent for a role holding none of the four permissions', () => {
+    const r = openPayments({ role: 'engineer' });
+    for (const id of ['pay-bill-1', 'reverse-bill-1', 'deduct-bill-1', 'release-bill-1']) {
+      expect(r.queryByTestId(id), id).toBeNull();
+    }
+  });
+
+  /**
+   * Round 3, F3 — a withholding may not consume what standing approvals already claim.
+   *
+   * `netPayable` was the wrong ceiling, and the difference is a §F seal rather than a preference:
+   * a withholding LOWERS `NET_PAYABLE`, and the derived-status seal re-runs after the insert
+   * requiring `APPROVED <= NET_PAYABLE`. With 40 payable and 30 already approved, withholding 40
+   * leaves the claim in breach and PostgreSQL rejects it AT COMMIT — after the outbox has reported
+   * the withholding saved. What is free is what is left after approvals, which is `approvable`.
+   */
+  it('will not withhold what standing approvals have already claimed', () => {
+    const r = openPayments();          // netPayable 40.00, approvable 30.00
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.01' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'one paisa past the unapproved payable still breaks APPROVED <= NET_PAYABLE').toBe(true);
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'what no approval has claimed is free to withhold').toBe(false);
+  });
+
+  /**
+   * Round 4, R4-1 — a ceiling computed from a bundle the list has moved past.
+   *
+   * Round 3 left this guard off the settlement controls, arguing it is not a COMPLETE staleness
+   * detector — a withholding can move `NET_PAYABLE` without moving the §F status this arbitration
+   * reads. True, and it does not support the conclusion: incomplete is not useless. When the list
+   * IS strictly newer, the bundle is stale beyond doubt and every ceiling below comes from its
+   * ledger.
+   */
+  it('will not settle anything from a claim copy the list has already moved past', () => {
+    const r = openPayments({ staleBundle: true });
+    fireEvent.change(r.getByTestId('deduct-type'), { target: { value: 'retention' } });
+    fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
+      'the payable this is measured against is known to be old').toBe(true);
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled,
+      'so is the approval balance').toBe(true);
+    fireEvent.change(r.getByTestId('reverse-payment'), { target: { value: 'pay-1' } });
+    fireEvent.change(r.getByTestId('reverse-amount'), { target: { value: '5.00' } });
+    fireEvent.change(r.getByTestId('reverse-reason'), { target: { value: 'bank returned it' } });
+    expect((r.getByTestId('reverse-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(r.getByTestId('release-deduction'), { target: { value: 'ded-1' } });
+    fireEvent.change(r.getByTestId('release-amount'), { target: { value: '5.00' } });
+    fireEvent.change(r.getByTestId('release-reason'), { target: { value: 'work made good' } });
+    expect((r.getByTestId('release-bill-1') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  /**
+   * Round 3, F5 — a payment draws on a certificate a supersede would retire.
+   *
+   * The outbox is FIFO: a supersede queued first replays first, and the payment service then
+   * re-reads this approval's certificate, finds it superseded, and refuses. `payCoalesceKey` names
+   * an APPROVAL and the supersede key names the BILL, so `commercialWriteBlocked` cannot connect
+   * them from the keys alone — only the screen, holding the claim's own id, can.
+   */
+  it('will not pay behind a pending transition that would retire the authority', () => {
+    const r = openPayments({ pending: ['com:billtx:bill-1:supersede'] });
+    fireEvent.change(r.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    fireEvent.change(r.getByTestId('pay-amount'), { target: { value: '10.00' } });
+    fireEvent.change(r.getByTestId('pay-method'), { target: { value: 'neft' } });
+    expect((r.getByTestId('pay-bill-1') as HTMLButtonElement).disabled,
+      'the authority this payment names is about to be replaced').toBe(true);
+    r.unmount();
+    // …and a transition on ANOTHER claim constrains nothing here
+    const other = openPayments({ pending: ['com:billtx:bill-9:supersede'] });
+    fireEvent.change(other.getByTestId('pay-approval'), { target: { value: 'appr-1' } });
+    fireEvent.change(other.getByTestId('pay-amount'), { target: { value: '10.00' } });
+    fireEvent.change(other.getByTestId('pay-method'), { target: { value: 'neft' } });
+    expect((other.getByTestId('pay-bill-1') as HTMLButtonElement).disabled).toBe(false);
   });
 });

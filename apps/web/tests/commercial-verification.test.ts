@@ -4,6 +4,8 @@ import { arbitrateBillCopy, transitionOffered } from '@/lib/billLifecycle';
 import {
   billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey, commercialWriteBlocked,
   COMMERCIAL_OUTBOX_OP_TYPES, normalizeCommercialOutbox,
+  deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey,
+  reverseCoalesceKey,
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
@@ -560,5 +562,98 @@ describe('§I (7B-iii-g) — an authorisation is independent of other GRANTS, no
     s().grantSodException('bill-1', 'u-2', 'only pmc on site', viewed);
     const op = s().outbox[0] as { t: string; idempotencyKey: string; coalesceKey: string };
     expect(normalizeCommercialOutbox([op]).ops).toHaveLength(1);
+  });
+});
+
+describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each command constrains", () => {
+  beforeEach(() => {
+    useStore.setState(getInitialState());
+    useStore.setState({
+      capabilities: ['commercial'], role: 'pmc', activeProjectId: 'p-1', online: false,
+    });
+    s()._setGateway({} as unknown as ApiGateway);
+  });
+  const keys = () => s().outbox.flatMap((o) => {
+    const k = (o as { coalesceKey?: unknown }).coalesceKey;
+    return typeof k === 'string' ? [k] : [];
+  });
+
+  /**
+   * A withholding moves `NET_PAYABLE`, so a lifecycle transition on its claim blocks it: the FIFO
+   * outbox would replay the transition first and the server would then refuse a withholding taken
+   * against a certificate that no longer stands.
+   */
+  it('a withholding yields to a claim transition on its own claim', () => {
+    expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
+      [billTransitionCoalesceKey('bill-1', 'certify')])).toBe(true);
+    // …and a transition on ANOTHER claim constrains nothing here
+    expect(commercialWriteBlocked(deductionCoalesceKey('bill-1'),
+      [billTransitionCoalesceKey('bill-2', 'certify')])).toBe(false);
+    // …and the dispatcher refuses it, not merely the screen (Codex J1)
+    s().beginVerification('bill-1');
+    s().recordDeduction('bill-1', 'retention', '10.00', null);
+    expect(keys()).toEqual([billTransitionCoalesceKey('bill-1', 'begin-verification')]);
+  });
+
+  /** Each of the other three names the ROW it constrains, so two actions on DIFFERENT rows are
+   *  independent and two on the SAME row coalesce. That is the §G bound in key form: bound 5 caps
+   *  paid at what ONE approval authorised, so the approval is the resource — carried under the
+   *  claim that settles it (round 4). */
+  it('release, pay and reverse are keyed by the row they draw down, under their claim', () => {
+    s().releaseDeduction('bill-1', 'ded-1', '5.00', 'work made good');
+    s().releaseDeduction('bill-1', 'ded-2', '5.00', 'work made good');
+    s().releaseDeduction('bill-1', 'ded-1', '5.00', 'work made good'); // equivalent, coalesced
+    expect(keys()).toEqual([
+      deductionReleaseCoalesceKey('bill-1', 'ded-1'), deductionReleaseCoalesceKey('bill-1', 'ded-2'),
+    ]);
+
+    useStore.setState({ outbox: [], commercialPending: [] });
+    s().recordPayment('bill-1', 'appr-1', '10.00', 'neft', null);
+    s().recordPayment('bill-1', 'appr-2', '10.00', 'neft', null);
+    expect(keys()).toEqual([payCoalesceKey('bill-1', 'appr-1'), payCoalesceKey('bill-1', 'appr-2')]);
+
+    useStore.setState({ outbox: [], commercialPending: [] });
+    s().reversePayment('bill-1', 'pay-1', '10.00', 'bank returned it');
+    s().reversePayment('bill-1', 'pay-1', '10.00', 'bank returned it');
+    expect(keys()).toEqual([reverseCoalesceKey('bill-1', 'pay-1')]);
+  });
+
+  /**
+   * Round 4 — the key must settle even when the row it names is GONE.
+   *
+   * Rounds 1–3 released these by asking the fresh claim read for the ids it returned, which holds
+   * only while the row survives. A full release followed by a supersede is a legal FIFO sequence
+   * in which both commit and the next read carries no live certificate at all: no id comes back,
+   * and the key is held for ever. Scoping the key to the claim makes ABSENCE settle it, because
+   * absence IS the effect once the parent is gone.
+   */
+  it('every one of the four settles on a claim read, even with the row gone', () => {
+    const read = { read: 'claim', billId: 'bill-1', observedWrite: true } as never;
+    expect(readClearsKey(deductionCoalesceKey('bill-1'), read)).toBe(true);
+    expect(readClearsKey(deductionReleaseCoalesceKey('bill-1', 'ded-1'), read),
+      'a withholding released in full and then superseded is absent, and still settles').toBe(true);
+    expect(readClearsKey(payCoalesceKey('bill-1', 'appr-1'), read)).toBe(true);
+    expect(readClearsKey(reverseCoalesceKey('bill-1', 'pay-1'), read)).toBe(true);
+    // …and a read of ANOTHER claim settles none of them: the scope is the claim, not the world
+    const other = { read: 'claim', billId: 'bill-9', observedWrite: true } as never;
+    for (const k of [deductionCoalesceKey('bill-1'), deductionReleaseCoalesceKey('bill-1', 'ded-1'),
+      payCoalesceKey('bill-1', 'appr-1'), reverseCoalesceKey('bill-1', 'pay-1')]) {
+      expect(readClearsKey(k, other), k).toBe(false);
+    }
+  });
+
+  it('each command takes its OWN permission, so widening one does not widen four', () => {
+    useStore.setState({ role: 'engineer' });
+    s().recordDeduction('bill-1', 'retention', '10.00', null);
+    s().releaseDeduction('bill-1', 'ded-1', '5.00', 'r');
+    s().recordPayment('bill-1', 'appr-1', '10.00', 'neft', null);
+    s().reversePayment('bill-1', 'pay-1', '10.00', 'r');
+    expect(s().outbox, 'an engineer holds none of the four').toHaveLength(0);
+  });
+
+  it('all four join the ONE op-type registry', () => {
+    for (const t of ['recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment']) {
+      expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
+    }
   });
 });
