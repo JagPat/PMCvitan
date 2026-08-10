@@ -76,6 +76,7 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   'grantSodException',
   // 7B-iii-d — the payer's chain. Same registry, same reason.
   'recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
+  'approvePayment', 'payAdvance',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -226,6 +227,12 @@ export const sodGrantCoalesceKey = (billId: string, actorId: string): string =>
  * independent, so nothing coalesces that should not.
  */
 export const deductionCoalesceKey = (billId: string): string => `com:deduct:${billId}`;
+/** claim-scoped already: an approval races the ONE net payable (§G bound 4) */
+export const approveCoalesceKey = (billId: string): string => `com:approve:${billId}`;
+/** vendor-scoped: an advance names no claim, so it conflicts with nothing on one — only with
+ *  another advance to the same counterparty. Settled by the `advances` read (7B-iv), which is the
+ *  read that carries its effect; before that read existed the key could never clear. */
+export const advanceCoalesceKey = (vendorId: string): string => `com:advance:${vendorId}`;
 export const deductionReleaseCoalesceKey = (billId: string, deductionId: string): string =>
   `com:release:${billId}:${deductionId}`;
 export const payCoalesceKey = (billId: string, approvalId: string): string =>
@@ -233,6 +240,25 @@ export const payCoalesceKey = (billId: string, approvalId: string): string =>
 export const reverseCoalesceKey = (billId: string, paymentId: string): string =>
   `com:payrev:${billId}:${paymentId}`;
 
+
+/**
+ * Whether a pending key moves money on THIS claim — the predicate the approve conflict is written
+ * from, so a fold-moving action added later is covered by naming it here once.
+ *
+ * Every §F fold source advances the claim's monotonic revision, and an approval PINS that revision.
+ * Queued behind any of them, an approval is written against a revision that is already gone.
+ *
+ * All four settlement keys are claim-scoped (round 4), so unlike the first three rounds this
+ * predicate can see every one of them from the key alone — there is no half left for the screen to
+ * close, which is what scoping the keys bought.
+ */
+export const isClaimMoneyPending = (key: string, billId: string): boolean =>
+  key === deductionCoalesceKey(billId)
+  || key === approveCoalesceKey(billId)
+  || isBillTransitionPending(key, billId)
+  || key.startsWith(`com:release:${billId}:`)
+  || key.startsWith(`com:pay:${billId}:`)
+  || key.startsWith(`com:payrev:${billId}:`);
 
 /**
  * Whether a commercial write must be refused because an EQUIVALENT or CONFLICTING one is pending.
@@ -293,6 +319,9 @@ export function commercialWriteBlocked(coalesceKey: string, pending: readonly st
   // because it holds the claim's own ids — stated here rather than left to be discovered.
   const deduct = /^com:deduct:(.+)$/u.exec(coalesceKey);
   if (deduct) return pending.some((k) => isBillTransitionPending(k, deduct[1]!));
+  // …and an APPROVAL yields to every fold write on its claim, because it pins the revision they move
+  const approve = /^com:approve:(.+)$/u.exec(coalesceKey);
+  if (approve) return pending.some((k) => isClaimMoneyPending(k, approve[1]!));
   return false;
 }
 
@@ -338,6 +367,9 @@ export type CommercialRead = {
   | { read: 'money' }
   | { read: 'bills' }
   | { read: 'claim'; billId: string }
+  /** 7B-iv — the read an ADVANCE settles on. It exists because the advance command shipped without
+   *  one, leaving `com:advance:<vendor>` with no release path at all. */
+  | { read: 'advances' }
   | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] }
 );
 
@@ -366,7 +398,10 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
         || coalesceKey === deductionCoalesceKey(r.billId)
         || coalesceKey.startsWith(`com:release:${r.billId}:`)
         || coalesceKey.startsWith(`com:pay:${r.billId}:`)
-        || coalesceKey.startsWith(`com:payrev:${r.billId}:`);
+        || coalesceKey.startsWith(`com:payrev:${r.billId}:`)
+        || coalesceKey === approveCoalesceKey(r.billId);
+    case 'advances':
+      return coalesceKey.startsWith('com:advance:');
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;

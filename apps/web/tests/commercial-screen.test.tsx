@@ -1576,6 +1576,7 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
   const openPayments = (o: {
     pending?: string[]; role?: string; approvable?: string | null;
     certificateId?: string; staleBundle?: boolean;
+    certifiedByCaller?: boolean; approveGrant?: string;
   } = {}) => {
     const c = claim();
     const base: CommercialClaimView = {
@@ -1589,6 +1590,12 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
         certifiedById: 'u-other',
       } as never,
       certifyPreflight: { ...c.certifyPreflight, callerActorId: 'u-self' },
+      // §I's PAYMENT rule — a different question from `certifyPreflight`, answered by the server
+      approvePreflight: {
+        grantState: (o.approveGrant ?? 'none') as never,
+        grantId: o.approveGrant === 'live' ? 'grant-1' : null,
+        callerIsCertifier: o.certifiedByCaller === true,
+      },
       deductions: {
         ...c.deductions,
         netPayable: '40.00',
@@ -1628,10 +1635,12 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
       commercialPending: o.pending ?? [],
     });
     if (o.staleBundle === true) {
-      // a LIST copy strictly NEWER than the bundle's: the claim has moved on the server, so every
-      // ceiling the bundle's ledger carries is known to be old
+      // 7B-iv — staleness stated EXACTLY. The list carries the claim's revision now, so the
+      // fixture moves the revision rather than the status stamp: that is the quantity the server
+      // compares, and it is precisely the case the old status arbitration could not see — the
+      // label and its timestamp are byte-identical here.
       useStore.setState({
-        commercialBills: [{ ...base.bill, status: 'approved-for-payment', statusChangedAt: at(9) }],
+        commercialBills: [{ ...base.bill, lifecycleVersion: base.bill.lifecycleVersion + 1 }],
       });
     }
     const r = render(<CommercialScreen />);
@@ -1790,6 +1799,44 @@ describe("§G/§H (7B-iii-d) — the payer's chain on the Payments tab", () => {
     fireEvent.change(r.getByTestId('deduct-amount'), { target: { value: '30.00' } });
     expect((r.getByTestId('deduct-bill-1') as HTMLButtonElement).disabled,
       'what no approval has claimed is free to withhold').toBe(false);
+  });
+
+  /**
+   * 7B-iv — §I has TWO rules, and the screen now asks the one the payment service consumes.
+   *
+   * Before the server exposed `approvePreflight`, this control read `certifyPreflight.grantState`
+   * — which resolves `evidence-recorder-may-not-certify`. That is a different question, and the
+   * gate was wrong in BOTH directions: a live certification grant enabled a self-approval the
+   * server refuses, and a real payment grant stayed invisible so an authorised approver was
+   * blocked. The client cannot answer either half; it can only ask the right field.
+   */
+  it('will not let the certifier approve their own claim without a PAYMENT authorisation', () => {
+    const r = openPayments({ certifiedByCaller: true });
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled).toBe(true);
+    expect(r.getByTestId('approve-self').textContent).toMatch(/you certified this claim/iu);
+    r.unmount();
+    // …and a live PAYMENT authorisation restores it, because the exception is MODELLED, not banned
+    const ok = openPayments({ certifiedByCaller: true, approveGrant: 'live' });
+    fireEvent.change(ok.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((ok.getByTestId('approve-bill-1') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('…and a CERTIFY authorisation is not permission to approve', () => {
+    // the certification grant is live; the payment rule's answer is still `none`
+    const r = openPayments({ certifiedByCaller: true });
+    useStore.setState((s) => ({
+      commercialClaims: {
+        ...s.commercialClaims,
+        'bill-1': {
+          ...s.commercialClaims['bill-1']!,
+          certifyPreflight: { ...s.commercialClaims['bill-1']!.certifyPreflight, grantState: 'live' },
+        },
+      },
+    }) as never);
+    fireEvent.change(r.getByTestId('approve-amount'), { target: { value: '10.00' } });
+    expect((r.getByTestId('approve-bill-1') as HTMLButtonElement).disabled,
+      'authorised to certify is not authorised to approve').toBe(true);
   });
 
   /**

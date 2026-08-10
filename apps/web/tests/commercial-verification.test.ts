@@ -5,7 +5,7 @@ import {
   billTransitionCoalesceKey, readClearsKey, sodGrantCoalesceKey, commercialWriteBlocked,
   COMMERCIAL_OUTBOX_OP_TYPES, normalizeCommercialOutbox,
   deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey,
-  reverseCoalesceKey,
+  reverseCoalesceKey, approveCoalesceKey, advanceCoalesceKey,
 } from '@/lib/commercialKeys';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_VERIFY_FROM } from '@vitan/shared';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
@@ -651,8 +651,56 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
     expect(s().outbox, 'an engineer holds none of the four').toHaveLength(0);
   });
 
-  it('all four join the ONE op-type registry', () => {
-    for (const t of ['recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment']) {
+  /**
+   * 7B-iv — the advance, and the read that finally settles it.
+   *
+   * An advance names a VENDOR and conflicts with nothing on any claim — asserted rather than
+   * assumed, because "it is money, so it must conflict" is the plausible wrong answer. Its key had
+   * NO release path until `commercial.advances` existed: no claim read carries a counterparty, so
+   * one advance disabled the control until a reload. That is the stuck-key rule for the fourth
+   * time, and this time the fix is the missing read rather than a cleverer key.
+   */
+  it('an advance is vendor-scoped and conflicts with no claim', () => {
+    expect(commercialWriteBlocked(advanceCoalesceKey('v-1'),
+      [approveCoalesceKey('bill-1'), billTransitionCoalesceKey('bill-1', 'certify')])).toBe(false);
+    expect(commercialWriteBlocked(advanceCoalesceKey('v-1'), [advanceCoalesceKey('v-1')])).toBe(true);
+    // …and two counterparties are independent
+    expect(commercialWriteBlocked(advanceCoalesceKey('v-1'), [advanceCoalesceKey('v-2')])).toBe(false);
+  });
+
+  it('an advance key is RELEASED by the advances read, and by nothing else', () => {
+    const observed = { observedWrite: true };
+    expect(readClearsKey(advanceCoalesceKey('v-1'), { read: 'advances', ...observed } as never)).toBe(true);
+    // no claim read can name a counterparty, which is why this read had to exist
+    expect(readClearsKey(advanceCoalesceKey('v-1'),
+      { read: 'claim', billId: 'bill-1', ...observed } as never)).toBe(false);
+    expect(readClearsKey(advanceCoalesceKey('v-1'), { read: 'money', ...observed } as never)).toBe(false);
+    expect(readClearsKey(advanceCoalesceKey('v-1'), { read: 'bills', ...observed } as never)).toBe(false);
+    // …and a read that STARTED before the write settled releases nothing (Q-a's causality term)
+    expect(readClearsKey(advanceCoalesceKey('v-1'),
+      { read: 'advances', observedWrite: false } as never)).toBe(false);
+  });
+
+  /** An APPROVAL pins the claim's revision, so every fold write on that claim invalidates it —
+   *  and all four settlement keys are claim-scoped now, so the rule sees every one from the key. */
+  it('a pending fold write on this claim BLOCKS an approval, whichever fold it moves', () => {
+    for (const pending of [
+      deductionCoalesceKey('bill-1'),
+      billTransitionCoalesceKey('bill-1', 'certify'),
+      'com:release:bill-1:ded-1',
+      'com:pay:bill-1:appr-1',
+      'com:payrev:bill-1:pay-1',
+    ]) {
+      expect(commercialWriteBlocked(approveCoalesceKey('bill-1'), [pending]), pending).toBe(true);
+    }
+    // …and a fold write on ANOTHER claim blocks nothing here
+    expect(commercialWriteBlocked(approveCoalesceKey('bill-1'),
+      [deductionCoalesceKey('bill-2'), 'com:pay:bill-2:appr-9'])).toBe(false);
+  });
+
+  it('all six join the ONE op-type registry', () => {
+    for (const t of ['recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
+      'approvePayment', 'payAdvance']) {
       expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
     }
   });
