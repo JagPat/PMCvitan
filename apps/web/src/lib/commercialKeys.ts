@@ -440,6 +440,10 @@ export type CommercialRead = {
   | { read: 'bills' }
   | { read: 'claim'; billId: string }
   | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] }
+  /** 7B-vi (§H) — the advances read. It exists FOR this: an advance names a counterparty and no
+   *  claim, so no other commercial read can settle its key. That is why the read lands with the
+   *  control rather than after it. */
+  | { read: 'advances' }
 );
 
 export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
@@ -469,6 +473,10 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
         || coalesceKey.startsWith(`com:pay:${r.billId}:`)
         || coalesceKey.startsWith(`com:payrev:${r.billId}:`)
         || coalesceKey === approveCoalesceKey(r.billId);
+    case 'advances':
+      // every advance key, whatever counterparty it names — the read carries the whole project's
+      // advances, so it settles them all rather than the one row a caller happened to pass
+      return coalesceKey.startsWith('com:advance:');
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;
