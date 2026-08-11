@@ -1,7 +1,11 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Two finding-bearing heads, nine findings, on a docs-only plan. **Three of the nine are one root, and
-it is a root the plan could have avoided by asking a question it never asked.**
+Three finding-bearing heads, fourteen findings, on a docs-only plan. **Four of the fourteen are one
+root, and it is a root the plan could have avoided by asking a question it never asked.**
+
+**Three of round 3's five findings are defects the round-2 correction introduced.** That is the
+number worth looking at, not the total: this lineage's corrections are generating findings at very
+nearly the rate the reviews are closing them.
 
 | # | Head | Finding | Root |
 |---|---|---|---|
@@ -14,6 +18,11 @@ it is a root the plan could have avoided by asking a question it never asked.**
 | 7 | `f9a4125` | include READ routes in the default-deny surface | **B — class named, not carried** |
 | 8 | `f9a4125` | define how scoped evidence upload is allowed | **B — class named, not carried** |
 | 9 | `f9a4125` | do not widen shared permissions for scoped routes | **A — built on `ROLE_POLICY`** |
+| 10 | `c431904` | include SERVICE backstops in the `ROLE_POLICY` replacement | **A — built on `ROLE_POLICY`** |
+| 11 | `c431904` | keep identity/session routes out of the collaborator complement | **D — created by fix 7** |
+| 12 | `c431904` | do not make 6.3 prove every future scope | **D — created by the round-2 tripwire** |
+| 13 | `c431904` | refuse grantless bindings, not merely unbound ones | **D — created by the round-2 activation fix** |
+| 14 | `c431904` | do not expose the flag before the cutover guard | staging |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -59,6 +68,48 @@ Worth noting what "replaces, not adds" buys, because it is the difference betwee
 decoration: an AND with `ROLE_POLICY` cannot narrow anything a collaborator can already do — a
 contractor already passes `project.read` — so the phase would have closed money writes while leaving
 the project snapshot reachable. Which is finding 7.
+
+### Round 3 — root A a fourth time, one layer below where I stopped looking
+
+Finding 10 is the same root at the layer I never checked. Round 2 removed the `ROLE_POLICY`
+dependency from the ROUTE guard and wrote a confident paragraph about it. It did not ask **who else
+reads `ROLE_POLICY`**. The answer, measured: **20 non-controller files, roughly 48 call sites**,
+including `procurement.service.ts:458` and `purchase-orders.service.ts:747` on `procurement.read` —
+exactly the paths §C's `procurement` scope needs. An allow-listed collaborator would have passed the
+new resolver and been rejected by the service; and the obvious repair, widening `ROLE_POLICY`,
+recreates the capability-off defect round 2 existed to remove.
+
+So the round-2 correction was not wrong, it was **partial** — and it read as complete because it had
+a measurement attached. The measurement covered routes. Nobody asked what it did not cover.
+
+> Root A restated with what round 3 adds: **removing a dependency at the layer where you found it is
+> not removing the dependency.** The search that pays is for every *reader* of the artefact, not
+> every *use* of it in the layer under discussion.
+
+This is also practice 6 (enumerate the complement) failing on its own first outing — practice 6 was
+added in round 2, and round 2's own correction is what finding 10 caught.
+
+## Root D — the round-2 correction generated three of round 3's five findings
+
+Findings 11, 12 and 13 are each a defect in something round 2 added, and the shape is identical in
+all three: **a rule stated at the strength that fixes the finding, without asking what else it now
+catches.**
+
+| Round-2 addition | What it fixed | What it broke |
+|---|---|---|
+| complement over **all** routes (fix 7) | reads were outside the boundary | `GET me/memberships` and `POST auth/switch` fell in — a collaborator could not list or switch projects. Not a narrowing, a lockout (11) |
+| tripwire "every §C scope has a map entry" | a scope that grants nothing is a dead word | at 6.3 **no** scope has routes, so it either fails outright or forces nine premature entries — each one reachable before its own 6.4 review stop (12) |
+| enablement refuses while a membership is **unbound** | the §L activation cutoff | a membership bound to a party with no grant passes the check and is cut off anyway (13) |
+
+Each is over-strength in the same direction: I wrote the rule against the case in front of me and
+did not test it against the cases beside it. The fixes are correspondingly narrow — the complement
+is over *project-scoped* routes with an enumerated identity exception; the scope-completeness check
+moves from 6.3 to *phase exit*; the cutover requires party **and** live grant.
+
+Finding 14 is not root D but is adjacent: staging put the `collaboration` capability in 6.1 and its
+enablement guard in 6.3, and `capability:enable` upserts any name — so between those units an
+operator could switch it on with no refusal to stop them. The capability moves into 6.3, with its
+guard, as one unit.
 
 ## Root B — a class measured in one section and not carried into the others
 
@@ -120,11 +171,47 @@ is wrong the instant it merges — is a state no later PR exists to fix.
   `procurement.dependsOn`, and that nothing in the graph depends on `orgs`.
 - `test:automation` 200/200 on every head.
 
+## The trajectory, stated plainly
+
+| Head | Findings | Of which, created by the previous correction |
+|---|---|---|
+| `e222981` | 5 | — |
+| `f9a4125` | 4 | 0 |
+| `c431904` | 5 | **3** |
+
+**There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
+combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header
+records PR #252 taking four finding-bearing heads at 8, 8, 7, 7, every finding correct and none
+contradicted, and concludes that a plan has no executable surface, so a finding on it can only be
+answered with more prose, and more prose is more surface.
+
+**This head does not take the deferral, and the reason is not pride.** All five round-3 findings are
+answerable *now*, concretely, from facts already checked — the 20 service files are counted, the
+identity routes are enumerated, the staging fix is a row in a table. A deferral converts an open
+question into a named probe; none of these five is an open question. Reaching for the mechanism here
+would be using it to stop working rather than to move verification somewhere it can actually happen.
+
+**The rule for round 4, decided now rather than improvised then:** if the next head draws findings
+that are again mostly self-inflicted, the response is not a sixth prose correction. It is the
+deferral trailer with each remaining question named as a probe carried into 6.1/6.3 — where a
+resolver and a tripwire can be *executed* against them instead of argued about. Prose has a
+verification ceiling and this lineage is at it.
+
 ## What this audit does not claim
 
-Nine correct findings on a plan is not a sign the plan was written carelessly, and treating it that
-way would produce the wrong correction. Roots A and B are both failures of *follow-through* rather
-than of judgement — a measurement taken and not used, a dependency questioned once and not again.
-The fix for that is not more caution; it is the two mechanical practices above (enumerate the
-complement; when the same artefact appears in three findings, delete the dependency), which are
+Fourteen correct findings on a plan is not, on its own, a sign the plan was written carelessly, and
+treating it that way would produce the wrong correction. Roots A and B are failures of
+*follow-through* rather than of judgement — a measurement taken and not used, a dependency
+questioned once and not again.
+
+Root D is different and should not be softened: three of round 3's five findings are damage from
+round 2's own repairs. The mechanism is that I wrote each rule at exactly the strength that closed
+the finding in front of me, and never tested it against the cases beside it. The practice that
+follows is the third mechanical one, and it is the one this lineage most needed:
+
+> **After writing a rule to close a finding, state what else it now catches, and check that each of
+> those is intended.** A complement over "all routes" catches the login switcher. A completeness
+> assertion at 6.3 catches nine unbuilt scopes. "Unbound" misses "bound with no grant."
+
+The fix for all four roots is not more caution; it is the three mechanical practices, which are
 checkable in a way "be more careful" is not.

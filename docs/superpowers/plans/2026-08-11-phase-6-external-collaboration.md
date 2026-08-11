@@ -35,11 +35,11 @@ lets two units pick different semantics and both claim to follow the merged plan
 | 2 | What a collaborator principal is | **(party, project, scope)**, resolved by a THREE-conjunct default-deny rule | §B |
 | 3 | Whether the closed set is subtracted | **Deny, never intersect** — the closed set is the COMPLEMENT of a positive route allow-list | §B/§D |
 | 4 | What authorises a collaborator | **A separate `COLLABORATOR_ROUTE_POLICY`, INSTEAD of `ROLE_POLICY` — which is never widened for a collaborator** | §B/§D |
-| 5 | What the allow-list covers | **Every route, READ and mutating** — Phase 6 narrows what is seen, not only what is written | §D |
+| 5 | What the allow-list covers | **Every PROJECT-SCOPED route, READ and mutating**; identity/session routes are a named exception | §D |
 | 6 | The scope vocabulary | **Nine grantable scopes + one IMPLIED (`evidence`)**, fixed in §C; `commercial` is not one of them | §C |
 | 7 | Guest → Org promotion | **The SEAM ships in 6.1; the promotion COMMAND is deferred** out of Phase 6 | §E |
-| 8 | How existing projects are protected | A per-project **`collaboration` capability**; off = byte-identical to today | §B |
-| 9 | What happens AT enablement | **Enablement REFUSES while any collaborator-role membership is unbound**, naming them; nothing is backfilled | §B |
+| 8 | How existing projects are protected | A per-project **`collaboration` capability**, shipped in 6.3 WITH its guard; off = byte-identical to today | §B |
+| 9 | What happens AT enablement | **Enablement REFUSES unless every active collaborator membership resolves to a party AND a live grant**, naming the failures; nothing is backfilled | §B |
 
 ## Facts consumed from earlier phases (never rebuilt)
 
@@ -179,6 +179,22 @@ separate, and the internal authority map is left exactly as it is.
 leave the project snapshot reachable and the phase would close money writes while leaving every
 existing project-wide read outside the boundary. Replacement is what makes the narrowing real.
 
+**The replacement covers SERVICE backstops, not only route guards — and that is the larger half.**
+Measured over `apps/api/src`: **20 non-controller files re-check `ROLE_POLICY[...]` at roughly 48
+call sites**, including `procurement.service.ts` and `purchase-orders.service.ts` on
+`procurement.read` — precisely the paths §C's `procurement` scope needs. A route guard replaced
+without them leaves an allow-listed collaborator passing the resolver and then rejected by the
+service, and "fix it by widening `ROLE_POLICY`" recreates the capability-off broad-read defect this
+section exists to avoid. So a handler is not allow-listable until every `ROLE_POLICY[...]` gate on
+its path consults the same collaborator decision through the shared predicate. §D asserts it, and
+the cost lands on the unit that wants the reach: **each 6.4+ scope unit routes its own module's
+backstops as the price of its entries** — 6.3 does not sweep all 48 up front.
+
+This is the fourth finding in this lineage about the same dependency (see
+`docs/reviews/pr-324-convergence.md`, root A). The first three were about how the ROUTE layer read
+`ROLE_POLICY`; removing that dependency did not prompt the question of who ELSE reads it. Measuring
+one layer is not enumerating the readers.
+
 The map is also **total over the allow-list by construction** — a route is allow-listed by being
 given an entry, so conjunct 2 can never be vacuous. That retires an earlier draft's rule that only a
 `@RolesFor` route could be allow-listed, which was itself the thing that forced the widening above:
@@ -221,11 +237,20 @@ Three shapes were available and the middle two are rejected on principle:
 | Backfill a party + grant per existing membership | it would **invent authority** — worse than inventing data, and the one thing §D exists to prevent |
 | Grace mode: an unbound membership keeps today's reach | the narrowing never actually happens, and "temporary" grace has no forcing function to end it |
 
-**Decided: enablement REFUSES while any `client`/`contractor`/`consultant` membership on the project
-is unbound, and the refusal enumerates them.** Parties, bindings and grants are all created while
-the capability is still OFF and are inert until it is on, so the operator composes the whole access
-picture first and then turns it on against a project that is already coherent. No authority is
-created by a flag, and the cutover is verified rather than hoped for.
+**Decided: enablement REFUSES unless every ACTIVE `client`/`contractor`/`consultant` membership on
+the project resolves to a party AND that party holds at least one live grant on this project — and
+the refusal enumerates the memberships that fail, saying which half is missing.** Parties, bindings
+and grants are all created while the capability is still OFF and are inert until it is on, so the
+operator composes the whole access picture first and then turns it on against a project that is
+already coherent. No authority is created by a flag, and the cutover is verified rather than hoped
+for.
+
+**"Bound" alone is not the check, and getting that wrong would have reproduced the very cutoff.** A
+member bound to a party that holds no grant passes an unbound-ness test and is then denied every
+route the instant the flag flips, because conjunct 3 has nothing to satisfy. Binding and grant are
+two facts and the cutover needs both. What the check does **not** assert is that the member's reach
+is unchanged — it is narrowing by design, and claiming otherwise would be false. It asserts only
+that no one drops to zero silently.
 
 ### §C. Scope is a positive grant, never a subtraction — and the vocabulary is CLOSED
 
@@ -294,11 +319,29 @@ declares exactly one authz intent. Phase 6 reads that same walk:
 1. `COLLABORATOR_ROUTE_POLICY` — an explicit, positive map from route handler id to
    `{ scope, roles }`, the **only** routes a collaborator principal may reach. Being in the map IS
    being allow-listed, so there is no second list to keep in step with it.
-2. The closed set is **derived as the complement**: `all routes − COLLABORATOR_ROUTE_POLICY`. A new
-   route — money or not, read or write, permissioned or `@AllowAnyRole` — is closed on the commit
-   that adds it, with no edit anywhere.
+2. The closed set is **derived as the complement over PROJECT-SCOPED routes**:
+   `all project-scoped routes − COLLABORATOR_ROUTE_POLICY`. A new route — money or not, read or
+   write, permissioned or `@AllowAnyRole` — is closed on the commit that adds it, with no edit
+   anywhere.
 3. The resolver applies §B's three conjuncts. Conjunct 1 is membership of the map; nothing consults
    the closed set at request time, because a default-deny rule has nothing to subtract.
+
+**"Project-scoped" is the load-bearing word, and an earlier draft said "all routes" instead.** Some
+authenticated routes carry no project resource for a scope to narrow and no §C word that could
+describe them — they are how a person discovers and enters a project in the first place. Taken
+literally, a complement over *all* routes puts them in the closed set and a collaborator can no
+longer list their projects or switch into one, which is not a narrowing of reach but a lockout. They
+are therefore a **named, enumerated exception class**, not a judgement call at 6.3:
+
+| Identity / session route | Why it is outside the project-scoped complement |
+|---|---|
+| `GET me/memberships` (`OrgsController.myMemberships`) | the discovery list — it answers "which projects am I on", so it cannot be scoped by a project |
+| `POST auth/switch` (`AuthController.switch`) | the switcher; `@AllowAnyRole`, and `AuthService.switchProject` already verifies membership of the TARGET project |
+| the ten `@Public` `auth/*` routes (session · login · password/\* · otp/\* · worker/token · email/\* · google) | pre-authentication — there is no principal yet, so no collaborator decision exists to make |
+
+Their existing authorisation is unchanged, and the exception is closed rather than open-ended: it is
+these routes, listed. `POST projects/:projectId/push/subscribe` is deliberately **not** among them —
+it names a project, so it is project-scoped and belongs in the map like any other.
 
 **The complement covers READ routes, not only mutating ones** — an earlier draft closed writes and
 left reads outside the boundary, which would have shipped a phase whose stated purpose is to narrow
@@ -316,8 +359,21 @@ were carefully closed. Reads are the larger half of the boundary, not an afterth
 | Every route dispatching a money command is in the derived closed set | someone adds a money route to the map |
 | **No `ROLE_POLICY` entry gains a collaborator role**, pinned against the recorded current set | a unit widens the shared internal authority map to make one scoped route pass — the global widening a per-project capability cannot contain |
 | Every map entry names a §C scope, and that scope's owning module owns the route | a route is granted under a scope that does not own it |
-| Every §C grantable scope has at least one map entry | a scope exists in the vocabulary that grants nothing — a word with no meaning |
+| **No `ROLE_POLICY[...]` gate remains on the code path of an allow-listed handler** | a route is allow-listed while a SERVICE backstop still gates it — the collaborator passes the resolver and is rejected downstream, or someone widens `ROLE_POLICY` to fix it |
+| Every project-scoped route is either in the map or in the derived closed set | a route escapes both — the classification is total |
 | The route walk finds routes at all, READS INCLUDED | reflection silently returns nothing, or returns only mutations, and every assertion above passes for free |
+
+**Deliberately NOT asserted at 6.3: that every §C scope has a map entry.** An earlier draft did
+assert it and the assertion is incompatible with the execution order it sits beside. 6.3 lands
+before any collaborator surface exists, so at 6.3 no scope has routes — the assertion would either
+fail outright, or force one entry per scope up front, and **every such entry is a route a bound
+collaborator can reach the moment the flag is on**. That would ship procurement, deliveries and
+daily-log reach before each has passed its own 6.4 review stop, dissolving the very split the
+staging exists to enforce. A scope with no entries is not a defect; it is a surface not yet built.
+
+The completeness question is real but belongs at the **end** of the phase: *phase exit* requires
+every §C scope to have at least one entry or to be struck from the vocabulary, so a word that never
+came to mean anything is removed rather than left standing.
 
 The money list — at minimum `commercial.bill.verify`, `commercial.bill.certify`,
 `commercial.certificate.supersede`, `commercial.sod.grant`, `commercial.deduction.record`,
@@ -362,14 +418,24 @@ unrepresentable at the database where the shape permits it, not merely refused i
 
 | Unit | Contents | Stop |
 |---|---|---|
-| **Plan (this document)** | the seven decisions above, SETTLED | **review stop — nothing is built until it clears** |
-| **6.1** | `ExternalParty` (§A) + the `promotedOrgId` seam (§E) + the `collaboration` capability + the §F tenancy and inertness proofs | review |
-| **6.2** | the collaborator principal + party binding (§B) | review |
-| **6.3** | §D's route walk, `COLLABORATOR_ROUTE_POLICY`, the derived closed set (reads AND writes), its five tripwire assertions, and the enablement refusal — **before any collaborator surface reads or writes anything** | review |
-| **6.4+** | the scoped surfaces themselves (§C), one scope per unit | review each |
+| **Plan (this document)** | the nine decisions above, SETTLED | **review stop — nothing is built until it clears** |
+| **6.1** | `ExternalParty` (§A) + the `promotedOrgId` seam (§E) + the §F tenancy proof. **No capability, no flag.** | review |
+| **6.2** | the collaborator principal, party binding and grants (§B) — still inert, because nothing can be switched on yet | review |
+| **6.3** | §D's route walk, `COLLABORATOR_ROUTE_POLICY`, the project-scoped closed set (reads AND writes) with its identity exception, the tripwire assertions, **the `collaboration` capability itself, AND the enablement refusal — in one unit** | review |
+| **6.4+** | the scoped surfaces themselves (§C), one scope per unit; each routes its own module's service backstops as the price of its entries | review each |
 
 **6.3 lands before 6.4 deliberately.** Building surfaces first and adding the guard after is how a
 surface ships with authority nobody checked. The guard is cheap to write and worthless to add late.
+
+**And the capability moved OUT of 6.1 into 6.3, because the flag and its guard are one unit.** An
+earlier draft created the `collaboration` capability in 6.1 and deferred the enablement refusal to
+6.3. The existing `capability:enable` CLI upserts any capability name it is given, so that draft
+opened a window — after 6.1, before 6.3 — in which an operator could switch collaboration on for a
+project with unbound memberships and no refusal to stop them. When 6.3 then began applying the
+resolver, those users would already be cut off. **A flag that can be turned on before its guard
+exists is a guard that is not there**, which is the same sentence as the paragraph above it, applied
+to the flag rather than the surfaces. 6.1 and 6.2 ship inert data models; there is no flag to turn
+on until the unit that refuses to turn it on wrongly.
 
 ## Out of scope (Phase 6)
 
@@ -407,9 +473,14 @@ down demonstrably did not perform it:
 6. **After measuring any set, enumerate its complement in the same breath.** 167 mutating routes
    implies 58 reads; reading evidence implies creating it; permissioned implies permission-less.
    Every one of this plan's second-round findings was a complement nobody looked at.
-7. **When three successive findings concern how your rule relates to an existing artefact, the
-   finding is the dependency, not the relation.** §D was corrected twice for *how* it read
-   `ROLE_POLICY` before the third finding showed it should not read it at all.
+7. **When successive findings concern how your rule relates to an existing artefact, the finding is
+   the dependency, not the relation** — and removing it at the layer where you found it is not
+   removing it. §D was corrected three times over `ROLE_POLICY` at the ROUTE layer before a fourth
+   finding named the 20 service files that read it too.
+8. **After writing a rule to close a finding, state what else it now catches, and check that each of
+   those is intended.** A complement over "all routes" catches the login switcher; a
+   scope-completeness assertion at 6.3 catches nine unbuilt scopes; "unbound" misses "bound with no
+   grant". Three of round 3's five findings were damage from round 2's own repairs.
 
 ## Vision alignment
 
