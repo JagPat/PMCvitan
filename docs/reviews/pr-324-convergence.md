@@ -1,6 +1,6 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Nine finding-bearing heads, forty-seven findings, on a docs-only plan — and the count did not fall:
+Ten finding-bearing heads, fifty findings, on a docs-only plan — and the count did not fall:
 **5 · 4 · 5 · 5 · 6.** The review lifecycle reached its limit on head `3f7e35d` and recommended
 splitting the unit. **It is right, and this audit's conclusion is that the unit was never one unit.**
 
@@ -59,6 +59,9 @@ concerns sharing one review, not of a careless document.
 | 45 | `3f5f657` | prevent duplicate project associations during a merge | created by fix 32 |
 | 46 | `3f5f657` | P5 must assert the DECLARED procurement → orgs edge | created by fix 34 |
 | 47 | `3f5f657` | P3 must cover binding create/update/repoint | created by fix 21 |
+| 48 | `45cd534` | mirror `ProjectVendor` into orgs instead of reading it | **created by fix 42 — root A's inversion, again** |
+| 49 | `45cd534` | serialize grant creation with party merges | created by fix 38 |
+| 50 | `45cd534` | freeze `promotedOrgId` after the first promotion | §E seam |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -372,6 +375,40 @@ differently* — failing in the very audit that lists it, one round after I wrot
 one-fact-two-places. Three of this lineage's five carried rules have now been broken inside the
 document that records them.
 
+## Round 10 — §A's own argument used against my fix for §A
+
+Three findings, down from seven. **48 is the one worth recording**, because it is root A's inversion
+arriving from the opposite direction and I walked into it while fixing §A.
+
+§A rejects A2 on one argument: *the access path must not read procurement.* Round 9's fix for
+finding 42 then defined the association predicate as "a `ProjectCompany` row **OR** a `ProjectVendor`
+row" — and `ProjectVendor` is procurement-owned and read-encapsulated. **I wrote an authority
+predicate that reads procurement, in the section whose entire thesis is that authority must not read
+procurement**, one page below where I wrote the thesis.
+
+The fix is the one the module system already provides: 6.1 introduces the orgs-owned
+`ProjectParty(projectId, partyId)` as the single canonical association, and both `ProjectCompany`
+(same module) and `ProjectVendor` (through the declared participant) MIRROR into it. The resolver
+reads one orgs-owned table and never leaves the module. That also gives the `(projectId, partyId)`
+uniqueness seal from finding 45 a natural home, so two findings close on one structure.
+
+> **A rule you stated is not a rule you are following.** Root A was "stop reading `ROLE_POLICY`";
+> root B was "carry the class you measured"; this is both at once — the argument was written down,
+> in the same section, and the next fix violated it anyway. The check that would have caught it is
+> mechanical and cheap: *for every predicate this plan defines, which modules does evaluating it
+> read?*
+
+**49 is fix 38 half-serialized.** The merge refuses when authority rows exist — but a refusal that
+READS is not a refusal that SERIALIZES: the merge can lock both parties, see no grants, repoint and
+commit, while a concurrent grant-create on the absorbed party commits after it. The authority writers
+must take the same ascending-`id` party locks, which is a constraint this command creates for the
+boundary plan and is now stated here rather than arriving there as a surprise.
+
+**50** is the §E seam shipping unguarded: with the promotion command deferred, nothing would stop a
+later retry or repair moving a party between tenants, so historical guest work would resolve to the
+wrong one. `promotedOrgId` now ships DB-frozen one-way from the day it lands — *a deferred command is
+not a reason to defer the guard; it is the reason the guard has to be there first.*
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -450,6 +487,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `f208076` | 6 | **3** (29, 30 from the split line; 34 from fix 27) — the split was right, its SEAM was not |
 | `5ca3719` | 6 | **4** (37 from fix 33; 38/39 from fix 32; 40 from fix 26) — all §A DEPTH now, no structural findings |
 | `3f5f657` | 7 | **5** (43/44/45 from fix 32-33; 46 from fix 34; 47 from fix 21) — five of seven are depth on ONE command |
+| `45cd534` | **3** | 2 (48 from fix 42; 49 from fix 38) |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header

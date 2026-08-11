@@ -51,7 +51,9 @@ is silently dropped in the split.
 | 2b | How the party links are sealed | **SAME-ORG composite FKs** on both `Vendor.partyId` and `ProjectCompany.partyId`, so a cross-org link is unrepresentable rather than refused | §A |
 | 2c | Firms created AFTER 6.1 | the create paths assign a party in the same transaction (through a declared `OrgsParticipant`), and `partyId` becomes NOT NULL once the backfill has run | §A |
 | 2d | Duplicate parties for one firm | 6.1 ships the operator **merge/repoint command**; the migration still never decides which rows are one firm | §A |
-| 2e | `ProjectCompany` removal | refused while any binding or grant references the party on that project | §A |
+| 2e | The canonical per-project association | **`ProjectParty`, orgs-owned**; `ProjectCompany` and `ProjectVendor` MIRROR into it so the resolver never reads procurement | §A |
+| 2h | Association removal / identity update | both refused while any binding or grant references the party on that project | §A |
+| 2i | `promotedOrgId` | **DB-backed one-way**: null → org permitted, any change of a non-null value refused | §E |
 | 2f | A pre-existing `collaboration` capability row | 6.1's migration **ABORTS** naming the projects; it never deletes the row | staging |
 | 2g | Where grants are planned | **6.2 moves to the boundary plan** — a grant cannot be stored before the vocabulary that gives it meaning | order |
 | 3 | Guest → Org promotion | **The SEAM ships in 6.1; the promotion COMMAND is deferred** out of Phase 6 | §E |
@@ -160,16 +162,31 @@ a nullable reference to it; `ProjectCompany` becomes its per-project association
 | `ExternalParty` | **orgs** | org (`orgId`) | the canonical firm identity |
 | `ProjectCompany` | orgs | project | that party's per-project association (gains `partyId`) |
 | `Vendor` | procurement | org | that party's COMMERCIAL relationship (gains nullable `partyId`) |
-| `ProjectVendor` | procurement | project | a SECOND per-project association — see below |
+| `ProjectVendor` | procurement | project | an association SOURCE — mirrored, never read by the resolver |
+| **`ProjectParty`** | **orgs** | project | **the canonical per-project association the resolver reads** |
 
-**`ProjectCompany` is not the only per-project association, and treating it as one leaves materials
-suppliers unreachable.** A firm that exists only as `Vendor` + `ProjectVendor` on project A gets an
-org-level party from 6.1 and no `ProjectCompany` row, so a project-scoped grant could not prove the
-party is associated with that project at all. Both rows are therefore association evidence: **a party
-is associated with a project when it has a `ProjectCompany` row OR a `ProjectVendor` row there**, and
-every rule below that names "the association" applies to both — the removal guard, the identity-update
-guard, and the merge command's repointing and duplicate handling. 6.1 backfills `ProjectVendor` the
-same way it backfills the other two, through the same participant.
+**`ProjectCompany` alone leaves materials suppliers unreachable, and reading `ProjectVendor` to fix
+that would rebuild the coupling §A exists to prevent.** A firm existing only as `Vendor` +
+`ProjectVendor` on project A gets an org-level party and no company row, so a project-scoped grant
+could not prove association at all. But an earlier draft's fix — "association = a `ProjectCompany`
+row OR a `ProjectVendor` row" — puts a procurement-owned, read-encapsulated table inside the
+authority predicate, so the orgs/platform resolver would have to read procurement synchronously.
+**That is the same inversion this section rejected A2 for**, arrived at from the other direction: I
+argued the access path must not read procurement, then wrote an access predicate that reads
+procurement.
+
+So 6.1 introduces **`ProjectParty(projectId, partyId)` — orgs-owned, the single canonical
+association** — and both existing project-scoped rows become SOURCES that mirror into it:
+
+| Source | Owner | How it reaches `ProjectParty` |
+|---|---|---|
+| `ProjectCompany` | orgs | same module — written directly, in the same transaction |
+| `ProjectVendor` | procurement | through the declared `OrgsParticipant`, in procurement's own transaction |
+
+The resolver reads only `ProjectParty`, so it never leaves orgs. Every rule below that names "the
+association" means this table: the unique `(projectId, partyId)` seal lives here (making duplicate
+associations unrepresentable rather than merely refused), the removal and identity-update guards
+protect it, and the merge command repoints it. 6.1 backfills it from both sources.
 
 `Vendor.partyId` is a foreign key, not a read: procurement gains no `dependsOn` edge from holding
 it. If a later unit needs the party's *name* inside procurement it goes through an orgs query
@@ -243,7 +260,15 @@ Two properties of that command are load-bearing rather than incidental:
   tell which is the real one. `ProjectCompany` and `ProjectVendor` therefore each carry a unique
   `(projectId, partyId)` seal, so the duplicate is unrepresentable rather than merely undesirable,
   and the merge must resolve the conflict explicitly before it can commit.
-- **It REFUSES once the target or source party holds any binding or grant.** The command outlives
+- **It REFUSES once the target or source party holds any binding or grant — and that refusal is
+  only sound if the AUTHORITY WRITERS take the same locks.** A refusal that reads is not a refusal
+  that serializes: the merge can lock A and B, see no authority rows, repoint the firm facts to B and
+  commit, while a concurrent transaction creates a grant on A and commits after it — leaving a live
+  grant on a party that no longer owns anything. So the boundary plan's binding and grant
+  create/update/repoint/revoke paths **must lock the affected `ExternalParty` roots in the same
+  ascending-`id` order**, and that interleaving gets its own barrier probe. Stated here because the
+  constraint is created by THIS command and would otherwise arrive as a surprise requirement on a
+  unit that has no reason to expect it. The command outlives
   6.1, and after 6.2 a merge would move the FACTS to the surviving party while the AUTHORITY rows
   stayed on the absorbed one — collaborators cut off, or a firm revocation checking an identity that
   no longer owns anything. Repointing authority rows silently is the worse option: moving a grant is
@@ -284,6 +309,16 @@ A collaborator firm may become its own Vitan tenant.
 identity is stable and never re-keyed, and every attributable act continues to record the acting
 person — so the attribution promotion must preserve is preserved by construction, before any
 promotion exists to threaten it.
+
+**And the seam ships FROZEN, because shipping the column early is what makes it forgeable.** The
+promotion command is deferred, so nothing in Phase 6 sets `promotedOrgId` — which means nothing in
+Phase 6 would stop a later retry, repair or migration from moving a party from tenant X to tenant Y,
+or clearing it. Historical guest work attributed through that party would then resolve to a
+different tenant than the one actually promoted, which is precisely the attribution §E exists to
+protect. The column therefore carries a **DB-backed one-way transition from the day it lands**: null
+→ an org is permitted, and any change of a non-null value — to another org or back to null — is
+refused at PostgreSQL. A deferred command is not a reason to defer the guard; it is the reason the
+guard has to be there first.
 
 **What does not ship in Phase 6:** the `promote` command itself, tenant provisioning, and any
 hand-over of records. Promotion CREATES A TENANT, which is a tenancy act; Phase 6's subject is
