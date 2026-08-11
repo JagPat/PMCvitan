@@ -612,8 +612,12 @@ model ExternalParty {
   orgId     String
   name      String
   createdAt DateTime @default(now())
-  createdBy User     @relation("externalPartiesCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  createdById String
+  // NULLABLE, and only for rows the 6.1a backfill created. `ProjectCompany` carries no
+  // creator column, so a party derived from one has no attributable author — and inventing
+  // an actor would be worse than recording that none is known. Every party created by a
+  // COMMAND carries its caller; a NULL here means "existed before parties did".
+  createdBy User?    @relation("externalPartiesCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String?
 
   // §E — the stable link to a future tenant. The promotion COMMAND is deferred out of Phase
   // 6, which is exactly why the guard ships now: nothing here sets this column, so nothing
