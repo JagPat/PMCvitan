@@ -126,6 +126,7 @@ seven times in one unit and would otherwise read as diligence.
 | upgrade proof, after C1–C8 | the new seals hold | 528 assertions before and after — none of them touched the new seals |
 | upgrade proof, after E1–E3 | the new seal holds | 534 before and after: **the same lesson, one round later** |
 | E2/E3, first drafts | the races are closed | committed T2 before T1 began, so both passed at the unfixed head |
+| the two teardown fixtures | they set up what the app sets up | wrote the party chain across FOUR transactions, a state no service path produces |
 
 The through-line: **each was a green signal produced without exercising the thing under test.** A
 passing probe and a probe that passes *for the right reason* are indistinguishable from the
@@ -154,6 +155,43 @@ and is now the thing actually relied on.
    on reasoning alone, which is a weaker footing than 6.1b should accept for its own.
 3. Every constraint it relies on must exist in `schema.prisma`, not only in its migration —
    Root B, now enforced for the party models by `schema-migration-drift.test.ts`.
+
+## The evidence obligation is PER HEAD, and I proved that the hard way
+
+The E-round correction carried this audit and the `Review-Convergence: complete` trailer. Then the
+integration suite found two teardown defects, I fixed them in a follow-up commit, pushed — and the
+gate refused the head: *"3 finding heads require convergence evidence; missing trailer and packet."*
+
+It was right. `assessConvergence` reads `headMessage` and `changedFiles` — **this commit's** message
+and **this commit's** files. Convergence evidence is not a thing a branch accumulates; it is a
+property the head must carry, every time the head moves. I satisfied the obligation once and
+assumed it stayed satisfied, which is the same shape as the earlier trailer bug where a blank line
+stopped it parsing: **a requirement met at one moment, assumed to hold at the next.**
+
+That is Root A in the process rather than the code — a check scoped to the moment the author was
+looking at, rather than to the thing it protects.
+
+> **Rule.** After any push that moves the head, re-ask every per-head obligation. "I already did
+> that" is a claim about a different commit.
+
+## The two teardown fixtures, and why they belong in Root D
+
+E1's seal — an origin must have a source — turned two fixtures red, and both were mine:
+
+- `phase2-snapshot-shape.test.ts` built the party chain as four separate top-level Prisma calls.
+  Four calls are four transactions, so the association committed alone, before the source existed.
+- the same suite's `afterAll` deleted the company in its own transaction, cascading the source away
+  and orphaning the association.
+
+Both were the seal working. `CompaniesService.add` writes all four rows together and `remove`
+deletes-and-releases together, precisely because the checks are DEFERRED — and deferred means
+"checked at the end of THIS transaction", not "checked eventually". A fixture that skips the
+transaction is not reproducing what the application does; it is constructing a state the
+application cannot reach and then asserting against it.
+
+Worth noting how they presented: `Test Files 1 failed | Tests 28 passed`. Every test green, the
+file red — a shape that is only ever a hook, and the second time this unit that signature pointed
+straight at the cause.
 
 ## Honest accounting
 
