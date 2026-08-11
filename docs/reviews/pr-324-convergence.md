@@ -1,11 +1,14 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Four finding-bearing heads, nineteen findings, on a docs-only plan.
+Five finding-bearing heads, twenty-five findings, on a docs-only plan — and the count did not fall:
+**5 · 4 · 5 · 5 · 6.** The review lifecycle reached its limit on head `3f7e35d` and recommended
+splitting the unit. **It is right, and this audit's conclusion is that the unit was never one unit.**
 
-**The number that matters is not nineteen. It is that seven findings across rounds 3 and 4 are
-damage from the correction immediately before them, and the rate is not falling.** One cluster —
-what enablement means on a live project — has produced a finding in three consecutive rounds, each
-time because the previous round's fix was correct and interacted with something else.
+The evidence is in the distribution, not the total. §A (identity) drew ONE finding across five
+rounds and has been stable since round 1. §B/§C/§D (authority) drew almost all the rest, and seven
+findings across rounds 3–5 are damage from the correction immediately before them — a fix in one of
+those sections repeatedly creating the next round's finding in another. That is the signature of two
+concerns sharing one review, not of a careless document.
 
 | # | Head | Finding | Root |
 |---|---|---|---|
@@ -28,6 +31,12 @@ time because the previous round's fix was correct and interacted with something 
 | 17 | `5a92ed2` | refuse grants that cover no allow-listed route | **E — the cutover cluster** |
 | 18 | `5a92ed2` | classify portfolio reads before exempting identity routes | **B — enumeration, again** |
 | 19 | `5a92ed2` | defer to the task that can RUN the probes | the deferral itself |
+| 20 | `3f7e35d` | filter portfolio COUNTERS by grant, not just the project row | **F — probe ledger** |
+| 21 | `3f7e35d` | cover grant mutation/revocation in P3, not only membership | **E — the cutover cluster** |
+| 22 | `3f7e35d` | put the deferred probes in the PLAN, not only the audit | **F — probe ledger** |
+| 23 | `3f7e35d` | keep evidence uploads possible before the citing fact exists | **D — created by fix 8** |
+| 24 | `3f7e35d` | bind labour rows to a party, or the `labour` scope cannot resolve | §C vs the data model |
+| 25 | `3f7e35d` | reserve the capability NAME before 6.3 | **finding 14, not actually fixed** |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -161,6 +170,52 @@ the deferral mechanism is for, applied to the one cluster that has earned it.
 It also forced out a fact worth having early: with an empty route map at 6.3, the invariant cannot be
 satisfied for anyone, so **`collaboration` ships un-enablable until the first 6.4 surface exists.**
 
+## Round 5 — and the decision to split
+
+Six findings, and the shape of them is why this audit stops recommending another prose round:
+
+- **25** is finding 14 again. Round 3 "fixed" the flag-before-guard window by moving the capability
+  from 6.1 to 6.3 — but `capability:enable` upserts **any** string, so an operator can create
+  `ProjectCapability(p, 'collaboration')` today regardless of which unit declares the constant. I
+  fixed where the name is *declared* and not where it can be *created*. The real fix is a
+  reservation: **6.1 makes `capability:enable` refuse the name**, and 6.3 replaces the refusal with
+  the enablement rule. That fix lives in this document because it is a staging decision about 6.1.
+- **21** extends the cutover cluster to a fifth operation (grant revocation/narrowing) — the same
+  root E that three prose predicates already failed to settle.
+- **20** and **22** are defects in the probe ledger I wrote one round earlier: P2 checked project
+  inclusion but not the counters inside the row, and P1/P4/P5 existed only in this audit while
+  implementation units read the *plan*.
+- **23** is fix 8 rebounding: making an uncited upload inexpressible removed the only legal sequence,
+  since `recordAttendanceSchema` takes an `evidenceMediaId` that must already exist.
+- **24** is the deepest and is not a correction defect at all: §C promises party-scoped `labour`
+  access, but `Worker`/`LabourAttendance`/`LabourWorkFact` carry no party owner and §A only adds
+  party references to `Vendor`/`ProjectCompany`, so conjunct 3 has nothing to evaluate.
+
+**Findings 20–24 all live in §B/§C/§D. Finding 25 lives in staging.** That distribution is the split
+argument in one line: the boundary material keeps generating findings while the identity material
+sits still.
+
+### What the split is, and what it is NOT
+
+`docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md` is reduced to the FOUNDATION —
+§A canonical party, §E promotion seam, §F tenancy, and units 6.1/6.2 — plus finding 25's capability
+reservation, which is a 6.1 staging decision. §B/§C/§D become a **separate boundary plan with its own
+review stop, which 6.3 is blocked on.** Findings 20–24 travel with that material and are answered
+there.
+
+**This is not the PR #318 round-8 mistake repeated.** That was a *replacement* PR for the same
+content, opened to dodge a deferral obligation, and it reset the finding-head counter for nothing.
+The difference here is measurable: this splits one unit into two smaller ones along a seam the
+findings themselves marked, at the explicit recommendation of the review lifecycle, and **the finding
+history travels** — this audit stays in the reduced PR, keeps all twenty-five findings, and the
+boundary plan cites it rather than starting from zero. Nothing is dismissed; five findings change
+which document answers them.
+
+> **When corrections in section X keep breaking section Y, the finding is not in X or Y. It is that
+> X and Y are one review unit and should not be.** Five rounds is a long time to take to notice
+> something the diff shape said at round 2: §B/§C/§D were 284 of 544 lines and carried nearly every
+> finding.
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -229,6 +284,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `f9a4125` | 4 | 0 |
 | `c431904` | 5 | **3** |
 | `5a92ed2` | 5 | **4** (15, 16, 17, 18 — and 19 was a defect in the deferral itself) |
+| `3f7e35d` | 6 | **4** (20, 22, 23 from the round before it; 25 was finding 14 never actually fixed) |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header
