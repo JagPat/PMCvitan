@@ -15,6 +15,7 @@ import type { AuthUser } from '../common/auth';
 import { hashRequest, type CommandScope } from '../platform/commands';
 import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor, type Actor } from '../common/actor';
+import { announceMoneyMoved } from './cash-forecast.projection';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CommercialStatusService } from './commercial-status.service';
@@ -238,6 +239,19 @@ export class CommercialDeductionService {
         // not attributed to one until a recovery lands on a certified claim). Calling either would
         // append an observation labelled against a write that moved nothing — the label drift §B's
         // round 4 removed. The RECOVERY is the mover, and it re-derives through `record` above.
+        //
+        // 7B-vi — it DOES announce, and that is not in tension with the paragraph above. Those two
+        // are §B/§F OBSERVATIONS, labelled against heads and claims an advance genuinely does not
+        // move. This is the §J INVALIDATION signal, and what it says is true: cash left the
+        // project. `costHeadCodes: []` states exactly that no head's exposure moved — the payload
+        // is explanation for a reader of the stream, never an input to a fold, so an empty list is
+        // an honest answer rather than a missing one.
+        //
+        // Without it the advances read had NO invalidation path: another client's advance left a
+        // ready list stale on screen, and the §M Pay control reads that list to decide the
+        // counterparty's position is known. Append-only with no server ceiling, so nothing
+        // downstream catches a decision made on it.
+        await announceMoneyMoved(tx, projectId, actor, { costHeadCodes: [], reason: 'advance' });
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.advance.pay',
           entity: 'VendorAdvance', entityId: advance.id,

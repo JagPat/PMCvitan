@@ -1,7 +1,7 @@
 # PR #322 — convergence audit (Phase 5 Task 7B-vi)
 
-Three finding-bearing heads, eleven findings, on the unit written to end enumeration — **and nine
-of the eleven are enumeration, twice in the corrections for it.**
+Four finding-bearing heads, twelve findings, on the unit written to end enumeration — **and nine
+of the twelve are enumeration, twice in the corrections for it.**
 
 | # | Head | Finding | Root |
 |---|---|---|---|
@@ -16,6 +16,29 @@ of the eleven are enumeration, twice in the corrections for it.**
 | 9 | `66f16ec` | the `error` retry looped: error → effect → loading → error | **created by fix 7** |
 | 10 | `66f16ec` | the socket path never refreshed an opened advances list | **coverage**, 3rd registry |
 | 11 | `66f16ec` | Pay re-enabled by editing a field while an advance was queued | **created by fix 8** |
+| 12 | `b1c4e40` | the socket refresh I added was INERT — `payAdvance` announced nothing | **created by fix 10** |
+
+## Round 3 — I wired a consumer to a producer that does not produce
+
+Fix 10 added `loadCommercialAdvances()` to the realtime path. It could never fire: `payAdvance`
+emitted no invalidating signal, so the refresh I added for cross-client staleness did not address
+cross-client staleness. **Third time in this PR a correction created the next finding**, and the
+sharpest of the three, because the wiring *looked* like the guarantee was in place.
+
+**What I nearly got wrong, and why it is worth recording.** I grepped for `events: [` and found all
+nineteen commercial commands returning `events: []`, concluded commercial emits nothing by design
+(§K, a sink), and began drafting an escalation asking whether to make advances the first
+event-emitting commercial command — an architectural question. That grep was conclusive-looking and
+wrong: the mechanism is a separate in-transaction `announceMoneyMoved(...)` call, already used by
+budget, cost-head, payment and reversal. **A grep that answers the question you asked is not the
+same as a grep that answers the question you have.**
+
+The fix is therefore the established mechanism, not a widening: `payAdvance` announces
+`commercial.money_moved` with `costHeadCodes: []` and `reason: 'advance'`. That does not contradict
+the deliberate decision recorded beside it — no `reDerive`, no headroom evaluation, because those
+are §B/§F **observations** labelled against heads and claims an advance genuinely does not move.
+This is the §J **invalidation** signal, and what it states is true: cash left the project, and no
+head's exposure moved. Mutation-tested: removing the announcement fails the probe.
 
 ## The root: I fixed instances of a class I had already named, in the same unit
 
