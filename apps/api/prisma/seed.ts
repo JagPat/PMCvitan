@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     // Phase 4 Task 5 §E/§I — the append-only mismatch register (resolution FKs the observation)
     // and the measured-output facts FK Worker/Activity/Media/CommandExecution, so they lead the
     // statement for the same reason (deleteMany is blocked by their append-only triggers).
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "Vendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
+    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "Vendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
   );
   await prisma.projectCapability.deleteMany();
   await prisma.gateOverride.deleteMany();
@@ -99,11 +99,19 @@ async function main(): Promise<void> {
   await prisma.labourTrade.deleteMany();
   await prisma.labourSkill.deleteMany();
   await prisma.pushSubscription.deleteMany();
+  // Phase 6 unit 6.1a — the canonical party records WHO created it through a NO ACTION key,
+  // because attribution for an external firm is not something a user delete may silently drop.
+  // Every reset that wipes users therefore has to clear the identity rows first: this one and
+  // `test/integration/fixtures.ts` are the two, and this is the second of the pair.
+  // `ProjectCompany` moves up from below `user.deleteMany()` for the same reason — it holds the
+  // party reference, so it can no longer be cleared after the party's creator is gone.
+  // (`ProjectParty`, its two source tables and `Vendor` are already in the TRUNCATE above.)
+  await prisma.projectCompany.deleteMany();
+  await prisma.externalParty.deleteMany();
   await prisma.user.deleteMany();
   await prisma.phase.deleteMany();
   await prisma.decision.deleteMany();
   await prisma.projectNode.deleteMany();
-  await prisma.projectCompany.deleteMany();
   await prisma.project.deleteMany();
   await prisma.projectTemplate.deleteMany();
   await prisma.templateModule.deleteMany();

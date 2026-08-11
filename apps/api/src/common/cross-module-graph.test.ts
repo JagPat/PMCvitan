@@ -134,6 +134,10 @@ const MODEL_OWNER: Record<string, string> = {
   projectNode: 'nodes',
   media: 'media',
   org: 'orgs', orgMembership: 'orgs', membership: 'orgs', project: 'orgs', projectCompany: 'orgs',
+  // Phase 6 unit 6.1a (§A) — orgs-owned so the collaborator resolver never reads procurement.
+  // Procurement writes them through `OrgsParticipant`, the declared participant edge.
+  externalParty: 'orgs', projectParty: 'orgs',
+  projectPartyCompanySource: 'orgs', projectPartyVendorSource: 'orgs',
   projectTemplate: 'orgs', templateModule: 'orgs', user: 'orgs', workerDevice: 'orgs',
   // shared infrastructure every module appends to — NOT a cross-module edge
   auditLog: 'SHARED', notification: 'SHARED', pushSubscription: 'SHARED',

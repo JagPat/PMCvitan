@@ -8,6 +8,7 @@ import { resolveActor } from '../common/actor';
 import type { AuthUser } from '../common/auth';
 import type { CreateVendorInput, BindVendorInput } from '../contracts';
 import type { Vendor, ProjectVendor } from '@prisma/client';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 /**
  * Phase 3 Task 2 — vendors (§H). `Vendor` is the ORG-scoped durable party record; creating or
@@ -30,6 +31,10 @@ export class VendorsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly capabilities: CapabilitiesService,
+    // Phase 6 unit 6.1a (§A) — `ExternalParty` and `ProjectParty` are ORGS-owned. Procurement
+    // does not write them directly; it asks their owner inside its own transaction, and
+    // `procurement.workflowParticipants` declares the edge.
+    private readonly party: OrgsParticipant,
   ) {}
 
   /** Org-admin authority: an ACTIVE org membership with role owner|admin. */
@@ -47,8 +52,14 @@ export class VendorsService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'vendors.create', idempotencyKey, requestHash: hashRequest(input),
       run: async (tx) => {
+        // The vendor IS a firm, so it gets the canonical identity in the same transaction —
+        // otherwise procurement mints counterparties the collaborator surface cannot name.
+        const party = await this.party.createParty(tx, { orgId, name: input.name, createdById: actor.actorId });
         const created = await tx.vendor.create({
-          data: { orgId, name: input.name, contact: input.contact ?? null, gstin: input.gstin ?? null, createdById: actor.actorId },
+          data: {
+            orgId, name: input.name, contact: input.contact ?? null, gstin: input.gstin ?? null,
+            createdById: actor.actorId, partyId: party.id,
+          },
         });
         return { resultRef: created.id, events: [] };
       },
@@ -87,7 +98,17 @@ export class VendorsService {
         const existing = await tx.projectVendor.findUnique({ where: { projectId_vendorId: { projectId, vendorId: vendor.id } } });
         if (existing) throw new BadRequestException('Vendor is already bound to this project');
         const created = await tx.projectVendor.create({
-          data: { projectId, orgId: project.orgId, vendorId: vendor.id, boundById: actor.actorId },
+          data: {
+            projectId, orgId: project.orgId, vendorId: vendor.id, boundById: actor.actorId,
+            // The binding's party copy is the VENDOR's, bound through it at the database.
+            partyId: vendor.partyId,
+          },
+        });
+        // A vendor binding is the second thing that can associate a party with a project — the
+        // materials supplier that has no `ProjectCompany` reaches it only this way.
+        await this.party.attachPartySource(tx, {
+          orgId: project.orgId, projectId, partyId: vendor.partyId,
+          origin: { kind: 'vendor', projectVendorId: created.id },
         });
         await recordAudit(tx, { projectId, actor, action: 'vendor.bind', entity: 'ProjectVendor', entityId: created.id });
         return { resultRef: created.id, events: [] };

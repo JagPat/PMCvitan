@@ -78,6 +78,21 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
       prisma.notification.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.membership.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.orgMembership.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
+      // Phase 6 unit 6.1a — the canonical party is ORG-scoped and records WHO created it, with a
+      // NO ACTION creator key: attribution for an external firm is not something a user delete may
+      // silently drop. So the identity rows have to go before the users who made them, and in
+      // their own dependency order — association, then the firm rows that reference the party,
+      // then the party. (Each source row cascades with whichever of the two it hangs off.)
+      // A suite that created no vendor or company deletes nothing here.
+      // ORDER is load-bearing: the source→association key is ON DELETE RESTRICT, so the
+      // association cannot be removed while a directory row still justifies it. Companies go
+      // first (taking their source rows with them by cascade), and only then the association.
+      // The reverse order — which this teardown originally used — is now refused by PostgreSQL,
+      // which is the seal doing its job rather than a problem with the teardown.
+      prisma.projectCompany.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
+      prisma.projectParty.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
+      prisma.vendor.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
+      prisma.externalParty.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
       prisma.user.deleteMany({ where: { id: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
       prisma.projectNode.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.project.deleteMany({ where: { id: { in: [projectA.id, projectB.id] } } }),

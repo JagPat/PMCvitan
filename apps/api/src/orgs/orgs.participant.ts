@@ -316,4 +316,151 @@ export class OrgsParticipant {
     return { standing: true, ceiling: settled[0]!.approvalLimit ?? null };
   }
 
+  // ── Phase 6 unit 6.1a (§A) — the canonical external party ─────────────────────────────────
+  //
+  // `ExternalParty`, `ProjectParty` and the two source tables are ORGS-owned. Procurement
+  // creates vendors and binds them to projects, so it needs a party and an association written
+  // in ITS OWN transaction — and must not write orgs tables directly. These three methods are
+  // that channel, and `procurement.workflowParticipants` declares the edge.
+  //
+  // Orgs owns them precisely because the collaborator resolver reads the association: putting a
+  // procurement table inside the authority predicate is the inversion §A rejects `Vendor` for.
+
+  /** Mint the canonical party for a firm this org has just started dealing with. */
+  async createParty(
+    tx: Prisma.TransactionClient,
+    input: { orgId: string; name: string; createdById: string | null },
+  ): Promise<{ id: string }> {
+    const created = await tx.externalParty.create({
+      data: { orgId: input.orgId, name: input.name, createdById: input.createdById },
+      select: { id: true },
+    });
+    return { id: created.id };
+  }
+
+  /**
+   * Record that `partyId` is associated with `projectId` BECAUSE of a specific origin row.
+   *
+   * The association is created if absent and reused if present — one party can reach a project
+   * through both a company and a vendor binding, and the second must not fail or duplicate. The
+   * SOURCE row is what differs, and it is FK-bound to the origin through the origin's own
+   * project and party, so it cannot justify an association it does not belong to.
+   */
+  async attachPartySource(
+    tx: Prisma.TransactionClient,
+    input: {
+      orgId: string;
+      projectId: string;
+      partyId: string;
+      origin: { kind: 'company'; projectCompanyId: string } | { kind: 'vendor'; projectVendorId: string };
+    },
+  ): Promise<void> {
+    const { orgId, projectId, partyId } = input;
+    // The other half of the rename serialization: a source attach conflicts with a rename in
+    // flight, so the two orders are the only two outcomes and "counted one, then a second
+    // appeared" is not among them.
+    await tx.$queryRaw`SELECT "id" FROM "ExternalParty" WHERE "id" = ${partyId} FOR UPDATE`;
+    await tx.projectParty.upsert({
+      where: { projectId_partyId: { projectId, partyId } },
+      create: { orgId, projectId, partyId },
+      update: {},
+    });
+    if (input.origin.kind === 'company') {
+      await tx.projectPartyCompanySource.create({
+        data: { orgId, projectId, partyId, projectCompanyId: input.origin.projectCompanyId },
+      });
+    } else {
+      await tx.projectPartyVendorSource.create({
+        data: { orgId, projectId, partyId, projectVendorId: input.origin.projectVendorId },
+      });
+    }
+  }
+
+  /**
+   * Drop the association if the origin just removed was its LAST justification.
+   *
+   * The source row itself is removed by the origin's ON DELETE CASCADE; what cascades cannot do
+   * is decide whether the association still has a reason to exist. Without this, deleting the
+   * only company on a project would leave `ProjectParty` alive with nothing supporting it — and
+   * the deferred constraint trigger would refuse the whole transaction at COMMIT, so the delete
+   * a user asked for would fail rather than the association tidying itself up.
+   *
+   * Call AFTER the origin delete, in the same transaction.
+   */
+  async releasePartyAssociationIfUnsourced(
+    tx: Prisma.TransactionClient,
+    input: { projectId: string; partyId: string },
+  ): Promise<void> {
+    const { projectId, partyId } = input;
+    // LOCK the association before counting what justifies it. Counting and then deleting is a
+    // read followed by a write, and between the two another transaction can add the source that
+    // makes the association necessary: a vendor binding commits, this delete cascades the source
+    // it just wrote, and the project ends with a bound vendor the resolver cannot see.
+    //
+    // The lock closes it from both sides. A source insert takes a KEY SHARE lock on its parent
+    // association through the foreign key, which conflicts with this FOR UPDATE — so a competing
+    // bind either happens entirely before the count (and the count sees it), or blocks until this
+    // transaction commits and then fails on the parent that is no longer there. A deterministic
+    // failure the caller retries, rather than a silently incoherent commit.
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "ProjectParty"
+       WHERE "projectId" = ${projectId} AND "partyId" = ${partyId}
+       FOR UPDATE`;
+    if (locked.length === 0) return;
+
+    const [companies, vendors] = await Promise.all([
+      tx.projectPartyCompanySource.count({ where: { projectId, partyId } }),
+      tx.projectPartyVendorSource.count({ where: { projectId, partyId } }),
+    ]);
+    if (companies + vendors > 0) return;
+    await tx.projectParty.deleteMany({ where: { projectId, partyId } });
+  }
+
+  /**
+   * Rename the canonical party a directory row represents — permitted ONLY while that row is the
+   * party's single justification.
+   *
+   * A `ProjectCompany` is now evidence of WHO a firm is, not just a directory entry, so leaving
+   * `name` freely rewritable would let an admin create "ACME", collect its party, and then PATCH
+   * the row to "Beta": the party a future resolver keys on still says ACME while the only row
+   * describing it says something else.
+   *
+   * Renaming a SHARED party is refused rather than propagated, because the other origin never
+   * agreed to it — a vendor binding and a directory row on one party are one firm, and renaming
+   * the firm from one of its two faces is the operator's reconciliation decision, not a
+   * side effect of a directory edit. (Authority rows do not exist until 6.2; that refusal is
+   * additive on top of this one, not a replacement for it.)
+   *
+   * **The count is ORG-WIDE, and the project scope it started with was a bug.** `ExternalParty`
+   * is owner-org-scoped: one row, one name, read by every project the firm reaches. Counting
+   * sources within the editing project alone means that once 6.1b repoints a project-A company
+   * onto a party already bound on project B, project A sees a single local source, calls itself
+   * the sole evidence, and renames the firm project B is relying on. The check has to be scoped
+   * the way the DATA is, not the way the caller happens to be.
+   */
+  async renamePartyForSoleSource(
+    tx: Prisma.TransactionClient,
+    input: { partyId: string; name: string },
+  ): Promise<{ renamed: boolean; sharedWith: number }> {
+    const { partyId, name } = input;
+    // LOCK THE PARTY ROOT before counting. Counting and then renaming is a read followed by a
+    // write, and between them a bind or a repoint can attach a SECOND source: the count says
+    // "sole evidence", the attach commits, and the rename lands on a firm that is now shared —
+    // renamed behind the back of an origin that was written under the old identity.
+    //
+    // `attachPartySource` takes the same lock, which is what makes this a serialization and not
+    // just a longer read. The party root is the right thing to lock because the party is what the
+    // rename CHANGES; locking the sources would leave the one being created unlocked.
+    await tx.$queryRaw`SELECT "id" FROM "ExternalParty" WHERE "id" = ${partyId} FOR UPDATE`;
+
+    const [companies, vendors] = await Promise.all([
+      tx.projectPartyCompanySource.count({ where: { partyId } }),
+      tx.projectPartyVendorSource.count({ where: { partyId } }),
+    ]);
+    const others = companies + vendors - 1;
+    if (others > 0) return { renamed: false, sharedWith: others };
+    await tx.externalParty.update({ where: { id: partyId }, data: { name } });
+    return { renamed: true, sharedWith: 0 };
+  }
+
 }

@@ -59,7 +59,7 @@ describe('Phase 5 Task 7B-i-a — commercial money invalidation + the emission r
   let seq = 0;
 
   const TRUNCATE =
-    'TRUNCATE TABLE "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "CashForecastProjection", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "VendorQuote", "QuoteComparison", "Rfq", "RequisitionLine", "Requisition", "ProjectVendor", "CommandExecution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "ProjectCapability" CASCADE';
+    'TRUNCATE TABLE "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "CashForecastProjection", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "VendorQuote", "QuoteComparison", "Rfq", "RequisitionLine", "Requisition", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "CommandExecution", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "ProjectCapability" CASCADE';
 
   const pmc = (projectId: string): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId }) as AuthUser;
   const orgAdmin = (): AuthUser => ({ sub: f.ownerUser.id, role: 'pmc', orgId: f.orgA.id }) as AuthUser;
