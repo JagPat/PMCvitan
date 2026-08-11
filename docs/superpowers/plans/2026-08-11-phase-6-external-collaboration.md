@@ -167,6 +167,15 @@ intersection. The forbidden set must never appear in the allow calculation. §D'
 **complement** of conjunct 1 — a deny statement derived from it, and a thing to assert, not a thing
 to intersect.
 
+**Conjunct 2 must never be vacuous, so only a permissioned route may be allow-listed.** 33 of the
+167 mutating routes carry `@AllowAnyRole` or `@Public` and therefore have no
+`ROLE_POLICY` entry to evaluate — for those, conjunct 2 has no value and a rule that skipped it
+would silently drop a third of its own protection. A route with no permission is therefore
+**ineligible for `COLLABORATOR_REACHABLE`**: to make one collaborator-reachable, a unit must first
+give it a `@RolesFor` permission, which is a visible, reviewable act. That keeps all three conjuncts
+live for every reachable route and makes the 33 structurally closed rather than conditionally
+closed. §D asserts it.
+
 Two consequences worth stating now:
 
 - Revoking a firm revokes everyone bound to it, in one attributable act.
@@ -242,6 +251,7 @@ declares exactly one authz intent, and `@RolesFor` records its permission under 
 |---|---|
 | Every route dispatching a money command is in the derived closed set | someone adds a money route to the allow-list |
 | No allow-listed route carries a permission whose `ROLE_POLICY` entry admits no collaborator role | a route is allow-listed that no collaborator could ever pass — dead grant, or a mis-scoped one |
+| Every allow-listed route carries a `@RolesFor` permission | a permission-less (`@AllowAnyRole` / `@Public`) route is allow-listed, which would leave §B's conjunct 2 with nothing to evaluate |
 | Every allow-listed route names a §C scope, and that scope's owning module owns the route | a route is granted under a scope that does not own it |
 | The route walk finds routes at all | reflection silently returns nothing and every assertion above passes for free |
 
