@@ -13,7 +13,7 @@ import {
   PLAN_REVIEW_ROUND_CAP,
   REQUIRED_INVARIANTS,
 } from './review-efficiency.mjs';
-import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
+import { OPEN_TASK_STATES, parseStatusNow } from './autonomous-status-state.mjs';
 import { run as runScope } from './review-scope.mjs';
 
 const CODEX = 'chatgpt-codex-connector[bot]';
@@ -894,4 +894,33 @@ test('the docs-only cap reads the whole PR, not just the convergence commit', ()
   });
   assert.equal(belowCap.cumulativeUnreadable, false);
   assert.equal(belowCap.allowed, true);
+});
+
+// `next_task` is consumed by an ALLOWLIST (`TASK_REFERENCE`), and an unparseable value is
+// invisible until the exact moment it matters. While the phase has open work `deferralPhases`
+// returns the current phase whatever `next_task` says; the moment a flip records `merged` with
+// `work_item: none`, `next_task` becomes the ONLY source, an unparseable value yields `[]`, and a
+// docs-only head past the round cap can no longer defer its open questions to a real stop.
+//
+// So this reads the REAL `docs/STATUS.md` and forces the terminal state rather than trusting the
+// state of the day. A fixture would only prove the parser parses what I already believe it does;
+// the thing worth guarding is the artifact.
+test('the recorded next_task names a stop the deferral gate can resolve', async () => {
+  const markdown = await readFile(new URL('../docs/STATUS.md', import.meta.url), 'utf8');
+  const now = parseStatusNow(markdown);
+  assert.ok(now, 'docs/STATUS.md must carry a parseable Now block');
+
+  // Forced terminal handoff shape: the one state in which `next_task` is load-bearing alone.
+  const handed = { ...now, task_state: 'merged', work_item: 'none' };
+  const phases = deferralPhases(handed);
+  assert.ok(
+    Array.isArray(phases) && phases.length > 0,
+    `next_task "${now.next_task}" does not parse as phase-<n>-task-<id> or phase-<n>-planning, so `
+      + 'after a merged handoff the deferral gate resolves no phase and a docs-only head past the '
+      + 'round cap fails closed on "no phase with open work"',
+  );
+
+  // …and the guard is only worth having if it can fail: the shape #328 was caught with.
+  const unparseable = deferralPhases({ ...handed, next_task: 'phase-6-unit-6.1b' });
+  assert.deepEqual(unparseable, [], 'a unit-style next_task must still be rejected by the gate');
 });
