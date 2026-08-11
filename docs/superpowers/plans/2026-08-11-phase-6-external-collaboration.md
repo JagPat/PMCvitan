@@ -35,11 +35,11 @@ lets two units pick different semantics and both claim to follow the merged plan
 | 2 | What a collaborator principal is | **(party, project, scope)**, resolved by a THREE-conjunct default-deny rule | §B |
 | 3 | Whether the closed set is subtracted | **Deny, never intersect** — the closed set is the COMPLEMENT of a positive route allow-list | §B/§D |
 | 4 | What authorises a collaborator | **A separate `COLLABORATOR_ROUTE_POLICY`, INSTEAD of `ROLE_POLICY` — which is never widened for a collaborator** | §B/§D |
-| 5 | What the allow-list covers | **Every PROJECT-SCOPED route, READ and mutating**; identity/session routes are a named exception | §D |
+| 5 | What the allow-list covers | **Every PROJECT-SCOPED route, READ and mutating**; a four-class RULE (not a list) puts every other route inside or outside, pinned by a totality probe | §D |
 | 6 | The scope vocabulary | **Nine grantable scopes + one IMPLIED (`evidence`)**, fixed in §C; `commercial` is not one of them | §C |
 | 7 | Guest → Org promotion | **The SEAM ships in 6.1; the promotion COMMAND is deferred** out of Phase 6 | §E |
 | 8 | How existing projects are protected | A per-project **`collaboration` capability**, shipped in 6.3 WITH its guard; off = byte-identical to today | §B |
-| 9 | What happens AT enablement | **Enablement REFUSES unless every active collaborator membership resolves to a party AND a live grant**, naming the failures; nothing is backfilled | §B |
+| 9 | What happens AT enablement | **An INVARIANT — no active collaborator membership is ever left with zero reachable routes**; the predicate enforcing it is `P3`, settled by probe in 6.3 | §B |
 
 ## Facts consumed from earlier phases (never rebuilt)
 
@@ -218,9 +218,17 @@ Two consequences worth stating now:
 
 **The `collaboration` capability.** The whole resolver is gated by a per-project `ProjectCapability`
 (`collaboration`), the same mechanism `materials`, `labour` and `commercial` use. Off — every
-existing project — the request path is byte-identical to today and no collaborator table carries a
-row. On, the three conjuncts apply. The two-projects-one-org inertness proof every prior pilot
-capability shipped is repeated here.
+existing project — **the RESOLVER is inert and the request path is byte-identical to today.** On,
+the three conjuncts apply. The two-projects-one-org inertness proof every prior pilot capability
+shipped is repeated here.
+
+**Inert means the resolver does not run; it does not mean the tables are empty.** An earlier draft
+said "no collaborator table carries a row" while the cutover below requires parties, bindings and
+grants to be composed *before* the flag is turned on — the two sentences were written in different
+rounds and contradicted each other, forbidding exactly the staging that makes enablement safe. The
+correct statement: collaborator rows are **inert data** while the capability is off. They change no
+request, no response and no authorisation, which is what the inertness proof asserts; and they are
+the only way an existing contractor project can be prepared for a cutover at all.
 
 **Enablement is a cutover, not a flip, and it REFUSES rather than backfills.** Because the map
 replaces `ROLE_POLICY` for a collaborator principal, turning the capability on for a project that
@@ -237,13 +245,32 @@ Three shapes were available and the middle two are rejected on principle:
 | Backfill a party + grant per existing membership | it would **invent authority** — worse than inventing data, and the one thing §D exists to prevent |
 | Grace mode: an unbound membership keeps today's reach | the narrowing never actually happens, and "temporary" grace has no forcing function to end it |
 
-**Decided: enablement REFUSES unless every ACTIVE `client`/`contractor`/`consultant` membership on
-the project resolves to a party AND that party holds at least one live grant on this project — and
-the refusal enumerates the memberships that fail, saying which half is missing.** Parties, bindings
-and grants are all created while the capability is still OFF and are inert until it is on, so the
-operator composes the whole access picture first and then turns it on against a project that is
-already coherent. No authority is created by a flag, and the cutover is verified rather than hoped
-for.
+**Decided as an INVARIANT, with the predicate deferred to 6.3's probes — and the reason is this
+plan's own record.** Three consecutive review rounds have found a defect in the prose predicate for
+this one question: first that "unbound" was the wrong test, then that a binding without a grant
+passes it anyway, then that a grant covering no allow-listed route passes *that* and cuts the user
+off regardless, and separately that guarding only the flip leaves the next membership unguarded.
+Each fix was correct and each created the next finding. A fourth prose predicate would be the same
+move a fourth time.
+
+> **THE INVARIANT.** No principal is ever left holding an ACTIVE collaborator membership on a
+> collaboration-enabled project while zero routes are reachable to them. Not at enablement, not when
+> a membership is later created, reactivated or re-roled, and not because the route map has no entry
+> their grant covers.
+
+This is stronger than any of the three predicates and it is stated as an outcome, so it cannot be
+satisfied by a check that happens to be spelled correctly while measuring the wrong thing. **How** it
+is enforced — which operations it guards, and whether a violation refuses the operation or refuses
+enablement — is `P3`, settled by probe in 6.3 against a running resolver rather than argued here.
+The two rejected options above stand: no backfill (it would invent authority) and no grace mode (the
+narrowing would never happen).
+
+**One consequence is load-bearing and is stated now rather than discovered in 6.4:** because §D
+ships an empty route map at 6.3, the invariant cannot be satisfied for any collaborator until the
+first scoped surface exists. **`collaboration` is therefore un-enablable between 6.3 and the first
+6.4 unit** — the machinery lands, the flag exists, and no project can turn it on until there is
+something for a grant to reach. That is the correct order, not a gap: a flag that could be switched
+on into a state with no reachable routes is the cutoff this section exists to prevent.
 
 **"Bound" alone is not the check, and getting that wrong would have reproduced the very cutoff.** A
 member bound to a party that holds no grant passes an unbound-ness test and is then denied every
@@ -333,15 +360,30 @@ literally, a complement over *all* routes puts them in the closed set and a coll
 longer list their projects or switch into one, which is not a narrowing of reach but a lockout. They
 are therefore a **named, enumerated exception class**, not a judgement call at 6.3:
 
-| Identity / session route | Why it is outside the project-scoped complement |
-|---|---|
-| `GET me/memberships` (`OrgsController.myMemberships`) | the discovery list — it answers "which projects am I on", so it cannot be scoped by a project |
-| `POST auth/switch` (`AuthController.switch`) | the switcher; `@AllowAnyRole`, and `AuthService.switchProject` already verifies membership of the TARGET project |
-| the ten `@Public` `auth/*` routes (session · login · password/\* · otp/\* · worker/token · email/\* · google) | pre-authentication — there is no principal yet, so no collaborator decision exists to make |
+**The classification is a RULE with a totality probe, not a hand-written list** — because the
+hand-written list was wrong on its first outing. An earlier draft enumerated these from
+`auth.controller.ts` plus `me/memberships`, called the exception "closed rather than open-ended",
+and missed `GET me/portfolio` (`OrgsController.portfolio`), which builds project-wide activity,
+review and pending-decision counts across every active membership. That route is the exact case the
+list existed to reason about and it was not in it — so the list is not the mechanism:
 
-Their existing authorisation is unchanged, and the exception is closed rather than open-ended: it is
-these routes, listed. `POST projects/:projectId/push/subscribe` is deliberately **not** among them —
-it names a project, so it is project-scoped and belongs in the map like any other.
+| Class | Rule | Disposition |
+|---|---|---|
+| **Pre-authentication** | no principal exists yet | outside; no collaborator decision can be made |
+| **Identity / session** | names no project AND returns no project CONTENT — membership existence and the act of switching only | outside; existing authorisation unchanged |
+| **Cross-project rollup** | names no project but returns project CONTENT or counts derived from it | **inside** — per-project data must be filtered to projects where the principal's grant reaches it |
+| **Project-scoped** | names a project | inside; in the map or in the closed set |
+
+Applied: `POST auth/*` (pre-auth) and `POST auth/switch` are outside. `GET me/memberships` is
+outside — it answers "which projects am I on", which a collaborator must be able to ask. **`GET
+me/portfolio` is INSIDE**, because it is a dashboard, not a switcher: exempting it wholesale hands a
+contractor with one narrow grant a project-wide rollup that §C never granted, and closing it
+wholesale removes a discovery surface they have today. Its per-project rows are filtered by grant.
+`POST projects/:projectId/push/subscribe` names a project, so it is ordinary map territory.
+
+**`P2` is what makes this real:** a probe asserting **every** route resolves to exactly one of the
+four classes, so a route added later cannot sit outside all of them the way `me/portfolio` did.
+Classification totality is checkable; my enumeration demonstrably is not.
 
 **The complement covers READ routes, not only mutating ones** — an earlier draft closed writes and
 left reads outside the boundary, which would have shipped a phase whose stated purpose is to narrow
@@ -421,7 +463,7 @@ unrepresentable at the database where the shape permits it, not merely refused i
 | **Plan (this document)** | the nine decisions above, SETTLED | **review stop — nothing is built until it clears** |
 | **6.1** | `ExternalParty` (§A) + the `promotedOrgId` seam (§E) + the §F tenancy proof. **No capability, no flag.** | review |
 | **6.2** | the collaborator principal, party binding and grants (§B) — still inert, because nothing can be switched on yet | review |
-| **6.3** | §D's route walk, `COLLABORATOR_ROUTE_POLICY`, the project-scoped closed set (reads AND writes) with its identity exception, the tripwire assertions, **the `collaboration` capability itself, AND the enablement refusal — in one unit** | review |
+| **6.3** | §D's route walk, `COLLABORATOR_ROUTE_POLICY`, the project-scoped closed set (reads AND writes) + the four-class rule, the tripwire assertions, **the `collaboration` capability itself, AND the §B invariant's enforcement (`P3`) — in one unit.** The flag ships UN-ENABLABLE: with an empty map no grant reaches anything, so no project can turn it on until 6.4 | review |
 | **6.4+** | the scoped surfaces themselves (§C), one scope per unit; each routes its own module's service backstops as the price of its entries | review each |
 
 **6.3 lands before 6.4 deliberately.** Building surfaces first and adding the guard after is how a
@@ -481,6 +523,15 @@ down demonstrably did not perform it:
    those is intended.** A complement over "all routes" catches the login switcher; a
    scope-completeness assertion at 6.3 catches nine unbuilt scopes; "unbound" misses "bound with no
    grant". Three of round 3's five findings were damage from round 2's own repairs.
+9. **When the requirement is an OUTCOME, state the outcome and let a probe enforce it — do not keep
+   encoding it as a test.** A test can be spelled correctly and still measure the wrong thing, and
+   the only way to find out is to run it. Three consecutive rounds wrote a different predicate for
+   "enablement must not cut anyone off"; each was refuted by the next. §B now states the invariant
+   and defers the predicate to `P3`.
+10. **An enumeration is not a closed set because you call it one.** Round 3 replaced a vague gesture
+    with a list and labelled it "closed rather than open-ended"; round 4 found `GET me/portfolio`
+    sitting outside it. Where a list must be complete, ship a classification RULE and a totality
+    probe instead — the rule is checkable, the list is a claim.
 
 ## Vision alignment
 

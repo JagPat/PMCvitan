@@ -1,11 +1,11 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Three finding-bearing heads, fourteen findings, on a docs-only plan. **Four of the fourteen are one
-root, and it is a root the plan could have avoided by asking a question it never asked.**
+Four finding-bearing heads, nineteen findings, on a docs-only plan.
 
-**Three of round 3's five findings are defects the round-2 correction introduced.** That is the
-number worth looking at, not the total: this lineage's corrections are generating findings at very
-nearly the rate the reviews are closing them.
+**The number that matters is not nineteen. It is that seven findings across rounds 3 and 4 are
+damage from the correction immediately before them, and the rate is not falling.** One cluster —
+what enablement means on a live project — has produced a finding in three consecutive rounds, each
+time because the previous round's fix was correct and interacted with something else.
 
 | # | Head | Finding | Root |
 |---|---|---|---|
@@ -23,6 +23,11 @@ nearly the rate the reviews are closing them.
 | 12 | `c431904` | do not make 6.3 prove every future scope | **D — created by the round-2 tripwire** |
 | 13 | `c431904` | refuse grantless bindings, not merely unbound ones | **D — created by the round-2 activation fix** |
 | 14 | `c431904` | do not expose the flag before the cutover guard | staging |
+| 15 | `5a92ed2` | keep off-state staging possible | **D — created by fix 13** |
+| 16 | `5a92ed2` | apply the cutover guard to later memberships | **E — the cutover cluster** |
+| 17 | `5a92ed2` | refuse grants that cover no allow-listed route | **E — the cutover cluster** |
+| 18 | `5a92ed2` | classify portfolio reads before exempting identity routes | **B — enumeration, again** |
+| 19 | `5a92ed2` | defer to the task that can RUN the probes | the deferral itself |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -111,6 +116,51 @@ enablement guard in 6.3, and `capability:enable` upserts any name — so between
 operator could switch it on with no refusal to stop them. The capability moves into 6.3, with its
 guard, as one unit.
 
+### Round 4 — the deferral head drew five more, and one of them was the deferral
+
+**15** is the flattest of the nineteen: §B said capability-off means "no collaborator table carries a
+row", while the cutover four paragraphs later requires parties, bindings and grants to exist *before*
+the flag is turned on. Two sentences written in different rounds, contradicting each other, forbidding
+the staging that makes the cutover safe. Nobody re-read them together — including me, twice.
+
+**18** is root B on the very list that was written to fix root B. Round 3 replaced a vague
+"identity/session routes" gesture with an enumeration and called it "closed rather than open-ended".
+It was assembled from `auth.controller.ts` plus `me/memberships`, and missed `GET me/portfolio` —
+project-wide activity, review and pending-decision counts across every active membership. That route
+is precisely the case the list existed to reason about. **An enumeration I write is not a closed set
+just because I call it one**, which is the same sentence as rule 1, now paid for a fourth time. It is
+replaced by a four-class RULE plus a totality probe: classification is checkable, my lists are not.
+
+**19** is a defect in the deferral I had just added. It named `phase-6-task-1` — I chose the
+*contiguous* next stop over the stop that can *settle* the questions, and four of the five probes are
+scheduled in 6.3. A handoff to a review stop that cannot adjudicate the thing handed to it is not a
+handoff. Retargeted to `phase-6-task-3`; P5 lands earlier in 6.1, which is fine — settled sooner is
+not a problem, settled never is.
+
+## Root E — one cluster that prose has now failed to settle three times
+
+Findings 13, 16 and 17 are the same question — *what does enablement mean on a project that already
+has collaborators?* — and each round's answer was correct and incomplete in a new way:
+
+| Round | Predicate | What the next round found |
+|---|---|---|
+| 2 | refuse while a membership is **unbound** | a membership bound to a party with no grant passes, and is cut off (13) |
+| 3 | refuse unless **party AND live grant** | guards only the flip; the next membership created or re-roled is unguarded (16) |
+| 3 | (same) | a grant covering no allow-listed route passes, and with an empty map at 6.3 that is *every* grant (17) |
+
+Three predicates, three rounds, three correct refutations. The pattern is not carelessness in any
+one of them — each is a reasonable reading of the requirement — it is that **the requirement is an
+outcome and I kept encoding it as a test.** A test can be spelled correctly and still measure the
+wrong thing, and the only way to know is to run it.
+
+So round 4 stops writing predicates for it. §B now states the INVARIANT — *no active collaborator
+membership is ever left with zero reachable routes, at enablement or afterwards* — and hands the
+enforcing predicate to `P3` in 6.3, where it can be executed against a running resolver. That is what
+the deferral mechanism is for, applied to the one cluster that has earned it.
+
+It also forced out a fact worth having early: with an empty route map at 6.3, the invariant cannot be
+satisfied for anyone, so **`collaboration` ships un-enablable until the first 6.4 surface exists.**
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -178,6 +228,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `e222981` | 5 | — |
 | `f9a4125` | 4 | 0 |
 | `c431904` | 5 | **3** |
+| `5a92ed2` | 5 | **4** (15, 16, 17, 18 — and 19 was a defect in the deferral itself) |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header
@@ -223,15 +274,16 @@ Neither finding is reopened or disputed; only the vehicle changes.
 
 ### The probe ledger — what each deferred question becomes
 
-`Review-Deferred-To-Probes: phase-6-task-1`. Every round-3 answer is prose, and prose is exactly
+`Review-Deferred-To-Probes: phase-6-task-3` — the stop that can RUN them (finding 19 corrected the
+first attempt, which named the contiguous next stop instead). Every round-3 and round-4 answer is prose, and prose is exactly
 what the cap says can no longer be the verification. Each becomes a probe in the unit that can
 execute it:
 
 | # | Question the prose answers | Probe | Settled in |
 |---|---|---|---|
 | P1 | do service backstops actually stop leaking? | tripwire RED-flags an allow-listed handler with a `ROLE_POLICY[...]` gate on its path; mutation-tested against the 20 measured files | 6.3 |
-| P2 | can a collaborator still discover and enter projects? | with the resolver ON, `GET me/memberships` and `POST auth/switch` succeed; a project-scoped route outside the map is refused | 6.3 |
-| P3 | does the cutover actually catch a grantless binding? | bound-with-no-grant refuses and names the membership; bound-with-grant enables | 6.3 |
+| P2 | is every route classified, and is the rollup filtered? | **every** route resolves to exactly one of the four classes (no route sits outside all of them, as `me/portfolio` did); `me/memberships` and `auth/switch` succeed with the resolver ON; `me/portfolio` returns only grant-reachable projects | 6.3 |
+| P3 | is §B's INVARIANT held — no active collaborator membership with zero reachable routes? | at enablement AND on later membership create / reactivate / re-role; grantless binding, and a grant covering no allow-listed route, both caught | 6.3 |
 | P4 | is the scope-completeness assertion absent where it would misfire? | 6.3 passes with scopes that have no entries; the phase-exit check fails when one never gains any | 6.3 / phase exit |
 | P5 | does §A's layering hold in the real graph? | the module-graph test shows no `orgs → procurement` edge after `ExternalParty` lands | 6.1 |
 
