@@ -185,17 +185,58 @@ records PR #252 taking four finding-bearing heads at 8, 8, 7, 7, every finding c
 contradicted, and concludes that a plan has no executable surface, so a finding on it can only be
 answered with more prose, and more prose is more surface.
 
-**This head does not take the deferral, and the reason is not pride.** All five round-3 findings are
-answerable *now*, concretely, from facts already checked — the 20 service files are counted, the
-identity routes are enumerated, the staging fix is a row in a table. A deferral converts an open
-question into a named probe; none of these five is an open question. Reaching for the mechanism here
-would be using it to stop working rather than to move verification somewhere it can actually happen.
+### A correction to this audit's own previous round
 
-**The rule for round 4, decided now rather than improvised then:** if the next head draws findings
-that are again mostly self-inflicted, the response is not a sixth prose correction. It is the
-deferral trailer with each remaining question named as a probe carried into 6.1/6.3 — where a
-resolver and a tripwire can be *executed* against them instead of argued about. Prose has a
-verification ceiling and this lineage is at it.
+Head `4eb607a` claimed the deferral was a judgement I was declining to make — *"this head does not
+take the deferral, and the reason is not pride"* — and recorded a rule for when I would take it
+later. **That was wrong about the mechanism.** `PLAN_REVIEW_ROUND_CAP` is 3, and past it a docs-only
+review **owes** the trailer; `assessConvergence` fails closed without it. The gate refused
+`4eb607a` on exactly that, and it was right to. There was no choice to decline.
+
+The reasoning underneath was not wrong — all five round-3 findings *are* answered on this head, from
+counted facts, and none is left open. But the deferral is not a way of declining to answer. Its own
+header says so: *"Nothing here discounts, filters, or downgrades a finding."* It moves the
+**verification** of an answer from prose to an executable probe, which is a different act from
+leaving the question open, and the distinction is the whole point of the mechanism. I read it as an
+escape hatch and it is a handoff.
+
+### The deferral and the folded STATUS cannot both be in this PR
+
+Past the cap, `assessConvergence` refuses a deferral from a PR whose diff touches
+`docs/STATUS.md` — the gate reads the DEFAULT-BRANCH copy to check the deferral's phase, so a PR
+that edits STATUS is not its own phase truth. Its refusal names the remedy: *"Land the STATUS change
+on its own."* This lineage has hit the same wall before (`docs/reviews/pr-318-convergence.md`, round
+8), and the first time it was resolved wrongly, by opening a replacement PR — which reset the
+finding-head counter rather than satisfying the obligation.
+
+So `docs/STATUS.md` is reverted out of this PR and lands on its own immediately after it merges.
+**This is a real cost and it is stated rather than glossed:** findings 3 and 6 were both STATUS
+findings, and removing the file removes their fixes from this diff. The corrected content is not
+lost — it is `git show 4eb607a:docs/STATUS.md` — and the follow-up PR restores exactly that:
+
+| Restored by the follow-up STATUS PR | Finding |
+|---|---|
+| the Phase 5 table's three stale state tokens, the stale `6B` narrative, and the "PHASE 5 IS THE ACTIVE PHASE" sentence, plus the paragraph marking per-row prose as historical | 3 |
+| the merged handoff shape (`task_state: merged`, `work_item: none`, `open_pr: none`) that makes `assessRunnerState` reach `next_task:phase-6-task-1` | 6 |
+
+Neither finding is reopened or disputed; only the vehicle changes.
+
+### The probe ledger — what each deferred question becomes
+
+`Review-Deferred-To-Probes: phase-6-task-1`. Every round-3 answer is prose, and prose is exactly
+what the cap says can no longer be the verification. Each becomes a probe in the unit that can
+execute it:
+
+| # | Question the prose answers | Probe | Settled in |
+|---|---|---|---|
+| P1 | do service backstops actually stop leaking? | tripwire RED-flags an allow-listed handler with a `ROLE_POLICY[...]` gate on its path; mutation-tested against the 20 measured files | 6.3 |
+| P2 | can a collaborator still discover and enter projects? | with the resolver ON, `GET me/memberships` and `POST auth/switch` succeed; a project-scoped route outside the map is refused | 6.3 |
+| P3 | does the cutover actually catch a grantless binding? | bound-with-no-grant refuses and names the membership; bound-with-grant enables | 6.3 |
+| P4 | is the scope-completeness assertion absent where it would misfire? | 6.3 passes with scopes that have no entries; the phase-exit check fails when one never gains any | 6.3 / phase exit |
+| P5 | does §A's layering hold in the real graph? | the module-graph test shows no `orgs → procurement` edge after `ExternalParty` lands | 6.1 |
+
+Nothing is dismissed, and the exact-head gate still fails closed on every current-head finding. What
+moves is where each answer is proven.
 
 ## What this audit does not claim
 
