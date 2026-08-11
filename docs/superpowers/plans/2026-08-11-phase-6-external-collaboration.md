@@ -51,9 +51,10 @@ is silently dropped in the split.
 | 2b | How the party links are sealed | **SAME-ORG composite FKs** on both `Vendor.partyId` and `ProjectCompany.partyId`, so a cross-org link is unrepresentable rather than refused | §A |
 | 2c | Firms created AFTER 6.1 | the create paths assign a party in the same transaction (through a declared `OrgsParticipant`), and `partyId` becomes NOT NULL once the backfill has run | §A |
 | 2d | Duplicate parties for one firm | 6.1 ships the operator **merge/repoint command**; the migration still never decides which rows are one firm | §A |
-| 2e | The canonical per-project association | **`ProjectParty`, orgs-owned**; `ProjectCompany` and `ProjectVendor` MIRROR into it so the resolver never reads procurement | §A |
+| 2e | The canonical per-project association | **`ProjectParty`, orgs-owned**, sealed to the project's org on BOTH sides; `ProjectCompany` and `ProjectVendor` MIRROR into it so the resolver never reads procurement | §A |
+| 2j | Which source justifies an association | `ProjectPartySource(projectId, partyId, source)` — each participant owns its own row; the association lives while ≥1 source does | §A |
 | 2h | Association removal / identity update | both refused while any binding or grant references the party on that project | §A |
-| 2i | `promotedOrgId` | **DB-backed one-way**: null → org permitted, any change of a non-null value refused | §E |
+| 2i | `promotedOrgId` | **DB-backed one-way AND one-to-one**: null → org permitted, any change of a non-null value refused, plus a partial unique on non-null | §E |
 | 2f | A pre-existing `collaboration` capability row | 6.1's migration **ABORTS** naming the projects; it never deletes the row | staging |
 | 2g | Where grants are planned | **6.2 moves to the boundary plan** — a grant cannot be stored before the vocabulary that gives it meaning | order |
 | 3 | Guest → Org promotion | **The SEAM ships in 6.1; the promotion COMMAND is deferred** out of Phase 6 | §E |
@@ -188,6 +189,24 @@ association" means this table: the unique `(projectId, partyId)` seal lives here
 associations unrepresentable rather than merely refused), the removal and identity-update guards
 protect it, and the merge command repoints it. 6.1 backfills it from both sources.
 
+**`ProjectParty` takes the org seal too — and forgetting it would have voided every other seal.**
+The table is the ONLY thing the resolver reads, so a row pairing an org-A project with an org-B party
+makes that party associated with that project no matter how well `Vendor` and `ProjectCompany` are
+sealed: §F's cross-tenant proof fails while every listed constraint passes. It therefore carries
+composite FKs to **both** `Project(orgId, id)` and `ExternalParty(orgId, id)`, so the two orgs must
+agree by construction. (This is the same seal added to `ProjectCompany` two rounds earlier; I applied
+it to the tables that existed and then introduced a new one without it — the class was named and the
+new instance was not carried.)
+
+**And the mirror needs to know WHICH source justifies it.** One party can have both a `ProjectCompany`
+and a `ProjectVendor` on the same project, so removing one source must not drop an association the
+other still supports — and orgs cannot read procurement to find out. So the mirror is
+**source-counted, in orgs**: `ProjectPartySource(projectId, partyId, source)` with `source ∈
+{company, vendor}`, unique per triple, each participant inserting and deleting **only its own** row in
+the same transaction as the source write. The `ProjectParty` association exists exactly while at least
+one source row does, and the last source removal removes it. Neither a stale association that can
+later receive grants, nor a live association dropped because the other source was tidied up.
+
 `Vendor.partyId` is a foreign key, not a read: procurement gains no `dependsOn` edge from holding
 it. If a later unit needs the party's *name* inside procurement it goes through an orgs query
 contract and declares `procurement.dependsOn += 'orgs'`, which stays acyclic because nothing in the
@@ -317,7 +336,11 @@ or clearing it. Historical guest work attributed through that party would then r
 different tenant than the one actually promoted, which is precisely the attribution §E exists to
 protect. The column therefore carries a **DB-backed one-way transition from the day it lands**: null
 → an org is permitted, and any change of a non-null value — to another org or back to null — is
-refused at PostgreSQL. A deferred command is not a reason to defer the guard; it is the reason the
+refused at PostgreSQL. **Plus a partial unique on non-null `promotedOrgId`**: the one-way rule stops
+a promoted party from MOVING, and nothing in it stops two different parties from each being set to
+the same tenant, which a retry or repair would do — leaving two guest firms resolving to one tenant
+and making attribution and revocation ambiguous in exactly the way §E exists to prevent. One-way and
+one-to-one are two properties, and the first does not imply the second. A deferred command is not a reason to defer the guard; it is the reason the
 guard has to be there first.
 
 **What does not ship in Phase 6:** the `promote` command itself, tenant provisioning, and any

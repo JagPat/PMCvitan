@@ -1,6 +1,6 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Ten finding-bearing heads, fifty findings, on a docs-only plan — and the count did not fall:
+Eleven finding-bearing heads, fifty-three findings, on a docs-only plan — and the count did not fall:
 **5 · 4 · 5 · 5 · 6.** The review lifecycle reached its limit on head `3f7e35d` and recommended
 splitting the unit. **It is right, and this audit's conclusion is that the unit was never one unit.**
 
@@ -62,6 +62,9 @@ concerns sharing one review, not of a careless document.
 | 48 | `45cd534` | mirror `ProjectVendor` into orgs instead of reading it | **created by fix 42 — root A's inversion, again** |
 | 49 | `45cd534` | serialize grant creation with party merges | created by fix 38 |
 | 50 | `45cd534` | freeze `promotedOrgId` after the first promotion | §E seam |
+| 51 | `24fdec0` | seal `ProjectParty` to the project's org | **B — the seal was not carried to a NEW table** |
+| 52 | `24fdec0` | make `promotedOrgId` one-to-one, not only one-way | created by fix 50 |
+| 53 | `24fdec0` | track which SOURCE justifies a `ProjectParty` row | created by fix 48 |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -409,6 +412,34 @@ later retry or repair moving a party between tenants, so historical guest work w
 wrong one. `promotedOrgId` now ships DB-frozen one-way from the day it lands — *a deferred command is
 not a reason to defer the guard; it is the reason the guard has to be there first.*
 
+## Round 11 — the seal I added, not carried to the table I then created
+
+Three findings, all on the two structures round 10 introduced.
+
+**51 is root B in its purest form yet.** Round 8 added the same-org composite FK to
+`ProjectCompany` after finding 40 showed a copied `orgId` seals nothing unless bound. Round 10 then
+introduced `ProjectParty` — **the only table the resolver reads** — with no org seal at all. A row
+pairing an org-A project with an org-B party makes that party associated with that project regardless
+of how well every other table is sealed: §F's cross-tenant proof fails while every listed constraint
+passes. I applied a rule to the tables that existed and did not carry it to the table I created three
+paragraphs later.
+
+> The complement question for a SEAL is not "which tables have it?" but **"which tables would defeat
+> it if they lacked it?"** — and a table introduced in the same edit is the easiest one to miss,
+> because it did not exist when the rule was written.
+
+**52 — one-way and one-to-one are two properties, and the first does not imply the second.** Fix 50's
+freeze stops a promoted party from MOVING between tenants; nothing in it stops two parties from each
+being set to the same tenant, which a retry or repair does naturally. Two guest firms resolving to one
+tenant makes attribution and revocation ambiguous in exactly the way §E exists to prevent. A partial
+unique on non-null `promotedOrgId` closes it.
+
+**53 — a mirror with two sources needs to know which one justifies it.** Deleting a `ProjectCompany`
+must not drop an association a `ProjectVendor` still supports, and orgs cannot read procurement to
+check. So the mirror is source-counted in orgs (`ProjectPartySource`, each participant owning only its
+own row, association alive while ≥1 source is), which avoids both a stale association that can later
+receive grants and a live one dropped because the other source was tidied.
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -488,6 +519,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `5ca3719` | 6 | **4** (37 from fix 33; 38/39 from fix 32; 40 from fix 26) — all §A DEPTH now, no structural findings |
 | `3f5f657` | 7 | **5** (43/44/45 from fix 32-33; 46 from fix 34; 47 from fix 21) — five of seven are depth on ONE command |
 | `45cd534` | **3** | 2 (48 from fix 42; 49 from fix 38) |
+| `24fdec0` | **3** | 3 (51 from fix 40's class; 52 from fix 50; 53 from fix 48) — all on structures introduced one round earlier |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header
