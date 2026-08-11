@@ -52,7 +52,7 @@ is silently dropped in the split.
 | 2c | Firms created AFTER 6.1 | the create paths assign a party in the same transaction (through a declared `OrgsParticipant`), and `partyId` becomes NOT NULL once the backfill has run | §A |
 | 2d | Duplicate parties for one firm | 6.1 ships the operator **merge/repoint command**; the migration still never decides which rows are one firm | §A |
 | 2e | The canonical per-project association | **`ProjectParty`, orgs-owned**, sealed to the project's org on BOTH sides; `ProjectCompany` and `ProjectVendor` MIRROR into it so the resolver never reads procurement | §A |
-| 2j | Which source justifies an association | `ProjectPartySource(projectId, partyId, source)` — each participant owns its own row; the association lives while ≥1 source does | §A |
+| 2j | Which source justifies an association | **one source table per origin**, each FK-bound to its row (CASCADE on delete); the association lives while ≥1 source does | §A |
 | 2h | Association removal / identity update | both refused while any binding or grant references the party on that project | §A |
 | 2i | `promotedOrgId` | **DB-backed one-way AND one-to-one**: null → org permitted, any change of a non-null value refused, plus a partial unique on non-null | §E |
 | 2f | A pre-existing `collaboration` capability row | 6.1's migration **ABORTS** naming the projects; it never deletes the row | staging |
@@ -200,12 +200,33 @@ new instance was not carried.)
 
 **And the mirror needs to know WHICH source justifies it.** One party can have both a `ProjectCompany`
 and a `ProjectVendor` on the same project, so removing one source must not drop an association the
-other still supports — and orgs cannot read procurement to find out. So the mirror is
-**source-counted, in orgs**: `ProjectPartySource(projectId, partyId, source)` with `source ∈
-{company, vendor}`, unique per triple, each participant inserting and deleting **only its own** row in
-the same transaction as the source write. The `ProjectParty` association exists exactly while at least
-one source row does, and the last source removal removes it. Neither a stale association that can
-later receive grants, nor a live association dropped because the other source was tidied up.
+other still supports — and orgs cannot read procurement to find out.
+
+An earlier draft did this with one table, `ProjectPartySource(projectId, partyId, source)`, and a
+`source ∈ {company, vendor}` discriminator. **That shape is the reason this section kept producing
+findings:** a discriminated triple has no source-specific key, so no ordinary foreign key can bind a
+`source='vendor'` row to the `ProjectVendor` that justifies it. Every way the row could drift from
+its origin then had to be caught by a hand-written guard — and each round found another one I had not
+written.
+
+So the justification is **normalised into one table per origin**, each FK-bound to the row it
+represents:
+
+| Table | Bound to | On origin delete |
+|---|---|---|
+| `ProjectPartyCompanySource` | `ProjectCompany` (same-org composite FK) | CASCADE |
+| `ProjectPartyVendorSource` | `ProjectVendor` (same-org composite FK) | CASCADE |
+
+Both also FK to `ProjectParty`. A source row surviving its origin is now **unrepresentable** rather
+than guarded against; the guards that remain are the ones about *authority*, not about bookkeeping.
+The association exists exactly while at least one source row does — asserted by the deferred
+constraint trigger, under the `ProjectParty` root lock — so neither a stale association that can later
+receive grants, nor a live association dropped because the other source was tidied up.
+
+**Both origins get the 6.2 removal guard, not just the company.** `ProjectVendor` is a source whose
+last deletion drops the same association, so if a party reaches a project only through a vendor
+binding, deleting it would strand or cut off exactly as a company deletion would. The guard is on the
+association, and both origins are subject to it.
 
 Three properties make that safe, and each was missing from the first draft of it:
 
@@ -214,11 +235,13 @@ Three properties make that safe, and each was missing from the first draft of it
   project A to vendor V1 while mirroring a different party P2, and the resolver would grant P2 access
   to V1's project records — or would have to read procurement to re-check, which is what the mirror
   exists to avoid. The copy has to be provably the source's own.
-- **The merge command repoints `ProjectPartySource` too**, in the same locked transaction as the rest.
-  A vendor-only supplier starts with `(project, A, 'vendor')`; after A→B the facts and association move
-  to B while that row still justifies A, so the next cleanup either strands A's association or removes
-  B's only justification. Each source row additionally carries an FK to its originating source, so the
-  justification cannot drift from the thing justifying it.
+- **The merge repoints EVERY party copy in one locked transaction — including `ProjectVendor`'s.**
+  The list is `Vendor`, `ProjectVendor`, `ProjectCompany`, `ProjectParty` and both source tables.
+  Missing `ProjectVendor` is not a soft failure now that its `partyId` is FK-bound to
+  `Vendor(orgId, id, partyId)`: moving `Vendor.partyId` to B while its `ProjectVendor` rows still say
+  A either aborts the merge on the FK or leaves the mirror justifying the absorbed party. **The seal
+  added in one round became a merge obligation in the next**, which is the checklist's second question
+  doing its job — asked at the time, it would have come with the seal.
 - **The zero-source state is unrepresentable, not merely avoided.** Two participants removing different
   sources concurrently each see the other's row, each concludes it is not the last remover, and both
   commit — leaving `ProjectParty` alive with nothing justifying it, ready to receive grants. Source

@@ -1,8 +1,8 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Twelve finding-bearing heads, fifty-six findings, on a docs-only plan.
+Thirteen finding-bearing heads, fifty-nine findings, on a docs-only plan.
 
-**The trajectory, and what changed it:** 5 · 4 · 5 · 5 · 6 · **3** · 6 · 6 · 7 · **3 · 3 · 3**. It did
+**The trajectory, and what changed it:** 5 · 4 · 5 · 5 · 6 · **3** · 6 · 6 · 7 · **3 · 3 · 3 · 3**. It did
 not fall for five rounds, and the review lifecycle reached its limit on `3f7e35d` and recommended
 splitting the unit. It was right. Rounds 1–5 were dominated by §B/§C/§D — authority — where a fix in
 one section repeatedly created the next round's finding in another; §A (identity) drew ONE finding in
@@ -71,6 +71,9 @@ circling — which is also why root I below matters more than the raw total.
 | 54 | `be3eb4c` | seal `ProjectVendor`'s party copy to the vendor | **I — new structure, three answers** |
 | 55 | `be3eb4c` | repoint `ProjectPartySource` during merges | **I** |
 | 56 | `be3eb4c` | serialize last-source `ProjectParty` cleanup | **I** |
+| 57 | `b4f0cf0` | give `ProjectPartySource` source-specific keys an FK can bind | **J — the SHAPE was wrong** |
+| 58 | `b4f0cf0` | repoint `ProjectVendor` party copies during merges | **I** (checklist Q2, on fix 54's seal) |
+| 59 | `b4f0cf0` | guard `ProjectVendor` source removals too | **I** (the guard named one origin of two) |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -471,6 +474,29 @@ proposed rather than over three review rounds.
 > findings arrive for every new member of a class, the fix is not a fourth set of three answers. It is
 > to make the three questions a precondition for adding a member.
 
+### Round 13 — and the checklist was not enough, because the SHAPE was wrong
+
+Round 12 added the checklist and round 13 returned three more findings on the same mirror. That is
+worth being precise about rather than filing as more of the same: **58 and 59 are exactly the
+checklist's questions 2 and 3** (what does the merge do to it; is the guard on every path) arriving
+one round late for a seal added in round 12 — so the checklist identified the right questions and I
+still shipped a structure without answering them for the piece I had just changed.
+
+**57 is the one that explains the whole cluster.** `ProjectPartySource(projectId, partyId, source)`
+is a discriminated triple: a `source='vendor'` row has no source-specific key, so **no ordinary
+foreign key can bind it to the `ProjectVendor` that justifies it.** Every way the row could drift
+from its origin therefore had to be caught by a hand-written guard, and each round found one more I
+had not written. The findings were not really about seals, merges and locks — they were about a shape
+that made all three unenforceable.
+
+Normalising it — one source table per origin, each FK-bound with CASCADE — makes a source row
+outliving its origin *unrepresentable* instead of guarded. Rounds 11 to 13 were, in hindsight, the
+review telling me the same thing three times in the vocabulary of its symptoms.
+
+> **When a structure needs a new hand-written guard every round, the structure is wrong.** Guards
+> accumulate around a shape that cannot express its own constraint; the fix is to change the shape
+> until the constraint is a foreign key.
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -552,6 +578,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `45cd534` | **3** | 2 (48 from fix 42; 49 from fix 38) |
 | `24fdec0` | **3** | 3 (51 from fix 40's class; 52 from fix 50; 53 from fix 48) — all on structures introduced one round earlier |
 | `be3eb4c` | **3** | 3 (54/55/56, all on fix 53's mirror) — the SAME three questions as the round before |
+| `b4f0cf0` | **3** | 3 (57/58/59, all on the mirror again) — which is what finally identified the SHAPE as the cause |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header
