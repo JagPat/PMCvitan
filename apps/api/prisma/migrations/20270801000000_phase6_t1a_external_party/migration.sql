@@ -37,10 +37,24 @@ BEGIN
   IF bad > 0 THEN
     RAISE EXCEPTION 'phase6-t1a: % ProjectVendor row(s) disagree with their project org (sample: %). Repair the binding, then redeploy.', bad, sample;
   END IF;
+
+  -- The backfill copies these names into `ExternalParty.name`, which is non-blank by CHECK. A
+  -- legacy blank would otherwise surface as an opaque constraint violation partway through the
+  -- backfill; naming the rows is the difference between a repairable abort and a puzzle.
+  SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
+    SELECT 'Vendor:' || v."id" AS id FROM "Vendor" v
+     WHERE btrim(v."name", E' \t\n\x0B\f\r') = ''
+    UNION ALL
+    SELECT 'ProjectCompany:' || c."id" FROM "ProjectCompany" c
+     WHERE btrim(c."name", E' \t\n\x0B\f\r') = ''
+     LIMIT 20) x;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t1a: % firm row(s) have a blank name (sample: %). The canonical party carries the firm name and cannot be blank; give each row a real name, then redeploy.', bad, sample;
+  END IF;
 END $$;
 
 -- ── the canonical party ──────────────────────────────────────────────────────────────────────
-CREATE TABLE "ExternalParty" (
+CREATE TABLE IF NOT EXISTS "ExternalParty" (
   "id"            TEXT NOT NULL,
   "orgId"         TEXT NOT NULL,
   "name"          TEXT NOT NULL,
@@ -50,14 +64,27 @@ CREATE TABLE "ExternalParty" (
   -- inventing an actor would not be.
   "createdById"   TEXT,
   "promotedOrgId" TEXT,
-  CONSTRAINT "ExternalParty_pkey" PRIMARY KEY ("id")
+  CONSTRAINT "ExternalParty_pkey" PRIMARY KEY ("id"),
+  -- The firm's name is what a person reads to decide WHO they are granting access to, so a name
+  -- of spaces is an identity nobody can verify. `btrim` alone strips spaces only; the explicit
+  -- class covers the whole ASCII whitespace set, matching the repository's existing discipline.
+  CONSTRAINT "ExternalParty_name_not_blank" CHECK (btrim("name", E' \t\n\x0B\f\r') <> '')
 );
-CREATE UNIQUE INDEX "ExternalParty_orgId_id_key" ON "ExternalParty"("orgId", "id");
-CREATE INDEX "ExternalParty_orgId_idx" ON "ExternalParty"("orgId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ExternalParty_orgId_id_key" ON "ExternalParty"("orgId", "id");
+CREATE INDEX IF NOT EXISTS "ExternalParty_orgId_idx" ON "ExternalParty"("orgId");
+ALTER TABLE "ExternalParty" DROP CONSTRAINT IF EXISTS "ExternalParty_orgId_fkey";
 ALTER TABLE "ExternalParty" ADD CONSTRAINT "ExternalParty_orgId_fkey"
   FOREIGN KEY ("orgId") REFERENCES "Org"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ExternalParty" DROP CONSTRAINT IF EXISTS "ExternalParty_createdById_fkey";
 ALTER TABLE "ExternalParty" ADD CONSTRAINT "ExternalParty_createdById_fkey"
   FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+-- §E: the promotion target is a REAL tenant, not a string. One-way and one-to-one both operate on
+-- the value; neither proves the org exists. A typo written by a repair would then be frozen
+-- forever, because correcting it IS the transition the one-way trigger refuses — the guard and
+-- the gap combine into an unrepairable row unless the reference is checked at write time.
+ALTER TABLE "ExternalParty" DROP CONSTRAINT IF EXISTS "ExternalParty_promotedOrgId_fkey";
+ALTER TABLE "ExternalParty" ADD CONSTRAINT "ExternalParty_promotedOrgId_fkey"
+  FOREIGN KEY ("promotedOrgId") REFERENCES "Org"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
 
 -- §E — the promotion seam ships FROZEN. The promotion command is deferred out of Phase 6, which
 -- is exactly why these guards land now: nothing in this phase sets `promotedOrgId`, so nothing
@@ -69,7 +96,7 @@ ALTER TABLE "ExternalParty" ADD CONSTRAINT "ExternalParty_createdById_fkey"
 -- The unique is scoped to the OWNER org because `ExternalParty` is owner-org-scoped by design —
 -- a supplier working with two owner orgs legitimately has a local party in each, and a global
 -- unique would let the first owner link and then refuse the second.
-CREATE UNIQUE INDEX "ExternalParty_orgId_promotedOrgId_key"
+CREATE UNIQUE INDEX IF NOT EXISTS "ExternalParty_orgId_promotedOrgId_key"
   ON "ExternalParty"("orgId", "promotedOrgId") WHERE "promotedOrgId" IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION "phase6_party_promotion_one_way"() RETURNS trigger AS $$
@@ -80,15 +107,16 @@ BEGIN
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS "ExternalParty_promotion_one_way" ON "ExternalParty";
 CREATE TRIGGER "ExternalParty_promotion_one_way"
   BEFORE UPDATE ON "ExternalParty"
   FOR EACH ROW EXECUTE FUNCTION "phase6_party_promotion_one_way"();
 
 -- ── the party columns on the three existing tables (nullable until backfilled) ───────────────
-ALTER TABLE "Vendor"         ADD COLUMN "partyId" TEXT;
-ALTER TABLE "ProjectCompany" ADD COLUMN "orgId"   TEXT;
-ALTER TABLE "ProjectCompany" ADD COLUMN "partyId" TEXT;
-ALTER TABLE "ProjectVendor"  ADD COLUMN "partyId" TEXT;
+ALTER TABLE "Vendor"         ADD COLUMN IF NOT EXISTS "partyId" TEXT;
+ALTER TABLE "ProjectCompany" ADD COLUMN IF NOT EXISTS "orgId"   TEXT;
+ALTER TABLE "ProjectCompany" ADD COLUMN IF NOT EXISTS "partyId" TEXT;
+ALTER TABLE "ProjectVendor"  ADD COLUMN IF NOT EXISTS "partyId" TEXT;
 
 -- ── backfill: one party per existing row, merging NOTHING ────────────────────────────────────
 -- Deterministic ids derived from the source row, so a re-run is idempotent and an operator can
@@ -125,8 +153,9 @@ ALTER TABLE "ProjectVendor"  ALTER COLUMN "partyId" SET NOT NULL;
 -- ── the seals ────────────────────────────────────────────────────────────────────────────────
 -- Same-org composite FKs throughout, so a cross-org party link is UNREPRESENTABLE rather than
 -- refused by a service that has to remember to check.
-CREATE UNIQUE INDEX "Vendor_orgId_id_partyId_key" ON "Vendor"("orgId", "id", "partyId");
-CREATE INDEX "Vendor_orgId_partyId_idx" ON "Vendor"("orgId", "partyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Vendor_orgId_id_partyId_key" ON "Vendor"("orgId", "id", "partyId");
+CREATE INDEX IF NOT EXISTS "Vendor_orgId_partyId_idx" ON "Vendor"("orgId", "partyId");
+ALTER TABLE "Vendor" DROP CONSTRAINT IF EXISTS "Vendor_orgId_partyId_fkey";
 ALTER TABLE "Vendor" ADD CONSTRAINT "Vendor_orgId_partyId_fkey"
   FOREIGN KEY ("orgId", "partyId") REFERENCES "ExternalParty"("orgId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
 
@@ -140,12 +169,14 @@ ALTER TABLE "Vendor" ADD CONSTRAINT "Vendor_orgId_partyId_fkey"
 -- different delete actions is an incoherent seal, not a stronger one — and the composite key
 -- subsumes the single column, so the single column goes and the CASCADE moves onto the survivor.
 ALTER TABLE "ProjectCompany" DROP CONSTRAINT IF EXISTS "ProjectCompany_projectId_fkey";
+ALTER TABLE "ProjectCompany" DROP CONSTRAINT IF EXISTS "ProjectCompany_orgId_projectId_fkey";
 ALTER TABLE "ProjectCompany" ADD CONSTRAINT "ProjectCompany_orgId_projectId_fkey"
   FOREIGN KEY ("orgId", "projectId") REFERENCES "Project"("orgId", "id") ON DELETE CASCADE ON UPDATE NO ACTION;
+ALTER TABLE "ProjectCompany" DROP CONSTRAINT IF EXISTS "ProjectCompany_orgId_partyId_fkey";
 ALTER TABLE "ProjectCompany" ADD CONSTRAINT "ProjectCompany_orgId_partyId_fkey"
   FOREIGN KEY ("orgId", "partyId") REFERENCES "ExternalParty"("orgId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
-CREATE INDEX "ProjectCompany_orgId_partyId_idx" ON "ProjectCompany"("orgId", "partyId");
-CREATE UNIQUE INDEX "ProjectCompany_orgId_projectId_partyId_id_key"
+CREATE INDEX IF NOT EXISTS "ProjectCompany_orgId_partyId_idx" ON "ProjectCompany"("orgId", "partyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ProjectCompany_orgId_projectId_partyId_id_key"
   ON "ProjectCompany"("orgId", "projectId", "partyId", "id");
 
 -- §A: one party holds at most ONE association per project THROUGH EACH ORIGIN KIND. The merge
@@ -164,16 +195,24 @@ BEGIN
     RAISE EXCEPTION 'phase6-t1a: backfill produced % project/party pair(s) held by more than one ProjectCompany (sample: %). One party per project per origin kind is a §A invariant; this is a migration defect, not a data problem.', bad, sample;
   END IF;
 END $$;
-CREATE UNIQUE INDEX "ProjectCompany_projectId_partyId_key" ON "ProjectCompany"("projectId", "partyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ProjectCompany_projectId_partyId_key" ON "ProjectCompany"("projectId", "partyId");
 
 -- The binding's party copy is bound THROUGH the vendor's party, not to `ExternalParty`
 -- directly: otherwise a same-org row could bind project A to vendor V1 while naming party P2.
+--
+-- ON UPDATE CASCADE, because the copy is DERIVED and a derived value has to follow its source.
+-- With the key frozen there is no order in which 6.1b's merge can repoint an already-bound
+-- vendor: moving the vendor first orphans the binding, and moving the binding first names a
+-- parent key that does not exist yet. The merge would have been unable to reconcile exactly the
+-- firms most worth reconciling — the ones already trading on a project.
+ALTER TABLE "ProjectVendor" DROP CONSTRAINT IF EXISTS "ProjectVendor_orgId_vendorId_partyId_fkey";
 ALTER TABLE "ProjectVendor" ADD CONSTRAINT "ProjectVendor_orgId_vendorId_partyId_fkey"
-  FOREIGN KEY ("orgId", "vendorId", "partyId") REFERENCES "Vendor"("orgId", "id", "partyId") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  FOREIGN KEY ("orgId", "vendorId", "partyId") REFERENCES "Vendor"("orgId", "id", "partyId") ON DELETE NO ACTION ON UPDATE CASCADE;
+ALTER TABLE "ProjectVendor" DROP CONSTRAINT IF EXISTS "ProjectVendor_orgId_partyId_fkey";
 ALTER TABLE "ProjectVendor" ADD CONSTRAINT "ProjectVendor_orgId_partyId_fkey"
   FOREIGN KEY ("orgId", "partyId") REFERENCES "ExternalParty"("orgId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
-CREATE INDEX "ProjectVendor_orgId_partyId_idx" ON "ProjectVendor"("orgId", "partyId");
-CREATE UNIQUE INDEX "ProjectVendor_orgId_projectId_partyId_id_key"
+CREATE INDEX IF NOT EXISTS "ProjectVendor_orgId_partyId_idx" ON "ProjectVendor"("orgId", "partyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ProjectVendor_orgId_projectId_partyId_id_key"
   ON "ProjectVendor"("orgId", "projectId", "partyId", "id");
 
 -- The same §A seal on the binding side. `(projectId, vendorId)` was already unique and the party
@@ -191,13 +230,13 @@ BEGIN
     RAISE EXCEPTION 'phase6-t1a: backfill produced % project/party pair(s) held by more than one ProjectVendor (sample: %). One party per project per origin kind is a §A invariant; this is a migration defect, not a data problem.', bad, sample;
   END IF;
 END $$;
-CREATE UNIQUE INDEX "ProjectVendor_projectId_partyId_key" ON "ProjectVendor"("projectId", "partyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ProjectVendor_projectId_partyId_key" ON "ProjectVendor"("projectId", "partyId");
 
 -- ── the canonical association ────────────────────────────────────────────────────────────────
 -- The ONLY table the collaborator resolver reads, so it carries the org seal on BOTH sides: a
 -- row pairing an org-A project with an org-B party would associate them no matter how well
 -- every other table is sealed.
-CREATE TABLE "ProjectParty" (
+CREATE TABLE IF NOT EXISTS "ProjectParty" (
   "id"        TEXT NOT NULL,
   "orgId"     TEXT NOT NULL,
   "projectId" TEXT NOT NULL,
@@ -205,10 +244,12 @@ CREATE TABLE "ProjectParty" (
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "ProjectParty_pkey" PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "ProjectParty_projectId_partyId_key" ON "ProjectParty"("projectId", "partyId");
-CREATE INDEX "ProjectParty_orgId_partyId_idx" ON "ProjectParty"("orgId", "partyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ProjectParty_projectId_partyId_key" ON "ProjectParty"("projectId", "partyId");
+CREATE INDEX IF NOT EXISTS "ProjectParty_orgId_partyId_idx" ON "ProjectParty"("orgId", "partyId");
+ALTER TABLE "ProjectParty" DROP CONSTRAINT IF EXISTS "ProjectParty_orgId_projectId_fkey";
 ALTER TABLE "ProjectParty" ADD CONSTRAINT "ProjectParty_orgId_projectId_fkey"
   FOREIGN KEY ("orgId", "projectId") REFERENCES "Project"("orgId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+ALTER TABLE "ProjectParty" DROP CONSTRAINT IF EXISTS "ProjectParty_orgId_partyId_fkey";
 ALTER TABLE "ProjectParty" ADD CONSTRAINT "ProjectParty_orgId_partyId_fkey"
   FOREIGN KEY ("orgId", "partyId") REFERENCES "ExternalParty"("orgId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
 
@@ -222,7 +263,7 @@ ALTER TABLE "ProjectParty" ADD CONSTRAINT "ProjectParty_orgId_partyId_fkey"
 -- The FK carries the project and the party, not just the origin id. An FK to the origin alone
 -- would say only "some binding exists in this org", so a row justifying ProjectParty(project B,
 -- party P) could point at an origin on project A and pass.
-CREATE TABLE "ProjectPartyCompanySource" (
+CREATE TABLE IF NOT EXISTS "ProjectPartyCompanySource" (
   "id"               TEXT NOT NULL,
   "orgId"            TEXT NOT NULL,
   "projectId"        TEXT NOT NULL,
@@ -230,15 +271,17 @@ CREATE TABLE "ProjectPartyCompanySource" (
   "projectCompanyId" TEXT NOT NULL,
   CONSTRAINT "ProjectPartyCompanySource_pkey" PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "ProjectPartyCompanySource_projectCompanyId_key" ON "ProjectPartyCompanySource"("projectCompanyId");
-CREATE INDEX "ProjectPartyCompanySource_projectId_partyId_idx" ON "ProjectPartyCompanySource"("projectId", "partyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ProjectPartyCompanySource_projectCompanyId_key" ON "ProjectPartyCompanySource"("projectCompanyId");
+CREATE INDEX IF NOT EXISTS "ProjectPartyCompanySource_projectId_partyId_idx" ON "ProjectPartyCompanySource"("projectId", "partyId");
+ALTER TABLE "ProjectPartyCompanySource" DROP CONSTRAINT IF EXISTS "ProjectPartyCompanySource_association_fkey";
 ALTER TABLE "ProjectPartyCompanySource" ADD CONSTRAINT "ProjectPartyCompanySource_association_fkey"
   FOREIGN KEY ("projectId", "partyId") REFERENCES "ProjectParty"("projectId", "partyId") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ProjectPartyCompanySource" DROP CONSTRAINT IF EXISTS "ProjectPartyCompanySource_origin_fkey";
 ALTER TABLE "ProjectPartyCompanySource" ADD CONSTRAINT "ProjectPartyCompanySource_origin_fkey"
   FOREIGN KEY ("orgId", "projectId", "partyId", "projectCompanyId")
   REFERENCES "ProjectCompany"("orgId", "projectId", "partyId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
-CREATE TABLE "ProjectPartyVendorSource" (
+CREATE TABLE IF NOT EXISTS "ProjectPartyVendorSource" (
   "id"              TEXT NOT NULL,
   "orgId"           TEXT NOT NULL,
   "projectId"       TEXT NOT NULL,
@@ -246,10 +289,12 @@ CREATE TABLE "ProjectPartyVendorSource" (
   "projectVendorId" TEXT NOT NULL,
   CONSTRAINT "ProjectPartyVendorSource_pkey" PRIMARY KEY ("id")
 );
-CREATE UNIQUE INDEX "ProjectPartyVendorSource_projectVendorId_key" ON "ProjectPartyVendorSource"("projectVendorId");
-CREATE INDEX "ProjectPartyVendorSource_projectId_partyId_idx" ON "ProjectPartyVendorSource"("projectId", "partyId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ProjectPartyVendorSource_projectVendorId_key" ON "ProjectPartyVendorSource"("projectVendorId");
+CREATE INDEX IF NOT EXISTS "ProjectPartyVendorSource_projectId_partyId_idx" ON "ProjectPartyVendorSource"("projectId", "partyId");
+ALTER TABLE "ProjectPartyVendorSource" DROP CONSTRAINT IF EXISTS "ProjectPartyVendorSource_association_fkey";
 ALTER TABLE "ProjectPartyVendorSource" ADD CONSTRAINT "ProjectPartyVendorSource_association_fkey"
   FOREIGN KEY ("projectId", "partyId") REFERENCES "ProjectParty"("projectId", "partyId") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ProjectPartyVendorSource" DROP CONSTRAINT IF EXISTS "ProjectPartyVendorSource_origin_fkey";
 ALTER TABLE "ProjectPartyVendorSource" ADD CONSTRAINT "ProjectPartyVendorSource_origin_fkey"
   FOREIGN KEY ("orgId", "projectId", "partyId", "projectVendorId")
   REFERENCES "ProjectVendor"("orgId", "projectId", "partyId", "id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -280,14 +325,30 @@ ON CONFLICT ("projectVendorId") DO NOTHING;
 CREATE OR REPLACE FUNCTION "phase6_project_party_sourced"() RETURNS trigger AS $$
 DECLARE target_project TEXT; target_party TEXT; sources BIGINT; assoc BIGINT;
 BEGIN
-  IF TG_OP = 'DELETE' THEN
-    target_project := OLD."projectId"; target_party := OLD."partyId";
-  ELSE
+  -- Which association is at risk? For a source LEAVING (a delete, or an update that repoints it
+  -- onto a different party) it is the one it left — OLD. `ON UPDATE CASCADE` on the origin key
+  -- means a repoint is exactly how 6.1b's merge moves a source, so checking only NEW would let a
+  -- merge strand the abandoned association with nothing justifying it, still readable by the
+  -- resolver. For a new association appearing it is NEW.
+  IF TG_OP = 'INSERT' THEN
     target_project := NEW."projectId"; target_party := NEW."partyId";
+  ELSIF TG_OP = 'DELETE' THEN
+    target_project := OLD."projectId"; target_party := OLD."partyId";
+  ELSIF TG_TABLE_NAME = 'ProjectParty' THEN
+    target_project := NEW."projectId"; target_party := NEW."partyId";
+  ELSE
+    target_project := OLD."projectId"; target_party := OLD."partyId";
   END IF;
 
-  SELECT count(*) INTO assoc FROM "ProjectParty"
-   WHERE "projectId" = target_project AND "partyId" = target_party;
+  -- LOCK the association before counting. A check that only reads is not a check that
+  -- serializes: two transactions each removing one of the two last justifications would each see
+  -- the other's row still present, both conclude the association is still supported, and both
+  -- commit — leaving a resolver target no row justifies. The lock makes the second re-read after
+  -- the first has committed, which is the whole point of counting at all.
+  SELECT count(*) INTO assoc FROM (
+    SELECT 1 FROM "ProjectParty"
+     WHERE "projectId" = target_project AND "partyId" = target_party
+     FOR UPDATE) locked;
   IF assoc = 0 THEN RETURN NULL; END IF;
 
   SELECT (SELECT count(*) FROM "ProjectPartyCompanySource"
@@ -302,18 +363,21 @@ BEGIN
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS "ProjectParty_sourced" ON "ProjectParty";
 CREATE CONSTRAINT TRIGGER "ProjectParty_sourced"
   AFTER INSERT OR UPDATE ON "ProjectParty"
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION "phase6_project_party_sourced"();
 
+DROP TRIGGER IF EXISTS "ProjectPartyCompanySource_association_sourced" ON "ProjectPartyCompanySource";
 CREATE CONSTRAINT TRIGGER "ProjectPartyCompanySource_association_sourced"
-  AFTER DELETE ON "ProjectPartyCompanySource"
+  AFTER DELETE OR UPDATE ON "ProjectPartyCompanySource"
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION "phase6_project_party_sourced"();
 
+DROP TRIGGER IF EXISTS "ProjectPartyVendorSource_association_sourced" ON "ProjectPartyVendorSource";
 CREATE CONSTRAINT TRIGGER "ProjectPartyVendorSource_association_sourced"
-  AFTER DELETE ON "ProjectPartyVendorSource"
+  AFTER DELETE OR UPDATE ON "ProjectPartyVendorSource"
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION "phase6_project_party_sourced"();
 

@@ -429,7 +429,11 @@ export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 export const companyKindSchema = z.enum(['client', 'contractor', 'architect', 'structural', 'mep', 'pmc', 'consultant', 'other']);
 const optText = z.string().trim().optional();
 export const addCompanySchema = z.object({
-  name: z.string().min(1),
+  // Phase 6 unit 6.1a — this name is copied into the canonical `ExternalParty`, so it is the
+  // firm identity a person reads before granting access. `min(1)` without `trim()` admitted a
+  // name of spaces; `createVendorSchema` above has always trimmed, and the inconsistency is the
+  // finding. Trimming here also keeps the value the DB's non-blank CHECK will accept.
+  name: z.string().trim().min(1).max(200),
   kind: companyKindSchema,
   contactName: optText,
   contactEmail: z.string().trim().email().optional().or(z.literal('')),

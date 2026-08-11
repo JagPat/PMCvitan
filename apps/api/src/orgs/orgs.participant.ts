@@ -388,12 +388,58 @@ export class OrgsParticipant {
     input: { projectId: string; partyId: string },
   ): Promise<void> {
     const { projectId, partyId } = input;
+    // LOCK the association before counting what justifies it. Counting and then deleting is a
+    // read followed by a write, and between the two another transaction can add the source that
+    // makes the association necessary: a vendor binding commits, this delete cascades the source
+    // it just wrote, and the project ends with a bound vendor the resolver cannot see.
+    //
+    // The lock closes it from both sides. A source insert takes a KEY SHARE lock on its parent
+    // association through the foreign key, which conflicts with this FOR UPDATE — so a competing
+    // bind either happens entirely before the count (and the count sees it), or blocks until this
+    // transaction commits and then fails on the parent that is no longer there. A deterministic
+    // failure the caller retries, rather than a silently incoherent commit.
+    const locked = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "ProjectParty"
+       WHERE "projectId" = ${projectId} AND "partyId" = ${partyId}
+       FOR UPDATE`;
+    if (locked.length === 0) return;
+
     const [companies, vendors] = await Promise.all([
       tx.projectPartyCompanySource.count({ where: { projectId, partyId } }),
       tx.projectPartyVendorSource.count({ where: { projectId, partyId } }),
     ]);
     if (companies + vendors > 0) return;
     await tx.projectParty.deleteMany({ where: { projectId, partyId } });
+  }
+
+  /**
+   * Rename the canonical party a directory row represents — permitted ONLY while that row is the
+   * party's single justification.
+   *
+   * A `ProjectCompany` is now evidence of WHO a firm is, not just a directory entry, so leaving
+   * `name` freely rewritable would let an admin create "ACME", collect its party, and then PATCH
+   * the row to "Beta": the party a future resolver keys on still says ACME while the only row
+   * describing it says something else.
+   *
+   * Renaming a SHARED party is refused rather than propagated, because the other origin never
+   * agreed to it — a vendor binding and a directory row on one party are one firm, and renaming
+   * the firm from one of its two faces is the operator's reconciliation decision, not a
+   * side effect of a directory edit. (Authority rows do not exist until 6.2; that refusal is
+   * additive on top of this one, not a replacement for it.)
+   */
+  async renamePartyForSoleSource(
+    tx: Prisma.TransactionClient,
+    input: { projectId: string; partyId: string; name: string },
+  ): Promise<{ renamed: boolean; sharedWith: number }> {
+    const { projectId, partyId, name } = input;
+    const [companies, vendors] = await Promise.all([
+      tx.projectPartyCompanySource.count({ where: { projectId, partyId } }),
+      tx.projectPartyVendorSource.count({ where: { projectId, partyId } }),
+    ]);
+    const others = companies + vendors - 1;
+    if (others > 0) return { renamed: false, sharedWith: others };
+    await tx.externalParty.update({ where: { id: partyId }, data: { name } });
+    return { renamed: true, sharedWith: 0 };
   }
 
 }

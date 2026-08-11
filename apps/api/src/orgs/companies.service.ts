@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { OrgsParticipant } from './orgs.participant';
 import type { AuthUser } from '../common/auth';
@@ -103,7 +103,26 @@ export class CompaniesService {
     if (input.contactEmail !== undefined) data.contactEmail = input.contactEmail || null;
     if (input.contactPhone !== undefined) data.contactPhone = input.contactPhone || null;
     if (input.notes !== undefined) data.notes = input.notes || null;
-    const updated = await this.prisma.projectCompany.update({ where: { id: companyId }, data });
+
+    // Phase 6 unit 6.1a (§A) — this row is now the evidence for a canonical party, so a rename is
+    // an IDENTITY change, not a display edit. Left alone it would desynchronise the two: the
+    // party a resolver keys on would still say ACME while the only row describing it says Beta.
+    // Contact details are not identity and stay freely editable.
+    const renaming = input.name !== undefined && input.name !== existing.name;
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.projectCompany.update({ where: { id: companyId }, data });
+      if (renaming) {
+        const outcome = await this.party.renamePartyForSoleSource(tx, {
+          projectId, partyId: existing.partyId, name: input.name!,
+        });
+        if (!outcome.renamed) {
+          throw new ConflictException(
+            'This firm’s identity is shared with another record on this project, so it cannot be renamed here. Reconcile the party first.',
+          );
+        }
+      }
+      return row;
+    });
     return this.toDto(updated);
   }
 

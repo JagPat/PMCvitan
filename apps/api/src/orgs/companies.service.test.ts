@@ -39,6 +39,12 @@ function make(orgRole: string | null = null) {
         parties.push(row);
         return row;
       }),
+      // A rename now follows the directory row into the party it is the sole evidence for.
+      update: vi.fn(async ({ where, data }: { where: { id: string }; data: { name: string } }) => {
+        const row = parties.find((p) => p.id === where.id);
+        if (row) row.name = data.name;
+        return row;
+      }),
     },
     projectParty: {
       upsert: vi.fn(async ({ create }: { create: { projectId: string; partyId: string } }) => {
@@ -88,6 +94,12 @@ function make(orgRole: string | null = null) {
     },
   };
   (prisma as { $transaction?: unknown }).$transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma));
+  // `releasePartyAssociationIfUnsourced` locks the association before counting what justifies it.
+  // The lock is the point of that method, so the mock answers the row-existence question the
+  // participant asks rather than stubbing the call away — a lock that returns nothing here would
+  // make the release a no-op and the "removes a company" test would assert against a fiction.
+  (prisma as { $queryRaw?: unknown }).$queryRaw = vi.fn(async (_strings: TemplateStringsArray, projectId: string, partyId: string) =>
+    associations.filter((a) => a.projectId === projectId && a.partyId === partyId).map((a) => ({ id: `${a.projectId}:${a.partyId}` })));
   const svc = new CompaniesService(prisma as unknown as PrismaService, new OrgsParticipant());
   return { svc, companies, parties, associations, companySources };
 }
