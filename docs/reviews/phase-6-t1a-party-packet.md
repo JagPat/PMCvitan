@@ -66,6 +66,22 @@ association when the last source goes — but that call is a convenience for the
 preventing an orphan. Probe 6d and the upgrade proof both delete the last source by bypassing the
 service entirely; PostgreSQL refuses the transaction.
 
+**"This firm is reachable here" is three statements, and each has an owner.** A SOURCE needs an
+origin (the origin FK). An ASSOCIATION needs a source (the trigger above). An ORIGIN needs a source
+— which nothing held until the E round, and which the F round found was still armed only against
+the tables an origin is *written* on. The obligation is breakable from either end, so it now fires
+from all four: `ProjectCompany`/`ProjectVendor` on write, and both source tables on DELETE OR
+UPDATE, through **one** function that derives its subject from `TG_TABLE_NAME`. Two copies of one
+obligation are two things that can drift.
+
+Without the removal arm, a firm reached both ways on one project — the contractor who also supplies
+— could have its directory row's source deleted: the association check sees the vendor's row, is
+satisfied, and the `ProjectCompany` is left naming a party nothing records. That is not only
+untidy, because `renamePartyForSoleSource` computes `sources - 1` (reading *"one of these is me"*):
+a company with no evidence then counts the vendor's row as its own and renames the firm the binding
+depends on. Probe F1 and four upgrade-proof assertions hold both ends, with a positive control
+proving the ordinary company deletion — which cascades its own source away — still commits.
+
 ### One party, one directory row and one binding per project
 
 `(projectId, partyId)` unique on both `ProjectCompany` and `ProjectVendor`.
@@ -157,7 +173,7 @@ deterministic and a duplicate can only mean the derivation is wrong.
 **6g was verified RED before green**: with the two new indexes dropped, the duplicate binding is
 accepted. The seal is load-bearing, not decorative.
 
-### Upgrade proof — 528 assertions, PASSED
+### Upgrade proof — 540 assertions, PASSED
 
 Nineteen are new. The important half is not the hostile inserts:
 
@@ -171,10 +187,22 @@ vendor's, no association came out unjustified, and the §E seam ships empty.
 A **positive control** sits among the refusals: a coherent party chain is ACCEPTED. A section that
 only proves refusals cannot distinguish a precise seal from a blanket one.
 
-### Correction probes — `phase6-t1a-correction.test.ts`, 7/7 live PG
+### Correction probes — `phase6-t1a-correction.test.ts`, 14/14 live PG
 
-Six were RED at `9a03d95` (C3, C5, C4, C8, C6, C2); C7 was not, for the reason given above.
+One probe per finding across four review rounds, each reproduced RED at the head it was reported on
+before the fix that turns it green:
+
+| Round | Head | Findings | Red first? |
+|---|---|---|---|
+| C | `9a03d95` | C2–C8 | six of seven — C7 could not be made to fail, and says so below |
+| D | `5fabb23` | D1–D4 | yes |
+| E | `31babd0` | E1–E3 | yes, after the first E2/E3 drafts were rewritten (they passed at the unfixed head) |
+| F | `87ac4f5` | F1 | yes — `expected the write to be REFUSED, and it was accepted` |
+
 C1 lives in `scripts/phase6-t1a-rerun-proof.sh` because a suite cannot observe a migration retry.
+
+The roots behind the four rounds, and what they change for 6.1b, are in
+`docs/reviews/pr-327-convergence.md`.
 
 ### Gates
 

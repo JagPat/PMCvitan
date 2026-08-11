@@ -3144,6 +3144,44 @@ assert "6.1a C8: the binding AND its source followed the vendor onto the survivi
   "SELECT (SELECT \"partyId\" FROM \"ProjectVendor\" WHERE \"id\" = 'UP45-PV') || '|' || (SELECT \"partyId\" FROM \"ProjectPartyVendorSource\" WHERE \"projectVendorId\" = 'UP45-PV') || '|' || (SELECT COUNT(*)::text FROM \"ProjectParty\" WHERE \"projectId\" = 'p1' AND \"partyId\" = 'pty_UP45-VEN');" \
   "pty_UP6-SURVIVOR|pty_UP6-SURVIVOR|0"
 
+# F1 — the obligation E1 seals is breakable from the OTHER end. Removing a source ran only the
+# association check, which counts sources for the (project, party) pair of EITHER kind: for a firm
+# reached both ways on one project it sees the sibling row, is satisfied, and lets the company's
+# source go — leaving the `ProjectCompany` carrying a party nothing records. The firm is then
+# invisible to the resolver, and `renamePartyForSoleSource` (which computes `sources - 1`, reading
+# "one of these is me") counts the vendor's row as the caller's own and renames a firm the binding
+# depends on.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6 F1: the both-ways fixture did not apply"; FAIL=1; }
+BEGIN;
+INSERT INTO "ExternalParty"("id","orgId","name") VALUES('pty_UP6-BOTH','org-legacy','Both Ways Ltd');
+INSERT INTO "ProjectParty"("id","orgId","projectId","partyId") VALUES('UP6-BOTH','org-legacy','p1','pty_UP6-BOTH');
+INSERT INTO "ProjectCompany"("id","projectId","orgId","partyId","name","kind") VALUES('UP6-BOTHC','p1','org-legacy','pty_UP6-BOTH','Both Ways Ltd','contractor');
+INSERT INTO "ProjectPartyCompanySource"("id","orgId","projectId","partyId","projectCompanyId") VALUES('UP6-BOTHCS','org-legacy','p1','pty_UP6-BOTH','UP6-BOTHC');
+INSERT INTO "Vendor"("id","orgId","name","createdById","partyId") VALUES('UP6-VBOTH','org-legacy','Both Ways Ltd','USER-1','pty_UP6-BOTH');
+INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById","partyId") VALUES('UP6-BOTHPV','p1','org-legacy','UP6-VBOTH','USER-1','pty_UP6-BOTH');
+INSERT INTO "ProjectPartyVendorSource"("id","orgId","projectId","partyId","projectVendorId") VALUES('UP6-BOTHVS','org-legacy','p1','pty_UP6-BOTH','UP6-BOTHPV');
+COMMIT;
+SQL
+assert_rejects "6.1a F1: stripping a directory row's source while a sibling binding keeps the association alive" \
+  "DELETE FROM \"ProjectPartyCompanySource\" WHERE \"id\" = 'UP6-BOTHCS'" \
+  'no source row recording it'
+assert_rejects "6.1a F1: …and the same from the binding's side" \
+  "DELETE FROM \"ProjectPartyVendorSource\" WHERE \"id\" = 'UP6-BOTHVS'" \
+  'no source row recording it'
+assert "6.1a F1: both refusals left every origin still justified" \
+  "SELECT (SELECT COUNT(*)::text FROM \"ProjectPartyCompanySource\" WHERE \"projectCompanyId\" = 'UP6-BOTHC') || '|' || (SELECT COUNT(*)::text FROM \"ProjectPartyVendorSource\" WHERE \"projectVendorId\" = 'UP6-BOTHPV');" \
+  "1|1"
+# …and the POSITIVE control that matters most for this arm: the legitimate removal deletes the
+# ORIGIN, whose cascade takes the source with it. A check that fired on "a source row vanished"
+# would refuse every company deletion in the product; this one asks whether the origin is sourced
+# AT COMMIT, where there is no origin left to owe anything.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6 F1: deleting a company cascaded its source and was REFUSED — the new arm fires on the legitimate path"; FAIL=1; }
+DELETE FROM "ProjectCompany" WHERE "id" = 'UP6-BOTHC';
+SQL
+assert "6.1a F1: the company and its source are gone, the association survives on the binding" \
+  "SELECT (SELECT COUNT(*)::text FROM \"ProjectPartyCompanySource\" WHERE \"projectCompanyId\" = 'UP6-BOTHC') || '|' || (SELECT COUNT(*)::text FROM \"ProjectParty\" WHERE \"id\" = 'UP6-BOTH');" \
+  "0|1"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller

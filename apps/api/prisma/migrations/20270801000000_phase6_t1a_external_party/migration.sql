@@ -417,23 +417,53 @@ BEGIN
   END IF;
 END $$;
 
+-- The obligation is broken from BOTH ends, so the check fires from both. Writing the origin is
+-- one way to owe a source; REMOVING the source is the other, and that path ran only the
+-- association check — which asks a different question. The association check counts sources for
+-- the (project, party) pair of EITHER kind, so for a firm reached both ways on one project it
+-- sees the vendor's row, is satisfied, and lets the company's row be deleted. The
+-- `ProjectCompany` is then left carrying a party nothing records: precisely the state this seal
+-- exists to forbid, reached through a door it did not cover.
+--
+-- The consequence is not cosmetic. `renamePartyForSoleSource` computes `sources - 1`, which
+-- reads "one of these rows is me" — an inference that holds only while the caller HAS a source.
+-- Strip it and a company with no evidence counts the vendor's row as its own, calls itself the
+-- sole justification, and renames the firm the binding depends on.
+--
+-- One function, fired from all four tables, because it is ONE statement. A second function for
+-- the removal side would be a copy free to drift from this one.
 CREATE OR REPLACE FUNCTION "phase6_origin_sourced"() RETURNS trigger AS $$
-DECLARE still_there BIGINT; sourced BIGINT;
+DECLARE origin_kind TEXT; origin_id TEXT; still_there BIGINT; sourced BIGINT;
 BEGIN
-  -- The row may have been deleted later in the same transaction; a deferred check must judge the
-  -- state at COMMIT, and a row that no longer exists owes nothing.
+  -- Which origin is at risk, and where the identity comes from, depends on which end moved. On
+  -- an origin write it is the row just written (NEW). On a source LEAVING — a delete, or an
+  -- update that repoints it — it is the origin that row used to justify (OLD).
   IF TG_TABLE_NAME = 'ProjectCompany' THEN
-    SELECT count(*) INTO still_there FROM "ProjectCompany" WHERE "id" = NEW."id";
-    IF still_there = 0 THEN RETURN NULL; END IF;
-    SELECT count(*) INTO sourced FROM "ProjectPartyCompanySource" WHERE "projectCompanyId" = NEW."id";
+    origin_kind := 'company'; origin_id := NEW."id";
+  ELSIF TG_TABLE_NAME = 'ProjectVendor' THEN
+    origin_kind := 'vendor'; origin_id := NEW."id";
+  ELSIF TG_TABLE_NAME = 'ProjectPartyCompanySource' THEN
+    origin_kind := 'company'; origin_id := OLD."projectCompanyId";
   ELSE
-    SELECT count(*) INTO still_there FROM "ProjectVendor" WHERE "id" = NEW."id";
+    origin_kind := 'vendor'; origin_id := OLD."projectVendorId";
+  END IF;
+
+  -- The origin may have been deleted later in the same transaction; a deferred check must judge
+  -- the state at COMMIT, and a row that no longer exists owes nothing. This is also what keeps
+  -- the check off every legitimate removal: deleting a company cascades its source away, and at
+  -- COMMIT there is no origin left to be unjustified.
+  IF origin_kind = 'company' THEN
+    SELECT count(*) INTO still_there FROM "ProjectCompany" WHERE "id" = origin_id;
     IF still_there = 0 THEN RETURN NULL; END IF;
-    SELECT count(*) INTO sourced FROM "ProjectPartyVendorSource" WHERE "projectVendorId" = NEW."id";
+    SELECT count(*) INTO sourced FROM "ProjectPartyCompanySource" WHERE "projectCompanyId" = origin_id;
+  ELSE
+    SELECT count(*) INTO still_there FROM "ProjectVendor" WHERE "id" = origin_id;
+    IF still_there = 0 THEN RETURN NULL; END IF;
+    SELECT count(*) INTO sourced FROM "ProjectPartyVendorSource" WHERE "projectVendorId" = origin_id;
   END IF;
 
   IF sourced = 0 THEN
-    RAISE EXCEPTION 'phase6: % % names party % with no source row recording it, so no ProjectParty association exists and the firm is invisible to the resolver', TG_TABLE_NAME, NEW."id", NEW."partyId";
+    RAISE EXCEPTION 'phase6: % origin % names a party with no source row recording it, so no ProjectParty association justifies it and the firm is invisible to the resolver', origin_kind, origin_id;
   END IF;
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
@@ -447,6 +477,23 @@ CREATE CONSTRAINT TRIGGER "ProjectCompany_origin_sourced"
 DROP TRIGGER IF EXISTS "ProjectVendor_origin_sourced" ON "ProjectVendor";
 CREATE CONSTRAINT TRIGGER "ProjectVendor_origin_sourced"
   AFTER INSERT OR UPDATE ON "ProjectVendor"
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION "phase6_origin_sourced"();
+
+-- The removal side. UPDATE is included for the same reason the association trigger includes it:
+-- `ON UPDATE CASCADE` on the origin key means 6.1b's repoint MOVES a source rather than deleting
+-- it, and a moved source must still leave its old origin justified. That case is satisfied by
+-- construction — the cascade carries the source along with the origin, so it is still sourced —
+-- which is why the check asks "is the origin sourced NOW", not "did this row justify it".
+DROP TRIGGER IF EXISTS "ProjectPartyCompanySource_origin_sourced" ON "ProjectPartyCompanySource";
+CREATE CONSTRAINT TRIGGER "ProjectPartyCompanySource_origin_sourced"
+  AFTER DELETE OR UPDATE ON "ProjectPartyCompanySource"
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION "phase6_origin_sourced"();
+
+DROP TRIGGER IF EXISTS "ProjectPartyVendorSource_origin_sourced" ON "ProjectPartyVendorSource";
+CREATE CONSTRAINT TRIGGER "ProjectPartyVendorSource_origin_sourced"
+  AFTER DELETE OR UPDATE ON "ProjectPartyVendorSource"
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION "phase6_origin_sourced"();
 

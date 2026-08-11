@@ -492,4 +492,78 @@ describe('Phase 6 unit 6.1a — the review corrections (live PG)', () => {
       await other.$disconnect();
     }
   });
+
+  // ── F1 ─────────────────────────────────────────────────────────────────────────────────────
+  /**
+   * E1 sealed "an ORIGIN must have a source" against the two tables an origin is WRITTEN on.
+   * The obligation can also be broken from the other end — by removing the source — and that
+   * path ran only the ASSOCIATION check, which asks a different question: it counts sources for
+   * the (project, party) pair, of EITHER kind. So when a firm is reached both ways on one
+   * project, deleting the company's source leaves the association justified by the vendor,
+   * the check satisfied, and the `ProjectCompany` carrying a party no source records.
+   *
+   * That is the exact state E1 forbids, reached through a door E1 did not cover.
+   */
+  it('F1 — removing a source rechecks the ORIGIN it justified, not only the association', async () => {
+    const projectId = await freshProject();
+    const { companyId, partyId } = await company(projectId, 'Both Ways Ltd');
+
+    // The same firm reached the second way on the SAME project — the main contractor who also
+    // supplies. This is what keeps the association alive after the company's source is removed;
+    // with only one source the association check refuses and the hole never opens.
+    const v = await vendors.create(f.orgA.id, { name: 'Both Ways Ltd' }, orgAdmin(f.orgA.id));
+    await t.prisma.$executeRawUnsafe('UPDATE "Vendor" SET "partyId" = $1 WHERE "id" = $2', partyId, v.id);
+    await vendors.bind(projectId, { vendorId: v.id }, pmc(projectId));
+    expect(await t.prisma.projectPartyCompanySource.count({ where: { projectId, partyId } })).toBe(1);
+    expect(await t.prisma.projectPartyVendorSource.count({ where: { projectId, partyId } })).toBe(1);
+
+    // An operator repair or a raw script deleting the company's source. The association survives
+    // on the vendor's, so nothing the association check asks is violated.
+    expect(await failure(() => t.prisma.projectPartyCompanySource.deleteMany({ where: { projectId, partyId } })))
+      .toMatch(/no source row recording it/i);
+    expect(await t.prisma.projectPartyCompanySource.count({ where: { projectCompanyId: companyId } })).toBe(1);
+
+    // Symmetrically from the other side: the vendor binding cannot be stripped of its source
+    // while the company's keeps the association standing.
+    expect(await failure(() => t.prisma.projectPartyVendorSource.deleteMany({ where: { projectId, partyId } })))
+      .toMatch(/no source row recording it/i);
+    expect(await t.prisma.projectPartyVendorSource.count({ where: { projectId, partyId } })).toBe(1);
+
+    // The consequence the review named, and the reason this is not merely untidy. `others` is
+    // `sources - 1`, which reads "one of these is me" — an inference that holds only while the
+    // caller HAS a source. Strip it and a company with no evidence at all counts the vendor's
+    // row as its own, calls itself the sole justification, and renames the firm the binding
+    // depends on. With the origin obligation sealed on this path, the state cannot be reached.
+    expect((await t.prisma.externalParty.findUniqueOrThrow({ where: { id: partyId } })).name).toBe('Both Ways Ltd');
+    await expect(companies.update(projectId, pmc(projectId), companyId, { name: 'Renamed With No Evidence' }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await t.prisma.externalParty.findUniqueOrThrow({ where: { id: partyId } })).name).toBe('Both Ways Ltd');
+  });
+
+  it('F1 control — the legitimate removals, which take the origin WITH the source, still commit', async () => {
+    const projectId = await freshProject();
+    const { companyId, partyId } = await company(projectId, 'Departing Ltd');
+    const v = await vendors.create(f.orgA.id, { name: 'Departing Ltd' }, orgAdmin(f.orgA.id));
+    await t.prisma.$executeRawUnsafe('UPDATE "Vendor" SET "partyId" = $1 WHERE "id" = $2', partyId, v.id);
+    const binding = await vendors.bind(projectId, { vendorId: v.id }, pmc(projectId));
+
+    // A check that fired on the cascade would refuse every legitimate delete, because deleting a
+    // company deletes its source too. It must judge the state at COMMIT — where the origin is
+    // gone and owes nothing — not the fact that a source row disappeared.
+    await companies.remove(projectId, pmc(projectId), companyId);
+    expect(await t.prisma.projectCompany.count({ where: { id: companyId } })).toBe(0);
+    // The association outlives it, still justified by the vendor binding.
+    expect(await t.prisma.projectParty.count({ where: { projectId, partyId } })).toBe(1);
+
+    // Removing the LAST origin has to release the association in the same transaction — the
+    // order `CompaniesService.remove` already uses, and the one an unbind would use. Both
+    // deferred checks then judge a state where neither the origin nor the association exists,
+    // and both are owed nothing. (A raw delete of the binding ALONE is refused, by the
+    // association seal rather than this one; that is C2/D2's territory, not F1's.)
+    await t.prisma.$transaction(async (tx) => {
+      await tx.projectVendor.delete({ where: { id: binding.id } });
+      await participant.releasePartyAssociationIfUnsourced(tx, { projectId, partyId });
+    });
+    expect(await t.prisma.projectParty.count({ where: { projectId, partyId } })).toBe(0);
+  });
 });

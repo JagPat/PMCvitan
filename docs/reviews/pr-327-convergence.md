@@ -1,21 +1,29 @@
 # PR #327 — convergence audit
 
-Unit 6.1a, the canonical external party. Three finding-bearing heads:
+Unit 6.1a, the canonical external party. Four finding-bearing heads:
 
 | Head | Findings | Severity |
 |---|---|---|
 | `9a03d95` | C1–C8 | 1 × P1, 7 × P2 |
 | `5fabb23` | D1–D4 | 4 × P2 |
 | `31babd0` | E1–E3 | 3 × P2 |
+| `87ac4f5` | F1 | 1 × P2 |
 
-Fifteen findings. This audit is not a list of them — the packet has that. It asks what produced
-them, because four roots produced all fifteen, and three of the four produced findings in EVERY
+Sixteen findings. This audit is not a list of them — the packet has that. It asks what produced
+them, because four roots produced all sixteen, and three of the four produced findings in EVERY
 round. A root that recurs after being named is the strongest signal in this document: it means the
 naming was not yet specific enough to act on.
 
+**F1 is the sharpest instance of that, because it is Root A landing on the seal that closed
+Root C.** E1 added the origin-side obligation; F1 says that obligation was armed only against the
+tables an origin is *written* on, while it can equally be broken by removing the source. Same
+error, one round later, inside the fix for the round before. It is written up in full under Root A,
+not given a root of its own, because inventing a fifth root would hide the recurrence that is the
+actual finding.
+
 ## Root A — the seal was scoped to the caller, not to the data
 
-The largest root: seven findings, in all three rounds.
+The largest root: eight findings, in all four rounds.
 
 | Finding | Scoped to | Should have been scoped to |
 |---|---|---|
@@ -26,6 +34,7 @@ The largest root: seven findings, in all three rounds.
 | C8 | the row being protected | the operation the row must still support |
 | E2 | the count's own snapshot | the party root, locked against a concurrent attach |
 | E3 | the row as read BEFORE the transaction | the row as it is INSIDE the transaction |
+| F1 | the tables an origin is WRITTEN on | every table whose write can break the obligation |
 
 **D1 is the purest statement of it.** `ExternalParty.name` is one row, one name, read by every
 project the firm reaches. The sole-source check counted sources `WHERE projectId = <the project
@@ -49,6 +58,45 @@ was written against the situation in front of the author.
 rename's scope from the project to the party — and still passed the party id from a read taken
 *outside* the transaction. The scope was corrected in space and left wrong in time. Widening a
 check without asking when its inputs were read is half a fix.
+
+### F1 — the same error, one round later, inside the previous round's fix
+
+E1's seal says: a live origin must have a source. I attached it to `ProjectCompany` and
+`ProjectVendor`, because writing an origin is how you come to owe a source. That is the scope of
+the **author's** situation, not of the **obligation**. An obligation between two rows can be broken
+from either end, and the other end — removing the source — ran only the *association* check, which
+asks a different question entirely:
+
+| Check | Question | Answer when the company's source is deleted |
+|---|---|---|
+| association | does `(project, party)` have ≥1 source, of **either** kind? | yes — the vendor's | ✓ satisfied |
+| origin | does **this company** have its own source? | no | never asked |
+
+So for a firm reached both ways on one project — the main contractor who also supplies, an entirely
+ordinary arrangement — deleting the company's source is accepted. The `ProjectCompany` is left
+naming a party nothing records: exactly the state E1 exists to forbid.
+
+And it is not merely untidy, because of a detail in the fix for D1.
+`renamePartyForSoleSource` computes `others = sources - 1`. That `- 1` reads *"one of these rows is
+me"* — an inference that is true only while the caller **has** a source. Strip it and a company
+with no evidence at all counts the vendor's row as its own, concludes it is the sole justification,
+and renames the firm the binding depends on. D1 was the same rename authorised by the wrong
+*scope*; F1 is the same rename authorised by a *phantom*.
+
+> **Rule.** An invariant between two rows can be violated from both ends. Attaching its check to
+> the end you happened to be writing is not enforcing it — it is enforcing it against yourself.
+
+The fix is one function fired from all four tables, deriving its subject from `TG_TABLE_NAME`
+(`NEW` on an origin write, `OLD."projectCompanyId"`/`OLD."projectVendorId"` on a source leaving),
+rather than a second function for the removal side. Two copies of one obligation are two things
+that can drift, and the E1/F1 pair is a demonstration of what that drift costs.
+
+Worth recording that the check's shape is what keeps it off the legitimate path: it asks *"is the
+origin sourced now?"*, not *"did this row justify something?"*. Deleting a company cascades its
+source away, and at COMMIT there is no origin left to owe anything — so the ordinary deletion still
+works. A check written the other way would have refused every company removal in the product, which
+is Root C's trap (the guard forbidding the operation it protects) and was live in this codebase two
+rounds ago as C8.
 
 ## Root B — a constraint in SQL is not a constraint
 
@@ -127,6 +175,7 @@ seven times in one unit and would otherwise read as diligence.
 | upgrade proof, after E1–E3 | the new seal holds | 534 before and after: **the same lesson, one round later** |
 | E2/E3, first drafts | the races are closed | committed T2 before T1 began, so both passed at the unfixed head |
 | the two teardown fixtures | they set up what the app sets up | wrote the party chain across FOUR transactions, a state no service path produces |
+| F1 control, first draft | the legitimate removals still commit | asserted a raw delete of the LAST binding, which no service performs and the association seal correctly refuses |
 
 The through-line: **each was a green signal produced without exercising the thing under test.** A
 passing probe and a probe that passes *for the right reason* are indistinguishable from the
@@ -144,6 +193,23 @@ exactly the reason C2's first draft had. Naming a habit is not the same as havin
 assertion-count check (does the gate's output MOVE when the code moves?) is the mechanical version
 and is now the thing actually relied on.
 
+**The F round is the first where it was applied before the claim rather than after the reminder**,
+so it is worth stating what "applied" concretely meant, since the previous two rounds show that
+intending it is not enough:
+
+1. the probe was written and run at `87ac4f5` **first**, and failed with `expected the write to be
+   REFUSED, and it was accepted` — the finding reproduced, not merely believed;
+2. the suite count **moved**, 12 → 14, and the upgrade proof **moved**, 536 → 540;
+3. the migration was then `git stash`ed and the upgrade proof re-run, which turned exactly the
+   three new F1 rejection assertions red and left the positive control green — so the new
+   assertions are demonstrably watching the new seal, which is the thing 528→528 and 534→534 could
+   not tell me;
+4. the one false step (the control asserting a delete no service performs) was caught by running
+   it, in the same minute, and is in the table above rather than quietly repaired.
+
+Step 3 is the one that was missing twice. An assertion count that moves proves new assertions were
+added; only reverting the fix proves they test it.
+
 ## What this changes for 6.1b
 
 6.1b is the operator merge/repoint command, and three of these roots are aimed straight at it:
@@ -155,6 +221,18 @@ and is now the thing actually relied on.
    on reasoning alone, which is a weaker footing than 6.1b should accept for its own.
 3. Every constraint it relies on must exist in `schema.prisma`, not only in its migration —
    Root B, now enforced for the party models by `schema-migration-drift.test.ts`.
+4. For every obligation it introduces, both ends must be enumerated and each given an owner —
+   Root A via F1. 6.1b's merge moves sources between parties, which is precisely the operation that
+   can satisfy one end of an obligation while breaking the other, and it is the operation E1's seal
+   was blind to.
+
+F1 also leaves 6.1b a concrete piece of work rather than only a caution.
+`renamePartyForSoleSource` still infers the caller's own evidence from `sources - 1`. That
+inference is now *true*, because the origin obligation is sealed on both ends and a live company
+always has exactly one source — but it is true by distant consequence rather than by construction.
+6.1b should pass the caller's source identity and count the others directly. It is not corrected
+here because it is not what makes the state unreachable, and widening this head beyond the finding
+is how a fourth round becomes a fifth.
 
 ## The evidence obligation is PER HEAD, and I proved that the hard way
 
