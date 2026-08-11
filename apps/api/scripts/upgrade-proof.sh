@@ -3084,6 +3084,53 @@ assert "6.1a §E: two OWNER orgs may each link their own local party to one tena
   "SELECT COUNT(*)::text FROM \"ExternalParty\" WHERE \"promotedOrgId\" = 'org-p6';" \
   "2"
 
+# ── the review corrections (C3, C4, C5, C8) over the MIGRATED legacy database ──────────────────
+#    Added because the first run of this section passed at exactly the same assertion count after
+#    the correction landed: the migration still applied and every OLD seal still held, which says
+#    nothing at all about the four seals the correction introduced. A gate that cannot notice the
+#    change it is being run for is not evidence.
+
+# C3 — the firm name a person reads before granting access cannot be whitespace.
+assert_rejects "6.1a C3: a party whose name is only spaces" \
+  "INSERT INTO \"ExternalParty\"(\"id\",\"orgId\",\"name\") VALUES('pty_UP6-BLANK','org-legacy','   ')" \
+  'ExternalParty_name_not_blank'
+assert_rejects "6.1a C3: …or only tabs and newlines (btrim alone strips neither)" \
+  "INSERT INTO \"ExternalParty\"(\"id\",\"orgId\",\"name\") VALUES('pty_UP6-BLANK2','org-legacy',E'\\t\\n\\r ')" \
+  'ExternalParty_name_not_blank'
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6 C3: a name with INTERNAL whitespace was refused — the CHECK is too strict"; FAIL=1; }
+INSERT INTO "ExternalParty"("id","orgId","name") VALUES('pty_UP6-SPACED','org-legacy','A C M E  Ltd');
+SQL
+assert "6.1a C3: a real firm name containing spaces is ACCEPTED" \
+  "SELECT COUNT(*)::text FROM \"ExternalParty\" WHERE \"id\" = 'pty_UP6-SPACED';" \
+  "1"
+
+# C5 — the promotion target is a real tenant. Without the reference the one-way trigger would
+# freeze a typo permanently, since correcting it IS the transition the trigger refuses.
+assert_rejects "6.1a C5: promoting a party to an org that does not exist" \
+  "UPDATE \"ExternalParty\" SET \"promotedOrgId\" = 'org-does-not-exist' WHERE \"id\" = 'pty_UP6-SPACED'" \
+  'ExternalParty_promotedOrgId_fkey'
+
+# C4 — a source REPOINTED onto another party rechecks the association it LEFT. This is how 6.1b's
+# merge moves a source, and the seal previously fired only on DELETE.
+assert_rejects "6.1a C4: repointing a company source strands the association it abandoned" \
+  "UPDATE \"ProjectCompany\" SET \"partyId\" = 'pty_UP45-VEN' WHERE \"id\" = 'UP6-OKC'" \
+  'has no source justifying it'
+
+# C8 — and the repoint a merge legitimately needs must WORK. A bound vendor moving onto a
+# surviving party, with the target association created first and the abandoned one released, is
+# the whole shape of 6.1b; with the binding's key frozen it was impossible in either order.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6 C8: a BOUND vendor could not be repointed — 6.1b's merge cannot run"; FAIL=1; }
+BEGIN;
+INSERT INTO "ExternalParty"("id","orgId","name") VALUES('pty_UP6-SURVIVOR','org-legacy','Surviving Firm');
+INSERT INTO "ProjectParty"("id","orgId","projectId","partyId") VALUES('UP6-SURV','org-legacy','p1','pty_UP6-SURVIVOR');
+UPDATE "Vendor" SET "partyId" = 'pty_UP6-SURVIVOR' WHERE "id" = 'UP45-VEN';
+DELETE FROM "ProjectParty" WHERE "projectId" = 'p1' AND "partyId" = 'pty_UP45-VEN';
+COMMIT;
+SQL
+assert "6.1a C8: the binding AND its source followed the vendor onto the surviving party" \
+  "SELECT (SELECT \"partyId\" FROM \"ProjectVendor\" WHERE \"id\" = 'UP45-PV') || '|' || (SELECT \"partyId\" FROM \"ProjectPartyVendorSource\" WHERE \"projectVendorId\" = 'UP45-PV') || '|' || (SELECT COUNT(*)::text FROM \"ProjectParty\" WHERE \"projectId\" = 'p1' AND \"partyId\" = 'pty_UP45-VEN');" \
+  "pty_UP6-SURVIVOR|pty_UP6-SURVIVOR|0"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
