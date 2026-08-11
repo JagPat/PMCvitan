@@ -65,7 +65,7 @@ import { screensFor } from '@/lib/screens';
 import { emptyProjectData, emptyModuleReadState, isCurrentProjectScope, type ProjectLoadState, type ProjectScope } from './projectScope';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
-import type { SodRule } from '@vitan/shared';
+import type { SodRule, VendorAdvanceListDto } from '@vitan/shared';
 import type { CommercialBillRow, CommercialClaimView, CommercialView } from './commercial';
 import { subtreeIds, ancestorIds } from '@/lib/locationTree';
 import type { ApiGateway, ApiSnapshot, OutboxOp, IssueDrawingInput, AddMemberInput, AddOrgMemberInput, NewProjectInput, CompanyInput, ArchivedProject, NewActivityInput, NewDecisionInput, OrgTemplateModule, OrgProjectTemplate, OverrideGateInput, AllocateLabourInput, RecordVendorBillInput, TakeMeasurementInput, AmendVendorBillInput } from '@/data/apiGateway';
@@ -74,7 +74,7 @@ import { deleteEvidence, evidenceAvailable, listEvidence, putEvidence, retryEvid
 import { parseLocation } from '@/lib/screens';
 import { reserveCoalesceKey, issueCoalesceKey, consumeCoalesceKey, requisitionCoalesceKey, isMaterialsOpType, normalizeMaterialsOutbox } from '@/lib/materialsKeys';
 import { allocateCoalesceKey, musterCoalesceKey, workCoalesceKey, labourRequisitionCoalesceKey, releaseCoalesceKey, isLabourOpType, normalizeLabourOutbox, bindSig } from '@/lib/labourKeys';
-import { budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { advanceCoalesceKey, budgetCoalesceKey, costHeadCoalesceKey, attributionCoalesceKey, measureCoalesceKey, correctionCoalesceKey, billCoalesceKey, billTransitionCoalesceKey, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, approveCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked, readClearsKey, isCommercialOpType, type CommercialRead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import { todayCivil } from '@/lib/civilDate';
 import { buildWorkerFingerprints } from '@/lib/labourSelection';
 
@@ -248,6 +248,12 @@ export interface AppState {
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaims: Record<string, CommercialClaimView>;
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
+  /** 7B-vi (§H) — the advances read. Project-scoped like every other commercial read, and a
+   *  SINGLE slot rather than a per-vendor map: the read carries the whole project's advances in
+   *  one snapshot, because `recoverable` is a fold and rows read apart from positions can state a
+   *  set of advances and a ceiling that were never true together. */
+  commercialAdvances: VendorAdvanceListDto | null;
+  commercialAdvancesLoad: 'idle' | 'loading' | 'ready' | 'error';
   /** §D — the cap RESERVATION each pending write holds, keyed by its COALESCE KEY.
    *
    *  Keyed by the coalesce key, not by line, so the reservation's lifecycle IS the key's: round 3
@@ -433,6 +439,10 @@ export interface AppActions {
   loadCommercial: () => Promise<void>;
   loadCommercialBills: () => Promise<void>;
   loadCommercialClaim: (billId: string) => Promise<void>;
+  /** 7B-vi (§H) — loads the advances AND settles the advance key. No claim read can: an advance
+   *  names a counterparty and no claim. */
+  loadCommercialAdvances: () => Promise<void>;
+  payAdvance: (vendorId: string, amount: string, reason: string, method: string, reference: string | null) => void;
   loadCommercialLineRegister: (labourPoLineId: string) => Promise<void>;
   /** §M writes (7B-iii-a). Each dispatches ONE server command through the durable write-ahead
    *  outbox under a fresh idempotency key, coalesced while pending on its deterministic key. */
@@ -832,6 +842,8 @@ export function getInitialState(): AppState {
     commercialBillsLoad: 'idle',
     commercialClaims: {},
     commercialClaimLoad: {},
+    commercialAdvances: null,
+    commercialAdvancesLoad: 'idle',
     commercialPendingQty: {},
     commercialLineRegisters: {},
     commercialLineRegisterLoad: {},
@@ -915,6 +927,7 @@ export const useStore = create<Store>()(
     // single token would let opening claim B cancel a still-useful load of claim A, and a slow A
     // returning after B would be dropped even though nothing newer asked for A.
     const commercialClaimSeq: Record<string, number> = {};
+    let commercialAdvancesSeq = 0;
     /** Per-LINE ownership for the §D register read, for the same reason as the per-claim one. */
     const commercialLineSeq: Record<string, number> = {};
     /**
@@ -2901,6 +2914,38 @@ export const useStore = create<Store>()(
      * of defect the reservation-plan generation fixed in PR #208, avoided here rather than found.
      */
 
+    /**
+     * 7B-vi (§H) — load the advances, and SETTLE the advance key.
+     *
+     * No claim read carries a counterparty, so until this landed the advance key had no release
+     * path at all: the op settled, no read cleared it, and the button stayed disabled until a
+     * hydration or a scope change rebuilt the pending set. A key with no settling read is not
+     * "pending", it is STUCK — 7B-iii-g's F2, and the reason this read ships with the control.
+     *
+     * Same latest-request ownership and scope guard as every other commercial read: an older
+     * response that resolves late is dropped rather than overwriting a newer one.
+     */
+    loadCommercialAdvances: () => {
+      if (!gateway) return Promise.resolve();
+      if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
+      const scope = { projectId: get().activeProjectId, generation: get().projectScopeGeneration };
+      const seq = (commercialAdvancesSeq += 1);
+      const owns = (s: { activeProjectId: string; projectScopeGeneration: number }) =>
+        seq === commercialAdvancesSeq && isCurrentProjectScope(s.activeProjectId, s.projectScopeGeneration, scope);
+      const settledAtStart = commercialWritesSettled;
+      set((s) => { s.commercialAdvancesLoad = 'loading'; });
+      return gateway.commercialAdvances().then((advances) => {
+        set((s) => {
+          if (!owns(s)) return;
+          s.commercialAdvances = castDraft(advances);
+          s.commercialAdvancesLoad = 'ready';
+          releaseCommercialKeys(s, {
+            read: 'advances', observedWrite: commercialWritesSettled === settledAtStart,
+          });
+        });
+      }).catch(() => set((s) => { if (owns(s)) s.commercialAdvancesLoad = 'error'; }));
+    },
+
     loadCommercialClaim: (billId: string) => {
       if (!gateway) return Promise.resolve();
       if (!get().capabilities.includes('commercial')) return Promise.resolve(); // inert off-pilot
@@ -3088,6 +3133,17 @@ export const useStore = create<Store>()(
         { t: 'approvePayment', input: { billId, amount, lifecycleVersion }, idempotencyKey: newIdempotencyKey(),
           coalesceKey: approveCoalesceKey(billId) },
         `Approve on ${billId}`, 'Payment approved.',
+      );
+    },
+    payAdvance: (vendorId, amount, reason, method, reference) => {
+      // 7B-vi — the coalesce key is derived from the SAME object the command carries, so the
+      // identity cannot drift from the payload the way a hand-listed subset does. `method` and
+      // `reference` are in it because they are in the input, not because a round found them.
+      const input = { vendorId, amount, reason, method, reference };
+      dispatchCommercial(
+        { t: 'payAdvance', input, idempotencyKey: newIdempotencyKey(),
+          coalesceKey: advanceCoalesceKey(input) },
+        `Advance to ${vendorId}`, 'Advance paid.',
       );
     },
     recordPayment: (billId, approvalId, amount, method, reference) => {
