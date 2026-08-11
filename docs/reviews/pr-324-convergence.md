@@ -1,6 +1,6 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Five finding-bearing heads, twenty-five findings, on a docs-only plan — and the count did not fall:
+Six finding-bearing heads, twenty-eight findings, on a docs-only plan — and the count did not fall:
 **5 · 4 · 5 · 5 · 6.** The review lifecycle reached its limit on head `3f7e35d` and recommended
 splitting the unit. **It is right, and this audit's conclusion is that the unit was never one unit.**
 
@@ -37,6 +37,9 @@ concerns sharing one review, not of a careless document.
 | 23 | `3f7e35d` | keep evidence uploads possible before the citing fact exists | **D — created by fix 8** |
 | 24 | `3f7e35d` | bind labour rows to a party, or the `labour` scope cannot resolve | §C vs the data model |
 | 25 | `3f7e35d` | reserve the capability NAME before 6.3 | **finding 14, not actually fixed** |
+| 26 | `db2c64d` | pin the party links to the SAME ORG | §A tenancy |
+| 27 | `db2c64d` | assign parties on FUTURE vendor/company writes | §A completeness |
+| 28 | `db2c64d` | keep the runner from re-entering planning | **G — two gate rules in conflict** |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -216,6 +219,52 @@ which document answers them.
 > something the diff shape said at round 2: §B/§C/§D were 284 of 544 lines and carried nearly every
 > finding.
 
+## Round 6 — the split worked, and the last finding is a rule conflict
+
+**Three findings, down from six.** First fall in the trajectory (5 · 4 · 5 · 5 · 6 · **3**), and the
+composition changed too: 26 and 27 are ordinary §A gaps found on their merits, not damage from the
+previous correction. That is what the split was for.
+
+- **26** — `Vendor.partyId` and `ProjectCompany.partyId` had to be SAME-ORG composite FKs. A
+  globally-valid reference lets org B's party own org A's rows, and §F's cross-tenant proof would
+  fail on a shape PostgreSQL still accepted. Now the containment pattern every prior phase used
+  (Phase 4's same-project FKs on worker/device/crew, Phase 3's on vendor/requisition lines) applied
+  one level up at the org.
+- **27** — 6.1 backfilled existing rows and left the CREATE paths minting party-less firms until the
+  boundary shipped. Practice 6 again, in miniature: I enumerated the rows that exist and not the ones
+  that arrive next. Fixed by updating both create paths and making `partyId` NOT NULL after backfill,
+  so "a firm with no canonical identity" stops being representable.
+
+## Root G — two gate rules that cannot both be satisfied in one diff
+
+Finding **28** is not a defect in the plan. It is a conflict between two rules that are each correct:
+
+| Rule | Requires |
+|---|---|
+| `PLAN_REVIEW_ROUND_CAP` (3 finding heads, docs-only) | the head carries `Review-Deferred-To-Probes` |
+| `assessConvergence`'s phase check | a deferral head's diff does **not** touch `docs/STATUS.md` |
+| the handoff (`AGENTS.md`) | the merged commit's STATUS resolves past the work item it completes |
+
+Satisfying the first two forces STATUS out of the PR; satisfying the third needs it in. Round 5
+resolved this with a prose promise to land STATUS afterwards, and finding 28 is the correct
+refutation: after #324 merges with STATUS unchanged, `assessRunnerState` reads
+`next_task:phase-6-planning` and the loop **re-enters the planning item it just finished**. A promise
+is not a state transition.
+
+The resolution is the one the refusal text and finding 28 both name — a **pre-existing** status-only
+handoff. **PR #325 is open before #324 merges**, carrying findings 3 and 6 with the same
+mutation-tested resolver evidence. The deferral stays admissible because #324's diff still does not
+touch STATUS, and the handoff is machine-actionable because the transition exists as a real PR rather
+than as an intention.
+
+> **A process rule that says "do X afterwards" is not satisfied by writing "we will do X
+> afterwards".** Where two gates conflict, the resolution has to be a third artefact that exists,
+> not a sentence in the artefact that cannot carry it.
+
+This also closes what process change #37 (fold STATUS into the work PR) left unstated: folding is
+right for an ordinary work PR, and **wrong for any head that must carry a deferral trailer** — those
+need the separate status PR the fold was meant to eliminate, opened before the work PR merges.
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -285,6 +334,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `c431904` | 5 | **3** |
 | `5a92ed2` | 5 | **4** (15, 16, 17, 18 — and 19 was a defect in the deferral itself) |
 | `3f7e35d` | 6 | **4** (20, 22, 23 from the round before it; 25 was finding 14 never actually fixed) |
+| `db2c64d` | **3** | **0** — 26/27 are §A gaps on their merits, 28 is a rule conflict. The split worked |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header

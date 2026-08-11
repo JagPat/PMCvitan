@@ -46,6 +46,8 @@ is silently dropped in the split.
 |---|---|---|---|
 | 1 | The canonical external party | **A3 — a new orgs-owned `ExternalParty`**; `Vendor` and `ProjectCompany` reference it | §A |
 | 2 | Whether 6.1 reconciles existing rows | **No.** One party per existing `Vendor` and per existing `ProjectCompany`; merging two rows into one firm is a human judgement a migration must not fabricate | §A |
+| 2b | How the party links are sealed | **SAME-ORG composite FKs** on both `Vendor.partyId` and `ProjectCompany.partyId`, so a cross-org link is unrepresentable rather than refused | §A |
+| 2c | Firms created AFTER 6.1 | the create paths assign a party in the same transaction, and `partyId` becomes NOT NULL once the backfill has run | §A |
 | 3 | Guest → Org promotion | **The SEAM ships in 6.1; the promotion COMMAND is deferred** out of Phase 6 | §E |
 | 4 | Tenancy standard | live-PostgreSQL cross-project proof per surface, unrepresentable-at-the-database where the shape permits | §F |
 
@@ -157,6 +159,28 @@ a nullable reference to it; `ProjectCompany` becomes its per-project association
 it. If a later unit needs the party's *name* inside procurement it goes through an orgs query
 contract and declares `procurement.dependsOn += 'orgs'`, which stays acyclic because nothing in the
 graph depends on `orgs`.
+
+**Both references are SAME-ORG composite FKs, not plain ones — and that is a tenancy requirement,
+not a style preference.** A globally-valid `partyId` lets `Vendor(org A).partyId` or a project-A
+`ProjectCompany.partyId` point at an `ExternalParty` in org B; the firm grant and revocation
+resolver would then treat org B's party as owning org A's project and commercial rows, and §F's
+live-PostgreSQL cross-tenant proof would fail on a shape the database still accepted. So:
+
+| Reference | Seal |
+|---|---|
+| `Vendor.partyId` | composite FK `(orgId, partyId) → ExternalParty(orgId, id)` — `Vendor` already carries `orgId` |
+| `ProjectCompany.partyId` | the association is project-scoped, so it carries the project's `orgId` and takes the same composite FK; a cross-org link is then unrepresentable rather than merely refused |
+
+This is the pattern every prior phase used for containment (Phase 4's same-project composite FKs on
+worker, device and crew; Phase 3's on vendor and requisition lines), applied one level up at the org.
+
+**Every FUTURE external firm gets its party at creation, not at the next backfill.** The migration
+covers rows that exist when 6.1 runs; the `Vendor` and `ProjectCompany` create paths run afterwards
+and would otherwise keep minting party-less firms right up until the boundary resolver ships,
+leaving Phase 6 to start from a mixed identity set that needs a second, unplanned backfill. 6.1
+therefore updates both create paths AND makes `partyId` NOT NULL once the backfill has run, so
+"a firm without a canonical identity" stops being a representable state instead of being a thing the
+next migration has to clean up.
 
 **6.1 never merges two existing rows into one party.** It creates one party per existing `Vendor`
 and one per existing `ProjectCompany`, and leaves any reconciliation to an explicit operator act.
