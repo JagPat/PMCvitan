@@ -264,10 +264,25 @@ refutation: after #324 merges with STATUS unchanged, `assessRunnerState` reads
 is not a state transition.
 
 The resolution is the one the refusal text and finding 28 both name — a **pre-existing** status-only
-handoff. **PR #325 is open before #324 merges**, carrying findings 3 and 6 with the same
-mutation-tested resolver evidence. The deferral stays admissible because #324's diff still does not
-touch STATUS, and the handoff is machine-actionable because the transition exists as a real PR rather
-than as an intention.
+handoff. **PR #325 was opened before #324 merges and has now MERGED at `main` `2e34c7f`**, carrying
+finding 3 with a clean Codex +1 on head `e74c7d4`. The deferral stays admissible because #324's diff
+still does not touch STATUS — verified after merging `origin/main` back into this branch, since a
+merge that dragged STATUS into the file list would have silently voided the trailer — and the handoff
+is machine-actionable because the transition exists rather than being intended.
+
+**What #325 taught, and it sharpened root G.** Finding 6 turned out not to belong there at all: it
+was a defect in the Now block *as #324 carried it*, and once STATUS left #324, `main`'s block was
+already correct for a world with no Phase 6 plan (`task_state: merged`, `work_item: none`,
+`next_task: phase-6-planning`, and a `phase_plan` that resolves). #325 then took two rounds to learn
+that, because it kept trying to advance the phase pointer to a plan no commit in its own tree
+contained. Its own audit (`docs/reviews/pr-325-convergence.md`) records the rule:
+
+> **A status file must never name a plan that no commit in its own tree contains.** The phase pointer
+> advances in the change that LANDS the phase's plan file, not in the change that anticipates it.
+
+So root G's resolution is narrower than round 6 stated: the separate status PR is required, but it
+carries only what is true WITHOUT the work PR — the closure of the previous phase's record. The
+forward pointer waits for the plan.
 
 > **A process rule that says "do X afterwards" is not satisfied by writing "we will do X
 > afterwards".** Where two gates conflict, the resolution has to be a third artefact that exists,
