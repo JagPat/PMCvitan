@@ -797,8 +797,12 @@ INSERT INTO "MaterialRequirementSpec"("id","projectId","requirementId","revision
 INSERT INTO "Requisition"("id","projectId","title","status","createdById") VALUES('UP45-REQ','p1','up45','approved','USER-1');
 INSERT INTO "RequisitionLine"("id","projectId","requisitionId","requirementId","revision","qty","status")
   VALUES('UP45-RL','p1','UP45-REQ','UP45-ROOT',1,100,'ordered');
-INSERT INTO "Vendor"("id","orgId","name","createdById") VALUES('UP45-VEN','org-legacy','V','USER-1');
-INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById") VALUES('UP45-PV','p1','org-legacy','UP45-VEN','USER-1');
+-- Phase 6 unit 6.1a: post-migration fixture, so it carries its own party.
+INSERT INTO "ExternalParty"("id","orgId","name") VALUES('pty_UP45-VEN','org-legacy','V');
+INSERT INTO "Vendor"("id","orgId","name","createdById","partyId") VALUES('UP45-VEN','org-legacy','V','USER-1','pty_UP45-VEN');
+INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById","partyId") VALUES('UP45-PV','p1','org-legacy','UP45-VEN','USER-1','pty_UP45-VEN');
+INSERT INTO "ProjectParty"("id","orgId","projectId","partyId") VALUES('pp_UP45-VEN','org-legacy','p1','pty_UP45-VEN') ON CONFLICT DO NOTHING;
+INSERT INTO "ProjectPartyVendorSource"("id","orgId","projectId","partyId","projectVendorId") VALUES('ppvs_UP45-VEN','org-legacy','p1','pty_UP45-VEN','UP45-PV');
 INSERT INTO "Rfq"("id","projectId","requisitionId","status","issuedById") VALUES('UP45-RFQ','p1','UP45-REQ','closed','USER-1');
 INSERT INTO "VendorQuote"("id","projectId","rfqId","requisitionId","vendorId","status","validUntil","recordedById")
   VALUES('UP45-VQ','p1','UP45-RFQ','UP45-REQ','UP45-VEN','recorded','2027-01-01','USER-1');
@@ -1161,8 +1165,12 @@ assert_rejects "labour T2: a requisition with an out-of-machine status (status C
 FPD="encode(digest('lsf.v1'||chr(31)||'trade:mason'||chr(31)||'skill:bar-bending'||chr(31)||'shift:day','sha256'),'hex')"
 $PSQL >/dev/null <<SQL && printf 'ok      %s\n' "labour T2: a coherent labour commercial chain is accepted (seal is precise)" || { printf 'FAILED  %s\n' "labour T2 coherent chain rejected"; FAIL=1; }
 BEGIN;
-INSERT INTO "Vendor"("id","orgId","name","createdById") VALUES('UPL-T2V','org-legacy','Labour Supplier','USER-1');
-INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById") VALUES('UPL-T2PV','p1','org-legacy','UPL-T2V','USER-1');
+-- Phase 6 unit 6.1a: post-migration fixture, so it carries its own party.
+INSERT INTO "ExternalParty"("id","orgId","name") VALUES('pty_UPL-T2V','org-legacy','Labour Supplier');
+INSERT INTO "Vendor"("id","orgId","name","createdById","partyId") VALUES('UPL-T2V','org-legacy','Labour Supplier','USER-1','pty_UPL-T2V');
+INSERT INTO "ProjectVendor"("id","projectId","orgId","vendorId","boundById","partyId") VALUES('UPL-T2PV','p1','org-legacy','UPL-T2V','USER-1','pty_UPL-T2V');
+INSERT INTO "ProjectParty"("id","orgId","projectId","partyId") VALUES('pp_UPL-T2V','org-legacy','p1','pty_UPL-T2V') ON CONFLICT DO NOTHING;
+INSERT INTO "ProjectPartyVendorSource"("id","orgId","projectId","partyId","projectVendorId") VALUES('ppvs_UPL-T2V','org-legacy','p1','pty_UPL-T2V','UPL-T2PV');
 INSERT INTO "LabourRequisition"("id","projectId","title","status","createdById","approvedById","approvedAt") VALUES('UPL-T2REQ','p1','crew','approved','USER-1','USER-1',NOW());
 INSERT INTO "LabourRequisitionLine"("id","projectId","requisitionId","requirementId","revision","civilDate","shift","labourSpecFingerprint","personShiftQty","status") VALUES('UPL-T2RL','p1','UPL-T2REQ','UPL-F2OK',1,'2026-08-12','day',$FPD,3,'ordered');
 INSERT INTO "LabourRfq"("id","projectId","requisitionId","issuedById") VALUES('UPL-T2RFQ','p1','UPL-T2REQ','USER-1');
