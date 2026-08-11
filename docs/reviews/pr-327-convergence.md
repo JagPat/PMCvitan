@@ -1,19 +1,21 @@
 # PR #327 — convergence audit
 
-Unit 6.1a, the canonical external party. Two finding-bearing heads:
+Unit 6.1a, the canonical external party. Three finding-bearing heads:
 
 | Head | Findings | Severity |
 |---|---|---|
 | `9a03d95` | C1–C8 | 1 × P1, 7 × P2 |
 | `5fabb23` | D1–D4 | 4 × P2 |
+| `31babd0` | E1–E3 | 3 × P2 |
 
-Twelve findings. This audit is not a list of them — the packet has that. It asks what produced
-them, because four distinct roots produced all twelve and three of the roots produced findings in
-**both** rounds.
+Fifteen findings. This audit is not a list of them — the packet has that. It asks what produced
+them, because four roots produced all fifteen, and three of the four produced findings in EVERY
+round. A root that recurs after being named is the strongest signal in this document: it means the
+naming was not yet specific enough to act on.
 
 ## Root A — the seal was scoped to the caller, not to the data
 
-The largest root: five findings.
+The largest root: seven findings, in all three rounds.
 
 | Finding | Scoped to | Should have been scoped to |
 |---|---|---|
@@ -22,6 +24,8 @@ The largest root: five findings.
 | C4 | the DELETE the seal was written for | every way a source can LEAVE, including UPDATE |
 | D1 | the project being edited | the party, which is org-scoped |
 | C8 | the row being protected | the operation the row must still support |
+| E2 | the count's own snapshot | the party root, locked against a concurrent attach |
+| E3 | the row as read BEFORE the transaction | the row as it is INSIDE the transaction |
 
 **D1 is the purest statement of it.** `ExternalParty.name` is one row, one name, read by every
 project the firm reaches. The sole-source check counted sources `WHERE projectId = <the project
@@ -36,10 +40,15 @@ project-scoped; that is the entire point of §A.
 > happens to invoke it. When those two differ, the caller's scope is always the smaller one, and
 > the gap is always silent.
 
-C2, C7 and C4 are the same error against *time* rather than *space*: a count taken before a
+C2, C7, C4, E2 and E3 are the same error against *time* rather than *space*: a count taken before a
 competing write, a snapshot taken before a competing commit, a trigger armed for one of the two
-ways its subject can move. In each, the seal was written against the situation in front of the
-author.
+ways its subject can move, a row read before the transaction that protects it. In each, the seal
+was written against the situation in front of the author.
+
+**E3 deserves singling out because it is Root A applied to my own fix.** D1's correction moved the
+rename's scope from the project to the party — and still passed the party id from a read taken
+*outside* the transaction. The scope was corrected in space and left wrong in time. Widening a
+check without asking when its inputs were read is half a fix.
 
 ## Root B — a constraint in SQL is not a constraint
 
@@ -72,7 +81,7 @@ Root A one level up: scoping the check to what was convenient.
 
 ## Root C — the guard's own mechanism opened the hole
 
-Three findings, and the most instructive shape.
+Four findings, and the most instructive shape.
 
 - **D2** — the source→association key cascaded. Deleting the association therefore deleted its own
   justification, after which the deferred check counted zero sources and returned **satisfied**.
@@ -84,14 +93,29 @@ Three findings, and the most instructive shape.
   impossible in either order, so 6.1b could not merge exactly the firms most worth merging: the
   ones already trading on a project.
 
+- **E1** — the obligation "this firm is reachable here" is three statements, and only two were
+  sealed. A SOURCE needs an origin (the origin FK); an ASSOCIATION needs a source (the sourced
+  trigger). Nothing required an ORIGIN to have a source. Every trigger hung off the two tables a
+  hand-written insert simply never writes, so a directory row could name a party and commit with
+  no association at all — a firm the directory plainly has and the resolver cannot see.
+
 > **Rule.** After adding a guard, ask what the guard now makes impossible and what it now makes
 > invisible. A protection that forbids the operation it protects, and a check that its own cascade
 > can satisfy, are both failures of the same question not being asked.
 
+> **Rule (E1).** When an invariant spans N tables, enumerate the N implications and check each has
+> an owner. Sealing "A implies B" and "B implies C" leaves "C implies B" unguarded, and the hole is
+> exactly where nobody writes through the service.
+
+**The most direct evidence E1 was reachable is that I wrote an instance of it.**
+`phase2-snapshot-shape.test.ts` created a `ProjectCompany` with a party and no source — by hand,
+two rounds before the seal that now refuses it, while I was fixing a different finding. The fixture
+now builds the full chain.
+
 ## Root D — probes that did not test what they claimed
 
 Not review findings — these I found myself, and they are recorded because the pattern recurred
-four times in one unit and would otherwise read as diligence.
+seven times in one unit and would otherwise read as diligence.
 
 | Probe | What it claimed | What it did |
 |---|---|---|
@@ -100,6 +124,8 @@ four times in one unit and would otherwise read as diligence.
 | rerun proof, assertion | no DDL blocked the retry | matched `already exists` anywhere, reading the `IF NOT EXISTS` **notice** as failure |
 | rerun proof, scenario | the migration is rerunnable | aborted at the top diagnostic, so no DDL was ever reached |
 | upgrade proof, after C1–C8 | the new seals hold | 528 assertions before and after — none of them touched the new seals |
+| upgrade proof, after E1–E3 | the new seal holds | 534 before and after: **the same lesson, one round later** |
+| E2/E3, first drafts | the races are closed | committed T2 before T1 began, so both passed at the unfixed head |
 
 The through-line: **each was a green signal produced without exercising the thing under test.** A
 passing probe and a probe that passes *for the right reason* are indistinguishable from the
@@ -109,6 +135,13 @@ watching the code.
 
 > **Rule.** Before trusting a probe, make it fail. If you cannot make it fail, you have not
 > established that it can.
+
+**This root repeated after being written down**, which is the finding about the finding. The
+E-round upgrade-proof extension was skipped for exactly the reason the C-round one had been — the
+suite was green, so the gate looked done — and the E2/E3 probes passed at the unfixed head for
+exactly the reason C2's first draft had. Naming a habit is not the same as having it; the
+assertion-count check (does the gate's output MOVE when the code moves?) is the mechanical version
+and is now the thing actually relied on.
 
 ## What this changes for 6.1b
 

@@ -221,8 +221,15 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     // unit 6.1a: a directory row now carries its firm's canonical party, so the fixture mints one
     // the way `CompaniesService.add` does. `CompanyDto` itself is unchanged — that is the point of
     // this suite, and this probe proves the party did not leak into the snapshot.
+    // The FULL chain, because a directory row with a party but no source is exactly the state
+    // Codex's E1 identified: no trigger fires, no association exists, and the resolver cannot see
+    // a firm the directory clearly has. This fixture WAS that state — written by hand two rounds
+    // before the seal that now refuses it — which is the most direct evidence the gap was
+    // reachable rather than theoretical.
     const p2Party = await t.prisma.externalParty.create({ data: { orgId: f.orgA.id, name: 'ACME', createdById: uid } });
+    await t.prisma.projectParty.create({ data: { orgId: f.orgA.id, projectId: pid, partyId: p2Party.id } });
     await t.prisma.projectCompany.create({ data: { id: s('p2-co'), projectId: pid, orgId: f.orgA.id, partyId: p2Party.id, name: 'ACME', kind: 'contractor', contactName: 'A Person', contactEmail: 'a@x.com', contactPhone: '123', notes: 'n' } });
+    await t.prisma.projectPartyCompanySource.create({ data: { orgId: f.orgA.id, projectId: pid, partyId: p2Party.id, projectCompanyId: s('p2-co') } });
     // a notification → notifications[]
     await t.prisma.notification.create({ data: { projectId: pid, text: 'hi', color: '#000', time: 'just now' } });
 

@@ -94,12 +94,25 @@ function make(orgRole: string | null = null) {
     },
   };
   (prisma as { $transaction?: unknown }).$transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma));
-  // `releasePartyAssociationIfUnsourced` locks the association before counting what justifies it.
-  // The lock is the point of that method, so the mock answers the row-existence question the
-  // participant asks rather than stubbing the call away — a lock that returns nothing here would
-  // make the release a no-op and the "removes a company" test would assert against a fiction.
-  (prisma as { $queryRaw?: unknown }).$queryRaw = vi.fn(async (_strings: TemplateStringsArray, projectId: string, partyId: string) =>
-    associations.filter((a) => a.projectId === projectId && a.partyId === partyId).map((a) => ({ id: `${a.projectId}:${a.partyId}` })));
+  // Three code paths now take row locks through `$queryRaw`, and each asks a DIFFERENT question:
+  // the association (release), the party root (rename serialization), and the company row itself
+  // (re-read inside the rename transaction). A single stub that answered one of them made the
+  // other two silently return nothing — which is how the company re-read started reporting
+  // "not found" for a row that exists. The mock discriminates on the SQL it was actually given
+  // rather than assuming which caller it is serving.
+  (prisma as { $queryRaw?: unknown }).$queryRaw = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const sql = strings.join('?');
+    if (sql.includes('"ProjectCompany"')) {
+      const [id, projectId] = values as [string, string];
+      return companies.filter((c) => c.id === id && c.projectId === projectId).map((c) => ({ partyId: c.partyId ?? null, name: c.name }));
+    }
+    if (sql.includes('"ExternalParty"')) {
+      const [partyId] = values as [string];
+      return parties.filter((p) => p.id === partyId).map((p) => ({ id: p.id }));
+    }
+    const [projectId, partyId] = values as [string, string];
+    return associations.filter((a) => a.projectId === projectId && a.partyId === partyId).map((a) => ({ id: `${a.projectId}:${a.partyId}` }));
+  });
   const svc = new CompaniesService(prisma as unknown as PrismaService, new OrgsParticipant());
   return { svc, companies, parties, associations, companySources };
 }

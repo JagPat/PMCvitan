@@ -356,6 +356,10 @@ export class OrgsParticipant {
     },
   ): Promise<void> {
     const { orgId, projectId, partyId } = input;
+    // The other half of the rename serialization: a source attach conflicts with a rename in
+    // flight, so the two orders are the only two outcomes and "counted one, then a second
+    // appeared" is not among them.
+    await tx.$queryRaw`SELECT "id" FROM "ExternalParty" WHERE "id" = ${partyId} FOR UPDATE`;
     await tx.projectParty.upsert({
       where: { projectId_partyId: { projectId, partyId } },
       create: { orgId, projectId, partyId },
@@ -439,6 +443,16 @@ export class OrgsParticipant {
     input: { partyId: string; name: string },
   ): Promise<{ renamed: boolean; sharedWith: number }> {
     const { partyId, name } = input;
+    // LOCK THE PARTY ROOT before counting. Counting and then renaming is a read followed by a
+    // write, and between them a bind or a repoint can attach a SECOND source: the count says
+    // "sole evidence", the attach commits, and the rename lands on a firm that is now shared —
+    // renamed behind the back of an origin that was written under the old identity.
+    //
+    // `attachPartySource` takes the same lock, which is what makes this a serialization and not
+    // just a longer read. The party root is the right thing to lock because the party is what the
+    // rename CHANGES; locking the sources would leave the one being created unlocked.
+    await tx.$queryRaw`SELECT "id" FROM "ExternalParty" WHERE "id" = ${partyId} FOR UPDATE`;
+
     const [companies, vendors] = await Promise.all([
       tx.projectPartyCompanySource.count({ where: { partyId } }),
       tx.projectPartyVendorSource.count({ where: { partyId } }),

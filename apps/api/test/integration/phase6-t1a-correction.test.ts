@@ -272,6 +272,121 @@ describe('Phase 6 unit 6.1a — the review corrections (live PG)', () => {
     expect(await t.prisma.projectParty.count({ where: { projectId, partyId } })).toBe(0);
   });
 
+  // ── E1 ─────────────────────────────────────────────────────────────────────────────────────
+  it('E1 — an ORIGIN row cannot commit without the source that makes its firm visible', async () => {
+    const projectId = await freshProject();
+    const party = await t.prisma.externalParty.create({ data: { orgId: f.orgA.id, name: 'Invisible Ltd', createdById: null } });
+
+    // Three statements make up "this firm is reachable here", and only two were sealed: a source
+    // needs an origin, an association needs a source. Nothing required an ORIGIN to have a source
+    // — so a directory row written outside its service committed with no association at all, and
+    // the resolver (which reads `ProjectParty` and nothing else) could not see a firm the
+    // directory plainly has.
+    expect(await failure(() => t.prisma.projectCompany.create({
+      data: { projectId, orgId: f.orgA.id, partyId: party.id, name: 'Invisible Ltd', kind: 'other' },
+    }))).toMatch(/no source row recording it/i);
+
+    const v = await vendors.create(f.orgA.id, { name: 'Invisible Supplier' }, orgAdmin(f.orgA.id));
+    const vendorRow = await t.prisma.vendor.findUniqueOrThrow({ where: { id: v.id } });
+    expect(await failure(() => t.prisma.projectVendor.create({
+      data: { projectId, orgId: f.orgA.id, vendorId: v.id, boundById: f.memberUser.id, partyId: vendorRow.partyId },
+    }))).toMatch(/no source row recording it/i);
+
+    // The seal is DEFERRED, so the service's legitimate order — origin first, then the source
+    // that records it — still commits. A NOT DEFERRABLE check would refuse `CompaniesService.add`
+    // itself, which is the failure mode this shape exists to avoid.
+    const ok = await companies.add(projectId, pmc(projectId), { name: 'Visible Ltd', kind: 'contractor' });
+    expect(await t.prisma.projectPartyCompanySource.count({ where: { projectCompanyId: ok.id } })).toBe(1);
+    await vendors.bind(projectId, { vendorId: v.id }, pmc(projectId));
+    expect(await t.prisma.projectVendor.count({ where: { projectId, vendorId: v.id } })).toBe(1);
+  });
+
+  // ── E3 ─────────────────────────────────────────────────────────────────────────────────────
+  it('E3 — a rename applies to the party the row ACTUALLY belongs to, not the one it was read on', async () => {
+    const projectId = await freshProject();
+    const { companyId, partyId: original } = await company(projectId, 'Original Firm');
+    const survivor = await t.prisma.externalParty.create({ data: { orgId: f.orgA.id, name: 'Survivor Firm', createdById: null } });
+
+    // The repoint has to land BETWEEN the service's pre-transaction read and its transaction —
+    // a repoint that commits first is seen by both versions and distinguishes nothing. So T2
+    // holds the row lock across T1's call: T1's unlocked pre-read sees the OLD party, and its
+    // in-transaction re-read (the fix) sees the new one.
+    const other = new PrismaClient();
+    const repointed = reported();
+    const commit = latch();
+    try {
+      const t2 = other.$transaction(async (tx) => {
+        await tx.projectParty.create({ data: { orgId: f.orgA.id, projectId, partyId: survivor.id } });
+        await tx.$executeRawUnsafe('UPDATE "ProjectCompany" SET "partyId" = $1 WHERE "id" = $2', survivor.id, companyId);
+        await tx.projectParty.deleteMany({ where: { projectId, partyId: original } });
+        repointed.ready();
+        await commit.waited;
+      }, { timeout: 30_000 }).catch((e: Error) => e);
+
+      await repointed.arrived;
+      const rename = companies.update(projectId, pmc(projectId), companyId, { name: 'Renamed Firm' })
+        .then(() => 'ok' as const)
+        .catch((e: Error) => e);
+      await new Promise((r) => setTimeout(r, 300));
+      commit.open();
+      await t2;
+      await rename;
+
+      // The party the row now belongs to carries the new name; the one it left is untouched.
+      expect((await t.prisma.externalParty.findUniqueOrThrow({ where: { id: survivor.id } })).name).toBe('Renamed Firm');
+      expect((await t.prisma.externalParty.findUniqueOrThrow({ where: { id: original } })).name).toBe('Original Firm');
+    } finally {
+      await other.$disconnect();
+    }
+  });
+
+  // ── E2 ─────────────────────────────────────────────────────────────────────────────────────
+  it('E2 — a rename serializes against a source being attached to the same party', async () => {
+    const projectA = await freshProject();
+    const projectB = await freshProject();
+    const { companyId, partyId } = await company(projectA, 'Racing Identity');
+    const v = await vendors.create(f.orgA.id, { name: 'Racing Identity' }, orgAdmin(f.orgA.id));
+    await t.prisma.$executeRawUnsafe('UPDATE "Vendor" SET "partyId" = $1 WHERE "id" = $2', partyId, v.id);
+
+    // T2 attaches a SECOND origin through the real participant and holds. T1 then renames while
+    // that attach is uncommitted — the window in which an unserialized count still reads "one
+    // source, sole evidence" and renames a firm that is about to be shared.
+    const other = new PrismaClient();
+    const attached = reported();
+    const commit = latch();
+    try {
+      const t2 = other.$transaction(async (tx) => {
+        const created = await tx.projectVendor.create({
+          data: { projectId: projectB, orgId: f.orgA.id, vendorId: v.id, boundById: f.memberUser.id, partyId },
+        });
+        await participant.attachPartySource(tx, {
+          orgId: f.orgA.id, projectId: projectB, partyId, origin: { kind: 'vendor', projectVendorId: created.id },
+        });
+        attached.ready();
+        await commit.waited;
+      }, { timeout: 30_000 }).catch((e: Error) => e);
+
+      await attached.arrived;
+      const rename = companies.update(projectA, pmc(projectA), companyId, { name: 'Renamed While Shared' })
+        .then(() => 'renamed' as const)
+        .catch((e: { status?: number }) => (e.status === 409 ? ('refused' as const) : ('errored' as const)));
+      await new Promise((r) => setTimeout(r, 300));
+      commit.open();
+      await t2;
+      const outcome = await rename;
+
+      const sources = await t.prisma.projectPartyCompanySource.count({ where: { partyId } })
+        + await t.prisma.projectPartyVendorSource.count({ where: { partyId } });
+      const name = (await t.prisma.externalParty.findUniqueOrThrow({ where: { id: partyId } })).name;
+      expect(
+        sources < 2 || name === 'Racing Identity',
+        `the party ended with ${sources} sources named "${name}" (rename ${outcome}) — a shared firm was renamed behind an origin's back`,
+      ).toBe(true);
+    } finally {
+      await other.$disconnect();
+    }
+  });
+
   // ── C2 ─────────────────────────────────────────────────────────────────────────────────────
   it('C2 — releasing an association serializes against a source being added for the same party', async () => {
     const projectId = await freshProject();

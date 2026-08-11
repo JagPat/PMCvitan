@@ -388,6 +388,68 @@ CREATE CONSTRAINT TRIGGER "ProjectPartyVendorSource_association_sourced"
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION "phase6_project_party_sourced"();
 
+-- ── the ORIGIN side of the same obligation ──────────────────────────────────────────────────
+-- Three statements make up "this firm is reachable on this project", and the seals above only
+-- covered two of them: a SOURCE must have an origin (the origin FK), and an ASSOCIATION must have
+-- a source (the sourced trigger). Nothing required an ORIGIN to have a source.
+--
+-- So a `ProjectCompany` or `ProjectVendor` written outside its service — an operator import, a
+-- repair script, a raw fixture — could name a party and commit with no source and no association
+-- at all. No trigger fires, because every trigger hangs off the two tables that were never
+-- written. The directory row exists, the firm is real, and the collaborator resolver (which reads
+-- `ProjectParty` and nothing else) cannot see it. An invisible counterparty is not a safe failure:
+-- it is a firm whose access nobody can grant, revoke or audit.
+--
+-- Deferred, because the service legitimately writes the origin before its source in one
+-- transaction. Checked at COMMIT, when the whole obligation is either satisfied or is not.
+DO $$
+DECLARE bad BIGINT; sample TEXT;
+BEGIN
+  SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
+    SELECT 'ProjectCompany:' || c."id" AS id FROM "ProjectCompany" c
+     WHERE NOT EXISTS (SELECT 1 FROM "ProjectPartyCompanySource" s WHERE s."projectCompanyId" = c."id")
+    UNION ALL
+    SELECT 'ProjectVendor:' || b."id" FROM "ProjectVendor" b
+     WHERE NOT EXISTS (SELECT 1 FROM "ProjectPartyVendorSource" s WHERE s."projectVendorId" = b."id")
+     LIMIT 20) x;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t1a: % firm row(s) carry a party with no source recording it (sample: %). The mirror above creates one per row; this is a migration defect, not a data problem.', bad, sample;
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION "phase6_origin_sourced"() RETURNS trigger AS $$
+DECLARE still_there BIGINT; sourced BIGINT;
+BEGIN
+  -- The row may have been deleted later in the same transaction; a deferred check must judge the
+  -- state at COMMIT, and a row that no longer exists owes nothing.
+  IF TG_TABLE_NAME = 'ProjectCompany' THEN
+    SELECT count(*) INTO still_there FROM "ProjectCompany" WHERE "id" = NEW."id";
+    IF still_there = 0 THEN RETURN NULL; END IF;
+    SELECT count(*) INTO sourced FROM "ProjectPartyCompanySource" WHERE "projectCompanyId" = NEW."id";
+  ELSE
+    SELECT count(*) INTO still_there FROM "ProjectVendor" WHERE "id" = NEW."id";
+    IF still_there = 0 THEN RETURN NULL; END IF;
+    SELECT count(*) INTO sourced FROM "ProjectPartyVendorSource" WHERE "projectVendorId" = NEW."id";
+  END IF;
+
+  IF sourced = 0 THEN
+    RAISE EXCEPTION 'phase6: % % names party % with no source row recording it, so no ProjectParty association exists and the firm is invisible to the resolver', TG_TABLE_NAME, NEW."id", NEW."partyId";
+  END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS "ProjectCompany_origin_sourced" ON "ProjectCompany";
+CREATE CONSTRAINT TRIGGER "ProjectCompany_origin_sourced"
+  AFTER INSERT OR UPDATE ON "ProjectCompany"
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION "phase6_origin_sourced"();
+
+DROP TRIGGER IF EXISTS "ProjectVendor_origin_sourced" ON "ProjectVendor";
+CREATE CONSTRAINT TRIGGER "ProjectVendor_origin_sourced"
+  AFTER INSERT OR UPDATE ON "ProjectVendor"
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION "phase6_origin_sourced"();
+
 -- ── closing diagnostic: the backfill left nothing unjustified ────────────────────────────────
 DO $$
 DECLARE bad BIGINT;

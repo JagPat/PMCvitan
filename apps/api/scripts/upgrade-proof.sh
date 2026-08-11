@@ -3127,6 +3127,19 @@ UPDATE "Vendor" SET "partyId" = 'pty_UP6-SURVIVOR' WHERE "id" = 'UP45-VEN';
 DELETE FROM "ProjectParty" WHERE "projectId" = 'p1' AND "partyId" = 'pty_UP45-VEN';
 COMMIT;
 SQL
+# E1 — the ORIGIN side of the obligation. A source needs an origin (FK) and an association needs
+# a source (trigger); nothing required an ORIGIN to have a source, so a directory row written
+# outside its service committed with no association and the resolver could not see the firm.
+# Added because the previous round's extension taught the lesson and this round repeated it: the
+# proof passed the E-round correction at exactly 534 assertions, unchanged, having tested none of
+# it.
+assert_rejects "6.1a E1: a directory row naming a party with no source recording it" \
+  "INSERT INTO \"ExternalParty\"(\"id\",\"orgId\",\"name\") VALUES('pty_UP6-ORPHAN','org-legacy','Invisible Firm'); INSERT INTO \"ProjectCompany\"(\"id\",\"projectId\",\"orgId\",\"partyId\",\"name\",\"kind\") VALUES('UP6-ORPHANC','p1','org-legacy','pty_UP6-ORPHAN','Invisible Firm','other')" \
+  'no source row recording it'
+assert_rejects "6.1a E1: …and a vendor binding with the same gap" \
+  "INSERT INTO \"ProjectVendor\"(\"id\",\"projectId\",\"orgId\",\"vendorId\",\"boundById\",\"partyId\") VALUES('UP6-ORPHANV','p1','org-legacy','UPT4-VEN','USER-1','p6v_UPT4-VEN')" \
+  'no source row recording it'
+
 assert "6.1a C8: the binding AND its source followed the vendor onto the surviving party" \
   "SELECT (SELECT \"partyId\" FROM \"ProjectVendor\" WHERE \"id\" = 'UP45-PV') || '|' || (SELECT \"partyId\" FROM \"ProjectPartyVendorSource\" WHERE \"projectVendorId\" = 'UP45-PV') || '|' || (SELECT COUNT(*)::text FROM \"ProjectParty\" WHERE \"projectId\" = 'p1' AND \"partyId\" = 'pty_UP45-VEN');" \
   "pty_UP6-SURVIVOR|pty_UP6-SURVIVOR|0"

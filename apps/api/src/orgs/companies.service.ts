@@ -108,12 +108,23 @@ export class CompaniesService {
     // an IDENTITY change, not a display edit. Left alone it would desynchronise the two: the
     // party a resolver keys on would still say ACME while the only row describing it says Beta.
     // Contact details are not identity and stay freely editable.
-    const renaming = input.name !== undefined && input.name !== existing.name;
     const updated = await this.prisma.$transaction(async (tx) => {
+      // RE-READ the row inside the transaction, locked. `existing` was read before it began, and
+      // a 6.1b repoint can move this company onto a different party in between — after which the
+      // update lands on the row (now on party B) while the rename would fire on party A: B's name
+      // left stale, A's name changed for a row that no longer belongs to it. The party renamed
+      // must be the party of the row actually being updated.
+      const current = await tx.$queryRaw<Array<{ partyId: string; name: string }>>`
+        SELECT "partyId", "name" FROM "ProjectCompany"
+         WHERE "id" = ${companyId} AND "projectId" = ${projectId}
+         FOR UPDATE`;
+      if (current.length === 0) throw new NotFoundException('Company not found on this project');
+      const pinned = current[0]!;
+
       const row = await tx.projectCompany.update({ where: { id: companyId }, data });
-      if (renaming) {
+      if (input.name !== undefined && input.name !== pinned.name) {
         const outcome = await this.party.renamePartyForSoleSource(tx, {
-          partyId: existing.partyId, name: input.name!,
+          partyId: pinned.partyId, name: input.name,
         });
         if (!outcome.renamed) {
           throw new ConflictException(
