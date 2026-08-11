@@ -16,7 +16,7 @@ task: 0
 task_state: in_progress
 work_item: phase-6-planning
 reviewed_merge: 1527ce3
-open_pr: PRNUM
+open_pr: 324
 next_task: phase-6-task-1
 blocking_directive: none
 updated: 2026-08-10
