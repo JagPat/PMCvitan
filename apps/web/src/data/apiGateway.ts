@@ -1053,7 +1053,7 @@ export class ApiGateway {
   /** §H — an advance to a counterparty, before any claim exists to draw it down. */
   /** 7B-vi (§H) — every advance on this project, with each counterparty's position. */
   commercialAdvances(): Promise<VendorAdvanceListDto> {
-    return this.get<VendorAdvanceListDto>(`/projects/${this.projectId}/commercial/advances`);
+    return this.req<VendorAdvanceListDto>(`/projects/${this.projectId}/commercial/advances`);
   }
 
   payAdvance(input: PayAdvanceInput, idempotencyKey?: string): Promise<unknown> {

@@ -115,6 +115,12 @@ export const COMMERCIAL_QUERIES = [
   // totals. FOLDS on every call: §G bounds 4–5 are computed from the rows, so a stored total
   // would be a second answer to a question the ledger already answers.
   'commercial.payments',
+  // 7B-vi (§H) — every advance on this project, with each counterparty's position. Folded on call
+  // like the ledgers beside it: `recoverable` is advances less every recovery across that
+  // counterparty's claims, and §H forbids a stored balance. Declared here rather than only served,
+  // because an undeclared route is one every registry and contract consumer believes does not
+  // exist — which is what `commercial.contract.test.ts` refuses, and it caught this omission.
+  'commercial.advances',
   // Phase 5 Task 7A — §J's cash forecast, served from the EIGHTH rebuildable projection. This is
   // the only commercial read that is PROJECTED rather than folded on call, and the reason is the
   // shape of the question: `commercial.budget` answers "what is this head's position right now"

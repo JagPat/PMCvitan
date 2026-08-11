@@ -7,6 +7,7 @@ import {
   type BillDeductionLedgerDto,
   type DeductionType,
   type VendorAdvanceDto,
+  type VendorAdvanceListDto,
   type VendorBillStatus,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
