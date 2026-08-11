@@ -160,6 +160,16 @@ a nullable reference to it; `ProjectCompany` becomes its per-project association
 | `ExternalParty` | **orgs** | org (`orgId`) | the canonical firm identity |
 | `ProjectCompany` | orgs | project | that party's per-project association (gains `partyId`) |
 | `Vendor` | procurement | org | that party's COMMERCIAL relationship (gains nullable `partyId`) |
+| `ProjectVendor` | procurement | project | a SECOND per-project association — see below |
+
+**`ProjectCompany` is not the only per-project association, and treating it as one leaves materials
+suppliers unreachable.** A firm that exists only as `Vendor` + `ProjectVendor` on project A gets an
+org-level party from 6.1 and no `ProjectCompany` row, so a project-scoped grant could not prove the
+party is associated with that project at all. Both rows are therefore association evidence: **a party
+is associated with a project when it has a `ProjectCompany` row OR a `ProjectVendor` row there**, and
+every rule below that names "the association" applies to both — the removal guard, the identity-update
+guard, and the merge command's repointing and duplicate handling. 6.1 backfills `ProjectVendor` the
+same way it backfills the other two, through the same participant.
 
 `Vendor.partyId` is a foreign key, not a read: procurement gains no `dependsOn` edge from holding
 it. If a later unit needs the party's *name* inside procurement it goes through an orgs query
@@ -223,6 +233,16 @@ Two properties of that command are load-bearing rather than incidental:
   different duplicate. This is the same stable-ascending-lock guardrail Phase 4 used for crew
   expansion, and it needs the same deterministic barrier test covering the opposite-direction
   interleaving.
+- **It REFUSES when either party has a non-null `promotedOrgId`.** §E makes that column the stable
+  link to a future tenant, and the merge outlives 6.1. Merging a promoted party either strands
+  `promotedOrgId` on an identity that no longer owns the vendor/company references, or moves a TENANT
+  relationship as a side effect of data cleanup — the same objection as authority rows, one level up.
+- **It REFUSES, or consolidates in the same transaction, when both parties already hold an
+  association on the SAME project.** Repointing every reference is not enough there: it would leave
+  two associations on one project with independently editable identities, and a guard that cannot
+  tell which is the real one. `ProjectCompany` and `ProjectVendor` therefore each carry a unique
+  `(projectId, partyId)` seal, so the duplicate is unrepresentable rather than merely undesirable,
+  and the merge must resolve the conflict explicitly before it can commit.
 - **It REFUSES once the target or source party holds any binding or grant.** The command outlives
   6.1, and after 6.2 a merge would move the FACTS to the surviving party while the AUTHORITY rows
   stayed on the absorbed one — collaborators cut off, or a firm revocation checking an identity that
@@ -234,8 +254,17 @@ Two properties of that command are load-bearing rather than incidental:
 checks.** Once the row is the party's per-project association, deleting it while the party holds
 bindings or grants on that project either strands the grants or cuts active collaborators off.
 
-An earlier draft put that guard in 6.1. That is the wrong unit and for an instructive reason: **6.1
-cannot check rows that do not exist yet.** A service check written against tables 6.2 introduces is
+**And removal is not the only way to break the mapping — an in-place UPDATE does it silently.** The
+existing company surface can rewrite `name` and `kind`, so once `partyId` is backfilled an org admin
+can take ACME's association (party P, holding bindings and grants) and PATCH it to represent a
+different firm: the grants stay on P while the association now names someone else, which walks
+straight past a delete-only guard. **Identity-changing updates are therefore treated exactly like
+delete and repoint** — refused once authority rows exist, with the operator creating or reconciling a
+party instead. Non-identity fields (contact details) stay freely editable; the distinction is whether
+the edit changes WHO the row says the firm is.
+
+An earlier draft put the removal guard in 6.1. That is the wrong unit and for an instructive reason:
+**6.1 cannot check rows that do not exist yet.** A service check written against tables 6.2 introduces is
 inert by construction, and an inert guard is indistinguishable from a guard that works until the day
 it matters. So the rule is stated here, in the plan, as a constraint on 6.2 — **the unit that
 creates the binding and grant tables installs the referential guard on `ProjectCompany` removal in
@@ -325,9 +354,9 @@ plan carries them forward and adds its own; this table is the handoff record.
 |---|---|---|---|
 | P1 | do service backstops still leak? | a tripwire RED-flags an allow-listed handler with a `ROLE_POLICY[...]` gate on its path, mutation-tested against the 20 measured files | 6.3 |
 | P2 | is every route classified, and rollups filtered? | every route resolves to exactly one class; `me/memberships` and `auth/switch` reachable with the resolver ON; `me/portfolio` returns grant-reachable projects AND grant-scoped counters, not project-wide ones | 6.3 |
-| P3 | is the §B invariant held? | no active collaborator membership with zero reachable routes — at enablement, on membership create/reactivate/re-role, **and on grant create/update/revoke or binding revocation** | 6.3 |
+| P3 | is the §B invariant held? | no active collaborator membership with zero reachable routes — at enablement, on membership create/reactivate/re-role, **and on grant create/update/revoke or binding create/update/REPOINT/revoke** — moving a binding from a party with a reachable grant to one without leaves the same membership with zero routes, and an UPDATE fires none of the revoke paths | 6.3 |
 | P4 | is scope-completeness asserted where it misfires? | 6.3 passes with scopes that have no entries; the phase-exit check fails when one never gains any | 6.3 / exit |
-| P5 | does §A's layering hold in the real graph? | the module-graph test shows no `orgs → procurement` edge after `ExternalParty` lands | 6.1 |
+| P5 | does §A's layering hold, and is the new write DECLARED? | the module-graph test shows no `orgs → procurement` dependency edge, **and** `procurement.workflowParticipants` declares `orgs` — a hand-built participant in the vendor create path would otherwise pass the first half while the cross-module write stayed undeclared | 6.1 |
 
 ## Out of scope (Phase 6)
 

@@ -1,6 +1,6 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Eight finding-bearing heads, forty findings, on a docs-only plan — and the count did not fall:
+Nine finding-bearing heads, forty-seven findings, on a docs-only plan — and the count did not fall:
 **5 · 4 · 5 · 5 · 6.** The review lifecycle reached its limit on head `3f7e35d` and recommended
 splitting the unit. **It is right, and this audit's conclusion is that the unit was never one unit.**
 
@@ -52,6 +52,13 @@ concerns sharing one review, not of a careless document.
 | 38 | `5ca3719` | repoint or REFUSE authority rows during a party merge | created by fix 32 |
 | 39 | `5ca3719` | serialize opposite-direction party merges | created by fix 32 |
 | 40 | `5ca3719` | bind `ProjectCompany.orgId` back to `Project` | created by fix 26 |
+| 41 | `3f5f657` | the audit's own verification line was FALSE for the reviewed tree | **unchecked claim** |
+| 42 | `3f5f657` | represent `ProjectVendor` bindings in the party association | §A completeness |
+| 43 | `3f5f657` | guard company identity UPDATES, not only deletes | created by fix 33 |
+| 44 | `3f5f657` | refuse merges of PROMOTED parties | created by fix 32 |
+| 45 | `3f5f657` | prevent duplicate project associations during a merge | created by fix 32 |
+| 46 | `3f5f657` | P5 must assert the DECLARED procurement → orgs edge | created by fix 34 |
+| 47 | `3f5f657` | P3 must cover binding create/update/repoint | created by fix 21 |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -352,6 +359,19 @@ revokes first.
 the plan when findings 20/21 widened P2 and P3. The audit now reproduces the plan's table and names
 the plan as authoritative, which is the same fix root B has been pointing at all along.
 
+**And it drifted AGAIN one round later, because the check I wrote for it could not fail.** Round 8
+reported the two tables "verified identical programmatically". The comparison used
+`re.findall(r'^\| (P[1-5]) \|.*')`, and `findall` with one capture group returns **only the group** —
+so it compared `{P1…P5}` against `{P1…P5}` and would have passed against any content whatsoever. Round
+9's edits to P3 and P5 duly drifted, and the vacuous check reported success. Rewritten to compare full
+row text, mutation-tested by tampering with a row and confirming the comparison fails, and the audit's
+rows are now generated FROM the plan's rather than hand-copied.
+
+This is carried-forward rule 4 — *a check is only evidence if its output could have come out
+differently* — failing in the very audit that lists it, one round after I wrote a paragraph about
+one-fact-two-places. Three of this lineage's five carried rules have now been broken inside the
+document that records them.
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -401,10 +421,15 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 
 ## Verification
 
-- `assessRunnerState` on the committed file returns `next_task:phase-6-task-1`, and is
-  **mutation-tested**: restoring `work_item: phase-6-planning` yields
-  `work_item:phase-6-planning`, restoring `task_state: in_progress` yields `task:0`, restoring
-  `open_pr: 324` yields `pr:324`. Three different wrong answers, so the check could have failed.
+- **CORRECTED.** An earlier round of this audit claimed `assessRunnerState` returns
+  `next_task:phase-6-task-1`. That was true of a STATUS shape this PR no longer carries and never
+  merged. On `main` today — after PR #325 — it returns **`next_task:phase-6-planning`**, because the
+  BOUNDARY plan is unwritten and STATUS's own rule is to begin at the phase's planning item while a
+  plan does not exist. The claim is corrected rather than quietly deleted: an unchecked verification
+  line is exactly the class of error this audit is about, and it survived four rounds here.
+  The advance to `phase-6-task-1` lands in the status PR that follows THIS plan's merge, on the rule
+  #325 established — the phase pointer advances in the change that lands the artefact, not the one
+  that anticipates it.
 - The route measurements are taken by walking the same controller metadata `route-policy.test.ts`
   walks — 225 handlers, 167 mutating (134 `@RolesFor` / 22 `@AllowAnyRole` / 11 `@Public`), 58 reads
   (45 `@RolesFor`), 9 reads already admitting a collaborator role. Counted, not estimated.
@@ -424,6 +449,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `db2c64d` | **3** | **0** — 26/27 are §A gaps on their merits, 28 is a rule conflict. The split worked |
 | `f208076` | 6 | **3** (29, 30 from the split line; 34 from fix 27) — the split was right, its SEAM was not |
 | `5ca3719` | 6 | **4** (37 from fix 33; 38/39 from fix 32; 40 from fix 26) — all §A DEPTH now, no structural findings |
+| `3f5f657` | 7 | **5** (43/44/45 from fix 32-33; 46 from fix 34; 47 from fix 21) — five of seven are depth on ONE command |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header
@@ -463,7 +489,7 @@ lost — it is `git show 4eb607a:docs/STATUS.md` — and the follow-up PR restor
 | Restored by the follow-up STATUS PR | Finding |
 |---|---|
 | the Phase 5 table's three stale state tokens, the stale `6B` narrative, and the "PHASE 5 IS THE ACTIVE PHASE" sentence, plus the paragraph marking per-row prose as historical | 3 |
-| the merged handoff shape (`task_state: merged`, `work_item: none`, `open_pr: none`) that makes `assessRunnerState` reach `next_task:phase-6-task-1` | 6 |
+| the merged handoff shape — which on the merged tree resolves to `next_task:phase-6-planning`, the boundary plan being unwritten | 6 (withdrawn: see round 6) |
 
 Neither finding is reopened or disputed; only the vehicle changes.
 
@@ -484,10 +510,10 @@ keeps paying for.
 | # | Question | Probe | Unit |
 |---|---|---|---|
 | P1 | do service backstops still leak? | a tripwire RED-flags an allow-listed handler with a `ROLE_POLICY[...]` gate on its path, mutation-tested against the 20 measured files | 6.3 |
-| P2 | is every route classified, and rollups filtered? | every route resolves to exactly one class; `me/memberships` and `auth/switch` reachable with the resolver ON; `me/portfolio` returns grant-reachable projects **AND grant-scoped counters**, not project-wide ones | 6.3 |
-| P3 | is the §B invariant held? | no active collaborator membership with zero reachable routes — at enablement, on membership create/reactivate/re-role, **and on grant create/update/revoke or binding revocation** | 6.3 |
+| P2 | is every route classified, and rollups filtered? | every route resolves to exactly one class; `me/memberships` and `auth/switch` reachable with the resolver ON; `me/portfolio` returns grant-reachable projects AND grant-scoped counters, not project-wide ones | 6.3 |
+| P3 | is the §B invariant held? | no active collaborator membership with zero reachable routes — at enablement, on membership create/reactivate/re-role, **and on grant create/update/revoke or binding create/update/REPOINT/revoke** — moving a binding from a party with a reachable grant to one without leaves the same membership with zero routes, and an UPDATE fires none of the revoke paths | 6.3 |
 | P4 | is scope-completeness asserted where it misfires? | 6.3 passes with scopes that have no entries; the phase-exit check fails when one never gains any | 6.3 / exit |
-| P5 | does §A's layering hold in the real graph? | the module-graph test shows no `orgs → procurement` edge after `ExternalParty` lands | 6.1 |
+| P5 | does §A's layering hold, and is the new write DECLARED? | the module-graph test shows no `orgs → procurement` dependency edge, **and** `procurement.workflowParticipants` declares `orgs` — a hand-built participant in the vendor create path would otherwise pass the first half while the cross-module write stayed undeclared | 6.1 |
 
 Nothing is dismissed, and the exact-head gate still fails closed on every current-head finding. What
 moves is where each answer is proven.
