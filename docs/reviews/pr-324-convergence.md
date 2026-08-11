@@ -1,6 +1,6 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Seven finding-bearing heads, thirty-four findings, on a docs-only plan — and the count did not fall:
+Eight finding-bearing heads, forty findings, on a docs-only plan — and the count did not fall:
 **5 · 4 · 5 · 5 · 6.** The review lifecycle reached its limit on head `3f7e35d` and recommended
 splitting the unit. **It is right, and this audit's conclusion is that the unit was never one unit.**
 
@@ -46,6 +46,12 @@ concerns sharing one review, not of a careless document.
 | 32 | `f208076` | schedule the party reconciliation command before grants | §A gap |
 | 33 | `f208076` | guard `ProjectCompany` association removal | §A gap |
 | 34 | `f208076` | declare the procurement → orgs creation edge | created by fix 27 |
+| 35 | `5ca3719` | say the boundary plan blocks **6.2** in every gate, not just the table | inconsistent restatement |
+| 36 | `5ca3719` | keep the deferral ledger identical to the plan's probes | **one fact in two places** |
+| 37 | `5ca3719` | put the delete guard in the unit whose tables it checks | created by fix 33 |
+| 38 | `5ca3719` | repoint or REFUSE authority rows during a party merge | created by fix 32 |
+| 39 | `5ca3719` | serialize opposite-direction party merges | created by fix 32 |
+| 40 | `5ca3719` | bind `ProjectCompany.orgId` back to `Project` | created by fix 26 |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -303,6 +309,34 @@ for one firm with no command to reconcile them (32); `ProjectCompany` deletion s
 grants once the row became an association (33); and the `Vendor` create path needing a declared
 procurement → orgs participant edge to assign a party in-transaction (34, created by fix 27).
 
+## Round 8 — the findings moved from structure to depth
+
+Six findings, and what changed is their KIND. None is about the split, the deferral, the probe
+placement or the review shape; all six are §A design detail, and four are consequences of round 7's
+own fixes:
+
+| # | What round 7 added | What it missed |
+|---|---|---|
+| 40 | same-org composite FK on `ProjectCompany.partyId` (fix 26) | a copied `orgId` seals nothing unless the copy is itself bound to the project — `(orgId, projectId) → Project(orgId, id)` was needed too, or a forged row keeps `projectId` on org A while pointing at an org-B party and both FKs pass |
+| 38 | the merge/repoint command (fix 32) | it outlives 6.1; after 6.2 a merge moves the FACTS and leaves BINDINGS and GRANTS on the absorbed party |
+| 39 | (same) | one transaction is not serialization — concurrent A→B and B→A each commit and reconcile the duplicate into a different duplicate |
+| 37 | the `ProjectCompany` removal guard (fix 33) | 6.1 cannot check binding/grant rows that 6.2 introduces, so the guard ships INERT |
+
+**37 is the sharpest of the four and generalises.** I wrote a guard into the unit that owns the
+TABLE BEING PROTECTED rather than the unit that creates the tables that make protection necessary. It
+would have passed review, shipped, and been indistinguishable from a working guard until 6.2 landed.
+*An inert check is worse than no check, because it looks like coverage.* The guard now ships with
+6.2, stated here as a constraint on that unit.
+
+**38 resolved toward refusal rather than repointing**, and the reason is §D: moving a grant is an
+authority decision, so a merge that silently repointed authority rows would move authority as a side
+effect of a data-cleanup command. The merge is a pre-grant operation; after grants exist the operator
+revokes first.
+
+**36 is one fact in two places** — the audit kept its own copy of the probe table and drifted behind
+the plan when findings 20/21 widened P2 and P3. The audit now reproduces the plan's table and names
+the plan as authoritative, which is the same fix root B has been pointing at all along.
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -374,6 +408,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `3f7e35d` | 6 | **4** (20, 22, 23 from the round before it; 25 was finding 14 never actually fixed) |
 | `db2c64d` | **3** | **0** — 26/27 are §A gaps on their merits, 28 is a rule conflict. The split worked |
 | `f208076` | 6 | **3** (29, 30 from the split line; 34 from fix 27) — the split was right, its SEAM was not |
+| `5ca3719` | 6 | **4** (37 from fix 33; 38/39 from fix 32; 40 from fix 26) — all §A DEPTH now, no structural findings |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header
@@ -424,12 +459,19 @@ first attempt, which named the contiguous next stop instead). Every round-3 and 
 what the cap says can no longer be the verification. Each becomes a probe in the unit that can
 execute it:
 
-| # | Question the prose answers | Probe | Settled in |
+**The canonical probe table lives in the PLAN**, in
+`docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md` under "Probes handed to the
+boundary plan". It is reproduced here for the review record, and the plan is authoritative if the
+two ever differ — an earlier round kept a second copy here that drifted behind the plan after
+findings 20 and 21 widened P2 and P3, which is the same one-fact-two-places defect this lineage
+keeps paying for.
+
+| # | Question | Probe | Unit |
 |---|---|---|---|
-| P1 | do service backstops actually stop leaking? | tripwire RED-flags an allow-listed handler with a `ROLE_POLICY[...]` gate on its path; mutation-tested against the 20 measured files | 6.3 |
-| P2 | is every route classified, and is the rollup filtered? | **every** route resolves to exactly one of the four classes (no route sits outside all of them, as `me/portfolio` did); `me/memberships` and `auth/switch` succeed with the resolver ON; `me/portfolio` returns only grant-reachable projects | 6.3 |
-| P3 | is §B's INVARIANT held — no active collaborator membership with zero reachable routes? | at enablement AND on later membership create / reactivate / re-role; grantless binding, and a grant covering no allow-listed route, both caught | 6.3 |
-| P4 | is the scope-completeness assertion absent where it would misfire? | 6.3 passes with scopes that have no entries; the phase-exit check fails when one never gains any | 6.3 / phase exit |
+| P1 | do service backstops still leak? | a tripwire RED-flags an allow-listed handler with a `ROLE_POLICY[...]` gate on its path, mutation-tested against the 20 measured files | 6.3 |
+| P2 | is every route classified, and rollups filtered? | every route resolves to exactly one class; `me/memberships` and `auth/switch` reachable with the resolver ON; `me/portfolio` returns grant-reachable projects **AND grant-scoped counters**, not project-wide ones | 6.3 |
+| P3 | is the §B invariant held? | no active collaborator membership with zero reachable routes — at enablement, on membership create/reactivate/re-role, **and on grant create/update/revoke or binding revocation** | 6.3 |
+| P4 | is scope-completeness asserted where it misfires? | 6.3 passes with scopes that have no entries; the phase-exit check fails when one never gains any | 6.3 / exit |
 | P5 | does §A's layering hold in the real graph? | the module-graph test shows no `orgs → procurement` edge after `ExternalParty` lands | 6.1 |
 
 Nothing is dismissed, and the exact-head gate still fails closed on every current-head finding. What

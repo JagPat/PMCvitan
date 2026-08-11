@@ -3,7 +3,9 @@
 **Docs-only architecture plan, first of two.** This document settles external IDENTITY — the
 canonical party, the promotion seam, and tenancy — and plans units 6.1 and 6.2. The AUTHORITY
 BOUNDARY (§B the collaborator principal, §C the scope vocabulary, §D the closed set and its
-tripwires) is planned in a **separate document that must clear its own review stop before 6.3**.
+tripwires, and unit 6.2's bindings and grants) is planned in a **separate document that must clear
+its own review stop before 6.2** — not merely before 6.3. A grant row cannot be stored before the
+vocabulary that gives it meaning is settled, so the block starts at the unit that would store one.
 
 **Why two documents, stated rather than glossed.** Written as one, this plan took five
 finding-bearing heads and nineteen findings, and the count was RISING (5 · 4 · 5 · 5 · 6) — the
@@ -173,7 +175,15 @@ live-PostgreSQL cross-tenant proof would fail on a shape the database still acce
 | Reference | Seal |
 |---|---|
 | `Vendor.partyId` | composite FK `(orgId, partyId) → ExternalParty(orgId, id)` — `Vendor` already carries `orgId` |
-| `ProjectCompany.partyId` | the association is project-scoped, so it carries the project's `orgId` and takes the same composite FK; a cross-org link is then unrepresentable rather than merely refused |
+| `ProjectCompany.partyId` | carries the project's `orgId` and takes the same composite FK — **plus** `(orgId, projectId) → Project(orgId, id)`, see below |
+
+**A copied `orgId` seals nothing unless the copy is itself bound to the project.** With only
+`projectId → Project(id)` and `(orgId, partyId) → ExternalParty(orgId, id)`, a row can keep
+`projectId` on an org-A project, set its copied `orgId` to org B, and point at an org-B party — both
+FKs pass and org B's party becomes the association for org A's project. So `ProjectCompany` also
+takes `(orgId, projectId) → Project(orgId, id)`, which makes the copy agree with the project by
+construction. (Deriving the org instead of storing it would work too, but a stored-and-bound copy is
+what the composite-FK pattern everywhere else in this repository already uses.)
 
 This is the pattern every prior phase used for containment (Phase 4's same-project composite FKs on
 worker, device and crew; Phase 3's on vendor and requisition lines), applied one level up at the org.
@@ -204,14 +214,33 @@ merge across orgs, and repointing every `Vendor` and `ProjectCompany` reference 
 so the canonical identity is actually reachable before anything relies on it. What 6.1 still does
 not do is DECIDE which rows are the same firm; that judgement stays with the operator.
 
-**`ProjectCompany` removal stops being directory cleanup.** Once the row is the party's per-project
-association, deleting it while the party holds bindings or grants on that project either strands the
-grants or cuts active collaborators off. 6.1 gives the association a guarded lifecycle: removal is
-**refused while any party binding or grant references the party on that project**, and the check
-lives with the association rather than in the boundary resolver, because the row is orgs-owned and
-the guard must hold even while the resolver is off. (There are no bindings or grants until 6.2, so
-the guard is inert on delivery and correct the moment they exist — which is the point of stating it
-now rather than discovering it in 6.2.)
+Two properties of that command are load-bearing rather than incidental:
+
+- **It LOCKS both party roots in a total order (ascending `id`) before reading any reference.** One
+  transaction is not enough on its own: with party A on a `Vendor` and party B on a `ProjectCompany`,
+  an operator running A→B and another running B→A each update a disjoint initial row set and both
+  commit, leaving the vendor on B and the company on A — the duplicate firm reconciled into a
+  different duplicate. This is the same stable-ascending-lock guardrail Phase 4 used for crew
+  expansion, and it needs the same deterministic barrier test covering the opposite-direction
+  interleaving.
+- **It REFUSES once the target or source party holds any binding or grant.** The command outlives
+  6.1, and after 6.2 a merge would move the FACTS to the surviving party while the AUTHORITY rows
+  stayed on the absorbed one — collaborators cut off, or a firm revocation checking an identity that
+  no longer owns anything. Repointing authority rows silently is the worse option: moving a grant is
+  an authority decision, and §D exists so that authority is never moved as a side effect. So the
+  merge is a pre-grant operation, and after grants exist the operator revokes first.
+
+**`ProjectCompany` removal stops being directory cleanup — and the guard ships WITH the tables it
+checks.** Once the row is the party's per-project association, deleting it while the party holds
+bindings or grants on that project either strands the grants or cuts active collaborators off.
+
+An earlier draft put that guard in 6.1. That is the wrong unit and for an instructive reason: **6.1
+cannot check rows that do not exist yet.** A service check written against tables 6.2 introduces is
+inert by construction, and an inert guard is indistinguishable from a guard that works until the day
+it matters. So the rule is stated here, in the plan, as a constraint on 6.2 — **the unit that
+creates the binding and grant tables installs the referential guard on `ProjectCompany` removal in
+the same change**, DB-backed where the shape permits it rather than service-only. 6.1 ships the
+association; 6.2 ships what makes removing it unsafe, and therefore ships the refusal.
 
 **6.1 never merges two existing rows into one party.** It creates one party per existing `Vendor`
 and one per existing `ProjectCompany`, and leaves any reconciliation to an explicit operator act.
@@ -306,8 +335,8 @@ plan carries them forward and adds its own; this table is the handoff record.
   (Phase 7, deferred).
 - External credentials, external schema assumptions, outbound calls to third-party systems.
 - The guest → Org promotion command (§E — the seam ships, the act does not).
-- The authority boundary (§B/§C/§D) — planned in the separate boundary document, not deferred or
-  dropped. 6.3 is blocked until it clears.
+- The authority boundary (§B/§C/§D) and unit 6.2's bindings/grants — planned in the separate boundary
+  document, not deferred or dropped. **6.2 and everything after it are blocked until it clears.**
 - Reopening cleared architecture in Phases 0–5.
 
 ## Verification battery (every PR)
