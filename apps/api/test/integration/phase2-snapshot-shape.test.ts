@@ -226,10 +226,17 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     // a firm the directory clearly has. This fixture WAS that state — written by hand two rounds
     // before the seal that now refuses it — which is the most direct evidence the gap was
     // reachable rather than theoretical.
+    // ONE transaction, because the seals are DEFERRED: the association is legal only once its
+    // source exists, and four separate top-level calls are four separate transactions — the
+    // association would commit alone and be refused for having nothing behind it. The service
+    // writes all four together for exactly this reason, and a fixture that skips the transaction
+    // is not reproducing what the application does.
     const p2Party = await t.prisma.externalParty.create({ data: { orgId: f.orgA.id, name: 'ACME', createdById: uid } });
-    await t.prisma.projectParty.create({ data: { orgId: f.orgA.id, projectId: pid, partyId: p2Party.id } });
-    await t.prisma.projectCompany.create({ data: { id: s('p2-co'), projectId: pid, orgId: f.orgA.id, partyId: p2Party.id, name: 'ACME', kind: 'contractor', contactName: 'A Person', contactEmail: 'a@x.com', contactPhone: '123', notes: 'n' } });
-    await t.prisma.projectPartyCompanySource.create({ data: { orgId: f.orgA.id, projectId: pid, partyId: p2Party.id, projectCompanyId: s('p2-co') } });
+    await t.prisma.$transaction(async (tx) => {
+      await tx.projectParty.create({ data: { orgId: f.orgA.id, projectId: pid, partyId: p2Party.id } });
+      await tx.projectCompany.create({ data: { id: s('p2-co'), projectId: pid, orgId: f.orgA.id, partyId: p2Party.id, name: 'ACME', kind: 'contractor', contactName: 'A Person', contactEmail: 'a@x.com', contactPhone: '123', notes: 'n' } });
+      await tx.projectPartyCompanySource.create({ data: { orgId: f.orgA.id, projectId: pid, partyId: p2Party.id, projectCompanyId: s('p2-co') } });
+    });
     // a notification → notifications[]
     await t.prisma.notification.create({ data: { projectId: pid, text: 'hi', color: '#000', time: 'just now' } });
 
@@ -250,7 +257,14 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     await t.prisma.crewRow.deleteMany({ where: { dailyLog: { projectId: pid } } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId: pid } });
     await t.prisma.notification.deleteMany({ where: { projectId: pid } });
-    await t.prisma.projectCompany.deleteMany({ where: { projectId: pid } });
+    // The company and the association it justifies come down TOGETHER, the way
+    // `CompaniesService.remove` does it. Deleting the company alone cascades its source away and
+    // leaves `ProjectParty` with nothing behind it, which the deferred seal refuses at COMMIT —
+    // correctly. Two statements in one transaction, not two transactions.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.projectCompany.deleteMany({ where: { projectId: pid } });
+      await tx.projectParty.deleteMany({ where: { projectId: pid } });
+    });
     await t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId: pid } } });
     await t.prisma.inspection.deleteMany({ where: { projectId: pid } });
     await t.prisma.phase.deleteMany({ where: { projectId: pid } });
