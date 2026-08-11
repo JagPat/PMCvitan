@@ -164,7 +164,10 @@ describe('Phase 2 Task 7 — module registry', () => {
       commercial: ['inventory', 'activities', 'procurement', 'labour', 'orgs'],
       // Phase 5 Task 1 (§C/§K) — the material twin: all FOUR PO lifecycle sites write or supersede
       // the attribution inside procurement's own transaction. Procurement never READS commercial.
-      procurement: ['commercial'],
+      // Phase 6 unit 6.1a (§A) — creating a vendor mints its orgs-owned `ExternalParty` and
+      // binding one records the `ProjectParty` association, both through `OrgsParticipant`
+      // inside procurement's own transaction. Declared edge, not a direct write.
+      procurement: ['commercial', 'orgs'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);
