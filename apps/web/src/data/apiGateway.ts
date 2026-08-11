@@ -59,6 +59,7 @@ import type {
   SodRule,
   MeasurementRegisterDto,
   VendorBillListDto,
+  VendorAdvanceListDto,
 } from '@vitan/shared';
 
 export interface ApiSnapshot {
@@ -1050,6 +1051,11 @@ export class ApiGateway {
     return this.cmd('/commercial/payments/record', input, idempotencyKey);
   }
   /** §H — an advance to a counterparty, before any claim exists to draw it down. */
+  /** 7B-vi (§H) — every advance on this project, with each counterparty's position. */
+  commercialAdvances(): Promise<VendorAdvanceListDto> {
+    return this.req<VendorAdvanceListDto>(`/projects/${this.projectId}/commercial/advances`);
+  }
+
   payAdvance(input: PayAdvanceInput, idempotencyKey?: string): Promise<unknown> {
     return this.cmd('/commercial/advances', input, idempotencyKey);
   }

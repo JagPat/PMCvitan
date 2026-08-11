@@ -31,8 +31,123 @@ import { normalizedBillNumber } from '@vitan/shared';
  * So: the value is part of the identity (two different amounts are two different actions), and
  * the disable-while-pending test is prefix-matched on the stable part.
  */
-export const budgetCoalesceKey = (costHeadCode: string, amount: string): string =>
-  `com:budget:${costHeadCode}:${amount}`;
+export const budgetCoalesceKey = (input: { costHeadCode: string; amount: string; reason: string }): string =>
+  payloadCoalesceKey('budget', input.costHeadCode, input);
+
+/**
+ * ── 7B-vi (§H) — DERIVE the coalesce identity, do not enumerate it ───────────────────────────
+ *
+ * `pr-317-convergence.md` records this lineage failing FOUR times at hand-listing the facts that
+ * define a row: round 2 listed three preconditions and called it the rule, round 3 found three
+ * more, round 4 widened the advance key by listing amount and reason, round 5 found the two that
+ * list omitted (`method`, `reference`). A hand-picked subset always looks complete from the inside
+ * — that is the property that makes this root recur, and why the fix cannot be a longer list.
+ *
+ * So: for a command whose identity IS its payload, two dispatches are the same action only if they
+ * are the same INPUT. The tail is a deterministic, injective serialisation of the WHOLE object, so
+ * **a field added to the command joins the identity automatically** — the property every
+ * enumeration here lacked.
+ *
+ * The SCOPE prefix is kept and is not decoration. Several conflict predicates prefix-match these
+ * keys (`isBudgetPendingForHead` asks "any budget set for this head, at any amount"), and an
+ * opaque hash would silently break every one of them. Stable prefix for the predicates, derived
+ * tail for the identity — neither half can be dropped without losing something real.
+ *
+ * Applied to BOTH commands that have this shape, not only the one a finding named. `setBudget`
+ * carries `reason` and `budgetCoalesceKey` omitted it, so two corrections of one head at the same
+ * amount coalesced and the second was dropped: the same defect, found by asking the question the
+ * parked ledger told the next unit to ask rather than by another round of review.
+ */
+export const payloadCoalesceKey = (action: string, scope: string, input: unknown): string =>
+  `com:${action}:${scope}:${canonicalPayload(input)}`;
+
+/**
+ * A stable, INJECTIVE serialisation: object keys sorted so field order cannot change the identity,
+ * and every string JSON-escaped so no value can impersonate a separator. Joining raw values with
+ * `:` would make `{a:'x:y',b:'z'}` and `{a:'x',b:'y:z'}` the same key — a collision that would
+ * silently drop a legitimate second command, which is the exact failure this helper exists to end.
+ *
+ * `undefined` is dropped rather than encoded, so an optional field left unset and one absent from
+ * the object are the same action. `null` is KEPT: an explicitly cleared reference is a different
+ * input from one never given.
+ */
+export const canonicalPayload = (value: unknown): string => {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(canonicalPayload).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalPayload(v)}`).join(',')}}`;
+};
+
+/**
+ * §H — an advance is APPEND-ONLY with no server ceiling, so two advances to one counterparty are
+ * two FACTS, not a retry. Its identity is therefore its whole payload: `method` and `reference`
+ * join automatically, and so would a sixth field. Settled by the `commercial.advances` read, which
+ * is why that read lands in this unit BEFORE the control it settles.
+ */
+export const advanceCoalesceKey = (input: {
+  vendorId: string; amount: string; reason: string; method: string; reference?: string | null;
+}): string => payloadCoalesceKey('advance', input.vendorId, input);
+
+/**
+ * 7B-vi — the op → PERMISSION map, moved HERE to sit beside `COMMERCIAL_OUTBOX_OP_TYPES`.
+ *
+ * These are two registries that must agree about the same set, and they lived in two files. That
+ * is how this unit shipped `payAdvance` in neither of them: the op dispatched with a valid key,
+ * hydration did not recognise it, the flush did not count it as a settled commercial write, and
+ * the durable dispatcher treated an unmapped op as needing NO client authority — so an engineer
+ * session offline would have had a cash advance queued and reported saved, then 403'd and dropped.
+ *
+ * Four findings from one omission, and moving the lists together is the part that stops the next
+ * one: `commercial-keys.test.ts` now asserts the two sets are IDENTICAL, so an op registered in
+ * one and forgotten in the other fails rather than shipping half-wired. The unit's own root — a
+ * hand-kept list that looks complete from the inside — one layer up from the keys it was written
+ * to fix, and I had already noted this shape here once (the project-scope teardown), fixed that
+ * instance, and not gone looking for the others.
+ */
+export const COMMERCIAL_OP_PERMISSION = {
+  setCommercialBudget: 'commercial.budget.manage',
+  defineCostHead: 'commercial.manage',
+  reattributeCommitment: 'commercial.attribute',
+  // 7B-iii-b — `commercial.measure` and `commercial.bill` are the ONLY two commercial
+  // permissions admitting `engineer`, so this map is doing real work here rather than
+  // restating "pmc": an engineer may measure and lodge, and may not certify or pay.
+  takeMeasurement: 'commercial.measure',
+  correctMeasurement: 'commercial.measure',
+  recordVendorBill: 'commercial.bill',
+  submitVendorBill: 'commercial.bill',
+  amendVendorBill: 'commercial.bill',
+  rejectVendorBill: 'commercial.bill',
+  // 7B-iii-c-i — `commercial.verify` is pmc-only, and that separation is the point: the
+  // engineer who lodged the claim may not be the one who verifies it. The map is what makes
+  // the durable dispatcher refuse it, not just the screen that hides the button.
+  beginVerification: 'commercial.verify',
+  verifyVendorBill: 'commercial.verify',
+  // 7B-iii-f — `commercial.certify` is DELIBERATELY separate from `commercial.verify` even
+  // though both resolve to pmc today: certifying decides what is OWED, and the policy is the
+  // source rather than a copy of its current answer. `commercial.sod.grant` is separate again —
+  // it is the authority to EXCUSE the rule, which is a stronger thing than performing the act.
+  certifyBill: 'commercial.certify',
+  supersedeCertificate: 'commercial.certify',
+  // 7B-iii-g — and the authorisation itself takes the stronger permission the comment above
+  // already names. Mapped here rather than left out, because this map is what makes the DURABLE
+  // dispatcher refuse it: the screen hiding a form is not a guarantee (Codex J1).
+  grantSodException: 'commercial.sod.grant',
+  // 7B-iii-d — SIX distinct permissions. They all resolve to pmc today and are named
+  // separately anyway, exactly as `certify` and `sod.grant` are: the policy is the source, not
+  // a copy of its current answer, and a later widening of one must not silently widen five.
+  recordDeduction: 'commercial.deduct',
+  releaseDeduction: 'commercial.deduct.release',
+  approvePayment: 'commercial.approve-payment',
+  recordPayment: 'commercial.record-payment',
+  reversePayment: 'commercial.reverse-payment',
+  // 7B-vi — the SEVENTH. Named separately for the same reason as the six above, and its
+  // absence was a real hole rather than a tidiness gap: `dispatchCommercial` treats an
+  // unmapped op as needing NO client authority, so an engineer session offline would have had
+  // the advance queued and reported saved, then 403'd and discarded by the server.
+  payAdvance: 'commercial.pay-advance',
+} as const;
 
 /** Whether ANY budget set for this cost head is still pending, at any amount (labour r7). */
 export const isBudgetPendingForHead = (key: string, costHeadCode: string): boolean =>
@@ -77,6 +192,11 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   // 7B-iii-d — the payer's chain. Same registry, same reason.
   'recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
   'approvePayment',
+  // 7B-vi (§H) — the advance. Its absence broke the whole outbox lifecycle for this op: hydration
+  // would not recognise it, the pending rebuild would not carry it, and the flush would not count
+  // it as a settled commercial write — so an advances read already in flight could clear the key
+  // over rows that predate the payment.
+  'payAdvance',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>
@@ -384,6 +504,10 @@ export type CommercialRead = {
   | { read: 'bills' }
   | { read: 'claim'; billId: string }
   | { read: 'lineRegister'; labourPoLineId: string; rowIds: readonly string[] }
+  /** 7B-vi (§H) — the advances read. It exists FOR this: an advance names a counterparty and no
+   *  claim, so no other commercial read can settle its key. That is why the read lands with the
+   *  control rather than after it. */
+  | { read: 'advances' }
 );
 
 export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
@@ -413,6 +537,10 @@ export function readClearsKey(coalesceKey: string, r: CommercialRead): boolean {
         || coalesceKey.startsWith(`com:pay:${r.billId}:`)
         || coalesceKey.startsWith(`com:payrev:${r.billId}:`)
         || coalesceKey === approveCoalesceKey(r.billId);
+    case 'advances':
+      // every advance key, whatever counterparty it names — the read carries the whole project's
+      // advances, so it settles them all rather than the one row a caller happened to pass
+      return coalesceKey.startsWith('com:advance:');
     case 'lineRegister': {
       const meas = /^com:meas:(.+):[^:]*$/u.exec(coalesceKey);
       if (meas) return meas[1] === r.labourPoLineId;

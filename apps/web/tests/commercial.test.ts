@@ -1,3 +1,4 @@
+import { ROLE_POLICY } from '@vitan/shared';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
@@ -11,7 +12,7 @@ import syncSource from '@/data/useApiSync.ts?raw';
 import contractsSource from '../../api/src/contracts.ts?raw';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
-import { budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { COMMERCIAL_OP_PERMISSION, COMMERCIAL_OUTBOX_OP_TYPES, advanceCoalesceKey, budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 
@@ -752,9 +753,14 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     pilot(writeGw({ setCommercialBudget: vi.fn().mockReturnValue(held.promise) }));
     s().setCommercialBudget('CIVIL', '100.00', 'v1');
     const first = s().outbox[0] as { idempotencyKey: string; coalesceKey: string };
-    expect(first.coalesceKey).toBe('com:budget:CIVIL:100.00');
+    // 7B-vi — the coalesce key is DERIVED from the whole command input, so it is asserted through
+    // the same function the store uses rather than pinned as a literal. Pinning the string would
+    // have to be edited every time a field joins the command, which is precisely the maintenance
+    // burden that made hand-listed identities drift from their payloads.
+    const expectedKey = budgetCoalesceKey({ costHeadCode: 'CIVIL', amount: '100.00', reason: 'v1' });
+    expect(first.coalesceKey).toBe(expectedKey);
     expect(first.idempotencyKey).not.toBe(first.coalesceKey);
-    expect(s().commercialPending).toEqual(['com:budget:CIVIL:100.00']);
+    expect(s().commercialPending).toEqual([expectedKey]);
 
     // PR #208 finding 1 — an EQUIVALENT action while pending is coalesced away (one queued op,
     // one disabled button), NOT queued a second time.
@@ -770,7 +776,14 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     s().setCommercialBudget('CIVIL', '100.00', 'v1');
 
     // the KEY carries the amount, so 200 is genuinely a different action…
-    expect(budgetCoalesceKey('CIVIL', '200.00')).not.toBe(budgetCoalesceKey('CIVIL', '100.00'));
+    const budget = (amount: string, reason = 'r'): string =>
+      budgetCoalesceKey({ costHeadCode: 'CIVIL', amount, reason });
+    expect(budget('200.00')).not.toBe(budget('100.00'));
+    // 7B-vi — and the REASON is part of the identity too. `setBudgetSchema` carries it and the old
+    // key omitted it, so correcting a head's reason at the same amount coalesced with the first
+    // and was silently dropped. Found by asking the question the 7B-vi ledger told this unit to
+    // ask — "does any other append-only command have this shape?" — rather than by a review round.
+    expect(budget('100.00', 'first note')).not.toBe(budget('100.00', 'corrected note'));
     // …but the disable TEST is prefix-matched on the head, so editing the input mid-flight does
     // NOT re-arm the button. RED if the screen tested `commercialPending.includes(key(head,amount))`:
     // the user retypes the figure and a second revision is written against the same head.
@@ -812,7 +825,8 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     expect(money, 'an uncertain response left the money position unrefreshed').toHaveBeenCalled();
     // …and the op is RETAINED with its key, so the button stays disabled while it retries
     expect(s().outbox).toHaveLength(1);
-    expect(s().commercialPending).toEqual(['com:budget:CIVIL:100.00']);
+    expect(s().commercialPending)
+      .toEqual([budgetCoalesceKey({ costHeadCode: 'CIVIL', amount: '100.00', reason: 'v1' })]);
   });
 
   it('labour r8: a resolved key clears when the fresh money APPLIES, not in the success gap', async () => {
@@ -840,6 +854,56 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     s().setCommercialBudget('CIVIL', '150.00', 'revised');
     const secondKey = (s().outbox[0] as { idempotencyKey: string }).idempotencyKey;
     expect(secondKey, 'a legitimate second action reused the first attempt identity').not.toBe(firstKey);
+  });
+
+  /**
+   * 7B-vi (§H) — the advance key is DERIVED from the payload, so a field added to the command
+   * joins the identity without anyone remembering to widen a list.
+   *
+   * `pr-317-convergence.md` records this lineage failing four times at hand-listing the facts that
+   * define a row, the last of them INSIDE the fix for the one before. These probes assert the
+   * property that ends it rather than the particular fields a round happened to name.
+   */
+  it('7B-vi: two advances differing in ANY field are two actions, not a retry', () => {
+    const base = {
+      vendorId: 'v-1', amount: '100.00', reason: 'mobilisation',
+      method: 'neft', reference: 'UTR-1',
+    };
+    const key = advanceCoalesceKey(base);
+    // the two fields round 5 found missing — the ones a fifth enumeration would have added by hand
+    expect(advanceCoalesceKey({ ...base, method: 'cheque' })).not.toBe(key);
+    expect(advanceCoalesceKey({ ...base, reference: 'UTR-2' })).not.toBe(key);
+    // …and the ones round 4 did list, still distinct
+    expect(advanceCoalesceKey({ ...base, amount: '200.00' })).not.toBe(key);
+    expect(advanceCoalesceKey({ ...base, reason: 'materials' })).not.toBe(key);
+    expect(advanceCoalesceKey({ ...base, vendorId: 'v-2' })).not.toBe(key);
+    // an absent reference is a DIFFERENT action from one explicitly given
+    expect(advanceCoalesceKey({ ...base, reference: null })).not.toBe(key);
+    // …and the same payload is the same action however the object was built, so field order
+    // cannot make a retry look like a new command
+    expect(advanceCoalesceKey({
+      reference: 'UTR-1', method: 'neft', reason: 'mobilisation', amount: '100.00', vendorId: 'v-1',
+    })).toBe(key);
+  });
+
+  it('7B-vi: no value can impersonate a separator', () => {
+    // joining raw values with `:` would make these one key and silently drop the second command
+    expect(advanceCoalesceKey({
+      vendorId: 'v-1', amount: '1.00', reason: 'a:b', method: 'c', reference: null,
+    })).not.toBe(advanceCoalesceKey({
+      vendorId: 'v-1', amount: '1.00', reason: 'a', method: 'b:c', reference: null,
+    }));
+  });
+
+  it('7B-vi: the scope prefix survives, because predicates read it', () => {
+    // `isBudgetPendingForHead` asks "any budget set for this head, at any amount" by prefix. An
+    // opaque hash would have satisfied the identity requirement and silently broken this.
+    const key = budgetCoalesceKey({ costHeadCode: 'CIVIL', amount: '10.00', reason: 'r' });
+    expect(isBudgetPendingForHead(key, 'CIVIL')).toBe(true);
+    expect(isBudgetPendingForHead(key, 'MEP')).toBe(false);
+    expect(advanceCoalesceKey({
+      vendorId: 'v-1', amount: '1.00', reason: 'r', method: 'm', reference: null,
+    }).startsWith('com:advance:v-1:')).toBe(true);
   });
 
   it('hydration is a GUARD: a malformed op is dropped and never becomes `undefined` pending', () => {
@@ -1210,5 +1274,35 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     expect(contractsSource.includes(String.raw`/^\d+(\.\d{1,6})?$/u`), 'an inline quantity regex is back').toBe(false);
     expect(contractsSource).toContain('MONEY_STRING');
     expect(contractsSource).toContain('QUANTITY_STRING');
+  });
+});
+
+/**
+ * 7B-vi round 1 — THE CLASS, not the member.
+ *
+ * Codex returned four findings from ONE omission: `payAdvance` was dispatched with a valid
+ * coalesce key but registered in neither `COMMERCIAL_OUTBOX_OP_TYPES` nor
+ * `COMMERCIAL_OP_PERMISSION`. Hydration did not recognise it, the pending rebuild did not carry
+ * it, the flush did not count it as a settled commercial write, and the durable dispatcher treats
+ * an UNMAPPED op as needing no client authority — so an engineer session offline would have had a
+ * cash advance queued and reported saved, then 403'd and discarded.
+ *
+ * Fixing the four instances would leave the next op free to repeat all of them. This asserts the
+ * two registries describe the SAME set, which is the only thing that makes the omission
+ * impossible rather than merely corrected.
+ */
+describe('7B-vi — the outbox registries agree about the same ops', () => {
+  it('every commercial outbox op type has a declared permission, and vice versa', () => {
+    expect([...COMMERCIAL_OUTBOX_OP_TYPES].sort())
+      .toEqual(Object.keys(COMMERCIAL_OP_PERMISSION).sort());
+  });
+
+  it('every declared permission is a real permission the policy knows', () => {
+    // …and the value is not free text: an op mapped to a permission `ROLE_POLICY` does not define
+    // would sail through the dispatcher's lookup and grant nothing, which is the same hole one
+    // level down from the missing key.
+    for (const permission of Object.values(COMMERCIAL_OP_PERMISSION)) {
+      expect(ROLE_POLICY[permission as keyof typeof ROLE_POLICY], `${permission} is not in ROLE_POLICY`).toBeDefined();
+    }
   });
 });

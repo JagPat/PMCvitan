@@ -1662,6 +1662,22 @@ describe('Phase 5 Tasks 6–7A — the §F/§H/§J money folds (live PG)', () =>
       vendorId, amount: '100', reason: 'mobilisation', method: 'neft',
     }, pmc(projectId));
 
+    // 7B-vi — an advance ANNOUNCES. Without this the advances read had no invalidation path at
+    // all: another client's advance left a ready list stale on screen, and the §M Pay control
+    // reads that list to decide the counterparty's position is known — append-only, no server
+    // ceiling, nothing downstream to catch a decision made on stale figures.
+    //
+    // `costHeadCodes: []` is the honest payload, not an omission: §J's buckets are per head and an
+    // advance moves none of them until a recovery lands on a certified claim. What moved is CASH,
+    // which is what the signal says.
+    const announced = await t.prisma.domainEvent.findFirst({
+      where: { projectId, eventType: 'commercial.money_moved' },
+      orderBy: { occurredAt: 'desc' },
+    });
+    expect(announced, 'paying an advance must invalidate the commercial reads').not.toBeNull();
+    expect((announced!.payload as { reason?: string }).reason).toBe('advance');
+    expect((announced!.payload as { costHeadCodes?: string[] }).costHeadCodes).toEqual([]);
+
     const forged = `it-6c-negative-${seq++}`;
     await expect(t.prisma.$executeRawUnsafe(
       `INSERT INTO "VendorAdvance"("id","projectId","vendorId","amount","reason","method","paidById","sourceCommandId")

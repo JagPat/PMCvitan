@@ -115,6 +115,12 @@ export const COMMERCIAL_QUERIES = [
   // totals. FOLDS on every call: §G bounds 4–5 are computed from the rows, so a stored total
   // would be a second answer to a question the ledger already answers.
   'commercial.payments',
+  // 7B-vi (§H) — every advance on this project, with each counterparty's position. Folded on call
+  // like the ledgers beside it: `recoverable` is advances less every recovery across that
+  // counterparty's claims, and §H forbids a stored balance. Declared here rather than only served,
+  // because an undeclared route is one every registry and contract consumer believes does not
+  // exist — which is what `commercial.contract.test.ts` refuses, and it caught this omission.
+  'commercial.advances',
   // Phase 5 Task 7A — §J's cash forecast, served from the EIGHTH rebuildable projection. This is
   // the only commercial read that is PROJECTED rather than folded on call, and the reason is the
   // shape of the question: `commercial.budget` answers "what is this head's position right now"
@@ -703,6 +709,21 @@ export interface VendorAdvancePositionDto {
   /** `advanced − recovered`, the ceiling a further recovery is bounded by. Never negative — the
    *  bound is enforced on the deduction WRITE, so no reader has to clamp it. */
   recoverable: string;
+}
+
+/**
+ * 7B-vi (§H) — every advance this project has paid, with each counterparty's position.
+ *
+ * The READ lands before the control, and that ordering is the finding rather than a preference.
+ * 7B-iv shipped an advance control whose write-ahead outbox key had NO settling read: nothing could
+ * hydrate or reconcile advance rows, so a key with no release path was stuck by construction. The
+ * split removed the control and left `POST commercial/advances` — this restores the half that makes
+ * the other half reconcilable.
+ */
+export interface VendorAdvanceListDto {
+  advances: VendorAdvanceDto[];
+  /** one row per counterparty that has ever been advanced on this project */
+  positions: VendorAdvancePositionDto[];
 }
 
 /** Phase 5 Task 6C (§H) — cash paid to a counterparty ahead of any certified claim. */

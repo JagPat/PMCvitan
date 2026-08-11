@@ -7,6 +7,7 @@ import {
   type BillDeductionLedgerDto,
   type DeductionType,
   type VendorAdvanceDto,
+  type VendorAdvanceListDto,
   type VendorBillStatus,
 } from '@vitan/shared';
 import { PrismaService } from '../prisma.service';
@@ -14,6 +15,7 @@ import type { AuthUser } from '../common/auth';
 import { hashRequest, type CommandScope } from '../platform/commands';
 import { CommercialCommandRunner } from './commercial-command.runner';
 import { resolveActor, type Actor } from '../common/actor';
+import { announceMoneyMoved } from './cash-forecast.projection';
 import { recordAudit } from '../platform/audit';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { CommercialStatusService } from './commercial-status.service';
@@ -237,6 +239,19 @@ export class CommercialDeductionService {
         // not attributed to one until a recovery lands on a certified claim). Calling either would
         // append an observation labelled against a write that moved nothing — the label drift §B's
         // round 4 removed. The RECOVERY is the mover, and it re-derives through `record` above.
+        //
+        // 7B-vi — it DOES announce, and that is not in tension with the paragraph above. Those two
+        // are §B/§F OBSERVATIONS, labelled against heads and claims an advance genuinely does not
+        // move. This is the §J INVALIDATION signal, and what it says is true: cash left the
+        // project. `costHeadCodes: []` states exactly that no head's exposure moved — the payload
+        // is explanation for a reader of the stream, never an input to a fold, so an empty list is
+        // an honest answer rather than a missing one.
+        //
+        // Without it the advances read had NO invalidation path: another client's advance left a
+        // ready list stale on screen, and the §M Pay control reads that list to decide the
+        // counterparty's position is known. Append-only with no server ceiling, so nothing
+        // downstream catches a decision made on it.
+        await announceMoneyMoved(tx, projectId, actor, { costHeadCodes: [], reason: 'advance' });
         await recordAudit(tx, {
           projectId, actor, action: 'commercial.advance.pay',
           entity: 'VendorAdvance', entityId: advance.id,
@@ -511,6 +526,41 @@ export class CommercialDeductionService {
    * after the bill so the order stays total and no honest transaction waits on it in the other
    * direction. `phase5_t6c_recoverable_check` takes the same row for the same reason.
    */
+
+  /**
+   * 7B-vi (§H) — every advance on this project, with each counterparty's position.
+   *
+   * ONE repeatable-read snapshot, for the reason every §H read opens one: `recoverable` is a FOLD
+   * over the advances less every recovery taken across that counterparty's claims, so rows and
+   * positions read separately can state a set of advances and a ceiling that were never true
+   * together.
+   *
+   * This read is what makes the §M advance control reconcilable at all. Its write-ahead key needs
+   * a read that can NAME the row it settles; without one the key is held for ever and the button
+   * never re-enables — 7B-iii-g's F2, which is why this lands before the control rather than
+   * beside it.
+   */
+  async listAdvances(projectId: string, user: AuthUser): Promise<VendorAdvanceListDto> {
+    await this.capabilities.assertEnabled(projectId, COMMERCIAL_CAPABILITY);
+    this.assertRead(user);
+    return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.vendorAdvance.findMany({
+        where: { projectId }, orderBy: { paidAt: 'desc' },
+      });
+      const vendorIds = [...new Set(rows.map((r) => r.vendorId))].sort();
+      const positions = [];
+      for (const vendorId of vendorIds) {
+        const { advanced, recovered, recoverable } = await this.deductions.recoverableFor(tx, projectId, vendorId);
+        positions.push({
+          vendorId,
+          advanced: advanced.toFixed(2),
+          recovered: recovered.toFixed(2),
+          recoverable: recoverable.toFixed(2),
+        });
+      }
+      return { advances: rows.map((a) => this.toAdvanceDto(a)), positions };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
 
   private toAdvanceDto(a: {
     id: string; vendorId: string; amount: Prisma.Decimal; reason: string; method: string;

@@ -15,6 +15,7 @@ import type {
   Review,
   ReservationPlan,
   MeasurementRegisterDto,
+  VendorAdvanceListDto,
 } from '@vitan/shared';
 import type { MaterialsView } from './materials';
 import type { LabourView } from './labour';
@@ -88,6 +89,10 @@ export interface ProjectDataState {
   commercialView: CommercialView | null;
   commercialBills: CommercialBillRow[] | null;
   commercialClaims: Record<string, CommercialClaimView>;
+  /** 7B-vi (§H) — the advances read. Cash paid to a counterparty ON THIS PROJECT: carrying it
+   *  across a switch would render another site's payments, which is the exact leak this module
+   *  exists to make impossible. */
+  commercialAdvances: VendorAdvanceListDto | null;
   /** §D — the cap reservation each pending write holds, keyed by its COALESCE KEY so the
    *  reservation and the key share one lifecycle. */
   commercialPendingQty: Record<string, { lineId: string; qty: string }>;
@@ -148,6 +153,7 @@ export function emptyProjectData(): ProjectDataState {
     // is project-contained, so carrying either across a switch would render another site's money.
     commercialBills: null,
     commercialClaims: {},
+    commercialAdvances: null,
     commercialPendingQty: {},
     commercialLineRegisters: {},
     labourPendingInputs: {},
@@ -189,6 +195,7 @@ export interface ModuleReadState {
   // scope being left, so nothing in it can be valid in the next one.
   commercialBillsLoad: 'idle' | 'loading' | 'ready' | 'error';
   commercialClaimLoad: Record<string, 'loading' | 'ready' | 'error'>;
+  commercialAdvancesLoad: 'idle' | 'loading' | 'ready' | 'error';
   /** §D — the per-LINE register read's status, keyed by labour PO line id. */
   commercialLineRegisterLoad: Record<string, 'loading' | 'ready' | 'error'>;
 }
@@ -209,6 +216,7 @@ export function emptyModuleReadState(): ModuleReadState {
     commercialLoad: 'idle',
     commercialBillsLoad: 'idle',
     commercialClaimLoad: {},
+    commercialAdvancesLoad: 'idle',
     commercialLineRegisterLoad: {},
   };
 }
