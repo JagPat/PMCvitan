@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type JSX } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type JSX, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
@@ -245,6 +245,9 @@ export function CommercialScreen() {
   // The scope a selection belongs to. A project switch (or a re-auth) bumps this, and the selection
   // below is only honoured while its recorded scope still matches — see the comment at `claim`.
   const scopeKey = useStore((s) => `${s.activeProjectId}:${s.projectScopeGeneration}`);
+  // 7B-vi — which tab the advances effect last saw, so a retry fires on ENTERING the tab rather
+  // than on the error state that a retry recreates.
+  const lastAdvanceTab = useRef<string>('');
   const [selection, setSelection] = useState<{ scope: string; billId: string | null }>({ scope: '', billId: null });
   // Form state is SCOPED the same way the claim selection is: a project switch bumps `scopeKey`,
   // so a half-typed budget for one site can never be submitted against another. Derived, not
@@ -500,11 +503,18 @@ export function CommercialScreen() {
   // …and the advances, which the Payments tab shows and the advance key settles on. Same shape as
   // every other read on this screen: driven by the tab that displays it, gated on the capability.
   useEffect(() => {
-    // `idle` OR `error`: a read that failed once must be retryable by returning to the tab.
-    // Gating on `idle` alone made a transient outage terminal — the screen told the operator to
-    // refresh, and Refresh did not cover this read either (Codex round 1, P2). Not `ready`, so a
-    // successful read is not re-fetched on every tab change.
-    if (tab === 'payments' && onPilot && (advancesLoad === 'idle' || advancesLoad === 'error')) {
+    // Retried on the EVENT of entering the tab, never on the STATE `error` — round 1 fixed the
+    // terminal-failure gap by triggering on `error`, which is a state the retry itself reproduces:
+    // error → effect → loading → error, hammering the endpoint for as long as the operator stayed
+    // on the tab (Codex round 2). An effect gated on a state its own action recreates is a loop by
+    // construction, and that is the general form worth remembering.
+    //
+    // So: fire when the tab BECOMES payments (and on first mount), plus explicit Refresh. Not
+    // while `loading`, so a tab flip mid-flight does not stack a second request.
+    const entered = tab === 'payments' && lastAdvanceTab.current !== 'payments';
+    lastAdvanceTab.current = tab;
+    if (tab === 'payments' && onPilot && advancesLoad !== 'loading'
+      && (advancesLoad === 'idle' || entered)) {
       void loadCommercialAdvances();
     }
   }, [tab, onPilot, advancesLoad, loadCommercialAdvances]);
@@ -1594,18 +1604,30 @@ export function CommercialScreen() {
                   vendorId: av.vendorId.trim(), amount: av.amount.trim(),
                   reason: av.reason.trim(), method: av.method.trim(), reference,
                 };
-                // …and the POSITION must be known. An advance is append-only with NO server
-                // ceiling, so the only thing standing between an operator and a duplicate payment
-                // is seeing what this counterparty already holds. Offering the button while that
-                // read has failed asks them to pay blind (Codex round 1, P2) — and the banner two
-                // lines up has just told them the position is unknown, which the control would
-                // then contradict.
-                const positionKnown = advancesLoad === 'ready' && advances !== null;
+                // …and the POSITION must be CURRENT, which is one question rather than a list.
+                //
+                // Round 1 asked "is the read ready?" and Codex round 2 found two more ways the
+                // answer can be yes while the list is wrong: another client's advance (the socket
+                // path did not refresh this read) and the operator's OWN queued advance (only the
+                // exact pending payload was blocked, so editing any field re-enabled the button
+                // over a list that does not show the first payment). Both are the same defect, and
+                // adding two more conjuncts would be this unit's own enumeration root a third time.
+                //
+                // Derived instead: the displayed list is trustworthy exactly when it reflects every
+                // advance that exists. It cannot, if the read never landed, or if one of ours is
+                // still queued. A field added to that reasoning later belongs HERE, once.
+                const advanceQueued = commercialPending.some((k) => k.startsWith('com:advance:'));
+                const positionKnown = advancesLoad === 'ready' && advances !== null && !advanceQueued;
                 const ready = positionKnown && command.vendorId !== '' && isMoneyString(command.amount)
                   && decIsPositive(command.amount) && command.method !== '' && command.reason !== '';
                 // …keyed on the SAME object the command will carry, so what the button tests and
                 // what the outbox stores cannot describe two different actions.
-                const blocked = ready && commercialWriteBlocked(advanceCoalesceKey(command), commercialPending);
+                // `blocked` still names the EXACT equivalent action (that is what a coalesce key
+                // is for, and what makes "Working…" honest); a DIFFERENT advance while one is
+                // queued is refused by `positionKnown` above, because the reason it must not
+                // proceed is a stale position, not an equivalent command.
+                const blocked = advanceQueued
+                  && commercialWriteBlocked(advanceCoalesceKey(command), commercialPending);
                 return (
                   <div style={rowCard} data-testid="commercial-advance">
                     <div style={{ fontWeight: 600 }}>Advance to a counterparty</div>

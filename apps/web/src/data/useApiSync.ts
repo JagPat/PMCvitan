@@ -66,6 +66,14 @@ export function useApiSync(): void {
       if (useStore.getState().commercialBillsLoad !== 'idle') {
         void useStore.getState().loadCommercialBills();
       }
+      // 7B-vi — and the ADVANCES, by the identical `!== 'idle'` test and for a sharper reason.
+      // A stale claim list shows old statuses; a stale advances list is what the Pay control reads
+      // to decide the counterparty's position is KNOWN. Two clients, one empty ready list: user B
+      // pays, user A still sees nothing owed, and appends a second cash advance against a position
+      // that moved. Append-only, no server ceiling — nothing downstream catches it.
+      if (useStore.getState().commercialAdvancesLoad !== 'idle') {
+        void useStore.getState().loadCommercialAdvances();
+      }
       // Codex G3 — INTENT, not results. Keying the refresh on `commercialClaims` (the map of
       // ARRIVED lifecycles) misses a claim whose FIRST read is still in flight: the ping lands
       // before the response, there is no key yet, no follow-up is scheduled, and the in-flight
