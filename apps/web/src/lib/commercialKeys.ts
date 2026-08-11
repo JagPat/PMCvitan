@@ -90,6 +90,65 @@ export const advanceCoalesceKey = (input: {
   vendorId: string; amount: string; reason: string; method: string; reference?: string | null;
 }): string => payloadCoalesceKey('advance', input.vendorId, input);
 
+/**
+ * 7B-vi — the op → PERMISSION map, moved HERE to sit beside `COMMERCIAL_OUTBOX_OP_TYPES`.
+ *
+ * These are two registries that must agree about the same set, and they lived in two files. That
+ * is how this unit shipped `payAdvance` in neither of them: the op dispatched with a valid key,
+ * hydration did not recognise it, the flush did not count it as a settled commercial write, and
+ * the durable dispatcher treated an unmapped op as needing NO client authority — so an engineer
+ * session offline would have had a cash advance queued and reported saved, then 403'd and dropped.
+ *
+ * Four findings from one omission, and moving the lists together is the part that stops the next
+ * one: `commercial-keys.test.ts` now asserts the two sets are IDENTICAL, so an op registered in
+ * one and forgotten in the other fails rather than shipping half-wired. The unit's own root — a
+ * hand-kept list that looks complete from the inside — one layer up from the keys it was written
+ * to fix, and I had already noted this shape here once (the project-scope teardown), fixed that
+ * instance, and not gone looking for the others.
+ */
+export const COMMERCIAL_OP_PERMISSION = {
+  setCommercialBudget: 'commercial.budget.manage',
+  defineCostHead: 'commercial.manage',
+  reattributeCommitment: 'commercial.attribute',
+  // 7B-iii-b — `commercial.measure` and `commercial.bill` are the ONLY two commercial
+  // permissions admitting `engineer`, so this map is doing real work here rather than
+  // restating "pmc": an engineer may measure and lodge, and may not certify or pay.
+  takeMeasurement: 'commercial.measure',
+  correctMeasurement: 'commercial.measure',
+  recordVendorBill: 'commercial.bill',
+  submitVendorBill: 'commercial.bill',
+  amendVendorBill: 'commercial.bill',
+  rejectVendorBill: 'commercial.bill',
+  // 7B-iii-c-i — `commercial.verify` is pmc-only, and that separation is the point: the
+  // engineer who lodged the claim may not be the one who verifies it. The map is what makes
+  // the durable dispatcher refuse it, not just the screen that hides the button.
+  beginVerification: 'commercial.verify',
+  verifyVendorBill: 'commercial.verify',
+  // 7B-iii-f — `commercial.certify` is DELIBERATELY separate from `commercial.verify` even
+  // though both resolve to pmc today: certifying decides what is OWED, and the policy is the
+  // source rather than a copy of its current answer. `commercial.sod.grant` is separate again —
+  // it is the authority to EXCUSE the rule, which is a stronger thing than performing the act.
+  certifyBill: 'commercial.certify',
+  supersedeCertificate: 'commercial.certify',
+  // 7B-iii-g — and the authorisation itself takes the stronger permission the comment above
+  // already names. Mapped here rather than left out, because this map is what makes the DURABLE
+  // dispatcher refuse it: the screen hiding a form is not a guarantee (Codex J1).
+  grantSodException: 'commercial.sod.grant',
+  // 7B-iii-d — SIX distinct permissions. They all resolve to pmc today and are named
+  // separately anyway, exactly as `certify` and `sod.grant` are: the policy is the source, not
+  // a copy of its current answer, and a later widening of one must not silently widen five.
+  recordDeduction: 'commercial.deduct',
+  releaseDeduction: 'commercial.deduct.release',
+  approvePayment: 'commercial.approve-payment',
+  recordPayment: 'commercial.record-payment',
+  reversePayment: 'commercial.reverse-payment',
+  // 7B-vi — the SEVENTH. Named separately for the same reason as the six above, and its
+  // absence was a real hole rather than a tidiness gap: `dispatchCommercial` treats an
+  // unmapped op as needing NO client authority, so an engineer session offline would have had
+  // the advance queued and reported saved, then 403'd and discarded by the server.
+  payAdvance: 'commercial.pay-advance',
+} as const;
+
 /** Whether ANY budget set for this cost head is still pending, at any amount (labour r7). */
 export const isBudgetPendingForHead = (key: string, costHeadCode: string): boolean =>
   key.startsWith(`com:budget:${costHeadCode}:`);
@@ -133,6 +192,11 @@ export const COMMERCIAL_OUTBOX_OP_TYPES = [
   // 7B-iii-d — the payer's chain. Same registry, same reason.
   'recordDeduction', 'releaseDeduction', 'recordPayment', 'reversePayment',
   'approvePayment',
+  // 7B-vi (§H) — the advance. Its absence broke the whole outbox lifecycle for this op: hydration
+  // would not recognise it, the pending rebuild would not carry it, and the flush would not count
+  // it as a settled commercial write — so an advances read already in flight could clear the key
+  // over rows that predate the payment.
+  'payAdvance',
 ] as const;
 
 export const isCommercialOpType = (t: unknown): boolean =>

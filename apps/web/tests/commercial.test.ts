@@ -1,3 +1,4 @@
+import { ROLE_POLICY } from '@vitan/shared';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useStore, getInitialState } from '@/store/store';
 import { emptyProjectData, emptyModuleReadState } from '@/store/projectScope';
@@ -11,7 +12,7 @@ import syncSource from '@/data/useApiSync.ts?raw';
 import contractsSource from '../../api/src/contracts.ts?raw';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
-import { advanceCoalesceKey, budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { COMMERCIAL_OP_PERMISSION, COMMERCIAL_OUTBOX_OP_TYPES, advanceCoalesceKey, budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 
@@ -1273,5 +1274,35 @@ describe('Task 7B-iii-b (§D/§F) — the engineer\'s writes', () => {
     expect(contractsSource.includes(String.raw`/^\d+(\.\d{1,6})?$/u`), 'an inline quantity regex is back').toBe(false);
     expect(contractsSource).toContain('MONEY_STRING');
     expect(contractsSource).toContain('QUANTITY_STRING');
+  });
+});
+
+/**
+ * 7B-vi round 1 — THE CLASS, not the member.
+ *
+ * Codex returned four findings from ONE omission: `payAdvance` was dispatched with a valid
+ * coalesce key but registered in neither `COMMERCIAL_OUTBOX_OP_TYPES` nor
+ * `COMMERCIAL_OP_PERMISSION`. Hydration did not recognise it, the pending rebuild did not carry
+ * it, the flush did not count it as a settled commercial write, and the durable dispatcher treats
+ * an UNMAPPED op as needing no client authority — so an engineer session offline would have had a
+ * cash advance queued and reported saved, then 403'd and discarded.
+ *
+ * Fixing the four instances would leave the next op free to repeat all of them. This asserts the
+ * two registries describe the SAME set, which is the only thing that makes the omission
+ * impossible rather than merely corrected.
+ */
+describe('7B-vi — the outbox registries agree about the same ops', () => {
+  it('every commercial outbox op type has a declared permission, and vice versa', () => {
+    expect([...COMMERCIAL_OUTBOX_OP_TYPES].sort())
+      .toEqual(Object.keys(COMMERCIAL_OP_PERMISSION).sort());
+  });
+
+  it('every declared permission is a real permission the policy knows', () => {
+    // …and the value is not free text: an op mapped to a permission `ROLE_POLICY` does not define
+    // would sail through the dispatcher's lookup and grant nothing, which is the same hole one
+    // level down from the missing key.
+    for (const permission of Object.values(COMMERCIAL_OP_PERMISSION)) {
+      expect(ROLE_POLICY[permission as keyof typeof ROLE_POLICY], `${permission} is not in ROLE_POLICY`).toBeDefined();
+    }
   });
 });

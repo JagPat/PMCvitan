@@ -733,8 +733,12 @@ describe("§G/§H (7B-iii-d) — the payer's chain, keyed by the resource each c
       'approvePayment']) {
       expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain(t);
     }
-    // `payAdvance` leaves with the advance surface (7B-vi) — asserted so a re-add without its
-    // control cannot pass silently.
-    expect(COMMERCIAL_OUTBOX_OP_TYPES).not.toContain('payAdvance');
+    // 7B-vi — `payAdvance` is BACK, with the read that settles its key and the control that
+    // dispatches it. This assertion was `.not.toContain` while the surface was parked, and it did
+    // exactly the job it was written for: it named the condition on which the op could return
+    // ("not without its control"), so re-adding it had to be a deliberate act rather than a quiet
+    // one. Inverted here rather than deleted, because the guarantee is still worth stating — the
+    // op exists only alongside the surface that makes it reconcilable.
+    expect(COMMERCIAL_OUTBOX_OP_TYPES).toContain('payAdvance');
   });
 });

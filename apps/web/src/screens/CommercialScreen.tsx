@@ -500,7 +500,13 @@ export function CommercialScreen() {
   // …and the advances, which the Payments tab shows and the advance key settles on. Same shape as
   // every other read on this screen: driven by the tab that displays it, gated on the capability.
   useEffect(() => {
-    if (tab === 'payments' && onPilot && advancesLoad === 'idle') void loadCommercialAdvances();
+    // `idle` OR `error`: a read that failed once must be retryable by returning to the tab.
+    // Gating on `idle` alone made a transient outage terminal — the screen told the operator to
+    // refresh, and Refresh did not cover this read either (Codex round 1, P2). Not `ready`, so a
+    // successful read is not re-fetched on every tab change.
+    if (tab === 'payments' && onPilot && (advancesLoad === 'idle' || advancesLoad === 'error')) {
+      void loadCommercialAdvances();
+    }
   }, [tab, onPilot, advancesLoad, loadCommercialAdvances]);
 
   /**
@@ -530,6 +536,10 @@ export function CommercialScreen() {
       // never appear. Refresh the thing the list is derived FROM, not only the things it names.
       void loadCommercial();
     }
+    // …and the ADVANCES, for the identical reason one line down (Codex round 1, P2): the advance
+    // list is its OWN read, so a Refresh that skipped it left the Payments tab permanently stale
+    // after one failure — while the failure banner told the operator to refresh.
+    if (tab === 'payments') void loadCommercialAdvances();
     // the §D registers are their own read, so Refresh has to say so — otherwise a line whose
     // register failed is unreachable from the one control offered for exactly that situation
     for (const id of measurableLineIds) void loadLineRegister(id);
@@ -1584,7 +1594,14 @@ export function CommercialScreen() {
                   vendorId: av.vendorId.trim(), amount: av.amount.trim(),
                   reason: av.reason.trim(), method: av.method.trim(), reference,
                 };
-                const ready = command.vendorId !== '' && isMoneyString(command.amount)
+                // …and the POSITION must be known. An advance is append-only with NO server
+                // ceiling, so the only thing standing between an operator and a duplicate payment
+                // is seeing what this counterparty already holds. Offering the button while that
+                // read has failed asks them to pay blind (Codex round 1, P2) — and the banner two
+                // lines up has just told them the position is unknown, which the control would
+                // then contradict.
+                const positionKnown = advancesLoad === 'ready' && advances !== null;
+                const ready = positionKnown && command.vendorId !== '' && isMoneyString(command.amount)
                   && decIsPositive(command.amount) && command.method !== '' && command.reason !== '';
                 // …keyed on the SAME object the command will carry, so what the button tests and
                 // what the outbox stores cannot describe two different actions.
