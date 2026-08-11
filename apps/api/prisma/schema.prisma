@@ -593,6 +593,9 @@ model ProjectCompany {
   // The candidate key `ProjectPartyCompanySource` binds through, so a source row proves its
   // origin is the source FOR THIS association rather than merely existing in the same org.
   @@unique([orgId, projectId, partyId, id])
+  // §A: one party, one directory row per project. 6.1b's merge must resolve a same-project
+  // collision explicitly instead of repointing into it and leaving two rows for one firm.
+  @@unique([projectId, partyId])
 }
 
 // ─── Phase 6 unit 6.1a (§A) — one canonical external party ────────────────────────────────
@@ -1418,6 +1421,9 @@ model ProjectVendor {
   @@index([orgId, partyId])
   // The candidate key `ProjectPartyVendorSource` binds through.
   @@unique([orgId, projectId, partyId, id])
+  // §A: the same one-party-one-binding-per-project seal. Implied by `(projectId, vendorId)`
+  // only while `partyId` is the vendor's — 6.1b's merge repoints it, and then it is not.
+  @@unique([projectId, partyId])
 }
 
 // §F — a demand batch against pinned requirement revisions. CAS state machine:

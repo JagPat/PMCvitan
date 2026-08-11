@@ -141,6 +141,24 @@ CREATE INDEX "ProjectCompany_orgId_partyId_idx" ON "ProjectCompany"("orgId", "pa
 CREATE UNIQUE INDEX "ProjectCompany_orgId_projectId_partyId_id_key"
   ON "ProjectCompany"("orgId", "projectId", "partyId", "id");
 
+-- §A: one party holds at most ONE association per project THROUGH EACH ORIGIN KIND. The merge
+-- command (6.1b) must resolve a same-project collision explicitly rather than repoint into it
+-- and leave two directory rows for one firm with independently editable identities. Diagnosed
+-- BEFORE the index, because `CREATE UNIQUE INDEX` on its own reports a duplicated key without
+-- saying which invariant it belongs to — the same opacity a Phase 3 review already rejected.
+DO $$
+DECLARE bad BIGINT; sample TEXT;
+BEGIN
+  SELECT count(*), string_agg(DISTINCT "projectId" || '/' || "partyId", ', ')
+    INTO bad, sample
+    FROM (SELECT "projectId", "partyId" FROM "ProjectCompany"
+           GROUP BY 1, 2 HAVING count(*) > 1 LIMIT 20) d;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t1a: backfill produced % project/party pair(s) held by more than one ProjectCompany (sample: %). One party per project per origin kind is a §A invariant; this is a migration defect, not a data problem.', bad, sample;
+  END IF;
+END $$;
+CREATE UNIQUE INDEX "ProjectCompany_projectId_partyId_key" ON "ProjectCompany"("projectId", "partyId");
+
 -- The binding's party copy is bound THROUGH the vendor's party, not to `ExternalParty`
 -- directly: otherwise a same-org row could bind project A to vendor V1 while naming party P2.
 ALTER TABLE "ProjectVendor" ADD CONSTRAINT "ProjectVendor_orgId_vendorId_partyId_fkey"
@@ -150,6 +168,23 @@ ALTER TABLE "ProjectVendor" ADD CONSTRAINT "ProjectVendor_orgId_partyId_fkey"
 CREATE INDEX "ProjectVendor_orgId_partyId_idx" ON "ProjectVendor"("orgId", "partyId");
 CREATE UNIQUE INDEX "ProjectVendor_orgId_projectId_partyId_id_key"
   ON "ProjectVendor"("orgId", "projectId", "partyId", "id");
+
+-- The same §A seal on the binding side. `(projectId, vendorId)` was already unique and the party
+-- is derived from the vendor, so the backfill cannot violate this — but 6.1b's merge REPOINTS
+-- `partyId`, and after that the derivation no longer holds. The seal is what makes the merge's
+-- same-project refusal enforceable rather than a rule it is trusted to remember.
+DO $$
+DECLARE bad BIGINT; sample TEXT;
+BEGIN
+  SELECT count(*), string_agg(DISTINCT "projectId" || '/' || "partyId", ', ')
+    INTO bad, sample
+    FROM (SELECT "projectId", "partyId" FROM "ProjectVendor"
+           GROUP BY 1, 2 HAVING count(*) > 1 LIMIT 20) d;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t1a: backfill produced % project/party pair(s) held by more than one ProjectVendor (sample: %). One party per project per origin kind is a §A invariant; this is a migration defect, not a data problem.', bad, sample;
+  END IF;
+END $$;
+CREATE UNIQUE INDEX "ProjectVendor_projectId_partyId_key" ON "ProjectVendor"("projectId", "partyId");
 
 -- ── the canonical association ────────────────────────────────────────────────────────────────
 -- The ONLY table the collaborator resolver reads, so it carries the org seal on BOTH sides: a
