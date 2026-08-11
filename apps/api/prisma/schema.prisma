@@ -634,6 +634,11 @@ model ExternalParty {
   // non-null `(orgId, promotedOrgId)` — scoped to the OWNER org, because a supplier working
   // with two owner orgs legitimately has a local party in each.
   promotedOrgId String?
+  // §E — the promotion target is a REAL tenant. Declared HERE and not only in the migration:
+  // the schema is the source a future `prisma migrate dev` diffs against, so an FK that exists
+  // only in SQL is an FK a later generated migration will quietly drop — re-opening the frozen
+  // typo the one-way trigger can never let an operator correct.
+  promotedOrg   Org?    @relation("externalPartyPromotedTo", fields: [promotedOrgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   vendors        Vendor[]
   projectCompanies ProjectCompany[]
@@ -694,7 +699,11 @@ model ProjectPartyCompanySource {
   projectId      String
   partyId        String
   projectCompanyId String
-  projectParty   ProjectParty   @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Cascade)
+  // Restrict, NOT cascade: cascading let a direct delete of the association take its own
+  // justification with it, after which the deferred check counted zero sources and returned
+  // happy — leaving a directory row whose firm the resolver cannot see. The release path already
+  // deletes the association only once both counts are zero, so the legitimate order still works.
+  projectParty   ProjectParty   @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Restrict)
   origin         ProjectCompany @relation(fields: [orgId, projectId, partyId, projectCompanyId], references: [orgId, projectId, partyId, id], onDelete: Cascade)
 
   @@unique([projectCompanyId])
@@ -707,7 +716,9 @@ model ProjectPartyVendorSource {
   projectId       String
   partyId         String
   projectVendorId String
-  projectParty    ProjectParty  @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Cascade)
+  // Restrict, matching the company source: cascading let a direct delete of the association take
+  // its own justification with it, after which the deferred check counted zero and returned happy.
+  projectParty    ProjectParty  @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Restrict)
   origin          ProjectVendor @relation(fields: [orgId, projectId, partyId, projectVendorId], references: [orgId, projectId, partyId, id], onDelete: Cascade)
 
   @@unique([projectVendorId])
@@ -729,6 +740,7 @@ model Org {
   vendors           Vendor[]
   // Phase 6 unit 6.1a (§A) — the canonical external firms this org collaborates with.
   externalParties   ExternalParty[]
+  promotedParties   ExternalParty[] @relation("externalPartyPromotedTo")
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -1405,7 +1417,10 @@ model ProjectVendor {
   // to V1's project records — or would have to read procurement to re-check, which is what
   // the orgs-owned mirror exists to avoid.
   partyId   String
-  vendorParty Vendor @relation("projectVendorParty", fields: [orgId, vendorId, partyId], references: [orgId, id, partyId], onDelete: NoAction, onUpdate: NoAction)
+  // ON UPDATE CASCADE, matching the migration: the copy is DERIVED and must follow its source, or
+  // 6.1b cannot repoint an already-bound vendor in any order. Declared here because the schema is
+  // what a generated migration diffs against — SQL-only would drift straight back.
+  vendorParty Vendor @relation("projectVendorParty", fields: [orgId, vendorId, partyId], references: [orgId, id, partyId], onDelete: NoAction, onUpdate: Cascade)
   party     ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
   boundAt   DateTime @default(now())
   boundBy   User     @relation("vendorsBound", fields: [boundById], references: [id], onDelete: NoAction, onUpdate: NoAction)

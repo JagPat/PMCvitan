@@ -113,11 +113,11 @@ export class CompaniesService {
       const row = await tx.projectCompany.update({ where: { id: companyId }, data });
       if (renaming) {
         const outcome = await this.party.renamePartyForSoleSource(tx, {
-          projectId, partyId: existing.partyId, name: input.name!,
+          partyId: existing.partyId, name: input.name!,
         });
         if (!outcome.renamed) {
           throw new ConflictException(
-            'This firm’s identity is shared with another record on this project, so it cannot be renamed here. Reconcile the party first.',
+            'This firm’s identity is shared with another record, so it cannot be renamed here. Reconcile the party first.',
           );
         }
       }

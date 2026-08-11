@@ -426,15 +426,22 @@ export class OrgsParticipant {
    * the firm from one of its two faces is the operator's reconciliation decision, not a
    * side effect of a directory edit. (Authority rows do not exist until 6.2; that refusal is
    * additive on top of this one, not a replacement for it.)
+   *
+   * **The count is ORG-WIDE, and the project scope it started with was a bug.** `ExternalParty`
+   * is owner-org-scoped: one row, one name, read by every project the firm reaches. Counting
+   * sources within the editing project alone means that once 6.1b repoints a project-A company
+   * onto a party already bound on project B, project A sees a single local source, calls itself
+   * the sole evidence, and renames the firm project B is relying on. The check has to be scoped
+   * the way the DATA is, not the way the caller happens to be.
    */
   async renamePartyForSoleSource(
     tx: Prisma.TransactionClient,
-    input: { projectId: string; partyId: string; name: string },
+    input: { partyId: string; name: string },
   ): Promise<{ renamed: boolean; sharedWith: number }> {
-    const { projectId, partyId, name } = input;
+    const { partyId, name } = input;
     const [companies, vendors] = await Promise.all([
-      tx.projectPartyCompanySource.count({ where: { projectId, partyId } }),
-      tx.projectPartyVendorSource.count({ where: { projectId, partyId } }),
+      tx.projectPartyCompanySource.count({ where: { partyId } }),
+      tx.projectPartyVendorSource.count({ where: { partyId } }),
     ]);
     const others = companies + vendors - 1;
     if (others > 0) return { renamed: false, sharedWith: others };

@@ -231,6 +231,47 @@ describe('Phase 6 unit 6.1a — the review corrections (live PG)', () => {
     expect((await t.prisma.externalParty.findUniqueOrThrow({ where: { id: partyId } })).name).toBe('Beta Constructions');
   });
 
+  // ── D1 ─────────────────────────────────────────────────────────────────────────────────────
+  it('D1 — the sole-source check is scoped the way the DATA is: ORG-wide, not per project', async () => {
+    const projectA = await freshProject();
+    const projectB = await freshProject();
+    const { companyId, partyId } = await company(projectA, 'Shared Firm');
+
+    // The state 6.1b's merge produces: one org-scoped party reached from TWO projects. Project B
+    // gets there through a vendor binding, which is the other origin kind.
+    const v = await vendors.create(f.orgA.id, { name: 'Shared Firm' }, orgAdmin(f.orgA.id));
+    await t.prisma.$executeRawUnsafe('UPDATE "Vendor" SET "partyId" = $1 WHERE "id" = $2', partyId, v.id);
+    await vendors.bind(projectB, { vendorId: v.id }, pmc(projectB));
+
+    // Project A holds exactly ONE source, so a project-scoped count calls it the sole evidence —
+    // and renames the firm project B is relying on. `ExternalParty` has one row and one name.
+    expect(await t.prisma.projectPartyCompanySource.count({ where: { projectId: projectA, partyId } })).toBe(1);
+    expect(await t.prisma.projectPartyVendorSource.count({ where: { projectId: projectA, partyId } })).toBe(0);
+
+    await expect(companies.update(projectA, pmc(projectA), companyId, { name: 'Renamed Behind B’s Back' }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await t.prisma.externalParty.findUniqueOrThrow({ where: { id: partyId } })).name).toBe('Shared Firm');
+  });
+
+  // ── D2 ─────────────────────────────────────────────────────────────────────────────────────
+  it('D2 — an association cannot be deleted out from under a source that still justifies it', async () => {
+    const projectId = await freshProject();
+    const { companyId, partyId } = await company(projectId, 'Still Sourced Ltd');
+
+    // With the source→association key cascading, this delete took its own justification with it
+    // and the deferred check then counted zero sources and returned satisfied — leaving a
+    // directory row whose firm the resolver cannot see. That is the exact state the check exists
+    // to prevent, reached THROUGH the check.
+    const message = await failure(() => t.prisma.projectParty.deleteMany({ where: { projectId, partyId } }));
+    expect(message).toMatch(/association_fkey|foreign key constraint/i);
+    expect(await t.prisma.projectPartyCompanySource.count({ where: { projectId, partyId } })).toBe(1);
+
+    // The legitimate order is unaffected: the company goes, its source goes with it, and only
+    // then is the association free to be released.
+    await companies.remove(projectId, pmc(projectId), companyId);
+    expect(await t.prisma.projectParty.count({ where: { projectId, partyId } })).toBe(0);
+  });
+
   // ── C2 ─────────────────────────────────────────────────────────────────────────────────────
   it('C2 — releasing an association serializes against a source being added for the same party', async () => {
     const projectId = await freshProject();

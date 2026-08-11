@@ -263,6 +263,13 @@ ALTER TABLE "ProjectParty" ADD CONSTRAINT "ProjectParty_orgId_partyId_fkey"
 -- The FK carries the project and the party, not just the origin id. An FK to the origin alone
 -- would say only "some binding exists in this org", so a row justifying ProjectParty(project B,
 -- party P) could point at an origin on project A and pass.
+--
+-- The association side is ON DELETE RESTRICT, not CASCADE. Cascading made the seal circular: a
+-- direct delete of `ProjectParty` took its own justification with it, and the deferred check then
+-- counted zero sources and returned satisfied — leaving a `ProjectCompany` whose firm no
+-- association names, which is the state the check exists to prevent. RESTRICT refuses that delete
+-- instead, and the legitimate order is unaffected: the release path removes the association only
+-- once both source counts are already zero.
 CREATE TABLE IF NOT EXISTS "ProjectPartyCompanySource" (
   "id"               TEXT NOT NULL,
   "orgId"            TEXT NOT NULL,
@@ -275,7 +282,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "ProjectPartyCompanySource_projectCompanyId_ke
 CREATE INDEX IF NOT EXISTS "ProjectPartyCompanySource_projectId_partyId_idx" ON "ProjectPartyCompanySource"("projectId", "partyId");
 ALTER TABLE "ProjectPartyCompanySource" DROP CONSTRAINT IF EXISTS "ProjectPartyCompanySource_association_fkey";
 ALTER TABLE "ProjectPartyCompanySource" ADD CONSTRAINT "ProjectPartyCompanySource_association_fkey"
-  FOREIGN KEY ("projectId", "partyId") REFERENCES "ProjectParty"("projectId", "partyId") ON DELETE CASCADE ON UPDATE CASCADE;
+  FOREIGN KEY ("projectId", "partyId") REFERENCES "ProjectParty"("projectId", "partyId") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "ProjectPartyCompanySource" DROP CONSTRAINT IF EXISTS "ProjectPartyCompanySource_origin_fkey";
 ALTER TABLE "ProjectPartyCompanySource" ADD CONSTRAINT "ProjectPartyCompanySource_origin_fkey"
   FOREIGN KEY ("orgId", "projectId", "partyId", "projectCompanyId")
@@ -293,7 +300,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "ProjectPartyVendorSource_projectVendorId_key"
 CREATE INDEX IF NOT EXISTS "ProjectPartyVendorSource_projectId_partyId_idx" ON "ProjectPartyVendorSource"("projectId", "partyId");
 ALTER TABLE "ProjectPartyVendorSource" DROP CONSTRAINT IF EXISTS "ProjectPartyVendorSource_association_fkey";
 ALTER TABLE "ProjectPartyVendorSource" ADD CONSTRAINT "ProjectPartyVendorSource_association_fkey"
-  FOREIGN KEY ("projectId", "partyId") REFERENCES "ProjectParty"("projectId", "partyId") ON DELETE CASCADE ON UPDATE CASCADE;
+  FOREIGN KEY ("projectId", "partyId") REFERENCES "ProjectParty"("projectId", "partyId") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "ProjectPartyVendorSource" DROP CONSTRAINT IF EXISTS "ProjectPartyVendorSource_origin_fkey";
 ALTER TABLE "ProjectPartyVendorSource" ADD CONSTRAINT "ProjectPartyVendorSource_origin_fkey"
   FOREIGN KEY ("orgId", "projectId", "partyId", "projectVendorId")
