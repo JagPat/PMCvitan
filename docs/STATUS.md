@@ -13,22 +13,57 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
 task: 1
-task_state: in_review
-work_item: phase-6-unit-6.1a
-reviewed_merge: adfaff6
-open_pr: 327
+task_state: merged
+work_item: none
+reviewed_merge: ec236c7
+open_pr: none
 next_task: phase-6-unit-6.1b
 blocking_directive: none
 updated: 2026-08-11
 ```
 
 **Unit 6.1 is executed in two halves, and the line runs where the DEPENDENCIES
-are.** PR #327 (`claude/phase6-task1`, base `f670077`) is **6.1a — the identity
-data model and its seals**: `ExternalParty`, the `ProjectParty` association and
-its two per-origin source tables, the same-org seals, the backfill, create-path
-assignment on both `Vendor` and `ProjectCompany`, the frozen §E `promotedOrgId`
-seam, and the §F tenancy proof. It authorises nothing — no principal, resolver,
-scope, grant, capability or route.
+are.** **6.1a — the identity data model and its seals — is MERGED AND CLEARED**
+(PR #327, reviewed head `a616384`, merged at `main` `ec236c7` with a clean Codex
++1): `ExternalParty`, the `ProjectParty` association and its two per-origin
+source tables, the same-org seals, the backfill, create-path assignment on both
+`Vendor` and `ProjectCompany`, the frozen §E `promotedOrgId` seam, and the §F
+tenancy proof. It authorises nothing — no principal, resolver, scope, grant,
+capability or route.
+
+**It took four finding-bearing heads and sixteen findings**, audited in
+`docs/reviews/pr-327-convergence.md`. Four roots produced all sixteen and three
+produced findings in EVERY round, so the audit's carry-forward is binding on
+6.1b rather than advisory:
+
+1. **Root A — a check's scope is a property of the DATA it protects, never of
+   the caller that happens to invoke it** (8 findings). D1 renamed a firm another
+   project depended on because it counted sources on the edited PROJECT; F1 armed
+   the origin obligation only against the tables an origin is WRITTEN on, so
+   removing the source went unchecked. 6.1b's refusals must be PARTY-scoped
+   (org-wide), and every obligation it introduces must have BOTH ends enumerated
+   and owned.
+2. **Root B — a constraint in SQL is not a constraint.** Two seals lived only in
+   hand-written migration SQL, invisible to every gate that observes just the
+   migrated database and one `prisma migrate dev` from being dropped. Now pinned
+   on both sides for the party models by `schema-migration-drift.test.ts`; 6.1b
+   must declare everything it relies on in `schema.prisma` too.
+3. **Root C — the guard's own mechanism opened the hole.** A cascading key let a
+   deferred check satisfy itself; a one-way freeze with no reference check made a
+   typo unrepairable. After adding a guard, ask what it now makes impossible and
+   what it now makes invisible.
+4. **Root D — probes that produced a green signal without exercising the thing
+   under test** (eight instances, found here rather than by review). 6.1b's
+   ascending-`id` root locks must be asserted by a barrier probe SEEN TO FAIL —
+   C7 is the cautionary case, a lock applied on reasoning alone with no red
+   evidence, and it says so in the packet.
+
+**One item is deliberately left undone and belongs to 6.1b:**
+`renamePartyForSoleSource` still infers the caller's own evidence from
+`sources - 1`. That inference is now *true* — the origin obligation is sealed at
+both ends, so a live company always has exactly one source — but true by distant
+consequence rather than by construction. 6.1b should pass the caller's source
+identity and count the others directly.
 
 **6.1b** carries the rest of the plan's unit 6.1: the operator merge/repoint
 command, and the `collaboration` capability-name reservation with its stale-row
