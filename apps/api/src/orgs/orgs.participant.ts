@@ -316,4 +316,84 @@ export class OrgsParticipant {
     return { standing: true, ceiling: settled[0]!.approvalLimit ?? null };
   }
 
+  // ── Phase 6 unit 6.1a (§A) — the canonical external party ─────────────────────────────────
+  //
+  // `ExternalParty`, `ProjectParty` and the two source tables are ORGS-owned. Procurement
+  // creates vendors and binds them to projects, so it needs a party and an association written
+  // in ITS OWN transaction — and must not write orgs tables directly. These three methods are
+  // that channel, and `procurement.workflowParticipants` declares the edge.
+  //
+  // Orgs owns them precisely because the collaborator resolver reads the association: putting a
+  // procurement table inside the authority predicate is the inversion §A rejects `Vendor` for.
+
+  /** Mint the canonical party for a firm this org has just started dealing with. */
+  async createParty(
+    tx: Prisma.TransactionClient,
+    input: { orgId: string; name: string; createdById: string | null },
+  ): Promise<{ id: string }> {
+    const created = await tx.externalParty.create({
+      data: { orgId: input.orgId, name: input.name, createdById: input.createdById },
+      select: { id: true },
+    });
+    return { id: created.id };
+  }
+
+  /**
+   * Record that `partyId` is associated with `projectId` BECAUSE of a specific origin row.
+   *
+   * The association is created if absent and reused if present — one party can reach a project
+   * through both a company and a vendor binding, and the second must not fail or duplicate. The
+   * SOURCE row is what differs, and it is FK-bound to the origin through the origin's own
+   * project and party, so it cannot justify an association it does not belong to.
+   */
+  async attachPartySource(
+    tx: Prisma.TransactionClient,
+    input: {
+      orgId: string;
+      projectId: string;
+      partyId: string;
+      origin: { kind: 'company'; projectCompanyId: string } | { kind: 'vendor'; projectVendorId: string };
+    },
+  ): Promise<void> {
+    const { orgId, projectId, partyId } = input;
+    await tx.projectParty.upsert({
+      where: { projectId_partyId: { projectId, partyId } },
+      create: { orgId, projectId, partyId },
+      update: {},
+    });
+    if (input.origin.kind === 'company') {
+      await tx.projectPartyCompanySource.create({
+        data: { orgId, projectId, partyId, projectCompanyId: input.origin.projectCompanyId },
+      });
+    } else {
+      await tx.projectPartyVendorSource.create({
+        data: { orgId, projectId, partyId, projectVendorId: input.origin.projectVendorId },
+      });
+    }
+  }
+
+  /**
+   * Drop the association if the origin just removed was its LAST justification.
+   *
+   * The source row itself is removed by the origin's ON DELETE CASCADE; what cascades cannot do
+   * is decide whether the association still has a reason to exist. Without this, deleting the
+   * only company on a project would leave `ProjectParty` alive with nothing supporting it — and
+   * the deferred constraint trigger would refuse the whole transaction at COMMIT, so the delete
+   * a user asked for would fail rather than the association tidying itself up.
+   *
+   * Call AFTER the origin delete, in the same transaction.
+   */
+  async releasePartyAssociationIfUnsourced(
+    tx: Prisma.TransactionClient,
+    input: { projectId: string; partyId: string },
+  ): Promise<void> {
+    const { projectId, partyId } = input;
+    const [companies, vendors] = await Promise.all([
+      tx.projectPartyCompanySource.count({ where: { projectId, partyId } }),
+      tx.projectPartyVendorSource.count({ where: { projectId, partyId } }),
+    ]);
+    if (companies + vendors > 0) return;
+    await tx.projectParty.deleteMany({ where: { projectId, partyId } });
+  }
+
 }

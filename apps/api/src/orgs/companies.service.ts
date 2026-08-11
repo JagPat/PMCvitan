@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
+import { OrgsParticipant } from './orgs.participant';
 import type { AuthUser } from '../common/auth';
 import type { AddCompanyInput, UpdateCompanyInput } from '../contracts';
 
@@ -21,7 +22,7 @@ export interface CompanyDto {
  */
 @Injectable()
 export class CompaniesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly party: OrgsParticipant) {}
 
   private async canManage(projectId: string, user: AuthUser): Promise<boolean> {
     if (user.role === 'pmc') return true; // token is already scoped to this project
@@ -56,16 +57,36 @@ export class CompaniesService {
 
   async add(projectId: string, requester: AuthUser, input: AddCompanyInput): Promise<CompanyDto> {
     await this.assertCanManage(projectId, requester);
-    const created = await this.prisma.projectCompany.create({
-      data: {
-        projectId,
+    const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { orgId: true } });
+    // Phase 6 unit 6.1a (§A) — a directory entry is now also a SOURCE that justifies a party's
+    // association with this project, so the party, the row and the association commit together.
+    // A company without a canonical identity is not a representable state.
+    const created = await this.prisma.$transaction(async (tx) => {
+      const party = await this.party.createParty(tx, {
+        orgId: project.orgId,
         name: input.name,
-        kind: input.kind,
-        contactName: input.contactName || null,
-        contactEmail: input.contactEmail || null,
-        contactPhone: input.contactPhone || null,
-        notes: input.notes || null,
-      },
+        createdById: requester.sub,
+      });
+      const row = await tx.projectCompany.create({
+        data: {
+          projectId,
+          orgId: project.orgId,
+          partyId: party.id,
+          name: input.name,
+          kind: input.kind,
+          contactName: input.contactName || null,
+          contactEmail: input.contactEmail || null,
+          contactPhone: input.contactPhone || null,
+          notes: input.notes || null,
+        },
+      });
+      await this.party.attachPartySource(tx, {
+        orgId: project.orgId,
+        projectId,
+        partyId: party.id,
+        origin: { kind: 'company', projectCompanyId: row.id },
+      });
+      return row;
     });
     return this.toDto(created);
   }
@@ -90,7 +111,15 @@ export class CompaniesService {
     await this.assertCanManage(projectId, requester);
     const existing = await this.prisma.projectCompany.findUnique({ where: { id: companyId } });
     if (!existing || existing.projectId !== projectId) throw new NotFoundException('Company not found on this project');
-    await this.prisma.projectCompany.delete({ where: { id: companyId } });
+    // The source row goes with the company by ON DELETE CASCADE, but a cascade cannot decide
+    // whether the ASSOCIATION still has a reason to exist. Without the release, removing the only
+    // company would leave `ProjectParty` alive with nothing supporting it and the deferred
+    // constraint trigger would refuse the whole transaction at COMMIT — so the delete the user
+    // asked for would fail rather than the association tidying itself up.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.projectCompany.delete({ where: { id: companyId } });
+      await this.party.releasePartyAssociationIfUnsourced(tx, { projectId, partyId: existing.partyId });
+    });
     return { ok: true };
   }
 }

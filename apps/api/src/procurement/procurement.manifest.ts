@@ -36,7 +36,12 @@ export const procurementManifest: ModuleManifest = {
   // until some later commercial command, so `COMMITTED` silently drops the whole vendor
   // obligation. NOT a `dependsOn` edge — procurement never READS commercial (that is what makes
   // commercial a SINK) — and participant channels are cycle-exempt, so the graph stays acyclic.
-  workflowParticipants: ['commercial'],
+  // Phase 6 unit 6.1a (§A) — `orgs` joins because creating a vendor now mints its canonical
+  // `ExternalParty`, and binding one records the orgs-owned `ProjectParty` association, both
+  // through `OrgsParticipant` inside procurement's own transaction. A DECLARED participant edge,
+  // not a direct write: probe P5 asserts both halves — this declaration, and the continued
+  // ABSENCE of an `orgs -> procurement` dependency edge.
+  workflowParticipants: ['commercial', 'orgs'],
   producesEvents: [
     'requisition.submitted', 'requisition.approved', 'comparison.approved',
     'po.issued', 'po.amended', 'po.cancelled', 'po.closed_short',
