@@ -10,39 +10,44 @@ narrative and may lag behind reality.
 ## Now
 
 ```yaml
-phase: 5
-phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
-task: 7
+phase: 6
+phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
+task: 0
 task_state: merged
 work_item: none
-reviewed_merge: 9e96bba
+reviewed_merge: adfaff6
 open_pr: none
-next_task: phase-6-planning
+next_task: phase-6-task-1
 blocking_directive: none
-updated: 2026-08-10
+updated: 2026-08-11
 ```
 
-**PHASE 6 PLANNING IS TWO UNITS, AND NEITHER HAS MERGED YET.** The `Now` block
-above is deliberately unchanged: `phase_plan` still names the Phase 5 plan because
-that is the plan present in this tree, and `next_task: phase-6-planning` is
-already the correct move under the runner rule below — begin at the phase's
-planning item while its plan does not yet exist. This PR closes Phase 5's record;
-it does not advance the phase pointer, because advancing it would name a file no
-commit here contains.
+**PHASE 6 IS ACTIVE. THE FOUNDATION PLAN IS MERGED AND CLEARED**, so the phase
+pointer advances here — in the first change after the one that LANDED the plan
+file, because that change (PR #324) could not carry `docs/STATUS.md`: past three
+finding-bearing heads a docs-only review owes a `Review-Deferred-To-Probes`
+trailer, and the gate refuses that trailer from a diff touching STATUS.
 
-Phase 6 planning was SPLIT on the review lifecycle's recommendation after five
-finding-bearing heads:
+`docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md` — merged as
+PR #324 at `main` `adfaff6` with a clean Codex +1 on head `c16a7a5`, after fourteen
+finding-bearing heads and sixty-one findings, all recorded in
+`docs/reviews/pr-324-convergence.md`. It settles external IDENTITY: §A the
+orgs-owned `ExternalParty` with its same-org seals, the `ProjectParty` association
+and its per-origin source tables, the reconciliation command, the capability-name
+reservation; §E the frozen `promotedOrgId` seam; §F the tenancy standard. It plans
+unit **6.1**, which is `next_task`.
 
-- **the FOUNDATION** — §A canonical party, §E promotion seam, §F tenancy, and unit
-  6.1 — is in review as PR #324;
-- **the BOUNDARY plan** — §B collaborator principal and resolver, §C scope
-  vocabulary, §D closed set and tripwires, the `collaboration` capability and its
-  enablement rule, plus unit 6.2's bindings and grants — is **NOT WRITTEN YET**.
-  Its source material and the findings it must answer are recorded in PR #324's
-  convergence audit.
+**Phase 6 planning is TWO units and the second is not written.** The BOUNDARY plan
+— §B collaborator principal and resolver, §C scope vocabulary, §D closed set and
+tripwires, the `collaboration` capability and its enablement rule, plus unit 6.2's
+bindings and grants — **must clear its own review stop before 6.2**, and 6.1 does
+not depend on it. Its source material is
+`git show 3f7e35d:docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md`
+lines 150-433, and the five findings it must answer are numbers 20-24 in
+`docs/reviews/pr-324-convergence.md`.
 
-Both are `phase-6-planning` work. The phase pointer advances in the same change
-that lands a Phase 6 plan file, so STATUS never names a plan that is not there.
+Execution order, from the merged plan: **foundation plan (done) → 6.1 → BOUNDARY
+plan → 6.2 → 6.3 → 6.4+.**
 
 **PHASE 6 IS THE ACTIVE PHASE. PHASE 5 IS COMPLETE** — every Phase 5 task,
 1 through 7, is merged and independently cleared through the exact-head
