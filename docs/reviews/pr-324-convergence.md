@@ -1,8 +1,8 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Thirteen finding-bearing heads, fifty-nine findings, on a docs-only plan.
+Fourteen finding-bearing heads, sixty-one findings, on a docs-only plan.
 
-**The trajectory, and what changed it:** 5 · 4 · 5 · 5 · 6 · **3** · 6 · 6 · 7 · **3 · 3 · 3 · 3**. It did
+**The trajectory, and what changed it:** 5 · 4 · 5 · 5 · 6 · **3** · 6 · 6 · 7 · **3 · 3 · 3 · 3 · 2**. It did
 not fall for five rounds, and the review lifecycle reached its limit on `3f7e35d` and recommended
 splitting the unit. It was right. Rounds 1–5 were dominated by §B/§C/§D — authority — where a fix in
 one section repeatedly created the next round's finding in another; §A (identity) drew ONE finding in
@@ -74,6 +74,8 @@ circling — which is also why root I below matters more than the raw total.
 | 57 | `b4f0cf0` | give `ProjectPartySource` source-specific keys an FK can bind | **J — the SHAPE was wrong** |
 | 58 | `b4f0cf0` | repoint `ProjectVendor` party copies during merges | **I** (checklist Q2, on fix 54's seal) |
 | 59 | `b4f0cf0` | guard `ProjectVendor` source removals too | **I** (the guard named one origin of two) |
+| 60 | `8d81016` | bind source rows to their project party, not just the origin | **J** — the normalisation's key was too narrow |
+| 61 | `8d81016` | scope promoted-org uniqueness to the OWNER org | created by fix 52 |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -497,6 +499,26 @@ review telling me the same thing three times in the vocabulary of its symptoms.
 > accumulate around a shape that cannot express its own constraint; the fix is to change the shape
 > until the constraint is a foreign key.
 
+### Round 14 — the normalisation was right and its KEY was too narrow
+
+Two findings, and the difference in kind is the point: neither asks for a new guard.
+
+**60** says the normalised source FK pointed at `ProjectVendor(orgId, id)` — which proves only that
+*some* vendor binding exists in the org, not that it is the source *for this association*. A source
+row justifying `ProjectParty(project B, party P)` could point at a `ProjectVendor` on project A with
+both FKs passing. Routing the FK through the origin's own copied `projectId` and `partyId` closes it
+**inside the mechanism rather than beside it** — which is what round 13's rule predicted a correct fix
+would look like. The shape was right; the key was one column short of expressing the constraint.
+
+**61** is fix 52 over-tightened. `ExternalParty` is owner-org-scoped by construction, so a supplier
+working with owner orgs A and B has a local party in each — by design. A global unique on
+`promotedOrgId` would let A link to the supplier's tenant and then refuse B's equally legitimate
+link. Per-owner-org uniqueness rejects what is actually wrong and permits what is not.
+
+> A seal can fail in two directions, and only one of them is visible from the finding that prompted
+> it. Fix 52 was written against "two parties, one tenant" and did not ask which two parties that
+> should still be allowed for.
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -579,6 +601,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `24fdec0` | **3** | 3 (51 from fix 40's class; 52 from fix 50; 53 from fix 48) — all on structures introduced one round earlier |
 | `be3eb4c` | **3** | 3 (54/55/56, all on fix 53's mirror) — the SAME three questions as the round before |
 | `b4f0cf0` | **3** | 3 (57/58/59, all on the mirror again) — which is what finally identified the SHAPE as the cause |
+| `8d81016` | **2** | 1 (61 from fix 52) — and 60 completes the normalisation rather than patching around it |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header

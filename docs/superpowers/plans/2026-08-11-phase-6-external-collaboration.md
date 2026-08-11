@@ -54,7 +54,7 @@ is silently dropped in the split.
 | 2e | The canonical per-project association | **`ProjectParty`, orgs-owned**, sealed to the project's org on BOTH sides; `ProjectCompany` and `ProjectVendor` MIRROR into it so the resolver never reads procurement | §A |
 | 2j | Which source justifies an association | **one source table per origin**, each FK-bound to its row (CASCADE on delete); the association lives while ≥1 source does | §A |
 | 2h | Association removal / identity update | both refused while any binding or grant references the party on that project | §A |
-| 2i | `promotedOrgId` | **DB-backed one-way AND one-to-one**: null → org permitted, any change of a non-null value refused, plus a partial unique on non-null | §E |
+| 2i | `promotedOrgId` | **DB-backed one-way AND one-to-one PER OWNER ORG**: null → org permitted, any change of a non-null value refused, partial unique on non-null `(orgId, promotedOrgId)` | §E |
 | 2f | A pre-existing `collaboration` capability row | 6.1's migration **ABORTS** naming the projects; it never deletes the row | staging |
 | 2g | Where grants are planned | **6.2 moves to the boundary plan** — a grant cannot be stored before the vocabulary that gives it meaning | order |
 | 3 | Guest → Org promotion | **The SEAM ships in 6.1; the promotion COMMAND is deferred** out of Phase 6 | §E |
@@ -214,11 +214,20 @@ represents:
 
 | Table | Bound to | On origin delete |
 |---|---|---|
-| `ProjectPartyCompanySource` | `ProjectCompany` (same-org composite FK) | CASCADE |
-| `ProjectPartyVendorSource` | `ProjectVendor` (same-org composite FK) | CASCADE |
+| `ProjectPartyCompanySource` | `ProjectCompany` via `(orgId, projectId, partyId, projectCompanyId)` | CASCADE |
+| `ProjectPartyVendorSource` | `ProjectVendor` via `(orgId, projectId, partyId, projectVendorId)` | CASCADE |
 
-Both also FK to `ProjectParty`. A source row surviving its origin is now **unrepresentable** rather
-than guarded against; the guards that remain are the ones about *authority*, not about bookkeeping.
+**The FK carries the project and the party, not just the origin's id — and a narrower one proves the
+wrong thing.** An FK to `ProjectVendor(orgId, id)` alone says only "some vendor binding exists in this
+org": a source row justifying `ProjectParty(project B, party P)` could point at a `ProjectVendor` row
+on project A, and both that FK and the `ProjectParty` FK would pass while no vendor source for B
+exists at all. Routing the FK through the origin's own copied `projectId` and `partyId` makes the
+origin provably the source *for this association*. (Each origin therefore carries the matching
+candidate key.)
+
+Both also FK to `ProjectParty`. A source row surviving its origin, or justifying an association it
+does not belong to, is now **unrepresentable** rather than guarded against; the guards that remain are
+the ones about *authority*, not about bookkeeping.
 The association exists exactly while at least one source row does — asserted by the deferred
 constraint trigger, under the `ProjectParty` root lock — so neither a stale association that can later
 receive grants, nor a live association dropped because the other source was tidied up.
@@ -393,11 +402,18 @@ or clearing it. Historical guest work attributed through that party would then r
 different tenant than the one actually promoted, which is precisely the attribution §E exists to
 protect. The column therefore carries a **DB-backed one-way transition from the day it lands**: null
 → an org is permitted, and any change of a non-null value — to another org or back to null — is
-refused at PostgreSQL. **Plus a partial unique on non-null `promotedOrgId`**: the one-way rule stops
-a promoted party from MOVING, and nothing in it stops two different parties from each being set to
-the same tenant, which a retry or repair would do — leaving two guest firms resolving to one tenant
-and making attribution and revocation ambiguous in exactly the way §E exists to prevent. One-way and
-one-to-one are two properties, and the first does not imply the second. A deferred command is not a reason to defer the guard; it is the reason the
+refused at PostgreSQL. **Plus a partial unique on non-null `(orgId, promotedOrgId)`**: the one-way
+rule stops a promoted party from MOVING, and nothing in it stops two different parties from each
+being set to the same tenant, which a retry or repair would do — leaving two guest firms resolving to
+one tenant and making attribution and revocation ambiguous in exactly the way §E exists to prevent.
+One-way and one-to-one are two properties, and the first does not imply the second.
+
+**The uniqueness is scoped to the OWNER org, and a global one would be wrong.** `ExternalParty` is
+owner-org-scoped by construction, so a supplier working with owner orgs A and B has a local party in
+each — that is the design, not a duplicate. A global unique would let A link its party to the
+supplier's tenant T and then refuse B's equally legitimate link, which breaks a case §A explicitly
+supports. Per-owner-org uniqueness rejects the thing actually wrong (one owner holding two local
+parties for the same promoted tenant) and permits the thing that is not. A deferred command is not a reason to defer the guard; it is the reason the
 guard has to be there first.
 
 **What does not ship in Phase 6:** the `promote` command itself, tenant provisioning, and any
