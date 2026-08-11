@@ -12,15 +12,31 @@ narrative and may lag behind reality.
 ```yaml
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
-task: 0
-task_state: merged
-work_item: none
+task: 1
+task_state: in_review
+work_item: phase-6-unit-6.1a
 reviewed_merge: adfaff6
-open_pr: none
-next_task: phase-6-task-1
+open_pr: 327
+next_task: phase-6-unit-6.1b
 blocking_directive: none
 updated: 2026-08-11
 ```
+
+**Unit 6.1 is executed in two halves, and the line runs where the DEPENDENCIES
+are.** PR #327 (`claude/phase6-task1`, base `f670077`) is **6.1a — the identity
+data model and its seals**: `ExternalParty`, the `ProjectParty` association and
+its two per-origin source tables, the same-org seals, the backfill, create-path
+assignment on both `Vendor` and `ProjectCompany`, the frozen §E `promotedOrgId`
+seam, and the §F tenancy proof. It authorises nothing — no principal, resolver,
+scope, grant, capability or route.
+
+**6.1b** carries the rest of the plan's unit 6.1: the operator merge/repoint
+command, and the `collaboration` capability-name reservation with its stale-row
+migration abort. The split is by dependency rather than convenience — the merge
+needs 6.1a's `(projectId, partyId)` seals to exist before it can refuse a
+same-project collision, and the reservation's backward half is a diagnostic over
+whatever `ProjectCapability` holds at deploy time, so a row created between the
+two units is still caught.
 
 **PHASE 6 IS ACTIVE. THE FOUNDATION PLAN IS MERGED AND CLEARED**, so the phase
 pointer advances here — in the first change after the one that LANDED the plan
