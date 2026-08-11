@@ -64,8 +64,15 @@ function make(orgRole: string | null = null) {
         companySources.push({ ...data });
         return data;
       }),
-      count: vi.fn(async ({ where }: { where: { projectId: string; partyId: string } }) =>
-        companySources.filter((x) => x.projectId === where.projectId && x.partyId === where.partyId).length),
+      // Phase 6 unit 6.1b — the rename now asks TWO questions of this table: how many sources the
+      // party has at all, and whether the CALLING company is one of them. A mock that hard-codes
+      // one filter shape answers the second question with 0 and turns every legitimate rename into
+      // a 409 — so it honours whichever keys it is actually given rather than the ones it expected.
+      count: vi.fn(async ({ where }: { where: { projectId?: string; partyId?: string; projectCompanyId?: string } }) =>
+        companySources.filter((x) =>
+          (where.projectId === undefined || x.projectId === where.projectId)
+          && (where.partyId === undefined || x.partyId === where.partyId)
+          && (where.projectCompanyId === undefined || x.projectCompanyId === where.projectCompanyId)).length),
     },
     projectPartyVendorSource: { count: vi.fn(async () => 0) },
     orgMembership: { findUnique: vi.fn(async () => (orgRole ? { role: orgRole } : null)) },

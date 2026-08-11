@@ -21,7 +21,13 @@ export const orgsManifest: ModuleManifest = {
   // Labour's query contract (`Worker` is Labour-owned + read-encapsulated). Labour is a LEAF, so
   // this edge closes no cycle.
   dependsOn: ['decisions', 'inspections', 'labour'],
-  workflowParticipants: ['nodes', 'activities', 'inspections'],
+  // Phase 6 unit 6.1b (§A) — the operator merge repoints EVERY party copy in one transaction, and
+  // two of them (`Vendor`, and `ProjectVendor` through its cascade) are procurement-owned. Parties
+  // are orgs-owned, so the command lives here and reaches procurement's rows through
+  // `ProcurementParticipant.repointVendorParty` rather than writing them directly. A
+  // workflow-participant edge is cycle-exempt, which is what lets an orgs → procurement channel
+  // coexist with procurement's own dependencies.
+  workflowParticipants: ['nodes', 'activities', 'inspections', 'procurement'],
   producesEvents: [
     'project.created',
     'project.updated',

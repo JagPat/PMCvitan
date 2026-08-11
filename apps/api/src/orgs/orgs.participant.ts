@@ -440,9 +440,9 @@ export class OrgsParticipant {
    */
   async renamePartyForSoleSource(
     tx: Prisma.TransactionClient,
-    input: { partyId: string; name: string },
+    input: { partyId: string; name: string; callerCompanyId: string },
   ): Promise<{ renamed: boolean; sharedWith: number }> {
-    const { partyId, name } = input;
+    const { partyId, name, callerCompanyId } = input;
     // LOCK THE PARTY ROOT before counting. Counting and then renaming is a read followed by a
     // write, and between them a bind or a repoint can attach a SECOND source: the count says
     // "sole evidence", the attach commits, and the rename lands on a firm that is now shared —
@@ -453,12 +453,28 @@ export class OrgsParticipant {
     // rename CHANGES; locking the sources would leave the one being created unlocked.
     await tx.$queryRaw`SELECT "id" FROM "ExternalParty" WHERE "id" = ${partyId} FOR UPDATE`;
 
-    const [companies, vendors] = await Promise.all([
+    // Count the caller's OWN evidence rather than assume it. The previous form computed
+    // `others = sources - 1`, which reads "one of these rows is me" — an inference that is only
+    // true while the caller HAS a source, and unit 6.1a's F1 showed that state was reachable:
+    // with the origin obligation armed only against origin WRITES, a raw delete of the company's
+    // source left the directory row carrying a party nothing recorded, after which this method
+    // counted a sibling vendor's row as the caller's own, concluded "sole evidence", and renamed
+    // the firm that binding depends on.
+    //
+    // F1 sealed that state shut, so the inference is now TRUE. It is still the wrong shape: it is
+    // true by distant consequence rather than by construction, and a check whose correctness lives
+    // in another file's trigger is one edit away from being wrong again with nothing to catch it.
+    // `own` also makes the method say what it means — the caller must BE evidence for this party.
+    const [own, companies, vendors] = await Promise.all([
+      tx.projectPartyCompanySource.count({ where: { partyId, projectCompanyId: callerCompanyId } }),
       tx.projectPartyCompanySource.count({ where: { partyId } }),
       tx.projectPartyVendorSource.count({ where: { partyId } }),
     ]);
-    const others = companies + vendors - 1;
-    if (others > 0) return { renamed: false, sharedWith: others };
+    const others = companies + vendors - own;
+    // `own === 0` means the caller is not evidence for this party at all. That is F1's state, now
+    // unrepresentable — so reaching it means a seal has been breached, and renaming an identity on
+    // the authority of a row that does not justify it is exactly the damage F1 described. Refuse.
+    if (own === 0 || others > 0) return { renamed: false, sharedWith: others };
     await tx.externalParty.update({ where: { id: partyId }, data: { name } });
     return { renamed: true, sharedWith: 0 };
   }

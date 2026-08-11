@@ -363,6 +363,51 @@ export class ProcurementParticipant {
     };
   }
 
+  /**
+   * Phase 6 unit 6.1b (§A) — repoint this org's vendor party copies from one canonical party to
+   * another, as part of the operator merge. Parties are orgs-owned, `Vendor` is procurement-owned,
+   * so the merge reaches its OWN module's rows through here rather than writing them directly.
+   *
+   * ONE statement moves three tables. `ProjectVendor.vendorParty` is
+   * `(orgId, vendorId, partyId) → Vendor(orgId, id, partyId) ON UPDATE CASCADE`, and
+   * `ProjectPartyVendorSource.origin` is `(orgId, projectId, partyId, projectVendorId) →
+   * ProjectVendor(...) ON UPDATE CASCADE`, so updating `Vendor.partyId` carries the binding's mirror
+   * and the source row with it. Writing those tables separately would fight the cascade: the FKs are
+   * NOT deferrable, so any intermediate state where the copy disagrees with its source is rejected
+   * mid-transaction rather than at commit.
+   *
+   * Scoped by `orgId` as well as party because a party is org-scoped and the caller's org is the
+   * smaller scope — the merge already refuses across orgs, and this makes a mistake there
+   * unreachable rather than merely refused.
+   */
+  async repointVendorParty(
+    tx: Prisma.TransactionClient,
+    input: { orgId: string; fromPartyId: string; toPartyId: string },
+  ): Promise<{ vendors: number }> {
+    const { orgId, fromPartyId, toPartyId } = input;
+    const { count } = await tx.vendor.updateMany({
+      where: { orgId, partyId: fromPartyId },
+      data: { partyId: toPartyId },
+    });
+    return { vendors: count };
+  }
+
+  /**
+   * The projects this org's vendor bindings reach for a party — the merge needs them BEFORE it moves
+   * anything, to decide whether the survivor would end up with two associations on one project.
+   */
+  async projectsBoundToParty(
+    tx: Prisma.TransactionClient,
+    orgId: string,
+    partyId: string,
+  ): Promise<string[]> {
+    const rows = await tx.projectVendor.findMany({
+      where: { orgId, partyId },
+      select: { projectId: true },
+    });
+    return [...new Set(rows.map((r) => r.projectId))];
+  }
+
   /** §F bound 3: Σ (accepted + quarantined) per PO line ≤ ordered + approvedOverage. */
   private assertReceiptFits(
     ordered: Prisma.Decimal,

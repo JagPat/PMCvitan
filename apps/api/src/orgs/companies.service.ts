@@ -124,7 +124,7 @@ export class CompaniesService {
       const row = await tx.projectCompany.update({ where: { id: companyId }, data });
       if (input.name !== undefined && input.name !== pinned.name) {
         const outcome = await this.party.renamePartyForSoleSource(tx, {
-          partyId: pinned.partyId, name: input.name,
+          partyId: pinned.partyId, name: input.name, callerCompanyId: companyId,
         });
         if (!outcome.renamed) {
           throw new ConflictException(
