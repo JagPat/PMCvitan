@@ -47,7 +47,11 @@ is silently dropped in the split.
 | 1 | The canonical external party | **A3 — a new orgs-owned `ExternalParty`**; `Vendor` and `ProjectCompany` reference it | §A |
 | 2 | Whether 6.1 reconciles existing rows | **No.** One party per existing `Vendor` and per existing `ProjectCompany`; merging two rows into one firm is a human judgement a migration must not fabricate | §A |
 | 2b | How the party links are sealed | **SAME-ORG composite FKs** on both `Vendor.partyId` and `ProjectCompany.partyId`, so a cross-org link is unrepresentable rather than refused | §A |
-| 2c | Firms created AFTER 6.1 | the create paths assign a party in the same transaction, and `partyId` becomes NOT NULL once the backfill has run | §A |
+| 2c | Firms created AFTER 6.1 | the create paths assign a party in the same transaction (through a declared `OrgsParticipant`), and `partyId` becomes NOT NULL once the backfill has run | §A |
+| 2d | Duplicate parties for one firm | 6.1 ships the operator **merge/repoint command**; the migration still never decides which rows are one firm | §A |
+| 2e | `ProjectCompany` removal | refused while any binding or grant references the party on that project | §A |
+| 2f | A pre-existing `collaboration` capability row | 6.1's migration **ABORTS** naming the projects; it never deletes the row | staging |
+| 2g | Where grants are planned | **6.2 moves to the boundary plan** — a grant cannot be stored before the vocabulary that gives it meaning | order |
 | 3 | Guest → Org promotion | **The SEAM ships in 6.1; the promotion COMMAND is deferred** out of Phase 6 | §E |
 | 4 | Tenancy standard | live-PostgreSQL cross-project proof per surface, unrepresentable-at-the-database where the shape permits | §F |
 
@@ -182,6 +186,33 @@ therefore updates both create paths AND makes `partyId` NOT NULL once the backfi
 "a firm without a canonical identity" stops being a representable state instead of being a thing the
 next migration has to clean up.
 
+**The `Vendor` create path needs a DECLARED procurement → orgs edge.** `Vendor` is created in
+procurement and `ExternalParty` is orgs-owned, so assigning a party in the same transaction is a
+cross-module write, and this repository does not permit undeclared ones. 6.1 declares an
+`OrgsParticipant` invoked from procurement's own transaction — the same pattern Phase 3 used for
+`ProcurementParticipant` and Phase 4 for `LabourRequirementParticipant` — so the write happens
+through the owning module rather than around it. The edge is cycle-safe because nothing in the graph
+depends on `orgs`; §A's layering claim (no `orgs → procurement` edge) is unaffected and is `P5`.
+
+**The reconciliation command ships in 6.1, not "later".** 6.1 deliberately creates one party per
+existing row and merges nothing — but a firm that is BOTH a `Vendor` and a `ProjectCompany` then has
+two parties, and a person or grant bound to one cannot prove ownership of rows linked to the other,
+so a firm-wide revocation would reach half the real firm. An earlier draft left reconciliation as
+"an explicit operator act" with no unit scheduled to provide it, which is a gap rather than a
+decision. 6.1 therefore ships the operator **merge/repoint command** — attributable, refusing to
+merge across orgs, and repointing every `Vendor` and `ProjectCompany` reference in one transaction —
+so the canonical identity is actually reachable before anything relies on it. What 6.1 still does
+not do is DECIDE which rows are the same firm; that judgement stays with the operator.
+
+**`ProjectCompany` removal stops being directory cleanup.** Once the row is the party's per-project
+association, deleting it while the party holds bindings or grants on that project either strands the
+grants or cuts active collaborators off. 6.1 gives the association a guarded lifecycle: removal is
+**refused while any party binding or grant references the party on that project**, and the check
+lives with the association rather than in the boundary resolver, because the row is orgs-owned and
+the guard must hold even while the resolver is off. (There are no bindings or grants until 6.2, so
+the guard is inert on delivery and correct the moment they exist — which is the point of stating it
+now rather than discovering it in 6.2.)
+
 **6.1 never merges two existing rows into one party.** It creates one party per existing `Vendor`
 and one per existing `ProjectCompany`, and leaves any reconciliation to an explicit operator act.
 Deciding that a vendor row and a company row are the same firm is a human judgement; a migration
@@ -216,27 +247,58 @@ unrepresentable at the database where the shape permits it, not merely refused i
 
 | Unit | Contents | Stop |
 |---|---|---|
-| **This plan** | §A canonical party · §E promotion seam · §F tenancy standard | **review stop — 6.1 does not begin until it clears** |
-| **6.1** | `ExternalParty` (§A) + the `promotedOrgId` seam (§E) + the §F tenancy proof. **No capability, no flag** — and see the reservation below | review |
-| **6.2** | the party↔person binding and grants — inert data, because nothing can be switched on yet | review |
-| **BOUNDARY PLAN** | §B principal + resolver · §C scope vocabulary · §D closed set, tripwires, the `collaboration` capability and its enablement rule · the probe ledger | **review stop — 6.3 does not begin until it clears** |
-| **6.3** | the resolver, the route map, the closed set and the capability — as the boundary plan specifies | review |
-| **6.4+** | the scoped surfaces (§C), one scope per unit | review each |
+| **This plan** | §A canonical party (+ its reconciliation, association-lifecycle and creation-edge rules) · §E promotion seam · §F tenancy standard | **review stop — 6.1 does not begin until it clears** |
+| **6.1** | `ExternalParty`, the same-org seals, the backfill + create-path assignment, the operator reconciliation command, the capability-name reservation and its stale-row abort, the `promotedOrgId` seam, the §F proof | review |
+| **BOUNDARY PLAN** | §B principal + resolver · §C scope vocabulary · §D closed set, tripwires, the `collaboration` capability and its enablement rule · the probe ledger below | **review stop — 6.2 does not begin until it clears** |
+| **6.2** | the party↔person binding and GRANTS — **moved here from the foundation**, see below | review |
+| **6.3** | the resolver, the route map, the closed set and the capability | review |
+| **6.4+** | the scoped surfaces, one scope per unit; each routes its own module's service backstops | review each |
 
-**6.3 lands before 6.4 deliberately, and the boundary plan lands before 6.3.** Building surfaces
-first and adding the guard after is how a surface ships with authority nobody checked; the guard is
-cheap to write and worthless to add late. The same argument applies one level up, which is why the
-boundary is planned and reviewed on its own rather than implemented from prose that never converged.
+**Why 6.2 moved.** An earlier draft of this split kept party bindings and grants in the foundation
+while moving §B and §C — the sections that define what a principal IS and what a grant can NAME —
+into the boundary plan. That is incoherent: a grant row written in 6.2 against an unsettled scope
+vocabulary can later have no route or scope meaning, and because the rows already exist, 6.3 would
+have to either reinterpret stored grants or migrate them. **A grant cannot be stored before the
+vocabulary that gives it meaning is settled.** The split line was in the wrong place; it now runs
+between IDENTITY (6.1, here) and EVERYTHING THAT AUTHORISES (6.2+, boundary plan).
 
-### The capability name is RESERVED by 6.1, not created by it
+**6.3 lands before 6.4, and the boundary plan lands before 6.2.** Building surfaces first and adding
+the guard after is how a surface ships with authority nobody checked; storing grants first and
+defining them after is the same mistake one layer down.
 
-6.1 and 6.2 ship inert data models and no flag — but "no flag" is not the same as "no flag can
-exist". The generic `capability:enable` CLI upserts **any** capability string it is given, so an
-operator could create `ProjectCapability(projectId, 'collaboration')` today, before any guard exists;
-when 6.3 later keys the resolver off that row, the project is already enabled and the cutover check
-never ran. **6.1 therefore makes `capability:enable` REFUSE the name `collaboration`**, and 6.3
-replaces that refusal with the real enablement rule. A reserved name is cheap; a project enabled
-before its guard exists is the cutoff the whole design is trying to prevent.
+### The capability name is RESERVED by 6.1, and pre-existing rows ABORT it
+
+6.1 ships no flag — but "no flag" is not the same as "no flag can exist". The generic
+`capability:enable` CLI upserts **any** capability string, so an operator could create
+`ProjectCapability(projectId, 'collaboration')` before any guard exists; when 6.3 keys the resolver
+off that row, the project is already enabled and the cutover check never ran.
+
+Two halves, and the first draft only had one:
+
+1. **Forward:** 6.1 makes `capability:enable` REFUSE the name `collaboration`; 6.3 replaces the
+   refusal with the real enablement rule.
+2. **Backward:** a row created BEFORE 6.1 is not addressed by refusing future calls. 6.1's migration
+   is therefore **diagnostic-first and ABORTS** if any `ProjectCapability` row carries
+   `collaboration`, naming the projects — the same shape every Phase 3–5 migration used for a state
+   it must not silently accept. It never deletes the row: an operator turned it on, and only an
+   operator decides whether that was intended.
+
+Additionally, 6.3 trusts only rows written by the guarded enablement path, so the two halves fail
+independently rather than relying on each other.
+
+### Probes handed to the boundary plan
+
+These live HERE, in a plan, and not only in `docs/reviews/pr-324-convergence.md` — an implementation
+unit reads the plan, and a probe named only in a review packet is a probe nobody runs. The boundary
+plan carries them forward and adds its own; this table is the handoff record.
+
+| # | Question | Probe | Unit |
+|---|---|---|---|
+| P1 | do service backstops still leak? | a tripwire RED-flags an allow-listed handler with a `ROLE_POLICY[...]` gate on its path, mutation-tested against the 20 measured files | 6.3 |
+| P2 | is every route classified, and rollups filtered? | every route resolves to exactly one class; `me/memberships` and `auth/switch` reachable with the resolver ON; `me/portfolio` returns grant-reachable projects AND grant-scoped counters, not project-wide ones | 6.3 |
+| P3 | is the §B invariant held? | no active collaborator membership with zero reachable routes — at enablement, on membership create/reactivate/re-role, **and on grant create/update/revoke or binding revocation** | 6.3 |
+| P4 | is scope-completeness asserted where it misfires? | 6.3 passes with scopes that have no entries; the phase-exit check fails when one never gains any | 6.3 / exit |
+| P5 | does §A's layering hold in the real graph? | the module-graph test shows no `orgs → procurement` edge after `ExternalParty` lands | 6.1 |
 
 ## Out of scope (Phase 6)
 

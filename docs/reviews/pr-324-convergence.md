@@ -1,6 +1,6 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Six finding-bearing heads, twenty-eight findings, on a docs-only plan — and the count did not fall:
+Seven finding-bearing heads, thirty-four findings, on a docs-only plan — and the count did not fall:
 **5 · 4 · 5 · 5 · 6.** The review lifecycle reached its limit on head `3f7e35d` and recommended
 splitting the unit. **It is right, and this audit's conclusion is that the unit was never one unit.**
 
@@ -40,6 +40,12 @@ concerns sharing one review, not of a careless document.
 | 26 | `db2c64d` | pin the party links to the SAME ORG | §A tenancy |
 | 27 | `db2c64d` | assign parties on FUTURE vendor/company writes | §A completeness |
 | 28 | `db2c64d` | keep the runner from re-entering planning | **G — two gate rules in conflict** |
+| 29 | `f208076` | put the deferred probes in an ACTUAL plan | **H — the split line was wrong** |
+| 30 | `f208076` | move grants behind the boundary vocabulary | **H — the split line was wrong** |
+| 31 | `f208076` | scrub/abort on stale `collaboration` capability rows | finding 25, only half done |
+| 32 | `f208076` | schedule the party reconciliation command before grants | §A gap |
+| 33 | `f208076` | guard `ProjectCompany` association removal | §A gap |
+| 34 | `f208076` | declare the procurement → orgs creation edge | created by fix 27 |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -265,6 +271,38 @@ This also closes what process change #37 (fold STATUS into the work PR) left uns
 right for an ordinary work PR, and **wrong for any head that must carry a deferral trailer** — those
 need the separate status PR the fold was meant to eliminate, opened before the work PR merges.
 
+## Root H — the split was right and I drew the line in the wrong place
+
+Round 7 returned six findings, and **29 and 30 are both the split itself, not the material.**
+
+I moved §B (what a principal is) and §C (what a grant can name) into the boundary plan, and left
+**6.2 — party bindings and GRANTS — in the foundation.** A grant row written against an unsettled
+vocabulary can later have no route or scope meaning, and because the rows exist, 6.3 would have to
+reinterpret or migrate them. Finding 30 is exactly right: *a grant cannot be stored before the
+vocabulary that gives it meaning is settled.* The line now runs between IDENTITY (6.1) and
+EVERYTHING THAT AUTHORISES (6.2+), which is where it should have been drawn.
+
+Finding 29 is the same error in the other direction: the probe ledger went out with the boundary
+material, into a document that does not exist yet, leaving the probes named only in this audit. **A
+probe named only in a review packet is a probe nobody runs**, because implementation units read the
+plan. The ledger now lives in the foundation plan as the handoff record, and the boundary plan will
+carry it forward.
+
+> **Splitting a unit is a design act, and the seam has to be drawn where the DEPENDENCIES are, not
+> where the prose happens to divide.** §B/§C/§D read as one block of text, so I cut there; 6.2
+> depended on them and stayed behind. The check I skipped: for each unit left behind, does anything
+> it builds depend on what I just moved?
+
+**31 is finding 25 half-fixed** — the reservation refused FUTURE `capability:enable` calls and did
+nothing about a row an operator already created. The forward half without the backward half is the
+same shape as root A's "removing a dependency at the layer where you found it". 6.1's migration now
+ABORTS on a pre-existing row, naming the projects, and never deletes it.
+
+**32, 33 and 34 are ordinary §A gaps**, each a consequence I owned and had not scheduled: two parties
+for one firm with no command to reconcile them (32); `ProjectCompany` deletion silently stranding
+grants once the row became an association (33); and the `Vendor` create path needing a declared
+procurement → orgs participant edge to assign a party in-transaction (34, created by fix 27).
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -335,6 +373,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `5a92ed2` | 5 | **4** (15, 16, 17, 18 — and 19 was a defect in the deferral itself) |
 | `3f7e35d` | 6 | **4** (20, 22, 23 from the round before it; 25 was finding 14 never actually fixed) |
 | `db2c64d` | **3** | **0** — 26/27 are §A gaps on their merits, 28 is a rule conflict. The split worked |
+| `f208076` | 6 | **3** (29, 30 from the split line; 34 from fix 27) — the split was right, its SEAM was not |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header
