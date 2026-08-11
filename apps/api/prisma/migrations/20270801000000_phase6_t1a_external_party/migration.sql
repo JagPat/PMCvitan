@@ -133,8 +133,15 @@ ALTER TABLE "Vendor" ADD CONSTRAINT "Vendor_orgId_partyId_fkey"
 -- The org copy is bound to the project itself. Without this a row could keep `projectId` on an
 -- org-A project, set its copied `orgId` to org B and point at an org-B party, and both the
 -- project FK and the party FK would pass.
+-- …and it REPLACES the original single-column `projectId` key rather than joining it. PostgreSQL
+-- enforces every foreign key on a row, so a CASCADE key beside a NO ACTION key to the same parent
+-- means the NO ACTION one wins: deleting a project that holds a directory row would have started
+-- failing, silently, for a reason nothing in this unit is about. Two keys to one parent with
+-- different delete actions is an incoherent seal, not a stronger one — and the composite key
+-- subsumes the single column, so the single column goes and the CASCADE moves onto the survivor.
+ALTER TABLE "ProjectCompany" DROP CONSTRAINT IF EXISTS "ProjectCompany_projectId_fkey";
 ALTER TABLE "ProjectCompany" ADD CONSTRAINT "ProjectCompany_orgId_projectId_fkey"
-  FOREIGN KEY ("orgId", "projectId") REFERENCES "Project"("orgId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+  FOREIGN KEY ("orgId", "projectId") REFERENCES "Project"("orgId", "id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "ProjectCompany" ADD CONSTRAINT "ProjectCompany_orgId_partyId_fkey"
   FOREIGN KEY ("orgId", "partyId") REFERENCES "ExternalParty"("orgId", "id") ON DELETE NO ACTION ON UPDATE NO ACTION;
 CREATE INDEX "ProjectCompany_orgId_partyId_idx" ON "ProjectCompany"("orgId", "partyId");

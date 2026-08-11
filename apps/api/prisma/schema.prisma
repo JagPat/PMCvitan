@@ -95,7 +95,6 @@ model Project {
   companies     ProjectCompany[]
   // Phase 6 unit 6.1a (§A) — the org-bound side of the same rows, and the canonical
   // per-project party associations the collaborator resolver reads.
-  orgCompanies  ProjectCompany[] @relation("projectCompanyOrgProject")
   projectParties ProjectParty[]  @relation("projectPartyProject")
   nodes         ProjectNode[]
   siteMaterials SiteMaterial[]
@@ -569,11 +568,16 @@ model CommandExecution {
 // its copied `orgId` to org B and point at an org-B party, and every other FK would pass.
 model ProjectCompany {
   id           String   @id @default(cuid())
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId    String
   // The project's own org, DB-bound to it — never an independently settable copy.
   orgId        String
-  orgProject   Project  @relation("projectCompanyOrgProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  // ONE foreign key to `Project`, composite and CASCADING. An earlier draft kept the original
+  // single-column `projectId` FK (cascade) and ADDED this one as NoAction — but PostgreSQL
+  // enforces both, so the stricter one won and deleting a project silently stopped working
+  // wherever it held a directory row. Two keys to the same parent with different delete actions
+  // is not a stronger seal, it is an incoherent one. The composite key subsumes the single
+  // column, so the single column goes.
+  project      Project  @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade, onUpdate: NoAction)
   // The canonical firm this directory entry represents (§A). Same-org composite FK, so a
   // cross-org party link is unrepresentable rather than merely refused.
   partyId      String

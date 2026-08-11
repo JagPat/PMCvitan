@@ -139,11 +139,15 @@ describe('Phase 3 Task 2 — procurement (live PG)', () => {
 
   it('§H TENANCY: a cross-org binding refuses in the service AND is unrepresentable at the database; quotes require the binding', async () => {
     const projectId = await freshProject();
-    const foreign = await t.prisma.vendor.create({ data: { orgId: f.orgB.id, name: 'Org-B vendor', createdById: f.otherUser.id } });
+    // Phase 6 unit 6.1a — a vendor without a canonical party is no longer a representable state,
+    // so the org-B vendor this probe forges is built the way the real create path builds one:
+    // its own org's party, minted first.
+    const foreignParty = await t.prisma.externalParty.create({ data: { orgId: f.orgB.id, name: 'Org-B vendor', createdById: f.otherUser.id } });
+    const foreign = await t.prisma.vendor.create({ data: { orgId: f.orgB.id, name: 'Org-B vendor', createdById: f.otherUser.id, partyId: foreignParty.id } });
     await expect(vendors.bind(projectId, { vendorId: foreign.id }, pmc(projectId))).rejects.toMatchObject({ status: 400 });
     // the DB backstop: a forged binding row claiming org A for an org-B vendor violates the composite FK
     await expect(
-      t.prisma.projectVendor.create({ data: { projectId, orgId: f.orgA.id, vendorId: foreign.id, boundById: f.memberUser.id } }),
+      t.prisma.projectVendor.create({ data: { projectId, orgId: f.orgA.id, vendorId: foreign.id, boundById: f.memberUser.id, partyId: foreignParty.id } }),
     ).rejects.toThrow();
     // a quote referencing an UNBOUND vendor refuses (§H — reach is only through the binding)
     const req = await freshRequirement(projectId);

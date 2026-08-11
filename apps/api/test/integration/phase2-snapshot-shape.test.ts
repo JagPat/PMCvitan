@@ -217,8 +217,12 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     await t.prisma.siteMaterial.create({ data: { id: s('p2-mat'), projectId: pid, dailyLogId: s('p2-log'), name: 'Tile', qty: '5', zone: 'GF', decisionId: APPROVED_ID, swatch: 'tile', matched: true, nodeId: NODE_ID } });
     // a placed PROGRESS photo → top-level photos[] (PhotoDto) AND dailyLog.photos[]
     await t.prisma.media.create({ data: { id: s('p2-photo'), projectId: pid, kind: 'progress', mime: 'image/png', uploadedBy: uid, nodeId: NODE_ID, takenAt: '2026-06-02' } });
-    // a company → CompanyDto (all contact fields populated so every key serializes)
-    await t.prisma.projectCompany.create({ data: { id: s('p2-co'), projectId: pid, name: 'ACME', kind: 'contractor', contactName: 'A Person', contactEmail: 'a@x.com', contactPhone: '123', notes: 'n' } });
+    // a company → CompanyDto (all contact fields populated so every key serializes). Phase 6
+    // unit 6.1a: a directory row now carries its firm's canonical party, so the fixture mints one
+    // the way `CompaniesService.add` does. `CompanyDto` itself is unchanged — that is the point of
+    // this suite, and this probe proves the party did not leak into the snapshot.
+    const p2Party = await t.prisma.externalParty.create({ data: { orgId: f.orgA.id, name: 'ACME', createdById: uid } });
+    await t.prisma.projectCompany.create({ data: { id: s('p2-co'), projectId: pid, orgId: f.orgA.id, partyId: p2Party.id, name: 'ACME', kind: 'contractor', contactName: 'A Person', contactEmail: 'a@x.com', contactPhone: '123', notes: 'n' } });
     // a notification → notifications[]
     await t.prisma.notification.create({ data: { projectId: pid, text: 'hi', color: '#000', time: 'just now' } });
 
