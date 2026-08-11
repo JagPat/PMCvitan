@@ -99,11 +99,19 @@ async function main(): Promise<void> {
   await prisma.labourTrade.deleteMany();
   await prisma.labourSkill.deleteMany();
   await prisma.pushSubscription.deleteMany();
+  // Phase 6 unit 6.1a — the canonical party records WHO created it through a NO ACTION key,
+  // because attribution for an external firm is not something a user delete may silently drop.
+  // Every reset that wipes users therefore has to clear the identity rows first: this one and
+  // `test/integration/fixtures.ts` are the two, and this is the second of the pair.
+  // `ProjectCompany` moves up from below `user.deleteMany()` for the same reason — it holds the
+  // party reference, so it can no longer be cleared after the party's creator is gone.
+  // (`ProjectParty`, its two source tables and `Vendor` are already in the TRUNCATE above.)
+  await prisma.projectCompany.deleteMany();
+  await prisma.externalParty.deleteMany();
   await prisma.user.deleteMany();
   await prisma.phase.deleteMany();
   await prisma.decision.deleteMany();
   await prisma.projectNode.deleteMany();
-  await prisma.projectCompany.deleteMany();
   await prisma.project.deleteMany();
   await prisma.projectTemplate.deleteMany();
   await prisma.templateModule.deleteMany();
