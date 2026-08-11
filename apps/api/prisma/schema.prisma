@@ -93,6 +93,10 @@ model Project {
   orgId         String
   memberships   Membership[]
   companies     ProjectCompany[]
+  // Phase 6 unit 6.1a (§A) — the org-bound side of the same rows, and the canonical
+  // per-project party associations the collaborator resolver reads.
+  orgCompanies  ProjectCompany[] @relation("projectCompanyOrgProject")
+  projectParties ProjectParty[]  @relation("projectPartyProject")
   nodes         ProjectNode[]
   siteMaterials SiteMaterial[]
   eventStream   ProjectEventStream?
@@ -557,10 +561,23 @@ model CommandExecution {
 // A firm/consultant associated with a project — the client company, the main
 // contractor, the structural/MEP consultants, etc. Distinct from Membership (which
 // is a *person* with a login role); a company is an organisation + a contact.
+//
+// Phase 6 unit 6.1a (§A): this row is no longer only a directory entry — it is one of the
+// two SOURCES that justify a party's association with a project, so it carries `partyId`
+// and gains `orgId`. The org copy is itself bound to the project by `(orgId, projectId) ->
+// Project(orgId, id)`: without that, a row could keep `projectId` on an org-A project, set
+// its copied `orgId` to org B and point at an org-B party, and every other FK would pass.
 model ProjectCompany {
   id           String   @id @default(cuid())
   project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId    String
+  // The project's own org, DB-bound to it — never an independently settable copy.
+  orgId        String
+  orgProject   Project  @relation("projectCompanyOrgProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  // The canonical firm this directory entry represents (§A). Same-org composite FK, so a
+  // cross-org party link is unrepresentable rather than merely refused.
+  partyId      String
+  party        ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
   name         String // firm / organisation name
   kind         String // client | contractor | architect | structural | mep | pmc | consultant | other
   contactName  String?
@@ -569,7 +586,121 @@ model ProjectCompany {
   notes        String?
   createdAt    DateTime @default(now())
 
+  partySources ProjectPartyCompanySource[]
+
   @@index([projectId])
+  @@index([orgId, partyId])
+  // The candidate key `ProjectPartyCompanySource` binds through, so a source row proves its
+  // origin is the source FOR THIS association rather than merely existing in the same org.
+  @@unique([orgId, projectId, partyId, id])
+}
+
+// ─── Phase 6 unit 6.1a (§A) — one canonical external party ────────────────────────────────
+//
+// Suppliers, contractors and consultants exist three times today: `ProjectCompany` (a
+// directory entry), `Vendor`/`ProjectVendor` (the commercial counterparty), and a
+// prospective guest `Org`. This is the identity all three reconcile to.
+//
+// Owned by ORGS, not procurement, and the reason is dependency direction rather than
+// convenience: the access path must never read procurement, so the canonical party sits at
+// the orgs end of an edge that runs INTO orgs. Promoting `Vendor` instead would have forced
+// `orgs.dependsOn += procurement` — the module deciding who may see anything reading the
+// module that buys things.
+model ExternalParty {
+  id        String   @id @default(cuid())
+  org       Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId     String
+  name      String
+  createdAt DateTime @default(now())
+  createdBy User     @relation("externalPartiesCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdById String
+
+  // §E — the stable link to a future tenant. The promotion COMMAND is deferred out of Phase
+  // 6, which is exactly why the guard ships now: nothing here sets this column, so nothing
+  // here would stop a later retry or repair moving a party from one tenant to another, and
+  // historical guest work would resolve to the wrong one. Raw SQL adds the one-way trigger
+  // (null -> org permitted; any change of a non-null value refused) and the partial unique on
+  // non-null `(orgId, promotedOrgId)` — scoped to the OWNER org, because a supplier working
+  // with two owner orgs legitimately has a local party in each.
+  promotedOrgId String?
+
+  vendors        Vendor[]
+  projectCompanies ProjectCompany[]
+  projectVendors ProjectVendor[]
+  projectParties ProjectParty[]
+
+  @@index([orgId])
+  // Every party reference in this schema is a same-org composite FK through this key.
+  @@unique([orgId, id])
+}
+
+// The canonical per-project association — the ONLY table the collaborator resolver reads.
+//
+// `ProjectCompany` alone would leave a materials supplier (which exists only as `Vendor` +
+// `ProjectVendor`) unreachable, but reading `ProjectVendor` to fix that would put a
+// procurement-owned table inside the authority predicate — the same inversion §A rejects.
+// So both mirror into this orgs-owned row and the resolver never leaves orgs.
+//
+// It carries the org seal on BOTH sides. It is the only thing the resolver reads, so a row
+// pairing an org-A project with an org-B party would make that party associated with that
+// project no matter how well every other table is sealed.
+model ProjectParty {
+  id        String   @id @default(cuid())
+  orgId     String
+  projectId String
+  partyId   String
+  project   Project  @relation("projectPartyProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  party     ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdAt DateTime @default(now())
+
+  companySources ProjectPartyCompanySource[]
+  vendorSources  ProjectPartyVendorSource[]
+
+  // One association per (project, party) — so a merge cannot leave two rows on one project
+  // with independently editable identities.
+  @@unique([projectId, partyId])
+  @@index([orgId, partyId])
+}
+
+// ─── Which SOURCE justifies an association ────────────────────────────────────────────────
+//
+// One party can hold both a `ProjectCompany` and a `ProjectVendor` on the same project, so
+// removing one source must not drop an association the other still supports — and orgs
+// cannot read procurement to find out.
+//
+// An earlier design did this with a single `(projectId, partyId, source)` triple and a
+// discriminator. That shape has no source-specific key, so no ordinary foreign key can bind
+// a `source='vendor'` row to the `ProjectVendor` justifying it, and every possible drift had
+// to be caught by a hand-written guard. Normalised into one table per origin, a source row
+// outliving its origin is UNREPRESENTABLE instead of guarded against.
+//
+// The FK carries the project and the party, not just the origin id: an FK to the origin
+// alone would say only "some binding exists in this org", so a row justifying
+// ProjectParty(project B, party P) could point at an origin on project A and still pass.
+model ProjectPartyCompanySource {
+  id             String   @id @default(cuid())
+  orgId          String
+  projectId      String
+  partyId        String
+  projectCompanyId String
+  projectParty   ProjectParty   @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Cascade)
+  origin         ProjectCompany @relation(fields: [orgId, projectId, partyId, projectCompanyId], references: [orgId, projectId, partyId, id], onDelete: Cascade)
+
+  @@unique([projectCompanyId])
+  @@index([projectId, partyId])
+}
+
+model ProjectPartyVendorSource {
+  id              String   @id @default(cuid())
+  orgId           String
+  projectId       String
+  partyId         String
+  projectVendorId String
+  projectParty    ProjectParty  @relation(fields: [projectId, partyId], references: [projectId, partyId], onDelete: Cascade)
+  origin          ProjectVendor @relation(fields: [orgId, projectId, partyId, projectVendorId], references: [orgId, projectId, partyId, id], onDelete: Cascade)
+
+  @@unique([projectVendorId])
+  @@index([projectId, partyId])
 }
 
 // An Org/Account (an architecture practice, e.g. "Vitan Architecture") — owns
@@ -585,6 +716,8 @@ model Org {
   templates ProjectTemplate[]
   commandExecutions CommandExecution[]
   vendors           Vendor[]
+  // Phase 6 unit 6.1a (§A) — the canonical external firms this org collaborates with.
+  externalParties   ExternalParty[]
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -906,6 +1039,7 @@ model User {
   requirementsCreated     ActivityRequirement[]      @relation("requirementsCreated")
   approvalsRecorded       DecisionApprovalRevision[] @relation("approvalRevisionsApproved")
   vendorsCreated          Vendor[]                   @relation("vendorsCreated")
+  externalPartiesCreated  ExternalParty[]            @relation("externalPartiesCreated")
   vendorsBound            ProjectVendor[]            @relation("vendorsBound")
   requisitionsCreated     Requisition[]              @relation("requisitionsCreated")
   rfqsIssued              Rfq[]                      @relation("rfqsIssued")
@@ -1227,10 +1361,21 @@ model Vendor {
   createdAt   DateTime @default(now())
   createdBy   User     @relation("vendorsCreated", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   createdById String
+  // Phase 6 unit 6.1a (§A) — the canonical firm this commercial counterparty IS. A foreign
+  // key, not a read: procurement gains no `dependsOn` edge from holding it.
+  partyId     String
+  party       ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
 
   bindings ProjectVendor[]
+  // Back-relation for `ProjectVendor.vendorParty` — the binding's party copy is bound
+  // THROUGH this vendor's own party, not directly to `ExternalParty`.
+  partyBoundBindings ProjectVendor[] @relation("projectVendorParty")
 
   @@unique([orgId, id])
+  @@index([orgId, partyId])
+  // The candidate key `ProjectVendor` binds its own party copy through, so the copy is
+  // provably the vendor's rather than an independently settable value.
+  @@unique([orgId, id, partyId])
 }
 
 // §H — a vendor's explicit reach into ONE project. The composite FKs bind the SAME orgId to
@@ -1243,9 +1388,19 @@ model ProjectVendor {
   project   Project  @relation("projectVendorProject", fields: [orgId, projectId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
   vendor    Vendor   @relation(fields: [orgId, vendorId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
   vendorId  String
+  // Phase 6 unit 6.1a (§A) — the party copy, bound THROUGH the vendor's own party rather
+  // than to `ExternalParty` directly. A same-org row could otherwise bind project A to
+  // vendor V1 while mirroring a different party P2, and the resolver would grant P2 access
+  // to V1's project records — or would have to read procurement to re-check, which is what
+  // the orgs-owned mirror exists to avoid.
+  partyId   String
+  vendorParty Vendor @relation("projectVendorParty", fields: [orgId, vendorId, partyId], references: [orgId, id, partyId], onDelete: NoAction, onUpdate: NoAction)
+  party     ExternalParty @relation(fields: [orgId, partyId], references: [orgId, id], onDelete: NoAction, onUpdate: NoAction)
   boundAt   DateTime @default(now())
   boundBy   User     @relation("vendorsBound", fields: [boundById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   boundById String
+
+  partySources ProjectPartyVendorSource[]
 
   quotes         VendorQuote[]
   purchaseOrders PurchaseOrder[]
@@ -1256,6 +1411,9 @@ model ProjectVendor {
 
   @@unique([projectId, vendorId])
   @@unique([projectId, id])
+  @@index([orgId, partyId])
+  // The candidate key `ProjectPartyVendorSource` binds through.
+  @@unique([orgId, projectId, partyId, id])
 }
 
 // §F — a demand batch against pinned requirement revisions. CAS state machine:
