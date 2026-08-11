@@ -386,6 +386,28 @@ SQL
   echo "pre-Task-4 chains planted (material UPT4-POL, labour UPT4-LPOL), both lines UNPINNED"
 }
 
+# `ProjectCompany` has existed since before Phase 1 and every real project holds rows in it, so
+# Phase 6's party backfill is a migration OVER EXISTING DATA — and a proof run against an empty
+# table would pass while proving nothing. These two are planted on the PRE-Phase-6 schema, where
+# `orgId` and `partyId` do not exist yet, which is exactly the state the backfill exists for.
+# (The vendor side already has legacy subjects: `UPT4-VEN`/`UPT4-PV` are planted pre-Task-4.)
+plant_pre_phase6_firms() {
+  echo ""
+  echo "=== planting PRE-Phase-6 directory rows (the §A party backfill subjects) ==="
+  $PSQL -q <<'SQL' || { echo "pre-Phase-6 directory planting failed"; exit 1; }
+BEGIN;
+INSERT INTO "ProjectCompany"("id","projectId","name","kind","contactName")
+  VALUES('UP6-CO1','p1','Legacy Architects','architect','A. Person');
+INSERT INTO "ProjectCompany"("id","projectId","name","kind")
+  VALUES('UP6-CO2','p3','Legacy Client','client');
+COMMIT;
+SQL
+  local partied
+  partied=$($PSQL -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='ProjectCompany' AND column_name='partyId';")
+  [ "$partied" = "0" ] || { echo "pre-Phase-6 planting ran AFTER the party migration — the backfill proof would be vacuous"; exit 1; }
+  echo "pre-Phase-6 directory rows planted (UP6-CO1 on p1, UP6-CO2 on p3), both PARTY-LESS"
+}
+
 # ---- 3f. the remaining ledger to HEAD ----------------------------------------------------
 # Migrations stamped after the round-2 stop (Task 2 procurement onward) also land in
 # phase3_r2_dirs; the explicit round-2/3 stops above covered exactly two of them. Apply every
@@ -402,6 +424,8 @@ for d in "${phase3_r2_dirs[@]}"; do
     # These two chains are therefore planted on the PRE-Task-4 schema, where the pinning columns
     # do not exist yet, and the assertions further down read what the backfill wrote.
     20270420000000_*) plant_pre_t4_chains ;;
+    # ── Phase 6 unit 6.1a STOP — the §A party BACKFILL needs directory rows to back-fill ──────
+    20270801000000_*) plant_pre_phase6_firms ;;
   esac
   apply_one "$d"
 done
@@ -2945,6 +2969,120 @@ assert "the Phase-5 Task-7A CashForecastProjection table exists and is ROW-FREE 
 assert "the Task-7A (generationId, projectId) unique is installed" \
   "SELECT COUNT(*)::text FROM pg_indexes WHERE indexname = 'CashForecastProjection_generationId_projectId_key';" \
   "1"
+
+# ── Phase 6 unit 6.1a — the CANONICAL EXTERNAL PARTY (§A), its promotion seam (§E) and its
+#    tenancy seals (§F). Unlike most sections here this one migrates EXISTING DATA: every legacy
+#    `Vendor`, `ProjectVendor` and `ProjectCompany` gains a party, and the assertions below read
+#    what the backfill actually wrote rather than that it ran.
+assert "6.1a: every legacy directory row and vendor got a party — and the backfill MERGED NOTHING" \
+  "SELECT (SELECT COUNT(*) FROM \"ProjectCompany\" WHERE \"partyId\" IS NULL)::text || '|' || (SELECT COUNT(*) FROM \"Vendor\" WHERE \"partyId\" IS NULL)::text || '|' || (SELECT COUNT(DISTINCT \"partyId\") FROM \"ProjectCompany\")::text || '|' || (SELECT COUNT(*) FROM \"ProjectCompany\")::text;" \
+  "0|0|2|2"
+# The derivation is per-ROW and per-VENDOR, so two firms are never guessed to be one — deciding
+# that is a human judgement, and 6.1 ships the operator merge instead of guessing it.
+assert "6.1a: each backfilled party is derived from its OWN row, and the org copy is the PROJECT's" \
+  "SELECT c.\"partyId\" || '|' || c.\"orgId\" || '|' || p.\"orgId\" || '|' || p.\"name\" FROM \"ProjectCompany\" c JOIN \"ExternalParty\" p ON p.\"id\" = c.\"partyId\" WHERE c.\"id\" = 'UP6-CO1';" \
+  "p6c_UP6-CO1|org-legacy|org-legacy|Legacy Architects"
+assert "6.1a: a binding's party copy is provably its VENDOR's, not one of its own" \
+  "SELECT (SELECT COUNT(*) FROM \"ProjectVendor\" b JOIN \"Vendor\" v ON v.\"id\" = b.\"vendorId\" WHERE b.\"partyId\" <> v.\"partyId\")::text;" \
+  "0"
+# The association mirror is orgs-owned and is what the collaborator resolver will read, so the
+# backfill has to have produced it for BOTH origin kinds — and nothing unjustified.
+assert "6.1a: every legacy origin produced a SOURCED association, and no association is unsourced" \
+  "SELECT (SELECT COUNT(*) FROM \"ProjectPartyCompanySource\")::text || '|' || (SELECT COUNT(*) FROM \"ProjectPartyVendorSource\")::text || '|' || (SELECT COUNT(*) FROM \"ProjectParty\" pp WHERE NOT EXISTS (SELECT 1 FROM \"ProjectPartyCompanySource\" s WHERE s.\"projectId\" = pp.\"projectId\" AND s.\"partyId\" = pp.\"partyId\") AND NOT EXISTS (SELECT 1 FROM \"ProjectPartyVendorSource\" s WHERE s.\"projectId\" = pp.\"projectId\" AND s.\"partyId\" = pp.\"partyId\"))::text;" \
+  "2|4|0"
+assert "6.1a: nothing in Phase 6 promotes a party — the §E seam ships EMPTY" \
+  "SELECT COUNT(*)::text FROM \"ExternalParty\" WHERE \"promotedOrgId\" IS NOT NULL;" \
+  "0"
+
+# A SECOND owner org, so the §F cross-tenant probes have a real other tenant rather than a
+# hypothetical one. Its own project and party are legitimate; only the PAIRINGS below are hostile.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6 cross-tenant fixture did not apply"; FAIL=1; }
+BEGIN;
+INSERT INTO "Org"("id","name","slug") VALUES ('org-p6','P6 Other Tenant','p6-other-org');
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+  VALUES('p6b','org-p6','Other Tenant Site','OT','','Finishing','OT-01','01 Jan 2026','31 Dec 2026',10,5,10);
+INSERT INTO "ExternalParty"("id","orgId","name") VALUES('pty_UP6-FOREIGN','org-p6','Foreign Firm');
+COMMIT;
+SQL
+
+# §F — a cross-tenant pairing is UNREPRESENTABLE on every reference, each by its own named seal.
+assert_rejects "6.1a §F: an association pairing an org-legacy project with an org-p6 party" \
+  "INSERT INTO \"ProjectParty\"(\"id\",\"orgId\",\"projectId\",\"partyId\") VALUES('UP6-XP','org-p6','p1','pty_UP6-FOREIGN')" \
+  'ProjectParty_orgId_projectId_fkey'
+assert_rejects "6.1a §F: a directory row keeping its project on org-legacy while claiming org-p6" \
+  "INSERT INTO \"ProjectCompany\"(\"id\",\"projectId\",\"orgId\",\"partyId\",\"name\",\"kind\") VALUES('UP6-XC1','p1','org-p6','pty_UP6-FOREIGN','Smuggled','other')" \
+  'ProjectCompany_orgId_projectId_fkey'
+assert_rejects "6.1a §F: a same-org directory row pointing at a party from another org" \
+  "INSERT INTO \"ProjectCompany\"(\"id\",\"projectId\",\"orgId\",\"partyId\",\"name\",\"kind\") VALUES('UP6-XC2','p1','org-legacy','pty_UP6-FOREIGN','Smuggled','other')" \
+  'ProjectCompany_orgId_partyId_fkey'
+assert_rejects "6.1a §F: a vendor claiming another org's party" \
+  "INSERT INTO \"Vendor\"(\"id\",\"orgId\",\"name\",\"createdById\",\"partyId\") VALUES('UP6-XV','org-legacy','Smuggled Vendor','USER-1','pty_UP6-FOREIGN')" \
+  'Vendor_orgId_partyId_fkey'
+# Same org, still refused: the binding's copy is bound THROUGH the vendor, so it cannot name a
+# party the vendor does not hold — which is what stops a binding from mirroring the wrong firm.
+assert_rejects "6.1a §F: a binding whose party copy is not its OWN vendor's" \
+  "INSERT INTO \"ProjectVendor\"(\"id\",\"projectId\",\"orgId\",\"vendorId\",\"boundById\",\"partyId\") VALUES('UP6-XPV','p1','org-legacy','UPT4-VEN','USER-1','p6c_UP6-CO1')" \
+  'ProjectVendor_orgId_vendorId_partyId_fkey'
+
+# §A — the association exists only while something SOURCES it, and the seal fires in BOTH
+# directions: on the association appearing, and on its last justification leaving.
+assert_rejects "6.1a §A: an association with nothing justifying it (refused at COMMIT)" \
+  "INSERT INTO \"ExternalParty\"(\"id\",\"orgId\",\"name\") VALUES('pty_UP6-BARE','org-legacy','Bare'); INSERT INTO \"ProjectParty\"(\"id\",\"orgId\",\"projectId\",\"partyId\") VALUES('UP6-BARE','org-legacy','p1','pty_UP6-BARE')" \
+  'has no source justifying it'
+assert_rejects "6.1a §A: deleting the last source without releasing the association" \
+  "DELETE FROM \"ProjectCompany\" WHERE \"id\" = 'UP6-CO1'" \
+  'has no source justifying it'
+# …and the POSITIVE control, because a seal that refuses everything proves nothing: the legitimate
+# order — association first, then the source that justifies it — commits, which is what makes the
+# constraint DEFERRED rather than merely present.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6: a COHERENT party chain was refused — the seals are too strict"; FAIL=1; }
+BEGIN;
+INSERT INTO "ExternalParty"("id","orgId","name") VALUES('pty_UP6-OK','org-legacy','Coherent Firm');
+INSERT INTO "ProjectParty"("id","orgId","projectId","partyId") VALUES('UP6-OK','org-legacy','p1','pty_UP6-OK');
+INSERT INTO "ProjectCompany"("id","projectId","orgId","partyId","name","kind") VALUES('UP6-OKC','p1','org-legacy','pty_UP6-OK','Coherent Firm','contractor');
+INSERT INTO "ProjectPartyCompanySource"("id","orgId","projectId","partyId","projectCompanyId") VALUES('UP6-OKS','org-legacy','p1','pty_UP6-OK','UP6-OKC');
+COMMIT;
+SQL
+assert "6.1a §A: the coherent chain was ACCEPTED, so the seals are precise rather than blanket" \
+  "SELECT COUNT(*)::text FROM \"ProjectParty\" WHERE \"id\" = 'UP6-OK';" \
+  "1"
+
+# §A — one party, one directory row and one binding PER PROJECT. 6.1b's merge repoints `partyId`,
+# and after that `(projectId, vendorId)` no longer implies this; the seal is what makes the merge's
+# same-project refusal enforceable instead of a rule it is trusted to remember.
+assert_rejects "6.1a §A: a second directory row for the same party on one project" \
+  "INSERT INTO \"ProjectCompany\"(\"id\",\"projectId\",\"orgId\",\"partyId\",\"name\",\"kind\") VALUES('UP6-DUPC','p1','org-legacy','pty_UP6-OK','Coherent Firm (again)','contractor')" \
+  'ProjectCompany_projectId_partyId_key'
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6: the shared-party vendor fixture did not apply"; FAIL=1; }
+INSERT INTO "Vendor"("id","orgId","name","createdById","partyId") VALUES('UP6-VSHARE','org-legacy','Merged Twin','USER-1','pty_UP45-VEN');
+SQL
+assert_rejects "6.1a §A: a second binding for the same party on one project (different vendors)" \
+  "INSERT INTO \"ProjectVendor\"(\"id\",\"projectId\",\"orgId\",\"vendorId\",\"boundById\",\"partyId\") VALUES('UP6-DUPPV','p1','org-legacy','UP6-VSHARE','USER-1','pty_UP45-VEN')" \
+  'ProjectVendor_projectId_partyId_key'
+
+# §E — the seam ships FROZEN. The promotion command is deferred, so the ONLY thing that could move
+# a promoted party is a retry, a repair or a migration; both halves are sealed from day one.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6: null -> org promotion was refused, but it is the one permitted transition"; FAIL=1; }
+UPDATE "ExternalParty" SET "promotedOrgId" = 'org-p6' WHERE "id" = 'pty_UP6-OK';
+SQL
+assert_rejects "6.1a §E: MOVING a promoted party to another tenant" \
+  "UPDATE \"ExternalParty\" SET \"promotedOrgId\" = 'org-legacy' WHERE \"id\" = 'pty_UP6-OK'" \
+  'promotion cannot be moved or cleared'
+assert_rejects "6.1a §E: CLEARING a promotion" \
+  "UPDATE \"ExternalParty\" SET \"promotedOrgId\" = NULL WHERE \"id\" = 'pty_UP6-OK'" \
+  'promotion cannot be moved or cleared'
+assert_rejects "6.1a §E: one owner org holding TWO parties resolving to the same tenant" \
+  "UPDATE \"ExternalParty\" SET \"promotedOrgId\" = 'org-p6' WHERE \"id\" = 'p6c_UP6-CO1'" \
+  'ExternalParty_orgId_promotedOrgId_key'
+# …and the negative control that proves the uniqueness is scoped to the OWNER org rather than
+# global: a DIFFERENT owner linking its own local party to the same tenant is the case §A exists
+# to support, and a global unique would have refused it.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6: a second OWNER org's link to the same tenant was refused — the unique is global, not scoped"; FAIL=1; }
+INSERT INTO "ExternalParty"("id","orgId","name","promotedOrgId") VALUES('pty_UP6-OTHEROWNER','org-p6','Same firm, other owner','org-p6');
+SQL
+assert "6.1a §E: two OWNER orgs may each link their own local party to one tenant" \
+  "SELECT COUNT(*)::text FROM \"ExternalParty\" WHERE \"promotedOrgId\" = 'org-p6';" \
+  "2"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
