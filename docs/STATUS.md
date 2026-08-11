@@ -10,37 +10,39 @@ narrative and may lag behind reality.
 ## Now
 
 ```yaml
-phase: 6
-phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
-task: 0
+phase: 5
+phase_plan: docs/superpowers/plans/2026-07-29-phase-5-commercial-control.md
+task: 7
 task_state: merged
 work_item: none
-reviewed_merge: 1527ce3
+reviewed_merge: 9e96bba
 open_pr: none
 next_task: phase-6-planning
 blocking_directive: none
-updated: 2026-08-11
+updated: 2026-08-10
 ```
 
-**PHASE 6 PLANNING IS TWO UNITS, AND ONLY ONE OF THEM IS DONE.** `next_task`
-is `phase-6-planning` rather than `phase-6-task-1`, and that is not the loop
-re-entering work it finished. The Phase 6 plan was SPLIT on the review
-lifecycle's recommendation after five finding-bearing heads:
+**PHASE 6 PLANNING IS TWO UNITS, AND NEITHER HAS MERGED YET.** The `Now` block
+above is deliberately unchanged: `phase_plan` still names the Phase 5 plan because
+that is the plan present in this tree, and `next_task: phase-6-planning` is
+already the correct move under the runner rule below — begin at the phase's
+planning item while its plan does not yet exist. This PR closes Phase 5's record;
+it does not advance the phase pointer, because advancing it would name a file no
+commit here contains.
 
-- **the FOUNDATION** — §A canonical party, §E promotion seam, §F tenancy, and
-  units 6.1/6.2 — is `docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md`;
+Phase 6 planning was SPLIT on the review lifecycle's recommendation after five
+finding-bearing heads:
+
+- **the FOUNDATION** — §A canonical party, §E promotion seam, §F tenancy, and unit
+  6.1 — is in review as PR #324;
 - **the BOUNDARY plan** — §B collaborator principal and resolver, §C scope
   vocabulary, §D closed set and tripwires, the `collaboration` capability and its
-  enablement rule — is **NOT WRITTEN YET**. Its source material is
-  `git show 3f7e35d:docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md`
-  lines 150-433, and the five findings it must answer are recorded in
-  `docs/reviews/pr-324-convergence.md` (numbers 20-24). It must clear its own
-  review stop, and **6.3 is blocked until it does**.
+  enablement rule, plus unit 6.2's bindings and grants — is **NOT WRITTEN YET**.
+  Its source material and the findings it must answer are recorded in PR #324's
+  convergence audit.
 
-So the outstanding planning item is the BOUNDARY plan. Implementation task 6.1
-begins once it clears; the foundation plan is merged and is not re-opened. This
-also satisfies the runner rule above — begin at the phase's planning item while a
-plan does not yet exist — because one of Phase 6's two plans does not.
+Both are `phase-6-planning` work. The phase pointer advances in the same change
+that lands a Phase 6 plan file, so STATUS never names a plan that is not there.
 
 **PHASE 6 IS THE ACTIVE PHASE. PHASE 5 IS COMPLETE** — every Phase 5 task,
 1 through 7, is merged and independently cleared through the exact-head
