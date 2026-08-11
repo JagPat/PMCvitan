@@ -11,7 +11,7 @@ import syncSource from '@/data/useApiSync.ts?raw';
 import contractsSource from '../../api/src/contracts.ts?raw';
 import billServiceSource from '../../api/src/commercial/commercial-bill.service.ts?raw';
 import type { ApiGateway } from '@/data/apiGateway';
-import { budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
+import { advanceCoalesceKey, budgetCoalesceKey, billCoalesceKey, isBudgetPendingForHead, normalizeCommercialOutbox } from '@/lib/commercialKeys';
 import type { CommercialClaimView, CommercialView } from '@/store/commercial';
 import type { CashForecastReadDto, CommercialBudgetDto, CostHeadPositionDto, MeasurementRegisterDto } from '@vitan/shared';
 
@@ -853,6 +853,56 @@ describe('Task 7B-iii-a (§M) — the two-key write lifecycle', () => {
     s().setCommercialBudget('CIVIL', '150.00', 'revised');
     const secondKey = (s().outbox[0] as { idempotencyKey: string }).idempotencyKey;
     expect(secondKey, 'a legitimate second action reused the first attempt identity').not.toBe(firstKey);
+  });
+
+  /**
+   * 7B-vi (§H) — the advance key is DERIVED from the payload, so a field added to the command
+   * joins the identity without anyone remembering to widen a list.
+   *
+   * `pr-317-convergence.md` records this lineage failing four times at hand-listing the facts that
+   * define a row, the last of them INSIDE the fix for the one before. These probes assert the
+   * property that ends it rather than the particular fields a round happened to name.
+   */
+  it('7B-vi: two advances differing in ANY field are two actions, not a retry', () => {
+    const base = {
+      vendorId: 'v-1', amount: '100.00', reason: 'mobilisation',
+      method: 'neft', reference: 'UTR-1',
+    };
+    const key = advanceCoalesceKey(base);
+    // the two fields round 5 found missing — the ones a fifth enumeration would have added by hand
+    expect(advanceCoalesceKey({ ...base, method: 'cheque' })).not.toBe(key);
+    expect(advanceCoalesceKey({ ...base, reference: 'UTR-2' })).not.toBe(key);
+    // …and the ones round 4 did list, still distinct
+    expect(advanceCoalesceKey({ ...base, amount: '200.00' })).not.toBe(key);
+    expect(advanceCoalesceKey({ ...base, reason: 'materials' })).not.toBe(key);
+    expect(advanceCoalesceKey({ ...base, vendorId: 'v-2' })).not.toBe(key);
+    // an absent reference is a DIFFERENT action from one explicitly given
+    expect(advanceCoalesceKey({ ...base, reference: null })).not.toBe(key);
+    // …and the same payload is the same action however the object was built, so field order
+    // cannot make a retry look like a new command
+    expect(advanceCoalesceKey({
+      reference: 'UTR-1', method: 'neft', reason: 'mobilisation', amount: '100.00', vendorId: 'v-1',
+    })).toBe(key);
+  });
+
+  it('7B-vi: no value can impersonate a separator', () => {
+    // joining raw values with `:` would make these one key and silently drop the second command
+    expect(advanceCoalesceKey({
+      vendorId: 'v-1', amount: '1.00', reason: 'a:b', method: 'c', reference: null,
+    })).not.toBe(advanceCoalesceKey({
+      vendorId: 'v-1', amount: '1.00', reason: 'a', method: 'b:c', reference: null,
+    }));
+  });
+
+  it('7B-vi: the scope prefix survives, because predicates read it', () => {
+    // `isBudgetPendingForHead` asks "any budget set for this head, at any amount" by prefix. An
+    // opaque hash would have satisfied the identity requirement and silently broken this.
+    const key = budgetCoalesceKey({ costHeadCode: 'CIVIL', amount: '10.00', reason: 'r' });
+    expect(isBudgetPendingForHead(key, 'CIVIL')).toBe(true);
+    expect(isBudgetPendingForHead(key, 'MEP')).toBe(false);
+    expect(advanceCoalesceKey({
+      vendorId: 'v-1', amount: '1.00', reason: 'r', method: 'm', reference: null,
+    }).startsWith('com:advance:v-1:')).toBe(true);
   });
 
   it('hydration is a GUARD: a malformed op is dropped and never becomes `undefined` pending', () => {

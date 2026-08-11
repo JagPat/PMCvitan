@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Eyebrow, Button } from '@/components';
 import { RefreshCw, WifiOff } from '@/lib/icons';
-import { isClaimMoneyPending, isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
+import { advanceCoalesceKey, isClaimMoneyPending, isBudgetPendingForHead, costHeadCoalesceKey, attributionCoalesceKey, billCoalesceKey, isCorrectionPendingFor, isMeasurePendingForLine, isBillTransitionPending, sodGrantCoalesceKey, deductionCoalesceKey, deductionReleaseCoalesceKey, payCoalesceKey, reverseCoalesceKey, commercialWriteBlocked } from '@/lib/commercialKeys';
 import type { CommercialClaimView } from '@/store/commercial';
 import { BILL_BEGIN_VERIFICATION_FROM, BILL_CERTIFY_FROM, DEDUCTION_TYPES, DEDUCTION_TYPES_REQUIRING_REASON, BILL_REJECTABLE_FROM, BILL_STATUSES_PAST_CERTIFICATION, BILL_SUBMITTABLE_FROM, BILL_VERIFY_FROM, claimLineMayCarryCharges, isCorrectionDelta, isMoneyString, isPositiveQuantity, isRealCivilDate, normalizedBillNumber, ROLE_POLICY, SOD_RULES, type SodRule } from '@vitan/shared';
 import type { CostHeadPositionDto, MeasurementRegisterDto, SodGrantState } from '@vitan/shared';
@@ -212,11 +212,16 @@ export function CommercialScreen() {
   const mayApprove = may('commercial.approve-payment');
   const mayPay = may('commercial.record-payment');
   const mayReverse = may('commercial.reverse-payment');
+  const mayAdvance = may('commercial.pay-advance');
   const commercialPending = useStore(useShallow((s) => s.commercialPending));
   const setBudget = useStore((s) => s.setCommercialBudget);
   const defineHead = useStore((s) => s.defineCostHead);
   const reattribute = useStore((s) => s.reattributeCommitment);
   const grantSodException = useStore((s) => s.grantSodException);
+  const payAdvance = useStore((s) => s.payAdvance);
+  const loadCommercialAdvances = useStore((s) => s.loadCommercialAdvances);
+  const advances = useStore((s) => s.commercialAdvances);
+  const advancesLoad = useStore((s) => s.commercialAdvancesLoad);
   const recordDeduction = useStore((s) => s.recordDeduction);
   const releaseDeduction = useStore((s) => s.releaseDeduction);
   const approvePayment = useStore((s) => s.approvePayment);
@@ -249,6 +254,16 @@ export function CommercialScreen() {
   );
   const form = draft.scope === scopeKey ? draft : { scope: scopeKey, head: '', amount: '', reason: '' };
   const setForm = (next: Partial<typeof form>): void => setDraft({ ...form, scope: scopeKey, ...next });
+  // 7B-vi (§H) — the advance form. Scoped like every other draft here: a project switch bumps
+  // `scopeKey` and the form empties, because a counterparty id and an amount are this project's.
+  const [advDraft, setAdvDraft] = useState<{
+    scope: string; vendorId: string; amount: string; method: string; reference: string; reason: string;
+  }>({ scope: '', vendorId: '', amount: '', method: '', reference: '', reason: '' });
+  const advanceDraft = advDraft.scope === scopeKey
+    ? advDraft
+    : { scope: scopeKey, vendorId: '', amount: '', method: '', reference: '', reason: '' };
+  const setAdvanceDraft = (v: Omit<typeof advanceDraft, 'scope'>): void =>
+    setAdvDraft({ scope: scopeKey, ...v });
   const [headDraft, setHeadDraft] = useState<{ scope: string; code: string; name: string }>({ scope: '', code: '', name: '' });
   const headForm = headDraft.scope === scopeKey ? headDraft : { scope: scopeKey, code: '', name: '' };
   const setHeadForm = (next: Partial<typeof headForm>): void => setHeadDraft({ ...headForm, scope: scopeKey, ...next });
@@ -481,6 +496,12 @@ export function CommercialScreen() {
   useEffect(() => {
     if (inClaimWorkflow && onPilot && billsLoad === 'idle') void loadCommercialBills();
   }, [inClaimWorkflow, onPilot, billsLoad, loadCommercialBills]);
+
+  // …and the advances, which the Payments tab shows and the advance key settles on. Same shape as
+  // every other read on this screen: driven by the tab that displays it, gated on the capability.
+  useEffect(() => {
+    if (tab === 'payments' && onPilot && advancesLoad === 'idle') void loadCommercialAdvances();
+  }, [tab, onPilot, advancesLoad, loadCommercialAdvances]);
 
   /**
    * Codex I1 — REFRESH RE-READS WHAT THIS SCREEN IS SHOWING.
@@ -1551,6 +1572,91 @@ export function CommercialScreen() {
 
           {tab === 'payments' && (
             <div data-testid="commercial-payments">
+              {/* ── 7B-vi (§H) — ADVANCE TO A COUNTERPARTY ─────────────────────────────────
+                  The one §M command that names no claim. It settles cash paid BEFORE any claim
+                  exists, so it needs none of the claim preconditions — and that is exactly why it
+                  could not ship with the payer's chain: no claim read carries a counterparty, so
+                  its key had no release path until the advances read landed beside it. */}
+              {mayAdvance && (() => {
+                const av = advanceDraft;
+                const reference = av.reference.trim() === '' ? null : av.reference.trim();
+                const command = {
+                  vendorId: av.vendorId.trim(), amount: av.amount.trim(),
+                  reason: av.reason.trim(), method: av.method.trim(), reference,
+                };
+                const ready = command.vendorId !== '' && isMoneyString(command.amount)
+                  && decIsPositive(command.amount) && command.method !== '' && command.reason !== '';
+                // …keyed on the SAME object the command will carry, so what the button tests and
+                // what the outbox stores cannot describe two different actions.
+                const blocked = ready && commercialWriteBlocked(advanceCoalesceKey(command), commercialPending);
+                return (
+                  <div style={rowCard} data-testid="commercial-advance">
+                    <div style={{ fontWeight: 600 }}>Advance to a counterparty</div>
+                    {advancesLoad === 'error' && (
+                      <div style={{ ...muted, marginTop: 6 }} data-testid="advance-unavailable">
+                        The advances could not be read, so what this counterparty already holds is
+                        unknown. Refresh before paying another.
+                      </div>
+                    )}
+                    {advances !== null && advances.positions.length > 0 && (
+                      <div style={{ ...muted, marginTop: 6 }} data-testid="advance-positions">
+                        {advances.positions.map((pos) => (
+                          <div key={pos.vendorId}>
+                            {pos.vendorId} — advanced <span style={num}>{pos.advanced}</span>,
+                            still recoverable <span style={num}>{pos.recoverable}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* The ROWS, not only the position. Every other way cash leaves this project
+                        has a certificate or an approval explaining it; an advance has neither, so
+                        its row IS that evidence — when a balance moved, how, and under what
+                        reference. A total alone cannot be audited back to a payment. */}
+                    {advances !== null && advances.advances.length > 0 && (
+                      <div style={{ marginTop: 6 }} data-testid="advance-rows">
+                        {advances.advances.map((a) => (
+                          <div key={a.id} style={{ ...muted, marginTop: 4 }} data-testid={`advance-row-${a.id}`}>
+                            {a.vendorId} <span style={num}>{a.amount}</span> — {a.reason}
+                            {' · '}{a.method}{a.reference === null ? '' : ` · ${a.reference}`}
+                            {' · '}{a.paidAt.slice(0, 10)}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                      {/* A vendor id TYPED, not chosen. No commercial read carries a counterparty
+                          roster and the §F lodge form takes the id the same way — inventing a
+                          picker here would mean inventing a read, which is a different unit. */}
+                      <input style={input} data-testid="advance-vendor" placeholder="Vendor id"
+                        value={av.vendorId}
+                        onChange={(e) => setAdvanceDraft({ ...av, vendorId: e.target.value })} />
+                      <input style={input} data-testid="advance-amount" placeholder="Amount"
+                        value={av.amount}
+                        onChange={(e) => setAdvanceDraft({ ...av, amount: e.target.value })} />
+                      <input style={input} data-testid="advance-method" placeholder="Method"
+                        value={av.method}
+                        onChange={(e) => setAdvanceDraft({ ...av, method: e.target.value })} />
+                      {/* OPTIONAL, and offered rather than omitted: `reference` is part of the
+                          command and therefore part of its identity, so a form that could never
+                          set it would leave half of that identity unreachable from the app. */}
+                      <input style={input} data-testid="advance-reference" placeholder="Reference (optional)"
+                        value={av.reference}
+                        onChange={(e) => setAdvanceDraft({ ...av, reference: e.target.value })} />
+                      <input style={{ ...input, flex: 1 }} data-testid="advance-reason"
+                        placeholder="Why this counterparty is being advanced"
+                        value={av.reason}
+                        onChange={(e) => setAdvanceDraft({ ...av, reason: e.target.value })} />
+                      <Button variant="ink" data-testid="advance-pay"
+                        disabled={!ready || blocked}
+                        onClick={() => {
+                          payAdvance(command.vendorId, command.amount, command.reason, command.method, command.reference);
+                          setAdvanceDraft({ vendorId: '', amount: '', method: '', reference: '', reason: '' });
+                        }}
+                      >{blocked ? 'Working…' : 'Pay advance'}</Button>
+                    </div>
+                  </div>
+                );
+              })()}
               {claimPanel((claim) => (
                 <div style={rowCard} data-testid="commercial-payment-ledger">
                   <div style={{ fontWeight: 600 }}>Approvals and payments</div>
