@@ -17,10 +17,24 @@ task_state: merged
 work_item: none
 reviewed_merge: ec236c7
 open_pr: none
-next_task: phase-6-unit-6.1b
+next_task: phase-6-task-1b
 blocking_directive: none
 updated: 2026-08-11
 ```
+
+**`next_task` spells unit 6.1b as `phase-6-task-1b`, and that is not a typo for
+the prose name.** `TASK_REFERENCE` in `scripts/review-efficiency.mjs` is an
+ALLOWLIST — `phase-<n>-task-<id>` or `phase-<n>-planning` — deliberately chosen
+over the blocklist it replaced. `phase-6-unit-6.1b` does not match it, and the
+consequence is invisible until the exact moment it matters: while the phase has
+open work `deferralPhases` returns the current phase regardless, but once a flip
+records `merged` with `work_item: none`, `next_task` becomes the ONLY source, an
+unparseable value yields `[]`, and a later docs-only head past the round cap
+cannot defer its open questions to a real stop — it fails closed on "no phase
+with open work". `phase: 6` + `task: 1` + half `b` reads as `phase-6-task-1b`,
+which is the same convention Phase 5 used for `phase-5-task-7b-iii-d`. Pinned by
+`review-efficiency.test.mjs`, which reads THIS file and forces the terminal
+state, so the next edit cannot reintroduce a value that only breaks later.
 
 **Unit 6.1 is executed in two halves, and the line runs where the DEPENDENCIES
 are.** **6.1a — the identity data model and its seals — is MERGED AND CLEARED**
