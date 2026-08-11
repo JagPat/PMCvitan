@@ -37,12 +37,23 @@ describe('Task 2 — the procurement module implements its shared command/query 
     ]);
   });
 
-  it('procurement invokes ONLY the commercial participant; its reverse disposition edge is declared by activities', () => {
+  it('procurement invokes exactly two participants — commercial and orgs — and READS neither', () => {
     // Phase 5 Task 1 (§C/§K): all four PO lifecycle sites write or supersede the cost-head
     // attribution inside procurement's own transaction, so the attribution and the version it
     // describes commit together. Procurement still READS nothing from commercial (`dependsOn`
     // unchanged) — that asymmetry is what makes commercial a SINK.
-    expect(procurementManifest.workflowParticipants).toEqual(['commercial']);
+    //
+    // Phase 6 unit 6.1a (§A): `orgs` joins for the same reason in the other direction. Creating a
+    // vendor mints its orgs-owned `ExternalParty` and binding one records the `ProjectParty`
+    // association, both inside procurement's own transaction through `OrgsParticipant`. The test
+    // NAME changed with the fact rather than only its expectation — "invokes ONLY the commercial
+    // participant" would now be a false sentence sitting above a passing assertion, which is the
+    // kind of stale claim this suite exists to prevent.
+    //
+    // `dependsOn` is deliberately UNCHANGED: a participant edge is a write through the owner, not
+    // a read of it. Probe P5 asserts both halves — this declaration, and the continued absence of
+    // an `orgs -> procurement` dependency.
+    expect(procurementManifest.workflowParticipants).toEqual(['commercial', 'orgs']);
     expect(procurementManifest.dependsOn).toEqual(['activities', 'decisions']);
   });
 });
