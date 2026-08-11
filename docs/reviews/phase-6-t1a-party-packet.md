@@ -171,13 +171,88 @@ vendor's, no association came out unjustified, and the §E seam ships empty.
 A **positive control** sits among the refusals: a coherent party chain is ACCEPTED. A section that
 only proves refusals cannot distinguish a precise seal from a blanket one.
 
+### Correction probes — `phase6-t1a-correction.test.ts`, 7/7 live PG
+
+Six were RED at `9a03d95` (C3, C5, C4, C8, C6, C2); C7 was not, for the reason given above.
+C1 lives in `scripts/phase6-t1a-rerun-proof.sh` because a suite cannot observe a migration retry.
+
 ### Gates
 
 | Gate | Result |
 |---|---|
 | `pnpm check` | see PR body |
 | full integration (live PG) | see PR body |
-| `upgrade-proof.sh` | 528 assertions, PASSED |
+| `upgrade-proof.sh` | see PR body |
+| `phase6-t1a-rerun-proof.sh` | see PR body |
+
+## The review round on head `9a03d95` — eight findings, one correction head
+
+Codex returned one P1 and seven P2s. All eight are fixed in `fa16c3b`. **Six were reproduced RED
+against `9a03d95` before the fix**; the two that were not are named as such rather than dressed up.
+
+| # | Finding | What it was | Fix |
+|---|---|---|---|
+| C1 | P1 | unguarded `CREATE TABLE` / `ADD COLUMN`, so an apply interrupted partway could not be retried | `IF NOT EXISTS` / `DROP IF EXISTS` throughout |
+| C2 | P2 | `releasePartyAssociationIfUnsourced` counted, then deleted | `FOR UPDATE` on the association before counting |
+| C3 | P2 | a whitespace-only party name was accepted | non-blank CHECK + trimmed schema + legacy diagnostic |
+| C4 | P2 | a REPOINTED source never rechecked the association it left | trigger fires on `UPDATE`, checks `OLD` |
+| C5 | P2 | `promotedOrgId` was free text | FK to `Org` |
+| C6 | P2 | a company rename desynchronised the party | follows a sole source; refused when shared |
+| C7 | P2 | the sourced check counted without serializing | `FOR UPDATE` inside the trigger |
+| C8 | P2 | a BOUND vendor could not be repointed, so 6.1b's merge could not run | `ON UPDATE CASCADE` on the derived copy |
+
+### C1 is the one to look at first
+
+Not because it is the P1, but because its proof is the only new gate. A migration's rerunnability
+cannot be observed from a suite running against an already-migrated database, so
+`scripts/phase6-t1a-rerun-proof.sh` builds the state instead:
+
+- **scenario A** — a blank legacy firm name aborts the apply, and the proof asserts that **no party
+  table exists afterwards**. That is the ordering claim ("diagnostic-first") and nothing more.
+- **scenario B** — the file's structural prefix is applied, confirmed to have created **exactly one
+  of the four tables**, and then the WHOLE migration is run over that half-applied schema. This is
+  the finding. RED at `9a03d95` with `ERROR: relation "ExternalParty" already exists`.
+- **step 8** — the retried schema's constraints, indexes and triggers are compared against a clean
+  first-time apply. "It re-runs" is worth nothing if the retry leaves a different shape.
+
+The first version of this proof conflated A and B and reported *"no DDL statement blocked the
+retry"* **without ever reaching a DDL statement** — the abort was at the top diagnostic, so there
+was nothing to trip over. Splitting the scenarios is what made the assertion mean anything.
+
+### C7 has no red evidence, and says so
+
+The reviewer's interleaving — two transactions each removing one of the last two justifications,
+each still seeing the other's row — could not be reproduced. PostgreSQL serialised the two deferred
+checks on every attempt: the second commit consistently observed the first's effect and was
+rejected. The `FOR UPDATE` is applied because the mechanism is sound and the invariant should not
+rest on commit ordering, but **the probe passes at both heads and is a regression guard, not
+evidence.** Recorded here because a fix presented as red-to-green when it is reasoned is the kind
+of claim these audits exist to catch.
+
+### Two of my own probes were wrong
+
+Worth stating because the pattern is the same one and it is not rare:
+
+- **C2's first draft inlined the count** to control its barrier — which bypassed the exact method
+  under test, and passed. A probe that reimplements the code it is testing tests nothing.
+- **The rerun proof's first fixture** failed on a NOT NULL column, planted nothing, and then
+  reported *"the migration completed over a blank firm name"* — a finding it had never tested. Its
+  second defect was matching `already exists` anywhere in the output, which reads the
+  `IF NOT EXISTS` **notice** — the guard working — as the guard failing.
+
+Both now fail loudly by construction: the fixture verifies its own row landed, and the assertion
+matches `ERROR:` rather than free text.
+
+### C6 needed a decision the plan had deferred
+
+§A says identity-changing updates are "refused once authority rows exist" — and authority rows are
+2's. That left 6.1a with a real gap and no instruction: rename ACME to Beta and the party a
+resolver keys on still says ACME.
+
+The rule adopted here is narrower than 6.2's and does not pre-empt it: **a rename follows the row
+into the party it is the sole evidence for, and is refused (409) once the party has another
+justification.** Renaming a firm from one of its two faces is the operator's reconciliation
+decision, not a side effect of a directory edit. 6.2's authority refusal is additive on top.
 
 ## Two things worth flagging to the reviewer
 
