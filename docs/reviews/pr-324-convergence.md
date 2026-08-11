@@ -1,14 +1,17 @@
 # PR #324 — convergence audit (Phase 6 architecture plan)
 
-Eleven finding-bearing heads, fifty-three findings, on a docs-only plan — and the count did not fall:
-**5 · 4 · 5 · 5 · 6.** The review lifecycle reached its limit on head `3f7e35d` and recommended
-splitting the unit. **It is right, and this audit's conclusion is that the unit was never one unit.**
+Twelve finding-bearing heads, fifty-six findings, on a docs-only plan.
 
-The evidence is in the distribution, not the total. §A (identity) drew ONE finding across five
-rounds and has been stable since round 1. §B/§C/§D (authority) drew almost all the rest, and seven
-findings across rounds 3–5 are damage from the correction immediately before them — a fix in one of
-those sections repeatedly creating the next round's finding in another. That is the signature of two
-concerns sharing one review, not of a careless document.
+**The trajectory, and what changed it:** 5 · 4 · 5 · 5 · 6 · **3** · 6 · 6 · 7 · **3 · 3 · 3**. It did
+not fall for five rounds, and the review lifecycle reached its limit on `3f7e35d` and recommended
+splitting the unit. It was right. Rounds 1–5 were dominated by §B/§C/§D — authority — where a fix in
+one section repeatedly created the next round's finding in another; §A (identity) drew ONE finding in
+that whole span and has been stable since. Two concerns were sharing one review.
+
+After the split (`db2c64d`) the character of the findings changed completely: no structural or
+process findings remain, and rounds 10–12 are three apiece, each a narrow question about a structure
+introduced one round earlier. That is the shape of a review converging on depth rather than
+circling — which is also why root I below matters more than the raw total.
 
 | # | Head | Finding | Root |
 |---|---|---|---|
@@ -65,6 +68,9 @@ concerns sharing one review, not of a careless document.
 | 51 | `24fdec0` | seal `ProjectParty` to the project's org | **B — the seal was not carried to a NEW table** |
 | 52 | `24fdec0` | make `promotedOrgId` one-to-one, not only one-way | created by fix 50 |
 | 53 | `24fdec0` | track which SOURCE justifies a `ProjectParty` row | created by fix 48 |
+| 54 | `be3eb4c` | seal `ProjectVendor`'s party copy to the vendor | **I — new structure, three answers** |
+| 55 | `be3eb4c` | repoint `ProjectPartySource` during merges | **I** |
+| 56 | `be3eb4c` | serialize last-source `ProjectParty` cleanup | **I** |
 
 Two more were **self-caught between heads** and are listed because a correction that only counts the
 findings someone else made is measuring the reviewer, not the work: the vacuous-conjunct-2 gap
@@ -440,6 +446,31 @@ check. So the mirror is source-counted in orgs (`ProjectPartySource`, each parti
 own row, association alive while ≥1 source is), which avoids both a stale association that can later
 receive grants and a live one dropped because the other source was tidied.
 
+## Root I — every new structure drew the same three findings, and I never generalised
+
+Rounds 10, 11 and 12 introduced `ProjectParty`, then its org seal and source counting, then the
+mirror's internals. **Each round drew the same three questions about whatever was newest:**
+
+| Structure | Missing org seal | Missing merge behaviour | Missing serialization |
+|---|---|---|---|
+| `ProjectParty` (round 10) | 51 | — | — |
+| `promotedOrgId` (round 10) | — | 44 | 52 (uniqueness) |
+| the merge command (round 9) | — | — | 39, 49 |
+| `ProjectPartySource` (round 11) | 54 | 55 | 56 |
+
+By round 12 the pattern is unmistakable, and the honest observation is that **I answered it three
+times without ever asking it once.** Each round I fixed the specific instance the reviewer named and
+introduced the next structure with the same three gaps, because I was treating each finding as a fact
+about that table rather than as an instance of a question every table owes.
+
+The plan now carries the checklist as a stated obligation — *what is its org seal, what does the merge
+do to it, where is its serialization point* — so the next structure answers all three before it is
+proposed rather than over three review rounds.
+
+> This is rule 9 (state the outcome, let a probe enforce it) applied one level up: when the same three
+> findings arrive for every new member of a class, the fix is not a fourth set of three answers. It is
+> to make the three questions a precondition for adding a member.
+
 ## Root B — a class measured in one section and not carried into the others
 
 Three instances, one shape:
@@ -520,6 +551,7 @@ is wrong the instant it merges — is a state no later PR exists to fix.
 | `3f5f657` | 7 | **5** (43/44/45 from fix 32-33; 46 from fix 34; 47 from fix 21) — five of seven are depth on ONE command |
 | `45cd534` | **3** | 2 (48 from fix 42; 49 from fix 38) |
 | `24fdec0` | **3** | 3 (51 from fix 40's class; 52 from fix 50; 53 from fix 48) — all on structures introduced one round earlier |
+| `be3eb4c` | **3** | 3 (54/55/56, all on fix 53's mirror) — the SAME three questions as the round before |
 
 **There is no declining rate**, and round 3's findings are increasingly *self-inflicted*. That
 combination is the exact measurement `scripts/review-efficiency.mjs` was written from — its header

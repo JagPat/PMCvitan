@@ -207,6 +207,40 @@ the same transaction as the source write. The `ProjectParty` association exists 
 one source row does, and the last source removal removes it. Neither a stale association that can
 later receive grants, nor a live association dropped because the other source was tidied up.
 
+Three properties make that safe, and each was missing from the first draft of it:
+
+- **The copied `partyId` on `ProjectVendor` is bound to the VENDOR's party**, via
+  `(orgId, vendorId, partyId) → Vendor(orgId, id, partyId)`. Without it a same-org row can bind
+  project A to vendor V1 while mirroring a different party P2, and the resolver would grant P2 access
+  to V1's project records — or would have to read procurement to re-check, which is what the mirror
+  exists to avoid. The copy has to be provably the source's own.
+- **The merge command repoints `ProjectPartySource` too**, in the same locked transaction as the rest.
+  A vendor-only supplier starts with `(project, A, 'vendor')`; after A→B the facts and association move
+  to B while that row still justifies A, so the next cleanup either strands A's association or removes
+  B's only justification. Each source row additionally carries an FK to its originating source, so the
+  justification cannot drift from the thing justifying it.
+- **The zero-source state is unrepresentable, not merely avoided.** Two participants removing different
+  sources concurrently each see the other's row, each concludes it is not the last remover, and both
+  commit — leaving `ProjectParty` alive with nothing justifying it, ready to receive grants. Source
+  removal therefore locks the `ProjectParty` root, and a DEFERRED constraint trigger asserts at commit
+  that the association exists if and only if at least one source does.
+
+### Every derived structure owes the same three answers
+
+That triple is not specific to the mirror. This section introduced `ExternalParty`, `ProjectParty` and
+`ProjectPartySource` in successive rounds, and **each one drew the same three findings** — a missing
+org seal, unhandled merge behaviour, and an unserialized concurrent path. So the obligation is stated
+once, as a checklist any new structure in this phase must answer before it is proposed:
+
+| Question | Why it is not optional |
+|---|---|
+| **What is its ORG seal?** | any table the resolver reaches can defeat every other seal if it can pair rows across orgs |
+| **What does the MERGE command do to it?** | the merge outlives the unit that ships it, and anything it does not repoint becomes a stranded reference |
+| **Where is its SERIALIZATION point?** | a check that reads is not a check that serializes; two writers on different rows will both pass it |
+
+A structure proposed without all three answers is incomplete, and the reviewer should not have to be
+the one to notice.
+
 `Vendor.partyId` is a foreign key, not a read: procurement gains no `dependsOn` edge from holding
 it. If a later unit needs the party's *name* inside procurement it goes through an orgs query
 contract and declares `procurement.dependsOn += 'orgs'`, which stays acyclic because nothing in the
