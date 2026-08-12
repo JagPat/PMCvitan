@@ -638,3 +638,79 @@ test('a valid in-progress state is not mistaken for a handoff', async () => {
     true,
   );
 });
+
+// FINDING (#331 head 35d9532, P1) — STATUS named a `phase_plan` that existed only on a
+// DIFFERENT unmerged branch. The runner's first act after parsing STATUS is opening that
+// file (docs/AUTONOMOUS_LOOP.md), so a dangling reference is the documented stall mode:
+// an in-progress task whose plan cannot be read. The rule this mechanizes — a merged
+// state is COMPLETE; every reference it makes resolves within the tree that carries it —
+// was learned twice on that PR's lineage (once as a promise of a follow-up PR, once as a
+// file on a sibling branch), and a rule learned twice belongs in CI, not in prose.
+//
+// Unconditional over phase_plan: even for a merged task the named plan is history the
+// loop may re-read, and no state is improved by pointing at a file that is not there.
+//
+// A REGULAR FILE inside the repository, not merely an existing path (Codex, #331
+// round 4): `phase_plan: docs/superpowers/plans` names a directory that exists, and the
+// runner's read of it stalls exactly like the missing-file case this pin was built for.
+// The containment check closes the sibling hole — a path that resolves outside the repo
+// is not this tree's plan no matter what it points at.
+test("the live STATUS's phase_plan resolves to a regular file in this tree", async () => {
+  const { statSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const path = await import('node:path');
+  const { now } = await loadStatusDocument();
+  const plan = String(now?.phase_plan ?? '').trim();
+  // `none` is only a valid answer when there is no work whose plan the runner
+  // must open (Codex, #331 round 5): an ACTIONABLE task with `phase_plan: none`
+  // passes an existence-only guard and still stalls the loop at its documented
+  // first read. And "terminal" alone is not that answer either (Codex, #331
+  // round 6): `task_state: merged` is a terminal LABEL that still schedules
+  // work — `assessRunnerState` consults `work_item`, then `next_task`, from
+  // exactly that state — so a merged handoff naming a next task beside
+  // `phase_plan: none` would be certified by a terminal-set exemption and
+  // stall all the same. The exemption therefore asks the SHARED state machine
+  // (the #303 rule: the live-file guard uses the shared predicate, never a
+  // fork of it) whether this state schedules anything. The queue is passed
+  // empty on purpose: maintenance slugs are STATUS-local upkeep between
+  // phases, not phase-plan tasks, and the between-phases drain is precisely
+  // the legitimate `phase_plan: none` state.
+  const state = String(now?.task_state ?? '').trim().toLowerCase();
+  const terminal = new Set(['merged', 'complete', 'completed', 'cleared']);
+  if (!plan || plan === 'none') {
+    const scheduled = assessRunnerState(now, []);
+    assert.ok(
+      terminal.has(state) && !scheduled.actionable,
+      `docs/STATUS.md records task_state '${now?.task_state}' with phase_plan `
+        + `'${now?.phase_plan}'`
+        + (scheduled.actionable ? ` while still scheduling '${scheduled.nextStep}'` : '')
+        + '. The runner opens phase_plan immediately after STATUS, so any state that '
+        + 'schedules work must name a real plan file — none/empty is only valid once '
+        + 'the work is terminal AND nothing (work_item, next_task, open_pr) is '
+        + 'scheduled from it.',
+    );
+    return;
+  }
+  const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
+  const resolved = path.resolve(repoRoot, plan);
+  assert.ok(
+    resolved.startsWith(repoRoot + path.sep),
+    `docs/STATUS.md names phase_plan '${plan}', which resolves OUTSIDE this repository. `
+      + 'The runner reads phase_plan relative to the repo; a path that escapes it is not '
+      + "this tree's plan regardless of what it points at.",
+  );
+  let isFile = false;
+  try {
+    isFile = statSync(resolved).isFile();
+  } catch {
+    isFile = false;
+  }
+  assert.ok(
+    isFile,
+    `docs/STATUS.md names phase_plan '${plan}', but no regular file exists there in this `
+      + 'tree (missing, or a directory). The runner opens phase_plan immediately after '
+      + 'STATUS, so an unopenable reference is a stall shipped as state. Land the plan in '
+      + 'the same PR as the STATUS that names it — a merged state must be complete in its '
+      + 'own tree.',
+  );
+});
