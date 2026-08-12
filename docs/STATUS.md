@@ -13,11 +13,11 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
 task: 1
-task_state: merged
-work_item: none
+task_state: in_review
+work_item: phase-6-task-1b
 reviewed_merge: 7970bfb
-open_pr: none
-next_task: phase-6-task-1b
+open_pr: 329
+next_task: phase-6-planning
 blocking_directive: none
 updated: 2026-08-11
 ```
