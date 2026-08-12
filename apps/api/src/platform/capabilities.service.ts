@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 
@@ -21,6 +21,20 @@ export const LABOUR_CAPABILITY = 'labour';
 // difference that is the whole point of §L: enabling `commercial` is NOT a no-op on a project
 // that already holds live purchase orders. See `CommercialActivationService`.
 export const COMMERCIAL_CAPABILITY = 'commercial';
+/**
+ * Phase 6 unit 6.1b (§A) — RESERVED, not yet a capability.
+ *
+ * The boundary plan gates the collaborator resolver behind this flag, and that resolver does not
+ * exist yet. A flag that can be switched on before the thing it governs means nothing when it is
+ * on, so the name is reserved in the unit that creates the identity it will later govern; 6.2
+ * lifts the reservation in the same migration that installs the resolver.
+ *
+ * The refusal below is the FRIENDLY error. The seal is the
+ * `ProjectCapability_collaboration_reserved` CHECK, because a service check is scoped to the
+ * caller — the operator CLI, a repair script and a raw insert all walk past it — and scoping a
+ * check to the caller rather than to the data it protects is Root A of the 6.1a audit.
+ */
+export const COLLABORATION_CAPABILITY = 'collaboration';
 
 @Injectable()
 export class CapabilitiesService {
@@ -44,6 +58,13 @@ export class CapabilitiesService {
 
   /** Idempotently enable a capability for ONE project, attributably. */
   async enable(projectId: string, capability: string, enabledById: string): Promise<void> {
+    if (capability === COLLABORATION_CAPABILITY) {
+      throw new BadRequestException(
+        'The `collaboration` capability name is reserved: the collaborator resolver it gates does '
+          + 'not exist yet, so enabling it would record a flag with no behaviour. It becomes '
+          + 'enableable in the unit that installs the resolver.',
+      );
+    }
     await this.prisma.projectCapability.upsert({
       where: { projectId_capability: { projectId, capability } },
       create: { projectId, capability, enabledById },

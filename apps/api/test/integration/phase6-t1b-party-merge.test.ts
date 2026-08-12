@@ -315,4 +315,36 @@ describe('Phase 6 unit 6.1b — the party merge (live PG)', () => {
       .rejects.toMatchObject({ status: 409 });
     expect((await t.prisma.externalParty.findUniqueOrThrow({ where: { id: a } })).name).toBe('Renamable Pvt');
   });
+
+  // ── M6 ─────────────────────────────────────────────────────────────────────────────────────
+  /**
+   * The `collaboration` name is RESERVED until the resolver it gates exists. A flag that can be
+   * switched on before the thing it governs means nothing when it is on.
+   */
+  it('M6 — the reserved capability name cannot be enabled, by service OR by raw insert', async () => {
+    const projectId = await freshProject();
+
+    // The friendly refusal: an operator gets a sentence naming the reason, not a constraint.
+    expect(await failure(() => capabilities.enable(projectId, 'collaboration', f.memberUser.id)))
+      .toMatch(/reserved/i);
+
+    // The SEAL. A service check is scoped to the CALLER — the operator CLI, a repair script and a
+    // raw insert all walk past it — and scoping a check to the caller rather than to the data it
+    // protects is Root A of the 6.1a audit. So the refusal is the database's.
+    expect(await failure(() => t.prisma.projectCapability.create({
+      data: { projectId, capability: 'collaboration', enabledById: f.memberUser.id },
+    }))).toMatch(/ProjectCapability_collaboration_reserved/);
+
+    // BOTH ENDS. F1 was an obligation armed against one end only, so this asserts the other: an
+    // existing row cannot be UPDATEd into the reserved name either. A CHECK covers both by
+    // construction, which is why it was chosen over a trigger that would need arming twice.
+    expect(await failure(() => t.prisma.$executeRawUnsafe(
+      `UPDATE "ProjectCapability" SET "capability" = 'collaboration' WHERE "projectId" = $1`, projectId,
+    ))).toMatch(/ProjectCapability_collaboration_reserved/);
+
+    // …and the reservation is NARROW: it must not disturb the capabilities that do have behaviour.
+    expect(await t.prisma.projectCapability.count({ where: { projectId, capability: MATERIALS_CAPABILITY } })).toBe(1);
+    await capabilities.enable(projectId, 'labour', f.memberUser.id);
+    expect(await t.prisma.projectCapability.count({ where: { projectId, capability: 'labour' } })).toBe(1);
+  });
 });

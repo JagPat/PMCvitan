@@ -15,7 +15,7 @@ phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
 task: 1
 task_state: merged
 work_item: none
-reviewed_merge: ec236c7
+reviewed_merge: 7970bfb
 open_pr: none
 next_task: phase-6-task-1b
 blocking_directive: none

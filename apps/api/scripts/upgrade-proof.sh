@@ -3182,6 +3182,32 @@ assert "6.1a F1: the company and its source are gone, the association survives o
   "SELECT (SELECT COUNT(*)::text FROM \"ProjectPartyCompanySource\" WHERE \"projectCompanyId\" = 'UP6-BOTHC') || '|' || (SELECT COUNT(*)::text FROM \"ProjectParty\" WHERE \"id\" = 'UP6-BOTH');" \
   "0|1"
 
+# ── 6.1b: the `collaboration` capability name is RESERVED until the resolver that gates it exists ─
+# A flag switchable before the thing it governs means nothing when it is on. The service refuses it
+# too, but that refusal is scoped to the CALLER — the operator CLI, a repair script and this raw
+# insert all walk past it — so the seal is the database's. Both ends are covered because a CHECK is
+# evaluated on INSERT and UPDATE by construction, which is F1's lesson bought for free.
+assert_rejects "6.1b: enabling the reserved \`collaboration\` capability" \
+  "INSERT INTO \"ProjectCapability\"(\"projectId\",\"capability\",\"enabledById\") VALUES('p1','collaboration','USER-1')" \
+  'ProjectCapability_collaboration_reserved'
+# The row this UPDATE renames has to EXIST first. An earlier version of this block tested the update
+# before planting anything: it matched zero rows, succeeded trivially, and reported a pass for a
+# seal it never reached — the same shape as the probes in Root D of the 6.1a audit. It is planted
+# here rather than later, and doubles as the NARROWNESS control below.
+$PSQL >/dev/null <<'SQL' || { echo "FAILED  phase-6 6.1b: a capability with real behaviour was refused — the reservation is too broad"; FAIL=1; }
+INSERT INTO "ProjectCapability"("projectId","capability","enabledById") VALUES('p1','materials','USER-1')
+ON CONFLICT DO NOTHING;
+SQL
+assert "6.1b: the planted row exists, so the UPDATE below has something to rename" \
+  "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'p1' AND \"capability\" = 'materials';" \
+  "1"
+assert_rejects "6.1b: …or RENAMING an existing capability into it" \
+  "UPDATE \"ProjectCapability\" SET \"capability\" = 'collaboration' WHERE \"projectId\" = 'p1' AND \"capability\" = 'materials'" \
+  'ProjectCapability_collaboration_reserved'
+assert "6.1b: the refusal left the capability that HAS behaviour untouched" \
+  "SELECT COUNT(*)::text FROM \"ProjectCapability\" WHERE \"projectId\" = 'p1' AND \"capability\" = 'materials';" \
+  "1"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller

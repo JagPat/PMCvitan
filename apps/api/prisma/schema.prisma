@@ -1225,10 +1225,17 @@ model ProjectNode {
 model ProjectCapability {
   project     Project  @relation(fields: [projectId], references: [id])
   projectId   String
-  capability  String // 'materials' (Stage 1)
+  capability  String // 'materials' (Stage 1), 'labour', 'commercial'
   enabledAt   DateTime @default(now())
   enabledById String
 
+  // Phase 6 unit 6.1b — `ProjectCapability_collaboration_reserved` CHECKs
+  // `capability <> 'collaboration'`. Prisma cannot express a CHECK, so it lives in
+  // `20270805000000_phase6_t1b_collaboration_reservation` and is recorded here because Root B of
+  // the 6.1a convergence audit is exactly this gap: a constraint present only in hand-written SQL
+  // is invisible to every gate that reads the model, and one `prisma migrate dev` from being
+  // silently dropped. The name is reserved until the boundary plan's resolver exists — 6.2 lifts
+  // the constraint in the same migration that gives the flag behaviour.
   @@id([projectId, capability])
 }
 
