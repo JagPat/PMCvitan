@@ -139,6 +139,36 @@ test('ci.yml serializes same-sha runs by queueing, never by cancelling', async (
     'quality-gate blocks on a cancelled job (no verdict), so the queue must '
       + 'never cancel an in-progress run',
   );
+
+  // ONLY a metadata-only `edited` event may join the per-sha queue. GitHub
+  // keeps at most ONE pending run per group — a newer pending run REPLACES the
+  // queued one — so any event whose payload is load-bearing must never sit in
+  // the queue where a later event can silently swallow it. The interleaving
+  // that forced this (Codex, PR #332 round 1): a synchronize run is mid-battery
+  // on base A; a base-retarget `edited` (changes.base) queues; a body edit on
+  // the same head REPLACES the queued retarget; the survivor has no
+  // changes.base, battery-plan reads base A's products as coverage, and the
+  // gate publishes stale green against base B. A cancelled-while-queued run
+  // creates no job-level check runs, so quality-gate never even sees it.
+  //
+  // Code events (opened/synchronize/reopened) and retarget edits therefore get
+  // a unique group (the run id) and execute immediately, exactly as before the
+  // concurrency block existed. Metadata edits replacing each OTHER while
+  // queued is safe: the surviving payload carries the newest body, which is
+  // what review-scope should read anyway.
+  assert.match(
+    concurrency.groups.group,
+    /github\.event\.action\s*==\s*'edited'/u,
+    'only `edited` events may queue per sha; code events must keep a unique '
+      + 'group so their payloads can never be replaced while pending',
+  );
+  assert.match(
+    concurrency.groups.group,
+    /!github\.event\.changes\.base/u,
+    'a base-retarget edit carries a load-bearing payload (changes.base); it '
+      + 'must be exempted from the shared queue or a later body edit can '
+      + 'replace it and the gate publishes stale evidence against the new base',
+  );
 });
 
 test('the plan reads the whole check history, not just the latest run', async () => {
