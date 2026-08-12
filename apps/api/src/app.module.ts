@@ -95,6 +95,7 @@ import { OrgsController } from './orgs/orgs.controller';
 import { MembersService } from './orgs/members.service';
 import { MembersController } from './orgs/members.controller';
 import { CompaniesService } from './orgs/companies.service';
+import { PartyMergeService } from './orgs/party-merge.service';
 import { CompaniesController } from './orgs/companies.controller';
 import { OutboxRelay } from './platform/outbox/relay.service';
 import { ExternalEffectDispatcher } from './platform/outbox/external-effect-dispatcher';
@@ -222,6 +223,7 @@ import { DailyLogParticipant } from './daily-log/daily-log.participant';
     OrgsService,
     MembersService,
     CompaniesService,
+    PartyMergeService,
     NodesService,
     OutboxRelay,
     // PR C Task 2 — the single external-effect sender (legacy/shadow immediate dispatch);
