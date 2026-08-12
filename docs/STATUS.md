@@ -13,14 +13,36 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
 task: 1
-task_state: merged
-work_item: none
+task_state: in_review
+work_item: space-model-plan
 reviewed_merge: ec236c7
-open_pr: none
+open_pr: 330
 next_task: phase-6-task-1b
 blocking_directive: none
 updated: 2026-08-11
 ```
+
+**PHASE 6 UNIT 6.1b IS PAUSED BY OWNER DECISION, and PR #329 is HELD rather than
+abandoned.** The active work item is the SPACE MODEL plan (PR #330): a live
+project reads `ZONE site > ROOM Excavation`, and Excavation is not a room — the
+vocabulary forces every piece of site work through a word that stops meaning
+anything the first time it is used. Decided: Space replaces Room, and a space is
+OPTIONAL and SELF-NESTING, so site-level work needs no invented container and a
+partial zone (a wing, a pour segment) has somewhere to live.
+
+The pause is recorded HERE rather than in `blocking_directive`, which schedules a
+correction from `correction_required` or `in_progress` only — setting it from
+`in_review` makes `assessRunnerState` refuse to advance at all, which is a halt
+rather than a handoff. `next_task` still names `phase-6-task-1b`, so the loop
+returns to it once the space work clears.
+
+**What #329 holds:** the four Codex findings from head `8a035eb` are fixed and
+pushed (`a82e198`), plus one more the full suite caught (`34c648f`) — the F4
+lock-ordering fix had turned E3, a CLEARED invariant, into a 409, narrowing "the
+rename lands on the right party" into "the edit is lost if a merge raced it". It
+is a bounded retry now. The full integration suite at that head did NOT complete
+(killed at `EXIT=143` by a branch switch), so CI is the verifier on resume; the
+PR comment states exactly what is and is not established.
 
 **`next_task` spells unit 6.1b as `phase-6-task-1b`, and that is not a typo for
 the prose name.** `TASK_REFERENCE` in `scripts/review-efficiency.mjs` is an
