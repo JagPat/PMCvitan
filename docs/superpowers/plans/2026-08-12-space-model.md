@@ -282,7 +282,7 @@ splits along the dependency:
 | **S1 — the structure** | the parent rule, the depth cap by subtree height, the serialized cycle guard, the initialization validator, project-scoped tree reads. **No vocabulary change at all** |
 | **S2 — expand** | the API accepts `space` in addition to `room`; contracts and payload schema widened; **all four `anchorKind` code sites** (§D) updated first, since accepting `space` is what makes a space-root module persistable |
 | **S3 — migrate + surfaces** | the three-store data migration; the API **canonicalizes an accepted `room` to `space`** (§E); recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales, `"object" → "element"`. The surfaces **read both kinds and write only `space`** |
-| **S4 — contract** | drop `room` from the contracts and the payload schema; a probe that `kind: 'room'` is refused. **Gated on both preconditions** (§E): the measured quiet window, and a preflight proving zero `room` values exist in any of the three stores |
+| **S4 — contract** | drop `room` from the contracts and the payload schema; a probe that `kind: 'room'` is refused. **Prerequisite: a client-version barrier that forces a stale bundle to reload** (§E) — none exists today. Plus a preflight proving zero `room` values remain in any of the three stores. **S4 is the only unit that does not follow automatically**, and the model's end state is already delivered at S3 |
 
 **S1 carries no rename, and that is what makes it buildable now.** Everything round-1 review found
 unsafe about the tree — the unserialized cycle guard, the depth cap that a subtree move walks
@@ -293,10 +293,30 @@ makes the broken states easier to reach.
 
 **S2 and S3 must be separate merges, and S2 must be DEPLOYED — not merely merged — before S3's
 bundle ships.** If one PR both teaches the API `space` and switches the web to send it, the web
-application can deploy first and spend the gap sending a kind the API still rejects. Splitting them
-is necessary but not sufficient: merge order does not imply deploy order when the two applications
-redeploy independently, so "S2 is live" is a release-time check somebody performs, not something the
-PR graph guarantees. Once S2 IS live, every combination of old/new web against old/new API is valid.
+application can deploy first and spend the gap sending a kind the API still rejects.
+
+**Splitting them is necessary but not sufficient, and "somebody checks S2 is live" is not a
+mechanism.** Merge order does not imply deploy order across two independently redeploying
+applications, and this loop is autonomous — there is no release engineer standing by to confirm the
+API landed before the bundle went out. If S2's deploy is merely slow, or fails, the S3 bundle starts
+writing `space` to an API whose `NODE_KINDS` still refuses it, and ordinary location creation breaks.
+
+**So the ordering is made mechanical, using a channel that already exists.** The shell response
+already carries `capabilities: string[]`, the store already holds `capabilities` and
+`capabilitiesKnown`, and `RouteBridge` already gates on it — the Phase 3 Task 7 pilot pattern, and
+already cleared. S2 adds a server capability marker to that array; S3's bundle **sends `space` only
+when the shell advertises it, and `room` otherwise.**
+
+That removes the ordering requirement instead of asking someone to satisfy it:
+
+| S3 bundle meets | it sends | outcome |
+|---|---|---|
+| an API with S2 live (marker present) | `space` | correct |
+| an API still on S1 (marker absent) | `room` | accepted; canonicalized once S2/S3 land |
+| an API mid-deploy, shell unreachable | `room` — the `capabilitiesKnown === false` path already exists | safe default |
+
+The client discovers what the server accepts rather than assuming it, so a delayed or failed S2
+deploy degrades to "still writing the old kind" instead of "creation is broken".
 
 **The data migration belongs with the surfaces (S3), not with the model.** Rewriting
 `ProjectNode.kind` to `space` while the live bundle still filters on `room` would blank the user's
@@ -324,7 +344,7 @@ the two applications matters:
 |---|---|---|---|---|
 | **E — expand** | `space` **and** `room` | as sent | unchanged, still sends `room` | old web + new API both work; anchor code understands both |
 | **M — migrate** | `space` and `room` | **always `space`** — canonicalized | writes `space`, **reads either** | old rows are swept; new `room` writes canonicalize, so no `room` row survives the step |
-| **C — contract** | `space` only | `space` | unchanged | no client is still writing `room` (measured) AND no `room` row exists (verified) |
+| **C — contract** | `space` only | `space` | unchanged | a client-version barrier makes a stale bundle impossible (prerequisite, §E) AND no `room` value remains (verified) |
 
 ### Why M canonicalizes rather than storing what it is sent
 
@@ -345,10 +365,10 @@ stored as `space` and then vanish from its own view. By M the shipping bundle re
 the only sufferer is a stale tab whose freshly created node does not appear until it reloads — a
 display gap, not an error, and strictly better than leaving `room` rows behind.
 
-**C therefore has two preconditions, not one:** the measured quiet window (no client is still
-*writing* `room`), and a diagnostic preflight proving zero `room` values *exist* — in
-`ProjectNode.kind`, in `TemplateModule.payload`, and in `anchorKind`. The second is cheap, and it is
-what makes the end state a verified fact rather than a belief.
+**C therefore has two preconditions, not one:** a client-version barrier that makes a stale bundle
+impossible (its own prerequisite unit — see below), and a diagnostic preflight proving zero `room`
+values *exist* — in `ProjectNode.kind`, in `TemplateModule.payload`, and in `anchorKind`. The second
+is cheap, and it is what makes the end state a verified fact rather than a belief.
 
 ### The mistake this table hides, and the rule that fixes it
 
@@ -375,12 +395,35 @@ been replaced.** Applied to the two places the first draft broke:
   step existed to prevent. There is **no client-version handshake in this codebase** (checked), so
   "all clients are new" cannot currently be established mechanically.
 
-**So C is gated on a measured precondition:** instrument `room`-valued writes at E, and run C only
-after a defined quiet window with zero of them. That converts "nothing sends `room`" from an
-assumption into an observation, which is the whole difference. Building a client-version handshake
-that forces a stale bundle to reload would make the gate mechanical rather than observational and is
-the better long-run answer — but it is its own piece of work, and naming it here is deliberate so C
-is not blocked on inventing it.
+**A measured quiet window was proposed here and is withdrawn — it does not prove what C needs.** The
+idea was to instrument `room`-valued writes and contract after a defined period with zero of them.
+But a tab opened before M can sit **idle** through the entire window and write the moment it wakes.
+Zero writes over an interval is evidence about recent *activity*; C needs evidence about the
+*existence* of stale bundles, and no amount of quiet establishes that. The measurement would have
+converted an assumption into a different assumption wearing a number.
+
+**So C has a real prerequisite: a client-version barrier that forces a stale bundle to reload.**
+There is none in this codebase today (checked — the only `clientVersion` hits are Prisma error
+mocks). Until one exists, dropping `room` turns any surviving old tab's next create into a rejection.
+The barrier is its own unit of work, and naming it as a prerequisite is the honest position rather
+than inventing a proxy for it.
+
+**What that costs is much less than it sounds, and this is the part worth being clear about.** The
+end state decision 4 asked for — one name in the model, no alias in the data — is reached at **M**,
+not at C:
+
+| after M | after C |
+|---|---|
+| every stored value is `space`, in all three stores | unchanged |
+| every new write is canonicalized to `space` | unchanged |
+| the surfaces say `space` | unchanged |
+| the API still *tolerates* the string `room` on input | it does not |
+
+So M delivers the model, the data and the vocabulary. C removes a wire-level synonym that nothing
+in the product refers to any more. That is worth doing — a contract that accepts a word the system
+no longer uses is debt — but it is not what the rename was for, and it must not hold the rest of the
+work hostage. **C stays a named unit (S4) with its prerequisite stated, and it ships when the barrier
+does.**
 
 **This preserves decision 4's end state exactly** — after step C, only `space` is accepted and no
 alias remains. What it changes is that the alias exists *during* the changeover rather than never,
@@ -485,8 +528,12 @@ deliberately.
 | `P3.2` a payload the migration cannot parse | it ABORTS; no row is rewritten, none dropped |
 | `P3.3` a `room`-valued write after this deploy **[D]** | stored as `space` |
 | `P3.4` a snapshot containing both kinds | the surfaces render both identically |
+| `P3.5` the bundle against a shell WITHOUT the capability marker | it sends `room`, and creation succeeds |
+| `P3.6` the bundle against a shell WITH the marker | it sends `space` |
+| `P3.7` the bundle while the shell is unreachable (`capabilitiesKnown === false`) | it sends `room` — the safe default |
 
-`P3.3` is what makes the migration's result survive the migration.
+`P3.3` is what makes the migration's result survive the migration. `P3.5`–`P3.7` are what make the
+deploy ordering a property of the code rather than a task for a person who is not there.
 
 ### S4 — contract
 
@@ -494,6 +541,10 @@ deliberately.
 |---|---|
 | `P4.1` preflight against a database holding one `room` value in any of the three stores | refuses, naming the store |
 | `P4.2` after the contraction | a request carrying `kind: 'room'` is refused |
+| `P4.3` a client older than the barrier attempts a write | it is told to reload and does, rather than failing the user's action |
+
+`P4.3` is the prerequisite probe: until it can be written at all, S4 has nothing to stand on, and the
+plan says so rather than shipping the contraction on a hope about browser tabs.
 
 ## What decision 2 changes in the rule
 

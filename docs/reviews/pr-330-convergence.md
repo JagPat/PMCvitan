@@ -8,7 +8,8 @@ common. This is that audit.
 |---|---|---|---|
 | 1 | `c87ee29` | 7 (6×P1, 1×P2) | all verified against code, all corrected on `922e67b` |
 | 2 | `6700171` | 4 (4×P1) | all verified, corrected on `aa1a604` |
-| 3 | `aa1a604` | 2 (2×P1) | all verified, corrected on this head |
+| 3 | `aa1a604` | 2 (2×P1) | all verified, corrected on `1b42cb5`/`db593a1` |
+| 4 | `db593a1` | 3 (3×P1) | all verified, corrected on this head |
 
 Thirteen findings on a document that changes no code. That number is the finding, and the audit
 below is about why.
@@ -111,6 +112,8 @@ The audit's value is only in what it changes about the implementation rounds. Co
   everywhere it is written — a guard that tests for the old value stops guarding silently.
 - Every migration must ship with the **write-path rule that keeps its result true**, or its
   guarantee lapses the moment it completes.
+- Every risk must be discharged into **code, a gate, or a merged state** — never into an instruction
+  for a person to be careful. There is no person.
 - The cycle-safety probe must be **seen to fail** before the guard is trusted. This is the standing
   rule; R4 on #329 needed three attempts before it could fail at all, and a green concurrency probe
   proves nothing until reverting the fix turns it red.
@@ -129,6 +132,36 @@ still fails closed on any finding; only the place of verification moves.
 The deferral names `phase-6-task-2` — the space model's first implementation unit (S1) — because that
 is the task whose probes settle these questions.
 
+### Round 4: the plan kept assuming a person who is not there
+
+The three round-4 findings are one defect, and it is not the one rounds 1–3 shared. Every remaining
+gap was a place where the plan discharged a risk by **assigning it to a human**:
+
+| the plan said | who was supposed to do it | why that fails here |
+|---|---|---|
+| "S2 must be DEPLOYED before S3 ships" | a release engineer checking deploy health | this loop is autonomous; nobody is watching, and a slow or failed S2 deploy silently breaks creation |
+| "contract after a measured quiet window" | an operator judging the window sufficient | an idle tab writes nothing during the window and writes the moment it wakes — quiet measures activity, not existence |
+| "the STATUS PR follows immediately" | whoever lands the next PR | a promise is not a state transition; the merged tree is what the runner reads |
+
+None of these is a wrong *intention*. Each is an intention with no mechanism, in a system that
+executes without supervision. **A plan for an autonomous loop may only discharge a risk into code,
+into a gate, or into a merged state — never into an instruction for someone to be careful.**
+
+What replaced them:
+
+- **Deploy ordering → capability discovery.** The shell already carries `capabilities: string[]`
+  with `capabilitiesKnown` (the cleared Phase 3 Task 7 pattern). S2 advertises a marker; S3's bundle
+  sends `space` only when it sees one, `room` otherwise, and `room` when the shell is unreachable.
+  The client asks rather than assumes, so a delayed S2 degrades to "still writing the old kind"
+  instead of "creation is broken".
+- **Quiet window → a stated prerequisite.** The window is withdrawn as unsound. S4 needs a real
+  client-version barrier, none exists, and that is now written as a prerequisite with its own probe
+  rather than approximated. Crucially, the *end state* decision 4 asked for lands at S3 — model,
+  data and vocabulary all `space` — so S4 removes only a wire synonym and cannot hold the work
+  hostage.
+- **Promised STATUS PR → a merged one.** Landed FIRST, as PR #331, so the state #330 merges into is
+  already correct. See below.
+
 ### One structural consequence, recorded because it changes how this PR lands
 
 The deferral gate cannot verify a phase reference when the PR itself edits `docs/STATUS.md`: the gate
@@ -136,15 +169,24 @@ runs from the trusted default branch and reads main's copy, which is not this PR
 **`docs/STATUS.md` was removed from this PR** and reverted to main's content.
 
 That is a deliberate reversal of the usual fold-STATUS-into-the-work-PR convention, forced by the
-gate and explicitly offered by it ("Land the STATUS change on its own"). It leaves a real gap worth
-naming rather than discovering: main's STATUS currently reads `task_state: merged` / `work_item:
-none` / `next_task: phase-6-task-1b`, so between #330 merging and the STATUS change landing, the
-runner would resolve to the PAUSED 6.1b. **The STATUS PR must therefore follow immediately**, setting
-`phase: 6` / `task: 2` / `task_state: in_progress` / `work_item: none`, which keeps the space work
-inside the phase the deferral names and satisfies the two live pins on that file (`work_item` is
-consulted only from `merged`; a `merged` block must clear it).
+gate and explicitly offered by it ("Land the STATUS change on its own").
 
-An earlier revision of this branch moved STATUS to `phase: 7`. That is withdrawn — phase 6 task 2
-satisfies the same pins and keeps the deferral's phase provable.
+**An earlier revision of this document said the STATUS PR would "follow immediately" and treated that
+as sufficient. It is not, and round 4 was right to reject it.** Between #330 merging and a follow-up
+landing, main would read `task_state: merged` / `work_item: none` / `next_task: phase-6-task-1b`, and
+`assessRunnerState` would send the runner into the PAUSED 6.1b work. In an autonomous loop the merged
+tree is the only thing that speaks; an intention recorded in a packet is not a state transition.
+
+**So the handoff was landed FIRST, as its own PR (#331), from `main`:** `phase: 6` / `task: 2` /
+`task_state: in_progress` / `work_item: none`. Verified against the live file rather than asserted —
+`nextStep = task:2` (the space work, not 6.1b) and `deferralPhases = [6]`, so #330's
+`phase-6-task-2` deferral still resolves against the STATUS that PR installs.
+
+The merge order is therefore **#331 then #330**, and it is not a preference: #330 cannot carry the
+STATUS change without voiding its own deferral, and cannot merge before it without misdirecting the
+runner.
+
+An earlier revision of this branch also moved STATUS to `phase: 7`. That is withdrawn — phase 6 task
+2 satisfies the same pins and keeps the deferral's phase provable.
 
 Review-Convergence: complete
