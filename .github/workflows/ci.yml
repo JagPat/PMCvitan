@@ -21,6 +21,25 @@ on:
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
+# One CI run at a time PER HEAD SHA. An `edited` event landing while the same
+# sha's synchronize run is mid-battery must QUEUE behind it, not race it: two
+# live runs on one sha leave a newer SKIPPED `api` beside an older in-flight
+# one, and the review owner reads "Checks did not settle: api" — a transient
+# false red observed three times (#330 heads 922e67b/6700171, #331 head
+# 5e4c766). Dropping `edited` instead was considered and REJECTED: a base
+# retarget only ever fires `edited` (the merge result under test changes with
+# no new sha), and a large PR whose review-scope failed has ONLY the body edit
+# to finally launch its battery — both pinned in autonomous-ci-battery.test.mjs.
+#
+# Different shas stay parallel (a new push is a new group). workflow_dispatch
+# has no PR payload, so it falls back to the run id — dispatches never
+# serialize. cancel-in-progress stays FALSE deliberately: quality-gate treats
+# a cancelled job as blocking (it never reached a verdict), so cancellation
+# would turn the transient false red into a durable real one.
+concurrency:
+  group: ci-${{ github.event.pull_request.head.sha || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   review-scope:
     runs-on: ubuntu-latest
