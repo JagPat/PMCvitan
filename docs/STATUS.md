@@ -11,7 +11,7 @@ narrative and may lag behind reality.
 
 ```yaml
 phase: 6
-phase_plan: docs/superpowers/plans/2026-08-12-space-model.md
+phase_plan: docs/superpowers/plans/2026-08-12-nested-locations.md
 task: 2
 task_state: in_progress
 work_item: none
@@ -22,40 +22,37 @@ blocking_directive: none
 updated: 2026-08-12
 ```
 
-**This is a STATUS-ONLY handoff, and it lands BEFORE the space-model plan PR
-(#330) rather than inside it.** Two mechanical constraints force that shape, and
-they pull in opposite directions:
+**Task 2 is NESTED LOCATIONS — the structural half of the space work.** A live
+project reads `ZONE site > ROOM Excavation`, because the middle level is
+effectively mandatory and site-level work had nowhere else to go. The fix is that
+a location may nest (5 levels) and an `element` may hang directly off a `zone`, so
+a partial zone — a wing, a pour segment — has a home and no pseudo-container is
+required. The plan is `docs/superpowers/plans/2026-08-12-nested-locations.md`, and
+it ships WITH this handoff so the runner never reads a `phase_plan` it cannot open.
 
-- #330 owes a probe deferral (three finding-bearing heads on a docs-only diff),
-  and `Review-Deferred-To-Probes` names a task whose PHASE the gate verifies
-  against the **default branch's** STATUS. A PR that edits `docs/STATUS.md`
-  therefore cannot carry a deferral at all — the gate reads main's copy, which is
-  not that PR's phase truth.
-- But merging #330 while main still read `task_state: merged` / `work_item: none`
-  / `next_task: phase-6-task-1b` would send the runner into the PAUSED 6.1b work,
-  because `assessRunnerState` falls through to `next_task`. A promise that a
-  STATUS PR will follow is not a state transition; only a merged state is.
-
-Landing the handoff FIRST satisfies both: #330 keeps a STATUS-free diff so its
-deferral verifies, and the state it merges into already points at the space work.
-
-**Phase 6, task 2 — not phase 7.** `deferralPhases` accepts only phases that
-STATUS shows have work ahead, which for the default branch is `[6]`. #330 defers
-to `phase-6-task-2`, so the space model must BE task 2 of phase 6 or the deferral
-names a phase this repository is not working on. An earlier revision of the
-space branch tried `phase: 7`; it is withdrawn.
+**The `room` → `space` RENAME IS DELIBERATELY NOT IN THIS TASK.** The two were
+planned as one unit; five review rounds produced twenty findings, SEVENTEEN of them
+in the rename — template payloads parsed with a throwing `.parse()`, four code
+sites comparing against the literal kind (one of which stops guarding *silently*),
+two independently deployed applications with no ordering guarantee, browser tabs
+that outlive any deploy, seed constants that reinsert the old value after a
+migration, and a picker that finds the created node by matching the kind it sent.
+None of it touches the tree rules. Bundling them meant a small, self-contained
+structural fix could not land until the whole changeover was solved. The rename
+gets its own plan and its own review unit; `docs/reviews/pr-330-convergence.md`
+records what those rounds established so it is not rediscovered.
 
 **`work_item: none` with `task_state: in_progress` is deliberate.**
 `autonomous-status-state.test.mjs` pins two rules against this file: `work_item`
 is consulted ONLY from `task_state: merged`, and a `merged` block must CLEAR it.
 So an `in_progress` block that names a `work_item` silently resolves to the bare
 parent task and discards the named unit. With `work_item: none` the resolver
-returns `task:2`, which is the space model's first implementation unit (S1).
+returns `task:2`, which is this task.
 
-**Nothing in the space work waits on a human.** The changeover route is settled —
-expand → migrate → contract — so S1 through S4 follow one another without a
-further decision. The sequencing constraints that DO bind are mechanical and live
-in the plan's §E and §G.
+**Nothing here waits on a human.** The structural work has no schema rename, no
+data migration, no cross-application deploy ordering and no client compatibility
+window — the API simply accepts a strictly wider set of trees than before, so
+every existing client keeps working unchanged.
 
 **`next_task` spells unit 6.1b as `phase-6-task-1b`, and that is not a typo for
 the prose name.** `TASK_REFERENCE` in `scripts/review-efficiency.mjs` is an
