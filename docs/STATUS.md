@@ -59,15 +59,23 @@ SELF-NESTING, so site-level work needs no invented container and a partial zone
 `docs/superpowers/plans/2026-08-12-space-model.md`.
 
 **`space-model-s1` is the structural work, and it is unblocked.** Round-1 review
-established that the tree rules are unsafe the moment nesting is allowed, and
-those fixes are independent of the one question still with the owner (the
-changeover route — see the plan's §E): the cycle guard must move inside the write
-transaction and be serialized (today the check runs OUTSIDE it, so two concurrent
-moves commit a cycle), the depth cap must count the moved subtree's HEIGHT and not
-just the moved node, the project-initialization write path must enforce the same
-rules it currently bypasses entirely, and the tree reads must be scoped to their
-project. None of that depends on what the kind is called. **The rename, the data
-migration and the enum change wait on the owner's answer** and land in S2/S3.
+established that the tree rules are unsafe the moment nesting is allowed: the
+cycle guard must move inside the write transaction and be serialized (today the
+check runs OUTSIDE it, so two concurrent moves commit a cycle), the depth cap
+must count the moved subtree's HEIGHT and not just the moved node, the
+project-initialization write path must enforce the same rules it currently
+bypasses entirely, and the tree reads must be scoped to their project. None of
+that depends on what the kind is called, which is why S1 carries no rename.
+
+**Nothing in this work is waiting on a human.** The changeover route is SETTLED —
+expand → migrate → contract — so S2 (the API accepts `space` alongside `room`),
+S3 (the data migration plus the surfaces) and S4 (drop `room`) all follow S1
+without a further decision. An earlier revision of this block said the rename and
+migration "wait on the owner's answer"; that is stale and was corrected here,
+because an autonomous runner reading it would pause after S1 for input that will
+never come. The sequencing constraints that DO bind are in the plan's §E: S2 must
+merge and be deployed before S3's bundle ships, and S4 is gated on stale bundles
+no longer being able to write.
 
 The pause is recorded HERE rather than in `blocking_directive`, which schedules a
 correction from `correction_required` or `in_progress` only — setting it from

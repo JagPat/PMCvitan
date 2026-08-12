@@ -216,9 +216,36 @@ reads that have nothing to do with this change.** Verified in the code:
 narrowing that enum to `space` without rewriting the stored JSON turns every pre-existing saved
 module into a parse failure on a read path no one associates with a rename.
 
-**S3 migrates all three together** (see §E for why the data moves with the surfaces rather than with
-the model), diagnostic-first, with a probe that a module saved before the migration still lists and
-still instantiates afterwards. The JSON rewrite aborts on any payload it cannot parse rather than
+**Migrating the stored values is not enough — the code that DERIVES and CONSUMES `anchorKind` has
+the kind names hard-coded, and would silently mis-anchor every module saved afterwards.**
+`anchorKindOf` (`orgs.service.ts:71`) is a two-line ladder over the literal kinds:
+
+```ts
+if (roots.some((r) => r.kind === 'element')) return 'room';
+if (roots.some((r) => r.kind === 'room'))    return 'zone';
+return null;                                  // ← where a `space` root lands after S3
+```
+
+A module captured from a `space` root matches NEITHER branch and returns `null`. `loadModuleCopies`
+(`orgs.service.ts:490`) then grafts only when `row.anchorKind === 'zone'`, so a `null` anchor
+instantiates with `parentId: null` — a **top-level space**, which the parent rule in §A forbids. The
+element branch is wrong in the other direction: it would keep returning `'room'`, a kind that no
+longer exists.
+
+So S3 changes three stored values AND two functions:
+
+| what | where |
+|---|---|
+| `ProjectNode.kind` | column |
+| `TemplateModule.payload.nodes[*].kind` | JSON |
+| `TemplateModule.anchorKind` | column |
+| `anchorKindOf` — the derivation | `orgs.service.ts:71` |
+| `loadModuleCopies` — the graft condition | `orgs.service.ts:490` |
+
+**S3 migrates all of it together** (see §E for why the data moves with the surfaces rather than with
+the model), diagnostic-first, with probes that a module saved BEFORE the migration still lists and
+instantiates afterwards, AND that a module captured from a space root AFTER it anchors under a zone
+rather than at top level. The JSON rewrite aborts on any payload it cannot parse rather than
 dropping nodes.
 
 **No legacy alias in the end state.** Only `space` is accepted once the changeover completes — a
@@ -234,8 +261,8 @@ splits along the dependency:
 |---|---|
 | **S1 — the structure** | the parent rule, the depth cap by subtree height, the serialized cycle guard, the initialization validator, project-scoped tree reads. **No vocabulary change at all** |
 | **S2 — expand** | the API accepts `space` in addition to `room`; contracts and payload schema widened |
-| **S3 — migrate + surfaces** | the three-store data migration, recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales, `"object" → "element"` |
-| **S4 — contract** | drop `room` from the contracts and the payload schema; a probe that `kind: 'room'` is refused |
+| **S3 — migrate + surfaces** | the three-store data migration **and the two `anchorKind` functions** (§D); recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales, `"object" → "element"`. The surfaces **read both kinds and write only `space`** |
+| **S4 — contract** | drop `room` from the contracts and the payload schema; a probe that `kind: 'room'` is refused. **Gated on the measured quiet window** (§E), not merged on a schedule |
 
 **S1 carries no rename, and that is what makes it buildable now.** Everything round-1 review found
 unsafe about the tree — the unserialized cycle guard, the depth cap that a subtree move walks
@@ -244,10 +271,12 @@ what the nestable kind is called. It is also the part that must be right before 
 rewritten, since a migration that lands `space` rows into a tree whose guards still do not hold just
 makes the broken states easier to reach.
 
-**S2 and S3 must be separate merges, with S2 deployed before S3's bundle ships.** If one PR both
-teaches the API `space` and switches the web to send it, the web application can deploy first and
-spend the gap sending a kind the API still rejects. Expanding first removes the ordering requirement
-entirely — every combination of old/new web against old/new API is then valid.
+**S2 and S3 must be separate merges, and S2 must be DEPLOYED — not merely merged — before S3's
+bundle ships.** If one PR both teaches the API `space` and switches the web to send it, the web
+application can deploy first and spend the gap sending a kind the API still rejects. Splitting them
+is necessary but not sufficient: merge order does not imply deploy order when the two applications
+redeploy independently, so "S2 is live" is a release-time check somebody performs, not something the
+PR graph guarantees. Once S2 IS live, every combination of old/new web against old/new API is valid.
 
 **The data migration belongs with the surfaces (S3), not with the model.** Rewriting
 `ProjectNode.kind` to `space` while the live bundle still filters on `room` would blank the user's
@@ -274,8 +303,40 @@ the two applications matters:
 | step | API | web | safe alone because |
 |---|---|---|---|
 | **E — expand** | accepts `space` **and** `room`; all nesting rules, depth, cycle guard, init validator | unchanged, still sends `room` | old web + new API both work |
-| **M — migrate** | unchanged | switches to `space`; the surfaces land | data is rewritten; API accepts either, so a stale bundle still works |
-| **C — contract** | drops `room` | unchanged | nothing sends `room` any more |
+| **M — migrate** | unchanged | writes `space`, **reads either**; the surfaces land | data is rewritten; API accepts either, so a stale bundle still works |
+| **C — contract** | drops `room` | unchanged | no client can still be writing `room` — a measured precondition, not an assumption |
+
+### The mistake this table hides, and the rule that fixes it
+
+The first version of this table said step M "switches to `space`" and step C was safe because
+"nothing sends `room` any more". Both treat the web switch as an **instant**. It is not. A browser
+tab holds its bundle until the user reloads, so at every moment during the changeover there are
+clients running the PREVIOUS step's code — and there is no point at which that stops being true by
+itself.
+
+**The rule: every step must tolerate the previous step's client, and no step may assume a client has
+been replaced.** Applied to the two places the first draft broke:
+
+- **M's web must READ both kinds.** Its bundle can reach a user before the API container has run the
+  migration, so it will be handed snapshots still containing `kind: 'room'`. A bundle that filters on
+  `space` alone renders those as nothing — the Site Map blanks. M's surfaces therefore treat `room`
+  and `space` as the same thing on read, and write only `space`.
+- **M's web must not ship before E is live.** Its creates send `space`; an API still on
+  `NODE_KINDS = ['zone','room','element']` (`contracts.ts:475`) rejects them. E merging is not
+  enough — E must be DEPLOYED. Since the two applications deploy independently and neither PR
+  boundary orders them, this is a release-time check, not something a merge order guarantees.
+- **C needs a positive signal, not an inference.** `LocationPicker.tsx:60` creates locations with
+  `kind: 'room'`; any tab opened before M still does. Dropping `room` while such a tab is open
+  breaks ordinary location creation for that user until they reload — exactly the outage the expand
+  step existed to prevent. There is **no client-version handshake in this codebase** (checked), so
+  "all clients are new" cannot currently be established mechanically.
+
+**So C is gated on a measured precondition:** instrument `room`-valued writes at E, and run C only
+after a defined quiet window with zero of them. That converts "nothing sends `room`" from an
+assumption into an observation, which is the whole difference. Building a client-version handshake
+that forces a stale bundle to reload would make the gate mechanical rather than observational and is
+the better long-run answer — but it is its own piece of work, and naming it here is deliberate so C
+is not blocked on inventing it.
 
 **This preserves decision 4's end state exactly** — after step C, only `space` is accepted and no
 alias remains. What it changes is that the alias exists *during* the changeover rather than never,
