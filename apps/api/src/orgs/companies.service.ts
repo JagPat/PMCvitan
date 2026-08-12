@@ -4,6 +4,17 @@ import { OrgsParticipant } from './orgs.participant';
 import type { AuthUser } from '../common/auth';
 import type { AddCompanyInput, UpdateCompanyInput } from '../contracts';
 
+/** The `ProjectCompany` columns `toDto` needs — the shape one update attempt returns. */
+interface ProjectCompanyRow {
+  id: string;
+  name: string;
+  kind: string;
+  contactName: string | null;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  notes: string | null;
+}
+
 export interface CompanyDto {
   id: string;
   name: string;
@@ -108,17 +119,52 @@ export class CompaniesService {
     // an IDENTITY change, not a display edit. Left alone it would desynchronise the two: the
     // party a resolver keys on would still say ACME while the only row describing it says Beta.
     // Contact details are not identity and stay freely editable.
-    const updated = await this.prisma.$transaction(async (tx) => {
-      // Phase 6 unit 6.1b — the PARTY ROOT is locked FIRST, before this row, whenever the edit can
-      // reach the party. The global order is party → origin (see `lockPartyRoot`), because the
-      // operator merge holds the party roots and then repoints `ProjectCompany`; locking this row
-      // first and the party second gave the two paths opposite orders and made a deadlock the
-      // expected outcome rather than a rare one.
-      //
-      // The party id comes from the pre-transaction read, which is exactly the value E3 warned is
-      // not authoritative — so it is used ONLY to choose a lock, never to decide anything. The
-      // authoritative value is still the locked re-read below, and the two are compared.
-      if (input.name !== undefined) await this.party.lockPartyRoot(tx, existing.partyId);
+    // Phase 6 unit 6.1b — the party root must be locked BEFORE this row (the global party → origin
+    // order), but which party to lock is only knowable from a read taken before the transaction —
+    // the value E3 established is not authoritative. So the attempt is made with the best guess and
+    // VERIFIED under the lock; if a merge moved the row in between, the whole transaction is rolled
+    // back and retried with the party the row actually belongs to.
+    //
+    // A retry rather than a refusal, because E3's contract is that the rename lands on the party the
+    // row ACTUALLY belongs to. An earlier version of this fix returned 409 instead, which is safe
+    // but quietly narrows a cleared invariant into "the edit is lost if a merge raced it" — the
+    // integration suite caught that, correctly. A retry rather than grabbing the second lock while
+    // holding the first, because that reintroduces exactly the cycle this ordering removes.
+    let expectedPartyId = existing.partyId;
+    let updated: ProjectCompanyRow | undefined;
+    for (let attempt = 0; attempt < 2 && updated === undefined; attempt++) {
+      const outcome = await this.runUpdate(projectId, companyId, input, data, expectedPartyId);
+      if (outcome.kind === 'moved') {
+        // Only the party changed under us; loop once with the truth. A second mismatch means the
+        // identity is being reconciled repeatedly right now, and guessing again is not better than
+        // saying so.
+        expectedPartyId = outcome.actualPartyId;
+        continue;
+      }
+      updated = outcome.row;
+    }
+    if (updated === undefined) {
+      throw new ConflictException(
+        'This firm’s canonical identity is being reconciled right now, so the change was not '
+          + 'applied. Reload and try again.',
+      );
+    }
+    return this.toDto(updated);
+  }
+
+  /** One attempt at the update, with the party root locked first. */
+  private async runUpdate(
+    projectId: string,
+    companyId: string,
+    input: UpdateCompanyInput,
+    data: Record<string, unknown>,
+    expectedPartyId: string,
+  ): Promise<{ kind: 'done'; row: ProjectCompanyRow } | { kind: 'moved'; actualPartyId: string }> {
+    return this.prisma.$transaction(async (tx) => {
+      // The party root FIRST, before this row. The operator merge holds the party roots and then
+      // repoints `ProjectCompany`; locking this row first and the party second gave the two paths
+      // opposite orders and made a deadlock the expected outcome rather than a rare one.
+      if (input.name !== undefined) await this.party.lockPartyRoot(tx, expectedPartyId);
 
       // RE-READ the row inside the transaction, locked. `existing` was read before it began, and
       // a 6.1b repoint can move this company onto a different party in between — after which the
@@ -132,17 +178,12 @@ export class CompaniesService {
       if (current.length === 0) throw new NotFoundException('Company not found on this project');
       const pinned = current[0]!;
 
-      // The pre-read chose which party to lock; the locked re-read says which party this row
-      // ACTUALLY belongs to. If a merge moved it in between, the lock in hand is the wrong one, and
-      // reaching for the right one now — while holding the first — is how the deadlock this
-      // ordering exists to prevent gets reintroduced. Refuse instead, and say so: the operator's
-      // edit was written against an identity that has since been reconciled, and a retry against
-      // the surviving firm is the correct next act, not a silently redirected rename.
-      if (input.name !== undefined && pinned.partyId !== existing.partyId) {
-        throw new ConflictException(
-          'This firm’s canonical identity was reconciled while you were editing, so the change was '
-            + 'not applied. Reload and try again.',
-        );
+      // The guess chose which party to lock; the locked re-read says which party this row ACTUALLY
+      // belongs to. When they differ a merge moved the row, so the lock in hand is the wrong one —
+      // report that and let the caller retry with the truth, rather than reaching for the second
+      // lock while holding the first.
+      if (input.name !== undefined && pinned.partyId !== expectedPartyId) {
+        return { kind: 'moved' as const, actualPartyId: pinned.partyId };
       }
 
       const row = await tx.projectCompany.update({ where: { id: companyId }, data });
@@ -156,9 +197,8 @@ export class CompaniesService {
           );
         }
       }
-      return row;
+      return { kind: 'done' as const, row };
     });
-    return this.toDto(updated);
   }
 
   async remove(projectId: string, requester: AuthUser, companyId: string): Promise<{ ok: boolean }> {
