@@ -11,7 +11,16 @@ owed yet" — that was false the moment it was written, and the gate said so.
 | `35d9532` | STATUS-only handoff | 1 (P1) | corrected on `5e4c766` |
 | `5e4c766` | the split: plan + STATUS in one diff | 4 (P2) | corrected on `0222c8f` |
 | `64daa05` | round-1 corrections + this packet | 4 (P2) | corrected on `9edac50` |
-| `9edac50` | round-2 corrections + the deferral | 5 (P2) | corrected on this head |
+| `9edac50` | round-2 corrections + the deferral | 5 (P2) | corrected on `0dd736f` |
+| `0dd736f` | the pin + STATUS returns; probes closed on their doors | 2 (P2) | corrected on this head |
+
+Round 4's two findings each sharpened a round-3 fix by one honest notch, and both were proven
+red-first: **P11 must run through the PUBLIC create-project selector** — `moduleSelectionSchema`
+carries only `underZone`, so a service-level graft probe proves a workflow no user can reach, and
+the selection contract's room-target field is now named in scope; and **the phase_plan pin now
+requires a regular file inside the repository** — a directory that exists (`docs/superpowers/plans`)
+stalls the runner exactly like a missing file, and both refusals (directory; a path escaping the
+repo) were seen to fail before being trusted.
 
 The parent unit's audit — five rounds, thirteen findings, and the three rules they produced — is
 `docs/reviews/pr-330-convergence.md`, carried on this branch unchanged. This packet does not repeat
