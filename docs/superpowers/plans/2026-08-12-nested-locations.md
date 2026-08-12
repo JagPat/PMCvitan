@@ -71,6 +71,11 @@ self-contained, and fixes real bugs — could not land until the changeover was 
 rediscovering it. What this plan does NOT do is make the rename harder: nothing here writes a new
 comparison against the literal kind.
 
+The boundary, stated precisely so it survives review: **structure is in, vocabulary is out.** The
+picker learning to render nested rooms and zone-level elements is structure and ships here; the
+picker's labels saying "Room" and "Object" are vocabulary and do not change. The same line runs
+through the dialog, the register grouping, and the module-placement code.
+
 ## §A — The tree rule replaces the tree map
 
 Today (`apps/api/src/nodes/nodes.service.ts`):
@@ -124,6 +129,12 @@ under another depth-4 destination, each check passes in its own snapshot and the
 5 and the new child at 6. The cap is a property of the tree, so every write that can change a node's
 depth — create and move alike — takes the same serialization.
 
+**The plain case comes before the race, and it gets its own probe.** Today's `create` path has NO
+depth logic at all — none was needed at fixed depth — so a single ordinary request appending a child
+under a node already at level 5 would simply succeed. Serializing the race without adding the plain
+check would be exactly the kind of half-fix a green concurrency probe hides, so §D adjudicates them
+separately: the plain refusal first (P10), the race second (P2).
+
 ### 3. A second write path enforces none of it
 
 `NodesService` is not the only thing that creates a `ProjectNode`. Project copy and module
@@ -133,6 +144,17 @@ check, no depth check, because `requireParentForKind` is a private on the other 
 
 A saved module or a copied project can therefore instantiate a chain the endpoints would refuse. The
 same parent rule and the same depth arithmetic apply to the initialization validator.
+
+**And validation must match in BOTH directions — refusal and acceptance.** The decision above makes
+`element` under `zone` legal, but the module path today makes that shape **unrepresentable**:
+`anchorKindOf` (`orgs.service.ts:71`) maps an element-root module to anchor `'room'`, the placement
+guards (`:418`, `:592`) refuse exactly that anchor at project creation and preset save, and
+`loadModuleCopies` (`:490`) grafts only zone-anchored modules under a zone. So this unit could pass
+every refusal probe while project initialization still cannot *produce* a tree shape the decision
+explicitly allows — a site-gate module would remain impossible to place. The anchor-placement code
+changes here, **structurally, without renaming anything**: an element-root module becomes placeable
+directly under a zone, and the acceptance is probed (P11), not assumed. What stays refused stays
+deliberately refused, with its reason intact.
 
 ### One more thing nesting makes worse
 
@@ -154,16 +176,40 @@ civil day; the located things are the materials delivered and the photos taken, 
 carry `nodeId`. Giving the log itself a location would force a site-wide record to claim one place —
 the same category error as `site > Excavation`.
 
-## §C — The UX gap this uncovered
+## §C — The surfaces that assume the fixed depth
 
-Answering *"how do I add rooms under zones"*: **you cannot.** The Locations dialog only creates
-zones. Its three zone-row icons are Save-as-module, Rename, Delete — there is no add-child control.
-Rooms exist only because `LocationPicker` offers create-as-you-type at filing time.
+The first draft of this section covered one surface (the Locations dialog) and called it the UX gap.
+Review found the honest scope is wider: **the fixed-depth assumption lives in readers too**, and a
+tree the writers permit but the readers misrender is not shipped — it is half-shipped. Three
+surfaces, each verified against the code, each in this unit:
 
-So the dialog states the model and can edit one third of it. That is why `Excavation` exists and no
-sibling could be added. **Nesting makes this worse, not neutral**: a tree you cannot build in the one
-screen devoted to building trees is a tree nobody will use. The add-child control ships with this
-unit.
+**1 · The Locations dialog cannot build the tree.** Answering *"how do I add rooms under zones"*:
+you cannot. The dialog only creates zones — its three zone-row icons are Save-as-module, Rename,
+Delete, with no add-child control. Rooms exist only because `LocationPicker` offers
+create-as-you-type at filing time. That is why `Excavation` exists and no sibling could be added.
+**Nesting makes this worse, not neutral**: a tree you cannot build in the one screen devoted to
+building trees is a tree nobody will use. The add-child control ships here.
+
+**2 · The filing picker renders exactly three levels.** `LocationPicker.tsx:43-61` holds state for
+precisely `zone` and `room` and renders Zone → Room → Object as three fixed rows; the element row
+appears only once a room is selected. So after nesting lands, a fourth-level room is unreachable
+from every filing flow, and a zone-level element cannot be selected at all — or worse, appears in
+the Room selector. The picker's **structural recursion** (arbitrary room depth, element directly
+under a zone) is this unit's work. Only its *labels* stay as they are — the copy belongs to the
+deferred rename.
+
+**3 · The Decision Register groups by position, not by kind.** `locationTree.ts:108-118` takes
+`groupBy: 'room'` as *"the 2nd path segment"* and `groupBy: 'element'` as *"the last segment"* —
+kind-blind positional logic that is only correct while the tree is exactly three levels. Under
+nesting, a decision filed at `Zone > Wing > Pour` groups under **Wing** instead of the room it was
+actually filed at, and an element directly under a zone lands at segment 2 and is grouped **as a
+room**. The grouping moves to the node's *kind*, and the probe pins the two misclassifications that
+positional logic produces.
+
+The pattern behind all three is the one `docs/reviews/pr-330-convergence.md` already names — a rule
+stated about one place when the system has several. §A enumerated the fixed-depth **write** paths;
+this section is the same enumeration for the **readers**, done now rather than found in review
+again.
 
 ## §D — Named probes
 
@@ -183,12 +229,22 @@ attempts before it could fail at all.
 | `P7` an `element` created directly under a `zone` | accepted | the current `PARENT_KIND` map |
 | `P8` a `room` created under another `room` | accepted | the same |
 | `P9` add-child from the Locations dialog | creates a nested location without going through filing | the dialog's three-icon row |
+| `P10` a plain `create` under a node already at level 5 — no race | refused, with the depth stated | the create path's absent depth logic |
+| `P11` a saved element-root module placed directly under a `zone` | it instantiates there — the shape the decision allows is producible through init | `anchorKindOf` → `'room'` + the placement guards + the zone-only graft |
+| `P12` a decision filed at `Zone > Room > Room`, and an element filed directly under a `zone` | the register groups the first under the room it was FILED at, and never shows the element as a room | the positional `seg[1]` / last-segment grouping |
+| `P13` the filing picker on a nested tree | a room under a room is reachable and selectable, and so is an element directly under a zone | the picker's fixed `zone`/`room` state |
+
+`P10` sits before `P2` deliberately: the race probe is worthless while the plain refusal does not
+exist, and a green race probe would hide that. `P11` is the acceptance mirror of `P4`/`P5` — a
+validator that only ever refuses is not proven able to produce the legal shapes.
 
 ## §E — Why this is one review unit
 
 No schema rename, no data migration, no cross-application deploy ordering, no client compatibility
 window, no seed constants, no contraction. The diff is the node service, the initialization
-validator, the parent-rule contract, and one dialog control.
+validator (both directions — refusal and the element-module acceptance), the parent-rule contract,
+and the three §C surfaces: the dialog's add-child control, the picker's structural recursion, and
+kind-based register grouping.
 
 It is independently deployable in the ordinary sense: the API accepts a strictly wider set of trees
 than before, and every existing client keeps working unchanged, because nothing it can send stops
