@@ -59,6 +59,11 @@ export const orgsManifest: ModuleManifest = {
     'companies.add',
     'companies.update',
     'companies.remove',
+    // Phase 6 unit 6.1b (§A) — the operator merge/repoint, exposed as the `party:merge` CLI.
+    // Not an HTTP route: reconciling canonical identity is a rare, high-authority correction
+    // that moves every reference a firm has and deletes an identity, which is the same shape as
+    // `capability:enable` rather than a workflow step.
+    'orgs.party.merge',
     // Phase 4 Task 3 (§H) — binding an orgs-owned WorkerDevice to a trusted Worker. The model is
     // orgs-owned, so the command lives here; the workflow it serves (trusted attendance evidence)
     // is Labour's, and it carries `labour.manage` authority + the labour capability gate.

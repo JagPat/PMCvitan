@@ -109,6 +109,17 @@ export class CompaniesService {
     // party a resolver keys on would still say ACME while the only row describing it says Beta.
     // Contact details are not identity and stay freely editable.
     const updated = await this.prisma.$transaction(async (tx) => {
+      // Phase 6 unit 6.1b — the PARTY ROOT is locked FIRST, before this row, whenever the edit can
+      // reach the party. The global order is party → origin (see `lockPartyRoot`), because the
+      // operator merge holds the party roots and then repoints `ProjectCompany`; locking this row
+      // first and the party second gave the two paths opposite orders and made a deadlock the
+      // expected outcome rather than a rare one.
+      //
+      // The party id comes from the pre-transaction read, which is exactly the value E3 warned is
+      // not authoritative — so it is used ONLY to choose a lock, never to decide anything. The
+      // authoritative value is still the locked re-read below, and the two are compared.
+      if (input.name !== undefined) await this.party.lockPartyRoot(tx, existing.partyId);
+
       // RE-READ the row inside the transaction, locked. `existing` was read before it began, and
       // a 6.1b repoint can move this company onto a different party in between — after which the
       // update lands on the row (now on party B) while the rename would fire on party A: B's name
@@ -120,6 +131,19 @@ export class CompaniesService {
          FOR UPDATE`;
       if (current.length === 0) throw new NotFoundException('Company not found on this project');
       const pinned = current[0]!;
+
+      // The pre-read chose which party to lock; the locked re-read says which party this row
+      // ACTUALLY belongs to. If a merge moved it in between, the lock in hand is the wrong one, and
+      // reaching for the right one now — while holding the first — is how the deadlock this
+      // ordering exists to prevent gets reintroduced. Refuse instead, and say so: the operator's
+      // edit was written against an identity that has since been reconciled, and a retry against
+      // the surviving firm is the correct next act, not a silently redirected rename.
+      if (input.name !== undefined && pinned.partyId !== existing.partyId) {
+        throw new ConflictException(
+          'This firm’s canonical identity was reconciled while you were editing, so the change was '
+            + 'not applied. Reload and try again.',
+        );
+      }
 
       const row = await tx.projectCompany.update({ where: { id: companyId }, data });
       if (input.name !== undefined && input.name !== pinned.name) {

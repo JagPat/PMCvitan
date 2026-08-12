@@ -438,6 +438,24 @@ export class OrgsParticipant {
    * the sole evidence, and renames the firm project B is relying on. The check has to be scoped
    * the way the DATA is, not the way the caller happens to be.
    */
+  /**
+   * Phase 6 unit 6.1b — take the canonical party root's row lock. THE ONE PLACE that does this, so
+   * every path takes the same lock the same way.
+   *
+   * The lock order across the whole system is **party root → origin rows**, and it is global rather
+   * than per-command: the operator merge locks both roots and then repoints `ProjectCompany` and
+   * `Vendor`, so any writer that reached an origin row first and asked for the party second would
+   * form a cycle — one transaction holding the party and waiting on the row, another holding the
+   * row and waiting on the party. PostgreSQL resolves that by aborting one as a deadlock, which is
+   * a correctness-preserving failure but a failure nonetheless, and it surfaces to an operator as a
+   * merge that mysteriously did not happen.
+   *
+   * A caller that renames, binds or repoints therefore calls this BEFORE it touches the origin.
+   */
+  async lockPartyRoot(tx: Prisma.TransactionClient, partyId: string): Promise<void> {
+    await tx.$queryRaw`SELECT "id" FROM "ExternalParty" WHERE "id" = ${partyId} FOR UPDATE`;
+  }
+
   async renamePartyForSoleSource(
     tx: Prisma.TransactionClient,
     input: { partyId: string; name: string; callerCompanyId: string },
@@ -451,7 +469,7 @@ export class OrgsParticipant {
     // `attachPartySource` takes the same lock, which is what makes this a serialization and not
     // just a longer read. The party root is the right thing to lock because the party is what the
     // rename CHANGES; locking the sources would leave the one being created unlocked.
-    await tx.$queryRaw`SELECT "id" FROM "ExternalParty" WHERE "id" = ${partyId} FOR UPDATE`;
+    await this.lockPartyRoot(tx, partyId);
 
     // Count the caller's OWN evidence rather than assume it. The previous form computed
     // `others = sources - 1`, which reads "one of these rows is me" — an inference that is only

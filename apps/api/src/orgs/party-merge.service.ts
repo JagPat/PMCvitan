@@ -43,9 +43,6 @@ export class PartyMergeService {
     user: AuthUser,
     idempotencyKey?: string,
   ): Promise<MergePartiesResult> {
-    // Reconciling firm identity is an org-administration act, not a project one: the party is
-    // org-scoped and the merge moves rows across every project the firm reaches.
-    await this.assertOrgAdmin(orgId, user);
     const { survivingPartyId, absorbedPartyId } = input;
     if (survivingPartyId === absorbedPartyId) {
       throw new BadRequestException('A party cannot be merged into itself');
@@ -57,6 +54,15 @@ export class PartyMergeService {
       commandType: 'orgs.party.merge',
       idempotencyKey, requestHash: hashRequest(input),
       run: async (tx) => {
+        // Authority is checked INSIDE the transaction, against a LOCKED membership row. Read on the
+        // top-level client beforehand it is a promise about a moment that has already passed: T1
+        // reads owner/admin, T2 revokes or downgrades that same `OrgMembership` and commits, and T1
+        // then deletes and repoints firm identity as a user who is no longer an admin. Nothing T1
+        // read was wrong; it was read too early. That is the same error 6.1a's E3 named one command
+        // over — a check whose inputs were taken outside the transaction that protects them.
+        //
+        // Taken FIRST, before the party roots, so the order is global: membership → party → origins.
+        await this.assertOrgAdmin(tx, orgId, user);
         const result = await this.runMerge(tx, orgId, survivingPartyId, absorbedPartyId);
         // `projectId: null` is the honest value, not a gap: a party is org-scoped and this merge
         // moves rows across every project the firm reaches, so no single project owns the act.
@@ -70,7 +76,47 @@ export class PartyMergeService {
         return { resultRef: survivingPartyId, value: result, events: [] };
       },
     });
+    // A keyed REPLAY returns `resultRef` with `value: undefined` — the transaction did not run
+    // again, so there is no fresh result to hand back. Casting the undefined would have returned it
+    // as if it were the documented shape. The merge's own audit row already records everything the
+    // caller is owed, including the absorbed party's NAME, which is unreadable by then because the
+    // row is gone: so a replay re-reads the recorded fact rather than fabricating or omitting it.
+    if (outcome.replayed) return this.recordedMerge(orgId, survivingPartyId, absorbedPartyId);
     return outcome.value as MergePartiesResult;
+  }
+
+  /** Rebuild a completed merge's result from the audit row it wrote. */
+  private async recordedMerge(
+    orgId: string,
+    survivingPartyId: string,
+    absorbedPartyId: string,
+  ): Promise<MergePartiesResult> {
+    const row = await this.prisma.auditLog.findFirst({
+      where: {
+        action: 'party.merge', entity: 'ExternalParty', entityId: survivingPartyId,
+        AND: [
+          { payload: { path: ['orgId'], equals: orgId } },
+          { payload: { path: ['absorbedPartyId'], equals: absorbedPartyId } },
+        ],
+      },
+      orderBy: { at: 'desc' },
+    });
+    if (!row) {
+      // The receipt says this merge committed, so its audit row committed in the same transaction.
+      // Missing means the two disagree, which is a fact worth surfacing rather than papering over
+      // with a plausible-looking reconstruction.
+      throw new ConflictException(
+        'This merge has a completed receipt but no audit record — the two disagree, so the result '
+          + 'cannot be reported truthfully. Investigate before retrying.',
+      );
+    }
+    const p = row.payload as { absorbedName?: string; companies?: number; vendors?: number; associations?: number };
+    return {
+      survivingPartyId,
+      absorbedPartyId,
+      absorbedName: p.absorbedName ?? '',
+      repointed: { companies: p.companies ?? 0, vendors: p.vendors ?? 0, associations: p.associations ?? 0 },
+    };
   }
 
   private async runMerge(
@@ -239,12 +285,19 @@ export class PartyMergeService {
     return [...new Set([...companyClash, ...vendorClash])].sort();
   }
 
-  private async assertOrgAdmin(orgId: string, user: AuthUser): Promise<void> {
-    const om = await this.prisma.orgMembership.findUnique({
-      where: { orgId_userId: { orgId, userId: user.sub } },
-      select: { role: true },
-    });
-    if (om?.role !== 'owner' && om?.role !== 'admin') {
+  /**
+   * The caller's org standing, read UNDER A ROW LOCK inside the merge's own transaction. A
+   * concurrent `orgs.removeOrgMember` or `orgs.updateOrgMemberRole` on this same membership now
+   * blocks here until the merge commits or rolls back, instead of slipping between the check and
+   * the repoint.
+   */
+  private async assertOrgAdmin(tx: Prisma.TransactionClient, orgId: string, user: AuthUser): Promise<void> {
+    const rows = await tx.$queryRaw<Array<{ role: string }>>`
+      SELECT "role" FROM "OrgMembership"
+       WHERE "orgId" = ${orgId} AND "userId" = ${user.sub}
+       FOR UPDATE`;
+    const role = rows[0]?.role;
+    if (role !== 'owner' && role !== 'admin') {
       throw new ForbiddenException('Merging firm identities is an org owner/admin action');
     }
   }

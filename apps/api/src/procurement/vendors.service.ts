@@ -97,6 +97,16 @@ export class VendorsService {
       run: async (tx) => {
         const existing = await tx.projectVendor.findUnique({ where: { projectId_vendorId: { projectId, vendorId: vendor.id } } });
         if (existing) throw new BadRequestException('Vendor is already bound to this project');
+        // Phase 6 unit 6.1b — take the PARTY ROOT first, before the binding touches `Vendor`.
+        //
+        // `attachPartySource` locks this same root a few lines below, so the lock itself is not
+        // new; its POSITION is. The operator merge locks party roots and then updates `Vendor`, so
+        // a bind that reached `Vendor` first and asked for the party second gave the two paths
+        // opposite orders — T1 holding the party and waiting on the vendor row, T2 holding the
+        // vendor row and waiting on the party, which PostgreSQL resolves by aborting one as a
+        // deadlock. One global order (party → origin) removes the cycle rather than relying on the
+        // retry that a deadlock forces.
+        await this.party.lockPartyRoot(tx, vendor.partyId);
         const created = await tx.projectVendor.create({
           data: {
             projectId, orgId: project.orgId, vendorId: vendor.id, boundById: actor.actorId,

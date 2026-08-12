@@ -241,6 +241,18 @@ describe('Phase 6 unit 6.1b — the party merge (live PG)', () => {
     // the pair and take the lower id FIRST, both merges must queue behind it — which is also why
     // the ascending order is deadlock-free rather than merely tidy. Only once both are confirmed
     // BLOCKED (read from `pg_stat_activity`, not guessed with a sleep) is the barrier released.
+    // TWO DIFFERENT operators. They must be different because the authority check now locks the
+    // caller's `OrgMembership` row first (the fix for the review's F2), so one operator racing
+    // themselves would queue on that row and never reach the party root — the probe would still
+    // pass, while measuring a different lock than the one it names. Two admins is also the
+    // realistic shape: the race this guards against is two people reconciling the same pair.
+    const secondAdmin = await t.prisma.orgMembership.upsert({
+      where: { orgId_userId: { orgId: f.orgA.id, userId: f.memberUser.id } },
+      create: { orgId: f.orgA.id, userId: f.memberUser.id, role: 'admin' },
+      update: { role: 'admin' },
+    });
+    const otherAdmin = { sub: secondAdmin.userId, role: 'pmc', orgId: f.orgA.id } as AuthUser;
+
     const holder = new PrismaClient();
     const lower = [a, b].sort()[0]!;
     try {
@@ -255,7 +267,7 @@ describe('Phase 6 unit 6.1b — the party merge (live PG)', () => {
       await held.arrived;
       const forward = merge.merge(f.orgA.id, { survivingPartyId: a, absorbedPartyId: b }, orgAdmin(f.orgA.id))
         .then(() => 'ok' as const, (e: Error) => e);
-      const reverse = merge.merge(f.orgA.id, { survivingPartyId: b, absorbedPartyId: a }, orgAdmin(f.orgA.id))
+      const reverse = merge.merge(f.orgA.id, { survivingPartyId: b, absorbedPartyId: a }, otherAdmin)
         .then(() => 'ok' as const, (e: Error) => e);
 
       // Condition-based: wait until BOTH merges are actually waiting on a lock. If the command did
@@ -346,5 +358,199 @@ describe('Phase 6 unit 6.1b — the party merge (live PG)', () => {
     expect(await t.prisma.projectCapability.count({ where: { projectId, capability: MATERIALS_CAPABILITY } })).toBe(1);
     await capabilities.enable(projectId, 'labour', f.memberUser.id);
     expect(await t.prisma.projectCapability.count({ where: { projectId, capability: 'labour' } })).toBe(1);
+  });
+
+  // ── R1 (Codex F1) ──────────────────────────────────────────────────────────────────────────
+  it('R1 — the merge is a REGISTERED command with an operator surface, not just a provider', async () => {
+    // A service that production cannot invoke does not ship the command the unit promises. The
+    // registry is where that claim is checkable: if this is absent, the module graph does not know
+    // the command exists and no operator path can be traced to it.
+    const { orgsManifest } = await import('../../src/orgs/orgs.manifest');
+    expect(orgsManifest.commands).toContain('orgs.party.merge');
+
+    // …and the surface itself exists and is wired as a runnable script. `capability:enable` is the
+    // precedent: a rare, high-authority correction is an operator CLI, not an HTTP route.
+    const { existsSync, readFileSync } = await import('node:fs');
+    expect(existsSync(new URL('../../src/orgs/party-merge.cli.ts', import.meta.url))).toBe(true);
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+    expect(pkg.scripts['party:merge']).toContain('party-merge.cli.ts');
+  });
+
+  // ── R2 (Codex F2) ──────────────────────────────────────────────────────────────────────────
+  /**
+   * The authority check used to read `OrgMembership` on the top-level client, BEFORE
+   * `executeCommand` opened its transaction — a promise about a moment that had already passed. A
+   * revoke committing in between let a no-longer-admin delete and repoint firm identity.
+   */
+  it('R2 — org standing is checked under a row lock, so a concurrent revoke cannot be outrun', async () => {
+    const projectId = await freshProject();
+    const { partyId: a } = await company(projectId, 'Authority Firm');
+    const { partyId: b } = await boundVendor(await freshProject(), 'Authority Firm');
+
+    // Revoke the admin's standing BEFORE the merge runs: the refusal must come from the row as it
+    // is inside the transaction, not from a value read earlier.
+    await t.prisma.orgMembership.update({
+      where: { orgId_userId: { orgId: f.orgA.id, userId: f.ownerUser.id } },
+      data: { role: 'member' },
+    });
+    try {
+      expect(await failure(() => merge.merge(f.orgA.id, { survivingPartyId: a, absorbedPartyId: b }, orgAdmin(f.orgA.id))))
+        .toMatch(/org owner\/admin/i);
+      // Nothing moved.
+      expect(await t.prisma.externalParty.count({ where: { id: b } })).toBe(1);
+    } finally {
+      await t.prisma.orgMembership.update({
+        where: { orgId_userId: { orgId: f.orgA.id, userId: f.ownerUser.id } },
+        data: { role: 'owner' },
+      });
+    }
+
+    // The lock is the half a single-threaded test cannot show, so assert it directly: a session
+    // holding the membership row must BLOCK the merge, which is only true if the merge reaches for
+    // that row inside its own transaction.
+    const holder = new PrismaClient();
+    try {
+      const held = reported();
+      const release = latch();
+      const barrier = holder.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe(
+          'SELECT "role" FROM "OrgMembership" WHERE "orgId" = $1 AND "userId" = $2 FOR UPDATE',
+          f.orgA.id, f.ownerUser.id,
+        );
+        held.ready();
+        await release.waited;
+      }, { timeout: 30_000 });
+
+      await held.arrived;
+      const attempt = merge.merge(f.orgA.id, { survivingPartyId: a, absorbedPartyId: b }, orgAdmin(f.orgA.id))
+        .then(() => 'ok' as const, (e: Error) => e);
+
+      const deadline = Date.now() + 15_000;
+      let blocked = 0;
+      while (Date.now() < deadline) {
+        const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT count(*)::bigint AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE '%OrgMembership%'`);
+        blocked = Number(rows[0]!.n);
+        if (blocked >= 1) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(blocked, 'the merge must BLOCK on the membership row, which it only does if it reads it in-tx')
+        .toBeGreaterThanOrEqual(1);
+      release.open();
+      await barrier;
+      await attempt;
+    } finally {
+      await holder.$disconnect();
+    }
+  });
+
+  // ── R3 (Codex F3) ──────────────────────────────────────────────────────────────────────────
+  it('R3 — a keyed replay returns the SAME result, not undefined', async () => {
+    const projectId = await freshProject();
+    const { partyId: a } = await company(projectId, 'Replayable Ltd');
+    const { partyId: b } = await boundVendor(await freshProject(), 'Replayable Ltd');
+    const key = `merge-${a}-${b}`;
+
+    const first = await merge.merge(f.orgA.id, { survivingPartyId: a, absorbedPartyId: b }, orgAdmin(f.orgA.id), key);
+    // The replay does not re-run the transaction, so there is no fresh value to hand back. The
+    // absorbed party's NAME is unreadable by then — its row is gone — so the result has to come
+    // from what the merge recorded, not from a re-derivation that cannot see the deleted identity.
+    const replay = await merge.merge(f.orgA.id, { survivingPartyId: a, absorbedPartyId: b }, orgAdmin(f.orgA.id), key);
+
+    expect(replay).toBeDefined();
+    expect(replay.absorbedName).toBe('Replayable Ltd');
+    expect(replay).toEqual(first);
+    // …and it really was a replay: no second merge happened.
+    expect(await t.prisma.auditLog.count({ where: { action: 'party.merge' } })).toBe(1);
+  });
+
+  // ── R4 (Codex F4) ──────────────────────────────────────────────────────────────────────────
+  /**
+   * The merge locks party roots and THEN repoints origin rows. `CompaniesService.update` used to
+   * lock the `ProjectCompany` row first and reach for the party second, so the two paths held the
+   * pair in opposite orders and PostgreSQL resolved it by aborting one as a deadlock.
+   *
+   * The order is now global — party root, then origin — so the second transaction QUEUES instead.
+   */
+  it('R4 — a merge and a concurrent rename take the party root in the SAME order, so neither deadlocks', async () => {
+    const projectId = await freshProject();
+    const { companyId, partyId: companyParty } = await company(projectId, 'Contended Firm');
+    const { partyId: vendorParty } = await boundVendor(await freshProject(), 'Contended Firm');
+
+    // The company must sit on the ABSORBED party, or the two paths never touch the same row: the
+    // merge repoints `ProjectCompany WHERE partyId = absorbed`, so a company on the SURVIVING party
+    // is untouched by it. An earlier draft merged the other way round and passed with the fix
+    // removed — not because the orders agreed, but because the transactions were disjoint.
+    const surviving = vendorParty;
+    const absorbed = companyParty;
+
+    const holder = new PrismaClient();
+    try {
+      // A third session holds the party the RENAME needs and the MERGE must repoint, so both
+      // contenders queue behind it and are genuinely in flight together.
+      const held = reported();
+      const release = latch();
+      const barrier = holder.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe('SELECT "id" FROM "ExternalParty" WHERE "id" = $1 FOR UPDATE', absorbed);
+        held.ready();
+        await release.waited;
+      }, { timeout: 30_000 });
+      await held.arrived;
+
+      // ORDER MATTERS, and the first draft of this probe got it wrong. Both contenders were
+      // launched together behind the barrier, so the rename usually reached the party first, won it
+      // on release, and finished — no cycle, and the probe passed with the fix REMOVED.
+      //
+      // The cycle needs the merge to hold the party while the rename holds the COMPANY ROW. So the
+      // merge is started first and confirmed waiting, which puts it at the head of the party's
+      // queue; only then is the rename started. Without the ordering fix the rename takes the
+      // company row and then queues for the party behind the merge, and on release the merge wins
+      // the party, turns to update that company row, and the two are deadlocked by construction.
+      const merging = merge.merge(f.orgA.id, { survivingPartyId: surviving, absorbedPartyId: absorbed }, orgAdmin(f.orgA.id))
+        .then(() => 'ok' as const, (e: Error) => e);
+      const waitersOnParty = async (): Promise<number> => {
+        const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+          `SELECT count(*)::bigint AS n FROM pg_stat_activity
+            WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE '%ExternalParty%'`);
+        return Number(rows[0]!.n);
+      };
+      const until = async (want: number): Promise<number> => {
+        const deadline = Date.now() + 15_000;
+        let n = 0;
+        while (Date.now() < deadline) {
+          n = await waitersOnParty();
+          if (n >= want) break;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        return n;
+      };
+      expect(await until(1), 'the merge must be queued on the party root before the rename starts')
+        .toBeGreaterThanOrEqual(1);
+
+      const renaming = companies.update(projectId, pmc(projectId), companyId, { name: 'Renamed Mid-Merge' })
+        .then(() => 'ok' as const, (e: Error) => e);
+      expect(await until(2), 'the rename must also be in flight, so the two genuinely contend')
+        .toBeGreaterThanOrEqual(2);
+
+      release.open();
+      await barrier;
+      const outcomes = await Promise.all([merging, renaming]);
+
+      // The defect this guards against is a DEADLOCK, so the assertion is about the failure MODE:
+      // whatever happens, PostgreSQL must not have had to break a cycle. A deadlock is 40P01.
+      for (const o of outcomes) {
+        if (o !== 'ok') {
+          expect(`${(o as Error).message}`, 'a deadlock means the two paths still disagree on lock order')
+            .not.toMatch(/deadlock|40P01/i);
+        }
+      }
+      // The merge is the operation that must not be lost: identity reconciliation is the operator's
+      // deliberate act, and a rename is an editing convenience.
+      expect(outcomes[0], `merge outcome: ${outcomes[0] === 'ok' ? 'ok' : (outcomes[0] as Error).message}`).toBe('ok');
+      expect(await t.prisma.externalParty.count({ where: { id: absorbed } })).toBe(0);
+    } finally {
+      await holder.$disconnect();
+    }
   });
 });

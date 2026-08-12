@@ -128,6 +128,52 @@ consequence rather than by construction, and a check whose correctness lives in 
 trigger is one edit from being wrong again with nothing to catch it. It now takes `callerCompanyId`
 and counts.
 
+## The review round on head `8a035eb` — four findings, one correction head
+
+All four were correct. Each was reproduced RED at `8a035eb` before the fix.
+
+| # | Finding | Fix |
+|---|---|---|
+| F1 | the service was registered and tested but **unreachable from production** — no controller, no CLI, no manifest command | the `party:merge` operator CLI + `orgs.party.merge` in the manifest commands |
+| F2 | the org-admin check read `OrgMembership` on the top-level client, so a concurrent revoke could commit between the check and the repoint | the check moved INSIDE the transaction, reading the membership row `FOR UPDATE` |
+| F3 | a keyed replay returned `value: undefined`, so the cast handed back `undefined` instead of the documented result | replay re-reads the merge's own audit row, which is the only place the absorbed party's name still exists |
+| F4 | the merge locked party→origin while `CompaniesService.update` and `VendorsService.bind` locked origin→party — **a deadlock, not a race** | one global order, party root first, through a single `lockPartyRoot` |
+
+**F1 is the one worth dwelling on.** Everything else in the unit was real — the locks, the seals, the
+probes — and none of it could be invoked. A command that ships as a provider nobody can call has not
+shipped. The CLI is the right surface for the same reason `capability:enable` is one: this is a rare,
+high-authority correction that moves every reference a firm has and deletes an identity, not a
+workflow step.
+
+**F2 is 6.1a's E3 one command over** — a check whose inputs were read outside the transaction that
+protects them. The membership lock is taken FIRST, so the global order is
+membership → party → origin.
+
+**F4 is the finding my own M4 probe could not have caught**, and that is the useful part. M4 races
+merge against merge, where the ascending-`id` order genuinely is sufficient. The deadlock lives
+*between* the merge and the ordinary writers, which M4 never involves. "Deadlock-free" was true
+within the command and false across the system, and only a probe that crossed the boundary could
+tell the difference.
+
+### R4 took three attempts to become capable of failing
+
+Worth recording in full, because two of the three failures were mine and each looked like a pass:
+
+1. **First draft** — both contenders launched together behind a barrier. The rename usually reached
+   the party first, won it on release, and finished. No cycle. Passed with the fix removed.
+2. **Second draft** — the merge started first and confirmed queued, so it would win the party. Still
+   passed, because the merge repoints `ProjectCompany WHERE partyId = absorbed` and the renamed
+   company sat on the SURVIVING party. The two transactions were disjoint: they could not deadlock
+   because they never touched the same row.
+3. **Third draft** — the company is on the ABSORBED party, so the merge must repoint the very row
+   the rename holds. With the fix stripped this now fails with
+   `Raw query failed. Code: 40P01. Message: ERROR: deadlock detected` — the exact failure the review
+   described, produced on demand.
+
+The through-line is that a concurrency probe can be green for at least three different reasons that
+have nothing to do with the invariant: the transactions ran end to end, they contended on the wrong
+lock, or they never shared a row at all. None is visible from a passing run.
+
 ## Verification
 
 | Gate | Result |
