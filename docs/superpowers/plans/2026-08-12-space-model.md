@@ -1,12 +1,9 @@
 # Space model — redefining Room as Space, optional and self-nesting
 
-**Status: PLAN. The four open questions are SETTLED by the owner. Round-1 review returned seven
-findings, all verified against the code and corrected here.**
-
-**One item blocks implementation:** the review established that "S1 and S2 deploy as one release" is
-impossible — the web SPA and the API are separate Coolify applications — so decision 4's *clean
-break* needs either the owner's agreement to the expand/migrate/contract route (§E), or their
-acceptance of an outage window of unknown length. Everything else in this plan is ready to build.
+**Status: PLAN, fully settled. Implementation may begin.** The four original questions are SETTLED by
+the owner; round-1 review returned seven findings, all verified against the code and corrected here;
+and the one question that correction raised — the changeover route — is **SETTLED: expand → migrate
+→ contract** (§E).
 
 ## The problem, in one screenshot
 
@@ -233,12 +230,12 @@ plan now differs from the decision as originally recorded.
 A rename touching every location reference will exceed the 20-file / 1,500-line budget, so the work
 splits along the dependency:
 
-| Unit | Contents | blocked? |
-|---|---|---|
-| **S1 — the structure** | the parent rule, the depth cap by subtree height, the serialized cycle guard, the initialization validator, project-scoped tree reads. **No vocabulary change at all** | **no** |
-| **S2 — expand** | the API accepts `space` in addition to `room`; contracts and payload schema widened | yes |
-| **S3 — migrate + surfaces** | the three-store data migration, recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales, `"object" → "element"` | yes |
-| **S4 — contract** | drop `room` from the contracts and the payload schema | yes |
+| Unit | Contents |
+|---|---|
+| **S1 — the structure** | the parent rule, the depth cap by subtree height, the serialized cycle guard, the initialization validator, project-scoped tree reads. **No vocabulary change at all** |
+| **S2 — expand** | the API accepts `space` in addition to `room`; contracts and payload schema widened |
+| **S3 — migrate + surfaces** | the three-store data migration, recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales, `"object" → "element"` |
+| **S4 — contract** | drop `room` from the contracts and the payload schema; a probe that `kind: 'room'` is refused |
 
 **S1 carries no rename, and that is what makes it buildable now.** Everything round-1 review found
 unsafe about the tree — the unserialized cycle guard, the depth cap that a subtree move walks
@@ -256,8 +253,7 @@ entirely — every combination of old/new web against old/new API is then valid.
 `ProjectNode.kind` to `space` while the live bundle still filters on `room` would blank the user's
 Site Map. The data and the surfaces that read it move together.
 
-If the owner keeps the clean break instead, S2–S4 collapse into a single rename PR and the outage
-window in §E is accepted; S1 is unaffected either way.
+All four units are unblocked. S1 is buildable immediately and independently of the rest.
 
 The original plan said these two "deploy as one release" and that S1 must not reach production
 alone. **That hold is not enforceable, and not merely unenforced — it is impossible by
@@ -285,14 +281,15 @@ the two applications matters:
 alias remains. What it changes is that the alias exists *during* the changeover rather than never,
 with step C as the scheduled removal rather than an open-ended "someday".
 
-> **This needs the owner's confirmation, because it reads on the surface like the opposite of what
-> was decided.** Decision 4 was "no alias, clean break, only `space` accepted from day one". The
-> deployment topology makes "from day one" unavailable without an outage window. The alternative is
-> to accept a brief period where users on a stale bundle get errors until they reload — which is
-> defensible with a small pilot team and was the accepted trade when the cost looked like *one*
-> reload. It is a weaker trade now that it is known the two applications deploy independently, since
-> the inconsistent window is not a moment but however long the two deploys and the browser caches
-> take to converge. Recorded here, not resolved unilaterally.
+**SETTLED by the owner: expand → migrate → contract.** Decision 4 stands as an end state and is
+delivered in full; what was revised is the route to it, once the review established that "only
+`space` from day one" was unavailable at any PR granularity without an outage window of unknown
+length.
+
+**Step C is not optional, and it is not "someday".** The whole difference between this and the
+permanent alias that was rejected is that the removal is scheduled work with an owner. It carries
+its own unit (S4) and its own probe: after C, a request carrying `kind: 'room'` is refused. A
+changeover that stops after M has quietly become the thing decision 4 said no to.
 
 S1 and S2 do not change what a user sees. S3 is where the confusion actually goes away.
 
@@ -314,7 +311,7 @@ not a consequence of the naming.
 | 1 | how deep may spaces nest | **5 levels of space.** A tower with wings and pour segments fits; the Site Map stays scannable on a phone |
 | 2 | may an `element` hang directly off a `zone` | **Yes.** A site gate or bore well needs no invented container — the same error `site > Excavation` exposed |
 | 3 | `element` vs "object" | **`element`, in code AND on screen.** Closer to construction drawing language; the UI copy changes from "object" |
-| 4 | accept `'room'` during changeover | **No — clean break.** Only `space` is accepted from day one |
+| 4 | accept `'room'` during changeover | **No alias in the end state.** Reached by expand → migrate → contract, where S4 removes `room` on a schedule — the route was revised after review, the end state was not |
 
 ### What decision 4 costs — revised, because the first statement of it was wrong
 
@@ -331,13 +328,12 @@ Decision 4's **end state is unchanged and still delivered**: only `space` is acc
 remains. What changes is the route — expand → migrate → contract in §E, where the alias exists
 during the changeover and step C removes it on a schedule.
 
-**Awaiting the owner's confirmation**, since this is the one place the plan now departs from a
-decision as it was recorded. Neither route is free:
+**SETTLED by the owner: expand → migrate → contract.** The alternative was priced honestly first:
 
 | route | what it costs |
 |---|---|
-| **expand/migrate/contract** (recommended) | `room` is accepted transiently; three steps instead of two; the end state is identical |
-| **clean break as recorded** | an outage window of unknown length, spanning two independent deploys, for anyone on a stale bundle |
+| **expand/migrate/contract** ← chosen | `room` is accepted transiently; four units instead of two; the end state is identical |
+| clean break as originally recorded | an outage window of unknown length, spanning two independent deploys, for anyone on a stale bundle |
 
 ### What decision 2 changes in the rule
 
