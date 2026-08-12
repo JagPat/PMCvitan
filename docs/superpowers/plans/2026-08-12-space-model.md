@@ -1,6 +1,6 @@
 # Space model — redefining Room as Space, optional and self-nesting
 
-**Status: PLAN. Review stop before implementation.**
+**Status: PLAN, with all four open questions SETTLED by the owner. Implementation may begin.**
 
 ## The problem, in one screenshot
 
@@ -143,10 +143,44 @@ So the dialog states the model and can edit one third of it. That is why `Excava
 sibling could be added. **Fixed in S2**, and recorded here because it is a defect in its own right,
 not a consequence of the naming.
 
-## Open questions for review
+## The four open questions — SETTLED by the owner
 
-1. **Depth bound of 8** — right number, or should it be lower (5) to keep the Site Map legible?
-2. **`element` under `zone`** — accepted, or should site-level objects be forced into a space named
-   for the site?
-3. **`element` vs "object"** — settle the vocabulary in one direction rather than carrying both.
-4. **Legacy alias lifetime** — one release, or removed in S2's own migration?
+| # | Question | Decision |
+|---|---|---|
+| 1 | how deep may spaces nest | **5 levels of space.** A tower with wings and pour segments fits; the Site Map stays scannable on a phone |
+| 2 | may an `element` hang directly off a `zone` | **Yes.** A site gate or bore well needs no invented container — the same error `site > Excavation` exposed |
+| 3 | `element` vs "object" | **`element`, in code AND on screen.** Closer to construction drawing language; the UI copy changes from "object" |
+| 4 | accept `'room'` during changeover | **No — clean break.** Only `space` is accepted from day one |
+
+### What decision 4 costs, stated rather than discovered
+
+The legacy alias existed to let the model and the surfaces ship as **independently deployable**
+releases. Without it they must reach production **together**: an API that accepts only `space` while
+a browser still holds a cached bundle sending `room` produces errors until that user reloads.
+
+That is the accepted trade — the pilot team is small and a reload is cheap — but it changes the
+delivery shape, so it is written down rather than left as a surprise:
+
+- **S1 and S2 remain two PRs** (review size is the reason for the split, and that reason is intact).
+- **They deploy as one release.** S1 must not go to production alone.
+- The web bundle changes in S2, so between the two merges `main` is briefly inconsistent. Nothing
+  deploys from that intermediate state.
+
+### What decision 2 changes in the rule
+
+`element` under `zone` is now confirmed rather than proposed, and the parent rule is final:
+
+| kind | may hang under |
+|---|---|
+| `zone` | nothing — top level only |
+| `space` | a `zone`, or another `space`, to **5 levels** of space |
+| `element` | a `space`, **or a `zone` directly** |
+
+`element` remains a leaf: elements do not contain elements.
+
+### What decision 3 changes beyond the rename
+
+Two renames ship together, not one: `room → space`, and `"object" → "element"` in the UI copy,
+picker labels, filter chips and the three locales. Worth noting the pairing, because shipping the
+first without the second would leave the vocabulary half-corrected — which is how the current
+`element`/"object" split arose in the first place.
