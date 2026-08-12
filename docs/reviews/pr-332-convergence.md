@@ -57,4 +57,40 @@ Any future change to this concurrency block must answer two questions before it 
 order: *who waits for whom* (they must share a group), and *whose payload dies in the pending slot*
 (they must be exempt). A change that answers only one will reproduce one of these two rounds.
 
+## Round 3, and the withdrawal
+
+| head | change | finding |
+|---|---|---|
+| `c439556` | retargets exempt via `changes.base` | two exempted retargets can interleave: retarget A→B delayed, B→C fast — the delayed B run's gates finish LAST, so its base-B products carry the newest gate stamp and outrank the base-C attempt, and the gate can go green for the current base on stale evidence |
+
+The finding is verified and honest about one thing worth stating precisely: **racing retargets are
+main's behaviour today** — before this PR, every run raced, including retargets. The round-3
+interleaving is not a regression of this diff; it is a pre-existing hazard this PR's own packet
+*claimed* was handled ("unrecoverable — hence the exemption") when the exemption merely preserved
+it. The claim was wrong even though the code was no worse.
+
+**This PR is withdrawn rather than corrected a third time.** The arithmetic, stated for the next
+person who reaches for this idea:
+
+- The disease is a **transient, self-healing false red** that occurs only when a PR body is edited
+  during its own CI run — already avoided by writing bodies right the first time and refreshing
+  after settle, and it has never blocked a merge (the orchestrator re-evaluates when the long job
+  lands).
+- The cure has produced **three consecutive correctness findings in the trusted merge gate**, each
+  round's fix surviving exactly until review found the next interleaving GitHub's one-pending-slot
+  primitive permits. A fourth round (a dedicated retarget lane) was designed and is sketched below,
+  and there is no proof it is the last — the primitive cannot express "serialize everything, lose
+  nothing," so every scoping choice trades one race for another.
+
+The precedent is `docs/reviews/pr-263-convergence.md` — the path-based risk classifier, attempted
+and withdrawn, with the workflow header pointing at the reasoning. This packet is that record for
+per-sha concurrency. If it is ever revived, the fourth-round sketch is: retargets serialize among
+THEMSELVES in a per-sha retarget lane (`ci-<sha>-retarget`) where replacement is safe because every
+retarget event is self-contained, while the main lane keeps the round-2 shape — and the burden of
+proof is enumerating the CROSS-lane interleavings before merge, not after review finds them.
+
+The durable, zero-risk yield of the three rounds stands regardless: `edited` must stay in the one
+workflow (pinned, with the retarget and stuck-PR reasons), and the false red's task-#56 playbook —
+confirm the named job is still running, wait, never push a no-op head — costs nothing and works.
+
 Review-Convergence: complete
