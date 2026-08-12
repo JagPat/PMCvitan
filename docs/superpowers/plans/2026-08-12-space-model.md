@@ -1,6 +1,12 @@
 # Space model — redefining Room as Space, optional and self-nesting
 
-**Status: PLAN, with all four open questions SETTLED by the owner. Implementation may begin.**
+**Status: PLAN. The four open questions are SETTLED by the owner. Round-1 review returned seven
+findings, all verified against the code and corrected here.**
+
+**One item blocks implementation:** the review established that "S1 and S2 deploy as one release" is
+impossible — the web SPA and the API are separate Coolify applications — so decision 4's *clean
+break* needs either the owner's agreement to the expand/migrate/contract route (§E), or their
+acceptance of an outage window of unknown length. Everything else in this plan is ready to build.
 
 ## The problem, in one screenshot
 
@@ -72,13 +78,40 @@ no meaningful containing space, and inventing one is the error this plan exists 
 **What is NOT changing:** `element` remains a leaf. Objects do not contain objects. Nothing in the
 product asks for that, and admitting it would make every reader recursive for no gain.
 
-### Cycle-safety stops being a formality
+### Cycle-safety stops being a formality — and the current guard cannot hold it
 
 `isDescendant` already exists and already guards reparenting. At fixed depth it could never actually
 fire for a `space`, because a room's only legal parent was a zone. With nesting it becomes
 load-bearing: `move` must refuse a space under its own descendant, and that probe must be **seen to
 fail** before the guard is trusted — the standing rule in this repository, and the one C7 in the
 Phase 6 audit is the cautionary case for.
+
+**The guard as written is not sufficient, and this was verified rather than assumed.** In
+`nodes.service.ts`, `move` runs the check at line 108 and the write at line 111 — the check is
+*outside* the transaction:
+
+```ts
+if (await this.isDescendant(parent.id, nodeId)) throw new BadRequestException(…);  // read
+…
+const ev = await this.prisma.$transaction(async (tx) => {                          // write
+  await tx.projectNode.update({ where: { id: nodeId }, data: { parentId: … } });
+```
+
+Two concurrent moves — `A under B` and `B under A` — each read the old tree, each pass, and both
+commit. The result is a two-node cycle, after which every recursive reader (`subtreeIds`,
+`ancestorIds`, the picker, the Site Map) either loops or overflows. Today this is unreachable for a
+room; **nesting makes it reachable by two ordinary users.**
+
+S1 must therefore:
+
+- move the descendant check **inside** the write transaction, serialized against concurrent
+  reparents of the same tree (a lock whose scope covers both nodes' ancestry — the project's node
+  set is the honest granularity, since ancestry can span it);
+- carry a **barrier race probe** driving both orderings, `A→B` and `B→A`, proving exactly one
+  commits;
+- and that probe must be **seen to fail first** against the unserialized guard. A green concurrency
+  probe proves nothing until reverting the fix turns it red — the standing rule, and R4 on #329
+  needed three attempts before it could fail at all.
 
 ### Depth is unbounded, so something must bound it
 
@@ -92,15 +125,70 @@ because:
 
 The limit is a refusal with a stated reason, not a silent truncation.
 
+**A depth check on the moved node alone does not deliver this bound.** `requireParentForKind` today
+inspects only the *immediate* parent's kind — there is no depth logic anywhere, because at fixed
+depth none was possible. Add a naive one and this passes:
+
+```
+move (A > B > C)  under  (P1 > P2 > P3)
+        ↑ moved root lands at level 4 — legal
+                                 → B at 5, C at 6 — over the cap, silently
+```
+
+So the rule is **destination depth + the moved subtree's own height**, evaluated on every reparent,
+not the moved node's new depth. The same arithmetic governs `create` (height 0) and is what makes
+the cap a property of the tree rather than of one operation.
+
+### The second write path, which bypasses all of this
+
+`NodesService` is not the only thing that creates a `ProjectNode`. Project copy and module
+instantiation go through `OrgsService.writeInitializationSource`
+(`orgs.service.ts:862,876`), which calls `NodeInitParticipant.createForInit` and writes
+`kind: node.kind` **straight through** — no parent-kind check, no depth check, because
+`requireParentForKind` is a private on the other service and the init path has its own separate graph
+validation.
+
+That means a saved module or a copied project can instantiate a chain the node endpoints would
+refuse, and every reader then receives a tree this plan promised was impossible. **S1 applies the
+same parent rule and the same depth arithmetic to the initialization validator, with a RED probe
+driving it through project initialization** — not only through the endpoints.
+
+### One more thing the nesting makes worse
+
+`subtreeIds` and `ancestorIds` both call `prisma.projectNode.findMany({ select: { id, parentId } })`
+with **no `projectId` filter** — every move loads every node of every project. It is not a data leak
+(ids only, and a cross-project parent is already refused upstream), but it is an unscoped
+cross-tenant read on a path nesting is about to make hotter. **Scope both to the project in S1**,
+while the file is open and the tests are being written anyway.
+
 ## §B — Filing targets any node
 
-"Space is optional" is a statement about **filing**, not about the tree. A decision, inspection,
-drawing, activity or daily-log entry must be able to name a `zone` directly.
+"Space is optional" is a statement about **filing**, not about the tree. A record that is filed at a
+location must be able to name a `zone` directly.
 
-This needs checking rather than assuming: filing appears to store a `nodeId`, in which case
-zone-level filing may already be *representable* and merely not *offered* by `LocationPicker`. The
-implementation's first task is to establish which, because it decides whether §B is a contract
-change or a UI change.
+**Checked rather than assumed, and the first draft of this section overreached.** Filing stores a
+`nodeId`, so zone-level filing is already *representable* and merely not *offered* by
+`LocationPicker` — §B is a UI change, not a contract change. But the list of what gets filed was
+wrong:
+
+| record | carries `nodeId` | filed at a place? |
+|---|---|---|
+| decision, inspection, drawing, activity | yes | yes |
+| `SiteMaterial` (a daily log's material row) | yes (`schema.prisma:2309`) | yes |
+| `Media` (a daily log's photo) | yes | yes |
+| **`DailyLog` itself** | **no** | **no — and it should not** |
+
+`DailyLog` (`schema.prisma:2260`) has no location column, and `placeContents`
+(`apps/web/src/lib/locationTree.ts:186`) never receives logs — it folds decisions, drawings, photos,
+activities, materials and inspections.
+
+That is **correct as it stands, not a gap to close.** A daily log is a whole-site record of one
+civil day; the located things are the materials delivered and the photos taken, and those already
+carry `nodeId`. Giving the log itself a location would force a site-wide record to claim one place,
+which is the same category error as `site > Excavation` — the error this plan exists to remove.
+
+**So §B narrows: a daily log is not a filing target, and S1 adds no `DailyLog.nodeId`.** Its
+child records are filed, and they already can be.
 
 ## §C — The rename, and the drift it should not repeat
 
@@ -115,27 +203,98 @@ picker labels, filter chips and the three locales.
 
 ## §D — Migration
 
-A data migration over live `ProjectNode.kind`, `'room' → 'space'`, **diagnostic-first** per the
-standing discipline: it aborts on anything it did not expect rather than guessing, and it never
-invents or deletes a row.
+A data migration `'room' → 'space'`, **diagnostic-first** per the standing discipline: it aborts on
+anything it did not expect rather than guessing, and it never invents or deletes a row.
 
-**No legacy alias.** Only `space` is accepted from day one — a clean break, decided deliberately.
-What that costs is set out under the settled questions below: S1 and S2 stay two PRs for review size,
-but they DEPLOY AS ONE RELEASE, because an API accepting only `space` while a cached browser bundle
-still sends `room` produces errors until that user reloads.
+**`ProjectNode.kind` is not the only place `'room'` is stored, and missing the others would break
+reads that have nothing to do with this change.** Verified in the code:
 
-## §E — Sequencing, and the review budget
+| store | where | what breaks if it is not migrated |
+|---|---|---|
+| `ProjectNode.kind` | column | the tree itself |
+| `TemplateModule.payload.nodes[*].kind` | **JSON** | `moduleSummary` calls `modulePayloadSchema.parse()` — a *throw*, not a `safeParse` — on every menu read (`orgs.service.ts:653`). An org with one saved room module gets a BadRequest **just listing its modules** |
+| `TemplateModule.anchorKind` | column | `orgs.service.ts:418,592` branch on `anchorKind === 'room'`; an element module anchored to a room stops grafting, so **project creation from a template fails** |
 
-A rename touching every location reference will exceed the 20-file / 1,500-line budget. Split along
-the dependency:
+`modulePayloadSchema` (`contracts.ts:285`) pins `kind: z.enum(['zone','room','element'])`, so
+narrowing that enum to `space` without rewriting the stored JSON turns every pre-existing saved
+module into a parse failure on a read path no one associates with a rename.
 
-| Unit | Contents |
-|---|---|
-| **S1 — the model** | `space` kind, the parent rule, the 5-level bound, cycle-safety probe, migration, API contracts |
-| **S2 — the surfaces** | recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales |
+**S3 migrates all three together** (see §E for why the data moves with the surfaces rather than with
+the model), diagnostic-first, with a probe that a module saved before the migration still lists and
+still instantiates afterwards. The JSON rewrite aborts on any payload it cannot parse rather than
+dropping nodes.
 
-S1 does not change what a user sees. S2 is where the confusion actually goes away — and because
-there is no alias, **S1 must not reach production without S2**.
+**No legacy alias in the end state.** Only `space` is accepted once the changeover completes — a
+clean break, decided deliberately. How that is delivered safely is §E, and it is the one place this
+plan now differs from the decision as originally recorded.
+
+## §E — Sequencing, and why "deploy as one release" cannot be honoured
+
+A rename touching every location reference will exceed the 20-file / 1,500-line budget, so the work
+splits along the dependency:
+
+| Unit | Contents | blocked? |
+|---|---|---|
+| **S1 — the structure** | the parent rule, the depth cap by subtree height, the serialized cycle guard, the initialization validator, project-scoped tree reads. **No vocabulary change at all** | **no** |
+| **S2 — expand** | the API accepts `space` in addition to `room`; contracts and payload schema widened | yes |
+| **S3 — migrate + surfaces** | the three-store data migration, recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales, `"object" → "element"` | yes |
+| **S4 — contract** | drop `room` from the contracts and the payload schema | yes |
+
+**S1 carries no rename, and that is what makes it buildable now.** Everything round-1 review found
+unsafe about the tree — the unserialized cycle guard, the depth cap that a subtree move walks
+straight past, the initialization path that enforces neither — is a property of *nesting*, not of
+what the nestable kind is called. It is also the part that must be right before any data is
+rewritten, since a migration that lands `space` rows into a tree whose guards still do not hold just
+makes the broken states easier to reach.
+
+**S2 and S3 must be separate merges, with S2 deployed before S3's bundle ships.** If one PR both
+teaches the API `space` and switches the web to send it, the web application can deploy first and
+spend the gap sending a kind the API still rejects. Expanding first removes the ordering requirement
+entirely — every combination of old/new web against old/new API is then valid.
+
+**The data migration belongs with the surfaces (S3), not with the model.** Rewriting
+`ProjectNode.kind` to `space` while the live bundle still filters on `room` would blank the user's
+Site Map. The data and the surfaces that read it move together.
+
+If the owner keeps the clean break instead, S2–S4 collapse into a single rename PR and the outage
+window in §E is accepted; S1 is unaffected either way.
+
+The original plan said these two "deploy as one release" and that S1 must not reach production
+alone. **That hold is not enforceable, and not merely unenforced — it is impossible by
+construction.** `docs/DEPLOY.md` provisions the web SPA and the API as **two separate Coolify
+applications**, both tracking `main` (§"Deploy on Coolify" and §"API Application" respectively).
+There is no deploy unit that contains both. Even collapsing S1 and S2 into a single PR would not fix
+it: one merge triggers two independent redeploys with no ordering guarantee between them, and a
+cached browser bundle outlives both.
+
+So a simultaneous cutover is not available at any PR granularity, and a plan that depends on one is
+a plan with an outage in it.
+
+### The delivery that does work: expand → migrate → contract
+
+Each step is independently deployable and compatible in **both** directions, so no ordering between
+the two applications matters:
+
+| step | API | web | safe alone because |
+|---|---|---|---|
+| **E — expand** | accepts `space` **and** `room`; all nesting rules, depth, cycle guard, init validator | unchanged, still sends `room` | old web + new API both work |
+| **M — migrate** | unchanged | switches to `space`; the surfaces land | data is rewritten; API accepts either, so a stale bundle still works |
+| **C — contract** | drops `room` | unchanged | nothing sends `room` any more |
+
+**This preserves decision 4's end state exactly** — after step C, only `space` is accepted and no
+alias remains. What it changes is that the alias exists *during* the changeover rather than never,
+with step C as the scheduled removal rather than an open-ended "someday".
+
+> **This needs the owner's confirmation, because it reads on the surface like the opposite of what
+> was decided.** Decision 4 was "no alias, clean break, only `space` accepted from day one". The
+> deployment topology makes "from day one" unavailable without an outage window. The alternative is
+> to accept a brief period where users on a stale bundle get errors until they reload — which is
+> defensible with a small pilot team and was the accepted trade when the cost looked like *one*
+> reload. It is a weaker trade now that it is known the two applications deploy independently, since
+> the inconsistent window is not a moment but however long the two deploys and the browser caches
+> take to converge. Recorded here, not resolved unilaterally.
+
+S1 and S2 do not change what a user sees. S3 is where the confusion actually goes away.
 
 ## §F — The separate UX gap this uncovered
 
@@ -145,7 +304,7 @@ add-child control. Rooms exist only because `LocationPicker` offers create-as-yo
 time.
 
 So the dialog states the model and can edit one third of it. That is why `Excavation` exists and no
-sibling could be added. **Fixed in S2**, and recorded here because it is a defect in its own right,
+sibling could be added. **Fixed in S3**, and recorded here because it is a defect in its own right,
 not a consequence of the naming.
 
 ## The four open questions — SETTLED by the owner
@@ -157,19 +316,28 @@ not a consequence of the naming.
 | 3 | `element` vs "object" | **`element`, in code AND on screen.** Closer to construction drawing language; the UI copy changes from "object" |
 | 4 | accept `'room'` during changeover | **No — clean break.** Only `space` is accepted from day one |
 
-### What decision 4 costs, stated rather than discovered
+### What decision 4 costs — revised, because the first statement of it was wrong
 
-The legacy alias existed to let the model and the surfaces ship as **independently deployable**
-releases. Without it they must reach production **together**: an API that accepts only `space` while
-a browser still holds a cached bundle sending `room` produces errors until that user reloads.
+The first version of this section said S1 and S2 would "deploy as one release", with the cost being
+a single stale-bundle reload. **Both halves of that turned out to be untrue**, and the correction is
+recorded rather than quietly swapped:
 
-That is the accepted trade — the pilot team is small and a reload is cheap — but it changes the
-delivery shape, so it is written down rather than left as a surprise:
+- *"They deploy as one release"* — there is no such release. The web SPA and the API are **separate
+  Coolify applications** (`docs/DEPLOY.md`), so no PR boundary, however drawn, deploys them together.
+- *"the cost is one reload"* — the inconsistent window is not a moment. It lasts until two
+  independent deploys and every open browser cache converge.
 
-- **S1 and S2 remain two PRs** (review size is the reason for the split, and that reason is intact).
-- **They deploy as one release.** S1 must not go to production alone.
-- The web bundle changes in S2, so between the two merges `main` is briefly inconsistent. Nothing
-  deploys from that intermediate state.
+Decision 4's **end state is unchanged and still delivered**: only `space` is accepted, no alias
+remains. What changes is the route — expand → migrate → contract in §E, where the alias exists
+during the changeover and step C removes it on a schedule.
+
+**Awaiting the owner's confirmation**, since this is the one place the plan now departs from a
+decision as it was recorded. Neither route is free:
+
+| route | what it costs |
+|---|---|
+| **expand/migrate/contract** (recommended) | `room` is accepted transiently; three steps instead of two; the end state is identical |
+| **clean break as recorded** | an outage window of unknown length, spanning two independent deploys, for anyone on a stale bundle |
 
 ### What decision 2 changes in the rule
 

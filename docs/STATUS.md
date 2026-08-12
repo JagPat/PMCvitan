@@ -10,25 +10,64 @@ narrative and may lag behind reality.
 ## Now
 
 ```yaml
-phase: 6
-phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
+phase: 7
+phase_plan: docs/superpowers/plans/2026-08-12-space-model.md
 task: 1
-task_state: in_review
-work_item: space-model-plan
+task_state: in_progress
+work_item: none
 reviewed_merge: ec236c7
-open_pr: 330
+open_pr: none
 next_task: phase-6-task-1b
 blocking_directive: none
-updated: 2026-08-11
+updated: 2026-08-12
 ```
 
+**This block is the state that should exist AFTER this PR merges, not while it is
+open** — the folded-STATUS convention. Committing `task_state: in_review` with
+`open_pr: 330` would be coherent today and a dead end tomorrow: once #330 merges
+the PR is no longer live, drift correction clears `open_pr`, and `in_review` with
+`open_pr: none` is precisely the "broken record" `assessRunnerState` refuses to
+advance — or worse, the runner falls through to `next_task` and resumes the
+PAUSED 6.1b as though the space work had been cleared rather than merely planned.
+The cost of landing it early is a drift shepherd while #330 is open, which is a
+comment, not a block, and which resolves on merge.
+
+**The space model is recorded as `phase: 7`, and that is a statement about
+vocabulary rather than ambition.** In this repository a phase IS a plan file with
+its own review stops, and the space model has one. It also has to be: the two
+live pins on this document disagree about every other shape. `work_item` is
+consulted ONLY from `task_state: merged`
+(`autonomous-status-state.test.mjs` fails an `in_progress` block that names one,
+because it silently resolves to the bare parent `task:1`), while a `merged` block
+must CLEAR `work_item` or the runner re-enters the unit that just merged. That
+leaves `next_task` to carry any handoff — and `next_task` is validated against
+the `phase-<n>-task-<id>` allowlist, which `space-model-s1` cannot satisfy. Both
+drafts of this edit failed those pins before this one passed.
+
+So the space work is `phase: 7 / task: 1`, `next_task` keeps pointing at
+`phase-6-task-1b`, and the loop returns to the paused collaboration work once the
+space units are done — which is exactly the intent the prose below already
+recorded, now in a form the state machine can execute.
+
 **PHASE 6 UNIT 6.1b IS PAUSED BY OWNER DECISION, and PR #329 is HELD rather than
-abandoned.** The active work item is the SPACE MODEL plan (PR #330): a live
-project reads `ZONE site > ROOM Excavation`, and Excavation is not a room — the
-vocabulary forces every piece of site work through a word that stops meaning
-anything the first time it is used. Decided: Space replaces Room, and a space is
-OPTIONAL and SELF-NESTING, so site-level work needs no invented container and a
-partial zone (a wing, a pour segment) has somewhere to live.
+abandoned.** The active work item is the SPACE MODEL: a live project reads
+`ZONE site > ROOM Excavation`, and Excavation is not a room — the vocabulary
+forces every piece of site work through a word that stops meaning anything the
+first time it is used. Decided: Space replaces Room, and a space is OPTIONAL and
+SELF-NESTING, so site-level work needs no invented container and a partial zone
+(a wing, a pour segment) has somewhere to live. The plan is
+`docs/superpowers/plans/2026-08-12-space-model.md`.
+
+**`space-model-s1` is the structural work, and it is unblocked.** Round-1 review
+established that the tree rules are unsafe the moment nesting is allowed, and
+those fixes are independent of the one question still with the owner (the
+changeover route — see the plan's §E): the cycle guard must move inside the write
+transaction and be serialized (today the check runs OUTSIDE it, so two concurrent
+moves commit a cycle), the depth cap must count the moved subtree's HEIGHT and not
+just the moved node, the project-initialization write path must enforce the same
+rules it currently bypasses entirely, and the tree reads must be scoped to their
+project. None of that depends on what the kind is called. **The rename, the data
+migration and the enum change wait on the owner's answer** and land in S2/S3.
 
 The pause is recorded HERE rather than in `blocking_directive`, which schedules a
 correction from `correction_required` or `in_progress` only — setting it from
@@ -53,7 +92,7 @@ open work `deferralPhases` returns the current phase regardless, but once a flip
 records `merged` with `work_item: none`, `next_task` becomes the ONLY source, an
 unparseable value yields `[]`, and a later docs-only head past the round cap
 cannot defer its open questions to a real stop — it fails closed on "no phase
-with open work". `phase: 6` + `task: 1` + half `b` reads as `phase-6-task-1b`,
+with open work". Phase 6's `task: 1` + half `b` reads as `phase-6-task-1b`,
 which is the same convention Phase 5 used for `phase-5-task-7b-iii-d`. Pinned by
 `review-efficiency.test.mjs`, which reads THIS file and forces the terminal
 state, so the next edit cannot reintroduce a value that only breaks later.
