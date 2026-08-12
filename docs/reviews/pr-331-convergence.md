@@ -12,7 +12,23 @@ owed yet" — that was false the moment it was written, and the gate said so.
 | `5e4c766` | the split: plan + STATUS in one diff | 4 (P2) | corrected on `0222c8f` |
 | `64daa05` | round-1 corrections + this packet | 4 (P2) | corrected on `9edac50` |
 | `9edac50` | round-2 corrections + the deferral | 5 (P2) | corrected on `0dd736f` |
-| `0dd736f` | the pin + STATUS returns; probes closed on their doors | 2 (P2) | corrected on this head |
+| `0dd736f` | the pin + STATUS returns; probes closed on their doors | 2 (P2) | corrected on `733d475` |
+| `733d475` | round-4 refinements | 2 (P2) | corrected on this head |
+
+Round 5 sharpened the two round-4 fixes one further notch, both red-first again: the visibility rule
+gains its RACE pair (P17 — `publish` reads its branch then updates unserialized against `move`, so a
+concurrent move of a still-draft child under a draft parent lands a published node beneath a hidden
+ancestor; a barrier probe, both orderings), and the phase_plan pin closes its own `none` exemption
+(an ACTIONABLE task with `phase_plan: none` passed the guard and still stalled the runner at its
+documented first read — open states must now name a real regular file, terminal states may not).
+
+**This head is the last reflexive correction round.** The unit stands at six finding-bearing heads
+against an advisory limit of five; the findings have been narrowing P2 probe refinements for three
+consecutive rounds, which justified finishing them — but any further finding-bearing review on this
+PR goes to the owner with the finding list and the split-or-hold question, regardless of severity.
+The plan's seventeen probes are re-verified during implementation in any case; review of the prose
+has reached the point where each round buys one probe clause, and whether that trade continues is
+the owner's call, not the loop's.
 
 Round 4's two findings each sharpened a round-3 fix by one honest notch, and both were proven
 red-first: **P11 must run through the PUBLIC create-project selector** — `moduleSelectionSchema`

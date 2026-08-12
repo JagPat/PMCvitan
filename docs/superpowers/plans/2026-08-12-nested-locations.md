@@ -167,6 +167,13 @@ handful of zones); nesting multiplies the reparent surface, and this unit rewrit
 so the rule lands here, stated the same way create states it: **a node may not be more visible than
 its parent, on every write path that can change either side of that relation.**
 
+"Either side" includes the RACE between the two sides, not only each alone. `publish` reads the
+branch it will publish and then updates it (`nodes.service.ts:82`), unserialized against `move` — so
+T1 can begin publishing draft child `C` under a visible parent while T2 moves the still-draft `C`
+under draft parent `D` (which passes any published-subtree check, since `C` is not published yet),
+and T1's commit then lands a published node beneath a hidden ancestor. Publish joins the same
+serialization the other tree writes take, and the probe is a barrier race, not a sequential check.
+
 ### One more thing nesting makes worse
 
 `subtreeIds` and `ancestorIds` call `prisma.projectNode.findMany({ select: { id, parentId } })` with
@@ -258,6 +265,7 @@ proves nothing.
 | `P14` concurrent `move(C under P)` ∥ `move(P under a depth-4 chain)`, both orderings | the tree never exceeds 5 levels | move-side depth checks outside the shared serialization |
 | `P15` move a PUBLISHED subtree under a DRAFT zone | refused — the visibility invariant `create` already enforces (a published child of a hidden parent is an orphan) holds for `move` too | `move`'s absent `publishedAt` logic |
 | `P16` a saved module containing `Zone > Room > Room`, instantiated | the nested-room chain is produced through init | the init validator's fixed parent map |
+| `P17` concurrent `publish(C)` ∥ `move(C under draft D)`, both orderings, under a barrier | the terminal tree has NO published node beneath a draft ancestor — the visibility rule survives its race, not only its sequential checks | publish's unserialized read-branch-then-update (`nodes.service.ts:82`) |
 
 `P10` sits before `P2` deliberately: the race probe is worthless while the plain refusal does not
 exist, and a green race probe would hide that. `P11` and `P16` are the acceptance mirrors of

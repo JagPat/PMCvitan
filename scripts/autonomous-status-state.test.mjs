@@ -661,7 +661,22 @@ test("the live STATUS's phase_plan resolves to a regular file in this tree", asy
   const path = await import('node:path');
   const { now } = await loadStatusDocument();
   const plan = String(now?.phase_plan ?? '').trim();
-  if (!plan || plan === 'none') return;
+  // `none` is only a valid answer when there is no work whose plan the runner
+  // must open (Codex, #331 round 5): an ACTIONABLE task with `phase_plan: none`
+  // passes an existence-only guard and still stalls the loop at its documented
+  // first read. Terminal states may leave the field empty; open ones may not.
+  const state = String(now?.task_state ?? '').trim().toLowerCase();
+  const terminal = new Set(['merged', 'complete', 'completed', 'cleared']);
+  if (!plan || plan === 'none') {
+    assert.ok(
+      terminal.has(state),
+      `docs/STATUS.md records task_state '${now?.task_state}' with phase_plan `
+        + `'${now?.phase_plan}'. An actionable task's first read is its phase plan, so an `
+        + 'open state must name a real plan file — none/empty is only valid once the '
+        + 'work is terminal.',
+    );
+    return;
+  }
   const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
   const resolved = path.resolve(repoRoot, plan);
   assert.ok(
