@@ -10,86 +10,17 @@ narrative and may lag behind reality.
 ## Now
 
 ```yaml
-phase: 7
-phase_plan: docs/superpowers/plans/2026-08-12-space-model.md
+phase: 6
+phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
 task: 1
-task_state: in_progress
+task_state: merged
 work_item: none
 reviewed_merge: ec236c7
 open_pr: none
 next_task: phase-6-task-1b
 blocking_directive: none
-updated: 2026-08-12
+updated: 2026-08-11
 ```
-
-**This block is the state that should exist AFTER this PR merges, not while it is
-open** — the folded-STATUS convention. Committing `task_state: in_review` with
-`open_pr: 330` would be coherent today and a dead end tomorrow: once #330 merges
-the PR is no longer live, drift correction clears `open_pr`, and `in_review` with
-`open_pr: none` is precisely the "broken record" `assessRunnerState` refuses to
-advance — or worse, the runner falls through to `next_task` and resumes the
-PAUSED 6.1b as though the space work had been cleared rather than merely planned.
-The cost of landing it early is a drift shepherd while #330 is open, which is a
-comment, not a block, and which resolves on merge.
-
-**The space model is recorded as `phase: 7`, and that is a statement about
-vocabulary rather than ambition.** In this repository a phase IS a plan file with
-its own review stops, and the space model has one. It also has to be: the two
-live pins on this document disagree about every other shape. `work_item` is
-consulted ONLY from `task_state: merged`
-(`autonomous-status-state.test.mjs` fails an `in_progress` block that names one,
-because it silently resolves to the bare parent `task:1`), while a `merged` block
-must CLEAR `work_item` or the runner re-enters the unit that just merged. That
-leaves `next_task` to carry any handoff — and `next_task` is validated against
-the `phase-<n>-task-<id>` allowlist, which `space-model-s1` cannot satisfy. Both
-drafts of this edit failed those pins before this one passed.
-
-So the space work is `phase: 7 / task: 1`, `next_task` keeps pointing at
-`phase-6-task-1b`, and the loop returns to the paused collaboration work once the
-space units are done — which is exactly the intent the prose below already
-recorded, now in a form the state machine can execute.
-
-**PHASE 6 UNIT 6.1b IS PAUSED BY OWNER DECISION, and PR #329 is HELD rather than
-abandoned.** The active work item is the SPACE MODEL: a live project reads
-`ZONE site > ROOM Excavation`, and Excavation is not a room — the vocabulary
-forces every piece of site work through a word that stops meaning anything the
-first time it is used. Decided: Space replaces Room, and a space is OPTIONAL and
-SELF-NESTING, so site-level work needs no invented container and a partial zone
-(a wing, a pour segment) has somewhere to live. The plan is
-`docs/superpowers/plans/2026-08-12-space-model.md`.
-
-**`space-model-s1` is the structural work, and it is unblocked.** Round-1 review
-established that the tree rules are unsafe the moment nesting is allowed: the
-cycle guard must move inside the write transaction and be serialized (today the
-check runs OUTSIDE it, so two concurrent moves commit a cycle), the depth cap
-must count the moved subtree's HEIGHT and not just the moved node, the
-project-initialization write path must enforce the same rules it currently
-bypasses entirely, and the tree reads must be scoped to their project. None of
-that depends on what the kind is called, which is why S1 carries no rename.
-
-**Nothing in this work is waiting on a human.** The changeover route is SETTLED —
-expand → migrate → contract — so S2 (the API accepts `space` alongside `room`),
-S3 (the data migration plus the surfaces) and S4 (drop `room`) all follow S1
-without a further decision. An earlier revision of this block said the rename and
-migration "wait on the owner's answer"; that is stale and was corrected here,
-because an autonomous runner reading it would pause after S1 for input that will
-never come. The sequencing constraints that DO bind are in the plan's §E: S2 must
-merge and be deployed before S3's bundle ships, and S4 is gated on stale bundles
-no longer being able to write.
-
-The pause is recorded HERE rather than in `blocking_directive`, which schedules a
-correction from `correction_required` or `in_progress` only — setting it from
-`in_review` makes `assessRunnerState` refuse to advance at all, which is a halt
-rather than a handoff. `next_task` still names `phase-6-task-1b`, so the loop
-returns to it once the space work clears.
-
-**What #329 holds:** the four Codex findings from head `8a035eb` are fixed and
-pushed (`a82e198`), plus one more the full suite caught (`34c648f`) — the F4
-lock-ordering fix had turned E3, a CLEARED invariant, into a 409, narrowing "the
-rename lands on the right party" into "the edit is lost if a merge raced it". It
-is a bounded retry now. The full integration suite at that head did NOT complete
-(killed at `EXIT=143` by a branch switch), so CI is the verifier on resume; the
-PR comment states exactly what is and is not established.
 
 **`next_task` spells unit 6.1b as `phase-6-task-1b`, and that is not a typo for
 the prose name.** `TASK_REFERENCE` in `scripts/review-efficiency.mjs` is an
@@ -100,7 +31,7 @@ open work `deferralPhases` returns the current phase regardless, but once a flip
 records `merged` with `work_item: none`, `next_task` becomes the ONLY source, an
 unparseable value yields `[]`, and a later docs-only head past the round cap
 cannot defer its open questions to a real stop — it fails closed on "no phase
-with open work". Phase 6's `task: 1` + half `b` reads as `phase-6-task-1b`,
+with open work". `phase: 6` + `task: 1` + half `b` reads as `phase-6-task-1b`,
 which is the same convention Phase 5 used for `phase-5-task-7b-iii-d`. Pinned by
 `review-efficiency.test.mjs`, which reads THIS file and forces the terminal
 state, so the next edit cannot reintroduce a value that only breaks later.

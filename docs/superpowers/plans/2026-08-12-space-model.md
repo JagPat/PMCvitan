@@ -440,7 +440,62 @@ during the changeover and step C removes it on a schedule.
 | **expand/migrate/contract** ← chosen | `room` is accepted transiently; four units instead of two; the end state is identical |
 | clean break as originally recorded | an outage window of unknown length, spanning two independent deploys, for anyone on a stale bundle |
 
-### What decision 2 changes in the rule
+## §G — The named probes this plan defers to
+
+Three finding-bearing rounds is the cap. Past it, a docs-only review stops answering questions with
+more prose and hands each remaining one to a **named probe** — an executable check written during
+implementation. Nothing is dismissed; only the place of verification moves. Every claim below is one
+this plan currently *asserts*, and each is listed against the unit that must *prove* it.
+
+The three rules the convergence audit extracted are what these probes exist to enforce, so each is
+tagged with the rule it defends: **[W]** state it per write path · **[C]** trace the renamed value to
+every comparison · **[D]** pair a migration with the write-path rule that keeps its result true.
+
+### S1 — the structure
+
+| probe | proves | must first be seen to FAIL against |
+|---|---|---|
+| `P1.1` concurrent `move(A under B)` ∥ `move(B under A)`, both orderings, under a barrier | exactly one commits; no cycle exists after | the unserialized guard as it stands today |
+| `P1.2` move a 3-deep subtree under a 3-deep chain | refused, with the depth stated in the reason | a check that measures only the moved node |
+| `P1.3` project init from a module whose graft would exceed 5 levels **[W]** | refused | `writeInitializationSource` as it stands today |
+| `P1.4` project init from a module with an illegal parent chain **[W]** | refused | the same |
+| `P1.5` `subtreeIds` / `ancestorIds` against a second project's tree | only this project's rows are read | the unscoped `findMany` |
+
+`P1.1` and `P1.3` are the two that matter most: the first because a green concurrency probe proves
+nothing until reverting the fix turns it red, and the second because project initialization is the
+write path this plan has now twice been caught assuming away.
+
+### S2 — expand
+
+| probe | proves |
+|---|---|
+| `P2.1` capture a module from a **space** root via `POST /orgs/:orgId/modules`, then instantiate it | it anchors under a zone — NOT at `parentId: null` |
+| `P2.2` an element-anchored module at project creation, and at preset save **[C]** | still refused at BOTH guards (`orgs.service.ts:418`, `:592`) |
+| `P2.3` create a node with `room`, and with `space` | both accepted; each stored as sent |
+
+`P2.2` is the silent-failure probe. After the rename the old comparison is simply never true, so the
+guard stops guarding without erroring — the failure mode no test catches unless one is written for it
+deliberately.
+
+### S3 — migrate + surfaces
+
+| probe | proves |
+|---|---|
+| `P3.1` a module saved BEFORE the migration | still lists and still instantiates after it |
+| `P3.2` a payload the migration cannot parse | it ABORTS; no row is rewritten, none dropped |
+| `P3.3` a `room`-valued write after this deploy **[D]** | stored as `space` |
+| `P3.4` a snapshot containing both kinds | the surfaces render both identically |
+
+`P3.3` is what makes the migration's result survive the migration.
+
+### S4 — contract
+
+| probe | proves |
+|---|---|
+| `P4.1` preflight against a database holding one `room` value in any of the three stores | refuses, naming the store |
+| `P4.2` after the contraction | a request carrying `kind: 'room'` is refused |
+
+## What decision 2 changes in the rule
 
 `element` under `zone` is now confirmed rather than proposed, and the parent rule is final:
 

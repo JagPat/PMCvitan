@@ -115,9 +115,36 @@ The audit's value is only in what it changes about the implementation rounds. Co
   rule; R4 on #329 needed three attempts before it could fail at all, and a green concurrency probe
   proves nothing until reverting the fix turns it red.
 
-## Status
+## Status, and where verification moves next
 
-Round-2 corrections are on this head. No finding from either round is dismissed or deferred; each is
-either implemented in the plan or narrowed with its reason stated (F1 only).
+Rounds 1–3 are corrected in the plan. No finding is dismissed: each is implemented, or narrowed with
+its reason stated (F1 only).
+
+**Three finding-bearing heads is the review cap for a docs-only diff, and this head reaches it.** Past
+the cap the rule is that remaining questions stop being answered with more prose and are handed to
+named probes instead — so the plan gains **§G**, which lists every claim this document asserts against
+the unit that must prove it, tagged with the convergence rule each probe defends. The exact-head gate
+still fails closed on any finding; only the place of verification moves.
+
+The deferral names `phase-6-task-2` — the space model's first implementation unit (S1) — because that
+is the task whose probes settle these questions.
+
+### One structural consequence, recorded because it changes how this PR lands
+
+The deferral gate cannot verify a phase reference when the PR itself edits `docs/STATUS.md`: the gate
+runs from the trusted default branch and reads main's copy, which is not this PR's phase truth. So
+**`docs/STATUS.md` was removed from this PR** and reverted to main's content.
+
+That is a deliberate reversal of the usual fold-STATUS-into-the-work-PR convention, forced by the
+gate and explicitly offered by it ("Land the STATUS change on its own"). It leaves a real gap worth
+naming rather than discovering: main's STATUS currently reads `task_state: merged` / `work_item:
+none` / `next_task: phase-6-task-1b`, so between #330 merging and the STATUS change landing, the
+runner would resolve to the PAUSED 6.1b. **The STATUS PR must therefore follow immediately**, setting
+`phase: 6` / `task: 2` / `task_state: in_progress` / `work_item: none`, which keeps the space work
+inside the phase the deferral names and satisfies the two live pins on that file (`work_item` is
+consulted only from `merged`; a `merged` block must clear it).
+
+An earlier revision of this branch moved STATUS to `phase: 7`. That is withdrawn — phase 6 task 2
+satisfies the same pins and keeps the deferral's phase provable.
 
 Review-Convergence: complete
