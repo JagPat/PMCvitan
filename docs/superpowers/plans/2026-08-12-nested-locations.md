@@ -156,6 +156,17 @@ changes here, **structurally, without renaming anything**: an element-root modul
 directly under a zone, and the acceptance is probed (P11), not assumed. What stays refused stays
 deliberately refused, with its reason intact.
 
+### 4. `move` must honour the visibility invariant `create` already does
+
+`create` refuses to publish a node under a DRAFT parent (`nodes.service.ts:58-61`): *"a published
+child of a hidden parent would be an orphan on the team's Site Map."* `move` enforces nothing about
+`publishedAt` — so reparenting a published subtree under a draft zone produces exactly the orphan
+the create path exists to prevent: teammates hold nodes whose browse path is hidden, and the filing
+pickers cannot reach them. Fixed depth kept the blast radius small (one level of room under a
+handful of zones); nesting multiplies the reparent surface, and this unit rewrites `move` anyway —
+so the rule lands here, stated the same way create states it: **a node may not be more visible than
+its parent, on every write path that can change either side of that relation.**
+
 ### One more thing nesting makes worse
 
 `subtreeIds` and `ancestorIds` call `prisma.projectNode.findMany({ select: { id, parentId } })` with
@@ -213,10 +224,21 @@ again.
 
 ## §D — Named probes
 
-Every claim above is one this plan *asserts*; each is listed against what must *prove* it. The two
-concurrency probes must be **seen to fail** against the current code before they are trusted — a
-green concurrency probe proves nothing until reverting the fix turns it red. R4 on #329 needed three
-attempts before it could fail at all.
+Every claim above is one this plan *asserts*; each is listed against what must *prove* it. The
+concurrency probes must be **seen to fail** before they are trusted — a green concurrency probe
+proves nothing until reverting the fix turns it red. R4 on #329 needed three attempts before it
+could fail at all.
+
+**Where the RED is captured matters, and the base commit is the wrong place.** At today's code,
+`move` runs `requireParentForKind` (line 105) *before* `isDescendant` (line 108) — so a
+room-under-room race fixture dies at the kind check and never reaches the unserialized guard. A red
+at the base commit would be the *wrong failure*: proof the fixture is illegal, not proof the race
+exists. The implementation therefore stages deliberately: **stage 1 legalizes the nested edges (the
+parent-rule change) with serialization still absent; the concurrency probes are run and SEEN RED
+there; stage 2 adds the serialization and turns them green.** The red-state evidence is captured
+mid-implementation and recorded in the packet — that intermediate commit is the probes' honest
+baseline, and the plan says so now rather than letting the reviewer discover the base-commit red
+proves nothing.
 
 | probe | proves | must first be seen to FAIL against |
 |---|---|---|
@@ -233,10 +255,19 @@ attempts before it could fail at all.
 | `P11` a saved element-root module placed directly under a `zone` | it instantiates there — the shape the decision allows is producible through init | `anchorKindOf` → `'room'` + the placement guards + the zone-only graft |
 | `P12` a decision filed at `Zone > Room > Room`, and an element filed directly under a `zone` | the register groups the first under the room it was FILED at, and never shows the element as a room | the positional `seg[1]` / last-segment grouping |
 | `P13` the filing picker on a nested tree | a room under a room is reachable and selectable, and so is an element directly under a zone | the picker's fixed `zone`/`room` state |
+| `P14` concurrent `move(C under P)` ∥ `move(P under a depth-4 chain)`, both orderings | the tree never exceeds 5 levels | move-side depth checks outside the shared serialization |
+| `P15` move a PUBLISHED subtree under a DRAFT zone | refused — the visibility invariant `create` already enforces (a published child of a hidden parent is an orphan) holds for `move` too | `move`'s absent `publishedAt` logic |
+| `P16` a saved module containing `Zone > Room > Room`, instantiated | the nested-room chain is produced through init | the init validator's fixed parent map |
 
 `P10` sits before `P2` deliberately: the race probe is worthless while the plain refusal does not
-exist, and a green race probe would hide that. `P11` is the acceptance mirror of `P4`/`P5` — a
-validator that only ever refuses is not proven able to produce the legal shapes.
+exist, and a green race probe would hide that. `P11` and `P16` are the acceptance mirrors of
+`P4`/`P5` — one per legal shape the decision adds, because a validator that only ever refuses is not
+proven able to produce them. `P14` exists because `P1` proves only *cycle* serialization and `P2`
+only the *create* side: a fix could serialize both and still leave move-side depth checks reading a
+stale snapshot, and only a move∥move race catches that. `P15` is the invariant this unit could
+silently break — `create` refuses publish-under-draft (`nodes.service.ts:58-61`, "a published child
+of a hidden parent would be an orphan on the team's Site Map") while `move` checks nothing, and a
+unit that rewrites `move` for nesting owns that gap the moment it touches the file.
 
 ## §E — Why this is one review unit
 

@@ -11,48 +11,16 @@ narrative and may lag behind reality.
 
 ```yaml
 phase: 6
-phase_plan: docs/superpowers/plans/2026-08-12-nested-locations.md
-task: 2
-task_state: in_progress
+phase_plan: docs/superpowers/plans/2026-08-11-phase-6-external-collaboration.md
+task: 1
+task_state: merged
 work_item: none
 reviewed_merge: ec236c7
 open_pr: none
 next_task: phase-6-task-1b
 blocking_directive: none
-updated: 2026-08-12
+updated: 2026-08-11
 ```
-
-**Task 2 is NESTED LOCATIONS — the structural half of the space work.** A live
-project reads `ZONE site > ROOM Excavation`, because the middle level is
-effectively mandatory and site-level work had nowhere else to go. The fix is that
-a location may nest (5 levels) and an `element` may hang directly off a `zone`, so
-a partial zone — a wing, a pour segment — has a home and no pseudo-container is
-required. The plan is `docs/superpowers/plans/2026-08-12-nested-locations.md`, and
-it ships WITH this handoff so the runner never reads a `phase_plan` it cannot open.
-
-**The `room` → `space` RENAME IS DELIBERATELY NOT IN THIS TASK.** The two were
-planned as one unit; five review rounds produced twenty findings, SEVENTEEN of them
-in the rename — template payloads parsed with a throwing `.parse()`, four code
-sites comparing against the literal kind (one of which stops guarding *silently*),
-two independently deployed applications with no ordering guarantee, browser tabs
-that outlive any deploy, seed constants that reinsert the old value after a
-migration, and a picker that finds the created node by matching the kind it sent.
-None of it touches the tree rules. Bundling them meant a small, self-contained
-structural fix could not land until the whole changeover was solved. The rename
-gets its own plan and its own review unit; `docs/reviews/pr-330-convergence.md`
-records what those rounds established so it is not rediscovered.
-
-**`work_item: none` with `task_state: in_progress` is deliberate.**
-`autonomous-status-state.test.mjs` pins two rules against this file: `work_item`
-is consulted ONLY from `task_state: merged`, and a `merged` block must CLEAR it.
-So an `in_progress` block that names a `work_item` silently resolves to the bare
-parent task and discards the named unit. With `work_item: none` the resolver
-returns `task:2`, which is this task.
-
-**Nothing here waits on a human.** The structural work has no schema rename, no
-data migration, no cross-application deploy ordering and no client compatibility
-window — the API simply accepts a strictly wider set of trees than before, so
-every existing client keeps working unchanged.
 
 **`next_task` spells unit 6.1b as `phase-6-task-1b`, and that is not a typo for
 the prose name.** `TASK_REFERENCE` in `scripts/review-efficiency.mjs` is an
