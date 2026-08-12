@@ -664,16 +664,30 @@ test("the live STATUS's phase_plan resolves to a regular file in this tree", asy
   // `none` is only a valid answer when there is no work whose plan the runner
   // must open (Codex, #331 round 5): an ACTIONABLE task with `phase_plan: none`
   // passes an existence-only guard and still stalls the loop at its documented
-  // first read. Terminal states may leave the field empty; open ones may not.
+  // first read. And "terminal" alone is not that answer either (Codex, #331
+  // round 6): `task_state: merged` is a terminal LABEL that still schedules
+  // work — `assessRunnerState` consults `work_item`, then `next_task`, from
+  // exactly that state — so a merged handoff naming a next task beside
+  // `phase_plan: none` would be certified by a terminal-set exemption and
+  // stall all the same. The exemption therefore asks the SHARED state machine
+  // (the #303 rule: the live-file guard uses the shared predicate, never a
+  // fork of it) whether this state schedules anything. The queue is passed
+  // empty on purpose: maintenance slugs are STATUS-local upkeep between
+  // phases, not phase-plan tasks, and the between-phases drain is precisely
+  // the legitimate `phase_plan: none` state.
   const state = String(now?.task_state ?? '').trim().toLowerCase();
   const terminal = new Set(['merged', 'complete', 'completed', 'cleared']);
   if (!plan || plan === 'none') {
+    const scheduled = assessRunnerState(now, []);
     assert.ok(
-      terminal.has(state),
+      terminal.has(state) && !scheduled.actionable,
       `docs/STATUS.md records task_state '${now?.task_state}' with phase_plan `
-        + `'${now?.phase_plan}'. An actionable task's first read is its phase plan, so an `
-        + 'open state must name a real plan file — none/empty is only valid once the '
-        + 'work is terminal.',
+        + `'${now?.phase_plan}'`
+        + (scheduled.actionable ? ` while still scheduling '${scheduled.nextStep}'` : '')
+        + '. The runner opens phase_plan immediately after STATUS, so any state that '
+        + 'schedules work must name a real plan file — none/empty is only valid once '
+        + 'the work is terminal AND nothing (work_item, next_task, open_pr) is '
+        + 'scheduled from it.',
     );
     return;
   }

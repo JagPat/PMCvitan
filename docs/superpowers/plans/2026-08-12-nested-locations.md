@@ -266,6 +266,7 @@ proves nothing.
 | `P15` move a PUBLISHED subtree under a DRAFT zone | refused — the visibility invariant `create` already enforces (a published child of a hidden parent is an orphan) holds for `move` too | `move`'s absent `publishedAt` logic |
 | `P16` a saved module containing `Zone > Room > Room`, instantiated | the nested-room chain is produced through init | the init validator's fixed parent map |
 | `P17` concurrent `publish(C)` ∥ `move(C under draft D)`, both orderings, under a barrier | the terminal tree has NO published node beneath a draft ancestor — the visibility rule survives its race, not only its sequential checks | publish's unserialized read-branch-then-update (`nodes.service.ts:82`) |
+| `P18` the SAME room-targeted element module SAVED as a named preset, then EXPANDED at create-project | the preset path both saves the room-anchored module and replays it under the chosen room — `createTemplate`'s save guard refuses `anchorKind === 'room'` today, so a fix can open ad-hoc placement (P11) while presets still cannot save or re-expand the same Main Door/fixture shape | the preset-save guard at `orgs.service.ts:592` + the preset expansion path |
 
 `P10` sits before `P2` deliberately: the race probe is worthless while the plain refusal does not
 exist, and a green race probe would hide that. `P11` and `P16` are the acceptance mirrors of
@@ -275,7 +276,11 @@ only the *create* side: a fix could serialize both and still leave move-side dep
 stale snapshot, and only a move∥move race catches that. `P15` is the invariant this unit could
 silently break — `create` refuses publish-under-draft (`nodes.service.ts:58-61`, "a published child
 of a hidden parent would be an orphan on the team's Site Map") while `move` checks nothing, and a
-unit that rewrites `move` for nesting owns that gap the moment it touches the file.
+unit that rewrites `move` for nesting owns that gap the moment it touches the file. `P18` closes
+the door P11 leaves ajar: §A counts the preset-save guard (`orgs.service.ts:592`) among the
+element-module blockers, and a fix that opens the create-project selector while `createTemplate`
+still refuses room-anchored saves passes P11 with the reusable-preset workflow dead — save and
+expand are probed as their own path because they are guarded as their own path.
 
 ## §E — Why this is one review unit
 

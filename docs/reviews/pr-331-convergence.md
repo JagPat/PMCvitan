@@ -13,7 +13,8 @@ owed yet" — that was false the moment it was written, and the gate said so.
 | `64daa05` | round-1 corrections + this packet | 4 (P2) | corrected on `9edac50` |
 | `9edac50` | round-2 corrections + the deferral | 5 (P2) | corrected on `0dd736f` |
 | `0dd736f` | the pin + STATUS returns; probes closed on their doors | 2 (P2) | corrected on `733d475` |
-| `733d475` | round-4 refinements | 2 (P2) | corrected on this head |
+| `733d475` | round-4 refinements | 2 (P2) | corrected on `51e8443` |
+| `51e8443` | round-5 refinements + the stop-rule | 3 (P2) | corrected on this head |
 
 Round 5 sharpened the two round-4 fixes one further notch, both red-first again: the visibility rule
 gains its RACE pair (P17 — `publish` reads its branch then updates unserialized against `move`, so a
@@ -22,13 +23,23 @@ ancestor; a barrier probe, both orderings), and the phase_plan pin closes its ow
 (an ACTIONABLE task with `phase_plan: none` passed the guard and still stalled the runner at its
 documented first read — open states must now name a real regular file, terminal states may not).
 
-**This head is the last reflexive correction round.** The unit stands at six finding-bearing heads
-against an advisory limit of five; the findings have been narrowing P2 probe refinements for three
-consecutive rounds, which justified finishing them — but any further finding-bearing review on this
-PR goes to the owner with the finding list and the split-or-hold question, regardless of severity.
-The plan's seventeen probes are re-verified during implementation in any case; review of the prose
-has reached the point where each round buys one probe clause, and whether that trade continues is
-the owner's call, not the loop's.
+Round 6 corrected three findings, and one of them was about the paragraph that used to stand here.
+The previous head declared itself "the last reflexive correction round" and directed any further
+finding to the owner with a split-or-hold question — an instruction to a person, in the very packet
+that carries the rule *a risk is discharged into code, a gate, or a merged state, never into an
+instruction for someone to be careful*. The gate rightly refused it: in this loop a finding returns
+the PR to draft for the Auto-fix cycle, and that executable transition IS the routing. The advisory
+head-count limit stays what it is — advisory, visible in the table above, where the owner can see it
+and intervene whenever they choose — but the packet no longer conditions the loop's next action on a
+human answer. The other two round-6 corrections: the phase_plan pin now asks the SHARED state
+machine instead of a terminal-state set (`task_state: merged` is a terminal label that still
+schedules work — `assessRunnerState` consults `work_item`, then `next_task`, from exactly that
+state — so a merged handoff naming a next task beside `phase_plan: none` was certified by the old
+exemption and would stall the runner at its documented first read; proven red-first against that
+exact shape, with the old guard shown falsely green on it), and the plan gains **P18** — the preset
+save-and-expand path for room-targeted element modules, because §A counts the preset-save guard
+(`orgs.service.ts:592`) among the blockers and P11's public-selector probe leaves it open for a fix
+that enables ad-hoc placement while saved presets stay dead.
 
 Round 4's two findings each sharpened a round-3 fix by one honest notch, and both were proven
 red-first: **P11 must run through the PUBLIC create-project selector** — `moduleSelectionSchema`
@@ -173,7 +184,10 @@ its own tree; enumerate readers; validate in both directions; plain before race.
 
 ## Status
 
-Both finding heads are corrected in the plan. Nothing is dismissed or deferred; the finding-head
-count stands at 2, below the docs-only deferral cap.
+Every finding on every head is corrected — in the plan, in the pin, or in this packet; nothing is
+dismissed or deferred. The finding-head count stands at seven. The diff is code-bearing (the
+phase_plan pin), so no docs-only deferral is owed; the count is stated plainly because it exceeds
+the advisory lifecycle limit of five, and the table above is the record the owner reads if they
+choose to intervene on that trend.
 
 Review-Convergence: complete
