@@ -21,34 +21,43 @@ on:
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
-# METADATA-ONLY edits queue behind the same sha's in-flight run; every other
-# event runs immediately in its own group, exactly as before this block
-# existed.
+# One shared queue per HEAD SHA, with exactly one exemption. The invariant,
+# learned across two corrected rounds: everything that must WAIT has to share
+# the group with what it WAITS FOR, and the only runs exempted from that
+# shared queue are those whose PAYLOAD cannot be recovered if the queue's one
+# pending slot swallows them.
 #
-# The queue exists because an `edited` event racing the same sha's synchronize
-# run leaves a newer SKIPPED `api` beside an older in-flight one, and the
-# review owner reads "Checks did not settle: api" — a transient false red
-# observed three times (#330 heads 922e67b/6700171, #331 head 5e4c766).
-# Dropping `edited` instead was considered and REJECTED: a base retarget only
-# ever fires `edited`, and a review-scope-stuck head has only the body edit to
+# WHY A QUEUE AT ALL: an `edited` event racing the same sha's synchronize run
+# leaves a newer SKIPPED `api` beside an older in-flight one, and the review
+# owner reads "Checks did not settle: api" — a transient false red observed
+# three times (#330 heads 922e67b/6700171, #331 head 5e4c766). Dropping
+# `edited` instead was considered and REJECTED: a base retarget only ever
+# fires `edited`, and a review-scope-stuck head has only the body edit to
 # launch its battery — both pinned in autonomous-ci-battery.test.mjs.
 #
-# The queue is scoped to metadata-only edits because GitHub keeps at most ONE
-# pending run per group — a newer pending run REPLACES the queued one. Any
-# event whose PAYLOAD is load-bearing must therefore never sit in the queue: a
-# queued base-retarget `edited` (changes.base) replaced by a later body edit
-# would leave a survivor with no changes.base, battery-plan would read the OLD
-# base's products as coverage, and the gate would publish stale green against
-# the new base — silently, since a cancelled-while-queued run creates no
-# job-level check runs for quality-gate to block on (Codex, PR #332 round 1).
-# Metadata edits replacing each OTHER while queued is safe: the survivor's
-# payload carries the newest body, which is what review-scope should read.
+# WHY THE RETARGET IS EXEMPT (round-1 finding): GitHub keeps ONE pending slot
+# per group and a newer pending run REPLACES the queued one. A queued retarget
+# swallowed by a later body edit leaves a survivor with no `changes.base`;
+# battery-plan reads the OLD base's products as coverage and the gate
+# publishes stale green against the new base — silently, since a
+# cancelled-while-queued run creates no job-level check runs. The retarget's
+# payload exists nowhere else, so it must never sit in the lossy slot.
+#
+# WHY ONLY THE RETARGET (round-2 finding): exempting by event TYPE — all code
+# events to unique groups — broke the serialization itself, because runs only
+# queue against members of the SAME group; the edited run raced the
+# synchronize run again. Code events belong IN the sha group: a swallowed
+# queued code event is RECOVERABLE — the surviving edited run's battery-plan
+# finds no product coverage for the new sha and fails toward running the full
+# battery, and a swallowed reopened leaves exactly the pre-close coverage the
+# metadata-edit design already accepts. workflow_dispatch has no PR payload
+# and falls to the run id.
 #
 # cancel-in-progress stays FALSE deliberately: quality-gate treats a cancelled
 # job as blocking (it never reached a verdict), so cancelling an in-progress
 # run would turn the transient false red into a durable real one.
 concurrency:
-  group: ci-${{ (github.event.action == 'edited' && !github.event.changes.base && github.event.pull_request.head.sha) || github.run_id }}
+  group: ci-${{ (github.event.changes.base && github.run_id) || github.event.pull_request.head.sha || github.run_id }}
   cancel-in-progress: false
 
 jobs:

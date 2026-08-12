@@ -140,34 +140,35 @@ test('ci.yml serializes same-sha runs by queueing, never by cancelling', async (
       + 'never cancel an in-progress run',
   );
 
-  // ONLY a metadata-only `edited` event may join the per-sha queue. GitHub
-  // keeps at most ONE pending run per group — a newer pending run REPLACES the
-  // queued one — so any event whose payload is load-bearing must never sit in
-  // the queue where a later event can silently swallow it. The interleaving
-  // that forced this (Codex, PR #332 round 1): a synchronize run is mid-battery
-  // on base A; a base-retarget `edited` (changes.base) queues; a body edit on
-  // the same head REPLACES the queued retarget; the survivor has no
-  // changes.base, battery-plan reads base A's products as coverage, and the
-  // gate publishes stale green against base B. A cancelled-while-queued run
-  // creates no job-level check runs, so quality-gate never even sees it.
+  // The FULL expression is pinned, ordering included, because both of its
+  // predecessors were individually plausible and individually wrong:
   //
-  // Code events (opened/synchronize/reopened) and retarget edits therefore get
-  // a unique group (the run id) and execute immediately, exactly as before the
-  // concurrency block existed. Metadata edits replacing each OTHER while
-  // queued is safe: the surviving payload carries the newest body, which is
-  // what review-scope should read anyway.
+  //   round 0  ci-<sha> for everything     — serialized correctly, but GitHub
+  //            keeps ONE pending slot per group and REPLACES it, so a queued
+  //            base-retarget could be swallowed by a later body edit and the
+  //            gate published stale green against the new base;
+  //   round 1  ci-<sha> only for metadata edits — fixed the swallow by moving
+  //            code events to unique groups, which broke the serialization
+  //            itself: runs only queue against members of the SAME group, so
+  //            the edited run raced the synchronize run again and the false
+  //            red returned (Codex, round 2).
+  //
+  // The invariant both rounds missed: everything that must WAIT has to share
+  // the group with what it WAITS FOR, and the only runs exempted from that
+  // shared (lossy) queue are those whose PAYLOAD cannot be recovered if the
+  // pending slot swallows them. That is exactly one case — a base retarget,
+  // whose `changes.base` exists nowhere else. A swallowed queued CODE event is
+  // recoverable: the surviving edited run's battery-plan finds no product
+  // coverage for the new sha and fails toward running the full battery (the
+  // 'plan reads the whole check history' pin below), and a swallowed reopened
+  // leaves exactly the pre-close coverage the metadata-edit design already
+  // accepts. workflow_dispatch has no PR payload and falls to the run id.
   assert.match(
     concurrency.groups.group,
-    /github\.event\.action\s*==\s*'edited'/u,
-    'only `edited` events may queue per sha; code events must keep a unique '
-      + 'group so their payloads can never be replaced while pending',
-  );
-  assert.match(
-    concurrency.groups.group,
-    /!github\.event\.changes\.base/u,
-    'a base-retarget edit carries a load-bearing payload (changes.base); it '
-      + 'must be exempted from the shared queue or a later body edit can '
-      + 'replace it and the gate publishes stale evidence against the new base',
+    /\(github\.event\.changes\.base\s*&&\s*github\.run_id\)\s*\|\|\s*github\.event\.pull_request\.head\.sha\s*\|\|\s*github\.run_id/u,
+    'retarget exemption FIRST (its payload is unrecoverable if swallowed), '
+      + 'then the shared per-sha group for every other PR event (waiters must '
+      + 'share the group with what they wait for), then the dispatch fallback',
   );
 });
 
