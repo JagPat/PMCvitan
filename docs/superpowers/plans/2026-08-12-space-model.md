@@ -232,20 +232,40 @@ instantiates with `parentId: null` — a **top-level space**, which the parent r
 element branch is wrong in the other direction: it would keep returning `'room'`, a kind that no
 longer exists.
 
-So S3 changes three stored values AND two functions:
+There is a **third** consumer, and it fails in the most dangerous direction — silently. The
+placement guards at `orgs.service.ts:418` and `:592` refuse element-anchored modules:
 
-| what | where |
-|---|---|
-| `ProjectNode.kind` | column |
-| `TemplateModule.payload.nodes[*].kind` | JSON |
-| `TemplateModule.anchorKind` | column |
-| `anchorKindOf` — the derivation | `orgs.service.ts:71` |
-| `loadModuleCopies` — the graft condition | `orgs.service.ts:490` |
+```ts
+if (m.anchorKind === 'room') {
+  throw new BadRequestException(`"${m.name}" anchors to a room — element modules can't be placed …`);
+}
+```
 
-**S3 migrates all of it together** (see §E for why the data moves with the surfaces rather than with
-the model), diagnostic-first, with probes that a module saved BEFORE the migration still lists and
-instantiates afterwards, AND that a module captured from a space root AFTER it anchors under a zone
-rather than at top level. The JSON rewrite aborts on any payload it cannot parse rather than
+Once no module anchors to `'room'` any more, that comparison is never true, the guard stops firing,
+and element modules start slipping into project creation and presets — the exact thing it was added
+to prevent (its own comment cites "review F3"). A guard that quietly stops guarding is worse than one
+that breaks loudly.
+
+So the changeover touches three stored values AND **four** code sites:
+
+| what | where | fails how |
+|---|---|---|
+| `ProjectNode.kind` | column | the tree itself |
+| `TemplateModule.payload.nodes[*].kind` | JSON | `.parse()` throws on a menu read |
+| `TemplateModule.anchorKind` | column | grafting stops |
+| `anchorKindOf` — derivation | `orgs.service.ts:71` | returns `null` for a space root |
+| `loadModuleCopies` — graft condition | `orgs.service.ts:490` | grafts at `parentId: null` |
+| placement guard (project creation) | `orgs.service.ts:418` | **stops firing, silently** |
+| placement guard (presets) | `orgs.service.ts:592` | **stops firing, silently** |
+
+**All four code sites move to S2, not S3** — see §E. S2 is where the contract starts accepting
+`space`, and the moment it does, a space-root module can be persisted through the public
+`POST /orgs/:orgId/modules`. Anchor code that still only understands `room` would mis-anchor it
+immediately. The data migration stays in S3; the code that interprets kinds must lead it.
+
+Probes: a module saved BEFORE the changeover still lists and instantiates after it; a module captured
+from a space root anchors under a zone rather than at top level; and an element-anchored module is
+still refused at both guards. The JSON rewrite aborts on any payload it cannot parse rather than
 dropping nodes.
 
 **No legacy alias in the end state.** Only `space` is accepted once the changeover completes — a
@@ -260,9 +280,9 @@ splits along the dependency:
 | Unit | Contents |
 |---|---|
 | **S1 — the structure** | the parent rule, the depth cap by subtree height, the serialized cycle guard, the initialization validator, project-scoped tree reads. **No vocabulary change at all** |
-| **S2 — expand** | the API accepts `space` in addition to `room`; contracts and payload schema widened |
-| **S3 — migrate + surfaces** | the three-store data migration **and the two `anchorKind` functions** (§D); recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales, `"object" → "element"`. The surfaces **read both kinds and write only `space`** |
-| **S4 — contract** | drop `room` from the contracts and the payload schema; a probe that `kind: 'room'` is refused. **Gated on the measured quiet window** (§E), not merged on a schedule |
+| **S2 — expand** | the API accepts `space` in addition to `room`; contracts and payload schema widened; **all four `anchorKind` code sites** (§D) updated first, since accepting `space` is what makes a space-root module persistable |
+| **S3 — migrate + surfaces** | the three-store data migration; the API **canonicalizes an accepted `room` to `space`** (§E); recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales, `"object" → "element"`. The surfaces **read both kinds and write only `space`** |
+| **S4 — contract** | drop `room` from the contracts and the payload schema; a probe that `kind: 'room'` is refused. **Gated on both preconditions** (§E): the measured quiet window, and a preflight proving zero `room` values exist in any of the three stores |
 
 **S1 carries no rename, and that is what makes it buildable now.** Everything round-1 review found
 unsafe about the tree — the unserialized cycle guard, the depth cap that a subtree move walks
@@ -300,11 +320,35 @@ a plan with an outage in it.
 Each step is independently deployable and compatible in **both** directions, so no ordering between
 the two applications matters:
 
-| step | API | web | safe alone because |
-|---|---|---|---|
-| **E — expand** | accepts `space` **and** `room`; all nesting rules, depth, cycle guard, init validator | unchanged, still sends `room` | old web + new API both work |
-| **M — migrate** | unchanged | writes `space`, **reads either**; the surfaces land | data is rewritten; API accepts either, so a stale bundle still works |
-| **C — contract** | drops `room` | unchanged | no client can still be writing `room` — a measured precondition, not an assumption |
+| step | API accepts | API stores | web | safe alone because |
+|---|---|---|---|---|
+| **E — expand** | `space` **and** `room` | as sent | unchanged, still sends `room` | old web + new API both work; anchor code understands both |
+| **M — migrate** | `space` and `room` | **always `space`** — canonicalized | writes `space`, **reads either** | old rows are swept; new `room` writes canonicalize, so no `room` row survives the step |
+| **C — contract** | `space` only | `space` | unchanged | no client is still writing `room` (measured) AND no `room` row exists (verified) |
+
+### Why M canonicalizes rather than storing what it is sent
+
+The migration is a **point-in-time sweep, but writes do not stop when it finishes.** `create`
+persists the literal kind (`nodes.service.ts:64`), so a tab opened before M can create a brand-new
+`room` row minutes *after* the sweep has run. C would then drop `room` from the contract while those
+rows sat in the database — the end state promised in decision 4 would be false in the data even
+though it was true in the schema.
+
+So from M's API deploy onward, an accepted `room` is **stored as `space`**. This is not a silent
+rewrite of someone's input: `room` and `space` are the same concept under two names, and
+canonicalizing a synonym is precisely what the expand/contract shape is for. It is recorded here so
+it is a documented behaviour rather than a surprise.
+
+**Why M and not E.** Canonicalizing at E would break the clients E exists to protect: the pre-M
+bundle renders levels by `kind === 'room'` (`LocationPicker.tsx:51`), so a node it created would be
+stored as `space` and then vanish from its own view. By M the shipping bundle reads both kinds, and
+the only sufferer is a stale tab whose freshly created node does not appear until it reloads — a
+display gap, not an error, and strictly better than leaving `room` rows behind.
+
+**C therefore has two preconditions, not one:** the measured quiet window (no client is still
+*writing* `room`), and a diagnostic preflight proving zero `room` values *exist* — in
+`ProjectNode.kind`, in `TemplateModule.payload`, and in `anchorKind`. The second is cheap, and it is
+what makes the end state a verified fact rather than a belief.
 
 ### The mistake this table hides, and the rule that fixes it
 

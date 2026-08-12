@@ -7,10 +7,11 @@ common. This is that audit.
 | round | head | findings | outcome |
 |---|---|---|---|
 | 1 | `c87ee29` | 7 (6×P1, 1×P2) | all verified against code, all corrected on `922e67b` |
-| 2 | `6700171` | 4 (4×P1) | all verified, corrected on this head |
+| 2 | `6700171` | 4 (4×P1) | all verified, corrected on `aa1a604` |
+| 3 | `aa1a604` | 2 (2×P1) | all verified, corrected on this head |
 
-Eleven findings on a document that changes no code. That number is the finding, and the audit below
-is about why.
+Thirteen findings on a document that changes no code. That number is the finding, and the audit
+below is about why.
 
 ## The one defect underneath most of them
 
@@ -27,11 +28,35 @@ place, when the system has more than one place that rule must hold.**
 | R2-F2 | 2 | migrate the stored `anchorKind` | `anchorKindOf` derives it; `loadModuleCopies` consumes it |
 | R2-F3 | 2 | S3 switches the web to `space` | its bundle may arrive before the migration runs |
 | R2-F4 | 2 | after S3 nothing sends `room` | a stale tab still does, indefinitely |
+| R3-F1 | 3 | anchor code changes with the migration (S3) | S2 already accepts `space`, so a space-root module is persistable a step earlier |
+| R3-F2 | 3 | the migration rewrites the `room` rows | writes continue after it; `create` persists the literal kind |
 | bonus | 1 | (unreported) tree reads are project-scoped | `subtreeIds`/`ancestorIds` scan every project |
 
 The remaining two are different in kind: F1 (the plan asserted a filing target the model does not
 have, and should not) and F6/R2-F1 (STATUS was internally inconsistent with the plan shipped beside
 it — twice).
+
+### Round 3 sharpened the pattern into two named traps
+
+Round 3's findings are the same defect at a finer grain, and both are worth naming because they
+generalize past this plan:
+
+- **A capability opens before the code that interprets it.** S2 widened the *contract* to accept
+  `space` while leaving anchor derivation on `room`. The gap between "the system accepts X" and "the
+  system understands X" is a window in which bad data is not merely possible but *invited*, through a
+  public endpoint. The rule: **the code that interprets a value must land in the same step that
+  starts accepting it, or earlier — never later.**
+- **A migration is a point in time; writes are a duration.** Sweeping the `room` rows does not stop
+  new ones arriving from clients that have not reloaded. The rule: **a data migration must be paired
+  with a write-path rule that keeps the invariant true afterwards** — here, canonicalizing an
+  accepted `room` to `space` — otherwise the sweep's guarantee expires the moment it finishes.
+
+Round 3 also surfaced a third `anchorKind` consumer that rounds 1 and 2 both missed, and it is the
+most dangerous kind: the placement guards at `orgs.service.ts:418,592` compare `anchorKind ===
+'room'` to *refuse* element modules. After the rename that comparison is simply never true, so the
+guard stops firing without erroring — protection that evaporates silently rather than breaking
+loudly. Enumerating "everywhere this value is written" is not sufficient; the enumeration must cover
+**everywhere it is compared**, including comparisons whose purpose is to say no.
 
 ## Why a docs-only change kept reproducing it
 
@@ -82,6 +107,10 @@ The audit's value is only in what it changes about the implementation rounds. Co
   unrelated screen.
 - Every step S2–S4 claims must be stated **per client generation**, and an open tab is a client
   generation.
+- Every value the changeover renames must be traced to **everywhere it is compared**, not only
+  everywhere it is written — a guard that tests for the old value stops guarding silently.
+- Every migration must ship with the **write-path rule that keeps its result true**, or its
+  guarantee lapses the moment it completes.
 - The cycle-safety probe must be **seen to fail** before the guard is trusted. This is the standing
   rule; R4 on #329 needed three attempts before it could fail at all, and a green concurrency probe
   proves nothing until reverting the fix turns it red.
