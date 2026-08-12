@@ -31,9 +31,10 @@ as a "room", and the word stops carrying meaning the first time it is used.
 Ground Floor (zone)
  └ East Wing (space)
     └ Slab Pour 2 (space)
-       └ Column C4 (object)
+       └ Column C4 (element)
 
 site (zone)
+ ├ Site Gate (element)        ← an element may hang straight off a zone
  └ [excavation activities filed directly on the zone — no invented space]
 ```
 
@@ -62,7 +63,7 @@ A fixed-depth lookup. It becomes a rule:
 | kind | may hang under |
 |---|---|
 | `zone` | nothing — top level only |
-| `space` | a `zone`, or another `space`, to any depth |
+| `space` | a `zone`, or another `space`, to **5 levels** of space |
 | `element` | a `space`, or a `zone` directly |
 
 **`element` under a `zone` is deliberate.** A site gate, a site board, a bore well are objects with
@@ -82,11 +83,11 @@ Phase 6 audit is the cautionary case for.
 ### Depth is unbounded, so something must bound it
 
 Unbounded nesting is unbounded recursion in every reader: the picker, the Site Map, the location
-filters, the snapshot, the projections. The plan takes a **bounded depth** (proposal: 8 levels of
-space) enforced at write time, because:
+filters, the snapshot, the projections. The bound is **5 levels of space**, enforced at write time,
+because:
 
 - it makes every reader's recursion provably terminating;
-- it is far past any real building (`Tower > Floor > Wing > Zone > Pour` is five);
+- five reaches a tower with wings and pour segments (`Tower > Floor > Wing > Zone > Pour`) and stays scannable on a phone, which is where the Site Map is actually read;
 - an unbounded tree is a denial-of-service surface on the read path, entered by an ordinary user.
 
 The limit is a refusal with a stated reason, not a silent truncation.
@@ -107,9 +108,10 @@ change or a UI change.
 locales.
 
 **There is existing drift to fix while we are here:** the schema and API say `element`, the UI says
-"objects". One of them is wrong in every conversation about this model. The plan adopts **`element`
-in code, "object" in UI copy** — the current split — but states it once, deliberately, instead of
-leaving it to be rediscovered. If that is the wrong call it should be settled in review, not later.
+"objects". One of them is wrong in every conversation about this model. **Settled: `element`, in code
+AND on screen** — closer to construction drawing language, and it ends the split rather than carrying
+it forward. So TWO renames ship together: `room → space`, and `"object" → "element"` in the UI copy,
+picker labels, filter chips and the three locales.
 
 ## §D — Migration
 
@@ -117,8 +119,10 @@ A data migration over live `ProjectNode.kind`, `'room' → 'space'`, **diagnosti
 standing discipline: it aborts on anything it did not expect rather than guessing, and it never
 invents or deletes a row.
 
-`'room'` is accepted as a **legacy alias on read** for one release, which is what allows the model
-and the surfaces to ship as two reviewable units instead of one unreviewable one.
+**No legacy alias.** Only `space` is accepted from day one — a clean break, decided deliberately.
+What that costs is set out under the settled questions below: S1 and S2 stay two PRs for review size,
+but they DEPLOY AS ONE RELEASE, because an API accepting only `space` while a cached browser bundle
+still sends `room` produces errors until that user reloads.
 
 ## §E — Sequencing, and the review budget
 
@@ -127,10 +131,11 @@ the dependency:
 
 | Unit | Contents |
 |---|---|
-| **S1 — the model** | `space` kind, the parent rule, depth bound, cycle-safety probe, migration, API contracts, `'room'` legacy alias |
+| **S1 — the model** | `space` kind, the parent rule, the 5-level bound, cycle-safety probe, migration, API contracts |
 | **S2 — the surfaces** | recursive `LocationPicker`, the Locations dialog's missing add-child control, filters, Site Map, locales |
 
-S1 does not change what a user sees. S2 is where the confusion actually goes away.
+S1 does not change what a user sees. S2 is where the confusion actually goes away — and because
+there is no alias, **S1 must not reach production without S2**.
 
 ## §F — The separate UX gap this uncovered
 
