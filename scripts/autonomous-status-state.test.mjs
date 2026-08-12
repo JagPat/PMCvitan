@@ -638,3 +638,27 @@ test('a valid in-progress state is not mistaken for a handoff', async () => {
     true,
   );
 });
+
+// FINDING (#331 head 35d9532, P1) — STATUS named a `phase_plan` that existed only on a
+// DIFFERENT unmerged branch. The runner's first act after parsing STATUS is opening that
+// file (docs/AUTONOMOUS_LOOP.md), so a dangling reference is the documented stall mode:
+// an in-progress task whose plan cannot be read. The rule this mechanizes — a merged
+// state is COMPLETE; every reference it makes resolves within the tree that carries it —
+// was learned twice on that PR's lineage (once as a promise of a follow-up PR, once as a
+// file on a sibling branch), and a rule learned twice belongs in CI, not in prose.
+//
+// Unconditional over phase_plan: even for a merged task the named plan is history the
+// loop may re-read, and no state is improved by pointing at a file that is not there.
+test("the live STATUS's phase_plan resolves to a file in this tree", async () => {
+  const { existsSync } = await import('node:fs');
+  const { now } = await loadStatusDocument();
+  const plan = String(now?.phase_plan ?? '').trim();
+  if (!plan || plan === 'none') return;
+  assert.ok(
+    existsSync(new URL(`../${plan}`, import.meta.url)),
+    `docs/STATUS.md names phase_plan '${plan}', but no such file exists in this tree. `
+      + 'The runner opens phase_plan immediately after STATUS, so a dangling reference '
+      + 'is a stall shipped as state. Land the plan in the same PR as the STATUS that '
+      + 'names it — a merged state must be complete in its own tree.',
+  );
+});

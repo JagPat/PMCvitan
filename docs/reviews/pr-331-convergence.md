@@ -10,7 +10,8 @@ owed yet" — that was false the moment it was written, and the gate said so.
 |---|---|---|---|
 | `35d9532` | STATUS-only handoff | 1 (P1) | corrected on `5e4c766` |
 | `5e4c766` | the split: plan + STATUS in one diff | 4 (P2) | corrected on `0222c8f` |
-| `64daa05` | round-1 corrections + this packet | 4 (P2) | corrected on this head |
+| `64daa05` | round-1 corrections + this packet | 4 (P2) | corrected on `9edac50` |
+| `9edac50` | round-2 corrections + the deferral | 5 (P2) | corrected on this head |
 
 The parent unit's audit — five rounds, thirteen findings, and the three rules they produced — is
 `docs/reviews/pr-330-convergence.md`, carried on this branch unchanged. This packet does not repeat
@@ -92,19 +93,51 @@ the default branch and reads main's copy, which a STATUS-editing PR is about to 
 cap, "plan + STATUS in one diff" and "deferral" are mechanically incompatible, and STATUS is
 reverted out of this PR — reversing head 2's own fix for head 1.
 
-That reversal is safe now for a reason that was checked, not hoped: **the drift rule guards the
-gap.** Main's STATUS has read `task_state: merged / open_pr: none / next_task: phase-6-task-1b` all
-day, with live `claude/**` PRs open — and the hourly cron has responded by posting drift shepherds,
-not by resuming the paused 6.1b, because live open PRs disagreeing with `open_pr: none` IS the drift
-condition. PR #329 (held) stays open through any gap this PR's merge creates, so the same mechanical
-guard covers the window until the follow-up STATUS PR lands. That follow-up satisfies head 1's rule
-in turn: by the time it merges, the plan it names exists on main, so every reference resolves in the
-tree that carries it. The order is forced end to end: **#331 (plan, deferring to `phase-6-task-2`) →
-STATUS handoff PR → implementation.**
+Head 3's packet claimed that reversal was safe because "the drift rule guards the gap" — PR #329
+staying open keeps the hourly cron posting drift shepherds instead of resuming the paused 6.1b.
+**Round 3 rejected that reasoning, and the rejection is this unit's own rule applied to its own
+packet: the safety depended on an EXTERNAL PR happening to stay open — luck, not code, a gate, or a
+merged state.** Close or merge #329 and the runner resumes paused work through `next_task`.
 
-The deferral names `phase-6-task-2` — verifiable against main's STATUS, whose `next_task` keeps
-phase 6 eligible — and §D's sixteen probes are the deferral's ledger: every question these three
-rounds opened is either answered in the plan or named as a probe with the unit that must run it.
+### Round 4 dissolves the trap instead of managing the gap
+
+The deferral was owed only because the diff was **docs-only** (`isDocsOnlyDiff` gates
+`deferralRequired`). The mechanical closure round 3 demanded is *code* — and landing it in this PR
+makes the diff code-bearing, the deferral not owed, and the STATUS-in-diff prohibition moot. So the
+final head does all three at once:
+
+- **STATUS returns to this PR** (head 2's arrangement, restored): `phase: 6 / task: 2 /
+  task_state: in_progress`, `phase_plan` naming the plan in this same diff. No follow-up PR, no
+  gap, no reliance on #329.
+- **The new CI pin makes head 1's defect unrepresentable**:
+  `autonomous-status-state.test.mjs` now asserts the live STATUS's `phase_plan` resolves to a file
+  in the tree. Proven red-first against head 1's EXACT shape — pointing `phase_plan` back at the
+  space-model path fails the pin with the stall explanation; restored, it passes. A rule learned
+  twice on this PR (once as a promised follow-up, once as a sibling-branch file) is now enforced by
+  CI on every future head of every future PR, which is what "discharge risk into a gate" means.
+- **The `Review-Deferred-To-Probes` trailer is dropped** — with code in the diff no deferral is
+  owed, and a trailer claiming a handoff that is not happening would be the bare marker wearing a
+  task name. §D's sixteen probes remain the implementation's ledger on their own terms.
+
+The circularity of heads 1–3 — STATUS-first dangles the plan; plan-first misdirects the runner;
+together they void the deferral — was real, but only within the assumption that this PR stays
+docs-only. The assumption was the trap.
+
+## Finding head 4: probes must close the door they name, not a nearby one
+
+Round 3's other four findings are each a probe that proved *adjacent* to its claim, and they close
+the same way:
+
+| probe | the gap round 3 named | now |
+|---|---|---|
+| P9 | "creates a nested location" — one child action passes while the dialog still cannot build both new shapes | both shapes named explicitly |
+| P11 | zone-anchored acceptance only — a fix remapping every element module to zone anchors passes while breaking every saved door/fixture module | both anchors probed: the new zone-level shape works AND the existing room-level shape survives |
+| P12 | presence cases only — a zone-filed decision still shows as a Room group, a room-filed one as an Object group | absence cases added for both groupings |
+| P13 | select only — a seeded tree renders while inline-create still stops at three levels, blocking every filing flow from the new shapes | select AND create, both shapes |
+
+The generalization, for the implementation rounds: **a probe is specified by the failure it must
+make impossible, not by the feature it exercises.** Each of these four passed a plausible
+implementation that still contained the failure.
 
 ## The cumulative rule set this unit now carries
 
