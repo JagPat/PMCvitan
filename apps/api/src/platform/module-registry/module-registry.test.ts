@@ -168,6 +168,12 @@ describe('Phase 2 Task 7 — module registry', () => {
       // binding one records the `ProjectParty` association, both through `OrgsParticipant`
       // inside procurement's own transaction. Declared edge, not a direct write.
       procurement: ['commercial', 'orgs'],
+      // Phase 6 unit 6.1b (§A) — the operator merge repoints EVERY party copy in one transaction,
+      // and `Vendor` (plus `ProjectVendor` through its cascade) is procurement-owned. Parties are
+      // orgs-owned, so the command lives in orgs and reaches those rows through
+      // `ProcurementParticipant.repointVendorParty`. A workflow-participant edge is cycle-exempt,
+      // which is what lets this coexist with procurement's own `dependsOn`.
+      orgs: ['nodes', 'activities', 'inspections', 'procurement'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

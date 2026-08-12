@@ -209,6 +209,13 @@ const SERVICES: Record<string, { domain: string; foreign: Record<string, number>
   // Phase 4 Task 3 (§H) — the orgs-owned WorkerDevice→Worker binding. A roster surface like Task-1
   // onboarding: attributable + idempotent, but no domain event, so it dispatches nothing.
   'orgs/worker-devices.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
+  // Phase 6 unit 6.1b — the operator party merge. It writes orgs-owned rows only
+  // (`ExternalParty`, `ProjectParty`, `ProjectCompany`); the procurement-owned `Vendor` moves
+  // through `ProcurementParticipant.repointVendorParty`, which is why `foreign` is empty rather
+  // than listing `vendor` — the point of the channel is that this file never touches that table.
+  // No event: reconciling identity is an operator correction, not a domain fact anything subscribes
+  // to, so `dispatch: 0`. The attributable record is the audit row.
+  'orgs/party-merge.service.ts': { domain: 'orgs', foreign: {}, dispatch: 0 },
   // Phase 4 Task 1 — the labour LEAF: trusted-workforce onboarding writes ONLY labour-owned
   // tables and emits NO domain event (a roster surface — capacity facts + their events arrive
   // in Tasks 3–5), so it dispatches nothing. The labour requirement detail write lives in the
