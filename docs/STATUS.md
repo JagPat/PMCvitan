@@ -13,14 +13,27 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-12-nested-locations.md
 task: 2
-task_state: in_review
+task_state: merged
 work_item: none
-reviewed_merge: ec236c7
-open_pr: 333
-next_task: phase-6-task-1b
+reviewed_merge: 7a688e3
+open_pr: none
+next_task: none
 blocking_directive: none
 updated: 2026-08-13
 ```
+
+**Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
+(`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
+(the New Project modal learned to EXPRESS the room-anchor graft target the
+contract gained — the P11 public-door lesson applied one door further). All
+eighteen plan probes green, staged red-first per §D; packet:
+`docs/reviews/phase-6-t2-nested-locations-packet.md`.
+
+**`next_task` is deliberately NONE.** Every candidate successor is owner-gated:
+the `room` → `space` rename may start only on the owner's explicit go (its task
+records "not without the owner saying go"); decision forwarding is sequenced
+after the rename; and unit 6.1b (PR #329, held) resumes only after both. Until
+one of those gates opens, the runner works the Maintenance queue below.
 
 **Task 2 is NESTED LOCATIONS — the structural half of the space work.** A live
 project reads `ZONE site > ROOM Excavation`, because the middle level is
