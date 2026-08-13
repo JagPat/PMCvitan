@@ -334,6 +334,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       ).rejects.toThrow(/only a published pending/);
     });
 
+    it('round 2 (Codex): the PUBLICATION fact is part of the frozen record — clearing publishedAt on a withdrawn row is refused, so the pmc register can never lose the withdrawal to the draft filter', async () => {
+      const id = await withdrawn();
+      await expect(raw(`UPDATE "Decision" SET "publishedAt"=NULL WHERE "id"=$1`, id)).rejects.toThrow(/publishedAt|write-once|published/);
+      // the row still serializes to the pmc with its evidence (the visibility rule's draft arm never fires)
+      const slice = await query.snapshotSlice(f.projectA.id, 'pmc', f.memberUser.id);
+      expect(slice.decisions.find((d) => d.id === id)?.status).toBe('withdrawn');
+    });
+
     it('never-approved (reverse): an approval-revision INSERT against a withdrawn decision is refused', async () => {
       const id = await withdrawn();
       await expect(

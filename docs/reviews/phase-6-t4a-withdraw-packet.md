@@ -18,6 +18,14 @@ carries only its own cancellation mark.
 
 ## Review unit
 
+<!-- review-size: justified-large -->
+**Justified-large** (round 2, Codex F3 — the marker belongs HERE with the matrix, not only in
+the PR body): the diff exceeds 20 files / 1,500 lines because the plan's §F pre-authorizes it —
+"a status is an interface; the breadth IS the correctness", and the enum and its readers are
+indivisible (a SHARED `DecisionStatus` whose web `as const` maps are the very §A.3 readers), so
+the split line cannot run between API and web. The pre-declared enum-independent split was
+available and not needed. All six invariant-matrix rows are complete below.
+
 - The `withdrawn` enum value + write-once evidence columns (`withdrawnAt`/`withdrawnById`/
   `withdrawnByName`/`withdrawReason`) with a Membership-backed attribution FK.
 - `DecisionsService.withdraw` on the standard command spine (`resolveActor → hashRequest →
@@ -151,3 +159,18 @@ new upgrade-proof STAGE (RED: the proof run against the finding head's migration
 
 Round-1 gates: probe file 25/25 (incl. the 4 new); `pnpm check` EXIT 0; `upgrade-proof.sh` PASSED
 with the F2 stage; the full integration battery re-run on the corrective head.
+
+## Round 2 — the four Codex findings on head `1fb4e54` (1×P1, 3×P2), one batched head + the owed convergence audit
+
+The second finding-bearing head: the architectural audit is `docs/reviews/pr-337-convergence.md`
+and the correction commit carries `Review-Convergence: complete`.
+
+| # | finding | fix |
+|---|---|---|
+| R2-F1 (P2) | the diagnostics scanned only `status='withdrawn'` rows — a partial apply that already added the columns could leave ORPHAN withdrawal evidence on a pending/approved row, which future-write triggers never revisit | a third unconditional diagnostic aborts on any NON-withdrawn row carrying any withdrawal evidence; proven by a new proof stage planting exactly that state (RED: the round-1 migration ACCEPTED it → GREEN: the named abort, repair, real apply) |
+| R2-F2 (P2) | the seals did not require/freeze `publishedAt` — hostile SQL clearing it on a withdrawn row dropped the permanent record into the draft filter's author-private arm, hiding it from the pmc register | seal 2 requires `publishedAt IS NOT NULL` with the status; seal 1 freezes it on a withdrawn row; a fourth diagnostic quarantines pre-existing violations; probed (hostile clear refused; the pmc slice keeps the row) |
+| R2-F3 (P1) | the PACKET lacked the `justified-large` marker (it was only in the PR body) | the marker + justification added to the packet's Review unit beside the complete matrix |
+| R2-F4 (P2) | the subject backfill covered `pending`/`leased` only — a pre-4a DEAD push stayed subjectless, so a post-deploy withdrawal could not mark it and an operator redrive would send the stale announcement | `dead` joins the backfill; the proof's backfill plant gains a dead row and asserts both subjects |
+
+Round-2 gates: probe file 26/26; `upgrade-proof.sh` PASSED with both new stages; `pnpm check`
+EXIT 0; the api CI battery on the corrective head.

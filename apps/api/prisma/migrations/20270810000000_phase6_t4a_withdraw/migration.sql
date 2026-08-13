@@ -62,6 +62,29 @@ BEGIN
   IF bad > 0 THEN
     RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) carry approval revisions — a decision with approval evidence can never be withdrawn (sample: %). Resolve by hand, then redeploy.', bad, sample;
   END IF;
+  -- Round 2 (Codex F1): the INVERSE arm of coherence, back-checked. The trigger below refuses
+  -- orphan evidence only on FUTURE writes; a partial/manual apply that already added the
+  -- columns can leave a non-withdrawn row carrying withdrawal claims, which the withdrawn-only
+  -- scans above never visit. Quarantine it here.
+  SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
+    SELECT d."id" FROM "Decision" d
+    WHERE d."status"::text <> 'withdrawn'
+      AND (d."withdrawnAt" IS NOT NULL OR d."withdrawnById" IS NOT NULL
+           OR d."withdrawnByName" IS NOT NULL OR d."withdrawReason" IS NOT NULL)
+    LIMIT 20) x;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t4a: % NON-withdrawn decision(s) carry withdrawal evidence — orphaned claims from a partial apply (sample: %). Clear the stray columns or complete the withdrawal by hand, then redeploy.', bad, sample;
+  END IF;
+  -- Round 2 (Codex F2): a withdrawn row must be PUBLISHED — the entry guard requires it going
+  -- forward, and the visibility rule's draft arm would otherwise hide the permanent record
+  -- from the pmc register. A pre-existing violation is quarantined, never repaired silently.
+  SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
+    SELECT d."id" FROM "Decision" d
+    WHERE d."status"::text = 'withdrawn' AND d."publishedAt" IS NULL
+    LIMIT 20) x;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) have no publishedAt — the withdrawal record would vanish behind the draft filter (sample: %). Restore the publication fact by hand, then redeploy.', bad, sample;
+  END IF;
 END $$;
 
 -- attribution names a REAL member of THIS project (the completionRequestedById discipline):
@@ -97,7 +120,10 @@ WHERE e."eventId" = d."eventId"
   AND d."consumer" = 'webpush.notify'
   AND e."eventType" = 'decision.published'
   AND d."subject" IS NULL
-  AND d."status" IN ('pending', 'leased');
+  -- 'dead' included (round 2, Codex F4): a pre-4a push that exhausted its retries must still be
+  -- markable by a later withdrawal, or an operator redrive would resurrect the stale
+  -- announcement past the pre-send check (which reads the mark this subject enables).
+  AND d."status" IN ('pending', 'leased', 'dead');
 
 -- ── seal 1: terminal, and the evidence FROZEN with it ────────────────────────────────────────
 -- Trigger NAMES are load-bearing: PostgreSQL fires same-event triggers in name order, so the
@@ -120,6 +146,12 @@ BEGIN
        OR NEW."withdrawReason" IS DISTINCT FROM OLD."withdrawReason" THEN
       RAISE EXCEPTION 'phase6-t4a: withdrawal evidence is write-once — decision % cannot be re-attributed', OLD."id";
     END IF;
+    -- Round 2 (Codex F2): the PUBLICATION fact is part of the frozen record. Clearing
+    -- publishedAt on a withdrawn row would drop it into the draft filter's author-private arm
+    -- and the pmc register would lose the permanent withdrawal + its reason.
+    IF NEW."publishedAt" IS DISTINCT FROM OLD."publishedAt" THEN
+      RAISE EXCEPTION 'phase6-t4a: publishedAt is frozen on a withdrawn decision — the record stays on the register (decision %)', OLD."id";
+    END IF;
   END IF;
   RETURN NEW;
 END $fn$ LANGUAGE plpgsql;
@@ -139,6 +171,9 @@ BEGIN
     IF NEW."withdrawnAt" IS NULL OR NEW."withdrawnById" IS NULL OR NEW."withdrawnByName" IS NULL
        OR NEW."withdrawReason" IS NULL OR btrim(NEW."withdrawReason", E' \t\n\x0B\f\r') = '' THEN
       RAISE EXCEPTION 'phase6-t4a: a withdrawn decision must carry withdrawnAt, withdrawnById, withdrawnByName and a non-blank withdrawReason (decision %)', NEW."id";
+    END IF;
+    IF NEW."publishedAt" IS NULL THEN
+      RAISE EXCEPTION 'phase6-t4a: a withdrawn decision must remain PUBLISHED — the register keeps the record (decision %)', NEW."id";
     END IF;
   ELSE
     IF NEW."withdrawnAt" IS NOT NULL OR NEW."withdrawnById" IS NOT NULL

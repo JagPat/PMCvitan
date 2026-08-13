@@ -421,6 +421,30 @@ SQL
   echo "ok      4a F2: abort names the evidence-less withdrawn row (UP4A-PARTIAL)"
   # operator repair per the diagnostic's remedy (re-issue/remove), then the real apply proceeds
   $PSQL -q -c "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-PARTIAL';" || { echo "4a F2 repair failed"; exit 1; }
+
+  # ── round 2 (Codex F1): the INVERSE state — a NON-withdrawn row carrying withdrawal claims.
+  # A partial fork that already added the columns can leave orphan evidence on a pending row;
+  # the coherence trigger fires only on future writes, so the diagnostic must quarantine it.
+  echo "=== Phase 6 4a (R2-F1): planting ORPHAN withdrawal evidence on a NON-withdrawn row ==="
+  $PSQL -q <<'SQL' || { echo "4a R2-F1 plant failed"; exit 1; }
+ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnAt" TIMESTAMP(3);
+ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnById" TEXT;
+ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnByName" TEXT;
+ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawReason" TEXT;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt","withdrawReason")
+VALUES ('UP4A-ORPHAN','p1','Orphan claims','Hall','pending','stone',now(),'stray claim from a partial fork');
+SQL
+  echo "=== Phase 6 4a (R2-F1): the migration must ABORT on the orphaned evidence ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4a R2-F1: the migration ACCEPTED a non-withdrawn row carrying withdrawal evidence"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'carry withdrawal evidence'; then
+    echo "FAILED  4a R2-F1: aborted, but not by the orphan-evidence diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  echo "ok      4a R2-F1: abort names the orphaned evidence (UP4A-ORPHAN)"
+  $PSQL -q -c "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-ORPHAN';" || { echo "4a R2-F1 repair failed"; exit 1; }
 }
 
 plant_pre_phase6_firms() {
@@ -3267,13 +3291,18 @@ INSERT INTO "OutboxConsumerCatalog"("consumer","consumerKind","consumerEffect","
 VALUES ('webpush.notify','unordered','external',1,true,now()) ON CONFLICT DO NOTHING;
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
 SELECT 'UP4A-EV1','decision.published',p."orgId",p."id",900001,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV2','decision.published',p."orgId",p."id",900002,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "OutboxDelivery"("id","eventId","projectId","consumer","consumerKind","streamPosition","deliveryAction","status","payload","updatedAt")
-VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatch','pending','{"body":"stale announcement"}',now());
+VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatch','pending','{"body":"stale announcement"}',now()),
+       -- round 2 (Codex F4): a push that EXHAUSTED its retries before the deploy — the subject
+       -- must reach it too, or an operator redrive would slip past the cancellation mark
+       ('UP4A-DEL2','UP4A-EV2','p1','webpush.notify','unordered',900002,'dispatch','dead','{"body":"stale announcement (dead)"}',now());
 SQL
 $PSQL -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null || { echo "FAILED  4a migration re-run (rerunnable-by-design) did not apply"; FAIL=1; }
-assert "4a: the subject backfill reached the pre-4a undelivered decision.published push row (copied from its event's entityId, never invented)" \
-  "SELECT COALESCE(\"subject\",'<null>') FROM \"OutboxDelivery\" WHERE \"id\"='UP4A-DEL1';" \
-  "UP4A-D2"
+assert "4a: the subject backfill reached the pre-4a undelivered decision.published push rows — pending AND dead (copied from each event's entityId, never invented)" \
+  "SELECT string_agg(\"id\" || '=' || COALESCE(\"subject\",'<null>'), ',' ORDER BY \"id\") FROM \"OutboxDelivery\" WHERE \"id\" IN ('UP4A-DEL1','UP4A-DEL2');" \
+  "UP4A-DEL1=UP4A-D2,UP4A-DEL2=UP4A-D2"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
