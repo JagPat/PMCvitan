@@ -43,9 +43,14 @@ describe('groupDecisions', () => {
     expect(door?.subLabel).toBe('Master Bedroom › Main Door');
   });
 
-  it('groups by object (element) — the deepest segment', () => {
+  it('groups by object (element) — kind-true: only element-filed decisions form object groups', () => {
     const g = groupDecisions(decisions, nodes, 'element');
-    expect(g.map((x) => x.label).sort()).toEqual(['Guest Bath', 'Main Door', 'Master Bedroom', 'Terrace']);
+    // DL-1 is filed on the Main Door element; DL-2/DL-3 are ROOM-filed and DL-4 is free-text —
+    // none of those is an object, and presenting a room or a text as one is the positional
+    // misfiling P12 removes.
+    expect(g.map((x) => x.label).sort()).toEqual(['Main Door', 'No object']);
+    const none = g.find((x) => x.label === 'No object')!;
+    expect(none.rows.map((r) => r.decision.id).sort()).toEqual(['DL-2', 'DL-3', 'DL-4']);
   });
 
   it('groups by status with a fixed pending→change→approved order', () => {
@@ -57,6 +62,56 @@ describe('groupDecisions', () => {
     const g = groupDecisions(decisions, nodes, 'flat');
     expect(g).toHaveLength(1);
     expect(g[0].counts.total).toBe(4);
+  });
+});
+
+// ── P12 — kind-true grouping over the NESTED tree, presence AND absence ─────────────────
+describe('groupDecisions — kind-true grouping on a nested tree (P12)', () => {
+  const nested: ProjectNode[] = [
+    { id: 'z1', parentId: null, name: 'Site', kind: 'zone', order: 0 },
+    { id: 'w1', parentId: 'z1', name: 'West Wing', kind: 'room', order: 0 },
+    { id: 'w2', parentId: 'w1', name: 'Pour 2', kind: 'room', order: 0 },
+    { id: 'g1', parentId: 'z1', name: 'Site Gate', kind: 'element', order: 1 },
+    { id: 'd1', parentId: 'w2', name: 'Column C4', kind: 'element', order: 0 },
+  ];
+  const filed = [
+    dec('N-1', 'pending', 'w2'), // filed AT the nested room Pour 2
+    dec('N-2', 'pending', 'g1'), // a zone-level element
+    dec('N-3', 'approved', 'z1'), // filed directly on the zone
+    dec('N-4', 'pending', 'w1'), // filed on the outer room
+    dec('N-5', 'change', 'd1'), // an element under the nested room
+  ];
+
+  it("room mode groups a nested-room decision under the room it was FILED at, never a positional segment", () => {
+    const g = groupDecisions(filed, nested, 'room');
+    const byLabel = Object.fromEntries(g.map((x) => [x.label, x]));
+    // N-1 was filed at Pour 2 (the 3rd segment) — positional seg[1] would misfile it under West Wing
+    expect(byLabel['Pour 2']?.rows.map((r) => r.decision.id)).toContain('N-1');
+    expect(byLabel['West Wing']?.rows.map((r) => r.decision.id)).toEqual(['N-4']);
+    // N-5's room is the nearest room ABOVE the element it was filed on
+    expect(byLabel['Pour 2']?.rows.map((r) => r.decision.id)).toContain('N-5');
+    expect(byLabel['Pour 2']?.rows.find((r) => r.decision.id === 'N-5')?.subLabel).toBe('Column C4');
+  });
+
+  it('room mode absence: a zone-filed decision and a zone-level element never show AS a room', () => {
+    const g = groupDecisions(filed, nested, 'room');
+    const byLabel = Object.fromEntries(g.map((x) => [x.label, x]));
+    // positional logic showed N-3 under a room group named "Site" and N-2 under one named "Site Gate"
+    expect(byLabel['Site']).toBeUndefined();
+    expect(byLabel['Site Gate']).toBeUndefined();
+    expect(byLabel['No room']?.rows.map((r) => r.decision.id).sort()).toEqual(['N-2', 'N-3']);
+  });
+
+  it('element mode absence: a room-filed or zone-filed decision never shows as an object', () => {
+    const g = groupDecisions(filed, nested, 'element');
+    const byLabel = Object.fromEntries(g.map((x) => [x.label, x]));
+    expect(byLabel['Site Gate']?.rows.map((r) => r.decision.id)).toEqual(['N-2']);
+    expect(byLabel['Column C4']?.rows.map((r) => r.decision.id)).toEqual(['N-5']);
+    // positional last-segment logic showed N-1 as object "Pour 2", N-4 as "West Wing", N-3 as "Site"
+    expect(byLabel['Pour 2']).toBeUndefined();
+    expect(byLabel['West Wing']).toBeUndefined();
+    expect(byLabel['Site']).toBeUndefined();
+    expect(byLabel['No object']?.rows.map((r) => r.decision.id).sort()).toEqual(['N-1', 'N-3', 'N-4']);
   });
 });
 

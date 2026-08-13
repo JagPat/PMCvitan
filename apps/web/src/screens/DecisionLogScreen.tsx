@@ -354,8 +354,12 @@ function IssueDecisionModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** PMC tree editor — rename / delete zones, rooms and objects (indented by depth). */
-function ManageLocationsModal({ onClose }: { onClose: () => void }) {
+/** PMC tree editor — build, rename and delete the location tree (indented by depth).
+ *  Nested locations: every zone/room row carries an ADD-CHILD control (a room or an
+ *  object, per the tree rule, while the 5-level cap allows it) — the one screen devoted
+ *  to building trees can now build every legal shape, instead of only creating zones
+ *  and leaving rooms to the filing picker. Exported for the P9 probes. */
+export function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   const nodes = useStore(useShallow((s) => s.nodes));
   const renameNode = useStore((s) => s.renameNode);
   const deleteNode = useStore((s) => s.deleteNode);
@@ -378,7 +382,7 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
       <div style={{ padding: '18px 20px', maxHeight: '80vh', overflowY: 'auto' }}>
         <div id="manage-loc-title" style={{ fontWeight: 700, fontSize: 17 }}>Locations</div>
         <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4 }}>
-          Zones contain rooms; rooms contain objects. Rename or remove any — a location with decisions on it can&apos;t be deleted until you move them. A <b>draft</b> location is private to you until you publish it.
+          Zones sit at the top; rooms nest under zones or other rooms (to 5 levels); objects sit under a room or directly under a zone. Rename or remove any — a location with decisions on it can&apos;t be deleted until you move them. A <b>draft</b> location is private to you until you publish it.
         </div>
 
         <div style={{ display: 'flex', gap: 8, margin: '14px 0 6px' }}>
@@ -393,7 +397,24 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
         {list.length === 0 && <div style={{ color: 'var(--faint)', fontSize: 12.5, padding: '8px 0' }}>No locations yet — add a zone to start.</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 }}>
           {list.map((n) => (
-            <LocationRow key={n.id} id={n.id} name={n.name} kind={n.kind} depth={n.depth} draft={n.draft} onRename={(name) => renameNode(n.id, name)} onPublish={() => publishNode(n.id)} onDelete={() => deleteNode(n.id)} onSaveAsModule={n.kind === 'zone' ? () => saveZoneAsModule(n.id, n.name) : undefined} />
+            <LocationRow
+              key={n.id}
+              id={n.id}
+              name={n.name}
+              kind={n.kind}
+              depth={n.depth}
+              draft={n.draft}
+              onRename={(name) => renameNode(n.id, name)}
+              onPublish={() => publishNode(n.id)}
+              onDelete={() => deleteNode(n.id)}
+              onSaveAsModule={n.kind === 'zone' ? () => saveZoneAsModule(n.id, n.name) : undefined}
+              // add-child per the tree rule: a zone or room takes a room or an object while the
+              // child would land within the 5-level cap (row depth is 0-based → child level is
+              // depth + 2); an element is a LEAF and takes nothing.
+              onAddChild={n.kind !== 'element' && n.depth + 2 <= 5
+                ? (kind, name) => void addLocationNode({ name, kind, parentId: n.id, publish: !asDraft })
+                : undefined}
+            />
           ))}
         </div>
 
@@ -417,10 +438,26 @@ function ManageLocationsModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDelete, onSaveAsModule }: { id: string; name: string; kind: string; depth: number; draft: boolean; onRename: (name: string) => void; onPublish: () => void; onDelete: () => void; onSaveAsModule?: () => void }) {
+function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDelete, onSaveAsModule, onAddChild }: { id: string; name: string; kind: string; depth: number; draft: boolean; onRename: (name: string) => void; onPublish: () => void; onDelete: () => void; onSaveAsModule?: () => void; onAddChild?: (kind: 'room' | 'element', name: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(name);
+  const [addingKind, setAddingKind] = useState<'room' | 'element' | null>(null);
+  const [childName, setChildName] = useState('');
   const commit = () => { if (value.trim()) onRename(value.trim()); setEditing(false); };
+  const commitChild = () => {
+    if (childName.trim() && addingKind && onAddChild) onAddChild(addingKind, childName.trim());
+    setAddingKind(null);
+    setChildName('');
+  };
+  if (addingKind) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: (depth + 1) * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
+        <input autoFocus value={childName} onChange={(e) => setChildName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitChild(); }} placeholder={`New ${addingKind === 'room' ? 'room' : 'object'} in ${name}`} style={{ ...fldD, flex: 1, minWidth: 0, height: 34 }} data-testid={`loc-add-input-${id}`} />
+        <button onClick={commitChild} style={iconBtn} aria-label={`Add inside ${name}`}>✓</button>
+        <button onClick={() => { setAddingKind(null); setChildName(''); }} style={iconBtn} aria-label="Cancel">✕</button>
+      </div>
+    );
+  }
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingLeft: depth * 18, minHeight: 34 }} data-testid={`loc-row-${id}`}>
       {editing ? (
@@ -434,6 +471,12 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
           <span style={{ flex: 1, fontSize: 13.5, fontWeight: kind === 'zone' ? 600 : 400, color: draft ? 'var(--muted)' : 'var(--ink)' }}>{name}</span>
           {draft && <span style={draftChip} data-testid={`loc-draft-${id}`}>DRAFT</span>}
           {draft && <Button variant="success" onClick={onPublish} data-testid={`loc-publish-${id}`} style={{ padding: '4px 9px', fontSize: 11 }}>Publish</Button>}
+          {onAddChild && (
+            <>
+              <button onClick={() => setAddingKind('room')} style={addChildBtn} data-testid={`loc-add-room-${id}`} title={`Add a room inside ${name}`} aria-label={`Add a room inside ${name}`}>+ Room</button>
+              <button onClick={() => setAddingKind('element')} style={addChildBtn} data-testid={`loc-add-element-${id}`} title={`Add an object inside ${name}`} aria-label={`Add an object inside ${name}`}>+ Object</button>
+            </>
+          )}
           {onSaveAsModule && (
             <button onClick={onSaveAsModule} style={iconBtn} data-testid={`loc-module-${id}`} title="Save this zone (rooms, objects, checklists) as a reusable module" aria-label={`Save ${name} as a module`}>
               <BookmarkPlus size={13} />
@@ -446,6 +489,17 @@ function LocationRow({ id, name, kind, depth, draft, onRename, onPublish, onDele
     </div>
   );
 }
+
+const addChildBtn: CSSProperties = {
+  background: 'transparent',
+  border: '1px dashed rgba(35,33,28,.3)',
+  borderRadius: 6,
+  padding: '2px 7px',
+  fontSize: 10.5,
+  cursor: 'pointer',
+  color: 'var(--muted)',
+  flex: 'none',
+};
 
 const draftChip: CSSProperties = {
   fontFamily: 'var(--font-mono)',
