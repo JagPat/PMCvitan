@@ -17,7 +17,7 @@ task_state: merged
 work_item: none
 reviewed_merge: 7a688e3
 open_pr: none
-next_task: phase-6-task-3
+next_task: phase-6-task-4
 blocking_directive: none
 updated: 2026-08-13
 ```
@@ -29,60 +29,42 @@ contract gained — the P11 public-door lesson applied one door further). All
 eighteen plan probes green, staged red-first per §D; packet:
 `docs/reviews/phase-6-t2-nested-locations-packet.md`.
 
-**`next_task` is phase-6-task-3 — the DECISION-WORKFLOW rework, scheduled by the
-owner on 2026-08-13 AHEAD of the rename.** The owner hit two real gaps in the
-Decision Log (an issue cannot be recorded without 2–4 options and without going
-to the client; a wrongly-published decision cannot be withdrawn by anyone), and
-chose to ship the whole decision-workflow unit next: the settled forwarding
-design (architect as a NEW role and countersign authority; no chain until an
-architect exists; self-countersign is two explicit recorded acts; an
-disagreeing architect may reject back OR forward on; forward authority is the
-holder + the PMC), an attributable `decisions.withdraw` command (reason
-required, terminal `withdrawn` state kept as register history, removed from the
-client's pending surfaces — never a silent delete), and a no-approval issue
-type (a record with an owner of NONE — filed, visible, approvable by nobody
-because nothing is being decided). Task 3 begins with its architecture plan as
-its own review unit; the plan document ships in the same PR as the STATUS that
-names it.
+**`next_task` is phase-6-task-4 — the DECISION-WORKFLOW rework, scheduled by the
+owner on 2026-08-13 AHEAD of the rename.** (`phase-6-task-3` is NOT this unit:
+that stop is already reserved by `Review-Deferred-To-Probes` in
+`docs/reviews/pr-324-convergence.md` for the external-collaboration plan's
+deferred probes, and a stop must stay bound to the questions it owes — task 4 is
+the first free number.) The owner hit two real gaps in the Decision Log (an
+issue cannot be recorded without 2–4 options and without going to the client; a
+wrongly-published decision cannot be withdrawn by anyone), and chose to ship the
+whole decision-workflow unit next: the settled forwarding design (architect as a
+NEW role and countersign authority; no chain until an architect exists;
+self-countersign is two explicit recorded acts; a disagreeing architect may
+reject back OR forward on; forward authority is the holder + the PMC), an
+attributable `decisions.withdraw` command (reason required, terminal `withdrawn`
+state kept as register history, removed from the client's pending surfaces —
+never a silent delete), and a no-approval issue type (a record with an approver
+of NONE — filed, visible, approvable by nobody because nothing is being
+decided).
+
+**Where task 4's plan lives:** its FIRST PR ships the architecture plan document
+and the STATUS flip to `task: 4 / task_state: in_progress / phase_plan: <the new
+plan>` in ONE diff — the same-tree pattern PR #331 proved and the phase_plan CI
+pin enforces at that moment. Until that PR merges, `phase_plan` here correctly
+names the COMPLETED task-2 plan: for a merged task the named plan is history the
+loop may re-read, which is exactly what the pin's own contract says.
 
 The REMAINING gated successors, as data:
 
 | gated successor | opening event | resume action |
 |---|---|---|
-| `room` → `space` rename plan | an explicit owner go (still not given — the owner re-sequenced it BEHIND task 3 on 2026-08-13) | write the rename plan from `docs/reviews/pr-330-convergence.md`'s catalogue |
-| unit 6.1b (PR #329, held) | task 3 and the rename clearing (owner sequencing) | rebase `claude/phase6-task1b`, resume the held PR |
+| `room` → `space` rename plan | an explicit owner go (still not given — the owner re-sequenced it BEHIND task 4 on 2026-08-13) | write the rename plan from `docs/reviews/pr-330-convergence.md`'s catalogue |
+| unit 6.1b (PR #329, held) | task 4 and the rename clearing (owner sequencing) | rebase `claude/phase6-task1b`, resume the held PR |
 
 An owner SCOPE decision is not a technical-approval gate: the review loop needs
 no human sign-off (the exact-head gate cleared task 2 autonomously), exactly as
 the Phase-4 "explicit Task-1 GO" precedent recorded scope authority in STATUS
 while the correction loop ran unattended.
-
-**Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
-(`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
-(the New Project modal learned to EXPRESS the room-anchor graft target the
-contract gained — the P11 public-door lesson applied one door further). All
-eighteen plan probes green, staged red-first per §D; packet:
-`docs/reviews/phase-6-t2-nested-locations-packet.md`.
-
-**`next_task` is deliberately NONE, and the state is machine-actionable, not a
-wait.** The runner's standing work source is the Maintenance queue below — its
-own contract is that the loop is never without an actionable item — so the
-interregnum is worked, not idled. The successor set is recorded as DATA, each
-with the exact event that opens it:
-
-| gated successor | opening event | resume action |
-|---|---|---|
-| `room` → `space` rename plan | an explicit owner go (a recorded decision — a message, PR comment, or check-in reply the loop consumes as an ordinary directive; the owner has been asked) | write the rename plan from `docs/reviews/pr-330-convergence.md`'s catalogue as its own review unit |
-| decision forwarding (architect countersign) | the rename plan unit clearing (owner sequencing) | build from the settled design in its task record |
-| unit 6.1b (PR #329, held) | the two above clearing (owner sequencing) | rebase `claude/phase6-task1b`, resume the held PR |
-
-This is a SCOPE decision by the owner, not a technical-approval gate: the review
-loop still needs no human sign-off (the exact-head gate cleared this very task
-autonomously), exactly as the Phase-4 "explicit Task-1 GO" precedent recorded
-scope authority in STATUS while the correction loop ran unattended. The opening
-event is consumed mechanically — a recorded go flips `next_task` to the named
-unit in an ordinary STATUS PR; nothing polls a person, and the hourly cron plus
-the standing check-in keep the loop reachable even if the queue were ever empty.
 
 **Task 2 is NESTED LOCATIONS — the structural half of the space work.** A live
 project reads `ZONE site > ROOM Excavation`, because the middle level is
