@@ -1,7 +1,11 @@
 # The decision learns who decides — withdraw, the decider, consultation, and the architect
 
-**Status: PLAN. Four implementation units (4a–4d), each its own PR and review stop,
-in that order.** The `room` → `space` rename is NOT here (owner-gated, sequenced
+**Status: PLAN — the task-4 programme frame plus the FULL design of unit 4a.**
+Task 4 is four implementation units, 4a → 4b → 4c → 4d, each its own PR and
+review stop. This document carries 4a (`decisions.withdraw`) to implementation
+readiness; units 4b–4d keep their SCOPE in §B and receive their design in a
+dedicated follow-up plan unit (the split at the review-lifecycle limit — §B
+records why). The `room` → `space` rename is NOT here (owner-gated, sequenced
 behind this task — see `docs/STATUS.md`'s gated-successor table). External-party
 IDENTITY and the collaborator BOUNDARY are NOT here (units 6.1b/6.2/6.3 and the
 reserved probes named below). This plan reworks WHO a decision goes to and what can
@@ -53,7 +57,7 @@ Four changes, one model:
    that is born in a terminal `recorded` state, needs no options, and is
    approvable by nobody because nothing is being decided. The `architect`
    decider value joins IN unit 4d together with the role that can hold it
-   (§B.1).
+   (§B).
 
 3. **CONSULTATION distinct from approval (unit 4c)** — the PMC or architect asks
    named members for input on a decision; requests and responses are recorded
@@ -208,11 +212,11 @@ a decision every surface has since hidden. The pending-approval push therefore
 gains a SEND-TIME guard: at claim time the dispatcher re-derives that the
 decision is STILL published-and-pending, and a stale intent is dropped with the
 drop recorded (never silently) — probed by the commit-publish → lag → withdraw
-→ relay-claims ordering (P10) → **the coverage re-seal**:
-`effectCoverageVersion()` changes with any new key and is pinned at
+→ relay-claims ordering (P10). The catalog chain then continues: **the coverage
+re-seal** — `effectCoverageVersion()` changes with any new key and is pinned at
 `outbox.bootstrap.ts:115`, `outbox-operations.service.ts:143` and
-`external-effects.test.ts:47-74` — the re-seal is explicit in the diff, never a
-drive-by → `decisionsManifest.producesEvents` → `DECISION_COMMANDS` in
+`external-effects.test.ts:47-74`, so the re-seal is explicit in the diff, never
+a drive-by — → `decisionsManifest.producesEvents` → `DECISION_COMMANDS` in
 `packages/shared/src/contracts/decisions.ts` → the manifest⇄contract equality
 test (`decisions.contract.test.ts:24-58`) and the catalog-membership test
 (`module-registry.test.ts:58`).
@@ -261,386 +265,52 @@ The migration is additive and diagnostic-first in the house pattern: it ABORTS
 with a sample if any existing row already violates what it seals (none can — the
 status is new), and legacy databases upgrade row-free.
 
-## §B — Unit 4b: the decider, and the record-only issue
+## §B — Units 4b–4d: scope, and where their design now lives
 
-### 1. The model
+**SPLIT at the review-lifecycle limit (five finding-bearing heads), along the
+findings' own seam.** Across rounds 3–5 every finding landed on the 4b–4d design
+prose while §A drew none — the same seam signal that split 7B-iii-b and
+7B-iii-f, and the same move: the settled half ships, the churning half gets its
+own review unit. This document is now the task-4 PROGRAMME FRAME plus the FULL
+unit-4a design. Units 4b–4d keep their SCOPE here and receive their design in a
+dedicated docs-only plan unit — "the 4b–4d plan" — which must clear its own
+exact-head review before unit 4b implementation begins (the same plan-first
+contract this document itself satisfies for 4a).
 
-`Decision` gains `deciderKind` (default `'client'`; every existing row backfills
-`'client'` — behavior byte-identical until a caller says otherwise) and
-`deciderMembershipId` (nullable, same-project composite FK, required iff
-`kind='member'`, sealed by CHECK). **The 4b contract admits
-`'client' | 'pmc' | 'member' | 'none'` — `'architect'` joins the enum IN UNIT 4d
-WITH the role** (Codex, round 1): 4b ships before the `architect` TokenRole
-exists, and a 4b-only deployment accepting an architect-decider would create
-decisions no one can authenticate to see or approve, with PMC-on-behalf the only
-escape. The value and the role are one deliverable. The composite FK needs a
-candidate key `Membership` does not have — today it carries only `id` and
-`@@unique([projectId, userId])` — so 4b adds `@@unique([projectId, id])` as an
-additive orgs-owned schema change in the same PR, covered by
-`schema-migration-drift.test.ts`, and the FK then makes a cross-project
-membership reference unrepresentable (P17). Membership FACTS (is this membership
-active, does it hold a role) are orgs-owned reads: `decisions.workflowParticipants`
-gains `orgs` and the validation routes through the orgs participant (the
-7B-iii-g `OrgsParticipant.projectRoleCandidates` precedent — the same module
-already answers "who holds standing" for commercial), never a raw `tx.membership`
-read from the decisions module.
+The scope, unchanged from the owner's recorded intent:
 
-The create contract exposes the decider; `approveSchema` stays `{ optionIndex }`
-— the approver is still server-resolved, but the AUTHORITY check becomes: the
-actor IS the decider (by role or named membership), or the PMC acting on the
-decider's behalf, recorded honestly — `onBehalfOf` generalizes from the
-hard-coded `'client'` (`decisions.service.ts:194`) to the decider's designation.
-**The holder columns are WRITE-ONCE from the day they exist** (Codex, round 4):
-the forward-only mutation seal was scheduled with 4d, but `deciderKind`/
-`deciderMembershipId` are TRUSTED from 4b — between the two units a hostile
-update could re-home a pending decision with no recorded actor while authority,
-counts, notices and pushes follow the rewritten holder. So 4b ships the columns
-immutable-after-create (a BEFORE UPDATE trigger refuses ANY change; no 4b
-service path needs one), hostile-update probed in 4b (P17), and 4d LOOSENS that
-trigger to exactly one opening: a change accompanied by its same-transaction
-`DecisionForward` row (P34) — the freeze comes first, the door comes with the
-act that justifies it.
+- **4b — the per-decision decider, and the record-only issue.** Who decides is a
+  property of the decision: `client` (default, backfilled — behavior
+  byte-identical), `pmc`, a NAMED project member, or `none` — the record-only
+  issue, born in a terminal `recorded` state, zero options required, approvable
+  by nobody. The `architect` decider value ships in 4d with the role.
+- **4c — consultation distinct from approval.** Recorded, append-only input
+  requests to named members feeding the decider; input is never sign-off, never
+  moves status, never gates an activity.
+- **4d — the architect and forwarding.** `architect` as a real `TokenRole`; the
+  settled forwarding design with the owner's 2026-08-13 AMENDMENT (forward
+  authority = holder + PMC + architect once one exists); no chain until an
+  active architect exists; countersign as a second attributed register act;
+  self-countersign is two explicit acts; a disagreeing architect rejects back or
+  forwards on.
 
-**The ROUTE ceiling must widen with it** (Codex, round 2): the service rule is
-unreachable while `ROLE_POLICY['decision.approve']` still admits only
-client/pmc — a contractor named as decider meets a 403 BEFORE the service runs.
-4b widens the approve policy to the union of possible decider roles (the
-CEILING, pinned by the `route-policy.test.ts` identity walk) and the SERVICE is
-the authority that narrows to the actual decider — the same ceiling-then-narrow
-shape as the push catalog — probed both ways: the member-decider contractor
-approves, the same-role non-decider is refused (P16).
-
-### 2. `none` — the record-only issue
-
-`deciderKind: 'none'` answers the owner's first two questions at once: the
-decision is born PUBLISHED-or-draft as usual but in a new terminal `recorded`
-status — filed, team-visible, approvable by nobody. Its contract relaxes
-`options` from `min(2)` to `min(0)` (a record may document zero, one, or several
-courses); every other kind keeps `min(2)` — a CHOICE still needs alternatives.
-**Relaxing the contract alone leaves the product path broken** (Codex, round 1):
-`DecisionsService.create` derives its lead presentation from `input.options[0]`
-and writes the REQUIRED `Decision.photoSwatch` from `lead.swatch`, so
-`options: []` would throw before persistence with the schema green. 4b therefore
-reworks the create path for the zero-option shape — the presentation columns
-sourced from options become nullable-or-defaulted for a record (an additive
-migration + serializer arm), the web create form supports filing without options,
-and P19 asserts the FULL path (create → persist → serialize → register render),
-never contract acceptance alone. **The create/publish side effects branch too**
-(Codex, round 2): today's path unconditionally appends the "Decision awaiting
-approval" notice and pushes `decision.published` at the pending audience — a
-false approval demand for a record nobody can approve. For `deciderKind='none'`
-the notice reads "Issue recorded: <title>" (ordinary audience — it is not a
-pending notice and no stripping shape matches it deliberately) and the
-published-event push narrows to NOBODY (the same decider-routed dispatch
-narrowing §B.3 builds — a record's decider set is empty), probed at the bell
-AND the push intent (P18). `recorded` walks the SAME reader table as §A.3:
-gate reading `na` ("record only — no approval required"; an activity linked to a
-record must not wait on nobody) — **for a PUBLISHED record only** (Codex,
-round 2): `statusOf` reads status regardless of draftness, so a PRIVATE draft
-record would otherwise unblock an activity gate with evidence the team cannot
-see; the recorded arm therefore consults the draft flag — draft → `wait` ("the
-linked record is unpublished — publish it"), published → `na` — and P20 proves
-an activity linked to a draft record refuses to start until publish. Pending
-surfaces exclude `recorded` structurally,
-register shows a RECORDED state, visibility is the ordinary published-decision
-audience (it is a team record, not a pending approval — AUTH-02's
-pending-narrowing does not apply), and the `as const` maps force every miss to a
-compile error. **`recorded` is TERMINAL and sealed like `withdrawn`** (Codex,
-round 1): a BEFORE UPDATE trigger refuses any transition out of it — `approve`'s
-CAS never matches it, and hostile SQL flipping a record to `approved` would
-manufacture a locked approval the activity gate then trusts — with the seal
-probed directly (P18).
-
-### 3. The pending audience follows the decider
-
-Today "pending" is hard-wired to the client: `countPending`'s audience gate
-(`orgs.service.ts:1137`), AUTH-02's pmc/client narrowing
-(`decision-serialize.ts:69-77`), `selectActionItems`' `client-pending` item, the
-nav badge, the persisted BELL notice and its stripping predicate
-(`isPendingDecisionNotice`), and the push target `['client']` on
-`decision.published` (`external-effects.ts:41-47`). With a decider, each of
-these routes to THE DECIDER — and "each" means ALL of them (Codex, round 2,
-three more enumerated): **the bell feed** (the awaiting notice reaches pmc + the
-decider; it is STRIPPED for everyone else, so an engineer-decider sees their
-notice while the client no longer receives a demand for a decision they do not
-decide — probed decider vs same-role non-decider vs client); **the `change` /
-reapproval surfaces** (`selectReapproval`, the reapprove action item, the
-readiness wording — a reopened decision is the SAME approval obligation with
-the same audience, so the decider-follows rule covers `pending` AND `change`,
-probed for a member-decider through approve → requestChange → re-approve);
-and **`countPending` itself gains the VIEWER** (today it takes only `projectId`,
-so a portfolio tile would show a project-wide count to a same-role non-decider —
-the count API takes the viewer's identity and counts the decisions THAT VIEWER
-decides, pmc seeing all, probed on the two-engineers-one-decider case). The
-pending decision is visible to pmc + the decider (a named-member
-decider sees their own pending item; from 4d, an architect-decider sees theirs), the
-badge and action items key on "decisions I decide", and the published-event push
-reaches the decider and only the decider — the static catalog names the CEILING
-audience (the union of decider roles) and the dispatch site narrows to the
-actual decider; `buildDispatchIntent`'s mismatch refusal
-(`external-effects.ts:272-287`) is extended to treat the catalog as the ceiling.
-**"Only the decider" requires a dispatch target the push spine does not have**
-(Codex, round 1): the outbox persists ROLE audiences (`push.roles`) and
-`PushSubscription` carries no user or membership linkage, so a role-level push
-for a named-member decider would notify EVERY member holding that role, and
-omitting the role would notify nobody. 4b's first deliverable is therefore the
-targeted dispatch — and the target is a USER, not a membership (Codex, round 2):
-an org owner/admin operating as `pmc` legitimately has NO project `Membership`
-row (the `ProjectAccessService`/`OrgsParticipant` fallback), so a
-membership-keyed target would either drop them or fall back to notifying every
-pmc. The push intent gains an optional user target beside its role ceiling (a
-membership designation RESOLVES to its user at dispatch; an org-admin actor
-already IS a user), the subscription→user linkage is added where the owning
-module holds it, and the probe pair proves BOTH directions: the target receives,
-a same-role non-target does NOT — including the org-admin-requester case in 4c
-(P26). 4c's consultation pushes ride the same mechanism. Every one of these readers is named in the
-unit's packet the way §A.3 names its readers.
-
-## §C — Unit 4c: consultation — input is not sign-off
-
-Two labour-adjacent append-only facts, owned by decisions:
-`DecisionConsultation` (**`projectId`**, decisionId, requestedById,
-consulteeMembershipId, question, requestedAt) — the child carries its OWN
-`projectId` column (Codex, round 2: a composite FK cannot bind columns the
-child does not have), and BOTH references are project-scoped through it: the
-composite FK onto the `(projectId, id)` candidate key 4b adds to `Membership`,
-and a composite FK onto `Decision(projectId, id)`, so a project-A decision can
-never name a project-B consultee — and `DecisionConsultationResponse` (consultationId,
-response text, an OPTIONAL recommended option, respondedAt; append-only,
-sealed). **The recommendation is a same-decision option REFERENCE, never a raw
-index** (Codex, round 2): an index is append-only evidence that nothing binds to
-the decision's actual options — `3` on a two-option decision is immutable
-nonsense the UI cannot render, and an index survives option reordering pointing
-somewhere else. The response stores the server-resolved `DecisionOption` id
-under a composite FK constrained to the SAME decision — and the response row
-carries the CHILD KEYS that FK needs (Codex, round 3: a database FK cannot
-prove "same decision" through the parent consultation row): the response gains
-its own `decisionId`, bound TWICE — `(consultationId, decisionId)` referencing
-a `(id, decisionId)` candidate key on `DecisionConsultation` (the response
-belongs to its consultation's decision, by construction) and
-`(decisionId, recommendedOptionId)` referencing a `(decisionId, id)` candidate
-key added on `DecisionOption` — so a response to a consultation on decision A
-naming decision B's option is unrepresentable, with the hostile probe feeding
-an out-of-range index and a foreign decision's option id (P27). **`question` and `response` are user-supplied EVIDENCE and carry the
-sibling non-blank discipline** (Codex, round 1): zod `trim().min(1)` at the
-contract AND the exact DB CHECK `btrim(x, E' \t\n\x0B\f\r') <> ''` on both
-columns — append-only whitespace is immutable evidence that says nothing — with
-P23 asserting the whitespace-only refusal at both layers, not merely
-round-trip/attribution. The PMC requests (the architect joins the requester set
-IN 4d with the role — the same staging rule as the decider value, §B.1: no
-authority names a role that cannot yet authenticate); the named member responds;
-the thread renders under the decision in the register and in the decider's view. Three invariants, stated
-now: consultation NEVER moves `status` (no CAS touches it), NEVER changes a gate
-verdict, and WIDENS visibility exactly one way — a consultee sees THAT decision
-(and its thread) while their consultation stands, an exception added to
-`decisionVisibleToViewer` beside AUTH-02, not a rewrite of it. **And the
-widening has an ELIGIBILITY carve-out** (Codex, round 2): a consultation may be
-requested only on a decision whose question is still OPEN — in 4c that set is
-`pending` or `change` (**the `awaiting_countersign` arm is ADDED BY 4d with the
-status itself** — Codex, round 3: 4c ships before that enum value exists, the
-same staging rule as every other 4d-owned value; 4d extends the eligibility and
-its visibility probe) **AND PUBLISHED** (Codex, round 4: status alone admits an
-author-private DRAFT, whose `status` is `pending` — a consultation on it would
-hand the consultee the title and question of a decision its own author has not
-released; `publishedAt IS NOT NULL` joins the request AND response guards,
-probed: draft-pending consultation refused with no visibility widening, P25) —
-never on `withdrawn` (whose title and reason are pmc-only; a consultation there
-would leak exactly what §A hides), `approved` or `recorded` (nothing left to
-inform). Refused 409 at the service, with the
-withdrawn-leak probe asserting a consultee gains NO visibility of a withdrawn
-row (P25). **The RESPONSE command re-checks the same eligibility at ITS moment**
-(Codex, round 3): a request made while `pending` outlives the decision, and a
-stale or offline response after a withdrawal would append evidence — and push a
-notification — against a row the consultee must no longer see. A response
-against a since-closed decision is refused 409, probed by the
-request → withdraw → late-response sequence (P25). Events
-`decision.consultation_requested` (push to the consultee) and
-`decision.consultation_responded` (push to the requester) join the catalog with
-the same re-seal discipline as §A.4. The consultee is a MEMBERSHIP — when
-external collaborators arrive (6.2+), they arrive as members and this table
-already names them.
-
-## §D — Unit 4d: the architect, and forwarding
-
-### 1. The role, honestly fanned out
-
-`architect` joins `TokenRole` (`packages/shared/src/domain/types.ts:16`) and its
-mirrors — `auth.ts:24`, BOTH zod role enums (`contracts.ts:6,616`), `PushRole`
-(`external-effects.ts:22`), `decisionsManifest.permissions`, the membership-role
-comment (`schema.prisma:812`), and every `ROLE_POLICY` entry the role belongs in
-(the exact policy row set is the unit's FIRST deliverable — `project.read`
-certainly among them, `decision.create` deliberately NOT (issuing stays the
-PMC's) — and the `route-policy.test.ts` identity walk pins whatever it says).
-The role is a project MEMBERSHIP role like the other five;
-`worker` stays deliberately absent from the zod allowlists. Where the controller
-prose already said "PMC/architect" (`decisions.controller.ts:28,41,53`,
-`policy.ts:21`), the allowlist finally matches the words — that is this unit's
-one-line summary.
-
-### 2. Orchestration
-
-The settled design, plus the owner's amendment, as behavior:
-
-- **Forwarding**: an append-only `DecisionForward` chain — `projectId`,
-  `decisionId`, `fromDesignation` (the DISPLACED holder), `toDesignation` (the
-  new one), **`forwardedById` (the ACTOR who exercised the authority — Codex,
-  round 2: forward authority includes non-holders, so a PMC forwarding a
-  client-held decision must be recorded as the PMC displacing the client;
-  collapsing actor and holder into one column loses one or the other)**,
-  `reason`, `at` — all immutable. The HOLDER is not a new concept: it is the
-  decision's CURRENT decider designation (§B.1) — a decision is born held by
-  its decider, forwarding re-points that designation, and the chain records
-  each hop, so every pending surface, badge and push that "follows the decider"
-  follows the forward automatically. **And forwarding EMITS** (Codex, round 2):
-  a `decision.forwarded` event joins the catalog (`{ invalidate: true }` with
-  the targeted push at the NEW holder through §B.3's user-level dispatch), else
-  the projection, open snapshots and the new holder's badge stay stale until a
-  full reload while the database holder has already moved — with the catalog
-  re-seal probed like §A.4's (P34). **The holder is mutable ONLY through the
-  recorded act** (Codex, round 3): because `deciderKind`/`deciderMembershipId`
-  ARE the holder that approval authority, pending counts and targeted pushes
-  trust, a DB trigger refuses any change to them unless the SAME transaction
-  appends the matching `DecisionForward` row — a holder change with no recorded
-  actor and reason is unrepresentable, hostile-update probed (P34). **And
-  forwarding is legal only in the states the NEW HOLDER can act on** (Codex,
-  rounds 3+4): `pending` and `change` ONLY, CAS'd on status. Terminal states
-  (`approved`/`recorded`/`withdrawn`) would append a holder change where no
-  approval can ever follow — and `awaiting_countersign` is EXCLUDED from the
-  generic command too (round 4): that status is the ARCHITECT's action item, so
-  a generic forward there would hand the new holder a decision they cannot
-  re-approve or complete; while a countersign is pending the ONLY routing moves
-  are the architect's own — countersign, reject-back, or forward-on through the
-  disagreement flow below, which transitions to `change` and leaves the new
-  holder actionable. Ineligible-status forwards are 409, BOTH classes probed
-  (P30). Forward
-  authority: the current HOLDER + the PMC **+ the architect once one exists**
-  (the AMENDMENT — previously holder + PMC).
-  The `reason` is user-supplied EVIDENCE for an append-only holder change and
-  carries the sibling non-blank discipline — zod `trim().min(1)` AND the exact
-  `btrim(x, E' \t\n\x0B\f\r') <> ''` CHECK (Codex, round 2; P34). And the
-  TARGET must be able to act (Codex, round 2): `toDesignation` is validated
-  through the orgs participant as an ACTIVE same-project member/role that can
-  hold the decision — forwarding to a removed membership or an unheld role
-  commits a holder no one can authenticate as, vanishing the decision from
-  every pending surface with PMC-on-behalf the only way back. A removed-target
-  forward is a 409, probed (P30).
-  **Forwarding SERIALIZES against approval and countersign** (Codex, round 1 —
-  the concrete interleaving: A reads holder=client and starts approving, B
-  forwards to engineer and commits, A's approval lands under a holder that no
-  longer exists): every one of approve/countersign/forward takes the decision
-  row's lock and re-checks the holder INSIDE the transaction (the lock-before-
-  read rule), so the loser of either ordering is a deterministic 409 — proven by
-  a barrier probe in BOTH orderings asserting exactly one surviving outcome and
-  a coherent holder (P35).
-- **No chain until an architect exists — and "exists" means an ACTIVE
-  membership** (Codex, round 1): `Membership` rows are soft-removed
-  (`invited | active | removed`), so mere row presence would leave the chain
-  armed after the only architect left, stranding every approval behind a
-  countersign nobody can give. The switch is "an ACTIVE architect membership
-  exists", read through the orgs participant (§B.1's edge). **And the switch's
-  WRITERS serialize with its readers** (Codex, round 2 — the concrete
-  interleaving: A reads "no active architect" and approves straight to
-  `approved`; B promotes a consultant to architect and commits; A commits an
-  approval the now-active chain should have held at `awaiting_countersign`):
-  approve/countersign/forward read the switch under `lockProjectReadiness`, and
-  the orgs-side mutations that can flip architect presence —
-  `MembersService.updateRole` (today lock-free at `members.service.ts:106-110`),
-  member removal/restore — take the SAME lock when the role entering or leaving
-  is `architect`, joining the §A lock-coverage enumeration in 4d. A
-  role-change-vs-approve barrier probe covers activation AND deactivation in
-  both orderings (P36). A project that removes its only architect DEACTIVATES
-  the chain for NEW approvals; a decision already `awaiting_countersign` at that
-  moment is NEVER auto-flipped — the PMC resolves it by an explicit attributable
-  act (complete it under the no-chain rule, or return it to the decider), both
-  recorded as chain entries. Probes: no-architect-ever (P29), removed-architect
-  + the stranded-decision resolution (P29b), the switch races (P36).
-- **Countersign, and the state that carries it** (Codex, round 1): §A's
-  eligibility proof rests on `pending` being unreachable after ANY approval act,
-  and "approved but not yet countersigned" is a state the enum must therefore
-  NAME rather than fake. Under an active chain, the decider's approval writes
-  its `DecisionApprovalRevision` and moves the decision to a new
-  **`awaiting_countersign`** status (the third and last new `DecisionStatus`
-  value, walking the same §A.3 reader table: gate reads `wait` — work must not
-  start on an uncountersigned approval; pending surfaces show it to the
-  ARCHITECT as their action item; withdraw refuses it — an approval act exists,
-  which the never-approved DB seal also enforces). **A provisional approval must
-  not be TRUSTABLE as a final one** (Codex, round 3): the register is already a
-  provenance TARGET — Phase-3 spec provenance FKs a `DecisionApprovalRevision`
-  as "an approval that really happened" — so a pre-countersign revision could
-  be pinned by downstream provenance while the gate still waits. The register
-  row therefore carries `finalized` (born `true` outside a chain — today's
-  behavior byte-identical; born `false` under a chain, flipped `true` by the
-  countersign as its ONE permitted transition, trigger-sealed), and the
-  downstream provenance reference becomes the CHECK-pinned composite the
-  repository already proved on `PurchaseOrder.comparisonStatus`: the
-  referencing side carries `revisionFinalized` CHECK-pinned `true` in a
-  composite FK onto the register's `(id, finalized)` candidate key, so
-  provenance naming an unfinalized revision is UNREPRESENTABLE and a
-  finalized→false flip is refused by the FK itself (hostile probes in P31).
-  **And the transition EMITS its own truth** (Codex, round 3): reusing
-  `decision.approved` for the awaiting state would lie to every consumer, so
-  `decision.awaiting_countersign` joins the catalog (`invalidate: true`, the
-  targeted push at the ARCHITECT — their action item must not wait for a
-  reload), the countersign itself emits the real `decision.approved`, and the
-  re-seal chain is §A.4's (P31). The architect's countersign — a second,
-  separately-attributed register act referencing the exact
-  `DecisionApprovalRevision` — moves it to `approved`. A SELF-countersign
-  (architect is also the decider) is TWO explicit recorded acts under two
-  idempotency keys, never one implied one. `pending` stays unreachable after any
-  approval act, so §A's proof survives 4d intact.
-- **Disagreement — and the `change` state's OWN machinery honored** (Codex,
-  round 2): reusing a state borrows its whole contract, and `change` is backed
-  by exactly ONE open `ChangeRequest` — `approve()` from `change` rolls back
-  unless precisely one open request resolves (`decisions.service.ts:226-236`),
-  and the serializer renders the reason FROM that open row. So BOTH
-  disagreement outcomes land in `change` AND create the open `ChangeRequest` in
-  the same transaction, requested by the architect with the disagreement
-  reason. **The request carries its ORIGIN, and the ordinary escape hatch is
-  closed for it** (Codex, round 3): `ChangeRequest` gains an immutable
-  `origin: 'standard' | 'countersign_rejection'` (additive, default
-  `'standard'`), because the existing `withdrawChange` restores
-  `change → approved` — on a disagreement request that path would complete an
-  approval WITHOUT its countersign — so `withdrawChange` refuses
-  `countersign_rejection` requests with a 409 naming re-approval as the only
-  way forward, seal-probed (P33). **And the request's EVIDENCE freezes with its
-  origin** (Codex, round 4): sealing `origin` alone leaves `reason`,
-  `costImpact`, `timeImpactDays` and `requestedById` — the very fields the
-  serializer renders as the disagreement — freely rewritable under an intact
-  origin. The freeze trigger covers the evidence set for EVERY `ChangeRequest`
-  row (the class, not the instance: a standard request's reason is evidence
-  too), with the status/resolution close transitions as the only permitted
-  mutations — hostile rewrites probed (P33). **And the request's REQUIRED fields are
-  populated honestly** (Codex, round 3): `ChangeRequest.costImpact` and
-  `timeImpactDays` are non-null and rendered, so the disagreement command
-  accepts both as OPTIONAL inputs (the architect may know the impact)
-  defaulting to 0, and P33 asserts the rendered change detail shows the
-  rejection with its reason and impacts. The two paths: **REJECT BACK** keeps
-  the original decider as holder — they re-approve
-  (which resolves the request, per the existing machinery) and the chain runs
-  again; **FORWARD ON** re-points the holder to the decider the architect
-  names (validated active, as above) — the NEW holder finds an actionable
-  change-state decision, re-approves, and the chain runs again
-  (`awaiting_countersign → countersign → approved`). Neither path returns to
-  `pending` (the §A invariant holds); neither erases the approval act it
-  answers — the register keeps both sides; and approve-from-`change` under an
-  ACTIVE chain lands `awaiting_countersign` exactly like approve-from-`pending`
-  (the countersign rule is about the chain, not the prior status). Probed end
-  to end: P33 drives reject-back AND forward-on through re-approval to
-  completion by the new holder.
-
-The unit writes only decisions-owned TABLES — its one foreign CODE change is
-the readiness lock joining the orgs role mutations (§ above), an edit the orgs
-module makes to its own commands — and the one foreign fact it needs
-is DECLARED now rather than left conditional (Codex, round 1): membership truth
-— active standing, held role, same-project identity — is orgs-owned, so
-`decisions.workflowParticipants` gains `orgs` in 4b and every consumer (member-
-decider validation §B, consultee validation §C, the architect presence switch
-and holder checks here) routes through the named orgs participant API
-(`projectRoleCandidates`/`hasProjectRoleStanding` and an active-membership
-assertion beside them — the 7B-iii-g precedent), never a synchronous
-`tx.membership` read from the decisions module. That is the P5 layering lesson
-from `pr-324-convergence.md` applied up front — the reserved task-3 CHECK is not
-run here, the discipline is.
+**The design decisions rounds 1–5 established for these units are BINDING on
+the 4b–4d plan and are recorded, each with the finding that forced it, in
+`docs/reviews/pr-335-convergence.md`** — among them: the decider reader
+enumeration (bell notice, reapproval surfaces, viewer-scoped `countPending`,
+push audience); the approve route ceiling widened then service-narrowed; the
+user-level (not membership-level) push target; the zero-option create-path
+rework and `recorded` terminal seal; the `Membership(projectId, id)` candidate
+key and the orgs participant edge; the consultation `projectId` child column,
+option-reference keys, non-blank evidence, and published-only + lock-guarded
+eligibility at request AND response; `awaiting_countersign` as a first-class
+status with the `finalized` register discipline and its emission; the
+`ChangeRequest` origin + evidence freeze and the closed `withdrawChange`
+escape; forwarding's actor/holder attribution, its event, its open-state and
+active-target rules, and the holder columns write-once from 4b. The full prose
+of the superseded design lives in this PR's own head history (`ac164c5`) and is
+the 4b–4d plan author's starting material — nothing is re-litigated from
+memory.
 
 ## §E — Named probes
 
@@ -669,55 +339,30 @@ against` names the exact site.
 | P13 | projection `decisions.inbox`: live == projection == rebuild across a withdraw; the rebuild emits zero events | the diagnostic comparables on the new status |
 | P14 | the web outbox op replays exactly once under its persisted key; the register shows WITHDRAWN with reason; the action is absent for non-pmc and for ineligible states | the op-union variant + screen state absent |
 
-### Unit 4b
+### Units 4b–4d
 
-| probe | proves | must first be seen to FAIL against |
-|---|---|---|
-| P15 | default-decider create is byte-identical to today (contract default + backfill) — the no-caller-change proof | the field's absence itself (schema equality fixture) |
-| P16 | a `member`-decider decision is approvable by that member and by pmc-on-behalf (recorded as on-behalf-of-the-decider), and by NO one else — the contractor decider passes the WIDENED route ceiling and is accepted by the service; a same-role non-decider passes the route and is refused by the SERVICE (the authority) | `decisions.service.ts:194` hard-coded `'client'`; `ROLE_POLICY['decision.approve']` admitting only client/pmc 403s the decider at the route |
-| P17 | `deciderKind='member'` without a membership id (and the inverse) is unrepresentable — contract 400 and PG CHECK; a CROSS-PROJECT membership reference is refused by the composite FK onto `Membership(projectId, id)`; and the holder columns are WRITE-ONCE — a hostile UPDATE re-homing a pending decision is refused by the 4b immutability trigger (loosened only by 4d's forward-act rule) | the CHECK + the candidate key absent — hostile insert accepted; the holder columns freely writable between 4b and 4d |
-| P18 | a `none` decision is born `recorded`, appears in the register and NEVER in any pending surface, badge, or action item; publishing it appends NO "awaiting approval" notice and pushes to NOBODY ("Issue recorded" notice instead — the bell and the push intent both asserted); PG refuses any transition OUT of `recorded` (approve CAS and hostile SQL both) | the `recorded` arm absent in each filter; the unconditional pending notice/push at `decisions.service.ts:101,149`; the terminal trigger absent |
-| P19 | a record files end-to-end with `options: []` — create → persist → serialize → register render (the FULL product path, not contract acceptance alone) — and every other kind still refuses fewer than 2 | `contracts.ts:467-478` unconditional `.min(2)`; `DecisionsService.create`'s `input.options[0]` lead derivation throws on the empty array |
-| P20 | an activity linked to a PUBLISHED `recorded` decision reads gate `na` with the record-only reason; linked to a DRAFT record it reads `wait` ("unpublished") and `start` refuses — publishing flips it to `na` | `readiness.ts:154-165` else-branch; `statusOf` blind to draftness |
-| P21 | the pending push on `decision.published` reaches the decider and ONLY the decider — a same-role NON-decider member receives nothing (the per-membership dispatch target) | the static `push: ['client']` at `external-effects.ts:41-47`; the role-only push spine |
-| P22 | the WHOLE audience follows the decider: a named-member decider SEES their pending decision, their bell notice, their reapproval item after approve → requestChange, and a portfolio count of 1 — while a same-role non-decider sees none of these (count 0, notice stripped) and the client no longer receives a demand for a decision they do not decide | `decision-serialize.ts:69-77` pmc/client-only arm; `isPendingDecisionNotice` pmc/client stripping; `selectReapproval`'s client-specific item; `countPending(projectId)` blind to the viewer |
+Their probe tables ship WITH their design, in the 4b–4d plan unit — a probe
+without its design decision is a number, not a commitment. The obligations
+those tables must discharge (every finding of rounds 1–5) are enumerated in
+`docs/reviews/pr-335-convergence.md`, and the superseded draft tables
+(P15–P36) remain readable at this PR's head `ac164c5` as starting material.
 
-### Unit 4c
+Ordering note: P7 sits inside 4a deliberately — the publish CAS is 4a's
+neighbour-repair, and the race probe is worthless while withdraw (the reason
+the window matters) does not exist.
 
-| probe | proves | must first be seen to FAIL against |
-|---|---|---|
-| P23 | a consultation request + response round-trips, append-only at PG (no UPDATE/DELETE), attributed both ways; a whitespace-only `question` or `response` is refused at the contract AND by the `btrim(x, E' \t\n\x0B\f\r')` CHECK | the tables/seals absent; the non-blank checks absent |
-| P24 | consultation moves NO status and changes NO gate verdict (fixture: pending stays pending, gate reading identical before/after) | trivially green only AFTER the tables exist — red at the staged baseline via the absent read |
-| P25 | the consultee sees THAT decision only while their consultation stands; another consultant still sees nothing; a consultation on a `withdrawn`/`approved`/`recorded` decision is refused 409 and a withdrawn title/reason is NEVER reachable through a consultation; a consultation on an author-private DRAFT (`status='pending'`, `publishedAt` null) is refused with no visibility widening; a LATE response after the decision closes (request-while-pending → withdraw → respond) is refused 409 with no row and no push | `decision-serialize.ts:69-77`; the missing eligibility carve-out; the status-only guard admitting drafts; the response command trusting request-time eligibility |
-| P26 | the two consultation events push to exactly the consultee / the requester — INCLUDING an org-admin requester with no membership row (user-level target), while every same-role non-target member receives nothing; the catalog re-seal is exact | the catalog entries absent; a membership-keyed target that drops the org-admin |
-| P27 | the consultation's OWN `projectId` binds both ends — a cross-project MEMBERSHIP and a cross-project DECISION are each unrepresentable (composite FKs onto `Membership(projectId,id)` and `Decision(projectId,id)`); the RESPONSE carries its own `decisionId` bound through BOTH candidate keys (`DecisionConsultation(id,decisionId)` and `DecisionOption(decisionId,id)`), so a response naming another decision's option — through any parent — is unrepresentable | the `projectId`/`decisionId` child columns + FKs absent — hostile inserts accepted |
-
-### Unit 4d
-
-| probe | proves | must first be seen to FAIL against |
-|---|---|---|
-| P28 | an `architect` membership authenticates, resolves policy, and appears in every role mirror (compile + runtime walk) | the `TokenRole` union — each mirror RED one by one |
-| P29 | with NO ACTIVE architect membership ever, 4b behavior is byte-identical (no chain, no countersign) — the presence-switch proof | the activation predicate |
-| P29b | removing the only architect DEACTIVATES the chain for new approvals; a decision already `awaiting_countersign` is never auto-flipped and is resolved only by an explicit attributable PMC act | presence read as row-existence — a `removed` membership keeps the chain armed |
-| P30 | forward authority: holder ✓, pmc ✓, architect ✓ (once active), any other member ✗ — the AMENDED rule; a forward naming a REMOVED membership or an unheld role is a 409 (active-target validation); a forward of an `approved`/`recorded`/`withdrawn` decision is a 409, AND a generic forward of an `awaiting_countersign` decision is a 409 (that status routes only through the architect's own countersign/reject-back/forward-on) | the pre-amendment holder+PMC check; the unvalidated `toDesignation`; the status-blind forward; the generic command stranding a new holder in the architect's state |
-| P31 | a decider approval under an active chain writes its revision `finalized=false` and lands `awaiting_countersign` (gate `wait`, withdraw refused, `decision.awaiting_countersign` emitted with the architect-targeted push); the countersign — a second attributed register act referencing the exact `DecisionApprovalRevision` — flips `finalized=true` (its ONE permitted transition), lands `approved`, and emits the real `decision.approved`; hostile: downstream provenance naming an UNFINALIZED revision is unrepresentable (the CHECK-pinned `(id, finalized)` composite FK) and a `finalized` true→false flip is refused | the countersign state/guard absent; the register trusted regardless of finality; `decision.approved` reused for the awaiting state |
-| P32 | a self-countersign is two explicit acts with two ledger entries under two idempotency keys | the single-act shortcut |
-| P33 | BOTH disagreement outcomes land in `change` WITH the open `ChangeRequest` created in-tx (`origin='countersign_rejection'`, impacts defaulted 0 and rendered with the reason; NEVER back to `pending`), keeping BOTH register acts; reject-back keeps the decider as holder, forward-on re-points to the named ACTIVE decider; each path completes end-to-end — re-approve resolves the request, lands `awaiting_countersign`, countersign lands `approved`; and `withdrawChange` REFUSES a `countersign_rejection` request 409 (the ordinary escape would approve without a countersign); hostile SQL rewriting a request's `reason`/`costImpact`/`timeImpactDays`/`requestedById` is refused by the evidence-freeze trigger (all origins — only the close transitions may mutate) | the chain table absent; a reject-back landing `change` with NO open request (`decisions.service.ts:226-236` rolls the re-approval back and the serializer shows no reason); `withdrawChange` restoring `change → approved` on a disagreement request; the request evidence freely rewritable under an intact `origin` |
-| P34 | the forward chain is append-only at PG and same-project-sealed; each entry records the DISPLACED holder and the ACTING forwarder as distinct immutable facts (a PMC forwarding a client-held decision shows both); a whitespace-only forward `reason` is refused at the contract AND by the `btrim(x, E' \t\n\x0B\f\r')` CHECK; `decision.forwarded` is in the catalog, the re-seal is exact, and the targeted push reaches the NEW holder; hostile: a direct UPDATE of `deciderKind`/`deciderMembershipId` with NO same-tx `DecisionForward` row is refused by the holder trigger | hostile insert/update accepted; the non-blank checks absent; one `fromId` column that loses actor or holder; the catalog entry absent — projection/badge stale after a holder move; the holder columns freely writable |
-| P35 | forward vs approve/countersign under the deterministic barrier, BOTH orderings: exactly one outcome survives, the loser is a 409, the holder is coherent (no approval recorded under a superseded holder) | the lock-free holder read — both interleavings commit at the staged baseline |
-| P36 | architect role-change vs approve under the deterministic barrier, BOTH directions (activation: promote-to-architect vs a direct approve; deactivation: demote vs a chain approve), BOTH orderings: the committed outcome matches the switch state AT COMMIT — never `approved` under an active chain, never `awaiting_countersign` under an inactive one | `MembersService.updateRole` lock-free at `members.service.ts:106-110` — the stale-switch approval commits at the staged baseline |
-
-Ordering notes: P7 sits inside 4a deliberately — the publish CAS is 4a's
-neighbour-repair and the race probe is worthless while withdraw (the reason the
-window matters) does not exist. P15 opens 4b because every later probe leans on
-the backfill being invisible. P29 precedes P30–P33: the chain probes are
-meaningless until the presence-switch is proven off.
 
 ## §F — Staging, review units, and the known docs-only constraint
 
-**One unit per PR, in order 4a → 4b → 4c → 4d**, each within the standard budget
-(20 files / 1,500 lines). 4a's fan-out is the widest (a status is an interface;
-the breadth IS the correctness) and is expected to brush the file budget.
+**The staging, after the §B split:** this plan PR (the frame + the 4a design) →
+**4a implementation** → **the 4b–4d plan unit** (docs-only, its own exact-head
+review, carrying every §B obligation) → 4b → 4c → 4d, one unit per PR, each
+within the standard budget (20 files / 1,500 lines). 4a first is the point: it
+is the owner's live defect, its design has been finding-free since round 3, and
+nothing in it depends on the 4b–4d design settling.
+
+4a's fan-out is wide (a status is an interface; the breadth IS the
+correctness) and is expected to brush the file budget.
 **The enum and its readers are indivisible, so the split line cannot run between
 API and web** (Codex, round 1): `DecisionStatus` is a SHARED type and the web's
 `as const` maps are the very readers §A.3 enlists — an API-only first half
@@ -726,11 +371,11 @@ hidden/leaking states P10/P14 exist to prevent. If 4a exceeds budget, the
 pre-declared split extracts the ENUM-INDEPENDENT repairs instead — the `publish`
 CAS (P7) and the withdrawal-notice audience predicate wiring (P10's filter
 half) land as a small preparatory PR touching no status value — and the enum
-with its COMPLETE reader closure stays one unit, never mid-invariant. Each unit lands with its packet,
-reproduce-first probes staged RED per §E, additive diagnostic-first migrations
-only, and the tripwire pins advanced in the same PR (§A lock-coverage gains
-`decisions.withdraw`; the external-effect coverage version re-seals in 4a, 4b
-and 4c; the role mirrors pin in 4d).
+with its COMPLETE reader closure stays one unit, never mid-invariant. Each unit
+lands with its packet, reproduce-first probes staged RED per §E, additive
+diagnostic-first migrations only, and the tripwire pins advanced in the same PR
+(§A lock-coverage gains `decisions.withdraw`; the external-effect coverage
+version re-seals with each unit's events).
 
 **This plan PR itself** set out to ship the plan + the STATUS flip to `task: 4 /
 in_progress` in ONE diff (the #331 pattern). The known constraint — docs-only,
