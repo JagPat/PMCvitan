@@ -139,13 +139,22 @@ export function isNoneFlipShape(now) {
 }
 const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cleared']);
 
-/** The Now-block fields a landing PROPOSES (#334 round 5). A head whose landing fields
- *  EQUAL the default branch's is carrying main's state, whatever else its diff touches —
- *  editing a historical STATUS paragraph puts the file in the diff without proposing a
- *  transition. Compared field-by-field, trimmed, so cosmetic whitespace never counts. */
-const LANDING_FIELDS = ['phase', 'task', 'task_state', 'work_item', 'open_pr', 'next_task'];
+/** Whether a head's Now block PROPOSES a state transition (#334 rounds 5–6). A head whose
+ *  Now block EQUALS the default branch's is carrying main's state, whatever else its diff
+ *  touches — editing a historical STATUS paragraph puts the file in the diff without
+ *  proposing anything. Round 5 compared an enumerated field list and round 6 promptly
+ *  found the field it missed (`blocking_directive` — a directive-only correction differs
+ *  in nothing else), which is the round-4 lesson pointed at FIELDS: gate the class, not
+ *  the instance. So the comparison is now the WHOLE Now block minus `updated` (the
+ *  timestamp — a cosmetic touch that must never count as a transition), over the UNION of
+ *  both sides' keys so an added or removed field also counts. Field values are trimmed. */
 function landingFieldsDiffer(headNow, defaultBranchNow) {
-  return LANDING_FIELDS.some(
+  const keys = new Set([
+    ...Object.keys(headNow ?? {}),
+    ...Object.keys(defaultBranchNow ?? {}),
+  ]);
+  keys.delete('updated');
+  return [...keys].some(
     (field) => String(headNow?.[field] ?? '').trim() !== String(defaultBranchNow?.[field] ?? '').trim(),
   );
 }

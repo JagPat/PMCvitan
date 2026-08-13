@@ -733,6 +733,31 @@ test('a PR editing only a historical STATUS paragraph does not suppress its own 
   assert.ok(body, "a historical-paragraph STATUS edit was mistaken for a landing proposal — the live PR's open_pr drift went unreported");
 });
 
+// FINDING (#334 P2, round 6) — round 5 enumerated the landing fields and promptly missed
+// one: a correction that ONLY clears a stale `blocking_directive` from a terminal handoff
+// differs in no enumerated field, so it was not recognized as the correction in flight and
+// the shepherd would advise the #303 stale-open_pr trap. The comparison is now the WHOLE
+// Now block minus the timestamp — the round-4 lesson (gate the class, not the instance)
+// applied to fields.
+test('a directive-only STATUS correction is recognized as the correction in flight', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const stale = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'phase-6-task-4', blocking_directive: 'fix-something', updated: '2026-08-12' };
+  const corrected = { ...stale, blocking_directive: 'none', updated: '2026-08-13' };
+  const body = buildDriftHandoff({
+    statusNow: stale,
+    openPullRequests: [{ number: 346, headRefName: 'claude/status-directive-clear', isDraft: true }],
+    headStatuses: [{ number: 346, now: corrected, editsStatus: true }],
+  });
+  assert.equal(body, null, 'the directive-only correction was not recognized — the shepherd would advise the #303 stale-open_pr trap');
+  // …and `updated` alone must NEVER count as a proposal: a date-touch is not a transition.
+  const dateOnly = buildDriftHandoff({
+    statusNow: stale,
+    openPullRequests: [{ number: 347, headRefName: 'claude/docs-touchup-2', isDraft: true }],
+    headStatuses: [{ number: 347, now: { ...stale, updated: '2026-08-14' }, editsStatus: true }],
+  });
+  assert.ok(dateOnly, 'a timestamp-only difference was mistaken for a landing proposal');
+});
+
 // FINDING (#331 head 35d9532, P1) — STATUS named a `phase_plan` that existed only on a
 // DIFFERENT unmerged branch. The runner's first act after parsing STATUS is opening that
 // file (docs/AUTONOMOUS_LOOP.md), so a dangling reference is the documented stall mode:

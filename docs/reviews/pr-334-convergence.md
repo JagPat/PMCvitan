@@ -8,7 +8,8 @@ Owed at the second finding-bearing head.
 | `9fad0cc` | the owner schedules the decision-workflow rework; interregnum → real handoff | 3 (P2) | corrected on `784a113` |
 | `784a113` | round-2 corrections + this packet | 3 (P2) | corrected on `b276e0c` |
 | `b276e0c` | round-3 corrections (`editsStatus` on the none-flip only) | 1 (P2) | corrected on `d27c209` |
-| `d27c209` | round-4 correction (`editsStatus` on both shapes, file-level) | 2 (P2) | corrected on this head |
+| `d27c209` | round-4 correction (`editsStatus` on both shapes, file-level) | 2 (P2) | corrected on `e6505e7` |
+| `e6505e7` | round-5 corrections (landing fields enumerated; #329 closed-held) | 2 (P2) | corrected on this head |
 
 Six findings on a STATUS flip. The root is ONE mistake made three ways, and it is this
 loop's oldest rule pointed at its own operator: **a state value has READERS, and I shipped
@@ -125,6 +126,26 @@ its full truth table (shape × editsStatus × landing-fields) with each cell pin
 next review still finds, the routing stays what the loop defines: draft → Auto-fix, one
 batched head, this packet extended — and the lifecycle observation in the state comment is
 the standing signal the owner reads if they choose to intervene on the trend.
+
+## Round 6 — the enumeration lesson, terminally applied
+
+Two findings on the round-5 head, each the terminal form of a class this packet already
+names:
+
+- **Round 5 enumerated the landing fields and immediately missed one** — a correction that
+  only clears a stale `blocking_directive` differs in no enumerated field, is not
+  recognized as the correction in flight, and earns the #303 advice. The comparison is now
+  the WHOLE Now block minus `updated` (a date-touch is never a transition), over the union
+  of both sides' keys so an added or removed field also counts. There is no field list left
+  to forget — the round-4 lesson (gate the class, not the instance) applied to fields, with
+  both new cells pinned red-first (directive-only correction → recognized; timestamp-only →
+  not a proposal).
+- **The prose sweep round 3 did by keyword, this round does exhaustively**: every
+  `next_task` claim in the file's narrative was enumerated, and the three stale
+  present-tense schedulers ("plans unit 6.1, which is `next_task`"; "Phase 5 planning is
+  the recorded `next_task`"; the 2026-08-10 programme-order cell's "is the next task")
+  are historicalized with their supersession stated — the Now block is named as the only
+  current truth at each site.
 
 ## The rule this unit adds to the working set
 
