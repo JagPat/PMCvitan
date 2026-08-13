@@ -303,18 +303,24 @@ migration SQL is not a constraint):
    `btrim(x)` strips spaces only):
    `btrim("withdrawReason", E' \t\n\x0B\f\r') <> ''`, and the hostile probe feeds
    a tabs-and-newlines-only reason (P8).
-3. **Never-approved, sealed in BOTH directions — and the reverse arm LOCKS
-   before it reads** (Codex, rounds 2 + 7): withdrawing is refused while any
-   `DecisionApprovalRevision` row exists for the decision — AND inserting an
-   approval revision is refused while the decision is `withdrawn`, else hostile
-   SQL could plant an approval under a terminal withdrawal and leave the two
-   immutable registers contradicting each other. The reverse trigger takes the
+3. **Never-approved, sealed in BOTH directions — the entry guarded by SOURCE
+   STATE, not register emptiness alone** (Codex, rounds 2 + 7 + 9): the
+   forward arm admits entry to `withdrawn` ONLY from a published `pending` row
+   — the DB-level mirror of the service CAS — because register emptiness is
+   NOT proof of never-approved on legacy data: the Phase-3 approval-history
+   backfill (PR #192) deliberately left UNPROVABLE legacy approvals without a
+   `DecisionApprovalRevision` row, so an `approved` decision with an empty
+   register exists and hostile SQL could otherwise withdraw it with a real
+   actor and non-blank reason, hiding a decision that carries approval
+   evidence. The register-emptiness check stays as the second arm
+   (belt-and-braces where BOTH facts exist), and the reverse arm refuses an
+   approval-revision insert while the decision is `withdrawn`, taking the
    DECISION ROW LOCK (`FOR UPDATE`) before reading its status — a plain READ
-   COMMITTED read would race an uncommitted withdrawal (the insert sees the old
-   `pending`, both commit, contradiction) — exactly the Phase-4 bound-3
-   precedent where the counting trigger learned to lock the commitment row
-   first. Probed sequentially AND as a two-session barrier race in both
-   orderings, exactly one side committing (P8).
+   COMMITTED read would race an uncommitted withdrawal (the insert sees the
+   old `pending`, both commit, contradiction) — the Phase-4 bound-3 precedent.
+   Probed sequentially, as a two-session barrier race in both orderings
+   (exactly one side committing), AND against a legacy approved-with-empty-
+   register row under a direct `approved → withdrawn` UPDATE (P8).
 
 The migration is additive and diagnostic-first in the house pattern: every
 statement in the retry-safe form (`ADD VALUE IF NOT EXISTS`;
@@ -404,7 +410,7 @@ against` names the exact site.
 | P5 | client/contractor/engineer/consultant get 403; pmc succeeds; the route-policy identity holds | `ROLE_POLICY['decision.withdraw']` absent |
 | P6 | two concurrent withdraws admit exactly one (CAS 409 for the loser), both orderings under the deterministic barrier | the CAS `count===0` branch |
 | P7 | double publish admits exactly one — publish's new CAS | `decisions.service.ts:147` plain `update` |
-| P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row, a FORGED `withdrawnById` naming no real actor (the FK), a whitespace-only reason (tabs/newlines — the `btrim(x, E' \t\n\x0B\f\r')` CHECK), an UPDATE rewriting `withdrawnAt`/`withdrawnById`/`withdrawReason` on an already-withdrawn row (evidence freeze), a withdraw beside an existing `DecisionApprovalRevision`, AND a `DecisionApprovalRevision` INSERT against a withdrawn decision — the reverse arm ALSO raced as a two-session barrier (withdraw uncommitted vs hostile insert), both orderings, exactly one side committing (the trigger's `FOR UPDATE` on the decision row) | the three triggers absent — hostile SQL accepted at baseline; the lock-free reverse trigger letting both sides commit |
+| P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row, a FORGED `withdrawnById` naming no real actor (the FK), a whitespace-only reason (tabs/newlines — the `btrim(x, E' \t\n\x0B\f\r')` CHECK), an UPDATE rewriting `withdrawnAt`/`withdrawnById`/`withdrawReason` on an already-withdrawn row (evidence freeze), a withdraw beside an existing `DecisionApprovalRevision`, a direct `approved → withdrawn` UPDATE on a LEGACY approved row whose register is EMPTY (the unprovable-approval backfill class — entry admitted only from published `pending`), AND a `DecisionApprovalRevision` INSERT against a withdrawn decision — the reverse arm ALSO raced as a two-session barrier (withdraw uncommitted vs hostile insert), both orderings, exactly one side committing (the trigger's `FOR UPDATE` on the decision row) | the three triggers absent — hostile SQL accepted at baseline; a register-emptiness-only guard admitting the legacy approved row; the lock-free reverse trigger letting both sides commit |
 | P9 | `countPending` and the client pending list drop the decision; the client badge clears | asserted against `decisions.query.ts:173-175` fixtures |
 | P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported); and a QUEUED `decision.published` push intent never reaches the client in either PROVABLE ordering — claim-after-withdraw finds the intent cancelled (the withdraw tx cancelled by subject, recorded; legacy pre-migration rows covered by the subject backfill), and cancelled-during-lease is caught by the pre-send re-check (recorded); the check→send in-flight residual is the DOCUMENTED boundary (§A.4), asserted as documentation not as a probe | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item; the outbox relay delivering the stale approval push in either provable ordering |
 | P11 | `deriveDecisionReading('withdrawn')` yields `wait` with the honest withdrawn reason, and an activity gated on the decision still refuses to start with that reason | `readiness.ts:154-165` else-branch emits "Awaiting the client's approval" |

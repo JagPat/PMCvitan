@@ -18,7 +18,8 @@ flip landing as the immediate tiny follow-up PR.
 | `ac164c5` | round-4 batch | 6 (1 P1, 5 P2) — the review lifecycle reports the head LIMIT (5 of 5) and advises a split | the SPLIT, on `f87be65` |
 | `f87be65` | the SPLIT: frame + 4a only | 4 (1 P1, 3 P2) — three on the 4a design, one on the deferral mechanics | corrected on `a9ec22d` |
 | `a9ec22d` | round-6 batch | 4 (1 P1, 3 P2) — second-order refinements of round-6's own additions | corrected on `7fdbeed` |
-| `7fdbeed` | round-7 batch | 4 distinct, all P2 (the status reported 6; two comments were double-delivered) — third-order refinements, severity now declining | corrected on this head |
+| `7fdbeed` | round-7 batch | 4 distinct, all P2 (the status reported 6; two comments were double-delivered) — third-order refinements, severity now declining | corrected on `ec5445d` |
+| `ec5445d` | round-8 batch | 1 (P1) — the legacy-data hole in the entry seal | corrected on this head |
 
 `eda4127` (the first-ten correction) was pushed between the two deliveries and
 SUPERSEDED before receiving any verdict of its own — the second delivery
@@ -312,10 +313,24 @@ round's own additions, corrected on this head:
    `Decision`/`serializeDecision` gain the withdrawal fields (pmc audience),
    and P14 pins the API response, not merely the rendered chip (§A.5).
 
+## Round 9 — the seal's proof was true of new data and false of history
+
+One finding (P1), corrected on this head: the never-approved seal inferred
+"never approved" from an EMPTY register — true for every row 4a creates, false
+for history, because the Phase-3 approval-history backfill (PR #192)
+deliberately registered only PROVABLE legacy approvals, leaving `approved`
+rows with empty registers that hostile SQL could have withdrawn through every
+existing check. The entry seal now admits `withdrawn` ONLY from a published
+`pending` source row (the DB mirror of the service CAS), keeping the register
+check as the second arm, with the legacy approved-empty-register hostile
+UPDATE probed (P8). The lesson is round 3's trust-anchor rule pointed at
+TIME: a derivation that holds by construction for new rows must be re-proven
+against every historical state the migrations have left behind.
+
 ## Status
 
-Sixty-six distinct findings across eight finding-bearing heads (13 + 20 + 10 +
-5 + 6 + 4 + 4 + 4; round 2 doubled and one round-7 comment pair
+Sixty-seven distinct findings across nine finding-bearing heads (13 + 20 + 10 +
+5 + 6 + 4 + 4 + 4 + 1; round 2 doubled and one round-7 comment pair
 double-delivered — delivery artifacts recorded, each head counted once). The
 4a design absorbed rounds 1–3, stayed clean through 4–5 (the 4b–4d seam the
 five-head-limit SPLIT followed), and rounds 6–8 refined the shipped 4a text
