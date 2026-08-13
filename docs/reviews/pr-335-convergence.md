@@ -8,7 +8,14 @@ escape the plan's §F pre-declares). This head is **finding head 2 of 3**.
 | head | role | findings | outcome |
 |---|---|---|---|
 | `45cecf2` | the plan + the flip to `task: 4 / in_progress` | 13 (6 P1, 7 P2) | corrected on `6229248` |
-| `6229248` | round-1 batch + a 3-site same-class sweep | 10 (2 P1, 8 P2) | corrected on this head |
+| `6229248` | round-1 batch + a 3-site same-class sweep | 20, in TWO deliveries (10:13Z: 2 P1 + 8 P2; 10:26Z: 10 P2 — the first Codex attempt timed out, the retry was triggered, and BOTH eventually delivered against this same head) | first ten corrected on `eda4127`; all twenty corrected on this head |
+
+`eda4127` (the first-ten correction) was pushed between the two deliveries and
+SUPERSEDED before receiving any verdict of its own — the second delivery
+critiques text that survives into it, so waiting for its review would only have
+re-collected known findings at the cost of the last in-cap head. One
+finding-bearing head, two deliveries, one full correction: `6229248` counts
+ONCE against the cap.
 
 ## Round 1 — the design was checked against itself, not against the code it lands in
 
@@ -75,6 +82,29 @@ versus its own obligations".
   non-blank and active-member disciplines their siblings already carry (P30,
   P34).
 
+The second delivery (10:26Z) extended the same two classes and is folded into
+this same round's correction:
+
+- **Three more audience readers the decider must carry**: the persisted bell
+  notice and its stripping predicate; the `change`/reapproval surfaces (the
+  same obligation, reopened); and `countPending`, which takes only `projectId`
+  and would hand a same-role non-decider a project-wide portfolio count — the
+  count now takes the VIEWER (P22).
+- **The route ceiling above the service rule**: `decision.approve` admits only
+  client/pmc at the ROUTE, so a contractor decider would 403 before the new
+  authority check ever ran — the policy widens to the decider-role union, the
+  service narrows (the ceiling-then-narrow shape, P16).
+- **Two attribution/emission gaps in forwarding**: the chain must record the
+  DISPLACED holder and the ACTING forwarder as distinct facts, and a holder
+  move must EMIT (`decision.forwarded`, invalidate + targeted push) or every
+  surface stays stale until a reload (P34).
+- **Three seals finished**: the never-approved seal made bidirectional (no
+  approval revision INSERT against a withdrawn decision, P8); the consultation
+  child carrying its OWN `projectId` so both composite FKs can exist (P27);
+  consultations refused on `withdrawn`/`approved`/`recorded` so the visibility
+  widening cannot leak what §A hides (P25). Plus the retry-safe
+  `ADD VALUE IF NOT EXISTS` enum form, spelled.
+
 ## The rule this audit adds
 
 Round 1's failure: enumerating the readers of a NEW value while checking the
@@ -89,12 +119,12 @@ mechanism, enumerate what it assumes, who writes it, and what it cannot see.
 
 ## Status
 
-All twenty-three findings across both rounds are corrected in the plan text
-with their probes named and their red sites stated. Nothing is dismissed or
-deferred. If the next review still finds, this is the LAST finding head before
-the docs-only cap: the following head owes `Review-Deferred-To-Probes`, which
-this diff can only carry by first reverting the STATUS edit and landing the
-flip as the immediate tiny follow-up PR — the #324-proven two-step the plan's
-§F pre-declares.
+All thirty-three findings across the two finding-bearing heads (13 + 20) are
+corrected in the plan text with their probes named and their red sites stated.
+Nothing is dismissed or deferred. If the next review still finds, that is
+finding head 3 — the LAST inside the docs-only cap: the head after it owes
+`Review-Deferred-To-Probes`, which this diff can only carry by first reverting
+the STATUS edit and landing the flip as the immediate tiny follow-up PR — the
+#324-proven two-step the plan's §F pre-declares.
 
 Review-Convergence: complete
