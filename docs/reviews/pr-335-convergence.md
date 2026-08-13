@@ -3,12 +3,16 @@
 Owed at the second finding-bearing head. Docs-only diff: the 3-finding-head plan
 review cap applies, and this PR touches `docs/STATUS.md`, so a
 `Review-Deferred-To-Probes` head would first have to revert the STATUS edit (the
-escape the plan's §F pre-declares). This head is **finding head 2 of 3**.
+escape the plan's §F pre-declares). **The cap is now REACHED: three
+finding-bearing heads.** If the next review finds, the head that answers it MUST
+carry the deferral trailer and therefore MUST first revert the STATUS edit, the
+flip landing as the immediate tiny follow-up PR.
 
 | head | role | findings | outcome |
 |---|---|---|---|
 | `45cecf2` | the plan + the flip to `task: 4 / in_progress` | 13 (6 P1, 7 P2) | corrected on `6229248` |
-| `6229248` | round-1 batch + a 3-site same-class sweep | 20, in TWO deliveries (10:13Z: 2 P1 + 8 P2; 10:26Z: 10 P2 — the first Codex attempt timed out, the retry was triggered, and BOTH eventually delivered against this same head) | first ten corrected on `eda4127`; all twenty corrected on this head |
+| `6229248` | round-1 batch + a 3-site same-class sweep | 20, in TWO deliveries (10:13Z: 2 P1 + 8 P2; 10:26Z: 10 P2 — the first Codex attempt timed out, the retry was triggered, and BOTH eventually delivered against this same head) | first ten corrected on `eda4127`; all twenty corrected on `2932234` |
+| `2932234` | round-2 batch, both deliveries folded | 10 (3 P1, 7 P2) | corrected on this head |
 
 `eda4127` (the first-ten correction) was pushed between the two deliveries and
 SUPERSEDED before receiving any verdict of its own — the second delivery
@@ -105,6 +109,45 @@ this same round's correction:
   widening cannot leak what §A hides (P25). Plus the retry-safe
   `ADD VALUE IF NOT EXISTS` enum form, spelled.
 
+## Round 3 — the registers the design TRUSTS, and the escape hatches it forgot
+
+Ten findings on the round-2 head, the class one level deeper again: round 1 was
+the new value against existing readers, round 2 the borrowed machinery's own
+contracts, round 3 is what the design's TRUST ANCHORS and ESCAPE PATHS imply.
+
+- **The approval register is a provenance TARGET** (P1): Phase-3 spec
+  provenance FKs any `DecisionApprovalRevision` as "an approval that really
+  happened" — a pre-countersign revision could be pinned downstream while the
+  gate still waits. The register row gains `finalized` (born true outside a
+  chain — byte-identical today; flipped true by the countersign as its one
+  sealed transition), and provenance re-points onto the CHECK-pinned
+  `(id, finalized=true)` composite — the exact `comparisonStatus` pattern this
+  repository already proved (P31).
+- **The holder is a trust anchor with no seal** (P1): `deciderKind`/
+  `deciderMembershipId` decide approval authority, counts and pushes, yet
+  nothing bound their mutation to the forward act — a trigger now refuses any
+  holder change without the same-tx `DecisionForward` row (P34).
+- **The ordinary escape hatch completed an approval without its countersign**
+  (P1): `withdrawChange` restores `change → approved`, so withdrawing an
+  architect's rejection request would have skipped the chain. The request now
+  carries an immutable `origin`, and `withdrawChange` refuses
+  `countersign_rejection` (P33).
+- The staging class struck a THIRD time — 4c's eligibility set named 4d's
+  `awaiting_countersign` — and is fixed the same way as its siblings: the arm
+  ships with the value (the class evidently needs its own authoring rule: **no
+  unit's rule may name a later unit's value, checked per unit, not per
+  finding**).
+- The rest: the stale client pending notice is RETIRED at withdraw (a bell item
+  demanding approval of an unopenable decision is a false instruction, not
+  history — reversing an earlier head's "keep as history" call, stamp-based
+  with a guarded legacy text-shape path, P10); forwards are legal only in open
+  holder states (P30); the countersign transition emits its own
+  `decision.awaiting_countersign` instead of lying with `decision.approved`
+  (P31); consultation responses re-check eligibility at RESPONSE time (P25);
+  the response row carries the child keys its same-decision option FK needs
+  (P27); and the disagreement request populates `ChangeRequest`'s required
+  impact fields honestly (P33).
+
 ## The rule this audit adds
 
 Round 1's failure: enumerating the readers of a NEW value while checking the
@@ -119,12 +162,17 @@ mechanism, enumerate what it assumes, who writes it, and what it cannot see.
 
 ## Status
 
-All thirty-three findings across the two finding-bearing heads (13 + 20) are
-corrected in the plan text with their probes named and their red sites stated.
-Nothing is dismissed or deferred. If the next review still finds, that is
-finding head 3 — the LAST inside the docs-only cap: the head after it owes
-`Review-Deferred-To-Probes`, which this diff can only carry by first reverting
-the STATUS edit and landing the flip as the immediate tiny follow-up PR — the
-#324-proven two-step the plan's §F pre-declares.
+All forty-three findings across the three finding-bearing heads (13 + 20 + 10)
+are corrected in the plan text with their probes named and their red sites
+stated. Nothing is dismissed or deferred. **The docs-only cap is reached.** If
+the next review still finds, the answering head MUST carry
+`Review-Deferred-To-Probes` — converting each still-open question into a named
+probe bound to this task's own implementation stops — and because the gate
+refuses that trailer from a diff touching `docs/STATUS.md`, that head FIRST
+reverts the STATUS edit, the flip landing as the immediate tiny follow-up PR:
+the #324-proven two-step the plan's §F pre-declares. The finding trajectory
+(13 → 20 → 10, with round 2 doubled by a delivery artifact) has been narrowing
+by round-depth — readers, borrowed machinery, trust anchors — which is the
+declining pattern the deferral mechanism exists to terminate honestly.
 
 Review-Convergence: complete
