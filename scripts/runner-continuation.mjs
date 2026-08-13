@@ -1,4 +1,4 @@
-import { assessRunnerState } from './autonomous-status-state.mjs';
+import { assessRunnerState, isNoneValue } from './autonomous-status-state.mjs';
 
 const NONE = 'none';
 
@@ -103,7 +103,7 @@ export function isHandoffShape(now) {
   const workItem = String(now?.work_item ?? '').trim().toLowerCase();
   const state = String(now?.task_state ?? '').trim().toLowerCase();
   const openPr = String(now?.open_pr ?? '').trim().toLowerCase();
-  const nextTask = String(now?.next_task ?? '').trim().toLowerCase();
+  const nextTask = String(now?.next_task ?? '').trim();
   return (
     (workItem === '' || workItem === 'none')
     && TERMINAL_HANDOFF_STATES.has(state)
@@ -113,7 +113,28 @@ export function isHandoffShape(now) {
     // work source) — treating it as a name classified that state as a handoff, and a
     // live maintenance PR whose head carried it would have suppressed the very
     // `open_pr: none` drift the hourly shepherd exists to correct (#334 round 1).
-    && nextTask !== '' && nextTask !== 'none'
+    // The predicate is the RUNNER'S OWN, case-exact (#334 round 3): a lowercased
+    // check here would call `NONE` the sentinel while assessRunnerState treats it as
+    // a named task — the same state read two ways by two readers.
+    && !isNoneValue(nextTask)
+  );
+}
+
+/** The terminal NONE-flip: a STATUS that deliberately lands `merged` with NOTHING
+ *  scheduled (the owner-gated interregnum). Not a handoff — it names no task — but a
+ *  PR that PROPOSES this state is still a correction in flight (#334 round 3): the
+ *  shepherd must not advise pointing `open_pr` at that PR's own number, or the merged
+ *  STATUS sends the runner to a closed PR (the exact #303 trap). Whether a head
+ *  PROPOSES the state or merely CARRIES it from main is decided by `editsStatus`. */
+export function isNoneFlipShape(now) {
+  const workItem = String(now?.work_item ?? '').trim().toLowerCase();
+  const state = String(now?.task_state ?? '').trim().toLowerCase();
+  const openPr = String(now?.open_pr ?? '').trim().toLowerCase();
+  return (
+    (workItem === '' || workItem === 'none')
+    && TERMINAL_HANDOFF_STATES.has(state)
+    && (openPr === '' || openPr === 'none')
+    && isNoneValue(String(now?.next_task ?? '').trim())
   );
 }
 const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cleared']);
@@ -145,7 +166,19 @@ export function detectStatusDriftAcrossHeads({
     //
     // So: exclude this head's own PR from the live set and re-ask. Nothing else open can be in
     // drift against it, or the head is not a correction — it is one of the things that is wrong.
-    if (!isHandoffShape(entry.now)) return false;
+    //
+    // TWO landing shapes qualify (#334 round 3). A HANDOFF names its next task and is
+    // recognizable from the Now block alone. A NONE-FLIP (the deliberate interregnum) is
+    // IDENTICAL, from the Now block, to a maintenance PR that merely CARRIES main's terminal
+    // state — so it qualifies only when the head actually EDITS docs/STATUS.md
+    // (`entry.editsStatus`): a flip PROPOSES the state, a maintenance PR inherits it, and only
+    // the proposal is a correction in flight. `editsStatus` unknown (null/undefined) counts as
+    // editing: wrongly suppressing a maintenance PR's drift costs one missed shepherd nudge,
+    // while wrongly advising a none-flip to point `open_pr` at itself plants the #303 trap in
+    // the merged record. Fail toward the recoverable mistake.
+    const qualifies = isHandoffShape(entry.now)
+      || (isNoneFlipShape(entry.now) && entry.editsStatus !== false);
+    if (!qualifies) return false;
     const others = (openPullRequests ?? []).filter(
       (pullRequest) => String(pullRequest.number) !== String(entry.number),
     );

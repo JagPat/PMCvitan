@@ -912,7 +912,12 @@ test('the recorded next_task names a stop the deferral gate can resolve, or is d
 
   // Forced terminal handoff shape: the one state in which `next_task` is load-bearing alone.
   const handed = { ...now, task_state: 'merged', work_item: 'none' };
-  const recorded = String(now.next_task ?? '').trim().toLowerCase();
+  // CASE-EXACT, matching the runner's own sentinel (#334 round 3): lowercasing here
+  // would bless `next_task: NONE` while `assessRunnerState` treats it as a NAMED task
+  // (`isNoneValue` accepts exact `none` only) — the same state read two ways by two
+  // readers. `NONE` therefore falls to the strict branch below and fails the pin,
+  // which is the correct, loud outcome for a typo.
+  const recorded = String(now.next_task ?? '').trim();
   if (recorded === 'none') {
     // ONLY the SPELLED sentinel is the deliberate owner-gated interregnum (phase-6-task-2's
     // flip: the rename needs the owner's explicit go, forwarding is sequenced behind it,

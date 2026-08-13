@@ -30,9 +30,16 @@ const PR_BEARING_STATES = new Set(['in_review', 'ready']);
 
 const NONE = 'none';
 
-function isNone(value) {
+// EXPORTED (#334 round 3): the sentinel predicate is an interface with several readers
+// (assessRunnerState here, isHandoffShape in runner-continuation, the live-file pins),
+// and each spelling its own variant is how `NONE` came to satisfy a guard's lowercased
+// check while this exact-case runner treated it as a NAMED task. One derivation,
+// every caller — deliberately case-exact: `NONE` is not the sentinel, it is a value
+// the allowlist will refuse, loudly, which is the correct failure for a typo.
+export function isNoneValue(value) {
   return value === undefined || value === null || value === '' || value === NONE;
 }
+const isNone = isNoneValue;
 
 // The Maintenance queue section is STATUS's own answer to "what does the runner
 // do between work items" — it says the queue keeps the loop live and never

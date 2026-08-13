@@ -653,15 +653,42 @@ test('the none-sentinel interregnum is NOT a handoff shape, and does not suppres
     false,
     "next_task 'none' was read as a named next task — the interregnum masqueraded as a handoff",
   );
-  // The F2 interference scenario: a maintenance PR is open, its head still carries the
-  // interregnum STATUS, and the default branch says open_pr: none — that IS drift, and the
-  // shepherd must say so instead of treating the maintenance PR as a handoff correction.
+  // The F2 interference scenario: a maintenance PR is open, its head still CARRIES the
+  // interregnum STATUS unchanged (editsStatus: false — its diff does not touch
+  // docs/STATUS.md), and the default branch says open_pr: none — that IS drift, and the
+  // shepherd must say so instead of treating the maintenance PR as a correction.
   const body = buildDriftHandoff({
     statusNow: interregnum,
     openPullRequests: [{ number: 340, headRefName: 'claude/maintenance-upkeep', isDraft: true }],
-    headStatuses: [{ number: 340, now: interregnum }],
+    headStatuses: [{ number: 340, now: interregnum, editsStatus: false }],
   });
   assert.ok(body, "a live maintenance PR's open_pr drift was suppressed by the none-sentinel handoff misclassification");
+});
+
+// FINDING (#334 P2, round 3) — the OTHER direction of the same sentinel. A STATUS-only flip
+// that deliberately LANDS the interregnum is a correction in flight: once round 1 stopped
+// calling the none-state a handoff, the flip's own head was no longer recognized, the
+// shepherd would advise setting `open_pr` to the flip's own number, and the merged record
+// would send the runner to a closed PR — the exact #303 trap. The distinguisher the Now
+// block cannot carry is whether the PR's DIFF edits docs/STATUS.md: a flip PROPOSES the
+// state (editsStatus: true → suppressed), a maintenance PR inherits it (false → reported,
+// pinned above), and unknown fails toward suppression because the #303 trap is the
+// unrecoverable side.
+test('a none-flip that EDITS STATUS is recognized as the correction in flight', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const interregnum = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'none', blocking_directive: 'none' };
+  const flip = buildDriftHandoff({
+    statusNow: { ...interregnum, task_state: 'in_review', open_pr: 'none' },
+    openPullRequests: [{ number: 341, headRefName: 'claude/status-flip', isDraft: true }],
+    headStatuses: [{ number: 341, now: interregnum, editsStatus: true }],
+  });
+  assert.equal(flip, null, "the flip PR proposing the none-state was not recognized as the correction in flight — the shepherd would advise the #303 stale-open_pr trap");
+  const unknown = buildDriftHandoff({
+    statusNow: { ...interregnum, task_state: 'in_review', open_pr: 'none' },
+    openPullRequests: [{ number: 342, headRefName: 'claude/status-flip-2', isDraft: true }],
+    headStatuses: [{ number: 342, now: interregnum }],
+  });
+  assert.equal(unknown, null, 'an UNKNOWN editsStatus must fail toward suppression (the recoverable mistake), not toward the #303 trap');
 });
 
 // FINDING (#331 head 35d9532, P1) — STATUS named a `phase_plan` that existed only on a

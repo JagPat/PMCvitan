@@ -98,19 +98,21 @@ data migration, no cross-application deploy ordering and no client compatibility
 window — the API simply accepts a strictly wider set of trees than before, so
 every existing client keeps working unchanged.
 
-**`next_task` spells unit 6.1b as `phase-6-task-1b`, and that is not a typo for
-the prose name.** `TASK_REFERENCE` in `scripts/review-efficiency.mjs` is an
-ALLOWLIST — `phase-<n>-task-<id>` or `phase-<n>-planning` — deliberately chosen
-over the blocklist it replaced. `phase-6-unit-6.1b` does not match it, and the
-consequence is invisible until the exact moment it matters: while the phase has
-open work `deferralPhases` returns the current phase regardless, but once a flip
-records `merged` with `work_item: none`, `next_task` becomes the ONLY source, an
-unparseable value yields `[]`, and a later docs-only head past the round cap
-cannot defer its open questions to a real stop — it fails closed on "no phase
-with open work". `phase: 6` + `task: 1` + half `b` reads as `phase-6-task-1b`,
-which is the same convention Phase 5 used for `phase-5-task-7b-iii-d`. Pinned by
-`review-efficiency.test.mjs`, which reads THIS file and forces the terminal
-state, so the next edit cannot reintroduce a value that only breaks later.
+**How `next_task` values are spelled (the convention, anchored to the CURRENT
+value `phase-6-task-4`).** `TASK_REFERENCE` in `scripts/review-efficiency.mjs`
+is an ALLOWLIST — `phase-<n>-task-<id>` or `phase-<n>-planning` — deliberately
+chosen over the blocklist it replaced. A value outside it (the historical
+near-miss was `phase-6-unit-6.1b`) is invisible until the exact moment it
+matters: while the phase has open work `deferralPhases` returns the current
+phase regardless, but once a flip records `merged` with `work_item: none`,
+`next_task` becomes the ONLY source, an unparseable value yields `[]`, and a
+later docs-only head past the round cap cannot defer its open questions to a
+real stop — it fails closed on "no phase with open work". When unit 6.1b's turn
+returns (see the gated-successor table above), its slug is `phase-6-task-1b` —
+`phase: 6` + `task: 1` + half `b`, the same convention Phase 5 used for
+`phase-5-task-7b-iii-d`. Pinned by `review-efficiency.test.mjs`, which reads
+THIS file and forces the terminal state, so an edit cannot reintroduce a value
+that only breaks later.
 
 **Unit 6.1 is executed in two halves, and the line runs where the DEPENDENCIES
 are.** **6.1a — the identity data model and its seals — is MERGED AND CLEARED**

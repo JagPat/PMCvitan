@@ -5,7 +5,8 @@ Owed at the second finding-bearing head.
 | head | role | findings | outcome |
 |---|---|---|---|
 | `de83801` | the flip: merged + the owner-gated interregnum (`next_task: none`) | 3 (P2) | corrected on `e8d4406`/`9fad0cc` |
-| `9fad0cc` | the owner schedules the decision-workflow rework; interregnum → real handoff | 3 (P2) | corrected on this head |
+| `9fad0cc` | the owner schedules the decision-workflow rework; interregnum → real handoff | 3 (P2) | corrected on `784a113` |
+| `784a113` | round-2 corrections + this packet | 3 (P2) | corrected on this head |
 
 Six findings on a STATUS flip. The root is ONE mistake made three ways, and it is this
 loop's oldest rule pointed at its own operator: **a state value has READERS, and I shipped
@@ -50,6 +51,31 @@ The owner scheduled the decision-workflow rework, and the re-flip introduced
   phase_plan CI pin enforces at that moment), and until then `phase_plan` here names the
   COMPLETED task-2 plan as history — which is the pin's own documented semantics for a
   merged task.
+
+## Round 3 — the sentinel's readers, enumerated at last
+
+Round 1 fixed the sentinel's readers ONE AT A TIME, and round 3 is the bill for that:
+
+- **The drift suppressor's OTHER direction.** Round 1 stopped calling the none-state a
+  handoff so a maintenance PR could not suppress its own drift — which un-recognized the
+  none-FLIP itself as a correction in flight, and the shepherd would then advise pointing
+  `open_pr` at the flip's own number: the exact #303 stale-open_pr trap, planted into the
+  merged record. The Now block CANNOT distinguish the two (a flip proposes the state; a
+  maintenance PR inherits it), so the distinguisher is now data: `editsStatus` — whether
+  the PR's diff touches `docs/STATUS.md`, fetched from the files API, `null` when unknown
+  and failing toward suppression because the #303 trap is the unrecoverable side. Both
+  directions pinned (maintenance `false` → reported; flip `true` → suppressed; unknown →
+  suppressed).
+- **Case-exactness.** Two of my sentinel checks lowercased; the runner's `isNone` is
+  exact. `next_task: NONE` would have passed the pin's deliberate branch while
+  `assessRunnerState` treated it as a NAMED task — one state, two readers, two meanings.
+  The predicate is now EXPORTED once (`isNoneValue`) and shared by `isHandoffShape` and
+  the pin's strict routing; `NONE` falls to the allowlist and fails loudly, which is the
+  correct outcome for a typo.
+- **The file's remaining prose.** The narrative still explained why `next_task` is
+  `phase-6-task-1b` — the previous handoff's truth contradicting the current Now block.
+  Historicalized: the convention paragraph now anchors to the CURRENT value and records
+  the 6.1b spelling as the slug for when its turn returns.
 
 ## The rule this unit adds to the working set
 
