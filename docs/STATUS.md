@@ -17,10 +17,45 @@ task_state: merged
 work_item: none
 reviewed_merge: 7a688e3
 open_pr: none
-next_task: none
+next_task: phase-6-task-3
 blocking_directive: none
 updated: 2026-08-13
 ```
+
+**Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
+(`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
+(the New Project modal learned to EXPRESS the room-anchor graft target the
+contract gained — the P11 public-door lesson applied one door further). All
+eighteen plan probes green, staged red-first per §D; packet:
+`docs/reviews/phase-6-t2-nested-locations-packet.md`.
+
+**`next_task` is phase-6-task-3 — the DECISION-WORKFLOW rework, scheduled by the
+owner on 2026-08-13 AHEAD of the rename.** The owner hit two real gaps in the
+Decision Log (an issue cannot be recorded without 2–4 options and without going
+to the client; a wrongly-published decision cannot be withdrawn by anyone), and
+chose to ship the whole decision-workflow unit next: the settled forwarding
+design (architect as a NEW role and countersign authority; no chain until an
+architect exists; self-countersign is two explicit recorded acts; an
+disagreeing architect may reject back OR forward on; forward authority is the
+holder + the PMC), an attributable `decisions.withdraw` command (reason
+required, terminal `withdrawn` state kept as register history, removed from the
+client's pending surfaces — never a silent delete), and a no-approval issue
+type (a record with an owner of NONE — filed, visible, approvable by nobody
+because nothing is being decided). Task 3 begins with its architecture plan as
+its own review unit; the plan document ships in the same PR as the STATUS that
+names it.
+
+The REMAINING gated successors, as data:
+
+| gated successor | opening event | resume action |
+|---|---|---|
+| `room` → `space` rename plan | an explicit owner go (still not given — the owner re-sequenced it BEHIND task 3 on 2026-08-13) | write the rename plan from `docs/reviews/pr-330-convergence.md`'s catalogue |
+| unit 6.1b (PR #329, held) | task 3 and the rename clearing (owner sequencing) | rebase `claude/phase6-task1b`, resume the held PR |
+
+An owner SCOPE decision is not a technical-approval gate: the review loop needs
+no human sign-off (the exact-head gate cleared task 2 autonomously), exactly as
+the Phase-4 "explicit Task-1 GO" precedent recorded scope authority in STATUS
+while the correction loop ran unattended.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
