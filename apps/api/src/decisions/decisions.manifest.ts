@@ -13,7 +13,12 @@ export const decisionsManifest: ModuleManifest = {
   // cross-module read goes through the queries below (DecisionsQueryService).
   readEncapsulated: ['decision', 'decisionOption', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
   dependsOn: [],
-  workflowParticipants: [],
+  // Phase 6 task 4a round 3 — the withdraw ATTRIBUTION question (does the actor hold an ACTIVE
+  // membership here — the `withdrawnById` FK's target?) is answered by its owner through
+  // `OrgsParticipant.lockActiveMembership` inside the decisions transaction. Cycle-exempt like
+  // every participant edge: `orgs.dependsOn` includes `decisions`, so a decisions → orgs READ
+  // dependency would close a cycle — the declared participant channel does not.
+  workflowParticipants: ['orgs'],
   producesEvents: [
     'decision.drafted',
     'decision.published',

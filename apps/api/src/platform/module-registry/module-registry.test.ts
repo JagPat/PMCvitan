@@ -168,6 +168,12 @@ describe('Phase 2 Task 7 — module registry', () => {
       // binding one records the `ProjectParty` association, both through `OrgsParticipant`
       // inside procurement's own transaction. Declared edge, not a direct write.
       procurement: ['commercial', 'orgs'],
+      // Phase 6 task 4a round 3 (Codex P2) — the withdraw ATTRIBUTION question (an ACTIVE
+      // membership, locked — the `withdrawnById` FK's target) is answered by its owner through
+      // OrgsParticipant.lockActiveMembership inside the decisions transaction. Cycle-exempt:
+      // orgs.dependsOn includes decisions, so a decisions → orgs READ would close a cycle —
+      // the participant channel does not.
+      decisions: ['orgs'],
     };
     for (const m of MODULE_MANIFESTS) {
       expect(m.workflowParticipants, `${m.id} workflowParticipants`).toEqual(expectedParticipants[m.id] ?? []);

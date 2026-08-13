@@ -174,3 +174,22 @@ and the correction commit carries `Review-Convergence: complete`.
 
 Round-2 gates: probe file 26/26; `upgrade-proof.sh` PASSED with both new stages; `pnpm check`
 EXIT 0; the api CI battery on the corrective head.
+
+## Round 3 — the three Codex P2 findings on head `74af426`, one batched head
+
+The third finding-bearing head: the convergence audit's head table and closing enumeration are
+extended in `docs/reviews/pr-337-convergence.md`, and this correction commit again carries
+`Review-Convergence: complete`. Reproduce-first: R3-F1/R3-F3 as new probes in
+`phase6-t4a-withdraw.test.ts` (`round 3` describe — 2/2 RED at `74af426` → GREEN); R3-F2 as the
+new raw-`Membership` ratchet in `cross-module-graph.test.ts` (RED at `74af426`: the decisions
+service is flagged as a raw reader outside the owner → GREEN).
+
+| # | finding | fix |
+|---|---|---|
+| R3-F1 (P2) | the terminal seal fired only on UPDATE — hostile SQL that cleared the children could DELETE a withdrawn row, erasing the write-once register entry | seal 1 gains its DELETE arm (`Decision_t4a_d_no_delete`, BEFORE DELETE — fires before FK evaluation, so the refusal never depends on surviving children); a non-withdrawn decision stays deletable (precision probed); the two destructive resets that wipe decisions (seed; the t4a suite cleanup) disable the named trigger under the same sanctioned contract as their DomainEvent TRUNCATE; upgrade-proof adds the hostile DELETE rejection and pins the trigger installed |
+| R3-F2 (P2) | the round-1 attribution fix put a raw orgs-owned `Membership` read inside the decisions service — an UNDECLARED synchronous decisions→orgs edge (orgs already depends on decisions) | the OWNER answers: `OrgsParticipant.lockActiveMembership` (attribution, not authority — deliberately no org arm, because the FK needs a `Membership` row to bind) called in the withdraw transaction; `decisions.workflowParticipants` declares `orgs` (cycle-exempt channel, pinned in module-registry); a new cross-module-graph RATCHET pins raw `Membership` SQL to the orgs module plus the three pre-existing legacy sites (activities.complete / requirements.responsible / inspections.assign — the very precedent the withdraw check copied), so the list can only shrink and a new raw read fails immediately; routing the legacy trio through the owner is tracked maintenance work |
+| R3-F3 (P2) | a `decision.published` event with NO delivery row yet (the rolling-deploy/crash gap the recovery scanner repairs) made the withdrawal's cancel match zero rows — a later recovery pass materialized the missing push as PENDING and sent the stale announcement | the cancellation materializes the missing row ITSELF, already cancelled (`succeeded`/`noop`, `cancelledAt`, subject; no payload was ever built — the durable dispatch intent stays on the event row): one set-based `INSERT … SELECT … NOT EXISTS … ON CONFLICT DO NOTHING` over the platform's OWN tables, complete by ordering (publication precedes withdrawal, so every event the arm must cover exists when it runs), single-winner against a concurrent scanner in both orders via the `(eventId, consumer)` unique; recovery itself stays domain-blind — the DOMAIN closes the gap at the only moment it knows the announcement went stale; the tombstone counts in the withdrawn event's `pushIntentsCancelled`; declared as the third raw-write waiver (own-module write, delegate-inexpressible statement) |
+
+Round-3 gates: probe file 28/28 (incl. the 2 new); the ratchet + registry/graph pins GREEN;
+`pnpm check` EXIT 0 (web 760/760, API 791/791); `upgrade-proof.sh` PASSED with the delete-arm
+rejection; the full integration battery via the required `api` CI check.

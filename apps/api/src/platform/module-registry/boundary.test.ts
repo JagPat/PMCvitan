@@ -175,8 +175,10 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
 
   it('NO analyzed persistence write crosses a module boundary except the declared waivers', () => {
     expect(analysis.persistence.findings).toEqual([]);
-    // the only runtime raw writes are the outbox relay's two lease claims (both waived)
+    // the only runtime raw writes are the outbox relay's two lease claims and the 4a
+    // cancellation tombstone (all three waived, all three platform-own-table writes)
     expect(analysis.persistence.rawWrites.map((r) => `${r.file}:${r.symbol}`).sort()).toEqual([
+      'platform/outbox/cancellation.ts:cancelQueuedPushBySubject',
       'platform/outbox/relay.service.ts:claim',
       'platform/outbox/relay.service.ts:claimExternalRecovery',
     ]);

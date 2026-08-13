@@ -3245,9 +3245,9 @@ assert "6.1a F1: the company and its source are gone, the association survives o
 echo ""
 echo "=== Phase 6 task 4a: the withdraw seals over the migrated legacy DB ==="
 
-assert "4a: legacy DB upgrades ROW-FREE (no withdrawn rows) with the three Decision seals, the reverse-arm trigger, and the attribution FK installed" \
-  "SELECT (SELECT COUNT(*) FROM \"Decision\" WHERE \"status\"::text='withdrawn')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Decision_t4a_a_terminal','Decision_t4a_b_entry','Decision_t4a_c_coherent','DecisionApprovalRevision_no_withdrawn'))::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname='Decision_projectId_withdrawnById_fkey')::text || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='Notification' AND column_name='decisionId')::text || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='OutboxDelivery' AND column_name IN ('subject','cancelledAt'))::text;" \
-  "0|4|1|1|2"
+assert "4a: legacy DB upgrades ROW-FREE (no withdrawn rows) with the four Decision seals (incl. the round-3 delete arm), the reverse-arm trigger, and the attribution FK installed" \
+  "SELECT (SELECT COUNT(*) FROM \"Decision\" WHERE \"status\"::text='withdrawn')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Decision_t4a_a_terminal','Decision_t4a_b_entry','Decision_t4a_c_coherent','Decision_t4a_d_no_delete','DecisionApprovalRevision_no_withdrawn'))::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname='Decision_projectId_withdrawnById_fkey')::text || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='Notification' AND column_name='decisionId')::text || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='OutboxDelivery' AND column_name IN ('subject','cancelledAt'))::text;" \
+  "0|5|1|1|2"
 
 # the attribution FK target (idempotent), and two published pending decisions minted for the probes
 $PSQL -q >/dev/null <<'SQL'
@@ -3267,6 +3267,8 @@ assert_rejects "4a seal 1: any transition OUT of withdrawn (terminal)" \
   "UPDATE \"Decision\" SET \"status\"='pending' WHERE \"id\"='UP4A-D1'" "terminal"
 assert_rejects "4a seal 1: rewriting the frozen evidence on a withdrawn row" \
   "UPDATE \"Decision\" SET \"withdrawReason\"='rewritten' WHERE \"id\"='UP4A-D1'" "write-once"
+assert_rejects "4a seal 1 delete arm (round 3): DELETING the withdrawn register entry — BEFORE DELETE fires before FK evaluation, so the refusal never depends on surviving children" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-D1'" "permanent register entry"
 assert_rejects "4a seal 2: an UNATTRIBUTED withdrawal (no evidence at all)" \
   "UPDATE \"Decision\" SET \"status\"='withdrawn' WHERE \"id\"='UP4A-D2'" "must carry"
 assert_rejects "4a seal 2: a tabs-and-newlines-only reason (the full-whitespace btrim class)" \

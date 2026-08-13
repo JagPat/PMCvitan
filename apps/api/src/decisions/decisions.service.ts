@@ -16,6 +16,7 @@ import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
 import { executeCommand, hashRequest, peekReplay, type CommandScope } from '../platform/commands';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
+import { OrgsParticipant } from '../orgs/orgs.participant';
 
 @Injectable()
 export class DecisionsService {
@@ -26,6 +27,10 @@ export class DecisionsService {
     // `dispatchCommitted` post-commit; the dispatcher (legacy/shadow) or the relay (outbox) is the
     // sole sender for the active mode, so no service ever sends a socket/push directly.
     private readonly dispatcher: ExternalEffectDispatcher,
+    // Phase 6 task 4a round 3 — `Membership` is orgs-owned: the withdraw ATTRIBUTION question
+    // (an active membership, locked — the FK's target) is answered by its owner through the
+    // declared decisions → orgs workflow-participant edge, never by a raw read here.
+    private readonly orgsParticipant: OrgsParticipant,
   ) {}
 
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
@@ -454,14 +459,13 @@ export class DecisionsService {
         // arithmetic, even though `pending` and `withdrawn` both read `wait` today.
         await lockProjectReadiness(tx, projectId);
         // The withdrawal is attributed to an ACTIVE member of THIS project (the FK's target),
-        // read LOCKED in this transaction — the activities.complete precedent. An org
-        // owner/admin operating as pmc WITHOUT a membership (the project-access super-admin
-        // path) is refused HERE with an answer, never by the FK rolling the command back
-        // (round 1, Codex F4).
-        const [membership] = await tx.$queryRaw<Array<{ status: string }>>(
-          Prisma.sql`SELECT "status" FROM "Membership" WHERE "projectId" = ${projectId} AND "userId" = ${user.sub} FOR UPDATE`,
-        );
-        if (membership?.status !== 'active') {
+        // the row LOCKED in this transaction. An org owner/admin operating as pmc WITHOUT a
+        // membership (the project-access super-admin path) is refused HERE with an answer,
+        // never by the FK rolling the command back (round 1, Codex F4). `Membership` is
+        // orgs-owned, so the OWNER answers through the declared decisions → orgs participant
+        // edge (round 3, Codex) — never a raw read of a foreign table from this service.
+        const attributable = await this.orgsParticipant.lockActiveMembership(tx, projectId, user.sub);
+        if (!attributable) {
           throw new BadRequestException('A withdrawal must be attributed to an ACTIVE member of this project — your account holds no active membership here (org-admin reach does not carry one; join the project to withdraw its decisions).');
         }
         // belt-and-braces: the DB entry seal refuses this too (source-state + register), but a
@@ -521,7 +525,7 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: 'decision.withdraw', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'decision.withdrawn', entityType: 'Decision', entityId: decisionId,
-          payload: { title: d.title, reason, pushIntentsCancelled: cancelled.neutralized + cancelled.marked },
+          payload: { title: d.title, reason, pushIntentsCancelled: cancelled.neutralized + cancelled.marked + cancelled.entombed },
           effectKey: 'decision.withdrawn',
           // surfaces refresh; no push — the lifecycle-correction precedent (change_requested/
           // change_withdrawn), and the pmc who acted needs no announcement

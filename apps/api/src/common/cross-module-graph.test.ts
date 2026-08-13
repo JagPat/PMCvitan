@@ -641,4 +641,36 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       }
     });
   });
+
+  describe('Phase 6 task 4a round 3 (Codex P2) — raw Membership SQL is a RATCHET: the owner answers, the legacy list may only shrink', () => {
+    // `Membership` is orgs-owned. A foreign module that needs the membership/standing answer asks
+    // the owner — `OrgsParticipant` (hasProjectRoleStanding, lockActiveMembership) — inside its
+    // own transaction, through a DECLARED workflowParticipants edge. The withdraw attribution
+    // check (round 1, Codex F4) was first spelled as a raw `SELECT … FROM "Membership"` inside
+    // the decisions service: an UNDECLARED synchronous decisions→orgs read edge (round 3 finding).
+    // It is now routed through the owner, and this ratchet keeps the class closed going forward.
+    //
+    // The three LEGACY sites predate the participant (the very precedent the withdraw check
+    // copied) and are pinned here so the list can only SHRINK — routing them through the owner is
+    // tracked maintenance work, and a NEW raw read anywhere else fails this test immediately.
+    const LEGACY_RAW_MEMBERSHIP = [
+      'activities/activities.service.ts', // activities.complete attribution (the copied precedent)
+      'activities/requirements.service.ts', // responsible-member validation (Phase 3 Task 1)
+      'inspections/inspections.service.ts', // assignee validation
+    ];
+    it('no file outside src/orgs/ reads the Membership table with raw SQL (three pinned legacy sites excepted)', () => {
+      const offenders = ALL_FILES
+        .filter((f) => f.endsWith('.ts') && !f.includes('.test.') && !f.includes('.spec.') && !f.startsWith('orgs/'))
+        .filter((f) => read(f).includes('FROM "Membership"'))
+        .sort();
+      expect(offenders).toEqual([...LEGACY_RAW_MEMBERSHIP].sort());
+    });
+    it('the pinned legacy sites still contain the raw read (a routed one leaves the list)', () => {
+      // the inverse pin: when a legacy site is routed through the owner, this fails until the
+      // list shrinks — the ratchet cannot silently go stale.
+      for (const f of LEGACY_RAW_MEMBERSHIP) {
+        expect(read(f), `${f} still carries the pinned legacy raw read`).toContain('FROM "Membership"');
+      }
+    });
+  });
 });

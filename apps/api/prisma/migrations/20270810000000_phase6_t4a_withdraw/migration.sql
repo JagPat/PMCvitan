@@ -160,6 +160,26 @@ CREATE TRIGGER "Decision_t4a_a_terminal"
   BEFORE UPDATE ON "Decision"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4a_withdrawn_terminal();
 
+-- ── seal 1 (delete arm): the register entry cannot be ERASED either ──────────────────────────
+-- Round 3 (Codex): the update arm freezes a withdrawn row's evidence, but DELETE was the other
+-- way to remove it — hostile SQL that clears the children first loses the withdrawn status,
+-- actor, time and reason from the pmc-visible register. BEFORE DELETE fires before FK
+-- evaluation, so this refusal never depends on what children remain. TRUNCATE (the sanctioned
+-- disposable-database reset) fires no row-level trigger, and the two destructive resets that
+-- wipe decisions (prisma/seed.ts; the t4a suite's own cleanup) disable this trigger BY NAME
+-- under the same contract that lets them TRUNCATE the append-only DomainEvent store.
+CREATE OR REPLACE FUNCTION phase6_t4a_withdrawn_no_delete() RETURNS trigger AS $fn$
+BEGIN
+  IF OLD."status"::text = 'withdrawn' THEN
+    RAISE EXCEPTION 'phase6-t4a: a withdrawn decision is a permanent register entry — it cannot be deleted (decision %)', OLD."id";
+  END IF;
+  RETURN OLD;
+END $fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS "Decision_t4a_d_no_delete" ON "Decision";
+CREATE TRIGGER "Decision_t4a_d_no_delete"
+  BEFORE DELETE ON "Decision"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4a_withdrawn_no_delete();
+
 -- ── seal 2: attributed — to a real actor, with a non-blank reason, in BOTH directions ────────
 -- status='withdrawn' requires the complete evidence (the FK above makes the actor real); and
 -- the inverse — evidence columns only ever exist WITH the status — so a non-withdrawn row can

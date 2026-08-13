@@ -89,7 +89,12 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
     await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
+    // withdrawn rows are permanent in a LIVE register (`Decision_t4a_d_no_delete`); this
+    // destructive test reset disables the named seal for exactly this wipe — the same
+    // sanctioned-bypass contract as the TRUNCATE above (which fires no row-level trigger).
+    await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
     await t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
+    await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
     await t.prisma.membership.deleteMany({ where: { userId: { startsWith: 'it-t4a-u-' } } });
     await t.prisma.user.deleteMany({ where: { id: { startsWith: 'it-t4a-u-' } } });
     roleUsers.clear();
@@ -626,25 +631,27 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     });
   });
 
+  /** A committed `decision.published` event with its queued push delivery — returns the
+   *  delivery row id. Shared by the round-1 and round-3 probes. */
+  const emitQueuedPush = async (id: string, title: string): Promise<string> => {
+    await t.prisma.$transaction((tx) =>
+      emitEvent(tx, {
+        projectId: f.projectA.id,
+        actor: human,
+        eventType: 'decision.published',
+        entityType: 'Decision',
+        entityId: id,
+        payload: { title },
+        effectKey: 'decision.published',
+        dispatch: { push: { body: `New decision awaiting your approval: ${title}` } },
+      }),
+    );
+    const row = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, status: 'pending' } });
+    return row.id;
+  };
+
   // ── Round 1 — the five Codex findings on head ea3391d, each reproduced RED before its fix ──
   describe('round 1 (Codex): recovery subject, dead-row cancellation, org-admin attribution, redacted readiness', () => {
-    const emitQueuedPush = async (id: string, title: string): Promise<string> => {
-      await t.prisma.$transaction((tx) =>
-        emitEvent(tx, {
-          projectId: f.projectA.id,
-          actor: human,
-          eventType: 'decision.published',
-          entityType: 'Decision',
-          entityId: id,
-          payload: { title },
-          effectKey: 'decision.published',
-          dispatch: { push: { body: `New decision awaiting your approval: ${title}` } },
-        }),
-      );
-      const row = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, status: 'pending' } });
-      return row.id;
-    };
-
     it('F1: a delivery re-created by the RECOVERY scanner carries the subject — a crash-gap row is not born uncancellable', async () => {
       const id = await seed({ title: 'Recovered push' });
       const deliveryId = await emitQueuedPush(id, 'Recovered push');
@@ -739,6 +746,60 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     });
   });
 
+  // ── Round 3 — the three Codex findings on head 74af426, each reproduced RED before its fix ──
+  describe('round 3 (Codex): delete seal, recovery tombstone', () => {
+    it('R3-F1: a withdrawn decision cannot be DELETED — the register entry is permanent; a non-withdrawn decision (children cleared) still can be', async () => {
+      const id = await seed({ title: 'Delete attempt' });
+      await svc.withdraw(f.projectA.id, id, { reason: 'then attacked' }, pmc());
+      // hostile SQL clears the children first (a FK refusal would otherwise mask the seal —
+      // though BEFORE DELETE fires before FK evaluation, the probe proves the seal alone)
+      await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
+      await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
+      await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
+      await expect(t.prisma.$executeRaw`DELETE FROM "Decision" WHERE "id" = ${id}`).rejects.toThrow(/permanent register entry/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('withdrawn');
+      // precision, not mere strictness: a NON-withdrawn decision is still deletable
+      const draft = await seed({ draft: true, title: 'Deletable draft' });
+      await t.prisma.decisionOption.deleteMany({ where: { decisionId: draft } });
+      expect(await t.prisma.$executeRaw`DELETE FROM "Decision" WHERE "id" = ${draft}`).toBe(1);
+    });
+
+    it('R3-F3: withdrawing INSIDE the recovery gap entombs the missing delivery — a later recovery pass cannot resurrect the stale push', async () => {
+      const id = await seed({ title: 'Gap push' });
+      const deliveryId = await emitQueuedPush(id, 'Gap push');
+      // the rolling-deploy/crash gap the recovery scanner exists to repair: the
+      // `decision.published` event committed but NO push delivery row exists yet
+      await t.prisma.outboxDelivery.delete({ where: { id: deliveryId } });
+      await svc.withdraw(f.projectA.id, id, { reason: 'withdrawn inside the gap' }, pmc());
+      // the cancellation materialized the missing row ITSELF — already cancelled (no payload
+      // was ever built), so the gap is closed at the only moment the domain knows it went stale
+      const tomb = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, subject: id } });
+      expect(tomb.status).toBe('succeeded');
+      expect(tomb.deliveryAction).toBe('noop');
+      expect(tomb.cancelledAt).not.toBeNull();
+      // …and the withdrawn event's payload counts it as a cancelled intent
+      const ev = await t.prisma.domainEvent.findFirstOrThrow({ where: { projectId: f.projectA.id, eventType: 'decision.withdrawn', entityId: id } });
+      expect((ev.payload as { pushIntentsCancelled: number }).pushIntentsCancelled).toBe(1);
+      // recovery finds the row present and creates nothing; nothing is pending; nothing sends
+      await relay.expandMissingDeliveries();
+      const resurrected = await t.prisma.outboxDelivery.findMany({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, status: 'pending' } });
+      const push = t.app.get(PushService);
+      const original = push.notifyProject.bind(push);
+      let sends = 0;
+      push.notifyProject = (async (...args: Parameters<PushService['notifyProject']>) => {
+        sends += 1;
+        return original(...args);
+      }) as PushService['notifyProject'];
+      try {
+        for (const d of resurrected) await relay.dispatchOne(d.id);
+      } finally {
+        push.notifyProject = original;
+      }
+      expect(resurrected).toHaveLength(0);
+      expect(sends).toBe(0);
+    });
+  });
+
   // ── P13 — the projection across a withdraw ──
   it('P13: decisions.inbox — live == projection == rebuild across a withdraw; the rebuild emits zero events', async () => {
     // a FRESH project: the ordered projection cursor consumes contiguously from stream position
@@ -787,7 +848,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.auditLog.deleteMany({ where: { projectId: proj13 } });
       await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
       await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
+      // this probe's row IS withdrawn — the same sanctioned destructive-reset bypass as cleanup()
+      await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
       await t.prisma.decision.deleteMany({ where: { id } });
+      await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
       await t.prisma.membership.deleteMany({ where: { projectId: proj13 } });
       await t.prisma.project.deleteMany({ where: { id: proj13 } });
     }

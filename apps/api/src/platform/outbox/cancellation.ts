@@ -22,6 +22,21 @@ import { PUSH_CONSUMER } from './consumers';
  *     operator redrive resets dead → pending, and without the mark that redrive would
  *     resurrect the stale announcement — with it, the sender's pre-send re-check turns the
  *     redrive into a recorded noop.
+ *   - a row that DOES NOT EXIST YET (round 3, Codex): the recovery scanner
+ *     (`expandMissingDeliveries`) exists to repair the rolling-deploy/crash gap — an event with
+ *     no delivery row for a registered consumer. A cancellation running INSIDE that gap would
+ *     match nothing, and a later recovery pass would materialize the missing row as PENDING and
+ *     send the stale announcement. So the cancellation materializes the row FIRST, already
+ *     cancelled (`succeeded` + `noop`, no payload was ever built — the durable dispatch intent
+ *     stays on the event row for audit), and recovery's NOT EXISTS then finds it present and
+ *     creates nothing. This arm is COMPLETE by ordering: every event it must cover exists when
+ *     it runs, because the publication that queued the announcement precedes the withdrawal
+ *     that cancels it. The `@@unique(eventId, consumer)` makes the race with a concurrent
+ *     scanner single-winner in both orders — a pending row that lands first is neutralized by
+ *     the first arm; a tombstone that lands first turns the scanner's create into its handled
+ *     P2002. Recovery itself stays domain-blind: it cannot ask "is this subject withdrawn?"
+ *     without reading a foreign module's table, so the DOMAIN closes the gap at the only
+ *     moment it knows the announcement went stale.
  * NOT a new status value — the `OutboxDelivery_status_check` set is deliberately closed.
  *
  * The guarantee's true boundary, stated rather than overclaimed: a cancellation landing in the
@@ -32,7 +47,7 @@ import { PUSH_CONSUMER } from './consumers';
 export async function cancelQueuedPushBySubject(
   tx: Prisma.TransactionClient,
   args: { projectId: string; subject: string; eventType: string },
-): Promise<{ neutralized: number; marked: number }> {
+): Promise<{ neutralized: number; marked: number; entombed: number }> {
   const now = new Date();
   const scope = {
     consumer: PUSH_CONSUMER,
@@ -49,5 +64,23 @@ export async function cancelQueuedPushBySubject(
     where: { ...scope, status: { in: ['leased', 'dead'] } },
     data: { cancelledAt: now },
   });
-  return { neutralized: neutralized.count, marked: marked.count };
+  // The recovery-gap tombstone (round 3). Set-based over the platform's OWN tables only.
+  // Guarded on the catalog contract row twice over: a delivery must name a declared
+  // (consumer, kind) — and an instance with no catalog row never expands the gap either.
+  const entombed = await tx.$executeRaw`
+    INSERT INTO "OutboxDelivery"
+      ("id", "eventId", "projectId", "consumer", "consumerKind", "deliveryAction",
+       "streamPosition", "status", "subject", "cancelledAt", "nextAttemptAt", "createdAt", "updatedAt")
+    SELECT gen_random_uuid(), e."eventId", e."projectId", ${PUSH_CONSUMER}, 'unordered', 'noop',
+           e."streamPosition", 'succeeded', ${args.subject}, ${now}, now(), now(), now()
+      FROM "DomainEvent" e
+     WHERE e."projectId" = ${args.projectId}
+       AND e."eventType" = ${args.eventType}
+       AND e."entityId" = ${args.subject}
+       AND EXISTS (SELECT 1 FROM "OutboxConsumerCatalog" c
+                    WHERE c."consumer" = ${PUSH_CONSUMER} AND c."consumerKind" = 'unordered')
+       AND NOT EXISTS (SELECT 1 FROM "OutboxDelivery" d
+                        WHERE d."eventId" = e."eventId" AND d."consumer" = ${PUSH_CONSUMER})
+     ON CONFLICT DO NOTHING`;
+  return { neutralized: neutralized.count, marked: marked.count, entombed };
 }
