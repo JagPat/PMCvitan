@@ -116,9 +116,16 @@ honest (`No room` / `No object`); free-text legacy decisions keep their stored r
 - `pnpm check` EXIT 0 (web 748/748, API unit 788/788 — `nodes.service.test` and
   `project-initialization.test` reworked to the rule, red-first where behavior changed).
 - Focused integration: `phase6-t2-nested-locations.test.ts` 15/15 (three consecutive
-  runs), `phase6-t2-modules.test.ts` 10/10.
-- FULL integration battery on a freshly recreated, fully migrated database: recorded in
-  the PR body (run at the head).
+  runs), `phase6-t2-modules.test.ts` 10/10 — both on live PG over a freshly recreated,
+  fully migrated database.
+- Adjacent integration (the suites sharing this diff's surfaces — node deletion signals,
+  SET NULL coverage, project-initialization atomicity, the activities/decisions
+  projections, snapshot shape): run locally at the head; result recorded in the PR body.
+- FULL integration battery: delegated to the PR's REQUIRED `api` CI check, which runs
+  the identical suite on the head and fails closed. Stated plainly: the development
+  container was restarted mid-battery twice (resource pressure) and cannot host the full
+  run; the required gate executes it before any review or merge, so nothing merges
+  without it.
 - No migration (upgrade-proof not applicable: zero schema bytes changed); no route
   added; no event added; no tripwire count moves.
 
