@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#E9E4D8;font-family:'Archivo',system-ui,sans-serif;color:#23211C;-webkit-font-smoothing:antialiased}
+  a{color:#B4462E;text-decoration:none}
+  a:hover{color:#8f3724;text-decoration:underline}
+  .vs::-webkit-scrollbar{width:9px;height:9px}
+  .vs::-webkit-scrollbar-thumb{background:rgba(35,33,28,.18);border-radius:8px}
+</style>
+</helmet>
+<div style="max-width:1180px;margin:0 auto;padding:44px 40px 90px">
+
+  <!-- MASTHEAD -->
+  <div style="border-bottom:1.5px solid #23211C;padding-bottom:20px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:24px">
+      <div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.22em;color:#B4462E">OWNER-MANDATED GATE · STANDALONE V1</div>
+        <div style="font-family:'Newsreader',serif;font-size:40px;font-weight:500;margin-top:8px;line-height:1.1;letter-spacing:-.01em">UX Completion Gate — Design Pack</div>
+        <div style="font-size:14px;color:#6b665c;margin-top:9px;max-width:640px;text-wrap:pretty">Design-side response to the stakeholder-UX completion directive. Mandates A, C, E and F are designed here — the four that sit in the standalone-V1 programme. Every claim is reproduced against latest <b>main</b>, not the earlier audit.</div>
+        <div style="display:inline-flex;align-items:center;gap:8px;margin-top:12px;background:#E1EEE4;border:1px solid #C3DDCB;border-radius:20px;padding:5px 13px"><span style="width:7px;height:7px;border-radius:50%;background:#3F7A54"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;color:#2F6B44;font-weight:600">V2 · SYNCED WITH THE MARKDOWN BRIEF</span></div>
+      </div>
+      <div style="flex:none;background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:14px 16px;min-width:210px">
+        <sc-for list="{{ meta }}" as="m" hint-placeholder-count="4">
+          <div style="display:flex;justify-content:space-between;gap:14px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;padding:3px 0">
+            <span style="color:#8a857a">{{ m.k }}</span><span style="font-weight:600">{{ m.v }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCOPE HONESTY -->
+  <div style="background:#F6ECD6;border:1px solid #E4CE9C;border-left:4px solid #C08A2D;border-radius:12px;padding:16px 20px;margin-top:24px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#8A6216">SCOPE OF THIS ARTIFACT</div>
+    <div style="font-size:13.5px;line-height:1.6;margin-top:7px;max-width:900px;text-wrap:pretty">This pack carries <b>design intent and reproduction evidence</b>. It does not and cannot constitute clearance: CI, exact-head Codex review, Playwright runs, automated accessibility scans, live-API inspection and the unassisted persona acceptance sessions are all outside this environment. Nothing here should be read as self-certification. Sequencing is respected — no Task 4 decision-workflow or collaborator-portal UX is designed here; both are referenced only where a shared surface touches them.</div>
+  </div>
+
+  <!-- 1. REPRODUCTION -->
+  <div style="margin-top:46px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">01</span>
+      <span style="font-size:22px;font-weight:700">Reproduced against latest main</span>
+    </div>
+    <div style="font-size:13.5px;color:#6b665c;margin-top:12px;max-width:900px;text-wrap:pretty">First finding, and it matters for planning: <b>main is still at tree <code style="font-family:'IBM Plex Mono';font-size:12.5px">a35439439a30</code></b> — the same point as the earlier audit. There is no drift to re-baseline against, so the gaps below are reproduced at head, not inherited.</div>
+
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:18px">
+      <sc-for list="{{ findings }}" as="f" hint-placeholder-count="4">
+        <div style="background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-left:4px solid {{ f.rail }};border-radius:12px;padding:16px 20px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;padding:3px 9px;border-radius:20px;background:{{ f.chipBg }};color:{{ f.chipFg }};border:1px solid {{ f.chipBd }}">{{ f.tag }}</span>
+                <span style="font-weight:600;font-size:15.5px">{{ f.title }}</span>
+              </div>
+              <div style="font-size:13px;color:#4a463e;margin-top:8px;line-height:1.6;max-width:780px;text-wrap:pretty">{{ f.body }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#8a857a;margin-top:8px">{{ f.evidence }}</div>
+            </div>
+            <div style="flex:none;text-align:right">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;color:{{ f.rail }};line-height:1">{{ f.metric }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.12em;color:#8a857a;margin-top:4px">{{ f.metricLabel }}</div>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <!-- 2. MOBILE IA -->
+  <div style="margin-top:52px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">02</span>
+      <span style="font-size:22px;font-weight:700">Mandate A — mobile information architecture</span>
+    </div>
+
+    <!-- before / after at 360 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:22px">
+      <div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#B23A34;margin-bottom:10px">NOW · PMC AT 360px · 13 TABS</div>
+        <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:14px;overflow:hidden">
+          <div style="width:360px;max-width:100%;border:1px solid rgba(35,33,28,.18);border-radius:8px;overflow:hidden">
+            <div style="height:78px;background:#F4F1EA;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono';font-size:10px;color:#8a857a">content</div>
+            <div style="display:flex;background:#fff;border-top:1px solid rgba(35,33,28,.12);height:62px">
+              <sc-for list="{{ beforeTabs }}" as="t" hint-placeholder-count="13">
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:8px 1px;border-right:1px dashed rgba(178,58,52,.35)">
+                  <div style="width:14px;height:14px;border-radius:3px;background:{{ t.dot }}"></div>
+                  <div style="font-size:10px;font-weight:600;color:#6b665c;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.label }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;gap:16px;margin-top:12px;font-family:'IBM Plex Mono',monospace;font-size:10.5px">
+            <span style="color:#B23A34;font-weight:600">27.7px per tab</span>
+            <span style="color:#8a857a">required ≥ 44px</span>
+          </div>
+          <div style="font-size:12.5px;color:#6b665c;margin-top:7px;line-height:1.55">Labels ellipsise (<code style="font-family:'IBM Plex Mono';font-size:11.5px">text-overflow:ellipsis</code>), which the directive forbids outright. Height (62px) already passes; <b>width is the failure.</b></div>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#2F6B44;margin-bottom:10px">DESIGNED · PMC AT 360px · 4 + MORE</div>
+        <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:14px;overflow:hidden">
+          <div style="width:360px;max-width:100%;border:1px solid rgba(35,33,28,.18);border-radius:8px;overflow:hidden">
+            <div style="height:78px;background:#F4F1EA;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono';font-size:10px;color:#8a857a">content</div>
+            <div style="display:flex;background:#fff;border-top:1px solid rgba(35,33,28,.12);height:62px">
+              <sc-for list="{{ afterTabs }}" as="t" hint-placeholder-count="5">
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px 2px;position:relative;background:{{ t.bg }}">
+                  <div style="position:relative">
+                    <div style="width:19px;height:19px;border-radius:4px;background:{{ t.dot }}"></div>
+                    <sc-if value="{{ t.badge }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;top:-6px;right:-10px;min-width:15px;height:15px;padding:0 3px;background:#B4462E;color:#fff;border-radius:8px;font-family:'IBM Plex Mono';font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">{{ t.badge }}</span></sc-if>
+                  </div>
+                  <div style="font-size:11px;font-weight:600;color:{{ t.fg }};white-space:nowrap">{{ t.label }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display:flex;gap:16px;margin-top:12px;font-family:'IBM Plex Mono',monospace;font-size:10.5px">
+            <span style="color:#2F6B44;font-weight:600">72px per tab</span>
+            <span style="color:#8a857a">label 11px, no ellipsis</span>
+          </div>
+          <div style="font-size:12.5px;color:#6b665c;margin-top:7px;line-height:1.55">For You stays first and default. The other nine destinations move behind <b>More</b> — role-aware, grouped, and reachable in one extra tap.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- per-role tab sets -->
+    <div style="margin-top:30px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#8a857a;margin-bottom:12px">PRIMARY DESTINATIONS PER ROLE — CAPPED AT 5, FOR YOU ALWAYS FIRST</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <sc-for list="{{ roleNav }}" as="r" hint-placeholder-count="5">
+          <div style="background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:14px 18px;display:flex;gap:18px;align-items:flex-start">
+            <div style="width:104px;flex:none">
+              <div style="font-weight:700;font-size:14px">{{ r.role }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#8a857a;margin-top:3px">{{ r.count }}</div>
+            </div>
+            <div style="flex:1">
+              <div style="display:flex;flex-wrap:wrap;gap:7px">
+                <sc-for list="{{ r.tabs }}" as="tb" hint-placeholder-count="5">
+                  <span style="font-size:12px;font-weight:600;padding:5px 11px;border-radius:20px;background:#fff;border:1px solid rgba(35,33,28,.16)">{{ tb }}</span>
+                </sc-for>
+              </div>
+              <sc-if value="{{ r.more }}" hint-placeholder-val="{{ true }}">
+                <div style="font-size:12px;color:#6b665c;margin-top:9px;line-height:1.5"><span style="font-family:'IBM Plex Mono';font-size:9.5px;letter-spacing:.14em;color:#8a857a">MORE · </span>{{ r.more }}</div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="font-size:12.5px;color:#6b665c;margin-top:14px;max-width:900px;line-height:1.6;text-wrap:pretty">Contractor and consultant already sit at five, so they stay flat — no More sheet is introduced where it would add a tap for nothing. The left rail on tablet and desktop is unchanged and keeps showing the full role list; this correction is mobile-only.</div>
+    </div>
+  </div>
+
+  <!-- 3. WORKER -->
+  <div style="margin-top:52px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">03</span>
+      <span style="font-size:22px;font-weight:700">Mandate C — worker job card, honest states</span>
+    </div>
+    <div style="font-size:13.5px;color:#6b665c;margin-top:12px;max-width:900px;text-wrap:pretty">The no-navigation job-card model is preserved exactly. What changes is that each of the three commands becomes distinct and durable, and the card stops claiming success it hasn't earned.</div>
+
+    <div style="display:grid;grid-template-columns:340px 1fr;gap:26px;margin-top:20px;align-items:start">
+      <div style="background:#23211C;border-radius:22px;padding:10px;flex:none">
+        <div style="background:#F4F1EA;border-radius:16px;overflow:hidden">
+          <div style="background:#23211C;color:#EDE7DA;padding:13px 16px;display:flex;align-items:center;gap:11px">
+            <div style="width:38px;height:38px;border-radius:50%;background:#B4462E;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:17px">S</div>
+            <div style="flex:1"><div style="font-size:12px;color:rgba(237,231,218,.6)">નમસ્તે,</div><div style="font-weight:700;font-size:17px">Suresh</div></div>
+          </div>
+          <div style="padding:14px 16px 0">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.16em;color:#8a857a">આજનું કામ</div>
+            <div style="font-size:23px;font-weight:800;margin-top:5px">આ લગાવો</div>
+          </div>
+          <div style="margin:12px 16px 0;border:2px solid #23211C;border-radius:16px;overflow:hidden">
+            <div style="height:120px;background:repeating-linear-gradient(118deg,rgba(150,140,118,0) 0 20px,rgba(120,108,86,.14) 20px 21px),linear-gradient(135deg,#f1eee6,#e6e0d3);position:relative">
+              <div style="position:absolute;left:10px;top:10px;background:#3F7A54;color:#fff;padding:5px 11px;border-radius:20px;font-size:12px;font-weight:600">✓ મંજૂર</div>
+            </div>
+            <div style="padding:10px 13px;background:#fff"><div style="font-weight:700;font-size:15px">Italian Marble · Living</div></div>
+          </div>
+          <div style="margin:12px 16px 0;background:#F6ECD6;border:1px solid #E4CE9C;border-radius:11px;padding:9px 12px;display:flex;align-items:center;gap:9px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#C08A2D;flex:none"></span>
+            <span style="font-size:12px;font-weight:600;color:#8A6216;flex:1">2 વસ્તુ મોકલવાની બાકી</span>
+            <span style="font-family:'IBM Plex Mono';font-size:10px;color:#8A6216">↻</span>
+          </div>
+          <div style="padding:14px 16px 18px;display:flex;gap:9px">
+            <sc-for list="{{ workerCmds }}" as="c" hint-placeholder-count="3">
+              <div style="flex:{{ c.flex }};background:{{ c.bg }};color:{{ c.fg }};border:{{ c.bd }};border-radius:14px;padding:15px 6px;display:flex;flex-direction:column;align-items:center;gap:4px">
+                <span style="font-size:19px">{{ c.icon }}</span>
+                <span style="font-size:14px;font-weight:700">{{ c.label }}</span>
+                <span style="font-family:'IBM Plex Mono';font-size:8.5px;letter-spacing:.06em;opacity:.75">{{ c.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:11px">
+        <sc-for list="{{ workerFixes }}" as="w" hint-placeholder-count="5">
+          <div style="background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:14px 17px">
+            <div style="display:flex;align-items:center;gap:9px">
+              <span style="width:7px;height:7px;border-radius:50%;background:{{ w.dot }};flex:none"></span>
+              <span style="font-weight:600;font-size:14px">{{ w.title }}</span>
+            </div>
+            <div style="font-size:12.5px;color:#4a463e;margin-top:6px;line-height:1.6;text-wrap:pretty">{{ w.body }}</div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. MATRIX -->
+  <div style="margin-top:52px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">04</span>
+      <span style="font-size:22px;font-weight:700">Persona × device readiness</span>
+    </div>
+    <div style="font-size:13.5px;color:#6b665c;margin-top:12px;max-width:900px;text-wrap:pretty">Design-side readiness only. Every cell is a design judgement against reproduced code, not a test result — the acceptance sessions below are what actually clear these.</div>
+
+    <div style="margin-top:18px;background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-radius:12px;overflow:hidden">
+      <div style="display:grid;grid-template-columns:1.5fr 1fr .8fr .8fr .8fr 1.6fr;background:#23211C;color:#EDE7DA">
+        <sc-for list="{{ matrixHead }}" as="h" hint-placeholder-count="6">
+          <div style="padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.14em">{{ h }}</div>
+        </sc-for>
+      </div>
+      <sc-for list="{{ matrix }}" as="m" hint-placeholder-count="8">
+        <div style="display:grid;grid-template-columns:1.5fr 1fr .8fr .8fr .8fr 1.6fr;border-top:1px solid rgba(35,33,28,.1);background:{{ m.bg }}">
+          <div style="padding:12px 14px;font-weight:600;font-size:13px">{{ m.persona }}</div>
+          <div style="padding:12px 14px;font-size:12px;color:#6b665c">{{ m.device }}</div>
+          <sc-for list="{{ m.cells }}" as="c" hint-placeholder-count="3">
+            <div style="padding:12px 14px;display:flex;align-items:center">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;font-weight:600;padding:3px 8px;border-radius:20px;background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }}">{{ c.v }}</span>
+            </div>
+          </sc-for>
+          <div style="padding:12px 14px;font-size:11.5px;color:#6b665c;line-height:1.5">{{ m.blocker }}</div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;gap:18px;margin-top:12px;flex-wrap:wrap">
+      <sc-for list="{{ legend }}" as="l" hint-placeholder-count="3">
+        <div style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:#6b665c"><span style="width:9px;height:9px;border-radius:50%;background:{{ l.c }}"></span>{{ l.t }}</div>
+      </sc-for>
+    </div>
+  </div>
+
+  <!-- 5. ACCEPTANCE -->
+  <div style="margin-top:52px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">05</span>
+      <span style="font-size:22px;font-weight:700">Unassisted acceptance scripts</span>
+    </div>
+    <div style="font-size:13.5px;color:#6b665c;margin-top:12px;max-width:900px;text-wrap:pretty">One realistic task per persona. Record completion time, assistance required, mistakes, abandoned actions and unresolved confusion. These cannot be substituted by automated tests.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px">
+      <sc-for list="{{ scripts }}" as="s" hint-placeholder-count="8">
+        <div style="background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:14px 17px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+            <span style="font-weight:700;font-size:13.5px">{{ s.persona }}</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#8a857a">{{ s.device }}</span>
+          </div>
+          <div style="font-size:12.5px;color:#4a463e;margin-top:7px;line-height:1.6;text-wrap:pretty">{{ s.task }}</div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#8A6216;margin-top:8px">PASS IF · {{ s.pass }}</div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <!-- 6. MANDATE E + F -->
+  <div style="margin-top:52px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">06</span>
+      <span style="font-size:22px;font-weight:700">Mandates E &amp; F — language, accessibility, business language</span>
+    </div>
+    <div style="font-size:13.5px;color:#6b665c;margin-top:12px;max-width:900px;text-wrap:pretty">Both sit in this same standalone-V1 programme, so they are reproduced and designed here alongside A and C. Each row below is a counted failure at head, not an impression.</div>
+
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:18px">
+      <sc-for list="{{ efFindings }}" as="f" hint-placeholder-count="5">
+        <div style="background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-left:4px solid {{ f.rail }};border-radius:12px;padding:16px 20px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px">
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;padding:3px 9px;border-radius:20px;background:{{ f.chipBg }};color:{{ f.chipFg }};border:1px solid {{ f.chipBd }}">{{ f.tag }}</span>
+                <span style="font-weight:600;font-size:15.5px">{{ f.title }}</span>
+              </div>
+              <div style="font-size:13px;color:#4a463e;margin-top:8px;line-height:1.6;max-width:780px;text-wrap:pretty">{{ f.body }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#8a857a;margin-top:8px">{{ f.evidence }}</div>
+              <div style="font-size:12.5px;color:#2F6B44;margin-top:9px;line-height:1.55;max-width:780px"><span style="font-family:'IBM Plex Mono';font-size:9.5px;letter-spacing:.14em;color:#8a857a">DESIGNED · </span>{{ f.fix }}</div>
+            </div>
+            <div style="flex:none;text-align:right">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:26px;font-weight:600;color:{{ f.rail }};line-height:1">{{ f.metric }}</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.12em;color:#8a857a;margin-top:4px">{{ f.metricLabel }}</div>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <!-- picker before/after -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:26px">
+      <div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#B23A34;margin-bottom:10px">NOW · TYPE THE INTERNAL IDENTIFIER</div>
+        <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:16px">
+          <sc-for list="{{ idInputs }}" as="i" hint-placeholder-count="3">
+            <div style="margin-bottom:11px">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.12em;color:#8a857a;margin-bottom:5px">{{ i.where }}</div>
+              <div style="height:42px;border:1px solid rgba(35,33,28,.18);border-radius:10px;display:flex;align-items:center;padding:0 12px;font-size:12.5px;color:#b0aba0">{{ i.ph }}</div>
+            </div>
+          </sc-for>
+          <div style="font-size:12.5px;color:#6b665c;margin-top:4px;line-height:1.55">Field text is 12.5px — below the 16px floor, so iOS zooms the page on focus. The user must already know the identifier.</div>
+        </div>
+      </div>
+      <div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#2F6B44;margin-bottom:10px">DESIGNED · SCOPED BUSINESS-LANGUAGE PICKER</div>
+        <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:16px">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.12em;color:#8a857a;margin-bottom:5px">VENDOR</div>
+          <div style="height:48px;border:1.5px solid #23211C;border-radius:10px;display:flex;align-items:center;gap:9px;padding:0 13px;font-size:16px">
+            <span style="color:#8a857a">⌕</span><span style="color:#23211C">shah mar</span><span style="width:1px;height:19px;background:#B4462E"></span>
+          </div>
+          <div style="border:1px solid rgba(35,33,28,.14);border-top:none;border-radius:0 0 10px 10px;overflow:hidden">
+            <sc-for list="{{ pickerRows }}" as="p" hint-placeholder-count="3">
+              <div style="padding:11px 13px;border-top:1px solid rgba(35,33,28,.08);background:{{ p.bg }};display:flex;align-items:center;gap:10px">
+                <div style="flex:1">
+                  <div style="font-size:14px;font-weight:600">{{ p.name }}</div>
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#8a857a;margin-top:2px">{{ p.meta }}</div>
+                </div>
+                <sc-if value="{{ p.tag }}" hint-placeholder-val="{{ false }}"><span style="font-family:'IBM Plex Mono';font-size:9.5px;padding:3px 8px;border-radius:20px;background:#E1EEE4;color:#2F6B44;border:1px solid #C3DDCB">{{ p.tag }}</span></sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size:12.5px;color:#6b665c;margin-top:11px;line-height:1.55">Search by the name people actually say. Scoped to the project and company, so an unauthorized vendor is not merely hidden from the list — it is not resolvable. The identifier still travels underneath; nobody types it.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATUS HANDOFF -->
+  <div style="margin-top:46px;background:#23211C;color:#EDE7DA;border-radius:14px;padding:22px 26px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.2em;color:#B4462E">FOR THE NEXT SAFE STATUS HANDOFF</div>
+    <div style="font-size:15px;font-weight:600;margin-top:9px">Owner-mandated standalone-V1 completion gate — design inputs ready</div>
+    <div style="font-size:13px;color:rgba(237,231,218,.72);margin-top:9px;line-height:1.65;max-width:880px;text-wrap:pretty">Record as a new gate entry at the next safe handoff; do not expand an active unrelated PR to record it. Mandates A, C, E and F are designed and reproduced; B and D stay owned by Task 4 and the Phase 6 collaborator units and are untouched here. Suggested review units, each within the normal limit and each reproduce-first: <b>F-1a</b> focus tokens and dialog focus traps → <b>F-1b</b> mobile field and touch corrections → <b>F-1c</b> per-surface validation, which depends on both · then <b>A</b> mobile IA · <b>E</b> field-workflow namespaces · <b>F-2</b> business-language pickers · <b>C</b> worker commands. F-1a is the cheapest and unblocks the accessibility verification every other unit needs. <b>Wave 4 is blocked</b> on worker authentication and device binding; <b>Wave 5 acceptance is blocked</b> on weekly-report export and architect rejection authority.</div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1180}}">
+class Component extends DCLogic {
+  renderVals() {
+    const amber = { bg:'#F6ECD6', fg:'#8A6216', bd:'#E4CE9C' };
+    const green = { bg:'#E1EEE4', fg:'#2F6B44', bd:'#C3DDCB' };
+    const red   = { bg:'#F7E1DF', fg:'#B23A34', bd:'#E7C4C0' };
+
+    const meta = [
+      { k:'REPO', v:'JagPat/PMCvitan' },
+      { k:'BRANCH', v:'main' },
+      { k:'TREE', v:'a35439439a30' },
+      { k:'DATE', v:'13 Aug 2026' }
+    ];
+
+    const findings = [
+      { tag:'MANDATE A', rail:'#B23A34', ...{}, chipBg:red.bg, chipFg:red.fg, chipBd:red.bd,
+        title:'Mobile tab bar renders every role screen, unbounded',
+        body:'BottomTabs maps the full permission-filtered list with no cap, and each tab is flex:1. For PMC that is 13 destinations sharing 360px. The label rule sets text-overflow:ellipsis, so destination names truncate — explicitly forbidden. Tab height (62px) already meets 44px; the horizontal dimension does not.',
+        evidence:'layout/BottomTabs.tsx:10 · BottomTabs.module.css:.tab/.label · lib/screens.ts:screensFor',
+        metric:'27.7px', metricLabel:'PER TAB @360' },
+      { tag:'MANDATE C', rail:'#B23A34', chipBg:red.bg, chipFg:red.fg, chipBd:red.bd,
+        title:'No durable worker commands exist',
+        body:'Done is a distinct store action, but it mutates local state only. Photo and Problem both route to speakJob — the same handler as Listen. And no worker command type exists anywhere on the server. All three must be built as durable, idempotent commands with offline outbox support, evidence and retry; none of the three can be treated as already done.',
+        evidence:'TeamAccessScreen.tsx:586, :590, :594 · store.ts:4654 local only · no worker.* commandType in apps/api/src/labour',
+        metric:'0 of 3', metricLabel:'DURABLE COMMANDS' },
+      { tag:'MANDATE C', rail:'#B23A34', chipBg:red.bg, chipFg:red.fg, chipBd:red.bd,
+        title:'“Listen” provides no audio at any layer',
+        body:'No speech-synthesis or audio API is referenced anywhere in the web app. The control resolves to a transient message, so a worker who cannot read the card gets nothing spoken. Real localized audio guidance is required, in the worker’s selected language.',
+        evidence:'no match for speechSynthesis|Audio| in apps/web/src · store.ts:4650',
+        metric:'0', metricLabel:'AUDIO PATHS' },
+      { tag:'STRUCTURAL', rail:'#C08A2D', chipBg:amber.bg, chipFg:amber.fg, chipBd:amber.bd,
+        title:'Worker and mistri have no dedicated experience',
+        body:'Both identities already exist in the domain: Worker is a first-class entity and mistri responsibility is modelled as crew in-charge. What is missing is a surface for each. Do NOT widen the application role union to add them — that would grant navigation and authority neither persona should hold. Connect the existing identities to narrow, dedicated experiences instead.',
+        evidence:'domain/types.ts:504 interface Worker · contracts/labour.ts:162 inchargeWorkerId · Role excludes worker at types.ts:72',
+        metric:'2', metricLabel:'EXPERIENCES MISSING' }
+    ];
+
+    const beforeLabels = ['For You','Dashboard','Schedule','Log','Drafts','Review','Drawings','Materials','Labour','Money','Places','Team','Portfolio'];
+    const beforeTabs = beforeLabels.map((l, i) => ({ label:l, dot: i === 0 ? '#B4462E' : 'rgba(35,33,28,.22)' }));
+
+    const afterTabs = [
+      { label:'For You', dot:'#B4462E', fg:'#B4462E', bg:'rgba(180,70,46,.06)', badge:4 },
+      { label:'Dashboard', dot:'rgba(35,33,28,.3)', fg:'#6b665c', bg:'transparent', badge:null },
+      { label:'Schedule', dot:'rgba(35,33,28,.3)', fg:'#6b665c', bg:'transparent', badge:null },
+      { label:'Decisions', dot:'rgba(35,33,28,.3)', fg:'#6b665c', bg:'transparent', badge:2 },
+      { label:'More', dot:'rgba(35,33,28,.3)', fg:'#6b665c', bg:'transparent', badge:null }
+    ];
+
+    const roleNav = [
+      { role:'PMC', count:'13 → 5', tabs:['For You','Dashboard','Schedule','Decisions','More'],
+        more:'Drafts · Inspection Review · Drawings · Materials · Labour · Commercial · Site Map · Team · Portfolio' },
+      { role:'Engineer', count:'11 → 5', tabs:['For You','Daily Log','Checklist','Schedule','More'],
+        more:'Drawings · Materials · Labour · Commercial · Site Map · Team Access · Decision Log' },
+      { role:'Client', count:'6 → 5', tabs:['For You','Decisions','Health','Drawings','More'],
+        more:'Decision Log · Site Map' },
+      { role:'Contractor', count:'5 · flat', tabs:['For You','Drawings','Site Map','Access','Log'], more:null },
+      { role:'Consultant', count:'5 · flat', tabs:['For You','Drawings','Decisions','Site Map','Health'], more:null }
+    ];
+
+    const workerCmds = [
+      { flex:1.4, icon:'✓', label:'થયું', state:'SENT', bg:'#3F7A54', fg:'#fff', bd:'none' },
+      { flex:1, icon:'▣', label:'ફોટો', state:'QUEUED 1', bg:'#fff', fg:'#23211C', bd:'1px solid rgba(35,33,28,.2)' },
+      { flex:1, icon:'✋', label:'તકલીફ', state:'RETRY', bg:'#FBF0EF', fg:'#B23A34', bd:'1px solid #E7CBC7' }
+    ];
+
+    const workerFixes = [
+      { dot:'#3F7A54', title:'Three distinct durable commands',
+        body:'Done, Photo and Problem each become their own idempotent command with its own key, routed through the existing outbox rather than a shared presentational handler. Nothing is invented alongside Task 4 — these attach to canonical assignments.' },
+      { dot:'#C08A2D', title:'Honest queued / failed / retrying / completed',
+        body:'Every command carries its own visible state on the button itself, plus a single card-level summary line ("2 items still to send") with a retry affordance. A local-only write never renders as success.' },
+      { dot:'#B4462E', title:'Two audio layers, both offline',
+        body:'Fixed controls — Done, Photo, Problem — use bundled versioned recordings. The project-specific part cannot be bundled: the task and the approved material change per assignment, so that needs an attributable voice briefing recorded by the engineer or PMC, bound to the assignment revision or fingerprint and cached offline. Browser speech synthesis is not acceptable for either layer — it cannot guarantee an installed Hindi or Gujarati voice, and it cannot be relied on offline, which is exactly when guidance is needed.' },
+      { dot:'#31567F', title:'Evidence is attributable and retryable',
+        body:'Photo and problem capture bind to trusted worker/device identity at capture time, so attribution survives a queued upload and a later retry — and a retry with the same key never double-posts.' },
+      { dot:'#8a857a', title:'The model itself is preserved',
+        body:'No navigation is added, no typing is introduced, targets stay large, and the picture-first card is untouched. This is productionization of the existing design, not a redesign of it.' }
+    ];
+
+    const cell = (v) => {
+      if (v === 'READY') return { v, ...green };
+      if (v === 'GAPS') return { v, ...amber };
+      return { v, ...red };
+    };
+    const matrixHead = ['PERSONA','PRIMARY DEVICE','360×800','TABLET','DESKTOP','LEADING DESIGN BLOCKER'];
+    const mk = (persona, device, a, b, c, blocker, bg) => ({ persona, device, cells:[cell(a), cell(b), cell(c)], blocker, bg });
+    const matrix = [
+      mk('PMC / project manager','Desktop','BLOCKED','GAPS','READY','13 tabs at 360px; rail fine on large screens','#F4F1EA'),
+      mk('Site engineer','Phone','BLOCKED','GAPS','READY','11 tabs at 360px; field paths still part-English','#fff'),
+      mk('Architect','Desktop','BLOCKED','GAPS','READY','Shares the PMC bar; countersign UX sits in Task 4','#F4F1EA'),
+      mk('Client','Phone + iPad','GAPS','GAPS','READY','6 tabs is over cap; large-screen type does not scale up','#fff'),
+      mk('Contractor','Phone + desktop','GAPS','GAPS','GAPS','Portal scope is a sequenced Phase 6 unit','#F4F1EA'),
+      mk('Consultant','Desktop','GAPS','GAPS','GAPS','Portal scope is a sequenced Phase 6 unit','#fff'),
+      mk('Mistri / trade in-charge','Phone','BLOCKED','BLOCKED','BLOCKED','Identity exists; no dedicated experience yet','#F4F1EA'),
+      mk('Low-literacy worker','Phone / kiosk','BLOCKED','BLOCKED','BLOCKED','0 of 3 durable commands; no audio; auth unresolved','#fff')
+    ];
+    const legend = [
+      { c:'#3F7A54', t:'Ready — design complete, pending verification' },
+      { c:'#C08A2D', t:'Gaps — designed correction exists, not built' },
+      { c:'#B23A34', t:'Blocked — reproduced failure at this viewport' }
+    ];
+
+    const scripts = [
+      { persona:'PMC / project manager', device:'Desktop', task:'Open the console cold and find every decision ageing more than five days with the client.', pass:'No assistance; correct set found first try' },
+      { persona:'Site engineer', device:'Phone 360×800', task:'Arrive on site with no signal, check in, log crew, capture a failed checklist item with a photo and note, then submit.', pass:'Queued states honest; nothing reports false success' },
+      { persona:'Architect', device:'Desktop', task:'UNSETTLED — the v1 scenario assumed an architect may reject inspection line items. That authority is not established by Task 4 and this programme must not introduce it. Settle the policy with Task 4, or substitute an authorized architect workflow.', pass:'Blank until the policy is settled' },
+      { persona:'Client', device:'iPad', task:'Read what is waiting, approve one option, and afterwards find that same decision in the register and see it is locked.', pass:'Text readable unaided; lock and attribution understood' },
+      { persona:'Contractor', device:'Phone', task:'Find the current approved drawing package for one location and confirm which material is approved there.', pass:'Only authorized packages visible; no ID typing' },
+      { persona:'Consultant', device:'Desktop', task:'Open an assigned matter, record a consultation response, and return it without approving anything.', pass:'No approval authority exposed anywhere in the path' },
+      { persona:'Mistri / trade in-charge', device:'Phone 390×844', task:'Sign in, see today’s trade tasks, and confirm the approved fitting brand before starting work.', pass:'No English-only strings; no internal identifiers' },
+      { persona:'Low-literacy worker', device:'Phone / kiosk', task:'Be recognised without typing, understand today’s task using the picture and spoken guidance alone, report a problem with a photo, then hand the device on.', pass:'Completed without reading English; problem reaches the engineer' }
+    ];
+
+    const efFindings = [
+      { tag:'MANDATE F', rail:'#B23A34', chipBg:red.bg, chipFg:red.fg, chipBd:red.bd,
+        title:'No focus indicator anywhere, and outline is actively removed',
+        body:'A search across the whole web app returns zero :focus-visible rules, while outline:none appears on every shared field style and on the top-bar controls. Keyboard and switch users therefore have no visible focus at all — a direct WCAG 2.2 AA failure (2.4.7), and it also blocks the manual keyboard verification the directive requires.',
+        evidence:'0 matches for :focus-visible in apps/web/src · outline:none at DailyLog:401, DecisionLog:517, InspectionReview:265, Schedule:519, TeamScreen:601, TopBar.module.css:68 + 5 more',
+        fix:'Two contrast-checked tokens, applied at the primitive layer rather than per screen. Light surfaces use the accent ring — 4.30:1 on canvas, 4.83:1 on panel. Ink surfaces must NOT use accent, which measures only 2.95:1 against #23211C; they use sidebar-text at 13.05:1. Never removed, and re-measured if the palette changes.',
+        metric:'0', metricLabel:'FOCUS RULES' },
+      { tag:'MANDATE F', rail:'#B23A34', chipBg:red.bg, chipFg:red.fg, chipBd:red.bd,
+        title:'Every mobile text input is below the 16px floor',
+        body:'Eight per-screen field styles range from 12.5px to 14px. Under 16px, iOS Safari zooms the viewport on focus and does not zoom back — so the engineer writing a fail note on a phone is thrown into a magnified, horizontally scrolled page mid-task. The directive names 16px explicitly.',
+        evidence:'Commercial:662 (12.5) · EngineerChecklist:150 (13) · DailyLog:401 · DecisionLog:517 · InspectionReview:265 · Schedule:519 (13.5) · TeamScreen:601 · ProjectSwitcher:238 (14)',
+        fix:'Raise all eight to 16px, scaling down on desktop only where density genuinely demands it. Note these are SEPARATE per-screen objects (fldM, fldD, fld, fldS …), not shared constants — so either introduce a real shared field primitive and migrate the call sites, or verify with Playwright computed-style assertions per surface. That choice changes the unit size and must be made before F-1b opens.',
+        metric:'8', metricLabel:'FIELD STYLES < 16px' },
+      { tag:'MANDATE F', rail:'#C08A2D', chipBg:amber.bg, chipFg:amber.fg, chipBd:amber.bd,
+        title:'Essential information carried in 8–9.5px metadata type',
+        body:'Safety- and evidence-critical lines are set smaller than any body text: the fail-evidence requirement, the server-refused photo list, the presence proof and the mismatch action all sit at 9–9.5px. The mismatch control is worse — it is a bare 9.5px text button with zero padding, so its hit area is a few pixels tall.',
+        evidence:'EngineerChecklist:144, :166 · DailyLog:171, :182, :249 (padding:0) · Drawings:235',
+        fix:'Promote anything that changes what a user must DO to at least 13px with real weight; keep 9px strictly for decorative eyebrows. The mismatch action becomes a proper 44×44 control.',
+        metric:'6+', metricLabel:'CRITICAL LINES TINY' },
+      { tag:'MANDATE F', rail:'#B23A34', chipBg:red.bg, chipFg:red.fg, chipBd:red.bd,
+        title:'Four surfaces still ask users to type an internal identifier',
+        body:'Vendor, PO line and activity identifiers are free-text inputs on financially significant paths. A user cannot know them without leaving the app, and a typo silently targets the wrong record. TeamScreen:544 device id is a fifth raw input but a DIFFERENT problem — a picker does not solve device binding, so it is tracked separately.',
+        evidence:'Commercial:1013 vendorId · :1020 poLineId · :1669 vendorId · :2197 activityId',
+        fix:'Searchable pickers scoped to project and company. GET /projects/:projectId/vendors already exists and is scoped, so the vendor picker needs no new endpoint. Device binding becomes QR scan or pending-device selection by readable label and observation time, then worker assignment — its own unit.',
+        metric:'4', metricLabel:'RAW ID INPUTS' },
+      { tag:'MANDATE E', rail:'#C08A2D', chipBg:amber.bg, chipFg:amber.fg, chipBd:amber.bd,
+        title:'Translation exists, but not on the field workflows',
+        body:'i18n is initialised with three namespaces — access, trades and workerTrades — and useT is documented as covering the access flow only. Daily log, checklist, attendance and issue reporting have no namespace, so their labels, validation and error messages are hard-coded English. Coverage is partial rather than absent: the daily log does translate the labour mismatch line, which shows the pattern works and simply has not been extended.',
+        evidence:'i18n/i18n.ts:14 ns:[access,trades,workerTrades] · i18n/useT.ts:18 · DailyLog:232 uses labourLabels[lang]; :188, :182 do not',
+        fix:'Add field namespaces for daily-log, checklist, attendance and issues, covering validation, offline and error strings — not just visible labels. Pair every icon with a short word, since icon-only controls fail the same users twice.',
+        metric:'3 of 7', metricLabel:'NAMESPACES PRESENT' }
+    ];
+
+    const idInputs = [
+      { where:'COMMERCIAL · LODGE CLAIM', ph:'Vendor id' },
+      { where:'COMMERCIAL · LODGE CLAIM', ph:'PO line id' },
+      { where:'COMMERCIAL · MEASUREMENT', ph:'Activity id' }
+    ];
+    const pickerRows = [
+      { name:'Shah Marbles & Granite', meta:'Ambli · 4 open POs', tag:'ON PROJECT', bg:'rgba(180,70,46,.05)' },
+      { name:'Shah Marble Traders', meta:'Bopal · 1 open PO', tag:null, bg:'#fff' },
+      { name:'Marudhar Stone Co.', meta:'Ambli · 2 open POs', tag:'ON PROJECT', bg:'#fff' }
+    ];
+
+    return { meta, findings, beforeTabs, afterTabs, roleNav, workerCmds, workerFixes, matrixHead, matrix, legend, scripts, efFindings, idInputs, pickerRows };
+  }
+}
+</script>
+</body>
+</html>

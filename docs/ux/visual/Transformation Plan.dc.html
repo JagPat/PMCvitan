@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#E9E4D8;font-family:'Archivo',system-ui,sans-serif;color:#23211C;-webkit-font-smoothing:antialiased}
+  a{color:#B4462E;text-decoration:none}
+  a:hover{color:#8f3724;text-decoration:underline}
+</style>
+</helmet>
+<div style="max-width:1180px;margin:0 auto;padding:44px 40px 90px">
+
+  <!-- MASTHEAD -->
+  <div style="border-bottom:1.5px solid #23211C;padding-bottom:20px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.22em;color:#B4462E">STANDALONE V1 · UX COMPLETION PROGRAMME</div>
+    <div style="font-family:'Newsreader',serif;font-size:40px;font-weight:500;margin-top:8px;line-height:1.1;letter-spacing:-.01em">Transformation Plan — page by page</div>
+    <div style="font-size:14px;color:#6b665c;margin-top:9px;max-width:700px;text-wrap:pretty">How each screen changes, in what order, and why that order. Built against <b>main @ a35439439a30</b>. Companion to the UX Completion Gate pack, which carries the reproduction evidence behind every change listed here.</div>
+    <div style="display:inline-flex;align-items:center;gap:8px;margin-top:12px;background:#E1EEE4;border:1px solid #C3DDCB;border-radius:20px;padding:5px 13px"><span style="width:7px;height:7px;border-radius:50%;background:#3F7A54"></span><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.1em;color:#2F6B44;font-weight:600">V2 · SYNCED WITH THE MARKDOWN BRIEF</span></div>
+  </div>
+
+  <!-- 1. SEQUENCE -->
+  <div style="margin-top:44px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">01</span>
+      <span style="font-size:22px;font-weight:700">Proposed sequence</span>
+    </div>
+    <div style="font-size:13.5px;color:#6b665c;margin-top:12px;max-width:900px;text-wrap:pretty">A foundation stage plus five waves — six stages in all. The ordering is driven by dependency, not by mandate letter: the cheapest change goes first precisely because everything after it is verified against it.</div>
+
+    <div style="display:flex;flex-direction:column;gap:0;margin-top:22px">
+      <sc-for list="{{ waves }}" as="w" hint-placeholder-count="6">
+        <div style="display:flex;gap:20px;align-items:stretch">
+          <div style="width:74px;flex:none;display:flex;flex-direction:column;align-items:center">
+            <div style="width:44px;height:44px;border-radius:50%;background:{{ w.dotBg }};color:{{ w.dotFg }};display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono';font-weight:600;font-size:13px;flex:none;border:1.5px solid {{ w.ring }}">{{ w.n }}</div>
+            <sc-if value="{{ w.hasLine }}" hint-placeholder-val="{{ true }}"><div style="flex:1;width:1.5px;background:rgba(35,33,28,.16);margin:4px 0"></div></sc-if>
+          </div>
+          <div style="flex:1;padding-bottom:20px">
+            <div style="background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-left:4px solid {{ w.ring }};border-radius:12px;padding:16px 20px">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap">
+                <div>
+                  <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+                    <span style="font-weight:700;font-size:16px">{{ w.title }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;padding:3px 9px;border-radius:20px;background:#fff;border:1px solid rgba(35,33,28,.16);color:#6b665c">{{ w.unit }}</span>
+                  </div>
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#8a857a;margin-top:5px">{{ w.touches }}</div>
+                </div>
+                <div style="display:flex;gap:16px;text-align:right">
+                  <div><div style="font-family:'IBM Plex Mono';font-size:15px;font-weight:600;color:{{ w.ring }}">{{ w.size }}</div><div style="font-family:'IBM Plex Mono';font-size:8.5px;letter-spacing:.1em;color:#8a857a;margin-top:2px">DIFF</div></div>
+                  <div><div style="font-family:'IBM Plex Mono';font-size:15px;font-weight:600">{{ w.screens }}</div><div style="font-family:'IBM Plex Mono';font-size:8.5px;letter-spacing:.1em;color:#8a857a;margin-top:2px">SCREENS</div></div>
+                </div>
+              </div>
+              <div style="font-size:13px;color:#4a463e;margin-top:10px;line-height:1.6;max-width:800px;text-wrap:pretty">{{ w.body }}</div>
+              <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(35,33,28,.1);font-size:12.5px;color:#2F6B44;line-height:1.55"><span style="font-family:'IBM Plex Mono';font-size:9.5px;letter-spacing:.14em;color:#8a857a">WHY HERE · </span>{{ w.why }}</div>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="background:#F6ECD6;border:1px solid #E4CE9C;border-left:4px solid #C08A2D;border-radius:12px;padding:16px 20px;margin-top:6px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#8A6216">SEQUENCING RISK WORTH RAISING NOW</div>
+      <div style="font-size:13.5px;line-height:1.6;margin-top:7px;max-width:900px;text-wrap:pretty">CommercialScreen.tsx is <b>162 KB in a single file</b> and holds four of the five raw-ID inputs. Wave 3 cannot land there as one PR without breaking the review-unit limit. Plan it as three units split by flow — lodge claim, advance, measurement — or extract the picker first and adopt it flow by flow. Either way, decide before Wave 3 opens rather than discovering it mid-review.</div>
+    </div>
+  </div>
+
+  <!-- 2. SCREEN MAP -->
+  <div style="margin-top:52px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">02</span>
+      <span style="font-size:22px;font-weight:700">Every surface, and what changes</span>
+    </div>
+    <div style="font-size:13.5px;color:#6b665c;margin-top:12px;max-width:900px;text-wrap:pretty">The eighteen screens on main, plus the five shared dialogs and pickers they mount — those carry the same Wave 0 defects and are easy to miss precisely because they are not screens. Most rows need only the Wave 0 sweep; the weight concentrates in four.</div>
+
+    <div style="margin-top:18px;background:#F4F1EA;border:1px solid rgba(35,33,28,.14);border-radius:12px;overflow:hidden">
+      <div style="display:grid;grid-template-columns:1.5fr .5fr 2.6fr .7fr;background:#23211C;color:#EDE7DA">
+        <sc-for list="{{ mapHead }}" as="h" hint-placeholder-count="4">
+          <div style="padding:11px 14px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.14em">{{ h }}</div>
+        </sc-for>
+      </div>
+      <sc-for list="{{ screenMap }}" as="s" hint-placeholder-count="23">
+        <div style="display:grid;grid-template-columns:1.5fr .5fr 2.6fr .7fr;border-top:1px solid rgba(35,33,28,.1);background:{{ s.bg }};align-items:center">
+          <div style="padding:11px 14px">
+            <div style="font-weight:600;font-size:13px">{{ s.name }}</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#8a857a;margin-top:2px">{{ s.role }}</div>
+          </div>
+          <div style="padding:11px 8px;display:flex;gap:4px;flex-wrap:wrap">
+            <sc-for list="{{ s.waves }}" as="wv" hint-placeholder-count="2">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:600;width:19px;height:19px;border-radius:50%;background:{{ wv.bg }};color:{{ wv.fg }};display:flex;align-items:center;justify-content:center">{{ wv.n }}</span>
+            </sc-for>
+          </div>
+          <div style="padding:11px 14px;font-size:12px;color:#4a463e;line-height:1.5">{{ s.change }}</div>
+          <div style="padding:11px 14px">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;font-weight:600;padding:3px 8px;border-radius:20px;background:{{ s.effBg }};color:{{ s.effFg }};border:1px solid {{ s.effBd }}">{{ s.effort }}</span>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+
+  <!-- 3. MOCKS -->
+  <div style="margin-top:52px">
+    <div style="display:flex;align-items:baseline;gap:12px;border-bottom:1px solid rgba(35,33,28,.16);padding-bottom:10px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#B4462E">03</span>
+      <span style="font-size:22px;font-weight:700">The three that change most</span>
+    </div>
+    <div style="font-size:13.5px;color:#6b665c;margin-top:12px;max-width:900px;text-wrap:pretty">Drawn from the real component structure on main, so these read as diffs rather than redesigns.</div>
+
+    <!-- MOCK 1 : CHECKLIST -->
+    <div style="margin-top:26px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.16em;color:#8a857a">EngineerChecklistScreen.tsx</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border-radius:20px;background:#F6ECD6;color:#8A6216;border:1px solid #E4CE9C">WAVE 0 + 2</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:26px">
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#B23A34;margin-bottom:10px">NOW</div>
+          <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:14px;padding:14px">
+            <div style="font-weight:600;font-size:14.5px;line-height:1.3">Waterproofing coat cured (7 days)</div>
+            <div style="display:flex;gap:7px;margin-top:11px">
+              <div style="flex:1;padding:9px 0;border-radius:9px;border:1px solid #B23A34;background:#B23A34;color:#fff;text-align:center;font-size:12.5px;font-weight:600">Fail</div>
+              <div style="flex:1;padding:9px 0;border-radius:9px;border:1px solid rgba(35,33,28,.15);text-align:center;font-size:12.5px;font-weight:600;color:#3F7A54">Pass</div>
+              <div style="flex:1;padding:9px 0;border-radius:9px;border:1px solid rgba(35,33,28,.15);text-align:center;font-size:12.5px;font-weight:600;color:#6b665c">N.A.</div>
+              <div style="flex:1;padding:9px 0;border-radius:9px;border:1px solid rgba(35,33,28,.15);text-align:center;font-size:14px">▣</div>
+            </div>
+            <div style="margin-top:10px;background:#FBF0EF;border:1px solid #E7CBC7;border-radius:9px;padding:9px 11px">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:#B23A34;letter-spacing:.1em">FAIL REQUIRES NOTE + PHOTO EVIDENCE</div>
+              <div style="margin-top:7px;font-size:13px;color:#b0aba0">Describe the issue…</div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px;margin-top:11px">
+            <sc-for list="{{ chkNow }}" as="c" hint-placeholder-count="3">
+              <div style="display:flex;gap:8px;font-size:12px;color:#B23A34;line-height:1.5"><span>✕</span><span style="flex:1">{{ c }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#2F6B44;margin-bottom:10px">TRANSFORMED</div>
+          <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:14px;padding:14px">
+            <div style="font-weight:600;font-size:15px;line-height:1.35">પાણી-રોધક કોટ સુકાયો (7 દિવસ)</div>
+            <div style="display:flex;gap:7px;margin-top:11px">
+              <div style="flex:1;height:48px;border-radius:10px;border:2px solid #B23A34;background:#B23A34;color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 0 0 2px #fff,0 0 0 4px rgba(178,58,52,.5)"><span style="font-size:15px">✕</span><span style="font-size:11px;font-weight:700">નિષ્ફળ</span></div>
+              <div style="flex:1;height:48px;border-radius:10px;border:1px solid rgba(35,33,28,.15);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#3F7A54"><span style="font-size:15px">✓</span><span style="font-size:11px;font-weight:700">બરાબર</span></div>
+              <div style="flex:1;height:48px;border-radius:10px;border:1px solid rgba(35,33,28,.15);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#6b665c"><span style="font-size:15px">—</span><span style="font-size:11px;font-weight:700">લાગુ નથી</span></div>
+              <div style="flex:1;height:48px;border-radius:10px;border:1px solid rgba(35,33,28,.15);display:flex;flex-direction:column;align-items:center;justify-content:center"><span style="font-size:16px">▣</span><span style="font-size:11px;font-weight:700">ફોટો</span></div>
+            </div>
+            <div style="margin-top:10px;background:#FBF0EF;border:1px solid #E7CBC7;border-radius:9px;padding:11px">
+              <div style="font-size:13px;color:#B23A34;font-weight:600;line-height:1.4">નિષ્ફળ માટે નોંધ અને ફોટો જરૂરી</div>
+              <div style="margin-top:8px;height:44px;border:1.5px solid #23211C;border-radius:9px;background:#fff;display:flex;align-items:center;padding:0 11px;font-size:16px;color:#b0aba0">શું તકલીફ છે?</div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px;margin-top:11px">
+            <sc-for list="{{ chkNext }}" as="c" hint-placeholder-count="4">
+              <div style="display:flex;gap:8px;font-size:12px;color:#2F6B44;line-height:1.5"><span>✓</span><span style="flex:1">{{ c }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MOCK 2 : DAILY LOG MISMATCH -->
+    <div style="margin-top:38px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.16em;color:#8a857a">DailyLogScreen.tsx — material mismatch control</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border-radius:20px;background:#F6ECD6;color:#8A6216;border:1px solid #E4CE9C">WAVE 0 + 2</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:26px">
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#B23A34;margin-bottom:10px">NOW · 9.5px TEXT, padding:0</div>
+          <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:13px;padding:13px;display:flex;gap:12px;align-items:flex-start">
+            <div style="width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,#f5f3ef,#e0dad0);flex:none"></div>
+            <div style="flex:1">
+              <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+                <div style="font-weight:600;font-size:13.5px">Kohler CP set</div>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;color:#B23A34;font-weight:600">⚠ Flag mismatch</div>
+              </div>
+              <div style="font-size:11.5px;color:#2F6B44;margin-top:2px">Matches locked decision DL-009</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#8a857a;margin-top:3px">1 set · 2nd floor bath</div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:#B23A34;margin-top:10px;line-height:1.55">Hit area is roughly 84 × 12 px against a 44 × 44 floor, and it is the control that blocks wrong material reaching the wall.</div>
+        </div>
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#2F6B44;margin-bottom:10px">TRANSFORMED · 44×44, TRANSLATED</div>
+          <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:13px;padding:13px">
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div style="width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,#f5f3ef,#e0dad0);flex:none"></div>
+              <div style="flex:1">
+                <div style="font-weight:600;font-size:14px">Kohler CP set</div>
+                <div style="font-size:12.5px;color:#2F6B44;margin-top:3px;font-weight:500">✓ મંજૂર નિર્ણય સાથે મળે છે · DL-009</div>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#8a857a;margin-top:3px">1 set · 2nd floor bath</div>
+              </div>
+            </div>
+            <div style="height:44px;margin-top:11px;border:1.5px solid #B23A34;border-radius:10px;display:flex;align-items:center;justify-content:center;gap:8px;color:#B23A34;font-weight:700;font-size:14px">⚠ ખોટો માલ છે</div>
+          </div>
+          <div style="font-size:12px;color:#2F6B44;margin-top:10px;line-height:1.55">Full-width, thumb-reachable, and stated in the language of the person holding the phone. The confirmation step is kept — it is a blocking action.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MOCK 3 : CLIENT HEALTH SCALE-UP -->
+    <div style="margin-top:38px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.16em;color:#8a857a">ClientHealthScreen.tsx — large-screen scale-up</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;padding:3px 8px;border-radius:20px;background:#E6ECF3;color:#31567F;border:1px solid #C4D3E4">WAVE 1</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1.35fr;gap:26px;align-items:start">
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#B23A34;margin-bottom:10px">NOW ON iPAD · PHONE LAYOUT, WIDENED</div>
+          <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:18px">
+            <div style="font-family:'Newsreader',serif;font-size:22px">Residence at Ambli</div>
+            <div style="font-size:13px;color:#6b665c;margin-top:4px">Finishing stage · On track</div>
+            <div style="height:7px;background:rgba(35,33,28,.1);border-radius:6px;margin-top:16px"><div style="height:100%;width:72%;background:#B4462E;border-radius:6px"></div></div>
+            <div style="display:flex;justify-content:space-between;margin-top:8px"><span style="font-size:11px;color:#8a857a">Overall progress</span><span style="font-family:'IBM Plex Mono';font-size:11px;color:#B4462E">72%</span></div>
+            <div style="margin-top:14px;background:#23211C;border-radius:12px;padding:12px;color:#EDE7DA"><div style="font-family:'IBM Plex Mono';font-size:9px;color:#B4462E;letter-spacing:.15em">ACTION NEEDED</div><div style="font-weight:700;font-size:14px;margin-top:3px">2 decisions waiting</div></div>
+            <div style="font-size:11px;color:#8a857a;margin-top:12px;line-height:1.5">Body 12–13px, metadata 11px, photos small — the same measurements the phone uses, on a screen three times the size.</div>
+          </div>
+        </div>
+        <div>
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:#2F6B44;margin-bottom:10px">TRANSFORMED · GROWS UP, NOT JUST WIDER</div>
+          <div style="background:#fff;border:1px solid rgba(35,33,28,.14);border-radius:12px;padding:26px 30px">
+            <div style="font-family:'Newsreader',serif;font-size:34px;line-height:1.15">Residence at Ambli</div>
+            <div style="font-size:18px;color:#6b665c;margin-top:8px">Finishing stage · On track</div>
+            <div style="height:11px;background:rgba(35,33,28,.1);border-radius:6px;margin-top:24px"><div style="height:100%;width:72%;background:#B4462E;border-radius:6px"></div></div>
+            <div style="display:flex;justify-content:space-between;margin-top:11px"><span style="font-size:16px;color:#6b665c">Overall progress</span><span style="font-family:'IBM Plex Mono';font-size:17px;color:#B4462E;font-weight:600">72%</span></div>
+            <div style="margin-top:22px;background:#23211C;border-radius:14px;padding:20px 22px;color:#EDE7DA;display:flex;justify-content:space-between;align-items:center">
+              <div><div style="font-family:'IBM Plex Mono';font-size:11px;color:#B4462E;letter-spacing:.15em">ACTION NEEDED</div><div style="font-weight:700;font-size:21px;margin-top:5px">2 decisions waiting</div></div>
+              <span style="font-size:26px">→</span>
+            </div>
+            <div style="font-size:15px;color:#6b665c;margin-top:20px;line-height:1.6;max-width:620px;text-wrap:pretty">Base type 18–20px, measure capped near 660px, photos enlarged, generous whitespace. Reads as an architect's document rather than a stretched phone screen — which is the point for an older client at home.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CLOSING -->
+  <div style="margin-top:46px;background:#23211C;color:#EDE7DA;border-radius:14px;padding:22px 26px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.2em;color:#B4462E">HOW TO RUN IT</div>
+    <div style="font-size:15px;font-weight:600;margin-top:9px">One stage open at a time, reproduce-first inside each</div>
+    <div style="font-size:13px;color:rgba(237,231,218,.72);margin-top:9px;line-height:1.65;max-width:900px;text-wrap:pretty">Each stage opens only when the previous one has cleared exact-head Codex review, so a later unit is never verified against a moving base. Within a stage, units are independent and can run in parallel — <b>except Wave 0</b>, where F-1c validates F-1a and F-1b and must follow both. Not yet design-ready: <b>Wave 3</b> until the CommercialScreen split is decided, <b>Wave 4</b> until worker authentication and device binding are settled, and <b>Wave 5 acceptance</b> until weekly-report export and architect rejection authority are resolved. Only the persona acceptance sessions close the gate, and none of this substitutes for them.</div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1180}}">
+class Component extends DCLogic {
+  renderVals() {
+    const W = {
+      0:{ bg:'#B4462E', fg:'#fff' }, 1:{ bg:'#31567F', fg:'#fff' }, 2:{ bg:'#C08A2D', fg:'#fff' },
+      3:{ bg:'#2F6B44', fg:'#fff' }, 4:{ bg:'#23211C', fg:'#fff' }
+    };
+
+    const waves = [
+      { n:'0', title:'Foundation sweep', unit:'F-1a / b / c', size:'S×3', screens:'all 23', hasLine:true,
+        ring:'#B4462E', dotBg:'#B4462E', dotFg:'#fff',
+        touches:'focus tokens · Modal.tsx trap · 8 field styles · 44×44 targets · per-surface validation',
+        body:'Three review units, run in order — F-1c depends on both F-1a and F-1b. F-1a: contrast-checked focus tokens on the shared primitives, plus focus traps in the five dialogs. F-1b: fields to 16px, critical text off 9px, mismatch control to 44×44. F-1c: the per-surface sweep with Playwright, automated a11y and manual keyboard and screen-reader passes. Note the eight field styles are currently separate per-screen objects, not shared constants — either introduce a real field primitive first, or assert via computed style rather than source.',
+        why:'It must be first. Every later unit needs accessibility checks and manual keyboard verification, and none can pass while focus is invisible app-wide. Fixing it later means re-verifying everything built on top of it.' },
+      { n:'1', title:'Shell and responsive', unit:'A', size:'M', screens:'layout + 2', hasLine:true,
+        ring:'#31567F', dotBg:'#31567F', dotFg:'#fff',
+        touches:'layout/BottomTabs.tsx · useNavItems.ts · lib/screens.ts · ClientHealth, ClientDecisions',
+        body:'Cap mobile primary navigation at five, add the role-aware More sheet, and give the client surfaces their large-screen scale-up.',
+        why:'Isolated to the layout folder, so it collides with nothing downstream. It goes before the content waves because the acceptance scripts navigate — testing translated screens through a broken tab bar confuses two failures into one.' },
+      { n:'2', title:'Field language', unit:'E', size:'M', screens:'4', hasLine:true,
+        ring:'#C08A2D', dotBg:'#C08A2D', dotFg:'#fff',
+        touches:'i18n namespaces · DailyLog · EngineerChecklist · TeamAccess · attendance strings',
+        body:'Add daily-log, checklist, attendance and issue namespaces covering validation, offline and error messages — not only visible labels — and pair every icon-only control with a short word.',
+        why:'The pattern already exists and works: the daily log translates its labour mismatch line today. This wave extends a proven mechanism rather than inventing one, and it lands before pickers so the picker strings inherit the same namespaces.' },
+      { n:'3', title:'Business language', unit:'F-2', size:'L', screens:'1 (split)', hasLine:true,
+        ring:'#2F6B44', dotBg:'#2F6B44', dotFg:'#fff',
+        touches:'CommercialScreen (split 3 ways) · new scoped picker component',
+        body:'Replace the four raw identifier inputs — vendor, PO line, activity — with searchable pickers scoped to project and company. GET /projects/:projectId/vendors already exists and is scoped, so the vendor picker needs no new endpoint. Device binding is NOT here: a picker does not solve it, and it becomes its own unit using QR scan or pending-device selection.',
+        why:'Later than it looks, because these sit on money paths where a wrong record is expensive, and the containment tests matter more than the ergonomics. It also needs Wave 0 fields and Wave 2 strings already in place. Not implementation-ready until the split is decided.' },
+      { n:'4', title:'Worker experience', unit:'C', size:'L', screens:'1', hasLine:true,
+        ring:'#23211C', dotBg:'#23211C', dotFg:'#EDE7DA',
+        touches:'TeamAccessScreen job card · 3 durable commands · device binding · versioned audio',
+        body:'All three commands — Done, Photo, Problem — become idempotent durable commands with offline outbox support, evidence and retry. None is already done: Done is a distinct action today but local-only, and no worker command type exists server-side. Honest queued, failed, retrying and completed states per button. Listen needs two audio layers: bundled versioned recordings for the fixed controls, and an attributable voice briefing recorded by the engineer or PMC for the project-specific part — the task and the approved material — bound to the assignment revision and cached offline. Browser speech synthesis cannot guarantee an installed Hindi or Gujarati voice offline.',
+        why:'Last because it has the most dependencies outside UX. BLOCKED until worker authentication and trusted device binding are settled — a reported gap where the UI requests a worker token but ignores it. That is a security question and must be fixed, not designed around.' },
+      { n:'5', title:'Unassisted acceptance', unit:'GATE', size:'—', screens:'8 personas', hasLine:false,
+        ring:'#8a857a', dotBg:'#F4F1EA', dotFg:'#23211C',
+        touches:'PMC · engineer · architect · client · contractor · consultant · mistri · worker',
+        body:'Run the eight task-based scripts from the Completion Gate pack. Record completion time, assistance required, mistakes, abandoned actions and unresolved confusion.',
+        why:'Only this closes the gate, and it cannot be self-certified — it needs observed sessions with real PMC, architect, client, contractor, mistri and worker participants. The mistri and worker sessions cannot run until those personas have a dedicated experience, so settle that during Wave 0. Two scenarios are currently unsettled: weekly-report export is reported disabled, and architect inspection rejection would introduce authority Task 4 has not established.' }
+    ];
+
+    const eff = {
+      S:{ bg:'#E1EEE4', fg:'#2F6B44', bd:'#C3DDCB' },
+      M:{ bg:'#F6ECD6', fg:'#8A6216', bd:'#E4CE9C' },
+      L:{ bg:'#F7E1DF', fg:'#B23A34', bd:'#E7C4C0' }
+    };
+    const mapHead = ['SCREEN','WAVES','WHAT CHANGES','EFFORT'];
+    const mk = (name, role, ws, change, effort, i) => ({
+      name, role, change, effort, bg: i % 2 ? '#fff' : '#F4F1EA',
+      waves: ws.map((n) => ({ n, ...W[n] })),
+      effBg: eff[effort].bg, effFg: eff[effort].fg, effBd: eff[effort].bd
+    });
+    const rows = [
+      ['DailyLogScreen','engineer',[0,2],'Heaviest language work; mismatch control to 44×44; presence proof out of 9px type','L'],
+      ['TeamAccessScreen','worker / mistri',[0,2,4],'Three durable commands built; versioned audio; full vernacular; blocked on auth','L'],
+      ['CommercialScreen','pmc',[0,3],'Four raw ID inputs to pickers — must be split into three review units','L'],
+      ['EngineerChecklistScreen','engineer',[0,2],'Fail-evidence line out of 9px; note field to 16px; toggles labelled in-language','M'],
+      ['ClientHealthScreen','client',[0,1],'Large-screen scale-up: 18–20px base, capped measure, enlarged photos','M'],
+      ['ClientDecisionsScreen','client',[0,1],'Same scale-up; option thumbnails enlarged; approve target confirmed at 44px','M'],
+      ['TeamScreen','pmc',[0],'Fields to 16px. Device binding reworked as QR / pending-device selection — its own unit, not a picker','M'],
+      ['ScheduleScreen','pmc / engineer',[0,1],'Fields to 16px; gate dots need a non-colour cue; timeline scrolls on tablet','M'],
+      ['DecisionLogScreen','all',[0,1],'Fields to 16px and focus ring; behaviour stays owned by Task 4','M'],
+      ['DrawingsScreen','all',[0,1],'Issued-to status out of 9.5px type; filter chips to 44px','M'],
+      ['InspectionReviewScreen','pmc',[0],'Fields to 16px; reject toggles get focus and keyboard operation','S'],
+      ['DashboardScreen','pmc',[0,1],'Live-from-site strip lifted off 8.5px; tiles stack on tablet','S'],
+      ['InboxScreen','all',[0],'Focus ring only — stays the default work queue on every device','S'],
+      ['MaterialsScreen','pmc / engineer',[0],'Wave 0 sweep; shortage state needs more than colour','S'],
+      ['LabourScreen','pmc / engineer',[0],'Wave 0 sweep; forecast verdicts need a non-colour cue','S'],
+      ['PlacesScreen','all',[0],'Wave 0 sweep; tree nodes need keyboard traversal','S'],
+      ['DraftsScreen','pmc',[0],'Wave 0 sweep','S'],
+      ['PortfolioScreen','pmc',[0],'Wave 0 sweep','S'],
+      ['ProjectSwitcher','layout dialog',[0],'Field to 16px; focus ring; needs a focus trap','S'],
+      ['LocationPicker','components · shared',[0],'outline:none removed; field to 16px; listbox keyboard semantics','S'],
+      ['ApproveModal','screens/modals',[0],'Focus ring and focus trap; confirmation wording preserved','S'],
+      ['ChangeModal','screens/modals',[0],'outline:none removed on its field; focus trap; field to 16px','S'],
+      ['QrModal','screens/modals',[0],'Focus ring and focus trap; dismiss reachable by keyboard','S']
+    ];
+    const screenMap = rows.map((r, i) => mk(r[0], r[1], r[2], r[3], r[4], i));
+
+    const chkNow = [
+      'Item text, toggles and the requirement line are English only',
+      'Requirement sits at 9px — smaller than every other line on the card',
+      'Note field is 13px, so iOS zooms the page the moment it is tapped'
+    ];
+    const chkNext = [
+      'Item, toggles and requirement in the worker’s language',
+      'Requirement at 13px with real weight — it changes what you must do',
+      'Note field at 16px, so no zoom on focus',
+      'Toggles carry an icon and a word, and a visible focus ring'
+    ];
+
+    return { waves, mapHead, screenMap, chkNow, chkNext };
+  }
+}
+</script>
+</body>
+</html>
