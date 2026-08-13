@@ -7,7 +7,7 @@ import { DailyLogQueryService } from '../daily-log/daily-log.query';
 import { DrawingsQueryService } from '../drawings/drawings.query';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { SignedUrlService } from '../media/signed-url.service';
-import { isPendingDecisionNotice } from '../domain/notifications';
+import { isPendingDecisionNotice, isWithdrawnDecisionNotice } from '../domain/notifications';
 import { ddMmmYyyy } from '../domain/dates';
 import type { Role } from '../common/auth';
 import type { ProjectShellCounts, SnapshotDto } from './types';
@@ -179,6 +179,10 @@ export class SnapshotService {
       // hidden, so a decision's title can't leak through the bell.
       notifications: notifications
         .filter((n) => !(hidePending && isPendingDecisionNotice(n.text)))
+        // Phase 6 task 4a — a withdrawal notice (title + reason) is PMC-ONLY: a withdrawn
+        // decision is invisible to every other role INCLUDING the client (§A.3), so its
+        // explanation must not leak through the bell either.
+        .filter((n) => !(role !== 'pmc' && isWithdrawnDecisionNotice(n.text)))
         .map((n) => ({ text: n.text, time: n.time, color: n.color })),
       companies: companies.map((c) => ({
         id: c.id,

@@ -1132,6 +1132,11 @@ export class ApiGateway {
   withdrawChange(decisionId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/decisions/${decisionId}/change/withdraw`, undefined, idempotencyKey);
   }
+  /** Withdraw a PUBLISHED, never-approved decision — pmc only, terminal, reason required
+   *  (Phase 6 task 4a). Distinct from `withdrawChange`, which closes a reopening. */
+  withdrawDecision(decisionId: string, reason: string, idempotencyKey?: string): Promise<ApiSnapshot> {
+    return this.p(`/decisions/${decisionId}/withdraw`, { reason }, idempotencyKey);
+  }
   /** Keyed for replay-safety (Task 10 Module 4): a lost-response retry starts exactly once. */
   startActivity(activityId: string, idempotencyKey?: string): Promise<ApiSnapshot> {
     return this.p(`/activities/${activityId}/start`, undefined, idempotencyKey);
@@ -1504,6 +1509,9 @@ export type OutboxOp =
   | { t: 'approve'; decisionId: string; optionIndex: number; idempotencyKey: string }
   | { t: 'change'; decisionId: string; reason: string; costImpact: number; timeImpactDays: number; idempotencyKey: string }
   | { t: 'changeWithdraw'; decisionId: string; idempotencyKey: string }
+  // Phase 6 task 4a — withdraw a published, never-approved decision (pmc; terminal; the reason
+  // travels with the op so an offline replay carries the exact attribution evidence).
+  | { t: 'withdraw'; decisionId: string; reason: string; idempotencyKey: string }
   // the drawing acknowledgement carries a stable idempotencyKey (Phase 2 Task 10): a queued ack
   // replayed on reconnect reaches the server under the SAME key it was first sent with, so a
   // lost-response retry records the acknowledgement exactly once (actor-scoped).
@@ -1605,6 +1613,8 @@ export function replayOutboxOp(gw: ApiGateway, op: OutboxOp): Promise<ApiSnapsho
       return gw.requestChange(op.decisionId, op.reason, op.costImpact, op.timeImpactDays, op.idempotencyKey);
     case 'changeWithdraw':
       return gw.withdrawChange(op.decisionId, op.idempotencyKey);
+    case 'withdraw':
+      return gw.withdrawDecision(op.decisionId, op.reason, op.idempotencyKey);
     case 'ackDrawing':
       // the server ack is idempotent under the command-ledger (same key ⇒ recorded once,
       // actor-scoped); it returns {ok,ackCount}, so refetch to reconcile the register

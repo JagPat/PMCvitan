@@ -31,8 +31,15 @@ export function selectReapproval(s: AppState): Decision[] {
 /** Decision log is permission-filtered: contractor & engineer never see pending rows.
  *  Private drafts are excluded for everyone — they live only in the Drafts workspace. */
 export function selectLogDecisions(s: AppState): Decision[] {
-  if (s.role === 'contractor' || s.role === 'engineer') {
-    return s.decisions.filter((d) => d.status !== 'pending' && !d.draft);
+  // Phase 6 task 4a — a WITHDRAWN decision is pmc-only (the server's decisionVisibleToViewer
+  // is the authority; this selector mirrors it): withdrawal never widens an audience, and the
+  // old `status !== 'pending'` negative filter would otherwise LEAK a withdrawn decision to
+  // roles that never saw it while it was pending.
+  if (s.role !== 'pmc') {
+    if (s.role === 'contractor' || s.role === 'engineer') {
+      return s.decisions.filter((d) => d.status !== 'pending' && d.status !== 'withdrawn' && !d.draft);
+    }
+    return s.decisions.filter((d) => d.status !== 'withdrawn' && !d.draft);
   }
   return s.decisions.filter((d) => !d.draft);
 }

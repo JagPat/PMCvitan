@@ -21,9 +21,10 @@ export const decisionsManifest: ModuleManifest = {
     'decision.reapproved',
     'decision.change_requested',
     'decision.change_withdrawn',
+    'decision.withdrawn',
   ],
   consumesEvents: [],
-  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange'],
+  commands: ['decisions.create', 'decisions.publish', 'decisions.approve', 'decisions.requestChange', 'decisions.withdrawChange', 'decisions.withdraw'],
   queries: ['decisions.snapshotSlice', 'decisions.projectionSlice', 'decisions.existsInProject', 'decisions.resolveRef', 'decisions.countByNodeIds', 'decisions.countPending', 'decisions.approvedRef'],
   routes: [
     'POST /projects/:projectId/decisions',
@@ -31,6 +32,7 @@ export const decisionsManifest: ModuleManifest = {
     'POST /projects/:projectId/decisions/:decisionId/approve',
     'POST /projects/:projectId/decisions/:decisionId/change',
     'POST /projects/:projectId/decisions/:decisionId/change/withdraw',
+    'POST /projects/:projectId/decisions/:decisionId/withdraw',
   ],
   permissions: ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
 };

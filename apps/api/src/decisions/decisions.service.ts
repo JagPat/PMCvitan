@@ -8,8 +8,9 @@ import type { AuthUser } from '../common/auth';
 import { resolveActor, ROLE_LABEL } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
-import { pendingDecisionNotice } from '../domain/notifications';
-import type { ApproveInput, ChangeInput, CreateDecisionInput } from '../contracts';
+import { pendingDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
+import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
+import type { ApproveInput, ChangeInput, CreateDecisionInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -98,7 +99,9 @@ export class DecisionsService {
         });
         await tx.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } });
         if (input.publish) {
-          await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now' } });
+          // Phase 6 task 4a — decision-notice writers stamp `decisionId`, so a later withdrawal
+          // retires the pending notice by IDENTITY, never by matching display text.
+          await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now', decisionId: id } });
         }
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
         const ev = await emitEvent(tx, {
@@ -144,9 +147,17 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
-        await tx.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } });
+        // Phase 6 task 4a — publish joins the CAS lifecycle it was the one exception to: the
+        // pre-read above is advisory, and THIS guard (`publishedAt: null`) is the transition,
+        // so two concurrent publishes admit exactly one (the loser gets the same 409 the
+        // pre-read gives) instead of both re-stamping `publishedAt`.
+        const { count } = await tx.decision.updateMany({
+          where: { id: decisionId, projectId, publishedAt: null },
+          data: { publishedAt: new Date() },
+        });
+        if (count === 0) throw new ConflictException('Decision is already published');
         await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
-        await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now' } });
+        await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now', decisionId } });
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
@@ -185,6 +196,14 @@ export class DecisionsService {
     });
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.status === 'approved') throw new ConflictException('Decision is already approved and locked');
+    // Phase 6 task 4a — approve validates its SOURCE STATE before the CAS: the CAS below takes
+    // the row's CURRENT status as its guard, so without this a stale client replaying an
+    // approval against a now-withdrawn decision would drive `withdrawn → approved` into the
+    // terminal trigger — a raw database error mid-write instead of a refusal. A deliberate 409
+    // here has NO side effects (no revision, no register event, no notice).
+    if (d.status !== 'pending' && d.status !== 'change') {
+      throw new ConflictException(`Decision ${decisionId} was withdrawn — it can no longer be approved`);
+    }
     const o = d.options[input.optionIndex];
     if (!o) throw new BadRequestException('Invalid option index');
 
@@ -272,7 +291,7 @@ export class DecisionsService {
             payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
           },
         });
-        await tx.notification.create({ data: { projectId, text: announce, color: '#3F7A54', time: 'just now' } });
+        await tx.notification.create({ data: { projectId, text: announce, color: '#3F7A54', time: 'just now', decisionId } });
         await recordAudit(tx, { projectId, actor, action: 'decision.approve', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: prior === 'change' ? 'decision.reapproved' : 'decision.approved', entityType: 'Decision', entityId: decisionId, payload: { option: o.label, material: o.material, ...(onBehalfOf ? { onBehalfOf } : {}) },
@@ -386,6 +405,117 @@ export class DecisionsService {
         await tx.decisionEvent.create({ data: { decisionId, type: 'change_withdrawn', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole } });
         await recordAudit(tx, { projectId, actor, action: 'decision.change_withdraw', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, { projectId, actor, eventType: 'decision.change_withdrawn', entityType: 'Decision', entityId: decisionId, effectKey: 'decision.change_withdrawn', dispatch: {} });
+        return { resultRef: decisionId, events: [ev] };
+      },
+    });
+
+    if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /** Withdraw a PUBLISHED, never-approved decision — the PMC takes back a question that should
+   *  not have been asked (Phase 6 task 4a; the owner's live defect). TERMINAL: the decision
+   *  leaves every actionable surface (pending count, client list, action items — all derive
+   *  from `status`), the pending bell notice is RETIRED (a stale approval demand is a false
+   *  instruction, not history), a queued `decision.published` push is CANCELLED by subject so a
+   *  lagging relay cannot announce a decision every surface has since hidden, and the
+   *  DecisionEvent register — not the bell — carries the explanation. `pending` is sufficient
+   *  proof of never-approved (no transition path re-enters it); the DB seals make the
+   *  combination unrepresentable even for hostile SQL. */
+  async withdraw(projectId: string, decisionId: string, input: WithdrawDecisionInput, user: AuthUser, idempotencyKey?: string): Promise<SnapshotDto> {
+    const actor = await resolveActor(this.prisma, user);
+    const scope: CommandScope = { scopeKind: 'project', projectId };
+    const reason = input.reason; // zod `.trim().min(1)` — already trimmed, provably non-blank
+    const requestHash = hashRequest({ decisionId, reason });
+    if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.withdraw', idempotencyKey, requestHash)) {
+      return this.snapshot.build(projectId, user.role, user.sub);
+    }
+
+    const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
+    if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
+    // a DRAFT needs no withdrawal — it is author-private and weightless; the author controls it
+    if (d.publishedAt === null) throw new ConflictException('A draft cannot be withdrawn — it was never issued (publish or discard it from Drafts)');
+    // an approved/reopened decision carries attributable approvals the register must keep
+    // authoritative — the honest path to revisit it is a change request
+    if (d.status === 'approved' || d.status === 'change') {
+      throw new ConflictException('This decision carries an approval — raise a change request instead; withdraw applies only to a never-approved pending decision');
+    }
+    if (d.status === 'withdrawn') throw new ConflictException('Decision is already withdrawn');
+
+    const outcome = await executeCommand(this.prisma, {
+      scope,
+      actor,
+      commandType: 'decisions.withdraw',
+      idempotencyKey,
+      requestHash,
+      run: async (tx) => {
+        // withdraw moves decision status, which the activity gate reads in `start`'s locked
+        // transaction — the lock is taken by CLASS (a readiness-input writer), not by verdict
+        // arithmetic, even though `pending` and `withdrawn` both read `wait` today.
+        await lockProjectReadiness(tx, projectId);
+        // belt-and-braces: the DB entry seal refuses this too (source-state + register), but a
+        // 409 is an answer and a trigger error is a crash — refuse here first.
+        const approvals = await tx.decisionApprovalRevision.count({ where: { decisionId } });
+        if (approvals > 0) throw new ConflictException('This decision carries approval evidence — it can never be withdrawn');
+        // CAS: the transition commits only from the published-pending state the eligibility
+        // checks saw — a concurrent approve/withdraw makes count 0 and this caller loses.
+        const now = new Date();
+        const { count } = await tx.decision.updateMany({
+          where: { id: decisionId, projectId, status: 'pending', publishedAt: { not: null } },
+          data: { status: 'withdrawn', withdrawnAt: now, withdrawnById: actor.actorId, withdrawnByName: actor.actorName, withdrawReason: reason },
+        });
+        if (count === 0) throw new ConflictException('The decision changed while withdrawing — reload and retry');
+
+        // RETIRE the pending bell notice — a client bell still saying "awaiting approval" for a
+        // decision every other surface has removed is a live false instruction, not history.
+        // Stamped rows retire by IDENTITY; only pending notices can be stamped with THIS
+        // decision (it was never approved, so no approval announcement exists for it).
+        await tx.notification.deleteMany({ where: { projectId, decisionId } });
+        // A LEGACY unstamped pending notice (the owner's live case predates the stamp) retires
+        // by its exact text shape rebuilt from the decision's own title — multiplicity-guarded:
+        // if another still-pending published decision shares the title, the text is ambiguous
+        // and the rows are LEFT and reported (in the register event), never guessed at.
+        const legacyText = pendingDecisionNotice(d.title);
+        const titleSharers = await tx.decision.count({
+          where: { projectId, title: d.title, status: 'pending', publishedAt: { not: null }, id: { not: decisionId } },
+        });
+        if (titleSharers === 0) {
+          await tx.notification.deleteMany({ where: { projectId, decisionId: null, text: legacyText } });
+        }
+
+        // the register entry IS the history (the report of a left-ambiguous legacy notice rides it)
+        await tx.decisionEvent.create({
+          data: {
+            decisionId,
+            type: 'withdrawn',
+            actor: actor.actorName,
+            actorId: actor.actorId,
+            actorName: actor.actorName,
+            actorRole: actor.actorRole,
+            payload: { title: d.title, reason, ...(titleSharers > 0 ? { legacyNoticeLeftAmbiguous: true } : {}) },
+          },
+        });
+        // the appended withdrawal notice — pmc-only: `isWithdrawnDecisionNotice` strips it from
+        // every non-pmc feed, the same mechanism that hides pending notices (§A.2/§A.3)
+        await tx.notification.create({ data: { projectId, text: withdrawnDecisionNotice(d.title, reason), color: '#6B665C', time: 'just now', decisionId } });
+
+        // outrun the QUEUED past: a committed `decision.published` push intent the relay has
+        // not yet delivered must not tell the client "awaiting your approval" about a decision
+        // every surface has since hidden. The DOMAIN owns the when; the platform mutates only
+        // its own table (cancelled and recorded, never deleted). A delivery leased moments
+        // before this commit is caught by the sender's pre-send re-check of its own row; the
+        // check→send in-flight residual is the documented boundary (§A.4).
+        const cancelled = await cancelQueuedPushBySubject(tx, { projectId, subject: decisionId, eventType: 'decision.published' });
+
+        await recordAudit(tx, { projectId, actor, action: 'decision.withdraw', entity: 'Decision', entityId: decisionId });
+        const ev = await emitEvent(tx, {
+          projectId, actor, eventType: 'decision.withdrawn', entityType: 'Decision', entityId: decisionId,
+          payload: { title: d.title, reason, pushIntentsCancelled: cancelled.neutralized + cancelled.marked },
+          effectKey: 'decision.withdrawn',
+          // surfaces refresh; no push — the lifecycle-correction precedent (change_requested/
+          // change_withdrawn), and the pmc who acted needs no announcement
+          dispatch: {},
+        });
         return { resultRef: decisionId, events: [ev] };
       },
     });

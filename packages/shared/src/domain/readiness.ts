@@ -153,6 +153,9 @@ export function deriveDrawingGate(activityId: string, drawings: ReadinessDrawing
 /** The Decision gate — derived live from the linked decision's lock state. */
 export function deriveDecisionReading(decisionStatus: DecisionStatus | null): GateReading {
   const v: Gate = decisionStatus == null ? 'na' : decisionStatus === 'approved' ? 'ok' : 'wait';
+  // Phase 6 task 4a: a WITHDRAWN linked decision keeps the gate at `wait` (the question the
+  // work depends on is unanswered — withdrawal must not silently unblock it), but the reason
+  // is honest: nothing is awaiting the client, the decision needs re-issuing or relinking.
   const reason =
     decisionStatus == null
       ? 'No linked decision'
@@ -160,7 +163,9 @@ export function deriveDecisionReading(decisionStatus: DecisionStatus | null): Ga
         ? 'Decision approved and locked'
         : decisionStatus === 'change'
           ? 'Change requested — awaiting the client’s re-approval'
-          : 'Awaiting the client’s approval';
+          : decisionStatus === 'withdrawn'
+            ? 'The linked decision was withdrawn — re-issue or relink'
+            : 'Awaiting the client’s approval';
   return { v, source: 'derived', reason };
 }
 

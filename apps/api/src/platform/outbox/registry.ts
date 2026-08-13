@@ -67,7 +67,11 @@ export interface NotificationIntent {
  *  every event — `dispatch` invokes it, `noop` records the event was deliberately irrelevant — so
  *  an ordered consumer's cursor never waits behind a stream position that produced no delivery row.
  *  There is no `null`: a missing row can no longer be silently "not relevant". */
-export type DeliveryPlan = { action: 'dispatch'; payload?: Prisma.InputJsonValue } | { action: 'noop' };
+export type DeliveryPlan =
+  // `subject` (Phase 6 task 4a): the entity a PUSH delivery is about (the emitting module's
+  // entityId) — the key `cancelQueuedPushBySubject` targets when a queued announcement goes
+  // stale. Optional and consumer-chosen; today only the push consumer sets it.
+  { action: 'dispatch'; payload?: Prisma.InputJsonValue; subject?: string } | { action: 'noop' };
 
 /** Where a PROJECTION consumer must write (Task 9): the specific rebuildable generation instance its
  *  rows belong to. The live relay passes the ACTIVE generation; a rebuild passes the BUILDING one.
@@ -189,6 +193,7 @@ export async function materializeDeliveries(
       deliveryAction: plan.action,
       status,
       ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
+      ...(plan.action === 'dispatch' && plan.subject !== undefined ? { subject: plan.subject } : {}),
     });
   }
   if (rows.length) await tx.outboxDelivery.createMany({ data: rows });

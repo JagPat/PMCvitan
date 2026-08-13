@@ -40,8 +40,10 @@ describe('PR B — total delivery planning', () => {
   });
 
   it('push dispatches only for a persisted push body; a null-intent event never invents a push', () => {
+    // Phase 6 task 4a — a push delivery also carries its SUBJECT (the emitting module's
+    // entityId), the key cancel-by-subject targets when a queued announcement goes stale.
     expect(push.deliveryFor(meta({ dispatchIntent: { effectKey: 'x', coverageVersion: 'x', invalidate: true, push: { body: 'hi', roles: ['client'] } } })))
-      .toEqual({ action: 'dispatch', payload: { body: 'hi', roles: ['client'] } });
+      .toEqual({ action: 'dispatch', payload: { body: 'hi', roles: ['client'] }, subject: 'D-1' });
     expect(push.deliveryFor(meta({ dispatchIntent: { effectKey: 'x', coverageVersion: 'x', invalidate: true } }))).toEqual({ action: 'noop' });
     expect(push.deliveryFor(meta({ dispatchIntent: null }))).toEqual({ action: 'noop' });
   });

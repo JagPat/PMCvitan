@@ -20,6 +20,9 @@ const STATUS_FILTERS: { key: Decision['status']; label: string }[] = [
   { key: 'pending', label: 'Pending' },
   { key: 'approved', label: 'Approved' },
   { key: 'change', label: 'Change' },
+  // Phase 6 task 4a — the register keeps withdrawn rows (pmc-only; the server filters them
+  // out of every other role's snapshot, so this chip simply never matches for them)
+  { key: 'withdrawn', label: 'Withdrawn' },
 ];
 
 export function DecisionLogScreen() {
@@ -27,6 +30,7 @@ export function DecisionLogScreen() {
   const nodes = useStore(useShallow((s) => s.nodes));
   const openChange = useStore((s) => s.openChange);
   const withdrawChange = useStore((s) => s.withdrawChange);
+  const openWithdraw = useStore((s) => s.openWithdraw);
   const role = useStore((s) => s.role);
   const sessionToken = useStore((s) => s.sessionToken);
   // who am I? — the JWT sub, for the requester-may-withdraw rule (null in demo mode)
@@ -42,6 +46,10 @@ export function DecisionLogScreen() {
   // button only appears where the server would accept the call
   const mayWithdraw = (d: Decision): boolean =>
     can('decision.withdrawChange', role) && (role === 'pmc' || (!!mySub && d.changeRequest?.requestedById === mySub));
+  // Phase 6 task 4a — withdrawing the DECISION itself: pmc only, and only a published,
+  // never-approved pending row is eligible (the service refuses everything else with a 409)
+  const mayWithdrawDecision = (d: Decision): boolean =>
+    can('decision.withdraw', role) && d.status === 'pending' && !d.draft;
   const [issuing, setIssuing] = useState(false);
   const [managing, setManaging] = useState(false);
   const [groupBy, setGroupBy] = useState<GroupBy>('location');
@@ -146,6 +154,7 @@ export function DecisionLogScreen() {
                     {g.counts.pending > 0 && <RollupChip n={g.counts.pending} color="var(--amber-solid)" label="pending" />}
                     {g.counts.change > 0 && <RollupChip n={g.counts.change} color="var(--red-solid)" label="change" />}
                     {g.counts.approved > 0 && <RollupChip n={g.counts.approved} color="var(--green-solid)" label="approved" />}
+                    {g.counts.withdrawn > 0 && <RollupChip n={g.counts.withdrawn} color="var(--muted)" label="withdrawn" />}
                   </span>
                 </button>
               )}
@@ -158,6 +167,7 @@ export function DecisionLogScreen() {
                       subLabel={subLabel}
                       onChange={() => openChange(decision.id)}
                       onWithdraw={mayWithdraw(decision) ? () => withdrawChange(decision.id) : undefined}
+                      onWithdrawDecision={mayWithdrawDecision(decision) ? () => openWithdraw(decision.id) : undefined}
                     />
                   ))}
                 </div>
@@ -180,14 +190,20 @@ function RollupChip({ n, color, label }: { n: number; color: string; label: stri
 }
 
 /** One decision card — the register row, with its finer location shown as a caption. */
-function DecisionRowCard({ d, subLabel, onChange, onWithdraw }: { d: Decision; subLabel: string; onChange: () => void; onWithdraw?: () => void }) {
+function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision }: { d: Decision; subLabel: string; onChange: () => void; onWithdraw?: () => void; onWithdrawDecision?: () => void }) {
   const locked = d.status === 'approved';
-  const attribution = d.approver
-    ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
-    : `Ageing ${d.ageDays} days · awaiting client`;
-  const approvedLine = d.status === 'pending' ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
-  const costStr = d.status === 'pending' ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta))) : signed(d.cost ?? 0);
-  const photoLabel = d.status === 'pending' ? 'OPTIONS' : 'APPROVED';
+  // Phase 6 task 4a — a withdrawn decision was never approved: it renders its options (never a
+  // fabricated approval line), and its attribution names the withdrawer, not an approver.
+  const neverLocked = d.status === 'pending' || d.status === 'withdrawn';
+  const attribution =
+    d.status === 'withdrawn'
+      ? `Withdrawn by ${d.withdrawnBy ?? 'the PMC'}${d.withdrawnAt ? ` · ${new Date(d.withdrawnAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}`
+      : d.approver
+        ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
+        : `Ageing ${d.ageDays} days · awaiting client`;
+  const approvedLine = neverLocked ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
+  const costStr = neverLocked ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta))) : signed(d.cost ?? 0);
+  const photoLabel = neverLocked ? 'OPTIONS' : 'APPROVED';
 
   return (
     <div
@@ -210,6 +226,11 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw }: { d: Decision; s
             </div>
             <DecisionChip status={d.status} />
           </div>
+          {d.status === 'withdrawn' && d.withdrawReason && (
+            <div style={{ marginTop: 12, padding: '9px 12px', borderRadius: 10, background: 'rgba(35,33,28,.05)', border: '1px solid rgba(35,33,28,.14)' }} data-testid={`withdraw-detail-${d.id}`}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--muted)' }}>Withdrawn: {d.withdrawReason}</div>
+            </div>
+          )}
           {d.status === 'change' && d.changeRequest && (
             <div style={{ marginTop: 12, padding: '9px 12px', borderRadius: 10, background: 'rgba(180,70,46,.07)', border: '1px solid rgba(180,70,46,.2)' }} data-testid={`cr-detail-${d.id}`}>
               <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--red-text)' }}>Change requested: {d.changeRequest.reason}</div>
@@ -236,6 +257,11 @@ function DecisionRowCard({ d, subLabel, onChange, onWithdraw }: { d: Decision; s
               {d.status === 'change' && onWithdraw && (
                 <Button variant="outline" onClick={onWithdraw} data-testid={`withdraw-${d.id}`} style={{ marginTop: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 500 }}>
                   Withdraw request
+                </Button>
+              )}
+              {onWithdrawDecision && (
+                <Button variant="outline" onClick={onWithdrawDecision} data-testid={`withdraw-decision-${d.id}`} style={{ marginTop: 7, padding: '6px 12px', fontSize: 11.5, fontWeight: 500 }}>
+                  Withdraw decision
                 </Button>
               )}
             </div>

@@ -374,6 +374,10 @@ export interface AppActions {
   submitChange: () => void;
   /** Withdraw the open change request — the decision re-locks (requester or PMC only). */
   withdrawChange: (decId: string) => void;
+  /** Withdraw a PUBLISHED, never-approved decision — pmc only, reason required (Phase 6 task 4a). */
+  openWithdraw: (decId: string) => void;
+  confirmWithdraw: () => void;
+  setWithdrawReason: (v: string) => void;
   setChangeText: (v: string) => void;
   setChangeCost: (v: string) => void;
   setChangeTime: (v: string) => void;
@@ -1935,6 +1939,33 @@ export const useStore = create<Store>()(
       });
       get().flash('Change request withdrawn — the decision is locked again.');
     },
+    openWithdraw: (decId) => {
+      const d = get().decisions.find((x) => x.id === decId);
+      if (!d) return;
+      set((s) => {
+        s.modal = { type: 'withdraw', decId, title: d.title, withdrawReason: '' };
+      });
+    },
+    confirmWithdraw: () => {
+      const { decId, withdrawReason } = get().modal;
+      if (decId == null) return;
+      const reason = withdrawReason?.trim() ?? '';
+      if (!reason) return; // the contract refuses a blank reason; the modal disables confirm
+      set((s) => { s.modal = { type: null }; });
+      // a fresh key per deliberate action; the queued op replays under the SAME key exactly once
+      const withdrawDecisionKey = newIdempotencyKey();
+      if (runRemoteOrQueue({ t: 'withdraw', decisionId: decId, reason, idempotencyKey: withdrawDecisionKey }, 'Withdraw ' + decId, () => gateway!.withdrawDecision(decId, reason, withdrawDecisionKey), 'Decision withdrawn — recorded in the register.')) return;
+      set((s) => {
+        const d = s.decisions.find((x) => x.id === decId);
+        if (d && d.status === 'pending') {
+          d.status = 'withdrawn';
+          d.withdrawReason = reason;
+        }
+        s.modal = { type: null };
+      });
+      get().flash('Decision withdrawn — recorded in the register.');
+    },
+    setWithdrawReason: (v) => set((s) => { s.modal.withdrawReason = v; }),
     setChangeText: (v) => set((s) => { s.modal.changeText = v; }),
     setChangeCost: (v) => set((s) => { s.modal.changeCost = v; }),
     setChangeTime: (v) => set((s) => { s.modal.changeTime = v; }),

@@ -3182,6 +3182,65 @@ assert "6.1a F1: the company and its source are gone, the association survives o
   "SELECT (SELECT COUNT(*)::text FROM \"ProjectPartyCompanySource\" WHERE \"projectCompanyId\" = 'UP6-BOTHC') || '|' || (SELECT COUNT(*)::text FROM \"ProjectParty\" WHERE \"id\" = 'UP6-BOTH');" \
   "0|1"
 
+
+# ---- Phase 6 task 4a: decisions.withdraw — enum + evidence + the three seals + the subject backfill ----
+echo ""
+echo "=== Phase 6 task 4a: the withdraw seals over the migrated legacy DB ==="
+
+assert "4a: legacy DB upgrades ROW-FREE (no withdrawn rows) with the three Decision seals, the reverse-arm trigger, and the attribution FK installed" \
+  "SELECT (SELECT COUNT(*) FROM \"Decision\" WHERE \"status\"::text='withdrawn')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Decision_t4a_a_terminal','Decision_t4a_b_entry','Decision_t4a_c_coherent','DecisionApprovalRevision_no_withdrawn'))::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname='Decision_projectId_withdrawnById_fkey')::text || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='Notification' AND column_name='decisionId')::text || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='OutboxDelivery' AND column_name IN ('subject','cancelledAt'))::text;" \
+  "0|4|1|1|2"
+
+# the attribution FK target (idempotent), and two published pending decisions minted for the probes
+$PSQL -q >/dev/null <<'SQL'
+INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('UP4A-M1','p1','USER-1','pmc','active') ON CONFLICT DO NOTHING;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+VALUES ('UP4A-D1','p1','Withdrawable','Hall','pending','stone',now()),
+       ('UP4A-D2','p1','Still pending','Hall','pending','stone',now());
+SQL
+
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='Legacy PMC', \"withdrawReason\"='asked in error' WHERE \"id\"='UP4A-D1';" >/dev/null \
+  || { echo "FAILED  4a: the COHERENT withdrawal was refused — the seals are blanket, not precise"; FAIL=1; }
+assert "4a: a COHERENT withdrawal of a published pending decision by a REAL member is ACCEPTED — the seals are precise, not blanket" \
+  "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4A-D1';" \
+  "withdrawn"
+
+assert_rejects "4a seal 1: any transition OUT of withdrawn (terminal)" \
+  "UPDATE \"Decision\" SET \"status\"='pending' WHERE \"id\"='UP4A-D1'" "terminal"
+assert_rejects "4a seal 1: rewriting the frozen evidence on a withdrawn row" \
+  "UPDATE \"Decision\" SET \"withdrawReason\"='rewritten' WHERE \"id\"='UP4A-D1'" "write-once"
+assert_rejects "4a seal 2: an UNATTRIBUTED withdrawal (no evidence at all)" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn' WHERE \"id\"='UP4A-D2'" "must carry"
+assert_rejects "4a seal 2: a tabs-and-newlines-only reason (the full-whitespace btrim class)" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"=E'\t\n \x0B' WHERE \"id\"='UP4A-D2'" "non-blank"
+assert_rejects "4a seal 2: a FORGED withdrawer naming no member of the project (the FK)" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='GHOST', \"withdrawnByName\"='Ghost', \"withdrawReason\"='forged' WHERE \"id\"='UP4A-D2'" "foreign key"
+assert_rejects "4a seal 2: withdrawal evidence on a NON-withdrawn row (the inverse arm)" \
+  "UPDATE \"Decision\" SET \"withdrawReason\"='orphan' WHERE \"id\"='UP4A-D2'" "only on a withdrawn"
+assert_rejects "4a seal 3 forward: the LEGACY approved-with-EMPTY-register class (DL-2, the PR-#192 backfill shape) — source state, not register emptiness, is the guard" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hide it' WHERE \"id\"='DL-2'" "only a published pending"
+assert_rejects "4a seal 3 forward: a decision cannot be BORN withdrawn" \
+  "INSERT INTO \"Decision\" (\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"withdrawnAt\",\"withdrawnById\",\"withdrawnByName\",\"withdrawReason\") VALUES ('UP4A-D9','p1','Born','Hall','withdrawn','stone',now(),'USER-1','X','r')" "created withdrawn"
+assert_rejects "4a seal 3 reverse: an approval revision recorded against the withdrawn decision" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\") VALUES('UP4A-R1','p1','UP4A-D1',1,'a',now(),'USER-1')" "withdrawn"
+
+# the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
+# down) must be backfilled from its own event's entityId when the migration runs — proven by
+# planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN
+# (this re-run also proves the diagnostics accept a database whose withdrawn rows are coherent).
+$PSQL -q >/dev/null <<'SQL'
+INSERT INTO "OutboxConsumerCatalog"("consumer","consumerKind","consumerEffect","catalogVersion","active","updatedAt")
+VALUES ('webpush.notify','unordered','external',1,true,now()) ON CONFLICT DO NOTHING;
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV1','decision.published',p."orgId",p."id",900001,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "OutboxDelivery"("id","eventId","projectId","consumer","consumerKind","streamPosition","deliveryAction","status","payload","updatedAt")
+VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatch','pending','{"body":"stale announcement"}',now());
+SQL
+$PSQL -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null || { echo "FAILED  4a migration re-run (rerunnable-by-design) did not apply"; FAIL=1; }
+assert "4a: the subject backfill reached the pre-4a undelivered decision.published push row (copied from its event's entityId, never invented)" \
+  "SELECT COALESCE(\"subject\",'<null>') FROM \"OutboxDelivery\" WHERE \"id\"='UP4A-DEL1';" \
+  "UP4A-D2"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller

@@ -38,6 +38,8 @@ export const DOMAIN_EVENT_TYPES = [
   'decision.reapproved',
   'decision.change_requested',
   'decision.change_withdrawn',
+  // Phase 6 task 4a — a published, never-approved decision taken back (terminal)
+  'decision.withdrawn',
   // activities
   'activity.created',
   'activity.updated',

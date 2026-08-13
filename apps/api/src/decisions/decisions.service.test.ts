@@ -48,6 +48,18 @@ function make() {
         Object.assign(d, args.data);
         return Promise.resolve(d);
       }),
+      // Phase 6 task 4a — publish/withdraw compare-and-set through updateMany; the stand-in
+      // honours the CAS guards (id/projectId equality, publishedAt null / not-null, status).
+      updateMany: vi.fn((args: { where: { id?: string; projectId?: string; status?: string; publishedAt?: { not: null } | null }; data: Partial<DecisionRow> & { status?: string } }) => {
+        const matches = decisions.filter((d) =>
+          (args.where.id === undefined || d.id === args.where.id) &&
+          (args.where.projectId === undefined || d.projectId === args.where.projectId) &&
+          (!('publishedAt' in args.where) || (args.where.publishedAt === null ? d.publishedAt === null : d.publishedAt !== null)) &&
+          (args.where.status === undefined || (d as { status?: string }).status === args.where.status),
+        );
+        for (const d of matches) Object.assign(d, args.data);
+        return Promise.resolve({ count: matches.length });
+      }),
     },
     decisionOption: { createMany: vi.fn(async () => ({ count: 0 })) },
     decisionEvent: { create: vi.fn((args: { data: { type: string } }) => { events.push(args.data); return Promise.resolve(args.data); }) },
@@ -125,6 +137,9 @@ describe('DecisionsService — draft → publish lifecycle', () => {
       text: pendingDecisionNotice('Kitchen counter top'),
       color: '#C08A2D',
       time: 'just now',
+      // Phase 6 task 4a — decision-notice writers stamp the decision so a later withdrawal
+      // retires the pending notice by identity, never by matching display text
+      decisionId: expect.any(String),
     }]);
 
     const draft = make();
