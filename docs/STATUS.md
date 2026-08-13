@@ -13,13 +13,13 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-12-nested-locations.md
 task: 2
-task_state: in_progress
+task_state: in_review
 work_item: none
 reviewed_merge: ec236c7
-open_pr: none
+open_pr: 333
 next_task: phase-6-task-1b
 blocking_directive: none
-updated: 2026-08-12
+updated: 2026-08-13
 ```
 
 **Task 2 is NESTED LOCATIONS — the structural half of the space work.** A live

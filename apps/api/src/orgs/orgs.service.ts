@@ -77,7 +77,7 @@ function anchorKindOf(payload: ModulePayload): string | null {
 }
 
 type InitNodeKind = 'zone' | 'room' | 'element';
-type InitSelection = { moduleId: string; count: number; underZone?: string };
+type InitSelection = { moduleId: string; count: number; underZone?: string; underRoom?: string };
 
 interface PreparedInitSource {
   label: string;
@@ -119,6 +119,12 @@ interface InitWriteState {
   activityIds: string[];
   inspectionIds: string[];
   zoneIdByName: Map<string, string>;
+  // Nested locations (phase-6-task-2): a room-anchored module grafts under a room the
+  // copied source or an EARLIER selection created (first name wins — deterministic), and
+  // every created node's 1-based depth is tracked so the graft depth check runs against
+  // the ACTUAL tree, not the static minimum the graph validator bounds.
+  roomIdByName: Map<string, string>;
+  nodeDepthById: Map<string, number>;
   phaseIdByIdentity: Map<string, string>;
   phaseIdByDefinition: Map<string, string>;
 }
@@ -388,6 +394,8 @@ export class OrgsService {
         activityIds: allActivityIds,
         inspectionIds: allInspectionIds,
         zoneIdByName: new Map<string, string>(),
+        roomIdByName: new Map<string, string>(),
+        nodeDepthById: new Map<string, number>(),
         phaseIdByIdentity: new Map<string, string>(),
         phaseIdByDefinition: new Map<string, string>(),
       };
@@ -407,7 +415,7 @@ export class OrgsService {
 
   /** Every selection's module must be this org's, unarchived, and placeable at create time —
    *  checked BEFORE the project row exists, so a stale pick can never strand an orphan. */
-  private async assertPlaceable(tx: Prisma.TransactionClient, orgId: string, selections: { moduleId: string }[]) {
+  private async assertPlaceable(tx: Prisma.TransactionClient, orgId: string, selections: InitSelection[]) {
     const rows = await tx.templateModule.findMany({
       where: { id: { in: selections.map((s) => s.moduleId) } },
     });
@@ -415,11 +423,29 @@ export class OrgsService {
     for (const s of selections) {
       const m = byId.get(s.moduleId);
       if (!m || m.orgId !== orgId || m.archivedAt) throw new NotFoundException('Module not found in this org');
-      if (m.anchorKind === 'room') {
-        throw new BadRequestException(`"${m.name}" anchors to a room — element modules can't be placed at project creation yet`);
-      }
+      this.assertSelectionTarget(m, s);
     }
     return byId;
+  }
+
+  /** The anchor-specific graft target rule, shared by project creation AND preset save
+   *  (a preset exists only to be expanded, so what expansion would refuse, saving refuses
+   *  too — with the same words). A room-anchored (element-root) module grafts under a
+   *  NAMED room or directly under a zone: exactly one of the two, stated explicitly —
+   *  never a silently invented default container. `underRoom` on a zone-anchored module
+   *  is meaningless and refused rather than ignored. */
+  private assertSelectionTarget(m: { name: string; anchorKind: string | null }, s: { underZone?: string; underRoom?: string }): void {
+    if (m.anchorKind === 'room') {
+      if (Boolean(s.underRoom) === Boolean(s.underZone)) {
+        throw new BadRequestException(
+          `"${m.name}" anchors to a room — pick exactly one graft target: underRoom (a room the structure creates) or underZone (directly under that zone)`,
+        );
+      }
+      return;
+    }
+    if (s.underRoom) {
+      throw new BadRequestException(`"${m.name}" does not anchor to a room — underRoom applies to element modules only`);
+    }
   }
 
   // ── Templates Slice 3 — named presets (docs/TEMPLATES.md) ───────────────────
@@ -485,10 +511,23 @@ export class OrgsService {
       for (let copy = 1; copy <= selection.count; copy += 1) {
         const suffix = selection.count > 1 ? ` ${copy}` : '';
         const label = `module "${row.name}" selection ${selectionIndex + 1} copy ${copy}`;
+        // Where this copy's roots graft. A zone-anchored (room-root) module grafts under the
+        // named zone (created as a draft if new — its default container is the historical
+        // 'Ground Floor'). A room-anchored (element-root) module grafts under the NAMED room
+        // when `underRoom` is given, or directly under the named zone (the nested-locations
+        // decision's element-under-zone edge) — `assertPlaceable` already proved exactly one
+        // target is present.
+        const graft: Pick<PreparedInitSource, 'rootParentKind' | 'rootParentName'> =
+          row.anchorKind === 'zone'
+            ? { rootParentKind: 'zone', rootParentName: selection.underZone ?? 'Ground Floor' }
+            : row.anchorKind === 'room'
+              ? selection.underRoom
+                ? { rootParentKind: 'room', rootParentName: selection.underRoom }
+                : { rootParentKind: 'zone', rootParentName: selection.underZone! }
+              : { rootParentKind: null };
         sources.push({
           label,
-          rootParentKind: row.anchorKind === 'zone' ? 'zone' : null,
-          ...(row.anchorKind === 'zone' ? { rootParentName: selection.underZone ?? 'Ground Floor' } : {}),
+          ...graft,
           nodes: parsed.data.nodes.map((node) => ({
             key: node.key,
             parentKey: node.parentKey,
@@ -587,11 +626,11 @@ export class OrgsService {
       for (const i of input.items) {
         const m = ok.get(i.moduleId);
         if (!m || m.orgId !== orgId || m.archivedAt) throw new NotFoundException('Module not found in this org');
-        // a preset exists only to be expanded at create-project, which can't place element
-        // modules yet — refuse at save time rather than minting an unusable preset (review F3)
-        if (m.anchorKind === 'room') {
-          throw new BadRequestException(`"${m.name}" anchors to a room — element modules can't join a preset yet`);
-        }
+        // a preset exists only to be expanded at create-project — so saving applies the SAME
+        // graft-target rule expansion applies (review F3's principle, now that element modules
+        // ARE placeable): a room-anchored item must carry its explicit target, or the preset
+        // would be minted unusable and fail only at expansion.
+        this.assertSelectionTarget(m, i);
       }
       const created = await this.prisma.projectTemplate.create({
         data: { orgId, name: input.name, description: input.description, items: input.items },
@@ -863,20 +902,46 @@ export class OrgsService {
         data: { projectId: state.targetId, parentId: null, name, kind: 'zone', order: state.zoneIdByName.size, publishedAt: null, authorId: state.userId },
       });
       state.zoneIdByName.set(name, created.id);
+      state.nodeDepthById.set(created.id, 1);
       return created.id;
     };
 
-    const rootParentId = source.rootParentName ? await zoneFor(source.rootParentName) : null;
+    // Where this source's roots graft. A zone target may be created fresh (a draft zone is a
+    // legal top-level invention); a ROOM target must already exist in the structure — a room
+    // cannot be invented without its own parent, so an unknown name is a refusal with the
+    // reason stated, never a silently minted container.
+    const rootParentId = source.rootParentName
+      ? source.rootParentKind === 'room'
+        ? (state.roomIdByName.get(source.rootParentName)
+          ?? (() => {
+            throw new BadRequestException(
+              `${source.label}: no room named "${source.rootParentName}" exists in the project structure — `
+              + 'an element module grafts under a room created by the copied source or an earlier selection, '
+              + 'or directly under a zone via underZone',
+            );
+          })())
+        : await zoneFor(source.rootParentName)
+      : null;
     const nodeIdByKey = new Map<string, string>();
     let remaining = [...source.nodes];
     while (remaining.length) {
       const batch = remaining.filter((node) => !node.parentKey || nodeIdByKey.has(node.parentKey));
       if (!batch.length) throw new Error(`${source.label}: unresolved node creation state for "${remaining[0]!.key}"`);
       for (const node of batch) {
+        const parentId = node.parentKey ? required(nodeIdByKey, node.parentKey, 'parent key') : rootParentId;
+        // The depth cap at the ACTUAL graft depth (the graph validator bounds only the static
+        // minimum): initialization is the second write path, and the same 5-level rule the
+        // node endpoints enforce holds here — a module whose graft would exceed it is refused.
+        const depth = parentId ? (state.nodeDepthById.get(parentId) ?? 1) + 1 : 1;
+        if (depth > 5) {
+          throw new BadRequestException(
+            `${source.label}: node "${node.name}" would land at level ${depth} — locations nest to 5 levels`,
+          );
+        }
         const created = await this.nodeInit.createForInit(tx, {
           data: {
             projectId: state.targetId,
-            parentId: node.parentKey ? required(nodeIdByKey, node.parentKey, 'parent key') : rootParentId,
+            parentId,
             name: node.name,
             kind: node.kind,
             order: node.order,
@@ -885,7 +950,9 @@ export class OrgsService {
           },
         });
         nodeIdByKey.set(node.key, created.id);
+        state.nodeDepthById.set(created.id, depth);
         if (node.kind === 'zone') state.zoneIdByName.set(node.name, created.id);
+        if (node.kind === 'room' && !state.roomIdByName.has(node.name)) state.roomIdByName.set(node.name, created.id);
       }
       remaining = remaining.filter((node) => !nodeIdByKey.has(node.key));
     }

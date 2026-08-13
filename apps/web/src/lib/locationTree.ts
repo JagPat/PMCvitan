@@ -51,6 +51,21 @@ export function pathOf(nodes: ProjectNode[], nodeId: string | undefined | null):
   return out;
 }
 
+/** Breadcrumb of NODES from root → node (cycle-safe) — the kind-aware sibling of
+ *  `trailOf`, for readers that must group by what a node IS rather than where it
+ *  sits (nested locations: position no longer implies kind). */
+function trailNodesOf(nodes: ProjectNode[], nodeId: string | undefined | null): ProjectNode[] {
+  const out: ProjectNode[] = [];
+  const seen = new Set<string>();
+  let cur = nodeById(nodes, nodeId);
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    out.unshift(cur);
+    cur = nodeById(nodes, cur.parentId ?? undefined);
+  }
+  return out;
+}
+
 /** Breadcrumb of {id,name} from root → node (cycle-safe). Empty when the node is missing. */
 export function trailOf(nodes: ProjectNode[], nodeId: string | undefined | null): { id: string; name: string }[] {
   const out: { id: string; name: string }[] = [];
@@ -106,16 +121,41 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
       key = d.status;
       label = STATUS_LABEL[d.status] ?? d.status;
     } else if (mode === 'room') {
-      // the room is the 2nd segment when a zone exists, else the first
-      const room = seg.length >= 2 ? seg[1] : seg[0];
-      key = `room:${room}`;
-      label = room;
-      subLabel = seg.slice(seg.indexOf(room) + 1).join(' › ');
+      // KIND-true, not positional (nested locations): the decision's room is the DEEPEST
+      // node of kind 'room' on its filed trail — a decision filed at Zone › Wing › Pour
+      // groups under Pour (where it was FILED), and a zone-filed decision or a zone-level
+      // element has NO room and is never presented as one. Free-text legacy decisions
+      // keep their stored room name as the group.
+      const trail = trailNodesOf(nodes, d.nodeId);
+      const roomIndex = trail.map((n) => n.kind).lastIndexOf('room');
+      if (trail.length && roomIndex >= 0) {
+        const room = trail[roomIndex]!;
+        key = `room:${room.name}`;
+        label = room.name;
+        subLabel = trail.slice(roomIndex + 1).map((n) => n.name).join(' › ');
+      } else if (trail.length) {
+        key = 'room:~none';
+        label = 'No room';
+        subLabel = trail.map((n) => n.name).join(' › ');
+      } else {
+        key = `room:${seg[0]}`;
+        label = seg[0];
+      }
     } else if (mode === 'element') {
-      const element = seg.length >= 1 ? seg[seg.length - 1] : 'Unfiled';
-      key = `el:${element}`;
-      label = element;
-      subLabel = seg.slice(0, -1).join(' › ');
+      // KIND-true: only a decision FILED ON an element forms an object group — a room- or
+      // zone-filed decision (or a free-text one) is honestly "No object", with its actual
+      // location as the row caption, instead of its last path segment masquerading as one.
+      const trail = trailNodesOf(nodes, d.nodeId);
+      const filed = trail[trail.length - 1];
+      if (filed?.kind === 'element') {
+        key = `el:${filed.name}`;
+        label = filed.name;
+        subLabel = trail.slice(0, -1).map((n) => n.name).join(' › ');
+      } else {
+        key = 'el:~none';
+        label = 'No object';
+        subLabel = seg.join(' › ');
+      }
     } else {
       // location: top-level = first segment (zone, or room when unzoned)
       key = `loc:${seg[0]}`;

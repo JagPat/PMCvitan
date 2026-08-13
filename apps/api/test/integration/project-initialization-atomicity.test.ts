@@ -48,9 +48,12 @@ const invalidModules: Array<{ label: string; payload: ModulePayloadJson }> = [
     label: 'invalid-kind-edge',
     payload: {
       ...emptyPayload(),
+      // element-under-ELEMENT: an element is a leaf. (The previous fixture — element
+      // directly under a zone — is a legal shape since nested locations, phase-6-task-2.)
       nodes: [
         { key: 'zone', parentKey: null, name: 'Zone', kind: 'zone', order: 0 },
         { key: 'element', parentKey: 'zone', name: 'Element', kind: 'element', order: 0 },
+        { key: 'sub', parentKey: 'element', name: 'Sub Element', kind: 'element', order: 0 },
       ],
     },
   },

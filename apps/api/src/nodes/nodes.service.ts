@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { SnapshotService } from '../snapshot/snapshot.service';
+import { lockProjectTree } from '../common/tree-lock';
+import { MAX_TREE_DEPTH, ancestorIdsOf, depthOf, heightOf, subtreeIdsOf, type TreeRow } from './tree-rules';
 import { DecisionsQueryService } from '../decisions/decisions.query';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ActivityParticipant } from '../activities/activity.participant';
@@ -14,13 +17,14 @@ import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 
-/** The location tree is exactly 3 levels: a zone contains rooms, a room contains
- *  elements (the objects, e.g. "Main Door"). A node's kind fixes what its parent
- *  must be — this keeps the tree well-formed so the UI can render clean breadcrumbs. */
-const PARENT_KIND: Record<string, 'zone' | 'room' | null> = {
+/** The location tree RULE (nested locations, phase-6-task-2): a zone is top-level
+ *  only; a room sits under a zone OR another room; an element (the object, e.g.
+ *  "Main Door") is a LEAF and sits under a room OR directly under a zone. The kind
+ *  fixes the SET of legal parents — depth is bounded separately (5 levels). */
+const ALLOWED_PARENT_KINDS: Record<string, ReadonlyArray<'zone' | 'room'> | null> = {
   zone: null, // top level
-  room: 'zone',
-  element: 'room',
+  room: ['zone', 'room'],
+  element: ['room', 'zone'],
 };
 
 /**
@@ -50,16 +54,24 @@ export class NodesService {
     private readonly dailyLogParticipant: DailyLogParticipant,
   ) {}
 
-  /** Create a zone/room/element under the right kind of parent. */
+  /** Create a zone/room/element under the right kind of parent. The tree invariants (depth,
+   *  visibility) are re-derived INSIDE the tree-lock transaction: a create racing a reparent
+   *  of its ancestry otherwise passes both checks on stale snapshots and lands at level 6. */
   async create(projectId: string, input: CreateNodeInput, user: AuthUser): Promise<SnapshotDto> {
     const actor = await resolveActor(this.prisma, user);
-    const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null);
-    const order = await this.nextOrder(projectId, input.parentId ?? null);
-    // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
-    // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
-    const parentIsDraft = parent ? parent.publishedAt === null : false;
-    const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
     const ev = await this.prisma.$transaction(async (tx) => {
+      await lockProjectTree(tx, projectId);
+      const parent = await this.requireParentForKind(projectId, input.kind, input.parentId ?? null, tx);
+      const tree = await this.loadTree(tx, projectId);
+      const depth = parent ? depthOf(tree, parent.id) + 1 : 1;
+      if (depth > MAX_TREE_DEPTH) {
+        throw new BadRequestException(`Cannot add "${input.name}" at level ${depth} — locations nest to ${MAX_TREE_DEPTH} levels`);
+      }
+      const order = this.nextOrderIn(tree, parent?.id ?? null);
+      // Draft → Publish: a node under a DRAFT parent must itself be a draft (a published child of a
+      // hidden parent would be an orphan on the team's Site Map). Otherwise honour `publish`.
+      const parentIsDraft = parent ? parent.publishedAt === null : false;
+      const publishedAt = input.publish && !parentIsDraft ? new Date() : null;
       const created = await tx.projectNode.create({
         data: { projectId, parentId: parent?.id ?? null, name: input.name, kind: input.kind, order, authorId: user.sub, publishedAt },
       });
@@ -69,22 +81,22 @@ export class NodesService {
   }
 
   /** Publish a private draft location → it (its subtree, and any draft ancestors so the path is
-   *  whole) become visible to the team and available in the filing pickers. PMC authority. */
+   *  whole) become visible to the team and available in the filing pickers. PMC authority.
+   *  The branch is computed INSIDE the tree-lock transaction: computed outside it, a concurrent
+   *  move of a still-draft child lands a published node beneath a hidden ancestor (§A's race). */
   async publish(projectId: string, nodeId: string, user: AuthUser): Promise<SnapshotDto> {
-    const node = await this.requireNode(projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
-    // publish the whole branch: draft ancestors (so the breadcrumb is complete) + the subtree.
-    const ancestors = await this.ancestorIds(nodeId);
-    const subtree = await this.subtreeIds(nodeId);
-    const branch = [...new Set([...ancestors, ...subtree])];
     const ev = await this.prisma.$transaction(async (tx) => {
+      await lockProjectTree(tx, projectId);
+      await this.requireNode(projectId, nodeId, tx);
+      const tree = await this.loadTree(tx, projectId);
+      const branch = [...new Set([...ancestorIdsOf(tree, nodeId), ...subtreeIdsOf(tree, nodeId)])];
       await tx.projectNode.updateMany({
         where: { id: { in: branch }, projectId, publishedAt: null },
         data: { publishedAt: new Date() },
       });
       return emitEvent(tx, { projectId, actor, eventType: 'node.published', entityType: 'ProjectNode', entityId: nodeId, effectKey: 'node.published', dispatch: {} });
     });
-    void node;
     return this.done(projectId, user, [ev]);
   }
 
@@ -99,17 +111,36 @@ export class NodesService {
     return this.done(projectId, user, [ev]);
   }
 
-  /** Reparent (and optionally reorder) a node — kind rules and cycle-safety enforced. */
+  /** Reparent (and optionally reorder) a node. Kind rules, cycle-safety, the 5-level depth cap
+   *  (destination depth + the moved subtree's HEIGHT — a cap on the moved node alone lands its
+   *  descendants at level 6 silently) and the visibility invariant (`a node may not be more
+   *  visible than its parent` — the rule `create` already enforces) are ALL re-derived inside
+   *  the tree-lock transaction, serialized against every other tree write. */
   async move(projectId: string, nodeId: string, input: MoveNodeInput, user: AuthUser): Promise<SnapshotDto> {
-    const node = await this.requireNode(projectId, nodeId);
-    const parent = await this.requireParentForKind(projectId, node.kind, input.parentId);
-    if (parent) {
-      if (parent.id === nodeId) throw new BadRequestException('A node cannot be its own parent');
-      if (await this.isDescendant(parent.id, nodeId)) throw new BadRequestException('Cannot move a node under one of its own descendants');
-    }
-    const order = input.order ?? (await this.nextOrder(projectId, input.parentId));
     const actor = await resolveActor(this.prisma, user);
     const ev = await this.prisma.$transaction(async (tx) => {
+      await lockProjectTree(tx, projectId);
+      const node = await this.requireNode(projectId, nodeId, tx);
+      const parent = await this.requireParentForKind(projectId, node.kind, input.parentId, tx);
+      const tree = await this.loadTree(tx, projectId);
+      const subtree = subtreeIdsOf(tree, nodeId);
+      if (parent) {
+        if (parent.id === nodeId) throw new BadRequestException('A node cannot be its own parent');
+        if (subtree.includes(parent.id)) throw new BadRequestException('Cannot move a node under one of its own descendants');
+      }
+      const destinationDepth = parent ? depthOf(tree, parent.id) : 0;
+      const deepest = destinationDepth + heightOf(tree, nodeId);
+      if (deepest > MAX_TREE_DEPTH) {
+        throw new BadRequestException(`Cannot move "${node.name}" here — its deepest location would land at level ${deepest}, and locations nest to ${MAX_TREE_DEPTH} levels`);
+      }
+      if (parent && parent.publishedAt === null) {
+        const byId = new Map(tree.map((row) => [row.id, row]));
+        const published = subtree.some((id) => byId.get(id)?.publishedAt != null);
+        if (published) {
+          throw new BadRequestException(`Cannot move a published location under the draft "${parent.name}" — a published child of a hidden parent would be an orphan on the team's Site Map. Publish "${parent.name}" first.`);
+        }
+      }
+      const order = input.order ?? this.nextOrderIn(tree, parent?.id ?? null);
       await tx.projectNode.update({ where: { id: nodeId }, data: { parentId: parent?.id ?? null, order } });
       return emitEvent(tx, { projectId, actor, eventType: 'node.moved', entityType: 'ProjectNode', entityId: nodeId, payload: { parentId: parent?.id ?? null }, effectKey: 'node.moved', dispatch: {} });
     });
@@ -124,7 +155,7 @@ export class NodesService {
   async remove(projectId: string, nodeId: string, user: AuthUser): Promise<SnapshotDto> {
     await this.requireNode(projectId, nodeId);
     const actor = await resolveActor(this.prisma, user);
-    const subtree = await this.subtreeIds(nodeId);
+    const subtree = subtreeIdsOf(await this.loadTree(this.prisma, projectId), nodeId);
     const attached = await this.decisions.countByNodeIds(subtree);
     if (attached > 0) {
       throw new BadRequestException(`Move or remove the ${attached} decision(s) under this location before deleting it.`);
@@ -161,64 +192,49 @@ export class NodesService {
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
-  private async requireNode(projectId: string, nodeId: string) {
-    const node = await this.prisma.projectNode.findUnique({ where: { id: nodeId } });
+  private async requireNode(projectId: string, nodeId: string, db: Db = this.prisma) {
+    const node = await db.projectNode.findUnique({ where: { id: nodeId } });
     if (!node || node.projectId !== projectId) throw new NotFoundException('Location not found in this project');
     return node;
   }
 
   /** Validate & load the parent required for a node of `kind` (null when the kind is top-level). */
-  private async requireParentForKind(projectId: string, kind: string, parentId: string | null) {
-    const expected = PARENT_KIND[kind];
-    if (expected === undefined) throw new BadRequestException('Unknown location kind');
-    if (expected === null) {
+  private async requireParentForKind(projectId: string, kind: string, parentId: string | null, db: Db = this.prisma) {
+    const allowed = ALLOWED_PARENT_KINDS[kind];
+    if (allowed === undefined) throw new BadRequestException('Unknown location kind');
+    if (allowed === null) {
       if (parentId) throw new BadRequestException('A zone is top-level and cannot have a parent');
       return null;
     }
+    const expected = allowed.join(' or a ');
     if (!parentId) throw new BadRequestException(`A ${kind} must sit under a ${expected}`);
-    const parent = await this.requireNode(projectId, parentId);
-    if (parent.kind !== expected) throw new BadRequestException(`A ${kind} must sit under a ${expected}, not a ${parent.kind}`);
+    const parent = await this.requireNode(projectId, parentId, db);
+    if (!(allowed as readonly string[]).includes(parent.kind)) {
+      throw new BadRequestException(`A ${kind} must sit under a ${expected}, not a ${parent.kind}`);
+    }
     return parent;
   }
 
-  private async nextOrder(projectId: string, parentId: string | null): Promise<number> {
-    const siblings = await this.prisma.projectNode.findMany({ where: { projectId, parentId }, select: { order: true } });
-    return siblings.reduce((m, s) => Math.max(m, s.order), -1) + 1;
+  /** The project's node set, loaded ONCE per write with a PROJECT-SCOPED read (the old
+   *  subtree/ancestor helpers scanned every project's rows). The pure walkers in
+   *  `tree-rules.ts` then operate on exactly these rows — inside a tree-lock
+   *  transaction they are the serialized truth every invariant is derived from. */
+  private async loadTree(db: Db, projectId: string): Promise<LoadedTreeRow[]> {
+    return db.projectNode.findMany({
+      where: { projectId },
+      select: { id: true, parentId: true, publishedAt: true, order: true },
+    });
   }
 
-  /** All node ids in the subtree rooted at `nodeId` (inclusive). */
-  private async subtreeIds(nodeId: string): Promise<string[]> {
-    const all = await this.prisma.projectNode.findMany({ select: { id: true, parentId: true } });
-    const childrenOf = new Map<string, string[]>();
-    for (const n of all) {
-      if (n.parentId) childrenOf.set(n.parentId, [...(childrenOf.get(n.parentId) ?? []), n.id]);
-    }
-    const ids: string[] = [];
-    const walk = (id: string): void => {
-      ids.push(id);
-      for (const c of childrenOf.get(id) ?? []) walk(c);
-    };
-    walk(nodeId);
-    return ids;
+  private nextOrderIn(tree: LoadedTreeRow[], parentId: string | null): number {
+    return tree.filter((row) => row.parentId === parentId).reduce((m, row) => Math.max(m, row.order), -1) + 1;
   }
+}
 
-  /** True when `nodeId` is `ancestorId` or a descendant of it (cycle guard for move). */
-  private async isDescendant(nodeId: string, ancestorId: string): Promise<boolean> {
-    return (await this.subtreeIds(ancestorId)).includes(nodeId);
-  }
+/** The subset of the client both `this.prisma` and a transaction satisfy. */
+type Db = Pick<PrismaService, 'projectNode'> | Prisma.TransactionClient;
 
-  /** Ancestor ids of a node (nearest-first), EXCLUDING the node itself (cycle-safe). */
-  private async ancestorIds(nodeId: string): Promise<string[]> {
-    const all = await this.prisma.projectNode.findMany({ select: { id: true, parentId: true } });
-    const parentOf = new Map(all.map((n) => [n.id, n.parentId]));
-    const out: string[] = [];
-    const seen = new Set<string>();
-    let cur = parentOf.get(nodeId) ?? null;
-    while (cur && !seen.has(cur)) {
-      seen.add(cur);
-      out.push(cur);
-      cur = parentOf.get(cur) ?? null;
-    }
-    return out;
-  }
+interface LoadedTreeRow extends TreeRow {
+  publishedAt: Date | null;
+  order: number;
 }

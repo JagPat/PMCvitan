@@ -65,7 +65,8 @@ export function ProjectSwitcher() {
   );
 }
 
-function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
+/** Exported for the nested-locations probes — the PUBLIC create-project door. */
+export function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => void }) {
   const createProject = useStore((s) => s.createProject);
   const memberships = useStore(useShallow((s) => s.memberships));
   const orgModules = useStore(useShallow((s) => s.orgModules));
@@ -76,27 +77,49 @@ function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => 
   const [short, setShort] = useState('');
   // '' = blank slate · 'tpl:<id>' = a named preset · 'proj:<id>' = copy a project's structure
   const [startFrom, setStartFrom] = useState('');
-  // the à-la-carte module picks: moduleId → {count, underZone} (Templates Slice 2)
-  const [picked, setPicked] = useState<Record<string, { count: number; underZone: string }>>({});
+  // the à-la-carte module picks: moduleId → {count, target} (Templates Slice 2). A
+  // room-anchored (element-root) module needs a graft target — a named room, or a zone
+  // for the nested-locations element-under-zone edge — so its pick carries the target
+  // KIND plus the name for whichever kind is chosen (the server enforces exactly one).
+  type Pick_ = { count: number; underZone: string; underRoom: string; roomTargetKind: 'room' | 'zone' };
+  const [picked, setPicked] = useState<Record<string, Pick_>>({});
   useEffect(() => { loadOrgModules(orgId); loadOrgTemplates(orgId); }, [orgId, loadOrgModules, loadOrgTemplates]);
 
   const togglePick = (id: string) =>
     setPicked((prev) => {
       const next = { ...prev };
       if (next[id]) delete next[id];
-      else next[id] = { count: 1, underZone: '' };
+      else next[id] = { count: 1, underZone: '', underRoom: '', roomTargetKind: 'room' };
       return next;
     });
-  const setPick = (id: string, patch: Partial<{ count: number; underZone: string }>) =>
-    setPicked((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  const setPick = (id: string, patch: Partial<Pick_>) =>
+    setPicked((prev) => ({ ...prev, [id]: { ...prev[id]!, ...patch } }));
+
+  // A selected room-anchored module with a blank target would be a guaranteed server
+  // refusal — the Create button waits for the target instead of sending it.
+  const targetsIncomplete = Object.entries(picked).some(([id, p]) => {
+    if (orgModules.find((m) => m.id === id)?.anchorKind !== 'room') return false;
+    return p.roomTargetKind === 'room' ? !p.underRoom.trim() : !p.underZone.trim();
+  });
 
   const submit = () => {
-    if (!name.trim() || !short.trim()) return;
-    const modules: ModuleSelection[] = Object.entries(picked).map(([moduleId, p]) => ({
-      moduleId,
-      count: p.count,
-      ...(p.underZone.trim() ? { underZone: p.underZone.trim() } : {}),
-    }));
+    if (!name.trim() || !short.trim() || targetsIncomplete) return;
+    const modules: ModuleSelection[] = Object.entries(picked).map(([moduleId, p]) => {
+      if (orgModules.find((m) => m.id === moduleId)?.anchorKind === 'room') {
+        return {
+          moduleId,
+          count: p.count,
+          ...(p.roomTargetKind === 'room'
+            ? { underRoom: p.underRoom.trim() }
+            : { underZone: p.underZone.trim() }),
+        };
+      }
+      return {
+        moduleId,
+        count: p.count,
+        ...(p.underZone.trim() ? { underZone: p.underZone.trim() } : {}),
+      };
+    });
     const input: NewProjectInput = {
       name: name.trim(),
       short: short.trim(),
@@ -172,6 +195,19 @@ function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => 
                         {m.anchorKind === 'zone' && (
                           <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Under zone (Ground Floor)" style={{ flex: 1, minWidth: 0, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
                         )}
+                        {m.anchorKind === 'room' && (
+                          <>
+                            <select value={sel.roomTargetKind} onChange={(e) => setPick(m.id, { roomTargetKind: e.target.value as 'room' | 'zone' })} data-testid={`np-target-kind-${m.id}`} aria-label={`Where ${m.name} grafts`} style={{ height: 30, padding: '0 6px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12 }}>
+                              <option value="room">Under room…</option>
+                              <option value="zone">Under zone…</option>
+                            </select>
+                            {sel.roomTargetKind === 'room' ? (
+                              <input value={sel.underRoom} onChange={(e) => setPick(m.id, { underRoom: e.target.value })} placeholder="Room name (Master Bedroom)" data-testid={`np-under-room-${m.id}`} style={{ flex: 1, minWidth: 0, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                            ) : (
+                              <input value={sel.underZone} onChange={(e) => setPick(m.id, { underZone: e.target.value })} placeholder="Zone name (Entrance)" data-testid={`np-under-zone-${m.id}`} style={{ flex: 1, minWidth: 0, height: 30, padding: '0 8px', borderRadius: 8, border: '1px solid rgba(35,33,28,.18)', fontFamily: 'var(--font-sans)', fontSize: 12.5 }} />
+                            )}
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
@@ -185,7 +221,7 @@ function CreateProjectModal({ orgId, onClose }: { orgId: string; onClose: () => 
         )}
         <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
           <button onClick={onClose} style={{ ...btn, background: '#fff', color: 'var(--ink)', border: '1px solid rgba(35,33,28,.2)' }}>Cancel</button>
-          <button onClick={submit} disabled={!name.trim() || !short.trim()} style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: name.trim() && short.trim() ? 1 : 0.5 }}>Create</button>
+          <button onClick={submit} disabled={!name.trim() || !short.trim() || targetsIncomplete} style={{ ...btn, background: 'var(--ink)', color: '#fff', border: 'none', opacity: name.trim() && short.trim() && !targetsIncomplete ? 1 : 0.5 }}>Create</button>
         </div>
       </div>
     </Modal>
