@@ -14,13 +14,14 @@ import { resolveActor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import type { EmittedEventMeta } from '../platform/outbox/registry';
 
-/** The location tree is exactly 3 levels: a zone contains rooms, a room contains
- *  elements (the objects, e.g. "Main Door"). A node's kind fixes what its parent
- *  must be — this keeps the tree well-formed so the UI can render clean breadcrumbs. */
-const PARENT_KIND: Record<string, 'zone' | 'room' | null> = {
+/** The location tree RULE (nested locations, phase-6-task-2): a zone is top-level
+ *  only; a room sits under a zone OR another room; an element (the object, e.g.
+ *  "Main Door") is a LEAF and sits under a room OR directly under a zone. The kind
+ *  fixes the SET of legal parents — depth is bounded separately (5 levels). */
+const ALLOWED_PARENT_KINDS: Record<string, ReadonlyArray<'zone' | 'room'> | null> = {
   zone: null, // top level
-  room: 'zone',
-  element: 'room',
+  room: ['zone', 'room'],
+  element: ['room', 'zone'],
 };
 
 /**
@@ -169,15 +170,18 @@ export class NodesService {
 
   /** Validate & load the parent required for a node of `kind` (null when the kind is top-level). */
   private async requireParentForKind(projectId: string, kind: string, parentId: string | null) {
-    const expected = PARENT_KIND[kind];
-    if (expected === undefined) throw new BadRequestException('Unknown location kind');
-    if (expected === null) {
+    const allowed = ALLOWED_PARENT_KINDS[kind];
+    if (allowed === undefined) throw new BadRequestException('Unknown location kind');
+    if (allowed === null) {
       if (parentId) throw new BadRequestException('A zone is top-level and cannot have a parent');
       return null;
     }
+    const expected = allowed.join(' or a ');
     if (!parentId) throw new BadRequestException(`A ${kind} must sit under a ${expected}`);
     const parent = await this.requireNode(projectId, parentId);
-    if (parent.kind !== expected) throw new BadRequestException(`A ${kind} must sit under a ${expected}, not a ${parent.kind}`);
+    if (!(allowed as readonly string[]).includes(parent.kind)) {
+      throw new BadRequestException(`A ${kind} must sit under a ${expected}, not a ${parent.kind}`);
+    }
     return parent;
   }
 
