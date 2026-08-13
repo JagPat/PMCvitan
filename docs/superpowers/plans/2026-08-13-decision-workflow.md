@@ -695,18 +695,21 @@ only, and the tripwire pins advanced in the same PR (§A lock-coverage gains
 `decisions.withdraw`; the external-effect coverage version re-seals in 4a, 4b
 and 4c; the role mirrors pin in 4d).
 
-**This plan PR itself** ships the plan + the STATUS flip to `task: 4 /
-in_progress` in ONE diff (the #331 pattern the `phase_plan` pin enforces). The
-known constraint, stated rather than discovered: the diff is docs-only, and past
-three finding-bearing heads a docs-only review owes a `Review-Deferred-To-Probes`
-trailer the gate REFUSES from a diff touching `docs/STATUS.md`
-(`docs/STATUS.md` records this exact lesson from PR #324). The escape, if the
-cap is reached: the trailer-carrying head REVERTS the STATUS edit (the diff
-stops touching STATUS; the trailer becomes acceptable; the deferral targets this
-task's own implementation stops, which `deferralPhases` admits while phase 6 has
-open work), and the flip lands as the immediate tiny follow-up — the #324-proven
-two-step. This paragraph exists so that head, if ever needed, is a planned move
-rather than an improvisation.
+**This plan PR itself** set out to ship the plan + the STATUS flip to `task: 4 /
+in_progress` in ONE diff (the #331 pattern). The known constraint — docs-only,
+and past three finding-bearing heads the review owes a
+`Review-Deferred-To-Probes` trailer the gate REFUSES from a diff touching
+`docs/STATUS.md` (the PR #324 lesson `docs/STATUS.md` records) — was stated in
+this paragraph from the first head, with its escape planned. **The cap was
+reached and the escape is now EXECUTED, not hypothetical**: the trailer-carrying
+head reverted the STATUS edit (this PR lands the plan + audit only; the trailer
+defers still-open verification to `phase-6-task-4`'s own implementation stops,
+where every §E probe runs red-first), and the STATUS flip to `task: 4 /
+in_progress / phase_plan: <this plan>` lands as the IMMEDIATE tiny follow-up PR
+after this one merges — the `phase_plan` pin is satisfied there because the plan
+file already resolves on `main` at that moment. Nothing is dismissed: the place
+of verification moves from prose to probes, which is the deferral mechanism's
+whole design.
 
 ## What carries forward
 

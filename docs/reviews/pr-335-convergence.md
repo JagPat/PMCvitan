@@ -160,19 +160,43 @@ implies frozen evidence; a push spine implies its addressing model. The §A.3
 reader-table discipline extends to borrowed machinery: for every reused
 mechanism, enumerate what it assumes, who writes it, and what it cannot see.
 
+## The deferral — executed, with its ledger
+
+The gate enforced the cap on the round-3 correction head itself
+(`convergence_required`: "after 3 finding-bearing heads a docs-only review must
+hand its remaining open questions to named probes instead of answering them
+with more prose"), and it refuses the deferral trailer from a diff touching
+`docs/STATUS.md`. So the two-step §F pre-declared is now EXECUTED on this head:
+
+1. The `docs/STATUS.md` edit is REVERTED — this PR lands the plan + this audit
+   only, and the flip to `task: 4 / in_progress / phase_plan: <the plan>` lands
+   as the immediate tiny follow-up PR after merge (the `phase_plan` pin is
+   satisfied there: the plan file resolves on `main` at that moment).
+2. The head carries `Review-Deferred-To-Probes: phase-6-task-4` — the task
+   whose review stops RUN the probes that adjudicate everything this review
+   opened.
+
+**The deferral ledger.** Every question the three rounds raised is already a
+NAMED probe in the plan's §E, because each correction was written as
+probe-first design; the still-open part is their EXECUTION, which no docs-only
+diff can provide. The binding, by round-3 finding (rounds 1–2 bind identically
+through their sections): the holder-mutation seal → P34; provisional approvals
+as provenance → P31 (the `finalized` CHECK-pinned composite, hostile inserts);
+`withdrawChange` on disagreement requests → P33; open-state-only forwards →
+P30; the countersign emission → P31; the retired pending notice → P10; late
+consultation responses → P25; the response's child keys → P27; the impact
+fields → P33; the 4c/4d staging arm → the per-unit staging rule + 4d's
+eligibility probe. Each runs RED-FIRST at its unit's staged baseline
+(4a: P1–P14; 4b: P15–P22; 4c: P23–P27; 4d: P28–P36), inside `phase-6-task-4`'s
+own exact-head review stops, which fail closed exactly like this one.
+
 ## Status
 
 All forty-three findings across the three finding-bearing heads (13 + 20 + 10)
 are corrected in the plan text with their probes named and their red sites
-stated. Nothing is dismissed or deferred. **The docs-only cap is reached.** If
-the next review still finds, the answering head MUST carry
-`Review-Deferred-To-Probes` — converting each still-open question into a named
-probe bound to this task's own implementation stops — and because the gate
-refuses that trailer from a diff touching `docs/STATUS.md`, that head FIRST
-reverts the STATUS edit, the flip landing as the immediate tiny follow-up PR:
-the #324-proven two-step the plan's §F pre-declares. The finding trajectory
-(13 → 20 → 10, with round 2 doubled by a delivery artifact) has been narrowing
-by round-depth — readers, borrowed machinery, trust anchors — which is the
-declining pattern the deferral mechanism exists to terminate honestly.
+stated; the finding trajectory (13 → 20 → 10, round 2 doubled by a delivery
+artifact) narrowed by round-depth — readers, borrowed machinery, trust anchors.
+Nothing is dismissed. The docs-only cap is reached and the deferral above moves
+the remaining verification from prose to probes, where it belonged all along.
 
 Review-Convergence: complete

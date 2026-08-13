@@ -11,13 +11,13 @@ narrative and may lag behind reality.
 
 ```yaml
 phase: 6
-phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
-task: 4
-task_state: in_progress
+phase_plan: docs/superpowers/plans/2026-08-12-nested-locations.md
+task: 2
+task_state: merged
 work_item: none
-reviewed_merge: a354394
-open_pr: 335
-next_task: none
+reviewed_merge: 7a688e3
+open_pr: none
+next_task: phase-6-task-4
 blocking_directive: none
 updated: 2026-08-13
 ```
@@ -29,31 +29,30 @@ contract gained — the P11 public-door lesson applied one door further). All
 eighteen plan probes green, staged red-first per §D; packet:
 `docs/reviews/phase-6-t2-nested-locations-packet.md`.
 
-**TASK 4 IS IN PROGRESS — the DECISION-WORKFLOW rework, scheduled by the owner
-on 2026-08-13 AHEAD of the rename.** (`phase-6-task-3` is NOT this unit: that
-stop is already reserved by `Review-Deferred-To-Probes` in
+**`next_task` is phase-6-task-4 — the DECISION-WORKFLOW rework, scheduled by the
+owner on 2026-08-13 AHEAD of the rename.** (`phase-6-task-3` is NOT this unit:
+that stop is already reserved by `Review-Deferred-To-Probes` in
 `docs/reviews/pr-324-convergence.md` for the external-collaboration plan's
 deferred probes, and a stop must stay bound to the questions it owes — task 4 is
-the first free number.) The owner hit three live gaps in the Decision Log (a
-wrongly-published decision cannot be withdrawn by anyone; an issue cannot be
-recorded without 2–4 options and without going to the client; the client is
-hard-wired as the only decider while real decisions need the architect to
-orchestrate and other parties to take the call or give input). The architecture
-plan is `docs/superpowers/plans/2026-08-13-decision-workflow.md` — the
-`phase_plan` above — and it stages FOUR implementation units, each its own PR
-and review stop, in order: **4a `decisions.withdraw`** (the owner's live defect:
-attributable, reasoned, terminal `withdrawn` kept as register history, cleared
-from the client's pending surfaces — never a silent delete), **4b the
-per-decision decider + the record-only issue**, **4c consultation distinct from
-approval**, **4d the `architect` role + forwarding/countersign** (forward
-authority AMENDED to holder + PMC + architect once one exists, per the owner's
-2026-08-13 instruction).
+the first free number.) The owner hit two real gaps in the Decision Log (an
+issue cannot be recorded without 2–4 options and without going to the client; a
+wrongly-published decision cannot be withdrawn by anyone), and chose to ship the
+whole decision-workflow unit next: the settled forwarding design (architect as a
+NEW role and countersign authority; no chain until an architect exists;
+self-countersign is two explicit recorded acts; a disagreeing architect may
+reject back OR forward on; forward authority is the holder + the PMC), an
+attributable `decisions.withdraw` command (reason required, terminal `withdrawn`
+state kept as register history, removed from the client's pending surfaces —
+never a silent delete), and a no-approval issue type (a record with an approver
+of NONE — filed, visible, approvable by nobody because nothing is being
+decided).
 
-**Task 4's plan shipped WITH this flip in ONE diff** — the same-tree pattern
-PR #331 proved and the `phase_plan` CI pin enforces (the pin's contract: any
-state that schedules work names a plan file that resolves in this tree).
-Implementation follows the plan's §F staging: one unit per PR, 4a first,
-each within the standard review budget.
+**Where task 4's plan lives:** its FIRST PR ships the architecture plan document
+and the STATUS flip to `task: 4 / task_state: in_progress / phase_plan: <the new
+plan>` in ONE diff — the same-tree pattern PR #331 proved and the phase_plan CI
+pin enforces at that moment. Until that PR merges, `phase_plan` here correctly
+names the COMPLETED task-2 plan: for a merged task the named plan is history the
+loop may re-read, which is exactly what the pin's own contract says.
 
 The REMAINING gated successors, as data:
 
@@ -67,29 +66,40 @@ no human sign-off (the exact-head gate cleared task 2 autonomously), exactly as
 the Phase-4 "explicit Task-1 GO" precedent recorded scope authority in STATUS
 while the correction loop ran unattended.
 
-**Task 2's history, compactly:** nested locations (the structural half of the
-space work) merged as PR #333; the `room` → `space` rename was split OUT of that
-unit after five review rounds put seventeen of twenty findings in the rename
-alone, and `docs/reviews/pr-330-convergence.md` records what those rounds
-established so it is not rediscovered. The rename waits on the owner's go,
-behind this task — the gated table above is the machine record.
+**Task 2 is NESTED LOCATIONS — the structural half of the space work.** A live
+project reads `ZONE site > ROOM Excavation`, because the middle level is
+effectively mandatory and site-level work had nowhere else to go. The fix is that
+a location may nest (5 levels) and an `element` may hang directly off a `zone`, so
+a partial zone — a wing, a pour segment — has a home and no pseudo-container is
+required. The plan is `docs/superpowers/plans/2026-08-12-nested-locations.md`, and
+it ships WITH this handoff so the runner never reads a `phase_plan` it cannot open.
+
+**The `room` → `space` RENAME IS DELIBERATELY NOT IN THIS TASK.** The two were
+planned as one unit; five review rounds produced twenty findings, SEVENTEEN of them
+in the rename — template payloads parsed with a throwing `.parse()`, four code
+sites comparing against the literal kind (one of which stops guarding *silently*),
+two independently deployed applications with no ordering guarantee, browser tabs
+that outlive any deploy, seed constants that reinsert the old value after a
+migration, and a picker that finds the created node by matching the kind it sent.
+None of it touches the tree rules. Bundling them meant a small, self-contained
+structural fix could not land until the whole changeover was solved. The rename
+gets its own plan and its own review unit; `docs/reviews/pr-330-convergence.md`
+records what those rounds established so it is not rediscovered.
 
 **`work_item: none` with `task_state: in_progress` is deliberate.**
 `autonomous-status-state.test.mjs` pins two rules against this file: `work_item`
 is consulted ONLY from `task_state: merged`, and a `merged` block must CLEAR it.
 So an `in_progress` block that names a `work_item` silently resolves to the bare
 parent task and discards the named unit. With `work_item: none` the resolver
-returns `task:4`, which is this task.
+returns `task:2`, which is this task.
 
-**Nothing here waits on a human.** The owner's SCOPE decisions are recorded (the
-2026-08-13 scheduling and the forward-authority amendment); the review loop
-needs no human sign-off. Task 4's units ship additive, diagnostic-first
-migrations only, and the plan's §F pre-declares each unit's budget and split
-line.
+**Nothing here waits on a human.** The structural work has no schema rename, no
+data migration, no cross-application deploy ordering and no client compatibility
+window — the API simply accepts a strictly wider set of trees than before, so
+every existing client keeps working unchanged.
 
-**How `next_task` values are spelled (the convention — the CURRENT value is the
-sentinel `none`: task 4 is in progress and nothing is scheduled beyond it; the
-convention governs any future NAMED value).** `TASK_REFERENCE` in `scripts/review-efficiency.mjs`
+**How `next_task` values are spelled (the convention, anchored to the CURRENT
+value `phase-6-task-4`).** `TASK_REFERENCE` in `scripts/review-efficiency.mjs`
 is an ALLOWLIST — `phase-<n>-task-<id>` or `phase-<n>-planning` — deliberately
 chosen over the blocklist it replaced. A value outside it (the historical
 near-miss was `phase-6-unit-6.1b`) is invisible until the exact moment it
@@ -169,7 +179,7 @@ orgs-owned `ExternalParty` with its same-org seals, the `ProjectParty` associati
 and its per-origin source tables, the reconciliation command, the capability-name
 reservation; §E the frozen `promotedOrgId` seam; §F the tenancy standard. It plans
 unit **6.1** (which WAS `next_task` at that handoff; unit 6.1a is merged, 6.1b is
-CLOSED-HELD — the CURRENT scheduling truth is the Now block's alone).
+CLOSED-HELD — the CURRENT `next_task` is the Now block's alone: `phase-6-task-4`).
 
 **Phase 6 planning is TWO units and the second is not written.** The BOUNDARY plan
 — §B collaborator principal and resolver, §C scope vocabulary, §D closed set and
