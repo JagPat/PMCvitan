@@ -15,7 +15,8 @@ flip landing as the immediate tiny follow-up PR.
 | `2932234` | round-2 batch, both deliveries folded | 10 (3 P1, 7 P2) | corrected on `e33c5ac` |
 | `e33c5ac` | round-3 batch | the GATE, not Codex: `convergence_required` — the cap's deferral owed | the two-step executed on `4f97dc5` |
 | `4f97dc5` | STATUS reverted + the deferral trailer | 5 (2 P1, 3 P2) — delivered 45s AFTER the orchestrator's two-attempt timeout marked the head `blocked`; the review is real and is answered, the timeout artifact resets with the next push | corrected on `ac164c5` |
-| `ac164c5` | round-4 batch | 6 (1 P1, 5 P2) — the review lifecycle reports the head LIMIT (5 of 5) and advises a split | the SPLIT, on this head |
+| `ac164c5` | round-4 batch | 6 (1 P1, 5 P2) — the review lifecycle reports the head LIMIT (5 of 5) and advises a split | the SPLIT, on `f87be65` |
+| `f87be65` | the SPLIT: frame + 4a only | 4 (1 P1, 3 P2) — three on the 4a design, one on the deferral mechanics | corrected on this head |
 
 `eda4127` (the first-ten correction) was pushed between the two deliveries and
 SUPERSEDED before receiving any verdict of its own — the second delivery
@@ -231,10 +232,30 @@ plan unit.** The superseded 4b–4d prose remains readable at head `ac164c5`.
 
 **The deferral ledger, post-split.** 4a's questions are the plan's P1–P14, each
 with its red site, executed at 4a's own staged baseline. The 4b–4d questions —
-all of rounds 1–5's findings on those units, including the six above — bind the
-4b–4d plan unit, whose review stop is equally inside `phase-6-task-4` (the
-trailer's target). Probe tables for 4b–4d ship WITH that plan; the superseded
-draft tables (P15–P36) at `ac164c5` are its starting material. The binding, by round-3 finding (rounds 1–2 bind identically
+all of rounds 1–5's findings on those units, including the six above — bind
+NAMED probes P15–P42, listed one-per-question in the plan's §E (Codex, round 6:
+a deferred question binds to a probe the runner can execute, never to a future
+promise); the 4b–4d plan unit elaborates each probe's red site and staging, and
+its review stop is equally inside `phase-6-task-4` (the trailer's target).
+
+## Round 6 — the narrowed diff, and the guard that crossed a boundary
+
+Four findings on the split head (1 P1, 3 P2), three on the shipped 4a design
+and one on the deferral mechanics — all corrected on this head:
+
+1. The round-4 send-time guard would have had the PLATFORM relay reading a
+   decisions table. Inverted: the push intent carries a platform-owned SUBJECT
+   key, and the WITHDRAW TRANSACTION cancels its own decision's pending pushes
+   through a narrow platform-owned operation — each module touches only its own
+   tables (P10).
+2. (P1) Deferred questions must bind to probes the runner can EXECUTE — the
+   4b–4d probes are now NAMED in this plan's §E (P15–P42), one per question;
+   the future plan elaborates, it does not invent.
+3. Every new column joins the enum value in the retry-safe form
+   (`ADD COLUMN IF NOT EXISTS`) — a partial deploy completes on re-run.
+4. `approve` validates `prior ∈ {pending, change}` BEFORE its CAS, so a stale
+   approval replayed against a withdrawn decision is a deliberate 409 with no
+   register side effects, never a raw trigger failure mid-write (P3). The binding, by round-3 finding (rounds 1–2 bind identically
 through their sections): the holder-mutation seal → P34; provisional approvals
 as provenance → P31 (the `finalized` CHECK-pinned composite, hostile inserts);
 `withdrawChange` on disagreement requests → P33; open-state-only forwards →
@@ -247,14 +268,16 @@ own exact-head review stops, which fail closed exactly like this one.
 
 ## Status
 
-Fifty-four findings across five finding-bearing heads (13 + 20 + 10 + 5 + 6;
-round 2 doubled by a delivery artifact). The 4a design absorbed rounds 1–3 and
-has been finding-free since; rounds 4–5 landed entirely on the 4b–4d prose, and
-at the five-head limit the unit SPLIT along that seam: this PR ships the
-programme frame + the implementation-ready 4a design + this audit, the STATUS
-flip follows as the immediate tiny PR, and the 4b–4d design ships in its own
-plan unit carrying every recorded obligation. Nothing is dismissed — the
-deferral trailer stands, and every open question is bound either to a 4a probe
-in this plan or to the 4b–4d plan's owed tables.
+Fifty-eight findings across six finding-bearing heads (13 + 20 + 10 + 5 + 6 +
+4; round 2 doubled by a delivery artifact). The 4a design absorbed rounds 1–3,
+stayed clean through 4–5, and took three surgical corrections in round 6 (the
+boundary-respecting push cancellation, the retry-safe columns, the service-
+level withdrawn refusal in `approve`); rounds 4–5 landed entirely on the 4b–4d
+prose and at the five-head limit the unit SPLIT along that seam. This PR ships
+the programme frame + the implementation-ready 4a design + this audit; the
+STATUS flip follows as the immediate tiny PR; the 4b–4d design ships in its own
+plan unit. Nothing is dismissed — the deferral trailer stands, and every open
+question is bound to a NAMED probe: P1–P14 in this plan for 4a, P15–P42 listed
+in §E for 4b–4d, each elaborated and executed at its unit's own review stop.
 
 Review-Convergence: complete

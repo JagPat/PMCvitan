@@ -111,6 +111,16 @@ decision that reads `pending` has never carried an approval. Refusals:
 - `approved` or `change` → 409 naming `requestChange` as the honest path — these
   carry attributable approvals the register must keep authoritative.
 
+**And the NEIGHBOURING commands learn the new value at the SERVICE, not from
+the trigger** (Codex, round 6): today's `approve` takes the row's CURRENT
+status as its CAS source, so a stale client replaying an approval against a
+now-withdrawn decision would drive a `withdrawn → approved` update into the
+terminal trigger — a raw database error mid-write instead of a refusal. The
+approve path validates `prior ∈ {pending, change}` BEFORE the CAS and returns
+a deliberate 409 for a withdrawn row, with NO approval revision, register
+event, or notice side effect — probed by the open-pending → withdraw →
+stale-approve-replay ordering (P3).
+
 Belt-and-braces, the transaction also asserts no `DecisionApprovalRevision` rows
 exist for the id, and the DB seal (point 6) makes the combination unrepresentable.
 
@@ -147,7 +157,10 @@ right that it is not history, it is a live false instruction: a client bell
 still saying "awaiting approval" for a decision every other surface has removed
 tells the client to approve something they can no longer open). Notices are
 DERIVED communication artifacts with no decision FK today, so 4a adds a nullable
-`Notification.decisionId` stamp (additive; the decision-notice writers set it)
+`Notification.decisionId` stamp (additive, in the retry-safe
+`ADD COLUMN IF NOT EXISTS` form like every column and enum value this plan
+adds — Codex, round 6: a deploy that aborts on a later trigger must re-run past
+the already-added column; the decision-notice writers set it)
 and the withdraw transaction DELETES the pending notices stamped with that
 decision — the `DecisionEvent` register, not the bell, is the history. A
 LEGACY unstamped pending notice (the owner's live case predates the stamp) is
@@ -208,11 +221,18 @@ set the precedent for lifecycle corrections). **And the withdraw must outrun the
 QUEUED past** (Codex, round 4): a committed `decision.published` push intent the
 relay has not yet delivered survives the withdrawal in the durable outbox, so a
 lagging or restarted relay would tell the client "awaiting your approval" about
-a decision every surface has since hidden. The pending-approval push therefore
-gains a SEND-TIME guard: at claim time the dispatcher re-derives that the
-decision is STILL published-and-pending, and a stale intent is dropped with the
-drop recorded (never silently) — probed by the commit-publish → lag → withdraw
-→ relay-claims ordering (P10). The catalog chain then continues: **the coverage
+a decision every surface has since hidden. **The guard lives in the DOMAIN, not
+the platform relay** (Codex, round 6 — "the dispatcher re-derives" would have
+meant the platform outbox synchronously reading a decisions table, a module-
+boundary violation): the push intent gains an indexed SUBJECT key at emission
+(the decision id, platform-owned column, set by the emitting module), and the
+WITHDRAW TRANSACTION — which owns the knowledge of when — cancels the still-
+pending `decision.published` push intents for that subject through a narrow
+platform-owned operation (cancelled and recorded, never deleted; platform
+mutates only its own table; decisions never reaches into the relay and the
+relay never reads decisions). A relay claiming after the commit finds the
+intent cancelled — probed by the commit-publish → lag → withdraw →
+relay-claims ordering (P10). The catalog chain then continues: **the coverage
 re-seal** — `effectCoverageVersion()` changes with any new key and is pinned at
 `outbox.bootstrap.ts:115`, `outbox-operations.service.ts:143` and
 `external-effects.test.ts:47-74`, so the re-seal is explicit in the diff, never
@@ -261,9 +281,14 @@ migration SQL is not a constraint):
    other. The same fact the state machine proves, sealed where the data lives,
    both ways (P8).
 
-The migration is additive and diagnostic-first in the house pattern: it ABORTS
-with a sample if any existing row already violates what it seals (none can — the
-status is new), and legacy databases upgrade row-free.
+The migration is additive and diagnostic-first in the house pattern: every
+statement in the retry-safe form (`ADD VALUE IF NOT EXISTS`,
+`ADD COLUMN IF NOT EXISTS` for `withdrawnAt`/`withdrawnById`/`withdrawReason`
+and `Notification.decisionId`, guarded trigger creation — Codex, round 6: a
+deploy that aborts partway must complete on re-run, never fail on its own
+earlier progress); it ABORTS with a sample if any existing row already violates
+what it seals (none can — the status is new), and legacy databases upgrade
+row-free.
 
 ## §B — Units 4b–4d: scope, and where their design now lives
 
@@ -326,26 +351,60 @@ against` names the exact site.
 |---|---|---|
 | P1 | withdraw of a published pending decision lands `withdrawn` + reason + actor; a `DecisionEvent 'withdrawn'` and the appended feed notice exist; keyed replay appends nothing | route absent — `decisions.controller.ts` (404 at the staged baseline) |
 | P2 | a draft is refused 409 | the service guard absent at baseline |
-| P3 | `approved` and `change` decisions are refused 409 naming `requestChange`; the approval register is untouched | the service guard absent at baseline |
+| P3 | `approved` and `change` decisions are refused 409 naming `requestChange`; the approval register is untouched; and the REVERSE ordering — a stale approve replayed against a now-withdrawn decision — is a deliberate 409 from the service (`prior ∈ {pending, change}` validated before the CAS) with no revision, event, or notice side effect | the service guard absent at baseline; approve's CAS sourced from the row's current status driving `withdrawn → approved` into the trigger |
 | P4 | a blank/absent reason is a 400 at the contract | zod schema absent |
 | P5 | client/contractor/engineer/consultant get 403; pmc succeeds; the route-policy identity holds | `ROLE_POLICY['decision.withdraw']` absent |
 | P6 | two concurrent withdraws admit exactly one (CAS 409 for the loser), both orderings under the deterministic barrier | the CAS `count===0` branch |
 | P7 | double publish admits exactly one — publish's new CAS | `decisions.service.ts:147` plain `update` |
 | P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row, a whitespace-only reason (tabs/newlines — the `btrim(x, E' \t\n\x0B\f\r')` CHECK), an UPDATE rewriting `withdrawnAt`/`withdrawnById`/`withdrawReason` on an already-withdrawn row (evidence freeze), a withdraw beside an existing `DecisionApprovalRevision`, AND a `DecisionApprovalRevision` INSERT against a withdrawn decision (the never-approved seal, both directions) | the three triggers absent — hostile SQL accepted at baseline |
 | P9 | `countPending` and the client pending list drop the decision; the client badge clears | asserted against `decisions.query.ts:173-175` fixtures |
-| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported); and a QUEUED `decision.published` push intent claimed AFTER the withdrawal is dropped by the send-time guard with the drop recorded (publish → relay lag → withdraw → claim ordering) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item; the outbox relay delivering the stale approval push |
+| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported); and a QUEUED `decision.published` push intent is found CANCELLED at claim — the withdraw tx cancelled it by subject through the platform-owned operation, recorded (publish → relay lag → withdraw → claim ordering) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item; the outbox relay delivering the stale approval push |
 | P11 | `deriveDecisionReading('withdrawn')` yields `wait` with the honest withdrawn reason, and an activity gated on the decision still refuses to start with that reason | `readiness.ts:154-165` else-branch emits "Awaiting the client's approval" |
 | P12 | `decision.withdrawn` is in the shared catalog, the external-effect catalog re-seal is exact, manifest⇄contract equality holds | `external-effects.test.ts:47-74` / `decisions.contract.test.ts:24-58` RED on the missing entry |
 | P13 | projection `decisions.inbox`: live == projection == rebuild across a withdraw; the rebuild emits zero events | the diagnostic comparables on the new status |
 | P14 | the web outbox op replays exactly once under its persisted key; the register shows WITHDRAWN with reason; the action is absent for non-pmc and for ineligible states | the op-union variant + screen state absent |
 
-### Units 4b–4d
+### Units 4b–4d — the deferred probes, NAMED here
 
-Their probe tables ship WITH their design, in the 4b–4d plan unit — a probe
-without its design decision is a number, not a commitment. The obligations
-those tables must discharge (every finding of rounds 1–5) are enumerated in
-`docs/reviews/pr-335-convergence.md`, and the superseded draft tables
-(P15–P36) remain readable at this PR's head `ac164c5` as starting material.
+The full tables (red sites, staging, orderings) ship WITH the 4b–4d design in
+its plan unit — but the probes themselves are named NOW (Codex, round 6: a
+deferred question must bind to a probe the runner can execute at the stop, not
+to a future promise). Each is a commitment the 4b–4d plan elaborates and its
+implementation runs red-first:
+
+- **4b** — P15 default-decider byte-identity; P16 member-decider authority
+  through the widened route ceiling + service narrowing; P17 decider CHECKs,
+  cross-project membership FK, holder columns write-once; P18 `recorded` born
+  terminal with no pending surface, notice, or push; P19 the zero-option
+  record files through the FULL product path; P20 a DRAFT record gates `wait`,
+  a published one `na`; P21 the targeted push reaches the decider and ONLY the
+  decider (user-level target); P22 the WHOLE audience follows the decider —
+  bell notice, reapproval surfaces, viewer-scoped `countPending`.
+- **4c** — P23 consultation round-trip, append-only, non-blank evidence; P24
+  consultation moves no status and no gate verdict; P25 visibility widening
+  bounded by eligibility (published-only, open-status, at request AND
+  response; a withdrawn title/reason never reachable); P26 consultation
+  pushes exact, including the org-admin requester; P27 the response's child
+  keys make a foreign decision's option unrepresentable.
+- **4d** — P28 the role in every mirror; P29 no-active-architect
+  byte-identity; P29b removed-architect deactivation + the stranded-decision
+  resolution; P30 forward authority, ACTIVE target, eligible states only
+  (`awaiting_countersign` excluded from the generic command); P31 the
+  `awaiting_countersign` lifecycle with the `finalized` register discipline
+  and its own emission; P32 self-countersign as two attributed acts; P33 both
+  disagreement outcomes through the open `ChangeRequest` (origin, impacts,
+  the closed `withdrawChange` escape, the evidence freeze); P34 the forward
+  chain's attribution, event, and the holder-mutation-only-with-forward seal;
+  P35 the forward-vs-approve barrier; P36 the switch-writers barrier.
+- **Round-5 obligations** — P37 `approved` DB-sealed behind countersign
+  finality (no transition out of `awaiting_countersign` into `approved`
+  without the finalized fact); P38 the queued-push cancellation/eligibility
+  guard generalized to EVERY targeted decision push; P39 removing a
+  current-holder membership refused (escape: withdraw-and-reissue in 4b,
+  forward from 4d); P40 claim-time holder match on targeted pending pushes;
+  P41 consultation eligibility checked UNDER the decision row lock, with the
+  request-vs-withdraw barrier; P42 the finality candidate key derived over
+  the ACTUAL Phase-3 provenance columns.
 
 Ordering note: P7 sits inside 4a deliberately — the publish CAS is 4a's
 neighbour-repair, and the race probe is worthless while withdraw (the reason
