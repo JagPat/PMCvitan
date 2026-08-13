@@ -715,6 +715,24 @@ test('a maintenance PR carrying a NAMED handoff from main does not suppress its 
   assert.equal(proposing, null, 'a genuine handoff PR editing STATUS must still be recognized as the correction in flight');
 });
 
+// FINDING (#334 P2, round 5) — `editsStatus` is a FILE-level fact, and the file holds more
+// than the Now block. A maintenance PR that edits only a HISTORICAL paragraph of
+// docs/STATUS.md gets editsStatus: true while its Now block still equals the default
+// branch's — it proposes NO transition, and calling it the correction in flight suppresses
+// the very drift nudge the shepherd owes the live PR. Proposing takes BOTH halves: the file
+// in the diff AND the landing fields differing from the default branch's.
+test('a PR editing only a historical STATUS paragraph does not suppress its own drift', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const namedHandoff = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'phase-6-task-4', blocking_directive: 'none' };
+  const body = buildDriftHandoff({
+    statusNow: namedHandoff, // the default branch ALREADY records this landing
+    openPullRequests: [{ number: 345, headRefName: 'claude/docs-touchup', isDraft: true }],
+    // the head edits STATUS (a narrative paragraph) but its Now block equals main's
+    headStatuses: [{ number: 345, now: namedHandoff, editsStatus: true }],
+  });
+  assert.ok(body, "a historical-paragraph STATUS edit was mistaken for a landing proposal — the live PR's open_pr drift went unreported");
+});
+
 // FINDING (#331 head 35d9532, P1) — STATUS named a `phase_plan` that existed only on a
 // DIFFERENT unmerged branch. The runner's first act after parsing STATUS is opening that
 // file (docs/AUTONOMOUS_LOOP.md), so a dangling reference is the documented stall mode:

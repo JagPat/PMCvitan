@@ -139,6 +139,17 @@ export function isNoneFlipShape(now) {
 }
 const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cleared']);
 
+/** The Now-block fields a landing PROPOSES (#334 round 5). A head whose landing fields
+ *  EQUAL the default branch's is carrying main's state, whatever else its diff touches —
+ *  editing a historical STATUS paragraph puts the file in the diff without proposing a
+ *  transition. Compared field-by-field, trimmed, so cosmetic whitespace never counts. */
+const LANDING_FIELDS = ['phase', 'task', 'task_state', 'work_item', 'open_pr', 'next_task'];
+function landingFieldsDiffer(headNow, defaultBranchNow) {
+  return LANDING_FIELDS.some(
+    (field) => String(headNow?.[field] ?? '').trim() !== String(defaultBranchNow?.[field] ?? '').trim(),
+  );
+}
+
 // Drift is a property of the STATUS that will exist on the default branch, but a
 // correction already in flight on an open PR head is NOT drift — the default
 // branch legitimately lags until that PR merges. Consult EVERY open head, not
@@ -167,19 +178,24 @@ export function detectStatusDriftAcrossHeads({
     // So: exclude this head's own PR from the live set and re-ask. Nothing else open can be in
     // drift against it, or the head is not a correction — it is one of the things that is wrong.
     //
-    // TWO landing shapes qualify (#334 rounds 3–4), and the PROPOSES-vs-CARRIES test
+    // TWO landing shapes qualify (#334 rounds 3–5), and the PROPOSES-vs-CARRIES test
     // applies to BOTH — the distinguisher belongs to the CLASS, not to whichever shape
     // last bit us. A HANDOFF names its next task; a NONE-FLIP is the deliberate
     // interregnum. Either one, read from a head's Now block, is IDENTICAL to a
     // maintenance PR that merely CARRIES the default branch's terminal state (round 4:
     // with a named handoff already merged on main, every fresh PR's head carries that
-    // exact shape) — so a head qualifies only when its diff actually EDITS
-    // docs/STATUS.md (`entry.editsStatus`). Unknown (null/undefined) counts as editing:
-    // wrongly suppressing a maintenance PR's drift costs one missed shepherd nudge,
-    // while wrongly advising a landing head to point `open_pr` at itself plants the
-    // #303 trap in the merged record. Fail toward the recoverable mistake.
+    // exact shape) — so a head qualifies only when it actually PROPOSES the state, which
+    // takes BOTH halves (round 5): its diff EDITS docs/STATUS.md (`entry.editsStatus` —
+    // a file-level fact) AND its Now block's LANDING FIELDS differ from the default
+    // branch's (a PR that edits only a historical STATUS paragraph carries the file in
+    // its diff while proposing nothing). `editsStatus` unknown (null/undefined) counts
+    // as editing: wrongly suppressing a maintenance PR's drift costs one missed
+    // shepherd nudge, while wrongly advising a landing head to point `open_pr` at
+    // itself plants the #303 trap in the merged record. Fail toward the recoverable
+    // mistake.
     const qualifies = (isHandoffShape(entry.now) || isNoneFlipShape(entry.now))
-      && entry.editsStatus !== false;
+      && entry.editsStatus !== false
+      && landingFieldsDiffer(entry.now, defaultBranchNow);
     if (!qualifies) return false;
     const others = (openPullRequests ?? []).filter(
       (pullRequest) => String(pullRequest.number) !== String(entry.number),

@@ -59,7 +59,7 @@ The REMAINING gated successors, as data:
 | gated successor | opening event | resume action |
 |---|---|---|
 | `room` → `space` rename plan | an explicit owner go (still not given — the owner re-sequenced it BEHIND task 4 on 2026-08-13) | write the rename plan from `docs/reviews/pr-330-convergence.md`'s catalogue |
-| unit 6.1b (PR #329, held) | task 4 and the rename clearing (owner sequencing) | rebase `claude/phase6-task1b`, resume the held PR |
+| unit 6.1b (PR #329, CLOSED-HELD — closed so the hold is machine state: an open autonomous PR would misdirect the continuation to "shepherd pr:329"; the branch and review lineage are preserved, the hold record is on the PR) | task 4 and the rename clearing (owner sequencing) | reopen #329 (or re-cut from `claude/phase6-task1b` rebased onto current `main`) |
 
 An owner SCOPE decision is not a technical-approval gate: the review loop needs
 no human sign-off (the exact-head gate cleared task 2 autonomously), exactly as

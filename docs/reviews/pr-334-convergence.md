@@ -7,7 +7,8 @@ Owed at the second finding-bearing head.
 | `de83801` | the flip: merged + the owner-gated interregnum (`next_task: none`) | 3 (P2) | corrected on `e8d4406`/`9fad0cc` |
 | `9fad0cc` | the owner schedules the decision-workflow rework; interregnum → real handoff | 3 (P2) | corrected on `784a113` |
 | `784a113` | round-2 corrections + this packet | 3 (P2) | corrected on `b276e0c` |
-| `b276e0c` | round-3 corrections (`editsStatus` on the none-flip only) | 1 (P2) | corrected on this head |
+| `b276e0c` | round-3 corrections (`editsStatus` on the none-flip only) | 1 (P2) | corrected on `d27c209` |
+| `d27c209` | round-4 correction (`editsStatus` on both shapes, file-level) | 2 (P2) | corrected on this head |
 
 Six findings on a STATUS flip. The root is ONE mistake made three ways, and it is this
 loop's oldest rule pointed at its own operator: **a state value has READERS, and I shipped
@@ -93,6 +94,37 @@ always). This is the packet's own round-3 sentence — "fixed the sentinel's rea
 time" — recommitted one abstraction level up: the fix itself was applied one SHAPE at a
 time. A guard on a classification belongs on the classification, not on its most recent
 counterexample.
+
+## Round 5 — the discriminator's last hole, and the hold made machine-real
+
+This head reaches the ADVISORY five-head limit, so both findings were weighed before being
+taken, and both are terminal-shaped rather than another turn of the crank:
+
+- **`editsStatus` is a FILE-level fact, and the file holds more than the Now block.** A PR
+  editing only a historical STATUS paragraph carries the file in its diff while proposing
+  no transition — round 4's gate blessed it. Proposing now takes BOTH halves: the file in
+  the diff AND the Now block's LANDING FIELDS (`phase`/`task`/`task_state`/`work_item`/
+  `open_pr`/`next_task`) differing from the default branch's — data already in hand, no
+  new fetches. Pinned red-first. The residual honestly stated: a stale-base PR that ALSO
+  edits STATUS narrative can still carry old landing fields that differ; both halves must
+  now be true simultaneously, which shrinks that window to a corner none of the loop's
+  real PR shapes occupy.
+- **The 6.1b hold stops being prose.** The successor table said "PR #329, held" while the
+  selector counts every open `claude/**` PR as live — the moment this flip merges, the
+  continuation would publish "shepherd pr:329" instead of starting task 4, and only owner
+  sequencing (a person) stood between. #329 is now CLOSED-HELD: the hold record, resume
+  conditions and reopen path are on the PR itself; the branch and review lineage survive;
+  and a closed PR is outside every selector by construction — the hold is state, not an
+  instruction to remember.
+
+**On the limit:** five heads, twelve findings, trajectory 3→3→3→1→2, every finding P2 and
+every fix narrowing the same two surfaces (the drift discriminator; the STATUS artifact's
+self-consistency). The audit's root holds across all five rounds — control-plane state is
+an interface whose readers must be enumerated at once — and the discriminator now states
+its full truth table (shape × editsStatus × landing-fields) with each cell pinned. If the
+next review still finds, the routing stays what the loop defines: draft → Auto-fix, one
+batched head, this packet extended — and the lifecycle observation in the state comment is
+the standing signal the owner reads if they choose to intervene on the trend.
 
 ## The rule this unit adds to the working set
 
