@@ -691,6 +691,30 @@ test('a none-flip that EDITS STATUS is recognized as the correction in flight', 
   assert.equal(unknown, null, 'an UNKNOWN editsStatus must fail toward suppression (the recoverable mistake), not toward the #303 trap');
 });
 
+// FINDING (#334 P2, round 4) — the PROPOSES-vs-CARRIES test belongs to the CLASS, not to the
+// shape that last bit us. With a NAMED handoff already merged on the default branch (merged /
+// none / none / next_task: phase-6-task-4), every fresh maintenance PR's head CARRIES exactly
+// the handoff shape — round 3 gated only the none-flip, so the carried named handoff still
+// qualified as "the correction in flight", self-exclusion left no drift, and the shepherd
+// never corrected `open_pr: none` for the live PR.
+test('a maintenance PR carrying a NAMED handoff from main does not suppress its own drift', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const namedHandoff = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'phase-6-task-4', blocking_directive: 'none' };
+  const carried = buildDriftHandoff({
+    statusNow: namedHandoff,
+    openPullRequests: [{ number: 343, headRefName: 'claude/maintenance-upkeep-2', isDraft: true }],
+    headStatuses: [{ number: 343, now: namedHandoff, editsStatus: false }],
+  });
+  assert.ok(carried, "a maintenance PR carrying main's named handoff was mistaken for the correction in flight — its open_pr drift went unreported");
+  // …while a REAL handoff PR (its diff edits STATUS) still suppresses, as always.
+  const proposing = buildDriftHandoff({
+    statusNow: { ...namedHandoff, task_state: 'in_review' },
+    openPullRequests: [{ number: 344, headRefName: 'claude/status-handoff', isDraft: true }],
+    headStatuses: [{ number: 344, now: namedHandoff, editsStatus: true }],
+  });
+  assert.equal(proposing, null, 'a genuine handoff PR editing STATUS must still be recognized as the correction in flight');
+});
+
 // FINDING (#331 head 35d9532, P1) — STATUS named a `phase_plan` that existed only on a
 // DIFFERENT unmerged branch. The runner's first act after parsing STATUS is opening that
 // file (docs/AUTONOMOUS_LOOP.md), so a dangling reference is the documented stall mode:

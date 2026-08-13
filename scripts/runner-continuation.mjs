@@ -167,17 +167,19 @@ export function detectStatusDriftAcrossHeads({
     // So: exclude this head's own PR from the live set and re-ask. Nothing else open can be in
     // drift against it, or the head is not a correction — it is one of the things that is wrong.
     //
-    // TWO landing shapes qualify (#334 round 3). A HANDOFF names its next task and is
-    // recognizable from the Now block alone. A NONE-FLIP (the deliberate interregnum) is
-    // IDENTICAL, from the Now block, to a maintenance PR that merely CARRIES main's terminal
-    // state — so it qualifies only when the head actually EDITS docs/STATUS.md
-    // (`entry.editsStatus`): a flip PROPOSES the state, a maintenance PR inherits it, and only
-    // the proposal is a correction in flight. `editsStatus` unknown (null/undefined) counts as
-    // editing: wrongly suppressing a maintenance PR's drift costs one missed shepherd nudge,
-    // while wrongly advising a none-flip to point `open_pr` at itself plants the #303 trap in
-    // the merged record. Fail toward the recoverable mistake.
-    const qualifies = isHandoffShape(entry.now)
-      || (isNoneFlipShape(entry.now) && entry.editsStatus !== false);
+    // TWO landing shapes qualify (#334 rounds 3–4), and the PROPOSES-vs-CARRIES test
+    // applies to BOTH — the distinguisher belongs to the CLASS, not to whichever shape
+    // last bit us. A HANDOFF names its next task; a NONE-FLIP is the deliberate
+    // interregnum. Either one, read from a head's Now block, is IDENTICAL to a
+    // maintenance PR that merely CARRIES the default branch's terminal state (round 4:
+    // with a named handoff already merged on main, every fresh PR's head carries that
+    // exact shape) — so a head qualifies only when its diff actually EDITS
+    // docs/STATUS.md (`entry.editsStatus`). Unknown (null/undefined) counts as editing:
+    // wrongly suppressing a maintenance PR's drift costs one missed shepherd nudge,
+    // while wrongly advising a landing head to point `open_pr` at itself plants the
+    // #303 trap in the merged record. Fail toward the recoverable mistake.
+    const qualifies = (isHandoffShape(entry.now) || isNoneFlipShape(entry.now))
+      && entry.editsStatus !== false;
     if (!qualifies) return false;
     const others = (openPullRequests ?? []).filter(
       (pullRequest) => String(pullRequest.number) !== String(entry.number),

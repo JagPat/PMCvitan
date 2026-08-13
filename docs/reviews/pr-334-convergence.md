@@ -6,7 +6,8 @@ Owed at the second finding-bearing head.
 |---|---|---|---|
 | `de83801` | the flip: merged + the owner-gated interregnum (`next_task: none`) | 3 (P2) | corrected on `e8d4406`/`9fad0cc` |
 | `9fad0cc` | the owner schedules the decision-workflow rework; interregnum → real handoff | 3 (P2) | corrected on `784a113` |
-| `784a113` | round-2 corrections + this packet | 3 (P2) | corrected on this head |
+| `784a113` | round-2 corrections + this packet | 3 (P2) | corrected on `b276e0c` |
+| `b276e0c` | round-3 corrections (`editsStatus` on the none-flip only) | 1 (P2) | corrected on this head |
 
 Six findings on a STATUS flip. The root is ONE mistake made three ways, and it is this
 loop's oldest rule pointed at its own operator: **a state value has READERS, and I shipped
@@ -76,6 +77,22 @@ Round 1 fixed the sentinel's readers ONE AT A TIME, and round 3 is the bill for 
   `phase-6-task-1b` — the previous handoff's truth contradicting the current Now block.
   Historicalized: the convention paragraph now anchors to the CURRENT value and records
   the 6.1b spelling as the slug for when its turn returns.
+
+## Round 4 — the distinguisher belonged to the class, not the instance
+
+Round 3 introduced the right distinction (a head PROPOSES a terminal state only when its
+diff edits STATUS; otherwise it merely CARRIES it) and then applied it to exactly the shape
+that had just bitten — the none-flip — leaving the NAMED handoff ungated. With a named
+handoff merged on the default branch (`next_task: phase-6-task-4`, precisely the state this
+PR lands), every fresh maintenance PR's head carries that exact shape, qualifies as "the
+correction in flight", and self-exclusion then leaves no drift to report — the shepherd
+never corrects `open_pr: none` for the live PR. The fix moves `editsStatus !== false`
+OUTSIDE the shape disjunction so it gates both shapes; both directions pinned red-first
+(carried named handoff → reported; a genuine STATUS-editing handoff PR → suppressed, as
+always). This is the packet's own round-3 sentence — "fixed the sentinel's readers one at a
+time" — recommitted one abstraction level up: the fix itself was applied one SHAPE at a
+time. A guard on a classification belongs on the classification, not on its most recent
+counterexample.
 
 ## The rule this unit adds to the working set
 
