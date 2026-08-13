@@ -59,7 +59,22 @@ export function validateInitializationGraph(label: string, graph: Initialization
     nodesBySource.set(node.source, nodes);
   }
 
-  const allowedParent: Record<NodeKind, NodeKind | null> = { zone: null, room: 'zone', element: 'room' };
+  // The tree RULE, not the old fixed map (nested locations, phase-6-task-2): a zone is
+  // top-level only, a room sits under a zone or another room, an element is a LEAF under
+  // a room or directly under a zone — the SAME rule the node endpoints enforce, because
+  // initialization is the second write path and a module or copied project must not be
+  // able to instantiate a chain the endpoints would refuse.
+  const allowedParent: Record<NodeKind, ReadonlyArray<NodeKind | null>> = {
+    zone: [null],
+    room: ['zone', 'room'],
+    element: ['room', 'zone'],
+  };
+  // The MINIMUM depth a source's roots can land at: a plain source starts at level 1, a
+  // zone graft's roots at 2, a room graft's roots at 3 (the shallowest possible room is
+  // level 2). The static bound refuses what can NEVER fit; the write path re-derives the
+  // ACTUAL graft depth, which for a nested room may be deeper.
+  const ROOT_OFFSET: Record<'zone' | 'room', number> = { zone: 1, room: 2 };
+  const MAX_TREE_DEPTH = 5;
   for (const [source, nodes] of nodesBySource) {
     for (const node of nodes.values()) {
       if (node.parentKey === node.key) invalid(label, source, `node "${node.key}" cannot parent itself`);
@@ -78,11 +93,26 @@ export function validateInitializationGraph(label: string, graph: Initialization
     };
     for (const node of nodes.values()) visit(node);
 
+    const depths = new Map<string, number>();
+    const depthFor = (node: InitializationNode): number => {
+      const known = depths.get(node.key);
+      if (known !== undefined) return known;
+      const parent = node.parentKey ? nodes.get(node.parentKey) : undefined;
+      const rootOffset = node.rootParentKind ? ROOT_OFFSET[node.rootParentKind as 'zone' | 'room'] ?? 0 : 0;
+      const depth = parent ? depthFor(parent) + 1 : rootOffset + 1;
+      depths.set(node.key, depth);
+      return depth;
+    };
+
     for (const node of nodes.values()) {
       const parentKind = (node.parentKey ? nodes.get(node.parentKey)?.kind : node.rootParentKind) ?? null;
-      if (allowedParent[node.kind] !== parentKind) {
+      if (!allowedParent[node.kind].includes(parentKind)) {
         const parentLabel = node.parentKey ? `parent "${node.parentKey}"` : 'root';
         invalid(label, source, `node "${node.key}" has invalid ${parentLabel} kind for ${node.kind}`);
+      }
+      const depth = depthFor(node);
+      if (depth > MAX_TREE_DEPTH) {
+        invalid(label, source, `node "${node.key}" would land at level ${depth} — locations nest to ${MAX_TREE_DEPTH} levels`);
       }
     }
   }

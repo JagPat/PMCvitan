@@ -61,10 +61,70 @@ describe('validateInitializationGraph', () => {
     expectInvalid(graph, 'module Cycle copy 1', 'a', 'cycle');
   });
 
-  it('rejects invalid parent kind', () => {
+  // Nested locations (phase-6-task-2): the rule replaces the fixed map — a room may sit
+  // under a room, an element under a room OR directly under a zone; an element stays a
+  // LEAF and a zone stays top-level-only; depth is bounded at 5 with the level stated.
+  it('accepts an element directly under a zone', () => {
     const graph = validGraph();
     graph.nodes[2]!.parentKey = 'zone';
-    expectInvalid(graph, 'module Villa copy 1', 'door', 'zone');
+    expect(() => validateInitializationGraph('project initialization', graph)).not.toThrow();
+  });
+
+  it('accepts a room nested under another room', () => {
+    const graph = validGraph();
+    graph.nodes.splice(2, 0, { source: 'module Villa copy 1', key: 'pour', parentKey: 'room', kind: 'room' });
+    graph.nodes[3]!.parentKey = 'pour';
+    expect(() => validateInitializationGraph('project initialization', graph)).not.toThrow();
+  });
+
+  it('rejects a room under an element (an element is a leaf)', () => {
+    const graph = validGraph();
+    graph.nodes.push({ source: 'module Villa copy 1', key: 'sub', parentKey: 'door', kind: 'room' });
+    expectInvalid(graph, 'module Villa copy 1', 'sub', 'door');
+  });
+
+  it('rejects an element under an element (an element is a leaf)', () => {
+    const graph = validGraph();
+    graph.nodes.push({ source: 'module Villa copy 1', key: 'lock', parentKey: 'door', kind: 'element' });
+    expectInvalid(graph, 'module Villa copy 1', 'lock', 'door');
+  });
+
+  it('rejects a zone with a parent', () => {
+    const graph = validGraph();
+    graph.nodes.push({ source: 'module Villa copy 1', key: 'z2', parentKey: 'room', kind: 'zone' });
+    expectInvalid(graph, 'module Villa copy 1', 'z2', 'room');
+  });
+
+  it('accepts five levels and rejects the sixth, with the level stated', () => {
+    const chain = (depth: number): InitializationGraph => ({
+      nodes: [
+        { source: 'module Tower copy 1', key: 'z', parentKey: null, kind: 'zone' },
+        ...Array.from({ length: depth - 1 }, (_, i) => ({
+          source: 'module Tower copy 1',
+          key: `r${i}`,
+          parentKey: i === 0 ? 'z' : `r${i - 1}`,
+          kind: 'room' as const,
+        })),
+      ],
+      phases: [], activities: [], inspections: [],
+    });
+    expect(() => validateInitializationGraph('project initialization', chain(5))).not.toThrow();
+    expectInvalid(chain(6), 'module Tower copy 1', 'level 6', '5 levels');
+  });
+
+  it('counts the graft offset: a zone-anchored source starts its roots at level 2', () => {
+    const graph: InitializationGraph = {
+      nodes: [
+        { source: 'module Wing copy 1', key: 'r0', parentKey: null, kind: 'room', rootParentKind: 'zone' },
+        { source: 'module Wing copy 1', key: 'r1', parentKey: 'r0', kind: 'room' },
+        { source: 'module Wing copy 1', key: 'r2', parentKey: 'r1', kind: 'room' },
+        { source: 'module Wing copy 1', key: 'r3', parentKey: 'r2', kind: 'room' },
+      ],
+      phases: [], activities: [], inspections: [],
+    };
+    expect(() => validateInitializationGraph('project initialization', graph)).not.toThrow(); // levels 2..5
+    graph.nodes.push({ source: 'module Wing copy 1', key: 'r4', parentKey: 'r3', kind: 'room' });
+    expectInvalid(graph, 'module Wing copy 1', 'r4', 'level 6');
   });
 
   it.each([

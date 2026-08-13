@@ -332,12 +332,19 @@ export const createModuleSchema = z
   .refine((v) => !v.fromNodeId || v.fromProject, { message: 'fromNodeId requires fromProject' });
 export type CreateModuleInput = z.infer<typeof createModuleSchema>;
 
-/** One menu pick at Create Project: which module, how many, and (for a room-anchored
- *  module) which zone name to graft under — created if it doesn't exist yet. */
+/** One menu pick at Create Project: which module, how many, and where it grafts.
+ *  A zone-anchored module (room roots) takes `underZone` — a zone NAME, created as a
+ *  draft if it doesn't exist yet. A room-anchored module (element roots, e.g. a saved
+ *  "Main Door") takes EXACTLY ONE of `underRoom` — a room NAME resolved among the rooms
+ *  the copied source or an earlier selection creates (a room cannot be invented without
+ *  its own parent) — or `underZone`, grafting the element directly under that zone (the
+ *  nested-locations decision's new legal edge). The anchor-specific requirements are
+ *  enforced server-side where the module's anchor kind is known. */
 export const moduleSelectionSchema = z.object({
   moduleId: z.string().min(1),
   count: z.number().int().min(1).max(20).default(1),
   underZone: z.string().trim().min(1).optional(),
+  underRoom: z.string().trim().min(1).optional(),
 });
 
 /** Create a named preset (Slice 3): an explicit module selection, or `fromProject` —

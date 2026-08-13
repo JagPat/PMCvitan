@@ -60,6 +60,10 @@ function make(seed: Node[] = [], decisionsByNode: Record<string, number> = {}) {
     project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
+    // phase-6-task-2 — create/move/publish take the per-project tree advisory lock as
+    // their first in-transaction statement; the stub only needs to accept the call.
+    $executeRaw: vi.fn(async () => 0),
+    $queryRaw: vi.fn(async () => []),
     $transaction: vi.fn(async (arg: unknown) =>
       typeof arg === 'function' ? (arg as (tx: unknown) => Promise<unknown>)(prisma) : Promise.all(arg as Promise<unknown>[])),
   } as unknown as PrismaService;
@@ -98,13 +102,31 @@ describe('NodesService.create — hierarchy rules', () => {
     await svc.create('ambli', { name: 'Bed', kind: 'room', parentId: 'z1' }, user); // ok under a zone
   });
 
-  it('requires an element under a room, not a zone', async () => {
+  // Nested locations (phase-6-task-2): an element sits under a room OR directly under a
+  // zone (both accepted), and stays a LEAF — nothing may sit under an element.
+  it('accepts an element under a room AND directly under a zone; an element stays a leaf', async () => {
     const { svc, user } = make([
       { id: 'z1', projectId: 'ambli', parentId: null, name: 'GF', kind: 'zone', order: 0 },
       { id: 'r1', projectId: 'ambli', parentId: 'z1', name: 'Bed', kind: 'room', order: 0 },
+      { id: 'e0', projectId: 'ambli', parentId: 'r1', name: 'Door', kind: 'element', order: 0 },
     ]);
-    await expect(svc.create('ambli', { name: 'Door', kind: 'element', parentId: 'z1' }, user)).rejects.toBeInstanceOf(BadRequestException);
-    await svc.create('ambli', { name: 'Door', kind: 'element', parentId: 'r1' }, user); // ok under a room
+    await svc.create('ambli', { name: 'Gate', kind: 'element', parentId: 'z1' }, user); // ok directly under a zone
+    await svc.create('ambli', { name: 'Lock', kind: 'element', parentId: 'r1' }, user); // ok under a room
+    await expect(svc.create('ambli', { name: 'Sub', kind: 'element', parentId: 'e0' }, user)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(svc.create('ambli', { name: 'SubRoom', kind: 'room', parentId: 'e0' }, user)).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('accepts a room under another room, and refuses a sixth level with the depth stated', async () => {
+    const { svc, user } = make([
+      { id: 'z1', projectId: 'ambli', parentId: null, name: 'GF', kind: 'zone', order: 0 },
+      { id: 'r1', projectId: 'ambli', parentId: 'z1', name: 'Wing', kind: 'room', order: 0 },
+      { id: 'r2', projectId: 'ambli', parentId: 'r1', name: 'Pour', kind: 'room', order: 0 },
+      { id: 'r3', projectId: 'ambli', parentId: 'r2', name: 'Seg', kind: 'room', order: 0 },
+    ]);
+    await svc.create('ambli', { name: 'Deep', kind: 'room', parentId: 'r3' }, user); // level 5 — ok
+    const deep = 'n1'; // the row the stub just minted
+    await expect(svc.create('ambli', { name: 'TooDeep', kind: 'room', parentId: deep }, user))
+      .rejects.toThrow(/level|5 levels/i);
   });
 
   it('rejects a parent from another project', async () => {
@@ -134,14 +156,15 @@ describe('NodesService.remove — delete guard', () => {
 
 describe('NodesService.move — cycle safety', () => {
   it('refuses to move a node under its own descendant', async () => {
+    // Nested rooms make the cycle DIRECTLY reachable (the old kind rule masked it):
+    // r2 sits under r1, and moving r1 under r2 would loop the tree.
     const { svc, user } = make([
       { id: 'z1', projectId: 'ambli', parentId: null, name: 'A', kind: 'zone', order: 0 },
-      { id: 'z2', projectId: 'ambli', parentId: null, name: 'B', kind: 'zone', order: 1 },
       { id: 'r1', projectId: 'ambli', parentId: 'z1', name: 'R', kind: 'room', order: 0 },
+      { id: 'r2', projectId: 'ambli', parentId: 'r1', name: 'R2', kind: 'room', order: 0 },
     ]);
-    // moving room r1 requires a zone parent; z1 is fine, but "under its own descendant" is
-    // exercised via a room→room attempt which the kind rule already blocks
-    await expect(svc.move('ambli', 'r1', { parentId: 'z1' }, user)).resolves.toBeDefined(); // valid reparent to a zone
+    await expect(svc.move('ambli', 'r1', { parentId: 'r2' }, user)).rejects.toThrow(/own descendants/i);
+    await expect(svc.move('ambli', 'r2', { parentId: 'z1' }, user)).resolves.toBeDefined(); // valid reparent
   });
 
   it('rejects reparenting to a wrong-kind parent', async () => {
@@ -149,9 +172,13 @@ describe('NodesService.move — cycle safety', () => {
       { id: 'z1', projectId: 'ambli', parentId: null, name: 'A', kind: 'zone', order: 0 },
       { id: 'r1', projectId: 'ambli', parentId: 'z1', name: 'R', kind: 'room', order: 0 },
       { id: 'e1', projectId: 'ambli', parentId: 'r1', name: 'E', kind: 'element', order: 0 },
+      { id: 'e2', projectId: 'ambli', parentId: 'r1', name: 'E2', kind: 'element', order: 1 },
     ]);
-    // an element must sit under a room — moving it under a zone is rejected
-    await expect(svc.move('ambli', 'e1', { parentId: 'z1' }, user)).rejects.toBeInstanceOf(BadRequestException);
+    // an element is a LEAF — moving anything under an element is rejected
+    await expect(svc.move('ambli', 'e1', { parentId: 'e2' }, user)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(svc.move('ambli', 'r1', { parentId: 'e1' }, user)).rejects.toBeInstanceOf(BadRequestException);
+    // …while the newly legal element-under-zone reparent is accepted
+    await expect(svc.move('ambli', 'e1', { parentId: 'z1' }, user)).resolves.toBeDefined();
   });
 });
 
