@@ -231,8 +231,16 @@ pending `decision.published` push intents for that subject through a narrow
 platform-owned operation (cancelled and recorded, never deleted; platform
 mutates only its own table; decisions never reaches into the relay and the
 relay never reads decisions). A relay claiming after the commit finds the
-intent cancelled — probed by the commit-publish → lag → withdraw →
-relay-claims ordering (P10). The catalog chain then continues: **the coverage
+intent cancelled. **And a delivery LEASED just before the withdraw is covered
+too** (Codex, round 7): the relay leases a row before it sends, so cancelling
+only still-pending rows would miss one claimed moments before the withdrawal
+committed — the send path therefore re-checks ITS OWN row's cancellation mark
+AFTER the lease and immediately before the notify handoff (a platform-internal
+read of the platform's own table — no boundary crossed), and a cancellation
+landing during the lease window drops the send with the drop recorded. BOTH
+orderings probed: claim-after-withdraw (found cancelled at claim) and
+claim-before-withdraw (leased, then cancelled, then the pre-send check drops
+it) (P10). The catalog chain then continues: **the coverage
 re-seal** — `effectCoverageVersion()` changes with any new key and is pinned at
 `outbox.bootstrap.ts:115`, `outbox-operations.service.ts:143` and
 `external-effects.test.ts:47-74`, so the re-seal is explicit in the diff, never
@@ -266,29 +274,42 @@ migration SQL is not a constraint):
    a status-only terminal seal would let hostile SQL rewrite WHO withdrew and
    WHY while the status stays legal, which is rewritten history wearing an
    intact seal. Write-once means the columns, not just the state (P8).
-2. **Attributed**: `status='withdrawn'` requires `withdrawnAt`, `withdrawnById`
-   and a non-blank `withdrawReason` (and the inverse: those columns only with the
-   status) — a CHECK-shaped constraint trigger, since the columns live on the row.
-   Non-blank is the repository's FULL ASCII-whitespace discipline, spelled exactly
-   (Codex, round 1 — `btrim(x)` strips spaces only):
+2. **Attributed — to a REAL actor** (Codex, round 7): `status='withdrawn'`
+   requires `withdrawnAt`, `withdrawnById` and a non-blank `withdrawReason`
+   (and the inverse: those columns only with the status) — a CHECK-shaped
+   constraint trigger, since the columns live on the row. `withdrawnById` is
+   FK-BACKED (the same identity-reference discipline Phase 3 gave
+   `responsibleId`/`createdById`): presence alone would let hostile SQL
+   attribute the permanent register to a nonexistent actor, so a forged
+   withdrawer is unrepresentable, probed (P8). Non-blank is the repository's
+   FULL ASCII-whitespace discipline, spelled exactly (Codex, round 1 —
+   `btrim(x)` strips spaces only):
    `btrim("withdrawReason", E' \t\n\x0B\f\r') <> ''`, and the hostile probe feeds
    a tabs-and-newlines-only reason (P8).
-3. **Never-approved, sealed in BOTH directions** (the reverse arm: Codex,
-   round 2): withdrawing is refused while any `DecisionApprovalRevision` row
-   exists for the decision — AND inserting an approval revision is refused while
-   the decision is `withdrawn`, else hostile SQL could plant an approval under a
-   terminal withdrawal and leave the two immutable registers contradicting each
-   other. The same fact the state machine proves, sealed where the data lives,
-   both ways (P8).
+3. **Never-approved, sealed in BOTH directions — and the reverse arm LOCKS
+   before it reads** (Codex, rounds 2 + 7): withdrawing is refused while any
+   `DecisionApprovalRevision` row exists for the decision — AND inserting an
+   approval revision is refused while the decision is `withdrawn`, else hostile
+   SQL could plant an approval under a terminal withdrawal and leave the two
+   immutable registers contradicting each other. The reverse trigger takes the
+   DECISION ROW LOCK (`FOR UPDATE`) before reading its status — a plain READ
+   COMMITTED read would race an uncommitted withdrawal (the insert sees the old
+   `pending`, both commit, contradiction) — exactly the Phase-4 bound-3
+   precedent where the counting trigger learned to lock the commitment row
+   first. Probed sequentially AND as a two-session barrier race in both
+   orderings, exactly one side committing (P8).
 
 The migration is additive and diagnostic-first in the house pattern: every
-statement in the retry-safe form (`ADD VALUE IF NOT EXISTS`,
-`ADD COLUMN IF NOT EXISTS` for `withdrawnAt`/`withdrawnById`/`withdrawReason`
-and `Notification.decisionId`, guarded trigger creation — Codex, round 6: a
-deploy that aborts partway must complete on re-run, never fail on its own
-earlier progress); it ABORTS with a sample if any existing row already violates
-what it seals (none can — the status is new), and legacy databases upgrade
-row-free.
+statement in the retry-safe form (`ADD VALUE IF NOT EXISTS`;
+`ADD COLUMN IF NOT EXISTS` for `withdrawnAt`/`withdrawnById`/`withdrawReason`,
+`Notification.decisionId`, AND the platform outbox SUBJECT column with its
+index (`CREATE INDEX IF NOT EXISTS`) that the push cancellation keys on —
+Codex, round 7: the cancel-by-subject code without its column finds no rows,
+and a partially-applied key must not fail the re-run; guarded trigger creation
+— Codex, round 6: a deploy that aborts partway must complete on re-run, never
+fail on its own earlier progress); it ABORTS with a sample if any existing row
+already violates what it seals (none can — the status is new), and legacy
+databases upgrade row-free.
 
 ## §B — Units 4b–4d: scope, and where their design now lives
 
@@ -356,9 +377,9 @@ against` names the exact site.
 | P5 | client/contractor/engineer/consultant get 403; pmc succeeds; the route-policy identity holds | `ROLE_POLICY['decision.withdraw']` absent |
 | P6 | two concurrent withdraws admit exactly one (CAS 409 for the loser), both orderings under the deterministic barrier | the CAS `count===0` branch |
 | P7 | double publish admits exactly one — publish's new CAS | `decisions.service.ts:147` plain `update` |
-| P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row, a whitespace-only reason (tabs/newlines — the `btrim(x, E' \t\n\x0B\f\r')` CHECK), an UPDATE rewriting `withdrawnAt`/`withdrawnById`/`withdrawReason` on an already-withdrawn row (evidence freeze), a withdraw beside an existing `DecisionApprovalRevision`, AND a `DecisionApprovalRevision` INSERT against a withdrawn decision (the never-approved seal, both directions) | the three triggers absent — hostile SQL accepted at baseline |
+| P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row, a FORGED `withdrawnById` naming no real actor (the FK), a whitespace-only reason (tabs/newlines — the `btrim(x, E' \t\n\x0B\f\r')` CHECK), an UPDATE rewriting `withdrawnAt`/`withdrawnById`/`withdrawReason` on an already-withdrawn row (evidence freeze), a withdraw beside an existing `DecisionApprovalRevision`, AND a `DecisionApprovalRevision` INSERT against a withdrawn decision — the reverse arm ALSO raced as a two-session barrier (withdraw uncommitted vs hostile insert), both orderings, exactly one side committing (the trigger's `FOR UPDATE` on the decision row) | the three triggers absent — hostile SQL accepted at baseline; the lock-free reverse trigger letting both sides commit |
 | P9 | `countPending` and the client pending list drop the decision; the client badge clears | asserted against `decisions.query.ts:173-175` fixtures |
-| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported); and a QUEUED `decision.published` push intent is found CANCELLED at claim — the withdraw tx cancelled it by subject through the platform-owned operation, recorded (publish → relay lag → withdraw → claim ordering) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item; the outbox relay delivering the stale approval push |
+| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported); and a QUEUED `decision.published` push intent never reaches the client in EITHER ordering — claim-after-withdraw finds the intent cancelled (the withdraw tx cancelled by subject through the platform-owned operation, recorded), and claim-BEFORE-withdraw is caught by the pre-send re-check of the leased row's own cancellation mark (lease → withdraw cancels → pre-send check drops, recorded) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item; the outbox relay delivering the stale approval push in either ordering |
 | P11 | `deriveDecisionReading('withdrawn')` yields `wait` with the honest withdrawn reason, and an activity gated on the decision still refuses to start with that reason | `readiness.ts:154-165` else-branch emits "Awaiting the client's approval" |
 | P12 | `decision.withdrawn` is in the shared catalog, the external-effect catalog re-seal is exact, manifest⇄contract equality holds | `external-effects.test.ts:47-74` / `decisions.contract.test.ts:24-58` RED on the missing entry |
 | P13 | projection `decisions.inbox`: live == projection == rebuild across a withdraw; the rebuild emits zero events | the diagnostic comparables on the new status |

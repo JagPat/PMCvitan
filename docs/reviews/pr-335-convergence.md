@@ -16,7 +16,8 @@ flip landing as the immediate tiny follow-up PR.
 | `e33c5ac` | round-3 batch | the GATE, not Codex: `convergence_required` — the cap's deferral owed | the two-step executed on `4f97dc5` |
 | `4f97dc5` | STATUS reverted + the deferral trailer | 5 (2 P1, 3 P2) — delivered 45s AFTER the orchestrator's two-attempt timeout marked the head `blocked`; the review is real and is answered, the timeout artifact resets with the next push | corrected on `ac164c5` |
 | `ac164c5` | round-4 batch | 6 (1 P1, 5 P2) — the review lifecycle reports the head LIMIT (5 of 5) and advises a split | the SPLIT, on `f87be65` |
-| `f87be65` | the SPLIT: frame + 4a only | 4 (1 P1, 3 P2) — three on the 4a design, one on the deferral mechanics | corrected on this head |
+| `f87be65` | the SPLIT: frame + 4a only | 4 (1 P1, 3 P2) — three on the 4a design, one on the deferral mechanics | corrected on `a9ec22d` |
+| `a9ec22d` | round-6 batch | 4 (1 P1, 3 P2) — second-order refinements of round-6's own additions | corrected on this head |
 
 `eda4127` (the first-ten correction) was pushed between the two deliveries and
 SUPERSEDED before receiving any verdict of its own — the second delivery
@@ -266,18 +267,37 @@ eligibility probe. Each runs RED-FIRST at its unit's staged baseline
 (4a: P1–P14; 4b: P15–P22; 4c: P23–P27; 4d: P28–P36), inside `phase-6-task-4`'s
 own exact-head review stops, which fail closed exactly like this one.
 
+## Round 7 — second-order refinements of round 6's own additions
+
+Four findings on the round-6 head (1 P1), each sharpening a mechanism round 6
+introduced, corrected on this head:
+
+1. The pending-only cancellation missed a delivery LEASED just before the
+   withdraw commits — the send path now re-checks its OWN row's cancellation
+   mark after the lease and before notify (platform-internal), with BOTH
+   orderings probed (P10).
+2. (P1) The reverse never-approved trigger read the decision's status without
+   locking it — an uncommitted withdrawal and a hostile revision insert could
+   both commit under READ COMMITTED. The trigger takes the decision row's
+   `FOR UPDATE` before reading (the Phase-4 bound-3 precedent), barrier-raced
+   in both orderings (P8).
+3. The outbox SUBJECT column/index joins the retry-safe migration inventory —
+   cancel-by-subject without its column finds nothing (§A.6).
+4. `withdrawnById` is FK-backed — presence alone let hostile SQL attribute the
+   permanent register to a nonexistent actor (P8).
+
 ## Status
 
-Fifty-eight findings across six finding-bearing heads (13 + 20 + 10 + 5 + 6 +
-4; round 2 doubled by a delivery artifact). The 4a design absorbed rounds 1–3,
-stayed clean through 4–5, and took three surgical corrections in round 6 (the
-boundary-respecting push cancellation, the retry-safe columns, the service-
-level withdrawn refusal in `approve`); rounds 4–5 landed entirely on the 4b–4d
-prose and at the five-head limit the unit SPLIT along that seam. This PR ships
-the programme frame + the implementation-ready 4a design + this audit; the
-STATUS flip follows as the immediate tiny PR; the 4b–4d design ships in its own
-plan unit. Nothing is dismissed — the deferral trailer stands, and every open
-question is bound to a NAMED probe: P1–P14 in this plan for 4a, P15–P42 listed
-in §E for 4b–4d, each elaborated and executed at its unit's own review stop.
+Sixty-two findings across seven finding-bearing heads (13 + 20 + 10 + 5 + 6 +
+4 + 4; round 2 doubled by a delivery artifact). The 4a design absorbed rounds
+1–3, stayed clean through 4–5 (which landed entirely on the 4b–4d prose — the
+seam the five-head-limit SPLIT followed), and rounds 6–7 refined the shipped
+4a text itself, each round narrowing onto the previous round's own additions
+(4 → 4, all correctable in place). This PR ships the programme frame + the
+implementation-ready 4a design + this audit; the STATUS flip follows as the
+immediate tiny PR; the 4b–4d design ships in its own plan unit. Nothing is
+dismissed — the deferral trailer stands, and every open question is bound to a
+NAMED probe: P1–P14 in this plan for 4a, P15–P42 listed in §E for 4b–4d, each
+elaborated and executed at its unit's own review stop.
 
 Review-Convergence: complete
