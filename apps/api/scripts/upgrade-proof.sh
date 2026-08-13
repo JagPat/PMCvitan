@@ -3301,6 +3301,15 @@ INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","st
 SELECT 'UP4A-EV3','decision.published',p."orgId",p."id",900003,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
 SELECT 'UP4A-EV4','decision.published',p."orgId",p."id",900004,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+-- round 5 (Codex): recovery-gap events with NO delivery row at all — one about the withdrawn
+-- UP4A-D1 (the migration must write the same cancelled tombstone the runtime cancellation
+-- writes, or the next recovery pass materializes it PENDING and nothing ever cancels it) and
+-- one about the LIVE UP4A-D2 (which must get NO tombstone — recovery legitimately owes it a
+-- pending delivery).
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV5','decision.published',p."orgId",p."id",900005,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV6','decision.published',p."orgId",p."id",900006,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "OutboxDelivery"("id","eventId","projectId","consumer","consumerKind","streamPosition","deliveryAction","status","payload","updatedAt")
 VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatch','pending','{"body":"stale announcement"}',now()),
        -- round 2 (Codex F4): a push that EXHAUSTED its retries before the deploy — the subject
@@ -3322,6 +3331,12 @@ assert "4a round 4: the migration CANCELS the queued pushes of an ALREADY-withdr
 assert "4a round 4 precision: the LIVE decision's queued pushes are NOT cancelled by the migration — only already-withdrawn subjects are" \
   "SELECT string_agg(\"id\" || '=' || \"status\" || '/' || (\"cancelledAt\" IS NULL)::text, ',' ORDER BY \"id\") FROM \"OutboxDelivery\" WHERE \"id\" IN ('UP4A-DEL1','UP4A-DEL2');" \
   "UP4A-DEL1=pending/true,UP4A-DEL2=dead/true"
+assert "4a round 5: the migration writes the recovery-gap TOMBSTONE for a pre-withdrawn decision's event with NO delivery row — the next recovery pass finds it present and resurrects nothing" \
+  "SELECT \"status\" || '/' || \"deliveryAction\" || '/' || (\"cancelledAt\" IS NOT NULL)::text || '/' || COALESCE(\"subject\",'<null>') FROM \"OutboxDelivery\" WHERE \"eventId\"='UP4A-EV5' AND \"consumer\"='webpush.notify';" \
+  "succeeded/noop/true/UP4A-D1"
+assert "4a round 5 precision: the LIVE decision's recovery-gap event gets NO tombstone — recovery legitimately owes it a pending delivery" \
+  "SELECT COUNT(*)::text FROM \"OutboxDelivery\" WHERE \"eventId\"='UP4A-EV6' AND \"consumer\"='webpush.notify';" \
+  "0"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

@@ -85,6 +85,22 @@ async function main(): Promise<void> {
   await prisma.drawing.deleteMany();
   await prisma.decisionOption.deleteMany();
   await prisma.activity.deleteMany();
+  // Phase 6 task 4a — the decision wipe runs BEFORE the membership wipe (round 5, Codex):
+  // `Decision.withdrawnById` FKs `Membership(projectId, userId)` ON DELETE NO ACTION, so a
+  // database holding a withdrawn decision refuses membership deletion until the decision rows
+  // are gone. Every Decision child (options, events, change requests, media, notifications,
+  // activities) is already cleared above. The delete seal (`Decision_t4a_d_no_delete`) refuses
+  // withdrawn-row deletes — in a LIVE database the register entry is permanent — and this seed
+  // is the sanctioned destructive reset (the same contract that lets the TRUNCATE above bypass
+  // the DomainEvent append-only trigger), so the named seal is disabled for exactly this wipe
+  // and re-enabled immediately after. Guarded: a pre-4a database has no such trigger.
+  await prisma.$executeRawUnsafe(
+    `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
+  );
+  await prisma.decision.deleteMany();
+  await prisma.$executeRawUnsafe(
+    `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
+  );
   // every Membership child (recipients, assignees, completion claims) is gone now
   await prisma.membership.deleteMany();
   await prisma.orgMembership.deleteMany();
@@ -110,18 +126,7 @@ async function main(): Promise<void> {
   await prisma.externalParty.deleteMany();
   await prisma.user.deleteMany();
   await prisma.phase.deleteMany();
-  // Phase 6 task 4a — the delete seal (`Decision_t4a_d_no_delete`) refuses withdrawn-row
-  // deletes: in a LIVE database the register entry is permanent. This seed is the sanctioned
-  // destructive reset (the same contract that lets the TRUNCATE above bypass the DomainEvent
-  // append-only trigger), so the named seal is disabled for exactly this wipe and re-enabled
-  // before any data is created. Guarded: a pre-4a database has no such trigger.
-  await prisma.$executeRawUnsafe(
-    `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
-  );
-  await prisma.decision.deleteMany();
-  await prisma.$executeRawUnsafe(
-    `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
-  );
+  // (the guarded decision wipe moved ABOVE membership.deleteMany — round 5, Codex)
   await prisma.projectNode.deleteMany();
   await prisma.project.deleteMany();
   await prisma.projectTemplate.deleteMany();

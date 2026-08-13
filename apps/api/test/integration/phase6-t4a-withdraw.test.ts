@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
@@ -899,6 +902,24 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       expect(row.deliveryAction).toBe('noop');
       expect(row.cancelledAt).not.toBeNull();
       expect(await relay.claim(PUSH_CONSUMER)).toHaveLength(0);
+    });
+  });
+
+  // ── Round 5 — the two Codex findings on head b24d36e ──
+  // (R5-F1, the migration's recovery-gap tombstone for pre-withdrawn decisions, is a
+  //  migration-level fact proven in upgrade-proof.sh — its plant/assert stage is the
+  //  reproduce-first evidence. R5-F2's behavioural capture ran the REAL seed against a database
+  //  holding a withdrawn decision: RED at b24d36e — membership.deleteMany refused by the
+  //  withdrawnById FK before the guarded wipe ever ran — then GREEN after the reorder. This pin
+  //  makes the ordering durable.)
+  describe('round 5 (Codex): the seed wipe order', () => {
+    it('R5-F2: the guarded decision wipe PRECEDES the membership wipe in seed.ts — the withdrawnById FK makes a withdrawn decision block membership deletion', () => {
+      const seedSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../prisma/seed.ts'), 'utf8');
+      const decisionWipe = seedSrc.indexOf('prisma.decision.deleteMany()');
+      const membershipWipe = seedSrc.indexOf('prisma.membership.deleteMany()');
+      expect(decisionWipe).toBeGreaterThan(-1);
+      expect(membershipWipe).toBeGreaterThan(-1);
+      expect(decisionWipe, 'the guarded decision wipe must run before membership.deleteMany — Decision.withdrawnById FKs Membership(projectId,userId) ON DELETE NO ACTION').toBeLessThan(membershipWipe);
     });
   });
 

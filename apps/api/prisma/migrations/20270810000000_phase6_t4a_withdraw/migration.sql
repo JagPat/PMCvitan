@@ -155,6 +155,29 @@ WHERE e."eventId" = d."eventId"
   AND e."eventType" = 'decision.published'
   AND dec."id" = e."entityId" AND dec."projectId" = e."projectId"
   AND dec."status"::text = 'withdrawn';
+-- Round 5 (Codex): the same withdrawal's RECOVERY-GAP arm. An already-withdrawn decision's
+-- `decision.published` event can sit in the crash/rolling-deploy gap with NO delivery row at
+-- all; the two updates above touch only rows that exist, so the next relay recovery pass
+-- would materialize the missing delivery as PENDING — and no future `decisions.withdraw`
+-- command will ever run to cancel it. So the migration writes the same cancelled tombstone
+-- the runtime cancellation writes (succeeded/noop, cancelledAt, subject from the event's own
+-- entityId, no payload was ever built), guarded on the catalog contract row exactly like the
+-- runtime arm, idempotent via NOT EXISTS + ON CONFLICT DO NOTHING. A LIVE decision's gap
+-- event is deliberately untouched — recovery legitimately owes it a pending delivery.
+INSERT INTO "OutboxDelivery"
+  ("id","eventId","projectId","consumer","consumerKind","deliveryAction",
+   "streamPosition","status","subject","cancelledAt","nextAttemptAt","createdAt","updatedAt")
+SELECT gen_random_uuid()::text, e."eventId", e."projectId", 'webpush.notify', 'unordered', 'noop',
+       e."streamPosition", 'succeeded', e."entityId", now(), now(), now(), now()
+FROM "DomainEvent" e
+JOIN "Decision" dec ON dec."id" = e."entityId" AND dec."projectId" = e."projectId"
+WHERE e."eventType" = 'decision.published'
+  AND dec."status"::text = 'withdrawn'
+  AND EXISTS (SELECT 1 FROM "OutboxConsumerCatalog" c
+               WHERE c."consumer" = 'webpush.notify' AND c."consumerKind" = 'unordered')
+  AND NOT EXISTS (SELECT 1 FROM "OutboxDelivery" d
+                   WHERE d."eventId" = e."eventId" AND d."consumer" = 'webpush.notify')
+ON CONFLICT DO NOTHING;
 
 -- ── seal 1: terminal, and the evidence FROZEN with it ────────────────────────────────────────
 -- Trigger NAMES are load-bearing: PostgreSQL fires same-event triggers in name order, so the

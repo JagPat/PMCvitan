@@ -14,7 +14,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `1fb4e54` | Codex attempt 2: **4 findings (1×P1, 3×P2)** | orphan withdrawal evidence outside the diagnostics; `publishedAt` neither required nor frozen on withdrawn rows; the `justified-large` marker absent from the packet; dead rows outside the subject BACKFILL |
 | `74af426` | round-2 correction + this audit; Codex attempt on it: **3 P2 findings** | DELETE outside the terminal seal; the round-1 attribution fix's raw `Membership` read (an undeclared decisions→orgs edge); the recovery scanner resurrecting a push whose delivery row did not exist at cancellation time |
 | `e759832` / `31f3fba` | round-3 correction (same tree; re-pushed to place the trailer in the commit's final trailer block); Codex attempt on `31f3fba`: **4 P2 findings** | subjectless rows written by an OLD instance during a rolling deploy; `projectId` outside the write-once set; a scanner row committing BETWEEN the cancellation passes and the tombstone insert; queued pushes of an ALREADY-withdrawn decision that no future command will ever cancel |
-| (this head) | the round-4 correction + this audit extended | — |
+| `b24d36e` | round-4 correction; Codex attempt on it: **2 P2 findings** — both deployment-harness completions of the round-3/4 arms, no runtime surface | the migration's cancellation lacked its recovery-gap tombstone arm (it only UPDATEd rows that exist); the seed's guarded decision wipe sat AFTER `membership.deleteMany()`, which the new `withdrawnById` FK refuses while a withdrawn decision exists |
+| (this head) | the round-5 correction + this audit extended — the review-lifecycle limit (5 finding heads) is reached at this head | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -51,6 +52,16 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   INSIDE the cancellation's own statement sequence (R4-F3). And the row's identity is not only
   its evidence columns: the PROJECT it belongs to is what makes the register entry findable at
   all (R4-F2).
+- Round 5 closed the two harness tails of exactly those arms — no runtime surface. When the
+  MIGRATION stands in for the command (round-4 R4-F4), it must carry EVERY arm the command
+  carries, including the round-3 recovery-gap tombstone it initially lacked (R5-F1). And a
+  new FK re-orders the world for every writer that deletes its target: the destructive seed's
+  membership wipe now sits BELOW the decision wipe in the dependency order, because
+  `withdrawnById` made memberships load-bearing for withdrawn history (R5-F2). The convergence
+  trajectory is itself evidence: 5 findings (runtime lifecycle) → 4 (mixed) → 3 (access
+  paths/boundary) → 4 (deployment eras) → 2 (harness completions of already-accepted arms) —
+  each round's surface narrower and further from the user-facing workflow, which is what a
+  closing enumeration looks like from outside.
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
@@ -65,9 +76,11 @@ matrix explicitly, and round 3 extends it along the two axes its findings named:
    INSIDE the cancellation's own window (round 4: the passes run again after the tombstone
    insert, so every scanner interleaving ends cancelled-or-never-created — proven by the
    deterministic barrier probe). Pushes of a decision ALREADY withdrawn before the migration
-   runs are cancelled BY the migration with the command's exact semantics (round 4), since no
-   future command will ever run for them. `succeeded` rows are already-sent history the design
-   accepts.
+   runs are cancelled BY the migration with the command's exact semantics (round 4) — ALL of
+   its arms, including the recovery-gap tombstone for the event with no delivery row at all
+   (round 5), with the live-decision precision assert proving recovery still owes THOSE their
+   pending deliveries — since no future command will ever run for them. `succeeded` rows are
+   already-sent history the design accepts.
 2. **Decision-row facts the withdrawn state depends on**: `status` (terminal), the four
    evidence columns (write-once, coherent both directions), `publishedAt` (required +
    frozen), and — round 4 — `projectId` (frozen: the register entry cannot be MOVED to
@@ -93,7 +106,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all four rounds is fixed in-branch with reproduce-first evidence (probes,
+Every finding from all five rounds is fixed in-branch with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

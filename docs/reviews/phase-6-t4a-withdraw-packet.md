@@ -216,3 +216,20 @@ uncancelled → GREEN).
 Round-4 gates: probe file 31/31 (incl. the 3 new); `pnpm check` EXIT 0 (API 791/791 across 57
 files; web unchanged); `upgrade-proof.sh` PASSED (558 assertions — the two new round-4 stages
 and every prior rejection); the full integration battery via the required `api` CI check.
+
+## Round 5 — the two Codex P2 findings on head `b24d36e`, one batched head
+
+The fifth finding-bearing head (the orchestrator's review-lifecycle limit). Both findings are
+deployment-harness completions of rounds 3–4's arms — neither touches runtime behaviour: the
+MIGRATION must carry every arm the runtime cancellation carries (round 5 adds its last one,
+the recovery-gap tombstone), and the destructive seed's wipe order must respect the FK graph
+the withdrawal evidence joined.
+
+| # | finding | fix |
+|---|---|---|
+| R5-F1 (P2) | the round-4 migration cancellation only UPDATEs delivery rows that EXIST — an already-withdrawn decision's `decision.published` event sitting in the recovery gap (no `webpush.notify` row at all) got no tombstone, so the next relay recovery pass would materialize it PENDING and no future `decisions.withdraw` command exists to cancel it | the migration writes the same cancelled tombstone the runtime cancellation writes (succeeded/noop, `cancelledAt`, subject from the event's own `entityId`, no payload), catalog-guarded, idempotent via NOT EXISTS + ON CONFLICT DO NOTHING; a LIVE decision's gap event is deliberately untouched — recovery legitimately owes it a pending delivery; upgrade-proof plants BOTH gap events (about the withdrawn `UP4A-D1` and the live `UP4A-D2`) and asserts tombstone-for-withdrawn + no-tombstone-for-live (RED at `b24d36e` → GREEN, 560 assertions) |
+| R5-F2 (P2) | the round-3 seed bypass sat at the decision wipe's ORIGINAL position — AFTER `membership.deleteMany()`, which the new `Decision.withdrawnById → Membership(projectId,userId)` ON DELETE NO ACTION FK now refuses while a withdrawn decision exists, so a post-withdrawal database could not be reseeded at all | the guarded decision wipe moves ahead of the membership wipe (every Decision child is already cleared above it); reproduced by running the REAL seed against a database holding a withdrawn decision — RED at `b24d36e` (P2003 on `Decision_projectId_withdrawnById_fkey` at `membership.deleteMany`, scratchpad `r5-seed-red.log`) → GREEN over the same failed state (`r5-seed-green.log`); a durable source-order pin in the probe file (RED at `b24d36e` → GREEN) keeps the ordering from regressing |
+
+Round-5 gates: probe file 32/32 (incl. the ordering pin); `pnpm check` EXIT 0 (web 760/760,
+API 791/791); `upgrade-proof.sh` PASSED — **560 assertions** incl. the two new round-5 stages;
+the full integration battery via the required `api` CI check.
