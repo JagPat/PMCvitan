@@ -29,11 +29,25 @@ contract gained — the P11 public-door lesson applied one door further). All
 eighteen plan probes green, staged red-first per §D; packet:
 `docs/reviews/phase-6-t2-nested-locations-packet.md`.
 
-**`next_task` is deliberately NONE.** Every candidate successor is owner-gated:
-the `room` → `space` rename may start only on the owner's explicit go (its task
-records "not without the owner saying go"); decision forwarding is sequenced
-after the rename; and unit 6.1b (PR #329, held) resumes only after both. Until
-one of those gates opens, the runner works the Maintenance queue below.
+**`next_task` is deliberately NONE, and the state is machine-actionable, not a
+wait.** The runner's standing work source is the Maintenance queue below — its
+own contract is that the loop is never without an actionable item — so the
+interregnum is worked, not idled. The successor set is recorded as DATA, each
+with the exact event that opens it:
+
+| gated successor | opening event | resume action |
+|---|---|---|
+| `room` → `space` rename plan | an explicit owner go (a recorded decision — a message, PR comment, or check-in reply the loop consumes as an ordinary directive; the owner has been asked) | write the rename plan from `docs/reviews/pr-330-convergence.md`'s catalogue as its own review unit |
+| decision forwarding (architect countersign) | the rename plan unit clearing (owner sequencing) | build from the settled design in its task record |
+| unit 6.1b (PR #329, held) | the two above clearing (owner sequencing) | rebase `claude/phase6-task1b`, resume the held PR |
+
+This is a SCOPE decision by the owner, not a technical-approval gate: the review
+loop still needs no human sign-off (the exact-head gate cleared this very task
+autonomously), exactly as the Phase-4 "explicit Task-1 GO" precedent recorded
+scope authority in STATUS while the correction loop ran unattended. The opening
+event is consumed mechanically — a recorded go flips `next_task` to the named
+unit in an ordinary STATUS PR; nothing polls a person, and the hourly cron plus
+the standing check-in keep the loop reachable even if the queue were ever empty.
 
 **Task 2 is NESTED LOCATIONS — the structural half of the space work.** A live
 project reads `ZONE site > ROOM Excavation`, because the middle level is

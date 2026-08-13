@@ -639,6 +639,31 @@ test('a valid in-progress state is not mistaken for a handoff', async () => {
   );
 });
 
+// FINDING (#334 P2, round 1) — the `none` SENTINEL is the absence of a next task, not a name.
+// The owner-gated interregnum (merged, nothing scheduled, the maintenance queue as the work
+// source) records `next_task: none`; the predicate read any non-empty string as "a next task
+// named" and classified that state as a HANDOFF — so a live maintenance PR whose head carried
+// it would have suppressed its own `open_pr: none` drift in detectStatusDriftAcrossHeads, and
+// the hourly shepherd would have posted no correction for the PR actually open.
+test('the none-sentinel interregnum is NOT a handoff shape, and does not suppress live-PR drift', async () => {
+  const { isHandoffShape, buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const interregnum = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'none', blocking_directive: 'none' };
+  assert.equal(
+    isHandoffShape(interregnum),
+    false,
+    "next_task 'none' was read as a named next task — the interregnum masqueraded as a handoff",
+  );
+  // The F2 interference scenario: a maintenance PR is open, its head still carries the
+  // interregnum STATUS, and the default branch says open_pr: none — that IS drift, and the
+  // shepherd must say so instead of treating the maintenance PR as a handoff correction.
+  const body = buildDriftHandoff({
+    statusNow: interregnum,
+    openPullRequests: [{ number: 340, headRefName: 'claude/maintenance-upkeep', isDraft: true }],
+    headStatuses: [{ number: 340, now: interregnum }],
+  });
+  assert.ok(body, "a live maintenance PR's open_pr drift was suppressed by the none-sentinel handoff misclassification");
+});
+
 // FINDING (#331 head 35d9532, P1) — STATUS named a `phase_plan` that existed only on a
 // DIFFERENT unmerged branch. The runner's first act after parsing STATUS is opening that
 // file (docs/AUTONOMOUS_LOOP.md), so a dangling reference is the documented stall mode:

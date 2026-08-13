@@ -103,12 +103,17 @@ export function isHandoffShape(now) {
   const workItem = String(now?.work_item ?? '').trim().toLowerCase();
   const state = String(now?.task_state ?? '').trim().toLowerCase();
   const openPr = String(now?.open_pr ?? '').trim().toLowerCase();
-  const nextTask = String(now?.next_task ?? '').trim();
+  const nextTask = String(now?.next_task ?? '').trim().toLowerCase();
   return (
     (workItem === '' || workItem === 'none')
     && TERMINAL_HANDOFF_STATES.has(state)
     && (openPr === '' || openPr === 'none')
-    && nextTask !== ''
+    // A handoff NAMES its next task. The `none` sentinel is the ABSENCE of one (the
+    // owner-gated interregnum: merged, nothing scheduled, the maintenance queue as the
+    // work source) — treating it as a name classified that state as a handoff, and a
+    // live maintenance PR whose head carried it would have suppressed the very
+    // `open_pr: none` drift the hourly shepherd exists to correct (#334 round 1).
+    && nextTask !== '' && nextTask !== 'none'
   );
 }
 const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cleared']);
