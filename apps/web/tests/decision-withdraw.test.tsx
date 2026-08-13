@@ -24,7 +24,6 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 const dec = (over: Partial<Decision> & { id: string }): Decision =>
   ({
-    id: over.id,
     title: over.title ?? `Title ${over.id}`,
     room: 'Kitchen',
     status: 'pending',
