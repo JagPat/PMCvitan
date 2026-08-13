@@ -17,7 +17,8 @@ flip landing as the immediate tiny follow-up PR.
 | `4f97dc5` | STATUS reverted + the deferral trailer | 5 (2 P1, 3 P2) — delivered 45s AFTER the orchestrator's two-attempt timeout marked the head `blocked`; the review is real and is answered, the timeout artifact resets with the next push | corrected on `ac164c5` |
 | `ac164c5` | round-4 batch | 6 (1 P1, 5 P2) — the review lifecycle reports the head LIMIT (5 of 5) and advises a split | the SPLIT, on `f87be65` |
 | `f87be65` | the SPLIT: frame + 4a only | 4 (1 P1, 3 P2) — three on the 4a design, one on the deferral mechanics | corrected on `a9ec22d` |
-| `a9ec22d` | round-6 batch | 4 (1 P1, 3 P2) — second-order refinements of round-6's own additions | corrected on this head |
+| `a9ec22d` | round-6 batch | 4 (1 P1, 3 P2) — second-order refinements of round-6's own additions | corrected on `7fdbeed` |
+| `7fdbeed` | round-7 batch | 4 distinct, all P2 (the status reported 6; two comments were double-delivered) — third-order refinements, severity now declining | corrected on this head |
 
 `eda4127` (the first-ten correction) was pushed between the two deliveries and
 SUPERSEDED before receiving any verdict of its own — the second delivery
@@ -286,18 +287,44 @@ introduced, corrected on this head:
 4. `withdrawnById` is FK-backed — presence alone let hostile SQL attribute the
    permanent register to a nonexistent actor (P8).
 
+## Round 8 — the boundary stated honestly, and the migration's own past
+
+Four distinct findings on the round-7 head (all P2; the status reported six —
+two comments were double-delivered), each again a refinement of the previous
+round's own additions, corrected on this head:
+
+1. Even the post-lease pre-send check cannot serialize with the withdrawal
+   COMMIT — a cancellation landing between that check and the external notify
+   call is unrecallable, exactly like an already-sent push, and closing it
+   would put external I/O inside the withdraw transaction. Taken as Codex
+   offers: the invariant is RESTATED at its true boundary (no stale push whose
+   delivery had not passed its final pre-send check at withdraw-commit time;
+   the check→send residual is documented, not probed) — the honest-residual
+   discipline, not an overclaim (P10).
+2. The subject key must reach BACKWARD: pre-migration durable
+   `decision.published` deliveries get their subject BACKFILLED from their own
+   `DomainEvent` entity id, deterministically, in the same guarded form —
+   else a publish committed before the deploy escapes cancellation (§A.6).
+3. The new FK/CHECK constraints join the retry-safe inventory with named
+   `pg_constraint`-guarded `DO` blocks — an aborted deploy must not fail its
+   re-run on its own earlier constraint (§A.6).
+4. The withdrawal evidence travels through the CONTRACT: `DecisionDto`/shared
+   `Decision`/`serializeDecision` gain the withdrawal fields (pmc audience),
+   and P14 pins the API response, not merely the rendered chip (§A.5).
+
 ## Status
 
-Sixty-two findings across seven finding-bearing heads (13 + 20 + 10 + 5 + 6 +
-4 + 4; round 2 doubled by a delivery artifact). The 4a design absorbed rounds
-1–3, stayed clean through 4–5 (which landed entirely on the 4b–4d prose — the
-seam the five-head-limit SPLIT followed), and rounds 6–7 refined the shipped
-4a text itself, each round narrowing onto the previous round's own additions
-(4 → 4, all correctable in place). This PR ships the programme frame + the
-implementation-ready 4a design + this audit; the STATUS flip follows as the
-immediate tiny PR; the 4b–4d design ships in its own plan unit. Nothing is
-dismissed — the deferral trailer stands, and every open question is bound to a
-NAMED probe: P1–P14 in this plan for 4a, P15–P42 listed in §E for 4b–4d, each
-elaborated and executed at its unit's own review stop.
+Sixty-six distinct findings across eight finding-bearing heads (13 + 20 + 10 +
+5 + 6 + 4 + 4 + 4; round 2 doubled and one round-7 comment pair
+double-delivered — delivery artifacts recorded, each head counted once). The
+4a design absorbed rounds 1–3, stayed clean through 4–5 (the 4b–4d seam the
+five-head-limit SPLIT followed), and rounds 6–8 refined the shipped 4a text
+with strictly narrowing scope and severity (1 P1 → 1 P1 → all P2), each round
+landing on the immediately previous round's own additions. This PR ships the
+programme frame + the implementation-ready 4a design + this audit; the STATUS
+flip follows as the immediate tiny PR; the 4b–4d design ships in its own plan
+unit. Nothing is dismissed — the deferral trailer stands, and every open
+question is bound to a NAMED probe: P1–P14 in this plan for 4a, P15–P42 listed
+in §E for 4b–4d, each elaborated and executed at its unit's own review stop.
 
 Review-Convergence: complete

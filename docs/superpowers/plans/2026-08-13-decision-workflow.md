@@ -237,10 +237,20 @@ only still-pending rows would miss one claimed moments before the withdrawal
 committed — the send path therefore re-checks ITS OWN row's cancellation mark
 AFTER the lease and immediately before the notify handoff (a platform-internal
 read of the platform's own table — no boundary crossed), and a cancellation
-landing during the lease window drops the send with the drop recorded. BOTH
-orderings probed: claim-after-withdraw (found cancelled at claim) and
-claim-before-withdraw (leased, then cancelled, then the pre-send check drops
-it) (P10). The catalog chain then continues: **the coverage
+landing during the lease window drops the send with the drop recorded.
+**The invariant's TRUE boundary, stated rather than overclaimed** (Codex,
+round 8): even the final pre-send check cannot serialize with the withdrawal
+COMMIT — a cancellation landing in the instant between that check and the
+external notify call is unrecallable, exactly as any already-sent push is, and
+closing it would mean the withdraw transaction waiting on external I/O. So the
+guarantee is stated at the boundary it actually holds: NO stale push is sent
+whose delivery had not yet passed its final pre-send check when the withdrawal
+committed; the residual window is check→send (external-call latency,
+milliseconds, bounded and identical to the already-sent case the design
+already accepts). BOTH provable orderings probed: claim-after-withdraw (found
+cancelled at claim) and cancelled-during-lease (the pre-send check drops it,
+recorded); the in-flight residual is the DOCUMENTED boundary, not a probe
+(P10). The catalog chain then continues: **the coverage
 re-seal** — `effectCoverageVersion()` changes with any new key and is pinned at
 `outbox.bootstrap.ts:115`, `outbox-operations.service.ts:143` and
 `external-effects.test.ts:47-74`, so the re-seal is explicit in the diff, never
@@ -255,11 +265,18 @@ The store gains `withdrawDecision` following the existing action pattern
 (`store.ts:1854-1937`): a fresh `newIdempotencyKey()` per deliberate action, the
 `runRemoteOrQueue` outbox spine, a new op-union variant `{ t: 'withdraw',
 decisionId, reason, idempotencyKey }` + replay arm + gateway method
-(`apiGateway.ts:1500-1506, 1603-1607`). The register (`DecisionLogScreen.tsx`)
-shows the WITHDRAWN state with its reason and withdrawer, offers the action only
-to pmc on an eligible decision (`can('decision.withdraw', role)` + status
-`pending` + not draft), and the client screens never see the row at all
-(server-filtered; the selectors mirror).
+(`apiGateway.ts:1500-1506, 1603-1607`). **The withdrawal evidence travels
+through the CONTRACT, not just the screen** (Codex, round 8): today's
+`DecisionDto`/shared `Decision`/`serializeDecision` carry no withdrawal fields,
+so the register would show a WITHDRAWN chip with no API data behind it — the
+serialized decision gains `withdrawnAt`, the withdrawer's display identity, and
+`withdrawReason` (pmc-audience only, per §A.3's visibility rule), and P14 pins
+the API RESPONSE, not merely the rendered screen state. The register
+(`DecisionLogScreen.tsx`) shows the WITHDRAWN state with its reason and
+withdrawer, offers the action only to pmc on an eligible decision
+(`can('decision.withdraw', role)` + status `pending` + not draft), and the
+client screens never see the row at all (server-filtered; the selectors
+mirror).
 
 ### 6. The DB seals
 
@@ -306,10 +323,20 @@ statement in the retry-safe form (`ADD VALUE IF NOT EXISTS`;
 index (`CREATE INDEX IF NOT EXISTS`) that the push cancellation keys on —
 Codex, round 7: the cancel-by-subject code without its column finds no rows,
 and a partially-applied key must not fail the re-run; guarded trigger creation
-— Codex, round 6: a deploy that aborts partway must complete on re-run, never
-fail on its own earlier progress); it ABORTS with a sample if any existing row
-already violates what it seals (none can — the status is new), and legacy
-databases upgrade row-free.
+— Codex, round 6 — AND named `pg_constraint`-guarded `DO` blocks for the new
+FK and CHECK constraints themselves (Codex, round 8: an aborted deploy that
+already created `Decision_withdrawnById_fkey` or the evidence CHECK must not
+fail its re-run on the duplicate constraint before the remaining seals
+install). **And the subject key reaches BACKWARD** (Codex, round 8): the
+column alone would leave pre-migration durable `decision.published` deliveries
+subjectless — a publish committed before the deploy, with the relay down and
+the withdraw after it, would escape cancel-by-subject — so the migration
+BACKFILLS the subject for existing undelivered `decision.published` rows from
+their own `DomainEvent` entity id (deterministic, copied from the event the
+delivery already carries, never invented), in the same guarded retry-safe
+form. It ABORTS with a sample if any existing row already violates what it
+seals (none can — the status is new), and legacy databases otherwise upgrade
+row-free.
 
 ## §B — Units 4b–4d: scope, and where their design now lives
 
@@ -379,11 +406,11 @@ against` names the exact site.
 | P7 | double publish admits exactly one — publish's new CAS | `decisions.service.ts:147` plain `update` |
 | P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row, a FORGED `withdrawnById` naming no real actor (the FK), a whitespace-only reason (tabs/newlines — the `btrim(x, E' \t\n\x0B\f\r')` CHECK), an UPDATE rewriting `withdrawnAt`/`withdrawnById`/`withdrawReason` on an already-withdrawn row (evidence freeze), a withdraw beside an existing `DecisionApprovalRevision`, AND a `DecisionApprovalRevision` INSERT against a withdrawn decision — the reverse arm ALSO raced as a two-session barrier (withdraw uncommitted vs hostile insert), both orderings, exactly one side committing (the trigger's `FOR UPDATE` on the decision row) | the three triggers absent — hostile SQL accepted at baseline; the lock-free reverse trigger letting both sides commit |
 | P9 | `countPending` and the client pending list drop the decision; the client badge clears | asserted against `decisions.query.ts:173-175` fixtures |
-| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported); and a QUEUED `decision.published` push intent never reaches the client in EITHER ordering — claim-after-withdraw finds the intent cancelled (the withdraw tx cancelled by subject through the platform-owned operation, recorded), and claim-BEFORE-withdraw is caught by the pre-send re-check of the leased row's own cancellation mark (lease → withdraw cancels → pre-send check drops, recorded) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item; the outbox relay delivering the stale approval push in either ordering |
+| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported); and a QUEUED `decision.published` push intent never reaches the client in either PROVABLE ordering — claim-after-withdraw finds the intent cancelled (the withdraw tx cancelled by subject, recorded; legacy pre-migration rows covered by the subject backfill), and cancelled-during-lease is caught by the pre-send re-check (recorded); the check→send in-flight residual is the DOCUMENTED boundary (§A.4), asserted as documentation not as a probe | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item; the outbox relay delivering the stale approval push in either provable ordering |
 | P11 | `deriveDecisionReading('withdrawn')` yields `wait` with the honest withdrawn reason, and an activity gated on the decision still refuses to start with that reason | `readiness.ts:154-165` else-branch emits "Awaiting the client's approval" |
 | P12 | `decision.withdrawn` is in the shared catalog, the external-effect catalog re-seal is exact, manifest⇄contract equality holds | `external-effects.test.ts:47-74` / `decisions.contract.test.ts:24-58` RED on the missing entry |
 | P13 | projection `decisions.inbox`: live == projection == rebuild across a withdraw; the rebuild emits zero events | the diagnostic comparables on the new status |
-| P14 | the web outbox op replays exactly once under its persisted key; the register shows WITHDRAWN with reason; the action is absent for non-pmc and for ineligible states | the op-union variant + screen state absent |
+| P14 | the web outbox op replays exactly once under its persisted key; the API RESPONSE carries the withdrawal evidence (`withdrawnAt`, the withdrawer's display identity, the reason — pmc audience only) and the register renders it; the action is absent for non-pmc and for ineligible states | the op-union variant + screen state absent; `DecisionDto`/`serializeDecision` carrying no withdrawal fields — a chip with no data behind it |
 
 ### Units 4b–4d — the deferred probes, NAMED here
 
