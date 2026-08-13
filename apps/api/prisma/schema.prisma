@@ -19,6 +19,12 @@ enum DecisionStatus {
   pending
   approved
   change
+  // Phase 6 task 4a — a published, never-approved decision the PMC takes back. TERMINAL
+  // (a BEFORE UPDATE trigger refuses any transition out) and entered ONLY from a published
+  // `pending` row (the entry trigger; register emptiness alone is not proof of never-approved
+  // on legacy data). Riding the enum — not an orthogonal flag — is deliberate: every reader
+  // keyed by DecisionStatus fails to compile until it answers for the new value.
+  withdrawn
 }
 
 enum ActivityStatus {
@@ -229,6 +235,20 @@ model OutboxDelivery {
   leaseExpiresAt DateTime?
   lastError      String?
   payload        Json? // consumer-specific dispatch data (e.g. Web Push {body, roles})
+  // Phase 6 task 4a — the entity a push delivery is ABOUT (the emitting module's entityId,
+  // copied at materialization; backfilled from DomainEvent.entityId for legacy undelivered
+  // rows). Platform-owned: the domain that learns a queued announcement went stale (e.g. a
+  // decision withdrawn before its `decision.published` push left) cancels by subject through
+  // the narrow platform operation — decisions never reaches into the relay, and the relay
+  // never reads a decisions table.
+  subject        String?
+  // Phase 6 task 4a — the cancellation MARK ('cancelled and recorded, never deleted'). Set by
+  // `cancelQueuedPushBySubject` inside the cancelling domain transaction; a still-pending row
+  // is neutralized in place (status 'succeeded' + action 'noop', payload preserved for audit),
+  // while a row already LEASED keeps its status and the sender's final pre-send re-check of
+  // its OWN row drops the send and records the drop the same way. NOT a new status value —
+  // the status CHECK is a deliberately closed set.
+  cancelledAt    DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   // PR B — a restrictive composite FK to the durable consumer catalog: a delivery's
@@ -239,6 +259,7 @@ model OutboxDelivery {
   @@unique([eventId, consumer]) // exactly one delivery row per (event, consumer)
   @@index([consumer, status, nextAttemptAt]) // the relay's claim scan
   @@index([consumer, projectId, streamPosition]) // an ordered consumer's per-project stream
+  @@index([consumer, subject]) // cancel-by-subject (Phase 6 task 4a)
 }
 
 // Phase 2 fix-forward PR B — the DURABLE consumer catalog. The relational pair
@@ -829,6 +850,8 @@ model Membership {
   inspectionAssignments Inspection[]
   // completion claims recorded against this membership (Phase 1 Task 5)
   completionClaims Activity[] @relation("CompletionClaims")
+  // decisions this member withdrew (Phase 6 task 4a) — attribution is FK-backed, never free-text
+  decisionWithdrawals Decision[] @relation("DecisionWithdrawals")
 
   @@unique([projectId, userId])
   @@index([userId])
@@ -1971,6 +1994,17 @@ model Decision {
   // migration is safe on the live DB; existing rows (published) are backfilled to createdAt.
   publishedAt    DateTime?
   authorId       String?
+  // Phase 6 task 4a — the withdrawal evidence, written ONCE by `decisions.withdraw` and frozen
+  // by trigger with the terminal status (rewritten attribution is forged history). All three are
+  // required (and only legal) when status='withdrawn' — the coherence trigger enforces both
+  // directions. `withdrawnById` is FK-backed to a REAL member of THIS project (the same identity
+  // discipline as `completionRequestedById`); `withdrawnByName` denormalizes the display identity
+  // at withdraw time (the `approver` precedent), so the serialized register never joins for it.
+  withdrawnAt     DateTime?
+  withdrawnById   String?
+  withdrawnByName String?
+  withdrawReason  String?
+  withdrawnBy     Membership? @relation("DecisionWithdrawals", fields: [projectId, withdrawnById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
 
   options           DecisionOption[]
   events            DecisionEvent[]
@@ -2351,6 +2385,16 @@ model Notification {
   color     String
   time      String // relative label, e.g. "2h ago" / "just now"
   at        DateTime @default(now())
+  // Phase 6 task 4a — the decision a decision-notice announces. Notices are DERIVED
+  // communication artifacts (the DecisionEvent register is the history), so retiring a
+  // now-false pending notice must not depend on matching display text: the writers stamp
+  // this and the withdraw transaction deletes by it. Nullable — non-decision notices and
+  // legacy rows (retired by exact text shape, multiplicity-guarded) carry none. NOT a
+  // relation: a notice may outlive nothing, but a deleted project cascades via projectId
+  // and a decision id is a plain stamp, never a join the feed depends on.
+  decisionId String?
+
+  @@index([decisionId])
 }
 
 model AuditLog {

@@ -21,6 +21,8 @@ export const DECISION_COMMANDS = [
   'decisions.approve',
   'decisions.requestChange',
   'decisions.withdrawChange',
+  // Phase 6 task 4a — take back a published, never-approved decision (pmc authority, terminal).
+  'decisions.withdraw',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -73,6 +75,12 @@ export interface RequestDecisionChangeInput {
   readonly reason: string;
   readonly costImpact: number;
   readonly timeImpactDays: number;
+}
+
+/** `decisions.withdraw` — take back a published, never-approved decision (Phase 6 task 4a).
+ *  The reason is REQUIRED: a withdrawal without one is the silent delete this design refuses. */
+export interface WithdrawDecisionInput {
+  readonly reason: string;
 }
 
 /** `decisions.publish` and `decisions.withdrawChange` carry no request body — the decision id comes

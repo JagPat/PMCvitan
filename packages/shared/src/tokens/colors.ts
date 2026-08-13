@@ -33,18 +33,23 @@ export const decisionChip = {
   pending: { bg: '#F6ECD6', color: '#8A6216', border: '#E4CE9C' },
   approved: { bg: '#E1EEE4', color: '#2F6B44', border: '#C3DDCB' },
   change: { bg: '#E6ECF3', color: '#31567F', border: '#C4D3E4' },
+  // a retired decision (Phase 6 task 4a) — muted ink, deliberately without an alarm colour:
+  // nothing is awaited, the register keeps the record
+  withdrawn: { bg: '#EAE5DA', color: '#6B665C', border: 'rgba(35,33,28,0.15)' },
 } as const;
 
 export const decisionChipLabel = {
   pending: 'PENDING',
   approved: 'APPROVED & LOCKED',
   change: 'CHANGE REQUESTED',
+  withdrawn: 'WITHDRAWN',
 } as const;
 
 export const decisionRail = {
   pending: '#C08A2D',
   approved: '#3F7A54',
   change: '#31567F',
+  withdrawn: '#6B665C',
 } as const;
 
 /** Readiness-gate colours. `na` renders as a hollow inset ring (transparent fill). */
