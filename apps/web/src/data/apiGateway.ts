@@ -164,11 +164,16 @@ export interface OrgTemplateModule {
   counts: { nodes: number; phases: number; activities: number; inspections: number };
 }
 
-/** One menu pick at Create Project: which module, how many, where room modules graft. */
+/** One menu pick at Create Project: which module, how many, and where it grafts. A
+ *  zone-anchored (room-root) module takes `underZone`; a room-anchored (element-root)
+ *  module takes EXACTLY ONE of `underRoom` — a room the copied source or an earlier
+ *  selection creates — or `underZone`, grafting the element directly under that zone
+ *  (nested locations). The server enforces the exactly-one rule. */
 export interface ModuleSelection {
   moduleId: string;
   count?: number;
   underZone?: string;
+  underRoom?: string;
 }
 
 /** Create a module: from a live project (a zone's subtree, or the whole project). */

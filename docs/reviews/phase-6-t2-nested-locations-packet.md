@@ -129,6 +129,21 @@ honest (`No room` / `No object`); free-text legacy decisions keep their stored r
 - No migration (upgrade-proof not applicable: zero schema bytes changed); no route
   added; no event added; no tripwire count moves.
 
+## Round 1 correction (Codex on `b312c64`, one P2 finding)
+
+The finding is the P11 lesson applied one door further: the contract and server gained
+the room-anchor target, but the PUBLIC New Project modal (`CreateProjectModal` in
+`ProjectSwitcher.tsx`) still stored only `{count, underZone}` and rendered a target
+input for zone anchors only — so an element-root module picked in the UI sent neither
+field and the new exactly-one rule refused it, leaving the workflow reachable only via
+API/tests. Corrected red-first (4 modal probes RED against the old component → GREEN):
+a room-anchored pick now carries a target-kind choice (Under room… / Under zone…) with
+the matching name input, the payload sends exactly the chosen field, a pick with a
+blank target DISABLES Create (the guaranteed refusal is never sent), and a
+zone-anchored module keeps its byte-identical optional `underZone` shape.
+`ModuleSelection` in the web gateway gains `underRoom`. `pnpm check` EXIT 0
+(web 752/752, API 788/788).
+
 ## What this unit deliberately does NOT do
 
 No `room` → `space` rename (contracts, schema, UI copy, locales all untouched); no
