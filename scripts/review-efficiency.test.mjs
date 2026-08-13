@@ -905,20 +905,39 @@ test('the docs-only cap reads the whole PR, not just the convergence commit', ()
 // So this reads the REAL `docs/STATUS.md` and forces the terminal state rather than trusting the
 // state of the day. A fixture would only prove the parser parses what I already believe it does;
 // the thing worth guarding is the artifact.
-test('the recorded next_task names a stop the deferral gate can resolve', async () => {
+test('the recorded next_task names a stop the deferral gate can resolve, or is deliberately none', async () => {
   const markdown = await readFile(new URL('../docs/STATUS.md', import.meta.url), 'utf8');
   const now = parseStatusNow(markdown);
   assert.ok(now, 'docs/STATUS.md must carry a parseable Now block');
 
   // Forced terminal handoff shape: the one state in which `next_task` is load-bearing alone.
   const handed = { ...now, task_state: 'merged', work_item: 'none' };
-  const phases = deferralPhases(handed);
-  assert.ok(
-    Array.isArray(phases) && phases.length > 0,
-    `next_task "${now.next_task}" does not parse as phase-<n>-task-<id> or phase-<n>-planning, so `
-      + 'after a merged handoff the deferral gate resolves no phase and a docs-only head past the '
-      + 'round cap fails closed on "no phase with open work"',
-  );
+  // CASE-EXACT, matching the runner's own sentinel (#334 round 3): lowercasing here
+  // would bless `next_task: NONE` while `assessRunnerState` treats it as a NAMED task
+  // (`isNoneValue` accepts exact `none` only) — the same state read two ways by two
+  // readers. `NONE` therefore falls to the strict branch below and fails the pin,
+  // which is the correct, loud outcome for a typo.
+  const recorded = String(now.next_task ?? '').trim();
+  if (recorded === 'none') {
+    // ONLY the SPELLED sentinel is the deliberate owner-gated interregnum (phase-6-task-2's
+    // flip: the rename needs the owner's explicit go, forwarding is sequenced behind it,
+    // 6.1b is held). It is the opposite of the failure this pin exists for — the #328 typo
+    // was INVISIBLE until the deferral gate silently resolved no phase. A spelled `none` is
+    // visible, the runner falls to the Maintenance queue, and a docs-only head past the
+    // round cap failing closed on "no phase with open work" is then CORRECT: there is no
+    // open stop to defer probes to. A BLANK or omitted next_task is NOT deliberate — it is
+    // exactly the accident class this pin was built for, and it stays on the strict path
+    // below (#334 round 1).
+    assert.deepEqual(deferralPhases(handed), [], 'a none next_task must resolve no phase, openly');
+  } else {
+    const phases = deferralPhases(handed);
+    assert.ok(
+      Array.isArray(phases) && phases.length > 0,
+      `next_task "${now.next_task}" does not parse as phase-<n>-task-<id> or phase-<n>-planning, so `
+        + 'after a merged handoff the deferral gate resolves no phase and a docs-only head past the '
+        + 'round cap fails closed on "no phase with open work"',
+    );
+  }
 
   // …and the guard is only worth having if it can fail: the shape #328 was caught with.
   const unparseable = deferralPhases({ ...handed, next_task: 'phase-6-unit-6.1b' });

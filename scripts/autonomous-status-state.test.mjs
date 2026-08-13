@@ -639,6 +639,125 @@ test('a valid in-progress state is not mistaken for a handoff', async () => {
   );
 });
 
+// FINDING (#334 P2, round 1) — the `none` SENTINEL is the absence of a next task, not a name.
+// The owner-gated interregnum (merged, nothing scheduled, the maintenance queue as the work
+// source) records `next_task: none`; the predicate read any non-empty string as "a next task
+// named" and classified that state as a HANDOFF — so a live maintenance PR whose head carried
+// it would have suppressed its own `open_pr: none` drift in detectStatusDriftAcrossHeads, and
+// the hourly shepherd would have posted no correction for the PR actually open.
+test('the none-sentinel interregnum is NOT a handoff shape, and does not suppress live-PR drift', async () => {
+  const { isHandoffShape, buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const interregnum = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'none', blocking_directive: 'none' };
+  assert.equal(
+    isHandoffShape(interregnum),
+    false,
+    "next_task 'none' was read as a named next task — the interregnum masqueraded as a handoff",
+  );
+  // The F2 interference scenario: a maintenance PR is open, its head still CARRIES the
+  // interregnum STATUS unchanged (editsStatus: false — its diff does not touch
+  // docs/STATUS.md), and the default branch says open_pr: none — that IS drift, and the
+  // shepherd must say so instead of treating the maintenance PR as a correction.
+  const body = buildDriftHandoff({
+    statusNow: interregnum,
+    openPullRequests: [{ number: 340, headRefName: 'claude/maintenance-upkeep', isDraft: true }],
+    headStatuses: [{ number: 340, now: interregnum, editsStatus: false }],
+  });
+  assert.ok(body, "a live maintenance PR's open_pr drift was suppressed by the none-sentinel handoff misclassification");
+});
+
+// FINDING (#334 P2, round 3) — the OTHER direction of the same sentinel. A STATUS-only flip
+// that deliberately LANDS the interregnum is a correction in flight: once round 1 stopped
+// calling the none-state a handoff, the flip's own head was no longer recognized, the
+// shepherd would advise setting `open_pr` to the flip's own number, and the merged record
+// would send the runner to a closed PR — the exact #303 trap. The distinguisher the Now
+// block cannot carry is whether the PR's DIFF edits docs/STATUS.md: a flip PROPOSES the
+// state (editsStatus: true → suppressed), a maintenance PR inherits it (false → reported,
+// pinned above), and unknown fails toward suppression because the #303 trap is the
+// unrecoverable side.
+test('a none-flip that EDITS STATUS is recognized as the correction in flight', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const interregnum = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'none', blocking_directive: 'none' };
+  const flip = buildDriftHandoff({
+    statusNow: { ...interregnum, task_state: 'in_review', open_pr: 'none' },
+    openPullRequests: [{ number: 341, headRefName: 'claude/status-flip', isDraft: true }],
+    headStatuses: [{ number: 341, now: interregnum, editsStatus: true }],
+  });
+  assert.equal(flip, null, "the flip PR proposing the none-state was not recognized as the correction in flight — the shepherd would advise the #303 stale-open_pr trap");
+  const unknown = buildDriftHandoff({
+    statusNow: { ...interregnum, task_state: 'in_review', open_pr: 'none' },
+    openPullRequests: [{ number: 342, headRefName: 'claude/status-flip-2', isDraft: true }],
+    headStatuses: [{ number: 342, now: interregnum }],
+  });
+  assert.equal(unknown, null, 'an UNKNOWN editsStatus must fail toward suppression (the recoverable mistake), not toward the #303 trap');
+});
+
+// FINDING (#334 P2, round 4) — the PROPOSES-vs-CARRIES test belongs to the CLASS, not to the
+// shape that last bit us. With a NAMED handoff already merged on the default branch (merged /
+// none / none / next_task: phase-6-task-4), every fresh maintenance PR's head CARRIES exactly
+// the handoff shape — round 3 gated only the none-flip, so the carried named handoff still
+// qualified as "the correction in flight", self-exclusion left no drift, and the shepherd
+// never corrected `open_pr: none` for the live PR.
+test('a maintenance PR carrying a NAMED handoff from main does not suppress its own drift', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const namedHandoff = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'phase-6-task-4', blocking_directive: 'none' };
+  const carried = buildDriftHandoff({
+    statusNow: namedHandoff,
+    openPullRequests: [{ number: 343, headRefName: 'claude/maintenance-upkeep-2', isDraft: true }],
+    headStatuses: [{ number: 343, now: namedHandoff, editsStatus: false }],
+  });
+  assert.ok(carried, "a maintenance PR carrying main's named handoff was mistaken for the correction in flight — its open_pr drift went unreported");
+  // …while a REAL handoff PR (its diff edits STATUS) still suppresses, as always.
+  const proposing = buildDriftHandoff({
+    statusNow: { ...namedHandoff, task_state: 'in_review' },
+    openPullRequests: [{ number: 344, headRefName: 'claude/status-handoff', isDraft: true }],
+    headStatuses: [{ number: 344, now: namedHandoff, editsStatus: true }],
+  });
+  assert.equal(proposing, null, 'a genuine handoff PR editing STATUS must still be recognized as the correction in flight');
+});
+
+// FINDING (#334 P2, round 5) — `editsStatus` is a FILE-level fact, and the file holds more
+// than the Now block. A maintenance PR that edits only a HISTORICAL paragraph of
+// docs/STATUS.md gets editsStatus: true while its Now block still equals the default
+// branch's — it proposes NO transition, and calling it the correction in flight suppresses
+// the very drift nudge the shepherd owes the live PR. Proposing takes BOTH halves: the file
+// in the diff AND the landing fields differing from the default branch's.
+test('a PR editing only a historical STATUS paragraph does not suppress its own drift', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const namedHandoff = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'phase-6-task-4', blocking_directive: 'none' };
+  const body = buildDriftHandoff({
+    statusNow: namedHandoff, // the default branch ALREADY records this landing
+    openPullRequests: [{ number: 345, headRefName: 'claude/docs-touchup', isDraft: true }],
+    // the head edits STATUS (a narrative paragraph) but its Now block equals main's
+    headStatuses: [{ number: 345, now: namedHandoff, editsStatus: true }],
+  });
+  assert.ok(body, "a historical-paragraph STATUS edit was mistaken for a landing proposal — the live PR's open_pr drift went unreported");
+});
+
+// FINDING (#334 P2, round 6) — round 5 enumerated the landing fields and promptly missed
+// one: a correction that ONLY clears a stale `blocking_directive` from a terminal handoff
+// differs in no enumerated field, so it was not recognized as the correction in flight and
+// the shepherd would advise the #303 stale-open_pr trap. The comparison is now the WHOLE
+// Now block minus the timestamp — the round-4 lesson (gate the class, not the instance)
+// applied to fields.
+test('a directive-only STATUS correction is recognized as the correction in flight', async () => {
+  const { buildDriftHandoff } = await import('./runner-continuation.mjs');
+  const stale = { phase: '6', task: '2', task_state: 'merged', work_item: 'none', open_pr: 'none', next_task: 'phase-6-task-4', blocking_directive: 'fix-something', updated: '2026-08-12' };
+  const corrected = { ...stale, blocking_directive: 'none', updated: '2026-08-13' };
+  const body = buildDriftHandoff({
+    statusNow: stale,
+    openPullRequests: [{ number: 346, headRefName: 'claude/status-directive-clear', isDraft: true }],
+    headStatuses: [{ number: 346, now: corrected, editsStatus: true }],
+  });
+  assert.equal(body, null, 'the directive-only correction was not recognized — the shepherd would advise the #303 stale-open_pr trap');
+  // …and `updated` alone must NEVER count as a proposal: a date-touch is not a transition.
+  const dateOnly = buildDriftHandoff({
+    statusNow: stale,
+    openPullRequests: [{ number: 347, headRefName: 'claude/docs-touchup-2', isDraft: true }],
+    headStatuses: [{ number: 347, now: { ...stale, updated: '2026-08-14' }, editsStatus: true }],
+  });
+  assert.ok(dateOnly, 'a timestamp-only difference was mistaken for a landing proposal');
+});
+
 // FINDING (#331 head 35d9532, P1) — STATUS named a `phase_plan` that existed only on a
 // DIFFERENT unmerged branch. The runner's first act after parsing STATUS is opening that
 // file (docs/AUTONOMOUS_LOOP.md), so a dangling reference is the documented stall mode:

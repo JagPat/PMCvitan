@@ -234,21 +234,45 @@ async function openHeadStatuses(client, openPullRequests) {
   return Promise.all(
     (openPullRequests ?? []).map(async (pullRequest) => {
       const headSha = pullRequest?.head?.sha;
-      if (!headSha) return { number: pullRequest?.number ?? null, now: null };
+      if (!headSha) return { number: pullRequest?.number ?? null, now: null, editsStatus: null };
       try {
         const markdown = await client.fileContent('docs/STATUS.md', headSha);
         return {
           number: pullRequest.number,
           now: parseStatusNow(markdown ?? ''),
+          // Whether this PR's DIFF touches docs/STATUS.md (#334 round 3): a terminal
+          // none-flip head is indistinguishable, from its Now block alone, from a
+          // maintenance PR that merely carries main's terminal state — only the diff
+          // says which one PROPOSES the state. `null` on failure: the drift logic
+          // treats unknown as editing, failing toward the recoverable mistake.
+          editsStatus: await pullRequestEditsStatus(client, pullRequest.number),
         };
       } catch (error) {
         console.warn(
           `Could not read STATUS from PR #${pullRequest.number} head: ${error.message}`,
         );
-        return { number: pullRequest.number, now: null };
+        return { number: pullRequest.number, now: null, editsStatus: null };
       }
     }),
   );
+}
+
+// Does the PR's changed-file list include docs/STATUS.md? Bounded to three pages
+// (an autonomous PR never legitimately exceeds 300 files — the review budget is 20);
+// an over-long or unreadable list returns null rather than guessing false.
+async function pullRequestEditsStatus(client, number) {
+  try {
+    for (let page = 1; page <= 3; page += 1) {
+      const batch = await client.request(
+        `/repos/${client.repository}/pulls/${number}/files?per_page=100&page=${page}`,
+      );
+      if ((batch ?? []).some((file) => file?.filename === 'docs/STATUS.md')) return true;
+      if ((batch ?? []).length < 100) return false;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // Two questions, two authorities. The post-merge handoff asks "given the STATUS

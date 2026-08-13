@@ -1,4 +1,4 @@
-import { assessRunnerState } from './autonomous-status-state.mjs';
+import { assessRunnerState, isNoneValue } from './autonomous-status-state.mjs';
 
 const NONE = 'none';
 
@@ -108,10 +108,56 @@ export function isHandoffShape(now) {
     (workItem === '' || workItem === 'none')
     && TERMINAL_HANDOFF_STATES.has(state)
     && (openPr === '' || openPr === 'none')
-    && nextTask !== ''
+    // A handoff NAMES its next task. The `none` sentinel is the ABSENCE of one (the
+    // owner-gated interregnum: merged, nothing scheduled, the maintenance queue as the
+    // work source) — treating it as a name classified that state as a handoff, and a
+    // live maintenance PR whose head carried it would have suppressed the very
+    // `open_pr: none` drift the hourly shepherd exists to correct (#334 round 1).
+    // The predicate is the RUNNER'S OWN, case-exact (#334 round 3): a lowercased
+    // check here would call `NONE` the sentinel while assessRunnerState treats it as
+    // a named task — the same state read two ways by two readers.
+    && !isNoneValue(nextTask)
+  );
+}
+
+/** The terminal NONE-flip: a STATUS that deliberately lands `merged` with NOTHING
+ *  scheduled (the owner-gated interregnum). Not a handoff — it names no task — but a
+ *  PR that PROPOSES this state is still a correction in flight (#334 round 3): the
+ *  shepherd must not advise pointing `open_pr` at that PR's own number, or the merged
+ *  STATUS sends the runner to a closed PR (the exact #303 trap). Whether a head
+ *  PROPOSES the state or merely CARRIES it from main is decided by `editsStatus`. */
+export function isNoneFlipShape(now) {
+  const workItem = String(now?.work_item ?? '').trim().toLowerCase();
+  const state = String(now?.task_state ?? '').trim().toLowerCase();
+  const openPr = String(now?.open_pr ?? '').trim().toLowerCase();
+  return (
+    (workItem === '' || workItem === 'none')
+    && TERMINAL_HANDOFF_STATES.has(state)
+    && (openPr === '' || openPr === 'none')
+    && isNoneValue(String(now?.next_task ?? '').trim())
   );
 }
 const TERMINAL_HANDOFF_STATES = new Set(['merged', 'complete', 'completed', 'cleared']);
+
+/** Whether a head's Now block PROPOSES a state transition (#334 rounds 5–6). A head whose
+ *  Now block EQUALS the default branch's is carrying main's state, whatever else its diff
+ *  touches — editing a historical STATUS paragraph puts the file in the diff without
+ *  proposing anything. Round 5 compared an enumerated field list and round 6 promptly
+ *  found the field it missed (`blocking_directive` — a directive-only correction differs
+ *  in nothing else), which is the round-4 lesson pointed at FIELDS: gate the class, not
+ *  the instance. So the comparison is now the WHOLE Now block minus `updated` (the
+ *  timestamp — a cosmetic touch that must never count as a transition), over the UNION of
+ *  both sides' keys so an added or removed field also counts. Field values are trimmed. */
+function landingFieldsDiffer(headNow, defaultBranchNow) {
+  const keys = new Set([
+    ...Object.keys(headNow ?? {}),
+    ...Object.keys(defaultBranchNow ?? {}),
+  ]);
+  keys.delete('updated');
+  return [...keys].some(
+    (field) => String(headNow?.[field] ?? '').trim() !== String(defaultBranchNow?.[field] ?? '').trim(),
+  );
+}
 
 // Drift is a property of the STATUS that will exist on the default branch, but a
 // correction already in flight on an open PR head is NOT drift — the default
@@ -140,7 +186,26 @@ export function detectStatusDriftAcrossHeads({
     //
     // So: exclude this head's own PR from the live set and re-ask. Nothing else open can be in
     // drift against it, or the head is not a correction — it is one of the things that is wrong.
-    if (!isHandoffShape(entry.now)) return false;
+    //
+    // TWO landing shapes qualify (#334 rounds 3–5), and the PROPOSES-vs-CARRIES test
+    // applies to BOTH — the distinguisher belongs to the CLASS, not to whichever shape
+    // last bit us. A HANDOFF names its next task; a NONE-FLIP is the deliberate
+    // interregnum. Either one, read from a head's Now block, is IDENTICAL to a
+    // maintenance PR that merely CARRIES the default branch's terminal state (round 4:
+    // with a named handoff already merged on main, every fresh PR's head carries that
+    // exact shape) — so a head qualifies only when it actually PROPOSES the state, which
+    // takes BOTH halves (round 5): its diff EDITS docs/STATUS.md (`entry.editsStatus` —
+    // a file-level fact) AND its Now block's LANDING FIELDS differ from the default
+    // branch's (a PR that edits only a historical STATUS paragraph carries the file in
+    // its diff while proposing nothing). `editsStatus` unknown (null/undefined) counts
+    // as editing: wrongly suppressing a maintenance PR's drift costs one missed
+    // shepherd nudge, while wrongly advising a landing head to point `open_pr` at
+    // itself plants the #303 trap in the merged record. Fail toward the recoverable
+    // mistake.
+    const qualifies = (isHandoffShape(entry.now) || isNoneFlipShape(entry.now))
+      && entry.editsStatus !== false
+      && landingFieldsDiffer(entry.now, defaultBranchNow);
+    if (!qualifies) return false;
     const others = (openPullRequests ?? []).filter(
       (pullRequest) => String(pullRequest.number) !== String(entry.number),
     );

@@ -167,7 +167,8 @@ test('A2b: an unreadable head STATUS degrades to null and cannot suppress drift'
       maintenanceQueue: [],
     }),
   });
-  assert.deepEqual(context.headStatuses, [{ number: 301, now: null }]);
+  // editsStatus: null on the error path too (#334 round 3) — unknown, never guessed.
+  assert.deepEqual(context.headStatuses, [{ number: 301, now: null, editsStatus: null }]);
   assert.equal(context.defaultBranchNow.open_pr, 'none');
 });
 
