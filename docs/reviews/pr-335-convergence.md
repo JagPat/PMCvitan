@@ -12,7 +12,9 @@ flip landing as the immediate tiny follow-up PR.
 |---|---|---|---|
 | `45cecf2` | the plan + the flip to `task: 4 / in_progress` | 13 (6 P1, 7 P2) | corrected on `6229248` |
 | `6229248` | round-1 batch + a 3-site same-class sweep | 20, in TWO deliveries (10:13Z: 2 P1 + 8 P2; 10:26Z: 10 P2 — the first Codex attempt timed out, the retry was triggered, and BOTH eventually delivered against this same head) | first ten corrected on `eda4127`; all twenty corrected on `2932234` |
-| `2932234` | round-2 batch, both deliveries folded | 10 (3 P1, 7 P2) | corrected on this head |
+| `2932234` | round-2 batch, both deliveries folded | 10 (3 P1, 7 P2) | corrected on `e33c5ac` |
+| `e33c5ac` | round-3 batch | the GATE, not Codex: `convergence_required` — the cap's deferral owed | the two-step executed on `4f97dc5` |
+| `4f97dc5` | STATUS reverted + the deferral trailer | 5 (2 P1, 3 P2) — delivered 45s AFTER the orchestrator's two-attempt timeout marked the head `blocked`; the review is real and is answered, the timeout artifact resets with the next push | corrected on this head |
 
 `eda4127` (the first-ten correction) was pushed between the two deliveries and
 SUPERSEDED before receiving any verdict of its own — the second delivery
@@ -176,10 +178,22 @@ with more prose"), and it refuses the deferral trailer from a diff touching
    whose review stops RUN the probes that adjudicate everything this review
    opened.
 
-**The deferral ledger.** Every question the three rounds raised is already a
-NAMED probe in the plan's §E, because each correction was written as
-probe-first design; the still-open part is their EXECUTION, which no docs-only
-diff can provide. The binding, by round-3 finding (rounds 1–2 bind identically
+**Round 4, post-deferral (5 findings on the deferral head itself).** Each is
+answered the way the deferral demands — a design decision bound to a named
+probe, never a prose-only round: the holder columns are WRITE-ONCE from 4b
+(the seal was 4d-scheduled while the trust began in 4b — the freeze comes
+first, 4d opens the one forward-act door; P17/P34); a QUEUED
+`decision.published` push claimed after a withdrawal is dropped by a send-time
+guard, recorded (P10); the `ChangeRequest` evidence set freezes for ALL
+origins, not only the new one (P33); consultation eligibility requires
+PUBLISHED, not merely open-status — a draft's `pending` would have leaked an
+author-private title (P25); and the generic forward EXCLUDES
+`awaiting_countersign` — that status routes only through the architect's own
+moves, or the new holder is stranded in someone else's action item (P30).
+
+**The deferral ledger.** Every question the four rounds raised is a NAMED probe
+in the plan's §E, because each correction was written as probe-first design;
+the still-open part is their EXECUTION, which no docs-only diff can provide. The binding, by round-3 finding (rounds 1–2 bind identically
 through their sections): the holder-mutation seal → P34; provisional approvals
 as provenance → P31 (the `finalized` CHECK-pinned composite, hostile inserts);
 `withdrawChange` on disagreement requests → P33; open-state-only forwards →
@@ -192,11 +206,13 @@ own exact-head review stops, which fail closed exactly like this one.
 
 ## Status
 
-All forty-three findings across the three finding-bearing heads (13 + 20 + 10)
-are corrected in the plan text with their probes named and their red sites
-stated; the finding trajectory (13 → 20 → 10, round 2 doubled by a delivery
-artifact) narrowed by round-depth — readers, borrowed machinery, trust anchors.
-Nothing is dismissed. The docs-only cap is reached and the deferral above moves
-the remaining verification from prose to probes, where it belonged all along.
+All forty-eight findings across the four finding-bearing heads
+(13 + 20 + 10 + 5) are corrected in the plan text with their probes named and
+their red sites stated; the trajectory (13 → 20 → 10 → 5, round 2 doubled by a
+delivery artifact) narrowed by round-depth — readers, borrowed machinery, trust
+anchors, staging seams. Nothing is dismissed. The docs-only cap is reached, the
+deferral trailer stands on every head from the fourth onward, and the remaining
+verification lives in the §E probes at `phase-6-task-4`'s own implementation
+stops, where it belonged all along.
 
 Review-Convergence: complete

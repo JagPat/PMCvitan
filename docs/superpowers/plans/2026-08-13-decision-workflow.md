@@ -200,7 +200,15 @@ new value. The enumerated readers, each with its decided behavior:
 (`packages/shared/src/platform/events.ts:34-40`) → `EXTERNAL_EFFECTS`
 (`apps/api/src/platform/external-effects.ts:41-47`) as `{ invalidate: true,
 push: null }` (surfaces refresh; no push — `change_requested`/`change_withdrawn`
-set the precedent for lifecycle corrections) → **the coverage re-seal**:
+set the precedent for lifecycle corrections). **And the withdraw must outrun the
+QUEUED past** (Codex, round 4): a committed `decision.published` push intent the
+relay has not yet delivered survives the withdrawal in the durable outbox, so a
+lagging or restarted relay would tell the client "awaiting your approval" about
+a decision every surface has since hidden. The pending-approval push therefore
+gains a SEND-TIME guard: at claim time the dispatcher re-derives that the
+decision is STILL published-and-pending, and a stale intent is dropped with the
+drop recorded (never silently) — probed by the commit-publish → lag → withdraw
+→ relay-claims ordering (P10) → **the coverage re-seal**:
 `effectCoverageVersion()` changes with any new key and is pinned at
 `outbox.bootstrap.ts:115`, `outbox-operations.service.ts:143` and
 `external-effects.test.ts:47-74` — the re-seal is explicit in the diff, never a
@@ -282,6 +290,17 @@ The create contract exposes the decider; `approveSchema` stays `{ optionIndex }`
 actor IS the decider (by role or named membership), or the PMC acting on the
 decider's behalf, recorded honestly — `onBehalfOf` generalizes from the
 hard-coded `'client'` (`decisions.service.ts:194`) to the decider's designation.
+**The holder columns are WRITE-ONCE from the day they exist** (Codex, round 4):
+the forward-only mutation seal was scheduled with 4d, but `deciderKind`/
+`deciderMembershipId` are TRUSTED from 4b — between the two units a hostile
+update could re-home a pending decision with no recorded actor while authority,
+counts, notices and pushes follow the rewritten holder. So 4b ships the columns
+immutable-after-create (a BEFORE UPDATE trigger refuses ANY change; no 4b
+service path needs one), hostile-update probed in 4b (P17), and 4d LOOSENS that
+trigger to exactly one opening: a change accompanied by its same-transaction
+`DecisionForward` row (P34) — the freeze comes first, the door comes with the
+act that justifies it.
+
 **The ROUTE ceiling must widen with it** (Codex, round 2): the service rule is
 unreachable while `ROLE_POLICY['decision.approve']` still admits only
 client/pmc — a contractor named as decider meets a 403 BEFORE the service runs.
@@ -420,9 +439,14 @@ requested only on a decision whose question is still OPEN — in 4c that set is
 `pending` or `change` (**the `awaiting_countersign` arm is ADDED BY 4d with the
 status itself** — Codex, round 3: 4c ships before that enum value exists, the
 same staging rule as every other 4d-owned value; 4d extends the eligibility and
-its visibility probe) — never on `withdrawn` (whose title and reason are
-pmc-only; a consultation there would leak exactly what §A hides), `approved` or
-`recorded` (nothing left to inform). Refused 409 at the service, with the
+its visibility probe) **AND PUBLISHED** (Codex, round 4: status alone admits an
+author-private DRAFT, whose `status` is `pending` — a consultation on it would
+hand the consultee the title and question of a decision its own author has not
+released; `publishedAt IS NOT NULL` joins the request AND response guards,
+probed: draft-pending consultation refused with no visibility widening, P25) —
+never on `withdrawn` (whose title and reason are pmc-only; a consultation there
+would leak exactly what §A hides), `approved` or `recorded` (nothing left to
+inform). Refused 409 at the service, with the
 withdrawn-leak probe asserting a consultee gains NO visibility of a withdrawn
 row (P25). **The RESPONSE command re-checks the same eligibility at ITS moment**
 (Codex, round 3): a request made while `pending` outlives the decision, and a
@@ -478,11 +502,17 @@ The settled design, plus the owner's amendment, as behavior:
   trust, a DB trigger refuses any change to them unless the SAME transaction
   appends the matching `DecisionForward` row — a holder change with no recorded
   actor and reason is unrepresentable, hostile-update probed (P34). **And
-  forwarding is legal only in the OPEN holder states** (Codex, round 3):
-  `pending`, `change` (and `awaiting_countersign` once 4d adds it), CAS'd on
-  status — forwarding an `approved`/`recorded`/`withdrawn` decision would
-  append a holder change and push a new "holder" where no approval action can
-  ever follow; terminal-status forwards are 409, probed (P30). Forward
+  forwarding is legal only in the states the NEW HOLDER can act on** (Codex,
+  rounds 3+4): `pending` and `change` ONLY, CAS'd on status. Terminal states
+  (`approved`/`recorded`/`withdrawn`) would append a holder change where no
+  approval can ever follow — and `awaiting_countersign` is EXCLUDED from the
+  generic command too (round 4): that status is the ARCHITECT's action item, so
+  a generic forward there would hand the new holder a decision they cannot
+  re-approve or complete; while a countersign is pending the ONLY routing moves
+  are the architect's own — countersign, reject-back, or forward-on through the
+  disagreement flow below, which transitions to `change` and leaves the new
+  holder actionable. Ineligible-status forwards are 409, BOTH classes probed
+  (P30). Forward
   authority: the current HOLDER + the PMC **+ the architect once one exists**
   (the AMENDMENT — previously holder + PMC).
   The `reason` is user-supplied EVIDENCE for an append-only holder change and
@@ -572,7 +602,14 @@ The settled design, plus the owner's amendment, as behavior:
   `change → approved` — on a disagreement request that path would complete an
   approval WITHOUT its countersign — so `withdrawChange` refuses
   `countersign_rejection` requests with a 409 naming re-approval as the only
-  way forward, seal-probed (P33). **And the request's REQUIRED fields are
+  way forward, seal-probed (P33). **And the request's EVIDENCE freezes with its
+  origin** (Codex, round 4): sealing `origin` alone leaves `reason`,
+  `costImpact`, `timeImpactDays` and `requestedById` — the very fields the
+  serializer renders as the disagreement — freely rewritable under an intact
+  origin. The freeze trigger covers the evidence set for EVERY `ChangeRequest`
+  row (the class, not the instance: a standard request's reason is evidence
+  too), with the status/resolution close transitions as the only permitted
+  mutations — hostile rewrites probed (P33). **And the request's REQUIRED fields are
   populated honestly** (Codex, round 3): `ChangeRequest.costImpact` and
   `timeImpactDays` are non-null and rendered, so the disagreement command
   accepts both as OPTIONAL inputs (the architect may know the impact)
@@ -626,7 +663,7 @@ against` names the exact site.
 | P7 | double publish admits exactly one — publish's new CAS | `decisions.service.ts:147` plain `update` |
 | P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row, a whitespace-only reason (tabs/newlines — the `btrim(x, E' \t\n\x0B\f\r')` CHECK), an UPDATE rewriting `withdrawnAt`/`withdrawnById`/`withdrawReason` on an already-withdrawn row (evidence freeze), a withdraw beside an existing `DecisionApprovalRevision`, AND a `DecisionApprovalRevision` INSERT against a withdrawn decision (the never-approved seal, both directions) | the three triggers absent — hostile SQL accepted at baseline |
 | P9 | `countPending` and the client pending list drop the decision; the client badge clears | asserted against `decisions.query.ts:173-175` fixtures |
-| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); and the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item |
+| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree); the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`); the client bell carries NO stale "awaiting approval" item for it — the pending notice is retired (stamp-based; legacy text-shape with the multiplicity guard, ambiguous rows left + reported); and a QUEUED `decision.published` push intent claimed AFTER the withdrawal is dropped by the send-time guard with the drop recorded (publish → relay lag → withdraw → claim ordering) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone and keeps the stale pending item; the outbox relay delivering the stale approval push |
 | P11 | `deriveDecisionReading('withdrawn')` yields `wait` with the honest withdrawn reason, and an activity gated on the decision still refuses to start with that reason | `readiness.ts:154-165` else-branch emits "Awaiting the client's approval" |
 | P12 | `decision.withdrawn` is in the shared catalog, the external-effect catalog re-seal is exact, manifest⇄contract equality holds | `external-effects.test.ts:47-74` / `decisions.contract.test.ts:24-58` RED on the missing entry |
 | P13 | projection `decisions.inbox`: live == projection == rebuild across a withdraw; the rebuild emits zero events | the diagnostic comparables on the new status |
@@ -638,7 +675,7 @@ against` names the exact site.
 |---|---|---|
 | P15 | default-decider create is byte-identical to today (contract default + backfill) — the no-caller-change proof | the field's absence itself (schema equality fixture) |
 | P16 | a `member`-decider decision is approvable by that member and by pmc-on-behalf (recorded as on-behalf-of-the-decider), and by NO one else — the contractor decider passes the WIDENED route ceiling and is accepted by the service; a same-role non-decider passes the route and is refused by the SERVICE (the authority) | `decisions.service.ts:194` hard-coded `'client'`; `ROLE_POLICY['decision.approve']` admitting only client/pmc 403s the decider at the route |
-| P17 | `deciderKind='member'` without a membership id (and the inverse) is unrepresentable — contract 400 and PG CHECK — and a CROSS-PROJECT membership reference is refused by the composite FK onto `Membership(projectId, id)` | the CHECK + the candidate key absent — hostile insert accepted |
+| P17 | `deciderKind='member'` without a membership id (and the inverse) is unrepresentable — contract 400 and PG CHECK; a CROSS-PROJECT membership reference is refused by the composite FK onto `Membership(projectId, id)`; and the holder columns are WRITE-ONCE — a hostile UPDATE re-homing a pending decision is refused by the 4b immutability trigger (loosened only by 4d's forward-act rule) | the CHECK + the candidate key absent — hostile insert accepted; the holder columns freely writable between 4b and 4d |
 | P18 | a `none` decision is born `recorded`, appears in the register and NEVER in any pending surface, badge, or action item; publishing it appends NO "awaiting approval" notice and pushes to NOBODY ("Issue recorded" notice instead — the bell and the push intent both asserted); PG refuses any transition OUT of `recorded` (approve CAS and hostile SQL both) | the `recorded` arm absent in each filter; the unconditional pending notice/push at `decisions.service.ts:101,149`; the terminal trigger absent |
 | P19 | a record files end-to-end with `options: []` — create → persist → serialize → register render (the FULL product path, not contract acceptance alone) — and every other kind still refuses fewer than 2 | `contracts.ts:467-478` unconditional `.min(2)`; `DecisionsService.create`'s `input.options[0]` lead derivation throws on the empty array |
 | P20 | an activity linked to a PUBLISHED `recorded` decision reads gate `na` with the record-only reason; linked to a DRAFT record it reads `wait` ("unpublished") and `start` refuses — publishing flips it to `na` | `readiness.ts:154-165` else-branch; `statusOf` blind to draftness |
@@ -651,7 +688,7 @@ against` names the exact site.
 |---|---|---|
 | P23 | a consultation request + response round-trips, append-only at PG (no UPDATE/DELETE), attributed both ways; a whitespace-only `question` or `response` is refused at the contract AND by the `btrim(x, E' \t\n\x0B\f\r')` CHECK | the tables/seals absent; the non-blank checks absent |
 | P24 | consultation moves NO status and changes NO gate verdict (fixture: pending stays pending, gate reading identical before/after) | trivially green only AFTER the tables exist — red at the staged baseline via the absent read |
-| P25 | the consultee sees THAT decision only while their consultation stands; another consultant still sees nothing; a consultation on a `withdrawn`/`approved`/`recorded` decision is refused 409 and a withdrawn title/reason is NEVER reachable through a consultation; a LATE response after the decision closes (request-while-pending → withdraw → respond) is refused 409 with no row and no push | `decision-serialize.ts:69-77`; the missing eligibility carve-out; the response command trusting request-time eligibility |
+| P25 | the consultee sees THAT decision only while their consultation stands; another consultant still sees nothing; a consultation on a `withdrawn`/`approved`/`recorded` decision is refused 409 and a withdrawn title/reason is NEVER reachable through a consultation; a consultation on an author-private DRAFT (`status='pending'`, `publishedAt` null) is refused with no visibility widening; a LATE response after the decision closes (request-while-pending → withdraw → respond) is refused 409 with no row and no push | `decision-serialize.ts:69-77`; the missing eligibility carve-out; the status-only guard admitting drafts; the response command trusting request-time eligibility |
 | P26 | the two consultation events push to exactly the consultee / the requester — INCLUDING an org-admin requester with no membership row (user-level target), while every same-role non-target member receives nothing; the catalog re-seal is exact | the catalog entries absent; a membership-keyed target that drops the org-admin |
 | P27 | the consultation's OWN `projectId` binds both ends — a cross-project MEMBERSHIP and a cross-project DECISION are each unrepresentable (composite FKs onto `Membership(projectId,id)` and `Decision(projectId,id)`); the RESPONSE carries its own `decisionId` bound through BOTH candidate keys (`DecisionConsultation(id,decisionId)` and `DecisionOption(decisionId,id)`), so a response naming another decision's option — through any parent — is unrepresentable | the `projectId`/`decisionId` child columns + FKs absent — hostile inserts accepted |
 
@@ -662,10 +699,10 @@ against` names the exact site.
 | P28 | an `architect` membership authenticates, resolves policy, and appears in every role mirror (compile + runtime walk) | the `TokenRole` union — each mirror RED one by one |
 | P29 | with NO ACTIVE architect membership ever, 4b behavior is byte-identical (no chain, no countersign) — the presence-switch proof | the activation predicate |
 | P29b | removing the only architect DEACTIVATES the chain for new approvals; a decision already `awaiting_countersign` is never auto-flipped and is resolved only by an explicit attributable PMC act | presence read as row-existence — a `removed` membership keeps the chain armed |
-| P30 | forward authority: holder ✓, pmc ✓, architect ✓ (once active), any other member ✗ — the AMENDED rule; a forward naming a REMOVED membership or an unheld role is a 409 (active-target validation); a forward of an `approved`/`recorded`/`withdrawn` decision is a 409 (open-states-only CAS) | the pre-amendment holder+PMC check; the unvalidated `toDesignation`; the status-blind forward |
+| P30 | forward authority: holder ✓, pmc ✓, architect ✓ (once active), any other member ✗ — the AMENDED rule; a forward naming a REMOVED membership or an unheld role is a 409 (active-target validation); a forward of an `approved`/`recorded`/`withdrawn` decision is a 409, AND a generic forward of an `awaiting_countersign` decision is a 409 (that status routes only through the architect's own countersign/reject-back/forward-on) | the pre-amendment holder+PMC check; the unvalidated `toDesignation`; the status-blind forward; the generic command stranding a new holder in the architect's state |
 | P31 | a decider approval under an active chain writes its revision `finalized=false` and lands `awaiting_countersign` (gate `wait`, withdraw refused, `decision.awaiting_countersign` emitted with the architect-targeted push); the countersign — a second attributed register act referencing the exact `DecisionApprovalRevision` — flips `finalized=true` (its ONE permitted transition), lands `approved`, and emits the real `decision.approved`; hostile: downstream provenance naming an UNFINALIZED revision is unrepresentable (the CHECK-pinned `(id, finalized)` composite FK) and a `finalized` true→false flip is refused | the countersign state/guard absent; the register trusted regardless of finality; `decision.approved` reused for the awaiting state |
 | P32 | a self-countersign is two explicit acts with two ledger entries under two idempotency keys | the single-act shortcut |
-| P33 | BOTH disagreement outcomes land in `change` WITH the open `ChangeRequest` created in-tx (`origin='countersign_rejection'`, impacts defaulted 0 and rendered with the reason; NEVER back to `pending`), keeping BOTH register acts; reject-back keeps the decider as holder, forward-on re-points to the named ACTIVE decider; each path completes end-to-end — re-approve resolves the request, lands `awaiting_countersign`, countersign lands `approved`; and `withdrawChange` REFUSES a `countersign_rejection` request 409 (the ordinary escape would approve without a countersign) | the chain table absent; a reject-back landing `change` with NO open request (`decisions.service.ts:226-236` rolls the re-approval back and the serializer shows no reason); `withdrawChange` restoring `change → approved` on a disagreement request |
+| P33 | BOTH disagreement outcomes land in `change` WITH the open `ChangeRequest` created in-tx (`origin='countersign_rejection'`, impacts defaulted 0 and rendered with the reason; NEVER back to `pending`), keeping BOTH register acts; reject-back keeps the decider as holder, forward-on re-points to the named ACTIVE decider; each path completes end-to-end — re-approve resolves the request, lands `awaiting_countersign`, countersign lands `approved`; and `withdrawChange` REFUSES a `countersign_rejection` request 409 (the ordinary escape would approve without a countersign); hostile SQL rewriting a request's `reason`/`costImpact`/`timeImpactDays`/`requestedById` is refused by the evidence-freeze trigger (all origins — only the close transitions may mutate) | the chain table absent; a reject-back landing `change` with NO open request (`decisions.service.ts:226-236` rolls the re-approval back and the serializer shows no reason); `withdrawChange` restoring `change → approved` on a disagreement request; the request evidence freely rewritable under an intact `origin` |
 | P34 | the forward chain is append-only at PG and same-project-sealed; each entry records the DISPLACED holder and the ACTING forwarder as distinct immutable facts (a PMC forwarding a client-held decision shows both); a whitespace-only forward `reason` is refused at the contract AND by the `btrim(x, E' \t\n\x0B\f\r')` CHECK; `decision.forwarded` is in the catalog, the re-seal is exact, and the targeted push reaches the NEW holder; hostile: a direct UPDATE of `deciderKind`/`deciderMembershipId` with NO same-tx `DecisionForward` row is refused by the holder trigger | hostile insert/update accepted; the non-blank checks absent; one `fromId` column that loses actor or holder; the catalog entry absent — projection/badge stale after a holder move; the holder columns freely writable |
 | P35 | forward vs approve/countersign under the deterministic barrier, BOTH orderings: exactly one outcome survives, the loser is a 409, the holder is coherent (no approval recorded under a superseded holder) | the lock-free holder read — both interleavings commit at the staged baseline |
 | P36 | architect role-change vs approve under the deterministic barrier, BOTH directions (activation: promote-to-architect vs a direct approve; deactivation: demote vs a chain approve), BOTH orderings: the committed outcome matches the switch state AT COMMIT — never `approved` under an active chain, never `awaiting_countersign` under an inactive one | `MembersService.updateRole` lock-free at `members.service.ts:106-110` — the stale-switch approval commits at the staged baseline |
