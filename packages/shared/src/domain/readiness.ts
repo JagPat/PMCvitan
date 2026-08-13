@@ -66,6 +66,9 @@ export interface ReadinessOverride {
 }
 
 export interface ReadinessInput {
+  /** Phase 6 task 4a round 1 (Codex F5): whether the VIEWER may see withdrawn decisions
+   *  (pmc only). Controls the decision-gate REASON wording, never the verdict. */
+  withdrawnReasonVisible?: boolean;
   decisionStatus: DecisionStatus | null;
   gateMaterial: Gate;
   gateTeam: Gate;
@@ -151,11 +154,15 @@ export function deriveDrawingGate(activityId: string, drawings: ReadinessDrawing
 }
 
 /** The Decision gate — derived live from the linked decision's lock state. */
-export function deriveDecisionReading(decisionStatus: DecisionStatus | null): GateReading {
+export function deriveDecisionReading(decisionStatus: DecisionStatus | null, withdrawnReasonVisible = false): GateReading {
   const v: Gate = decisionStatus == null ? 'na' : decisionStatus === 'approved' ? 'ok' : 'wait';
   // Phase 6 task 4a: a WITHDRAWN linked decision keeps the gate at `wait` (the question the
   // work depends on is unanswered — withdrawal must not silently unblock it), but the reason
   // is honest: nothing is awaiting the client, the decision needs re-issuing or relinking.
+  // Round 1 (Codex F5): a withdrawn decision is pmc-only, so the honest reason is served ONLY
+  // to viewers who can see it — everyone else gets a non-disclosing reason with the same
+  // verdict and the same next step (the ball is with the PMC). Fail-closed: callers that do
+  // not say who is looking get the redacted text.
   const reason =
     decisionStatus == null
       ? 'No linked decision'
@@ -164,7 +171,9 @@ export function deriveDecisionReading(decisionStatus: DecisionStatus | null): Ga
         : decisionStatus === 'change'
           ? 'Change requested — awaiting the client’s re-approval'
           : decisionStatus === 'withdrawn'
-            ? 'The linked decision was withdrawn — re-issue or relink'
+            ? withdrawnReasonVisible
+              ? 'The linked decision was withdrawn — re-issue or relink'
+              : 'Awaiting the PMC on the linked decision'
             : 'Awaiting the client’s approval';
   return { v, source: 'derived', reason };
 }
@@ -172,7 +181,7 @@ export function deriveDecisionReading(decisionStatus: DecisionStatus | null): Ga
 /** The five-gate readiness derivation — an unexpired override supersedes ITS gate. */
 export function deriveReadiness(activityId: string, input: ReadinessInput): ActivityReadiness {
   const derived: ActivityReadiness = {
-    decision: deriveDecisionReading(input.decisionStatus),
+    decision: deriveDecisionReading(input.decisionStatus, input.withdrawnReasonVisible ?? false),
     material: { v: input.gateMaterial, source: 'stored', reason: 'Stored site flag — material on site' },
     team: { v: input.gateTeam, source: 'stored', reason: 'Stored site flag — team present' },
     inspection: deriveInspectionGate(activityId, input.inspections),

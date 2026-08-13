@@ -409,6 +409,10 @@ export class OutboxRelay implements OnModuleDestroy {
               eventId: event.eventId, projectId: event.projectId, consumer: cat.consumer, consumerKind: consumer.kind,
               streamPosition: event.streamPosition, deliveryAction: plan.action, status,
               ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
+              // Phase 6 task 4a round 1 (Codex F1): the SUBJECT is part of the plan, in EVERY
+              // delivery-creation path — a crash-gap row recovered here without it would be
+              // born uncancellable by `cancelQueuedPushBySubject`.
+              ...(plan.action === 'dispatch' && plan.subject !== undefined ? { subject: plan.subject } : {}),
             },
           });
           created++;

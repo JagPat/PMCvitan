@@ -18,6 +18,10 @@ import { PUSH_CONSUMER } from './consumers';
  *   - a row already LEASED keeps its status (the sender owns it right now); it receives only
  *     the `cancelledAt` mark, and the sender's final pre-send re-check of its OWN row
  *     (`relay.service.ts` dispatchExternal) drops the send and records the drop.
+ *   - a DEAD row keeps its dead history but receives the mark too (round 1, Codex F3): an
+ *     operator redrive resets dead → pending, and without the mark that redrive would
+ *     resurrect the stale announcement — with it, the sender's pre-send re-check turns the
+ *     redrive into a recorded noop.
  * NOT a new status value — the `OutboxDelivery_status_check` set is deliberately closed.
  *
  * The guarantee's true boundary, stated rather than overclaimed: a cancellation landing in the
@@ -42,7 +46,7 @@ export async function cancelQueuedPushBySubject(
     data: { status: 'succeeded', deliveryAction: 'noop', cancelledAt: now, leaseOwner: null, leaseExpiresAt: null, lastError: null },
   });
   const marked = await tx.outboxDelivery.updateMany({
-    where: { ...scope, status: 'leased' },
+    where: { ...scope, status: { in: ['leased', 'dead'] } },
     data: { cancelledAt: now },
   });
   return { neutralized: neutralized.count, marked: marked.count };

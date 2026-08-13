@@ -133,3 +133,21 @@ manifest⇄contract equality (`decision.withdrawn` + `decisions.withdraw` + the 
 registry unit pin on the push delivery's `subject`; the web `ROLE_POLICY` matrix pin
 (`decision.withdraw: ['pmc']`); the decisions service unit harness (CAS-aware `updateMany`
 stand-in + the stamped-notice pin).
+
+## Round 1 — the five Codex P2 findings on head `ea3391d`, each reproduced RED before its fix
+
+One batched corrective head. Reproduce-first: F1/F3/F4/F5 as new probes in
+`phase6-t4a-withdraw.test.ts` (`round 1` describe — 4/4 RED at the finding head → GREEN); F2 as a
+new upgrade-proof STAGE (RED: the proof run against the finding head's migration exits 1 with
+"the migration ACCEPTED a withdrawn row with no evidence" → GREEN: the abort names the row).
+
+| # | finding | fix |
+|---|---|---|
+| F1 | the relay RECOVERY scanner (`expandMissingDeliveries`) re-created crash-gap delivery rows copying only `payload` — a recovered `decision.published` push was born `subject = NULL`, unreachable by cancel-by-subject | the scanner persists `plan.subject` exactly like the emit-time materializer; probed end-to-end (delete the delivery → recover → subject present → withdraw cancels it) |
+| F2 | the migration's diagnostics were GATED on the evidence columns existing, so a partial/manual apply (enum value + a withdrawn row, no columns) slid through and gained NULL evidence the seals never judge | the additive shape (enum value + four nullable columns — nothing enforced, nothing edited) installs FIRST and the diagnostics run UNCONDITIONALLY after it, aborting before any SEAL installs; proven by a new upgrade-proof stage that plants exactly that state, sees the named abort, repairs, and lets the real apply proceed |
+| F3 | cancellation touched only `pending`/`leased` rows — a `dead` push redriven by an operator would resurrect the stale announcement | the mark reaches `dead` rows too (status kept — the dead history stands); probed: withdraw marks the dead row, a redrive to `pending` is dropped by the pre-send re-check with the push service provably never invoked |
+| F4 | an org owner/admin operating as pmc WITHOUT a project membership (the project-access super-admin path) hit the attribution FK and rolled back with a raw error | the `activities.complete` precedent verbatim: the membership row is read LOCKED in the withdraw transaction and a missing/inactive membership refuses with an answer (400 naming the constraint and the escape) before any side effect |
+| F5 | the baked readiness reason ("The linked decision was withdrawn…") leaked the withdrawal to roles that cannot see withdrawn decisions | `deriveDecisionReading` takes `withdrawnReasonVisible` (FAIL-CLOSED: an unlabelled caller gets the redacted wording) threaded viewer-aware through the snapshot bake, the module GET, `activities.start`'s refusal (follows the STARTER), and the web demo derivation; non-pmc viewers read "Awaiting the PMC on the linked decision" — same verdict, same next step, no disclosure |
+
+Round-1 gates: probe file 25/25 (incl. the 4 new); `pnpm check` EXIT 0; `upgrade-proof.sh` PASSED
+with the F2 stage; the full integration battery re-run on the corrective head.

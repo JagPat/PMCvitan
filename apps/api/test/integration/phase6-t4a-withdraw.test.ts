@@ -599,9 +599,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
 
   // ── P11 — the honest gate reading ──
   it('P11: deriveDecisionReading(withdrawn) is wait with the honest reason, and a gated activity refuses to start with it', async () => {
-    const reading = deriveDecisionReading('withdrawn');
-    expect(reading.v).toBe('wait');
-    expect(reading.reason).toBe('The linked decision was withdrawn — re-issue or relink');
+    // the honest reason is pmc-only (round 1, Codex F5); the bare call is FAIL-CLOSED redacted
+    const pmcReading = deriveDecisionReading('withdrawn', true);
+    expect(pmcReading.v).toBe('wait');
+    expect(pmcReading.reason).toBe('The linked decision was withdrawn — re-issue or relink');
+    const redacted = deriveDecisionReading('withdrawn');
+    expect(redacted.v).toBe('wait');
+    expect(redacted.reason).toBe('Awaiting the PMC on the linked decision');
 
     const id = await seed();
     await t.prisma.activity.create({
@@ -611,6 +615,119 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     await expect(activities.start(f.projectA.id, `it-t4a-act-${seq}`, pmc())).rejects.toMatchObject({
       status: 409,
       message: expect.stringContaining('withdrawn — re-issue or relink'),
+    });
+  });
+
+  // ── Round 1 — the five Codex findings on head ea3391d, each reproduced RED before its fix ──
+  describe('round 1 (Codex): recovery subject, dead-row cancellation, org-admin attribution, redacted readiness', () => {
+    const emitQueuedPush = async (id: string, title: string): Promise<string> => {
+      await t.prisma.$transaction((tx) =>
+        emitEvent(tx, {
+          projectId: f.projectA.id,
+          actor: human,
+          eventType: 'decision.published',
+          entityType: 'Decision',
+          entityId: id,
+          payload: { title },
+          effectKey: 'decision.published',
+          dispatch: { push: { body: `New decision awaiting your approval: ${title}` } },
+        }),
+      );
+      const row = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, status: 'pending' } });
+      return row.id;
+    };
+
+    it('F1: a delivery re-created by the RECOVERY scanner carries the subject — a crash-gap row is not born uncancellable', async () => {
+      const id = await seed({ title: 'Recovered push' });
+      const deliveryId = await emitQueuedPush(id, 'Recovered push');
+      // the documented crash/rolling-deploy gap: the event committed but its delivery row is missing
+      await t.prisma.outboxDelivery.delete({ where: { id: deliveryId } });
+      await relay.expandMissingDeliveries();
+      const recovered = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, status: 'pending' } });
+      expect(recovered.subject).toBe(id);
+      // and the withdraw therefore cancels it exactly like an emit-time row
+      await svc.withdraw(f.projectA.id, id, { reason: 'recovered then withdrawn' }, pmc());
+      const after = await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: recovered.id } });
+      expect(after.cancelledAt).not.toBeNull();
+      expect(after.status).toBe('succeeded');
+      expect(after.deliveryAction).toBe('noop');
+    });
+
+    it('F3: a DEAD decision.published push is marked cancelled by the withdraw, so an operator redrive is a recorded noop — never a resurrected stale announcement', async () => {
+      const id = await seed({ title: 'Dead push' });
+      const deliveryId = await emitQueuedPush(id, 'Dead push');
+      // the row exhausted its retries before the withdrawal
+      await t.prisma.outboxDelivery.update({ where: { id: deliveryId }, data: { status: 'dead', lastError: 'endpoint gone' } });
+      await svc.withdraw(f.projectA.id, id, { reason: 'dead then withdrawn' }, pmc());
+      const dead = await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: deliveryId } });
+      expect(dead.status).toBe('dead'); // the dead history is kept…
+      expect(dead.cancelledAt).not.toBeNull(); // …but the cancellation mark lands
+      // an operator redrive resets it to pending; the sender's pre-send re-check drops it
+      await t.prisma.outboxDelivery.update({ where: { id: deliveryId }, data: { status: 'pending', attempts: 0, nextAttemptAt: new Date(), lastError: null } });
+      const push = t.app.get(PushService);
+      const original = push.notifyProject.bind(push);
+      let sends = 0;
+      push.notifyProject = (async (...args: Parameters<PushService['notifyProject']>) => {
+        sends += 1;
+        return original(...args);
+      }) as PushService['notifyProject'];
+      try {
+        expect(await relay.dispatchOne(deliveryId)).toBe('succeeded');
+      } finally {
+        push.notifyProject = original;
+      }
+      expect(sends).toBe(0);
+      const dropped = await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: deliveryId } });
+      expect(dropped.status).toBe('succeeded');
+      expect(dropped.deliveryAction).toBe('noop');
+    });
+
+    it('F4: an org owner/admin operating as pmc WITHOUT a project membership gets a clean refusal, never a rolled-back FK error', async () => {
+      const id = await seed();
+      // an org-A owner with NO Membership row on project A — authorized as pmc by the
+      // org-super-admin path (project-access.service.ts), but not attributable via the FK
+      expect(await t.prisma.membership.count({ where: { projectId: f.projectA.id, userId: f.ownerUser.id } })).toBe(0);
+      const orgAdmin = { sub: f.ownerUser.id, role: 'pmc', projectId: f.projectA.id } as AuthUser;
+      await expect(svc.withdraw(f.projectA.id, id, { reason: 'org admin attempt' }, orgAdmin)).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringContaining('ACTIVE member'),
+      });
+      // no side effects: the decision is untouched and nothing was appended
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+      expect(await t.prisma.decisionEvent.count({ where: { decisionId: id, type: 'withdrawn' } })).toBe(0);
+    });
+
+    it('F5: the baked readiness reason is REDACTED for viewers who cannot see withdrawn decisions; the pmc keeps the honest reason; the start refusal follows the starter', async () => {
+      const id = await seed();
+      const actId = `it-t4a-f5-${seq}`;
+      await t.prisma.activity.create({
+        data: { id: actId, projectId: f.projectA.id, name: 'Veneer work', zone: 'GF', plannedStart: 0, plannedEnd: 1, gateMaterial: 'na', gateTeam: 'na', decisionId: id },
+      });
+      await svc.withdraw(f.projectA.id, id, { reason: 'secret operational reason' }, pmc());
+
+      // an engineer (never saw the decision) can still see the ACTIVITY — the gate stays `wait`
+      // but its reason must not disclose the withdrawal
+      const engUid = await roleUser('engineer');
+      const engSnap = await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${t.issueProjectToken(engUid, f.projectA.id, 'engineer')}`);
+      expect(engSnap.status).toBe(200);
+      const engAct = (engSnap.body.activities as Array<{ id: string; readiness: { decision: { v: string; reason: string } } }>).find((a) => a.id === actId);
+      expect(engAct?.readiness.decision.v).toBe('wait');
+      expect(engAct?.readiness.decision.reason).not.toContain('withdrawn');
+      // the pmc keeps the honest reason
+      const pmcSnap = await http().get(`/projects/${f.projectA.id}/snapshot`).set('Authorization', `Bearer ${t.issueProjectToken(f.memberUser.id, f.projectA.id, 'pmc')}`);
+      const pmcAct = (pmcSnap.body.activities as Array<{ id: string; readiness: { decision: { v: string; reason: string } } }>).find((a) => a.id === actId);
+      expect(pmcAct?.readiness.decision.reason).toContain('withdrawn — re-issue or relink');
+
+      // the start refusal follows the STARTER: an engineer's refusal is redacted, the pmc's is honest
+      const engineer = { sub: engUid, role: 'engineer', projectId: f.projectA.id } as AuthUser;
+      await expect(activities.start(f.projectA.id, actId, engineer)).rejects.toMatchObject({
+        status: 409,
+        message: expect.not.stringContaining('withdrawn'),
+      });
+      await expect(activities.start(f.projectA.id, actId, pmc())).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining('withdrawn — re-issue or relink'),
+      });
     });
   });
 

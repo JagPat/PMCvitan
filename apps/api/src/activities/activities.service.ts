@@ -374,6 +374,9 @@ export class ActivitiesService {
     projectId: string,
     activity: { id: string; gateMaterial: GateState; gateTeam: GateState; decision: { status: string } | null },
     db: Prisma.TransactionClient = this.prisma,
+    // Phase 6 task 4a round 1 (Codex F5): the withdrawn-decision gate REASON is pmc-only —
+    // fail-closed, so an unlabelled caller gets the redacted wording (the verdict is identical).
+    withdrawnReasonVisible = false,
   ): Promise<ActivityReadiness> {
     const [inspections, drawings, activeMembers, overrides] = await Promise.all([
       // Task 10 (Module 3) — the inspection-gate readiness input comes from the inspections module's query
@@ -385,6 +388,7 @@ export class ActivitiesService {
     ]);
     return deriveReadiness(activity.id, {
       decisionStatus: activity.decision ? (activity.decision.status as DecisionStatus) : null,
+      withdrawnReasonVisible,
       gateMaterial: activity.gateMaterial,
       gateTeam: activity.gateTeam,
       inspections,
@@ -431,7 +435,7 @@ export class ActivitiesService {
         if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
         const decisionStatus = a.decisionId ? await this.decisions.statusOf(projectId, a.decisionId, tx) : null;
 
-        const readiness = await this.loadReadiness(projectId, { ...a, decision: decisionStatus ? { status: decisionStatus } : null }, tx);
+        const readiness = await this.loadReadiness(projectId, { ...a, decision: decisionStatus ? { status: decisionStatus } : null }, tx, user.role === 'pmc');
         // Phase 3 Task 6 (§A): on a PILOT project, the material gate is CANONICAL coverage — never
         // the stored flag or a projection. Evaluated on THIS transaction under the readiness lock,
         // so a concurrent reservation/issue/adjustment/requirement-revision/substitution-revocation

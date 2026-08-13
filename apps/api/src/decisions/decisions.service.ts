@@ -453,6 +453,17 @@ export class DecisionsService {
         // transaction — the lock is taken by CLASS (a readiness-input writer), not by verdict
         // arithmetic, even though `pending` and `withdrawn` both read `wait` today.
         await lockProjectReadiness(tx, projectId);
+        // The withdrawal is attributed to an ACTIVE member of THIS project (the FK's target),
+        // read LOCKED in this transaction — the activities.complete precedent. An org
+        // owner/admin operating as pmc WITHOUT a membership (the project-access super-admin
+        // path) is refused HERE with an answer, never by the FK rolling the command back
+        // (round 1, Codex F4).
+        const [membership] = await tx.$queryRaw<Array<{ status: string }>>(
+          Prisma.sql`SELECT "status" FROM "Membership" WHERE "projectId" = ${projectId} AND "userId" = ${user.sub} FOR UPDATE`,
+        );
+        if (membership?.status !== 'active') {
+          throw new BadRequestException('A withdrawal must be attributed to an ACTIVE member of this project — your account holds no active membership here (org-admin reach does not carry one; join the project to withdraw its decisions).');
+        }
         // belt-and-braces: the DB entry seal refuses this too (source-state + register), but a
         // 409 is an answer and a trigger error is a crash — refuse here first.
         const approvals = await tx.decisionApprovalRevision.count({ where: { decisionId } });

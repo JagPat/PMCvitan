@@ -19,54 +19,50 @@
 -- LITERAL in the transaction that adds it; a text cast never resolves the literal, and the
 -- trigger function bodies are parsed at runtime, after commit).
 
--- ── diagnostics (abort before any structural change) ─────────────────────────────────────────
--- None of these can fire on a healthy database — the status value and the evidence columns are
--- born in this migration, so no existing row can already violate what it seals. The checks
--- exist because "cannot happen" is an argument, and an abort-with-sample is a proof: a database
--- carrying a hand-minted 'withdrawn' (a partially-applied fork of this migration, or hostile
--- SQL between deploys) must stop the deploy, not inherit seals that instantly contradict it.
-DO $$
-DECLARE bad BIGINT; sample TEXT;
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
-    WHERE t.typname = 'DecisionStatus' AND e.enumlabel = 'withdrawn'
-  ) THEN
-    -- the value pre-exists (a re-run): any row already in it must carry coherent evidence
-    -- IF the evidence columns also pre-exist; without them there is nothing to check yet.
-    IF EXISTS (
-      SELECT 1 FROM information_schema.columns
-      WHERE table_name = 'Decision' AND column_name = 'withdrawnAt'
-    ) THEN
-      SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
-        SELECT d."id" FROM "Decision" d
-        WHERE d."status"::text = 'withdrawn'
-          AND (d."withdrawnAt" IS NULL OR d."withdrawnById" IS NULL OR d."withdrawnByName" IS NULL
-               OR d."withdrawReason" IS NULL OR btrim(d."withdrawReason", E' \t\n\x0B\f\r') = '')
-        LIMIT 20) x;
-      IF bad > 0 THEN
-        RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) carry incomplete withdrawal evidence (sample: %). Repair the rows (attribute or re-issue), then redeploy.', bad, sample;
-      END IF;
-      SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
-        SELECT d."id" FROM "Decision" d
-        JOIN "DecisionApprovalRevision" r ON r."decisionId" = d."id"
-        WHERE d."status"::text = 'withdrawn'
-        LIMIT 20) x;
-      IF bad > 0 THEN
-        RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) carry approval revisions — a decision with approval evidence can never be withdrawn (sample: %). Resolve by hand, then redeploy.', bad, sample;
-      END IF;
-    END IF;
-  END IF;
-END $$;
+-- ── the ADDITIVE shape first, then the diagnostics — the order is load-bearing ───────────────
+-- (Round 1, Codex F2.) The diagnostics below quarantine any PRE-EXISTING 'withdrawn' row that
+-- lacks coherent evidence, and that check is only EXPRESSIBLE once the evidence columns exist.
+-- A partially-applied fork of this migration (or hand-minted SQL between deploys) can leave the
+-- enum value — and rows in it — WITHOUT the columns; gating the diagnostic on the columns'
+-- existence would let exactly that state slide through, adding NULL evidence around a row the
+-- seals are then never asked to judge. So the harmless additive shape (an enum value and four
+-- nullable columns — neither edits a row nor enforces anything) installs FIRST, and the
+-- diagnostics run UNCONDITIONALLY after it: any 'withdrawn' row without full evidence, or
+-- beside an approval revision, ABORTS the deploy before a single SEAL (the binding structural
+-- change) installs. Diagnostic-first still holds where it matters: nothing is enforced, and no
+-- fact is edited or invented, until the database is proven clean.
 
--- ── the enum value (added, never used in this file's immediate SQL) ──────────────────────────
+-- the enum value (added, never used in this file's immediate SQL except via ::text)
 ALTER TYPE "DecisionStatus" ADD VALUE IF NOT EXISTS 'withdrawn';
 
--- ── the withdrawal evidence (write-once with the status; sealed by the triggers below) ───────
+-- the withdrawal evidence (write-once with the status; sealed by the triggers below)
 ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnAt" TIMESTAMP(3);
 ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnById" TEXT;
 ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnByName" TEXT;
 ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawReason" TEXT;
+
+-- ── diagnostics (abort before any SEAL installs; unconditional) ──────────────────────────────
+DO $$
+DECLARE bad BIGINT; sample TEXT;
+BEGIN
+  SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
+    SELECT d."id" FROM "Decision" d
+    WHERE d."status"::text = 'withdrawn'
+      AND (d."withdrawnAt" IS NULL OR d."withdrawnById" IS NULL OR d."withdrawnByName" IS NULL
+           OR d."withdrawReason" IS NULL OR btrim(d."withdrawReason", E' \t\n\x0B\f\r') = '')
+    LIMIT 20) x;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) carry incomplete withdrawal evidence (sample: %). Repair the rows (attribute or re-issue), then redeploy.', bad, sample;
+  END IF;
+  SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
+    SELECT d."id" FROM "Decision" d
+    JOIN "DecisionApprovalRevision" r ON r."decisionId" = d."id"
+    WHERE d."status"::text = 'withdrawn'
+    LIMIT 20) x;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) carry approval revisions — a decision with approval evidence can never be withdrawn (sample: %). Resolve by hand, then redeploy.', bad, sample;
+  END IF;
+END $$;
 
 -- attribution names a REAL member of THIS project (the completionRequestedById discipline):
 -- presence alone would let hostile SQL attribute the permanent register to a nonexistent actor.

@@ -122,6 +122,9 @@ export function readinessFor(s: AppState, a: Activity): ActivityReadiness {
   if (a.readiness) return a.readiness;
   const r = deriveReadiness(a.id, {
     decisionStatus: a.decisionId ? decStatusOf(s, a.decisionId) : null,
+    // Phase 6 task 4a round 1 (Codex F5): the withdrawn-decision gate reason is pmc-only —
+    // the demo derivation mirrors the server's viewer rule.
+    withdrawnReasonVisible: s.role === 'pmc',
     gateMaterial: a.gm,
     gateTeam: a.gt,
     inspections: [], // demo checklists carry no requirement edges — the stored flag stands in below

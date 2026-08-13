@@ -391,6 +391,38 @@ SQL
 # table would pass while proving nothing. These two are planted on the PRE-Phase-6 schema, where
 # `orgId` and `partyId` do not exist yet, which is exactly the state the backfill exists for.
 # (The vendor side already has legacy subjects: `UPT4-VEN`/`UPT4-PV` are planted pre-Task-4.)
+# ── Phase 6 task 4a round 1 (Codex F2) — the PARTIAL-APPLY quarantine ─────────────────────────
+# A partially-applied fork of the 4a migration (or hand-minted SQL between deploys) can leave the
+# 'withdrawn' enum value — and a row in it — WITHOUT the evidence columns. The migration's
+# diagnostics are UNCONDITIONAL precisely so that state ABORTS the deploy instead of gaining
+# NULL evidence around a row the seals are never asked to judge. Proven here by planting exactly
+# that state, applying the migration EXPECTING the named abort, repairing, and letting the real
+# apply proceed.
+plant_and_prove_t4a_partial_apply() {
+  local d="$1" out
+  echo ""
+  echo "=== Phase 6 4a (F2): planting the PARTIAL-APPLY state (enum value + withdrawn row, NO evidence columns) ==="
+  # the enum value commits on its own (a new value is unusable inside its adding transaction)
+  $PSQL -q -c "ALTER TYPE \"DecisionStatus\" ADD VALUE IF NOT EXISTS 'withdrawn';" || { echo "4a F2 plant (enum) failed"; exit 1; }
+  $PSQL -q <<'SQL' || { echo "4a F2 plant (row) failed"; exit 1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+VALUES ('UP4A-PARTIAL','p1','Hand-minted','Hall','pending','stone',now());
+UPDATE "Decision" SET "status"='withdrawn' WHERE "id"='UP4A-PARTIAL';
+SQL
+  echo "=== Phase 6 4a (F2): the migration must ABORT on the evidence-less withdrawn row ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4a F2: the migration ACCEPTED a withdrawn row with no evidence (the unconditional diagnostic is gone)"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'incomplete withdrawal evidence'; then
+    echo "FAILED  4a F2: the migration aborted, but not by the named diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  echo "ok      4a F2: abort names the evidence-less withdrawn row (UP4A-PARTIAL)"
+  # operator repair per the diagnostic's remedy (re-issue/remove), then the real apply proceeds
+  $PSQL -q -c "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-PARTIAL';" || { echo "4a F2 repair failed"; exit 1; }
+}
+
 plant_pre_phase6_firms() {
   echo ""
   echo "=== planting PRE-Phase-6 directory rows (the §A party backfill subjects) ==="
@@ -426,6 +458,8 @@ for d in "${phase3_r2_dirs[@]}"; do
     20270420000000_*) plant_pre_t4_chains ;;
     # ── Phase 6 unit 6.1a STOP — the §A party BACKFILL needs directory rows to back-fill ──────
     20270801000000_*) plant_pre_phase6_firms ;;
+    # ── Phase 6 task 4a STOP — the F2 partial-apply state must ABORT, then repair + real apply ─
+    20270810000000_*) plant_and_prove_t4a_partial_apply "$d" ;;
   esac
   apply_one "$d"
 done
