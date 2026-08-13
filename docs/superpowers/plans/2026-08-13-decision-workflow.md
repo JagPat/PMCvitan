@@ -49,9 +49,11 @@ Four changes, one model:
 
 2. **The per-decision DECIDER (unit 4b)** — each decision names who decides:
    `client` (the default — every existing row backfills to it, byte-identical
-   behavior), `architect`, `pmc`, a NAMED project member, or `none` — a
-   record-only issue that is born in a terminal `recorded` state, needs no options,
-   and is approvable by nobody because nothing is being decided.
+   behavior), `pmc`, a NAMED project member, or `none` — a record-only issue
+   that is born in a terminal `recorded` state, needs no options, and is
+   approvable by nobody because nothing is being decided. The `architect`
+   decider value joins IN unit 4d together with the role that can hold it
+   (§B.1).
 
 3. **CONSULTATION distinct from approval (unit 4c)** — the PMC or architect asks
    named members for input on a decision; requests and responses are recorded
@@ -128,7 +130,16 @@ register row, and an APPENDED notification notice ("Decision withdrawn: <title> 
 <reason>"), following the approve precedent (`decisions.service.ts:275`) —
 notifications are project-scoped text notices with no decision FK, so the design
 APPENDS the truth chronologically and deletes nothing; the actionable pending
-surfaces derive from `status` and clear by themselves.
+surfaces derive from `status` and clear by themselves. **The withdrawal notice is
+AUDIENCE-FILTERED to pmc** (Codex, round 1): the snapshot's notice stripping
+today recognizes only the pending-notice text shape (`isPendingDecisionNotice`,
+`domain/notifications.ts:19`, applied at `snapshot.service.ts:181`), so an
+unfiltered withdrawal notice would hand contractor/engineer/consultant AND the
+client the title and reason of a decision §A.3 declares pmc-only — a new
+`isWithdrawnDecisionNotice` predicate joins the same mechanism and the notice is
+stripped for every non-pmc viewer. The client's pending item simply disappears
+(status-derived); the register, not the bell feed, is where the withdrawal is
+explained to the authority that manages it.
 
 **`publish` gains the CAS it lacks, in this unit.** It is today the ONE command
 with a read-then-write window (plain `update` at `decisions.service.ts:147` behind
@@ -164,7 +175,7 @@ new value. The enumerated readers, each with its decided behavior:
 | `selectActionItems` (`selectors.ts:252-292`) | rebuilds pending/changes inline | withdrawn contributes to NO action item |
 | nav badge (`useNavItems.ts:15`, an inline duplicate of the pending filter) | `status === 'pending'` | drops it; the duplication is noted for 4b (which touches the audience) |
 | `STATUS_FILTERS` + chips + rail (`DecisionLogScreen.tsx:19-23,146-148,195,211`; `tokens/colors.ts:32-48`; `StatusChip.tsx:23-30`) | typed triple `pending\|approved\|change` | a fourth WITHDRAWN state: filter, count chip, rail colour, chip label — the maps are `as const` keyed by `DecisionStatus`, so TS flags every miss |
-| `isPendingDecisionNotice` audience stripping (`domain/notifications.ts:19`, `snapshot.service.ts:181`) | strips pending notices for non-pmc/client | unchanged — the OLD pending notice stays in the feed as history (the approve precedent keeps it too); the new withdrawal notice is appended beside it |
+| notice audience stripping (`domain/notifications.ts:19`, `snapshot.service.ts:181`) | strips PENDING notices for non-pmc/client; knows no other decision-notice shape | the OLD pending notice stays in the client/pmc feed as history (the approve precedent keeps it too); the NEW withdrawal notice is stripped for every non-pmc viewer via `isWithdrawnDecisionNotice` — title and reason never reach roles that never saw the decision, nor the client (§A.2) |
 | projection `decisions.inbox` (`decisions.projection.ts:25,29,112`) | `decision.` prefix dispatch; full-refresh-from-canonical | picks the new event up with no per-event logic; the diagnostic comparables include `status` field-for-field and must know the value |
 | activity gate callers (`activities.service.ts:432`, `activities.query.ts:127`) | consume `statusOf`/`statusMap` verbatim | unchanged — the reading function above is the single point of interpretation |
 
@@ -206,6 +217,10 @@ migration SQL is not a constraint):
 2. **Attributed**: `status='withdrawn'` requires `withdrawnAt`, `withdrawnById`
    and a non-blank `withdrawReason` (and the inverse: those columns only with the
    status) — a CHECK-shaped constraint trigger, since the columns live on the row.
+   Non-blank is the repository's FULL ASCII-whitespace discipline, spelled exactly
+   (Codex, round 1 — `btrim(x)` strips spaces only):
+   `btrim("withdrawReason", E' \t\n\x0B\f\r') <> ''`, and the hostile probe feeds
+   a tabs-and-newlines-only reason (P8).
 3. **Never-approved**: withdrawing is refused while any `DecisionApprovalRevision`
    row exists for the decision — the same fact the state machine proves, sealed
    where the data lives.
@@ -218,15 +233,31 @@ status is new), and legacy databases upgrade row-free.
 
 ### 1. The model
 
-`Decision` gains `deciderKind: 'client' | 'architect' | 'pmc' | 'member' | 'none'`
-(default `'client'`; every existing row backfills `'client'` — behavior
-byte-identical until a caller says otherwise) and `deciderMembershipId` (nullable,
-same-project composite FK, required iff `kind='member'`, sealed by CHECK). The
-create contract exposes both; `approveSchema` stays `{ optionIndex }` — the
-approver is still server-resolved, but the AUTHORITY check becomes: the actor IS
-the decider (by role or named membership), or the PMC acting on the decider's
-behalf, recorded honestly — `onBehalfOf` generalizes from the hard-coded
-`'client'` (`decisions.service.ts:194`) to the decider's designation.
+`Decision` gains `deciderKind` (default `'client'`; every existing row backfills
+`'client'` — behavior byte-identical until a caller says otherwise) and
+`deciderMembershipId` (nullable, same-project composite FK, required iff
+`kind='member'`, sealed by CHECK). **The 4b contract admits
+`'client' | 'pmc' | 'member' | 'none'` — `'architect'` joins the enum IN UNIT 4d
+WITH the role** (Codex, round 1): 4b ships before the `architect` TokenRole
+exists, and a 4b-only deployment accepting an architect-decider would create
+decisions no one can authenticate to see or approve, with PMC-on-behalf the only
+escape. The value and the role are one deliverable. The composite FK needs a
+candidate key `Membership` does not have — today it carries only `id` and
+`@@unique([projectId, userId])` — so 4b adds `@@unique([projectId, id])` as an
+additive orgs-owned schema change in the same PR, covered by
+`schema-migration-drift.test.ts`, and the FK then makes a cross-project
+membership reference unrepresentable (P17). Membership FACTS (is this membership
+active, does it hold a role) are orgs-owned reads: `decisions.workflowParticipants`
+gains `orgs` and the validation routes through the orgs participant (the
+7B-iii-g `OrgsParticipant.projectRoleCandidates` precedent — the same module
+already answers "who holds standing" for commercial), never a raw `tx.membership`
+read from the decisions module.
+
+The create contract exposes the decider; `approveSchema` stays `{ optionIndex }`
+— the approver is still server-resolved, but the AUTHORITY check becomes: the
+actor IS the decider (by role or named membership), or the PMC acting on the
+decider's behalf, recorded honestly — `onBehalfOf` generalizes from the
+hard-coded `'client'` (`decisions.service.ts:194`) to the decider's designation.
 
 ### 2. `none` — the record-only issue
 
@@ -235,13 +266,25 @@ decision is born PUBLISHED-or-draft as usual but in a new terminal `recorded`
 status — filed, team-visible, approvable by nobody. Its contract relaxes
 `options` from `min(2)` to `min(0)` (a record may document zero, one, or several
 courses); every other kind keeps `min(2)` — a CHOICE still needs alternatives.
-`recorded` is the second and last new `DecisionStatus` value, and it walks the
-SAME reader table as §A.3: gate reading `na` ("record only — no approval
-required"; an activity linked to a record must not wait on nobody), pending
-surfaces exclude it structurally, register shows a RECORDED state, visibility is
-the ordinary published-decision audience (it is a team record, not a pending
-approval — AUTH-02's pending-narrowing does not apply), and the `as const` maps
-force every miss to a compile error.
+**Relaxing the contract alone leaves the product path broken** (Codex, round 1):
+`DecisionsService.create` derives its lead presentation from `input.options[0]`
+and writes the REQUIRED `Decision.photoSwatch` from `lead.swatch`, so
+`options: []` would throw before persistence with the schema green. 4b therefore
+reworks the create path for the zero-option shape — the presentation columns
+sourced from options become nullable-or-defaulted for a record (an additive
+migration + serializer arm), the web create form supports filing without options,
+and P19 asserts the FULL path (create → persist → serialize → register render),
+never contract acceptance alone. `recorded` walks the SAME reader table as §A.3:
+gate reading `na` ("record only — no approval required"; an activity linked to a
+record must not wait on nobody), pending surfaces exclude it structurally,
+register shows a RECORDED state, visibility is the ordinary published-decision
+audience (it is a team record, not a pending approval — AUTH-02's
+pending-narrowing does not apply), and the `as const` maps force every miss to a
+compile error. **`recorded` is TERMINAL and sealed like `withdrawn`** (Codex,
+round 1): a BEFORE UPDATE trigger refuses any transition out of it — `approve`'s
+CAS never matches it, and hostile SQL flipping a record to `approved` would
+manufacture a locked approval the activity gate then trusts — with the seal
+probed directly (P18).
 
 ### 3. The pending audience follows the decider
 
@@ -251,25 +294,40 @@ Today "pending" is hard-wired to the client: `countPending`'s audience gate
 nav badge, and the push target `['client']` on `decision.published`
 (`external-effects.ts:41-47`). With a decider, each of these routes to THE
 DECIDER: the pending decision is visible to pmc + the decider (a named-member
-decider sees their own pending item; an architect-decider sees theirs), the
+decider sees their own pending item; from 4d, an architect-decider sees theirs), the
 badge and action items key on "decisions I decide", and the published-event push
 reaches the decider and only the decider — the static catalog names the CEILING
 audience (the union of decider roles) and the dispatch site narrows to the
-actual decider; if `buildDispatchIntent`'s mismatch refusal
-(`external-effects.ts:272-287`) pins the exact audience, it is extended to treat
-the catalog as the ceiling, with a probe proving both "reaches the decider" and
-"reaches ONLY the decider". Every one of these readers is named in the unit's
-packet the way §A.3 names its readers.
+actual decider; `buildDispatchIntent`'s mismatch refusal
+(`external-effects.ts:272-287`) is extended to treat the catalog as the ceiling.
+**"Only the decider" requires a dispatch target the push spine does not have**
+(Codex, round 1): the outbox persists ROLE audiences (`push.roles`) and
+`PushSubscription` carries no user or membership linkage, so a role-level push
+for a named-member decider would notify EVERY member holding that role, and
+omitting the role would notify nobody. 4b's first deliverable is therefore the
+per-membership dispatch target — the push intent gains an optional member
+target beside its role ceiling, and the subscription→member linkage is added
+where the owning module holds it — with the probe pair proving BOTH directions:
+the decider receives, and a same-role non-decider does NOT. 4c's consultation
+pushes ride the same mechanism. Every one of these readers is named in the
+unit's packet the way §A.3 names its readers.
 
 ## §C — Unit 4c: consultation — input is not sign-off
 
 Two labour-adjacent append-only facts, owned by decisions:
 `DecisionConsultation` (decisionId, requestedById, consulteeMembershipId — a
-same-project composite FK, question, requestedAt) and
-`DecisionConsultationResponse` (consultationId, response text, optional
-recommended option index, respondedAt; append-only, sealed). The PMC or
-architect requests; the named member responds; the thread renders under the
-decision in the register and in the decider's view. Three invariants, stated
+same-project composite FK onto the `(projectId, id)` candidate key 4b adds,
+question, requestedAt) and `DecisionConsultationResponse` (consultationId,
+response text, optional recommended option index, respondedAt; append-only,
+sealed). **`question` and `response` are user-supplied EVIDENCE and carry the
+sibling non-blank discipline** (Codex, round 1): zod `trim().min(1)` at the
+contract AND the exact DB CHECK `btrim(x, E' \t\n\x0B\f\r') <> ''` on both
+columns — append-only whitespace is immutable evidence that says nothing — with
+P23 asserting the whitespace-only refusal at both layers, not merely
+round-trip/attribution. The PMC requests (the architect joins the requester set
+IN 4d with the role — the same staging rule as the decider value, §B.1: no
+authority names a role that cannot yet authenticate); the named member responds;
+the thread renders under the decision in the register and in the decider's view. Three invariants, stated
 now: consultation NEVER moves `status` (no CAS touches it), NEVER changes a gate
 verdict, and WIDENS visibility exactly one way — a consultee sees THAT decision
 (and its thread) while their consultation stands, an exception added to
@@ -288,9 +346,10 @@ already names them.
 mirrors — `auth.ts:24`, BOTH zod role enums (`contracts.ts:6,616`), `PushRole`
 (`external-effects.ts:22`), `decisionsManifest.permissions`, the membership-role
 comment (`schema.prisma:812`), and every `ROLE_POLICY` entry the role belongs in
-(at minimum: `project.read`, `decision.create`? no — see below; the exact policy
-row set is the unit's first deliverable and the `route-policy.test.ts` identity
-walk pins it). The role is a project MEMBERSHIP role like the other five;
+(the exact policy row set is the unit's FIRST deliverable — `project.read`
+certainly among them, `decision.create` deliberately NOT (issuing stays the
+PMC's) — and the `route-policy.test.ts` identity walk pins whatever it says).
+The role is a project MEMBERSHIP role like the other five;
 `worker` stays deliberately absent from the zod allowlists. Where the controller
 prose already said "PMC/architect" (`decisions.controller.ts:28,41,53`,
 `policy.ts:21`), the allowlist finally matches the words — that is this unit's
@@ -304,23 +363,59 @@ The settled design, plus the owner's amendment, as behavior:
   toDesignation, reason, at). Forward authority: the current HOLDER + the PMC
   **+ the architect once one exists** (the AMENDMENT — previously holder + PMC).
   Forwarding re-points the decision's CURRENT holder; the chain is the record.
-- **No chain until an architect exists**: a project with no architect member
-  behaves exactly as 4b left it — decider decides, PMC may act on-behalf,
-  recorded honestly. The chain and countersign activate on the first architect
-  membership; nothing is configured, presence IS the switch.
-- **Countersign**: where the chain is active, an approval by the decider is
-  completed by the architect's countersign — a second, separately-attributed
-  register act referencing the `DecisionApprovalRevision` it countersigns. A
-  SELF-countersign (architect is also the decider) is TWO explicit recorded
-  acts, never one implied one.
-- **Disagreement**: a disagreeing architect either REJECTS BACK (to the decider,
-  with reason — status returns to pending-with-the-decider) or FORWARDS ON (to a
-  decider who can settle it). Both are chain entries; neither erases the
-  approval act it answers — the register keeps both sides.
+  **Forwarding SERIALIZES against approval and countersign** (Codex, round 1 —
+  the concrete interleaving: A reads holder=client and starts approving, B
+  forwards to engineer and commits, A's approval lands under a holder that no
+  longer exists): every one of approve/countersign/forward takes the decision
+  row's lock and re-checks the holder INSIDE the transaction (the lock-before-
+  read rule), so the loser of either ordering is a deterministic 409 — proven by
+  a barrier probe in BOTH orderings asserting exactly one surviving outcome and
+  a coherent holder (P35).
+- **No chain until an architect exists — and "exists" means an ACTIVE
+  membership** (Codex, round 1): `Membership` rows are soft-removed
+  (`invited | active | removed`), so mere row presence would leave the chain
+  armed after the only architect left, stranding every approval behind a
+  countersign nobody can give. The switch is "an ACTIVE architect membership
+  exists", read through the orgs participant (§B.1's edge). A project that
+  removes its only architect DEACTIVATES the chain for NEW approvals; a decision
+  already `awaiting_countersign` at that moment is NEVER auto-flipped — the PMC
+  resolves it by an explicit attributable act (complete it under the no-chain
+  rule, or return it to the decider), both recorded as chain entries. Probes:
+  no-architect-ever (P29), removed-architect + the stranded-decision resolution
+  (P29b).
+- **Countersign, and the state that carries it** (Codex, round 1): §A's
+  eligibility proof rests on `pending` being unreachable after ANY approval act,
+  and "approved but not yet countersigned" is a state the enum must therefore
+  NAME rather than fake. Under an active chain, the decider's approval writes
+  its `DecisionApprovalRevision` and moves the decision to a new
+  **`awaiting_countersign`** status (the third and last new `DecisionStatus`
+  value, walking the same §A.3 reader table: gate reads `wait` — work must not
+  start on an uncountersigned approval; pending surfaces show it to the
+  ARCHITECT as their action item; withdraw refuses it — an approval act exists,
+  which the never-approved DB seal also enforces). The architect's countersign —
+  a second, separately-attributed register act referencing the exact
+  `DecisionApprovalRevision` — moves it to `approved`. A SELF-countersign
+  (architect is also the decider) is TWO explicit recorded acts under two
+  idempotency keys, never one implied one. `pending` stays unreachable after any
+  approval act, so §A's proof survives 4d intact.
+- **Disagreement**: a disagreeing architect either REJECTS BACK (with reason —
+  the decision moves `awaiting_countersign → change`, the existing
+  needs-the-decider-again state, NEVER back to `pending`, so the §A invariant
+  holds; the decider's approval revision and the architect's rejection are both
+  kept) or FORWARDS ON (to a decider who can settle it). Both are chain entries;
+  neither erases the approval act it answers — the register keeps both sides.
 
-The unit writes only decisions-owned tables; if any step needs another module's
-fact, it declares a `workflowParticipants` edge (the P5 layering lesson from
-`pr-324-convergence.md` — the check is reserved to task 3, the DISCIPLINE is not).
+The unit writes only decisions-owned tables, and the one foreign fact it needs
+is DECLARED now rather than left conditional (Codex, round 1): membership truth
+— active standing, held role, same-project identity — is orgs-owned, so
+`decisions.workflowParticipants` gains `orgs` in 4b and every consumer (member-
+decider validation §B, consultee validation §C, the architect presence switch
+and holder checks here) routes through the named orgs participant API
+(`projectRoleCandidates`/`hasProjectRoleStanding` and an active-membership
+assertion beside them — the 7B-iii-g precedent), never a synchronous
+`tx.membership` read from the decisions module. That is the P5 layering lesson
+from `pr-324-convergence.md` applied up front — the reserved task-3 CHECK is not
+run here, the discipline is.
 
 ## §E — Named probes
 
@@ -341,9 +436,9 @@ against` names the exact site.
 | P5 | client/contractor/engineer/consultant get 403; pmc succeeds; the route-policy identity holds | `ROLE_POLICY['decision.withdraw']` absent |
 | P6 | two concurrent withdraws admit exactly one (CAS 409 for the loser), both orderings under the deterministic barrier | the CAS `count===0` branch |
 | P7 | double publish admits exactly one — publish's new CAS | `decisions.service.ts:147` plain `update` |
-| P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row (attribution seal), and a withdraw beside an existing `DecisionApprovalRevision` (never-approved seal) | the three triggers absent — hostile SQL accepted at baseline |
+| P8 | PG refuses `withdrawn → pending/approved/change` UPDATE (terminal seal), an unattributed withdrawn row, a whitespace-only reason (tabs/newlines — the `btrim(x, E' \t\n\x0B\f\r')` CHECK), and a withdraw beside an existing `DecisionApprovalRevision` (never-approved seal) | the three triggers absent — hostile SQL accepted at baseline |
 | P9 | `countPending` and the client pending list drop the decision; the client badge clears | asserted against `decisions.query.ts:173-175` fixtures |
-| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm |
+| P10 | a withdrawn decision is INVISIBLE to contractor/engineer/consultant AND to the client (server serialize + web selector agree), and the withdrawal NOTICE (title + reason) is stripped from every non-pmc feed (`isWithdrawnDecisionNotice`) | `selectors.ts:32-38` negative filter leaks it; `decision-serialize.ts:69-77` has no withdrawn arm; `snapshot.service.ts:181` delivers the notice to everyone |
 | P11 | `deriveDecisionReading('withdrawn')` yields `wait` with the honest withdrawn reason, and an activity gated on the decision still refuses to start with that reason | `readiness.ts:154-165` else-branch emits "Awaiting the client's approval" |
 | P12 | `decision.withdrawn` is in the shared catalog, the external-effect catalog re-seal is exact, manifest⇄contract equality holds | `external-effects.test.ts:47-74` / `decisions.contract.test.ts:24-58` RED on the missing entry |
 | P13 | projection `decisions.inbox`: live == projection == rebuild across a withdraw; the rebuild emits zero events | the diagnostic comparables on the new status |
@@ -355,18 +450,18 @@ against` names the exact site.
 |---|---|---|
 | P15 | default-decider create is byte-identical to today (contract default + backfill) — the no-caller-change proof | the field's absence itself (schema equality fixture) |
 | P16 | a `member`-decider decision is approvable by that member and by pmc-on-behalf (recorded as on-behalf-of-the-decider), and by NO other role | `decisions.service.ts:194` hard-coded `'client'` |
-| P17 | `deciderKind='member'` without a membership id (and the inverse) is unrepresentable — contract 400 and PG CHECK | the CHECK absent |
-| P18 | a `none` decision is born `recorded`, appears in the register and NEVER in any pending surface, badge, or action item | the `recorded` arm absent in each filter |
-| P19 | `options: []` is accepted for `none` and refused (min 2) for every other kind | `contracts.ts:467-478` unconditional `.min(2)` |
+| P17 | `deciderKind='member'` without a membership id (and the inverse) is unrepresentable — contract 400 and PG CHECK — and a CROSS-PROJECT membership reference is refused by the composite FK onto `Membership(projectId, id)` | the CHECK + the candidate key absent — hostile insert accepted |
+| P18 | a `none` decision is born `recorded`, appears in the register and NEVER in any pending surface, badge, or action item; PG refuses any transition OUT of `recorded` (approve CAS and hostile SQL both) | the `recorded` arm absent in each filter; the terminal trigger absent |
+| P19 | a record files end-to-end with `options: []` — create → persist → serialize → register render (the FULL product path, not contract acceptance alone) — and every other kind still refuses fewer than 2 | `contracts.ts:467-478` unconditional `.min(2)`; `DecisionsService.create`'s `input.options[0]` lead derivation throws on the empty array |
 | P20 | an activity linked to a `recorded` decision reads gate `na` with the record-only reason | `readiness.ts:154-165` else-branch |
-| P21 | the pending push on `decision.published` reaches the decider and ONLY the decider | the static `push: ['client']` at `external-effects.ts:41-47` |
+| P21 | the pending push on `decision.published` reaches the decider and ONLY the decider — a same-role NON-decider member receives nothing (the per-membership dispatch target) | the static `push: ['client']` at `external-effects.ts:41-47`; the role-only push spine |
 | P22 | pending visibility follows the decider: a named-member decider SEES their pending decision; a non-decider consultant does NOT | `decision-serialize.ts:69-77` pmc/client-only arm |
 
 ### Unit 4c
 
 | probe | proves | must first be seen to FAIL against |
 |---|---|---|
-| P23 | a consultation request + response round-trips, append-only at PG (no UPDATE/DELETE), attributed both ways | the tables/seals absent |
+| P23 | a consultation request + response round-trips, append-only at PG (no UPDATE/DELETE), attributed both ways; a whitespace-only `question` or `response` is refused at the contract AND by the `btrim(x, E' \t\n\x0B\f\r')` CHECK | the tables/seals absent; the non-blank checks absent |
 | P24 | consultation moves NO status and changes NO gate verdict (fixture: pending stays pending, gate reading identical before/after) | trivially green only AFTER the tables exist — red at the staged baseline via the absent read |
 | P25 | the consultee sees THAT decision only while their consultation stands; another consultant still sees nothing | `decision-serialize.ts:69-77` |
 | P26 | the two consultation events push to exactly the consultee / the requester; the catalog re-seal is exact | the catalog entries absent |
@@ -377,12 +472,14 @@ against` names the exact site.
 | probe | proves | must first be seen to FAIL against |
 |---|---|---|
 | P28 | an `architect` membership authenticates, resolves policy, and appears in every role mirror (compile + runtime walk) | the `TokenRole` union — each mirror RED one by one |
-| P29 | with NO architect member, 4b behavior is byte-identical (no chain, no countersign) — the presence-switch proof | the activation predicate |
-| P30 | forward authority: holder ✓, pmc ✓, architect ✓ (once existing), any other member ✗ — the AMENDED rule | the pre-amendment holder+PMC check |
-| P31 | a decider approval under an active chain is incomplete until countersigned; the countersign is a second attributed register act referencing the exact `DecisionApprovalRevision` | the countersign table/guard absent |
+| P29 | with NO ACTIVE architect membership ever, 4b behavior is byte-identical (no chain, no countersign) — the presence-switch proof | the activation predicate |
+| P29b | removing the only architect DEACTIVATES the chain for new approvals; a decision already `awaiting_countersign` is never auto-flipped and is resolved only by an explicit attributable PMC act | presence read as row-existence — a `removed` membership keeps the chain armed |
+| P30 | forward authority: holder ✓, pmc ✓, architect ✓ (once active), any other member ✗ — the AMENDED rule | the pre-amendment holder+PMC check |
+| P31 | a decider approval under an active chain writes its revision and lands `awaiting_countersign` (gate `wait`, withdraw refused, the architect's action item); the countersign — a second attributed register act referencing the exact `DecisionApprovalRevision` — lands `approved` | the countersign state/guard absent |
 | P32 | a self-countersign is two explicit acts with two ledger entries under two idempotency keys | the single-act shortcut |
-| P33 | reject-back returns the decision to the decider with reason, keeping BOTH register acts; forward-on re-points the holder; both append chain entries | the chain table absent |
+| P33 | reject-back moves `awaiting_countersign → change` with reason (NEVER back to `pending` — §A's never-approved proof), keeping BOTH register acts; forward-on re-points the holder; both append chain entries | the chain table absent; a reject-back that restores `pending` |
 | P34 | the forward chain is append-only at PG and same-project-sealed | hostile insert/update accepted |
+| P35 | forward vs approve/countersign under the deterministic barrier, BOTH orderings: exactly one outcome survives, the loser is a 409, the holder is coherent (no approval recorded under a superseded holder) | the lock-free holder read — both interleavings commit at the staged baseline |
 
 Ordering notes: P7 sits inside 4a deliberately — the publish CAS is 4a's
 neighbour-repair and the race probe is worthless while withdraw (the reason the
@@ -394,10 +491,16 @@ meaningless until the presence-switch is proven off.
 
 **One unit per PR, in order 4a → 4b → 4c → 4d**, each within the standard budget
 (20 files / 1,500 lines). 4a's fan-out is the widest (a status is an interface;
-the breadth IS the correctness) and is expected to brush the file budget; if it
-exceeds, the pre-declared split line is API-side (schema, service, gate, events,
-seals — P1–P13) then web-side (op union, register, selectors — P10's selector
-half, P14), in that order, never mid-invariant. Each unit lands with its packet,
+the breadth IS the correctness) and is expected to brush the file budget.
+**The enum and its readers are indivisible, so the split line cannot run between
+API and web** (Codex, round 1): `DecisionStatus` is a SHARED type and the web's
+`as const` maps are the very readers §A.3 enlists — an API-only first half
+either fails `pnpm check` outright or loosens the type and ships exactly the
+hidden/leaking states P10/P14 exist to prevent. If 4a exceeds budget, the
+pre-declared split extracts the ENUM-INDEPENDENT repairs instead — the `publish`
+CAS (P7) and the withdrawal-notice audience predicate wiring (P10's filter
+half) land as a small preparatory PR touching no status value — and the enum
+with its COMPLETE reader closure stays one unit, never mid-invariant. Each unit lands with its packet,
 reproduce-first probes staged RED per §E, additive diagnostic-first migrations
 only, and the tripwire pins advanced in the same PR (§A lock-coverage gains
 `decisions.withdraw`; the external-effect coverage version re-seals in 4a, 4b
@@ -418,10 +521,11 @@ rather than an improvisation.
 
 ## What carries forward
 
-1. **A status value is an interface** (pr-334-convergence). Both new
-   `DecisionStatus` values ride the enum precisely so every reader is FORCED to
-   answer; §A.3's reader table is the enumeration done up front, not after a
-   finding.
+1. **A status value is an interface** (pr-334-convergence). Every new
+   `DecisionStatus` value — `withdrawn` (4a), `recorded` (4b),
+   `awaiting_countersign` (4d) — rides the enum precisely so every reader is
+   FORCED to answer; §A.3's reader table is the enumeration done up front, not
+   after a finding.
 2. **A constraint only in migration SQL is not a constraint** (pr-327 Root B).
    Every seal here is declared in `schema.prisma` where Prisma can express it and
    pinned by the drift test where it cannot.
