@@ -193,3 +193,26 @@ service is flagged as a raw reader outside the owner → GREEN).
 Round-3 gates: probe file 28/28 (incl. the 2 new); the ratchet + registry/graph pins GREEN;
 `pnpm check` EXIT 0 (web 760/760, API 791/791); `upgrade-proof.sh` PASSED with the delete-arm
 rejection; the full integration battery via the required `api` CI check.
+
+## Round 4 — the four Codex P2 findings on head `31f3fba`, one batched head
+
+The fourth finding-bearing head (`e759832`/`31f3fba` are one tree; the re-push placed the
+`Review-Convergence: complete` trailer in the commit's final trailer block, where git parses
+it). The convergence audit's head table, root analysis and closing enumeration are extended
+again, and this correction commit carries the trailer. Reproduce-first: R4-F1/R4-F2/R4-F3 as
+new probes in `phase6-t4a-withdraw.test.ts` (`round 4` describe — 3/3 RED at `31f3fba` →
+GREEN, the F3 interleave under a deterministic pg_stat_activity barrier); R4-F4 + the F2
+hostile update as upgrade-proof stages (RED at `31f3fba`: the moved register entry was refused
+only by the FK — which a destination membership defeats — and the pre-withdrawn pushes stayed
+uncancelled → GREEN).
+
+| # | finding | fix |
+|---|---|---|
+| R4-F1 (P2) | during a migration-first rolling deploy an OLD API instance materializes a `decision.published` push AFTER the one-time backfill, writing `subject = NULL`; the subject-keyed cancel misses it and the tombstone is suppressed by the existing `(eventId, consumer)` row — the stale push survives | each cancellation pass first STAMPS the subject onto any matching-event row that lacks it (copied from the row's OWN event identity, never invented), and the status arms then see it — pending is neutralized, leased/dead marked; probed by nulling a materialized row's subject and asserting stamp + neutralize + the `pushIntentsCancelled` count |
+| R4-F2 (P2) | the terminal seal froze the withdrawal evidence but not the row's PROJECT identity: hostile SQL could re-point `projectId` at another project where the withdrawer holds an active membership — the FK passes while the permanent record vanishes from the original project's register | `projectId` joins the write-once set in `phase6_t4a_withdrawn_terminal` (round-4 arm); probed with a real destination membership so the RED capture demonstrates the FK alone did NOT refuse; upgrade-proof adds the hostile move rejection by the named rule |
+| R4-F3 (P2) | a recovery-scanner row COMMITTING between the cancellation's update passes (which cannot see it) and the tombstone insert (which resolves to its handled conflict) survives as `pending` with `cancelledAt = NULL` — the next relay pass sends the stale push | the stamp+neutralize+mark passes RUN AGAIN after the tombstone insert: a row that landed in the window is committed and visible by then and is neutralized; a row landing after the insert executed blocks on the in-flight unique conflict and resolves to the scanner's handled P2002 after the cancelling transaction commits — every interleaving ends cancelled-or-never-created, proven by a deterministic two-session barrier (the scanner's create held open, the cancellation provably BLOCKED on it via pg_stat_activity before release) |
+| R4-F4 (P2) | a decision ALREADY withdrawn when the migration runs (the coherent partial/manual-apply shape the diagnostics deliberately accept) will never see a future `decisions.withdraw` command — the backfill stamped its old pushes' subjects but nothing ever cancelled them, so a relay pass or operator redrive could still send the stale approval request | the migration performs the command's cancellation itself for already-withdrawn subjects, with the command's exact semantics (pending → neutralized in place, payload preserved; leased/dead → marked only), compared as `::text` (vacuous on a first apply — no row can hold the value), idempotent via the `cancelledAt IS NULL` guard; upgrade-proof plants pending+dead pushes about the withdrawn `UP4A-D1` and asserts cancellation after the re-run, plus the PRECISION assert that the live decision's pushes stay uncancelled |
+
+Round-4 gates: probe file 31/31 (incl. the 3 new); `pnpm check` EXIT 0 (API 791/791 across 57
+files; web unchanged); `upgrade-proof.sh` PASSED (558 assertions — the two new round-4 stages
+and every prior rejection); the full integration battery via the required `api` CI check.

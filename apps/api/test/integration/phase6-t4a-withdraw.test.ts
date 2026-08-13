@@ -10,6 +10,7 @@ import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { PushService } from '../../src/push/push.service';
 import { PUSH_CONSUMER } from '../../src/platform/outbox/consumers';
+import { cancelQueuedPushBySubject } from '../../src/platform/outbox/cancellation';
 import { emitEvent } from '../../src/platform/events';
 import { pendingDecisionNotice, withdrawnDecisionNotice, isWithdrawnDecisionNotice } from '../../src/domain/notifications';
 import { deriveDecisionReading } from '@vitan/shared';
@@ -797,6 +798,107 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       }
       expect(resurrected).toHaveLength(0);
       expect(sends).toBe(0);
+    });
+  });
+
+  // ── Round 4 — the four Codex findings on head 31f3fba, each reproduced RED before its fix ──
+  // (R4-F4, the migration cancelling pushes of an ALREADY-withdrawn decision, is a migration-level
+  //  fact proven in upgrade-proof.sh — its plant/assert stage is the reproduce-first evidence.)
+  describe('round 4 (Codex): subjectless rolling-deploy rows, frozen project identity, the scanner interleave', () => {
+    it('R4-F1: a delivery materialized SUBJECTLESS by an old instance is stamped from its own event and cancelled — the rolling-deploy writer cannot orphan the announcement', async () => {
+      const id = await seed({ title: 'Subjectless push' });
+      const deliveryId = await emitQueuedPush(id, 'Subjectless push');
+      // a migration-first rolling deploy: an OLD API instance (pre-4a code) materialized this
+      // row AFTER the one-time backfill ran — the new nullable column is written NULL
+      await t.prisma.outboxDelivery.update({ where: { id: deliveryId }, data: { subject: null } });
+      await svc.withdraw(f.projectA.id, id, { reason: 'withdrawn during the rolling deploy' }, pmc());
+      const row = await t.prisma.outboxDelivery.findUniqueOrThrow({ where: { id: deliveryId } });
+      expect(row.subject).toBe(id); // identity restored from the row's OWN event, never invented
+      expect(row.status).toBe('succeeded');
+      expect(row.deliveryAction).toBe('noop');
+      expect(row.cancelledAt).not.toBeNull();
+      const ev = await t.prisma.domainEvent.findFirstOrThrow({ where: { projectId: f.projectA.id, eventType: 'decision.withdrawn', entityId: id } });
+      expect((ev.payload as { pushIntentsCancelled: number }).pushIntentsCancelled).toBe(1);
+    });
+
+    it('R4-F2: the withdrawn register entry cannot be MOVED to another project — projectId joins the write-once set', async () => {
+      const id = await seed({ title: 'Register move' });
+      await svc.withdraw(f.projectA.id, id, { reason: 'then relocated' }, pmc());
+      // the attack needs the FK to pass in the destination: the withdrawer holds an ACTIVE
+      // membership on project B too (created here, removed in the finally)
+      await t.prisma.membership.create({ data: { projectId: f.projectB.id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      try {
+        // children cleared so the RED capture demonstrates the real hole (the seal, once
+        // installed, fires BEFORE any FK evaluation and needs no surviving children)
+        await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
+        await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
+        await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
+        await expect(
+          t.prisma.$executeRaw`UPDATE "Decision" SET "projectId" = ${f.projectB.id} WHERE "id" = ${id}`,
+        ).rejects.toThrow(/projectId is frozen/);
+        expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).projectId).toBe(f.projectA.id);
+      } finally {
+        await t.prisma.membership.deleteMany({ where: { projectId: f.projectB.id, userId: f.memberUser.id } });
+      }
+    });
+
+    it('R4-F3: a scanner row committing BETWEEN the cancellation passes and the tombstone insert is still neutralized — the interleave is closed by the repeat pass', async () => {
+      const id = await seed({ title: 'Interleaved scanner' });
+      const deliveryId = await emitQueuedPush(id, 'Interleaved scanner');
+      // the recovery gap: the event exists, its delivery row does not
+      await t.prisma.outboxDelivery.delete({ where: { id: deliveryId } });
+      const ev = await t.prisma.domainEvent.findFirstOrThrow({ where: { projectId: f.projectA.id, eventType: 'decision.published', entityId: id } });
+
+      const blockedWaiters = async (queryLike: string): Promise<number> => {
+        const rows = await t.prisma.$queryRawUnsafe<Array<{ c: number }>>(
+          `SELECT COUNT(*)::int AS c FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE $1`,
+          queryLike,
+        );
+        return Number(rows[0]!.c);
+      };
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let inserted!: () => void;
+      const insertedP = new Promise<void>((r) => (inserted = r));
+      // Session B: the recovery scanner's create, held OPEN (uncommitted) — exactly the
+      // interleaving Codex named: it commits after the cancellation's first passes scanned
+      // (they cannot see it) and while the tombstone insert is in flight (which BLOCKS on the
+      // in-flight unique conflict, then resolves to its handled no-op).
+      const scanner = raceDb.$transaction(
+        async (btx) => {
+          await btx.$executeRawUnsafe(
+            `INSERT INTO "OutboxDelivery"("id","eventId","projectId","consumer","consumerKind","streamPosition","deliveryAction","status","payload","subject","updatedAt")
+             VALUES (gen_random_uuid()::text, $1, $2, 'webpush.notify', 'unordered', $3, 'dispatch', 'pending', '{"body":"stale"}', $4, now())`,
+            ev.eventId, f.projectA.id, ev.streamPosition, id,
+          );
+          inserted();
+          await gate;
+        },
+        { timeout: 20_000, maxWait: 10_000 },
+      );
+      await insertedP;
+      // The cancellation sequence — the exact function `decisions.withdraw` invokes in-tx
+      // (P1/P10 prove that wiring); driven directly here so the barrier is deterministic.
+      const cancel = t.prisma.$transaction(
+        (tx) => cancelQueuedPushBySubject(tx, { projectId: f.projectA.id, subject: id, eventType: 'decision.published' }),
+        { timeout: 20_000, maxWait: 10_000 },
+      );
+      // the cancellation is provably BLOCKED on the scanner's in-flight row before we let the
+      // scanner commit — condition-based, never a sleep
+      for (let i = 0; i < 200; i++) {
+        if ((await blockedWaiters('%INSERT INTO "OutboxDelivery"%')) >= 1) break;
+        await new Promise((r) => setTimeout(r, 50));
+        if (i === 199) throw new Error('barrier timeout: the cancellation never blocked on the scanner insert');
+      }
+      release();
+      await scanner; // the scanner's pending row COMMITS mid-cancellation
+      const counts = await cancel; // …and the repeat pass neutralizes it before the withdrawal commits
+      expect(counts.neutralized).toBe(1);
+      const row = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { eventId: ev.eventId, consumer: PUSH_CONSUMER } });
+      expect(row.status).toBe('succeeded');
+      expect(row.deliveryAction).toBe('noop');
+      expect(row.cancelledAt).not.toBeNull();
+      expect(await relay.claim(PUSH_CONSUMER)).toHaveLength(0);
     });
   });
 

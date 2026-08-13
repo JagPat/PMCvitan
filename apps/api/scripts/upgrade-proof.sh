@@ -3269,6 +3269,8 @@ assert_rejects "4a seal 1: rewriting the frozen evidence on a withdrawn row" \
   "UPDATE \"Decision\" SET \"withdrawReason\"='rewritten' WHERE \"id\"='UP4A-D1'" "write-once"
 assert_rejects "4a seal 1 delete arm (round 3): DELETING the withdrawn register entry — BEFORE DELETE fires before FK evaluation, so the refusal never depends on surviving children" \
   "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-D1'" "permanent register entry"
+assert_rejects "4a seal 1 (round 4): MOVING the withdrawn register entry to another project — projectId joins the write-once set, so the record cannot vanish from its project's register" \
+  "UPDATE \"Decision\" SET \"projectId\"='p2' WHERE \"id\"='UP4A-D1'" "projectId is frozen"
 assert_rejects "4a seal 2: an UNATTRIBUTED withdrawal (no evidence at all)" \
   "UPDATE \"Decision\" SET \"status\"='withdrawn' WHERE \"id\"='UP4A-D2'" "must carry"
 assert_rejects "4a seal 2: a tabs-and-newlines-only reason (the full-whitespace btrim class)" \
@@ -3295,16 +3297,31 @@ INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","st
 SELECT 'UP4A-EV1','decision.published',p."orgId",p."id",900001,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
 SELECT 'UP4A-EV2','decision.published',p."orgId",p."id",900002,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV3','decision.published',p."orgId",p."id",900003,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV4','decision.published',p."orgId",p."id",900004,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
 INSERT INTO "OutboxDelivery"("id","eventId","projectId","consumer","consumerKind","streamPosition","deliveryAction","status","payload","updatedAt")
 VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatch','pending','{"body":"stale announcement"}',now()),
        -- round 2 (Codex F4): a push that EXHAUSTED its retries before the deploy — the subject
        -- must reach it too, or an operator redrive would slip past the cancellation mark
-       ('UP4A-DEL2','UP4A-EV2','p1','webpush.notify','unordered',900002,'dispatch','dead','{"body":"stale announcement (dead)"}',now());
+       ('UP4A-DEL2','UP4A-EV2','p1','webpush.notify','unordered',900002,'dispatch','dead','{"body":"stale announcement (dead)"}',now()),
+       -- round 4 (Codex): queued pushes about UP4A-D1 — a decision ALREADY withdrawn when the
+       -- migration runs (the accepted partial/manual-apply shape). No future decisions.withdraw
+       -- command will ever run for it, so the MIGRATION must perform the cancellation itself.
+       ('UP4A-DEL3','UP4A-EV3','p1','webpush.notify','unordered',900003,'dispatch','pending','{"body":"stale announcement (pre-withdrawn)"}',now()),
+       ('UP4A-DEL4','UP4A-EV4','p1','webpush.notify','unordered',900004,'dispatch','dead','{"body":"stale announcement (pre-withdrawn, dead)"}',now());
 SQL
 $PSQL -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null || { echo "FAILED  4a migration re-run (rerunnable-by-design) did not apply"; FAIL=1; }
 assert "4a: the subject backfill reached the pre-4a undelivered decision.published push rows — pending AND dead (copied from each event's entityId, never invented)" \
   "SELECT string_agg(\"id\" || '=' || COALESCE(\"subject\",'<null>'), ',' ORDER BY \"id\") FROM \"OutboxDelivery\" WHERE \"id\" IN ('UP4A-DEL1','UP4A-DEL2');" \
   "UP4A-DEL1=UP4A-D2,UP4A-DEL2=UP4A-D2"
+assert "4a round 4: the migration CANCELS the queued pushes of an ALREADY-withdrawn decision — pending neutralized in place (payload preserved), dead marked for the pre-send re-check" \
+  "SELECT string_agg(\"id\" || '=' || \"status\" || '/' || \"deliveryAction\" || '/' || (\"cancelledAt\" IS NOT NULL)::text || '/' || COALESCE(\"subject\",'<null>'), ',' ORDER BY \"id\") FROM \"OutboxDelivery\" WHERE \"id\" IN ('UP4A-DEL3','UP4A-DEL4');" \
+  "UP4A-DEL3=succeeded/noop/true/UP4A-D1,UP4A-DEL4=dead/dispatch/true/UP4A-D1"
+assert "4a round 4 precision: the LIVE decision's queued pushes are NOT cancelled by the migration — only already-withdrawn subjects are" \
+  "SELECT string_agg(\"id\" || '=' || \"status\" || '/' || (\"cancelledAt\" IS NULL)::text, ',' ORDER BY \"id\") FROM \"OutboxDelivery\" WHERE \"id\" IN ('UP4A-DEL1','UP4A-DEL2');" \
+  "UP4A-DEL1=pending/true,UP4A-DEL2=dead/true"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

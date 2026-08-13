@@ -13,11 +13,12 @@ the next correction is not another isolated patch — it carries this architectu
 | `ea3391d` | Codex attempt 1: **5 P2 findings** | recovery-scanner subject; migration diagnostics gated on column existence; dead rows outside the cancellation mark; org-admin-without-membership FK rollback; readiness-reason disclosure to non-pmc viewers |
 | `1fb4e54` | Codex attempt 2: **4 findings (1×P1, 3×P2)** | orphan withdrawal evidence outside the diagnostics; `publishedAt` neither required nor frozen on withdrawn rows; the `justified-large` marker absent from the packet; dead rows outside the subject BACKFILL |
 | `74af426` | round-2 correction + this audit; Codex attempt on it: **3 P2 findings** | DELETE outside the terminal seal; the round-1 attribution fix's raw `Membership` read (an undeclared decisions→orgs edge); the recovery scanner resurrecting a push whose delivery row did not exist at cancellation time |
-| (this head) | the round-3 correction + this audit extended | — |
+| `e759832` / `31f3fba` | round-3 correction (same tree; re-pushed to place the trailer in the commit's final trailer block); Codex attempt on `31f3fba`: **4 P2 findings** | subjectless rows written by an OLD instance during a rolling deploy; `projectId` outside the write-once set; a scanner row committing BETWEEN the cancellation passes and the tombstone insert; queued pushes of an ALREADY-withdrawn decision that no future command will ever cancel |
+| (this head) | the round-4 correction + this audit extended | — |
 
-## Root analysis — why two rounds, and what closes the class
+## Root analysis — why the rounds happened, and what closes the class
 
-Every substantive finding across both rounds is one root wearing five coats: **a terminal
+Every substantive finding across all rounds is one root wearing many coats: **a terminal
 status is a NETWORK of facts, and each fact lives in more lifecycle states and creation paths
 than the happy path exercises.** The unit's design centred on the emit-time, active-row,
 project-member, pmc-viewer case; each round found the SAME invariant one state further out:
@@ -42,25 +43,41 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   delivery row that EXISTS but not the one the recovery scanner would create later (R3-F3).
   A terminal fact's seal is complete only over every access path — update, delete, and the
   row-creation path itself.
+- Round 4 found it one DEPLOYMENT ERA further out in each direction. Writers are not only the
+  current code: an OLD instance in a rolling deploy materializes deliveries with the new
+  column NULL (R4-F1), and PRE-MIGRATION history holds withdrawn decisions whose cancellation
+  only the migration itself can ever perform, because the command that performs it has already
+  happened (R4-F4). Time is not only before-vs-after this transaction: the scanner can commit
+  INSIDE the cancellation's own statement sequence (R4-F3). And the row's identity is not only
+  its evidence columns: the PROJECT it belongs to is what makes the register entry findable at
+  all (R4-F2).
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
 
-1. **Delivery lifecycle × creation path**: subject present on emit-time (`materializeDeliveries`),
-   recovery (`expandMissingDeliveries`), and backfill (pending/leased/dead) rows; the
-   cancellation mark reaches pending (neutralized), leased (pre-send check), dead
-   (redrive-proof), AND the row that does not exist yet (round 3: the cancellation
-   materializes the recovery-gap delivery itself, already cancelled — complete by ordering,
-   since publication precedes withdrawal; single-winner against a concurrent scanner via the
-   `(eventId, consumer)` unique); `succeeded` rows are already-sent history the design accepts.
+1. **Delivery lifecycle × creation path × deployment era**: subject present on emit-time
+   (`materializeDeliveries`), recovery (`expandMissingDeliveries`), and backfill
+   (pending/leased/dead) rows — and STAMPED at cancellation time onto any row an old-code
+   writer materialized subjectless during a rolling deploy, copied from the row's own event
+   (round 4). The cancellation mark reaches pending (neutralized), leased (pre-send check),
+   dead (redrive-proof), the row that does not exist yet (round 3: the recovery-gap tombstone,
+   complete by ordering since publication precedes withdrawal), AND the row that commits
+   INSIDE the cancellation's own window (round 4: the passes run again after the tombstone
+   insert, so every scanner interleaving ends cancelled-or-never-created — proven by the
+   deterministic barrier probe). Pushes of a decision ALREADY withdrawn before the migration
+   runs are cancelled BY the migration with the command's exact semantics (round 4), since no
+   future command will ever run for them. `succeeded` rows are already-sent history the design
+   accepts.
 2. **Decision-row facts the withdrawn state depends on**: `status` (terminal), the four
-   evidence columns (write-once, coherent both directions), and `publishedAt` (required +
-   frozen) — each sealed by trigger AND back-checked by an unconditional migration diagnostic
-   for every partial-apply shape (value-without-columns; columns-with-orphan-evidence;
-   withdrawn-without-publication). Round 3 completes the seal over the ACCESS PATHS: the
-   DELETE arm (`Decision_t4a_d_no_delete`) makes the register entry unerasable, with the two
-   destructive resets using the same sanctioned named-trigger bypass as their DomainEvent
-   TRUNCATE.
+   evidence columns (write-once, coherent both directions), `publishedAt` (required +
+   frozen), and — round 4 — `projectId` (frozen: the register entry cannot be MOVED to
+   another project where the withdrawer happens to hold a membership, which would satisfy the
+   FK while the record vanishes from its own register) — each sealed by trigger AND
+   back-checked by an unconditional migration diagnostic for every partial-apply shape
+   (value-without-columns; columns-with-orphan-evidence; withdrawn-without-publication).
+   Round 3 completes the seal over the ACCESS PATHS: the DELETE arm
+   (`Decision_t4a_d_no_delete`) makes the register entry unerasable, with the two destructive
+   resets using the same sanctioned named-trigger bypass as their DomainEvent TRUNCATE.
 3. **Actor paths**: member (attributed via the FK), org-admin-without-membership (refused with
    an answer under the row lock), ghost (FK-refused) — and the QUESTION itself now asked of
    its owner (round 3): `OrgsParticipant.lockActiveMembership` under the declared
@@ -76,7 +93,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all three rounds is fixed in-branch with reproduce-first evidence (probes,
+Every finding from all four rounds is fixed in-branch with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

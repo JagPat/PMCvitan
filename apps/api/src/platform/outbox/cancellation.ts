@@ -22,6 +22,12 @@ import { PUSH_CONSUMER } from './consumers';
  *     operator redrive resets dead → pending, and without the mark that redrive would
  *     resurrect the stale announcement — with it, the sender's pre-send re-check turns the
  *     redrive into a recorded noop.
+ *   - a row materialized SUBJECTLESS (round 4, Codex): during a migration-first rolling deploy
+ *     an OLD API instance can still create a delivery AFTER the one-time backfill ran, writing
+ *     the new nullable `subject` column as NULL. A subject-keyed match alone would miss it —
+ *     and the tombstone below is suppressed because the `(eventId, consumer)` row EXISTS. So
+ *     each pass first STAMPS the subject onto any matching-event row that lacks it (copied
+ *     from the row's own event identity, never invented), and the status arms then see it.
  *   - a row that DOES NOT EXIST YET (round 3, Codex): the recovery scanner
  *     (`expandMissingDeliveries`) exists to repair the rolling-deploy/crash gap — an event with
  *     no delivery row for a registered consumer. A cancellation running INSIDE that gap would
@@ -31,12 +37,16 @@ import { PUSH_CONSUMER } from './consumers';
  *     stays on the event row for audit), and recovery's NOT EXISTS then finds it present and
  *     creates nothing. This arm is COMPLETE by ordering: every event it must cover exists when
  *     it runs, because the publication that queued the announcement precedes the withdrawal
- *     that cancels it. The `@@unique(eventId, consumer)` makes the race with a concurrent
- *     scanner single-winner in both orders — a pending row that lands first is neutralized by
- *     the first arm; a tombstone that lands first turns the scanner's create into its handled
- *     P2002. Recovery itself stays domain-blind: it cannot ask "is this subject withdrawn?"
- *     without reading a foreign module's table, so the DOMAIN closes the gap at the only
- *     moment it knows the announcement went stale.
+ *     that cancels it.
+ *   - the SCANNER INTERLEAVE (round 4, Codex): a recovery row that COMMITS after the first
+ *     passes scanned (they cannot see it) and before the tombstone insert resolves would
+ *     survive as pending — the insert merely arrives at its handled conflict. So the passes
+ *     RUN AGAIN after the insert: a row that landed in the window is committed and visible by
+ *     then and is neutralized; a row that lands after the insert executed blocks on the
+ *     in-flight unique conflict and resolves to the scanner's handled P2002 after this
+ *     transaction commits. With the repeat pass, every interleaving of the scanner's create
+ *     and this cancellation ends with the row cancelled or never created — proven by the
+ *     deterministic barrier probe (R4-F3).
  * NOT a new status value — the `OutboxDelivery_status_check` set is deliberately closed.
  *
  * The guarantee's true boundary, stated rather than overclaimed: a cancellation landing in the
@@ -56,17 +66,34 @@ export async function cancelQueuedPushBySubject(
     cancelledAt: null,
     event: { is: { eventType: args.eventType } },
   } as const;
-  const neutralized = await tx.outboxDelivery.updateMany({
-    where: { ...scope, status: 'pending' },
-    data: { status: 'succeeded', deliveryAction: 'noop', cancelledAt: now, leaseOwner: null, leaseExpiresAt: null, lastError: null },
-  });
-  const marked = await tx.outboxDelivery.updateMany({
-    where: { ...scope, status: { in: ['leased', 'dead'] } },
-    data: { cancelledAt: now },
-  });
-  // The recovery-gap tombstone (round 3). Set-based over the platform's OWN tables only.
-  // Guarded on the catalog contract row twice over: a delivery must name a declared
-  // (consumer, kind) — and an instance with no catalog row never expands the gap either.
+  // One pass of the three set-based mutations, over the platform's OWN tables only.
+  const pass = async (): Promise<{ neutralized: number; marked: number }> => {
+    // round 4 — restore the identity an old-instance writer omitted, from the row's own event
+    await tx.$executeRaw`
+      UPDATE "OutboxDelivery" d
+         SET "subject" = e."entityId", "updatedAt" = now()
+        FROM "DomainEvent" e
+       WHERE e."eventId" = d."eventId"
+         AND d."consumer" = ${PUSH_CONSUMER}
+         AND d."projectId" = ${args.projectId}
+         AND d."subject" IS NULL
+         AND e."eventType" = ${args.eventType}
+         AND e."entityId" = ${args.subject}`;
+    const neutralized = await tx.outboxDelivery.updateMany({
+      where: { ...scope, status: 'pending' },
+      data: { status: 'succeeded', deliveryAction: 'noop', cancelledAt: now, leaseOwner: null, leaseExpiresAt: null, lastError: null },
+    });
+    const marked = await tx.outboxDelivery.updateMany({
+      where: { ...scope, status: { in: ['leased', 'dead'] } },
+      data: { cancelledAt: now },
+    });
+    return { neutralized: neutralized.count, marked: marked.count };
+  };
+
+  const first = await pass();
+  // The recovery-gap tombstone (round 3). Guarded on the catalog contract row twice over: a
+  // delivery must name a declared (consumer, kind) — and an instance with no catalog row never
+  // expands the gap either.
   const entombed = await tx.$executeRaw`
     INSERT INTO "OutboxDelivery"
       ("id", "eventId", "projectId", "consumer", "consumerKind", "deliveryAction",
@@ -82,5 +109,13 @@ export async function cancelQueuedPushBySubject(
        AND NOT EXISTS (SELECT 1 FROM "OutboxDelivery" d
                         WHERE d."eventId" = e."eventId" AND d."consumer" = ${PUSH_CONSUMER})
      ON CONFLICT DO NOTHING`;
-  return { neutralized: neutralized.count, marked: marked.count, entombed };
+  // round 4 — the repeat pass: catch any row that committed between the first pass and the
+  // insert's resolution (see the SCANNER INTERLEAVE bullet above).
+  const second = await pass();
+
+  return {
+    neutralized: first.neutralized + second.neutralized,
+    marked: first.marked + second.marked,
+    entombed,
+  };
 }

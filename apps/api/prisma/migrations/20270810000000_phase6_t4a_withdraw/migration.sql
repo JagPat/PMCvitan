@@ -125,6 +125,37 @@ WHERE e."eventId" = d."eventId"
   -- announcement past the pre-send check (which reads the mark this subject enables).
   AND d."status" IN ('pending', 'leased', 'dead');
 
+-- Round 4 (Codex): a decision ALREADY withdrawn when this migration runs — the coherent
+-- partial/manual-apply shape the diagnostics deliberately ACCEPT — will never see a future
+-- `decisions.withdraw` command, so the cancellation that command performs is executed HERE
+-- for its queued announcements, with the command's exact semantics: a pending row is
+-- neutralized in place (succeeded/noop, payload preserved for audit), a leased/dead row keeps
+-- its status and receives only the mark (the sender's pre-send re-check / an operator redrive
+-- turns it into a recorded noop). Compared as ::text (this file adds the enum value; on a
+-- first apply no row can hold it, so this is a no-op there). Idempotent via the
+-- `cancelledAt IS NULL` guard — rerunnable by design like the whole file.
+UPDATE "OutboxDelivery" d
+SET "status" = 'succeeded', "deliveryAction" = 'noop', "cancelledAt" = now(),
+    "leaseOwner" = NULL, "leaseExpiresAt" = NULL, "lastError" = NULL, "updatedAt" = now()
+FROM "DomainEvent" e, "Decision" dec
+WHERE e."eventId" = d."eventId"
+  AND d."consumer" = 'webpush.notify'
+  AND d."status" = 'pending'
+  AND d."cancelledAt" IS NULL
+  AND e."eventType" = 'decision.published'
+  AND dec."id" = e."entityId" AND dec."projectId" = e."projectId"
+  AND dec."status"::text = 'withdrawn';
+UPDATE "OutboxDelivery" d
+SET "cancelledAt" = now(), "updatedAt" = now()
+FROM "DomainEvent" e, "Decision" dec
+WHERE e."eventId" = d."eventId"
+  AND d."consumer" = 'webpush.notify'
+  AND d."status" IN ('leased', 'dead')
+  AND d."cancelledAt" IS NULL
+  AND e."eventType" = 'decision.published'
+  AND dec."id" = e."entityId" AND dec."projectId" = e."projectId"
+  AND dec."status"::text = 'withdrawn';
+
 -- ── seal 1: terminal, and the evidence FROZEN with it ────────────────────────────────────────
 -- Trigger NAMES are load-bearing: PostgreSQL fires same-event triggers in name order, so the
 -- `t4a_a/_b/_c` prefixes make the TERMINAL seal answer first (a transition out of `withdrawn`
@@ -151,6 +182,13 @@ BEGIN
     -- and the pmc register would lose the permanent withdrawal + its reason.
     IF NEW."publishedAt" IS DISTINCT FROM OLD."publishedAt" THEN
       RAISE EXCEPTION 'phase6-t4a: publishedAt is frozen on a withdrawn decision — the record stays on the register (decision %)', OLD."id";
+    END IF;
+    -- Round 4 (Codex): the PROJECT identity is part of the frozen record too. Re-pointing
+    -- projectId at another project where the same withdrawer happens to be an active member
+    -- passes the attribution FK while the permanent record vanishes from the original
+    -- project's PMC register — the row must stay on the register it was withdrawn from.
+    IF NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN
+      RAISE EXCEPTION 'phase6-t4a: a withdrawn decision stays on its project''s register — projectId is frozen (decision %)', OLD."id";
     END IF;
   END IF;
   RETURN NEW;
