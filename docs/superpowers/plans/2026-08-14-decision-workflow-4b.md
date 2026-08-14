@@ -70,7 +70,18 @@ routes through the named orgs participant (the 7B-iii-g
 same boundary holds through §B.2's declared SQL primitives — a
 decisions-owned trigger never SELECTs from the orgs-owned table.
 
-The create contract exposes the decider; `approveSchema` stays
+The create contract exposes the decider — **and so does the shipped UI**
+(this plan's round 7): a contract field no screen can set is not a product
+path, and today's `IssueDecisionModal`/`issueDecision` payload carry only
+question/options/location/publish. The create modal gains the decider
+picker — default `client` (untouched, the payload and behavior are
+byte-identical: P15's guarantee), `pmc`, a NAMED ACTIVE member (the
+candidate list loaded through the orgs participant the module already
+routes membership reads through), or record-only (`none`, the §A.2 zero-
+option form) — so a PMC mints every decider kind through the shipped
+product, never through direct API calls; probed as P16's UI arm beside the
+service-layer fixtures, and P19 already walks the record form.
+`approveSchema` stays
 `{ optionIndex }` — the approver is server-resolved, but the AUTHORITY check
 becomes: the actor IS the decider (by role or named membership), or the PMC
 acting on the decider's behalf, recorded honestly — `onBehalfOf` generalizes
@@ -85,15 +96,25 @@ therefore freezes the holder TUPLE at the act — `deciderKind`, the named
 the register renders it — on the act itself: the holder columns are current
 STATE, the act keeps its own history. Probed: PMC-on-behalf-of-A →
 requestChange → re-approve; the FIRST act still names A (P16).
-**The holder columns are WRITE-ONCE from the day they exist** (round 4 of
-PR #335): between 4b and 4d a hostile update could otherwise re-home a
-pending decision with no recorded actor while authority, counts, notices and
-pushes follow the rewritten holder. 4b ships the columns
-immutable-after-create (a BEFORE UPDATE trigger refuses ANY change; no 4b
-service path needs one), hostile-update probed (P17); 4d LOOSENS that
-trigger to exactly one opening — a change accompanied by its
+**The holder columns are WRITE-ONCE FROM PUBLICATION** (round 4 of
+PR #335; the draft carve-out this plan's round 7): between 4b and 4d a
+hostile update could otherwise re-home a PUBLISHED decision with no recorded
+actor while authority, counts, notices and pushes follow the rewritten
+holder. But an UNPUBLISHED draft is the author's private, weightless
+workspace — freezing its holder at create would strand a draft whose named
+member later leaves (withdraw rejects drafts; a write-once column forbids
+re-pointing; the only exit would force private content to publish). So the
+freeze binds WITH publication, exactly like the recorded evidence freeze:
+while `publishedAt IS NULL` the author edits the holder like any other draft
+field; the PUBLISH transition atomically re-validates the named holder's
+ACTIVE standing under the readiness lock (a stranded draft refuses to
+publish, naming the fix — edit the draft's holder); from publication the
+BEFORE UPDATE trigger refuses ANY holder change (no 4b service path needs
+one), hostile-update probed alongside the legal draft re-point (P17); 4d
+LOOSENS that trigger to exactly one opening — a change accompanied by its
 same-transaction `DecisionForward` row, designed in the 4d plan unit. The
-freeze comes first; the door comes with the act that justifies it.
+freeze comes with the act that gives the columns weight; the door comes with
+the act that justifies it.
 
 **The ROUTE ceiling widens with it** (round 2): `ROLE_POLICY['decision.approve']`
 admits only client/pmc today, so a contractor named as decider meets a 403
@@ -103,9 +124,14 @@ and the SERVICE is the authority that narrows to the actual decider — the
 ceiling-then-narrow shape the push catalog already uses — probed both ways: the
 member-decider contractor approves; the same-role non-decider is refused (P16).
 
-**Removing the CURRENT HOLDER's membership is refused** (round-5 obligation 3
-of PR #335): a membership that is the decider designation of any OPEN decision
-(`pending`, `change` — and from 4d, `awaiting_countersign`) cannot be removed.
+**Removing the CURRENT HOLDER's membership is refused — for PUBLISHED open
+decisions** (round-5 obligation 3 of PR #335; the published scope this plan's
+round 7): a membership that is the decider designation of any PUBLISHED OPEN
+decision (`pending`, `change` — and from 4d, `awaiting_countersign`; always
+`publishedAt IS NOT NULL`) cannot be removed. A private DRAFT never blocks a
+removal — it is weightless, and its holder is editable until publish (above),
+so the draft that names a since-removed member is fixed by editing, never by
+forcing publication.
 The refusal lives in the orgs member-removal command, which already consults
 participants for standing questions; it asks the NEW decisions-owned
 participant answer `decisions.holdsOpenDecisions({ membershipId, role,
@@ -306,7 +332,15 @@ tripwires can walk them:
 
 - ORGS-owned primitives (created by an orgs migration, callable by
   decisions-owned seals): membership-is-active for a `(projectId,
-  membershipId)`, and active-member-count for a `(projectId, role)`.
+  membershipId)`; active-member-count for a `(projectId, role)`; and
+  **user-decision-authority for a `(projectId, userId)`** (this plan's
+  round 7) — does this user currently hold standing that authorizes
+  creating decisions on this project: an ACTIVE membership in a
+  decision-creating role OR owner/admin standing on the project's org (the
+  membership-less pmc case). The recorded-insert seal consumes it to
+  validate `authorId`: a terminal `recorded` row is BORN permanent with no
+  later act to catch a forged author, so a direct insert attributed to an
+  unrelated or null actor must be unrepresentable (P18).
 - DECISIONS-owned primitive (callable by the orgs-owned membership seal):
   does-any-open-decision-name-this-holder for a `(projectId, membershipId,
   role)` — the DB re-judgement of `holdsOpenDecisions`, mirroring the
@@ -347,8 +381,8 @@ obligations beside its zod contract and service authority:
 
 | 4b fact | pairing (2) | actor standing (3) | subject eligibility (4) | probes |
 |---|---|---|---|---|
-| `Decision` holder columns | write-once (the 4d door comes with 4d) | named decider membership ACTIVE at create | the kind⟺status CHECKs; the orgs-side orphan guard | P17/P18/P39 |
-| `recorded` decisions | — (terminal at birth) | creator per the existing create authority | published-record evidence frozen; draft edits retained until publish | P18/P19/P20 |
+| `Decision` holder columns | write-once FROM PUBLICATION (draft edits legal; the 4d door comes with 4d) | named decider membership ACTIVE at publish | the kind⟺status CHECKs; the orgs-side orphan guard (published open decisions only) | P17/P18/P39 |
+| `recorded` decisions | — (terminal at birth) | `authorId` validated by the orgs user-decision-authority primitive | published-record evidence frozen; draft edits retained until publish | P18/P19/P20 |
 
 A future fact table added under this task inherits the contract by default:
 omitting an obligation is a defect by construction, and each unit's review
@@ -364,50 +398,61 @@ missing symbol). Red sites name where today's behavior lives.
 | probe | proves | red site / staging |
 |---|---|---|
 | P15 | default-decider byte-identity: with no caller opting in, every surface (approve authority, notice, push, counts, badges) behaves byte-for-byte as before the migration | the full existing decisions test surface re-run over a `deciderKind`-bearing schema; plus an explicit fixture asserting `'client'` backfill on legacy rows |
-| P16 | member-decider authority: the named contractor approves through the widened ceiling; a same-role non-decider is 403/refused at the SERVICE, not the route; the PMC on-behalf approval freezes the EXACT holder tuple (kind + membershipId + display identity) on the act — after a `change` reopening and re-approval, the FIRST act still names the original holder | `ROLE_POLICY['decision.approve']` + `decisions.service.ts` approve authority + the on-behalf evidence columns |
-| P17 | decider CHECKs (`member` ⟺ membershipId), the cross-project membership FK refusal, the holder columns write-once (hostile UPDATE refused), the named decider membership ACTIVE at create (a removed-membership decider refused at the DB through the orgs-owned primitive), and the `Membership.userId` identity freeze (a hostile re-key refused — a named holder can never silently move to another user) | the new columns' migration; `Membership @@unique([projectId, id])`; the §B.1 protocol + §B.2 primitives |
-| P18 | `recorded` born terminal: no pending surface, no awaiting notice, no push intent; the "Issue recorded" notice at ordinary audience; the hostile `recorded → approved` flip AND the hostile DELETE both refused; the PUBLISHED record's evidence frozen — hostile retitle, re-room, `publishedAt`-clear and option replace/delete all refused, the DRAFT edit still accepted; the INVERSE coherence arm — `deciderKind='none'` with `status='pending'` refused by CHECK on insert AND update, and `recorded` refused for every other kind | `decisions.service.ts` create/publish side effects; the terminal + no-delete + evidence-freeze seals + the pair CHECK |
+| P16 | member-decider authority: the named contractor approves through the widened ceiling; a same-role non-decider is 403/refused at the SERVICE, not the route; the PMC on-behalf approval freezes the EXACT holder tuple (kind + membershipId + display identity) on the act — after a `change` reopening and re-approval, the FIRST act still names the original holder; AND the UI arm — the create modal's decider picker mints every kind (client default byte-identical, pmc, named ACTIVE member from the participant-loaded candidates, record-only) through the shipped product | `ROLE_POLICY['decision.approve']` + `decisions.service.ts` approve authority + the on-behalf evidence columns + `IssueDecisionModal`/`issueDecision` |
+| P17 | decider CHECKs (`member` ⟺ membershipId), the cross-project membership FK refusal, the holder columns write-once FROM PUBLICATION (the draft re-point legal; the hostile post-publish UPDATE refused; publish atomically re-validates the named holder's ACTIVE standing and refuses a stranded draft naming the fix), a removed-membership decider refused at publish through the orgs-owned primitive, and the `Membership.userId` identity freeze (a hostile re-key refused — a named holder can never silently move to another user) | the new columns' migration; `Membership @@unique([projectId, id])`; the §B.1 protocol + §B.2 primitives; the publish transition |
+| P18 | `recorded` born terminal: no pending surface, no awaiting notice, no push intent; the "Issue recorded" notice at ordinary audience; the hostile `recorded → approved` flip AND the hostile DELETE both refused; the PUBLISHED record's evidence frozen — hostile retitle, re-room, `publishedAt`-clear and option replace/delete all refused, the DRAFT edit still accepted; the INVERSE coherence arm — `deciderKind='none'` with `status='pending'` refused by CHECK on insert AND update, and `recorded` refused for every other kind; AND the author arm — a direct `recorded` insert whose `authorId` fails the orgs user-decision-authority primitive (unrelated, null, or revoked) refused, the membership-less org-admin author accepted | `decisions.service.ts` create/publish side effects; the terminal + no-delete + evidence-freeze seals + the pair CHECK + the author-standing seal |
 | P19 | the zero-option record files through the FULL product path: create → persist → serialize → register render, web form included | `DecisionsService.create` lead-presentation derivation (`input.options[0]`) |
 | P20 | a DRAFT record gates `wait` ("publish it"); a published record gates `na` | the gate reader's recorded arm consulting the draft flag |
 | P21 | the targeted push reaches the decider USER and only them: target receives; same-role non-target does not; the org-admin (membership-less) target receives; the decider-family standing arm — a target removed between enqueue and claim is re-targeted or dropped with the cancellation mark, never delivered | the outbox role-audience shape; the new user-target column + subscription linkage; the claim-time predicate |
 | P22 | the WHOLE audience follows the decider: bell notice (decider vs same-role non-decider vs client), reapproval surfaces through approve → requestChange → re-approve, viewer-scoped `countPending` (two-engineers-one-decider), the PROJECTED slice (the `decisions.inbox` projection row carries the decider designation, the read-path filter distinguishes the named decider from a same-role non-decider — no leak, no hidden action item — and a rebuild preserves the slice), AND the ROUTE (the decision-approval surface reachable for the actual decider; the Inbox CTA lands and stays; the same-role non-decider still has no route) | `countPending`; AUTH-02 narrowing in `decision-serialize.ts`; `selectActionItems`; `isPendingDecisionNotice` stripping; the projection row schema/fold/filter; `screensFor()` + `RouteBridge` |
-| P39 | removing the current-holder membership is refused for BOTH designations — the named-member holder AND the last active member of a ROLE named by an open decision (role-change of that last holder refused too) — at BOTH layers: 409 through the participant on the command path, and the orgs-owned DB membership seal (calling the decisions-owned predicate primitive) refusing the hostile DIRECT soft-removal and role-change that bypass it; a non-holder membership still removes | the orgs member-removal command + the widened `holdsOpenDecisions` participant answer + the §B.2 membership seal |
+| P39 | removing the current-holder membership is refused for BOTH designations — the named-member holder AND the last active member of a ROLE named by a PUBLISHED open decision (role-change of that last holder refused too) — at BOTH layers: 409 through the participant on the command path, and the orgs-owned DB membership seal (calling the decisions-owned predicate primitive) refusing the hostile DIRECT soft-removal and role-change that bypass it; a non-holder membership still removes; AND the draft arm — a private draft naming the member does NOT block the removal, and the stranded draft is fixed by editing its holder, never by forced publication | the orgs member-removal command + the widened `holdsOpenDecisions` participant answer + the §B.2 membership seal |
 
 ## §D — Obligations carried to the successor plan units
 
 PR #340's round-6 review returned eight findings; three are folded above
 (the recorded evidence freeze — P18; the §B.2 ownership rule for DB-layer
 membership reads; the class-level target-standing rule — §A.3). The other
-five are 4c/4d design obligations, carried by name — nothing dismissed:
+five are 4c/4d design obligations. **Each is carried as a NAMED PROBE, not
+prose** (this plan's round 7): the probe numbers P23–P42 are RESERVED to the
+successor units (their joint-plan assignments held stable), each carried
+question is bound to its probe HERE, and the successor plans elaborate the
+full rows (proves / red site / staging) that these named probes execute
+RED→GREEN at their unit's review stops. Nothing is dismissed:
 
 **To the 4c plan unit** (consultation):
-1. The `decisions.inbox` projection must carry the resolved CONSULTATION
-   audience beside the decider designation — the projection row/fold/rebuild/
-   filter thread, probed on the projected slice, not only the live read.
-2. The response-side DB eligibility seal needs its OWN hostile probes: a
-   direct `DecisionConsultationResponse` INSERT against an ineligible
-   decision, and an unauthorized-responder case, so the probe adjudicates the
-   response seal — the request-side probe alone does not.
-3. The consultation push families' pre-send/claim predicates instantiate the
-   §A.3 class standing rule: a consultee removed — or a requester demoted —
-   between enqueue and claim never receives decision content.
+1. **P25c (a named arm of P25)** — the `decisions.inbox` projection carries
+   the resolved CONSULTATION audience beside the decider designation (the
+   projection row/fold/rebuild/filter thread); PROVES: after a consultation
+   is requested, the consultee's projected slice admits exactly that
+   decision, a same-role non-consultee's does not, and a rebuild preserves
+   the slice — on the PROJECTED path, not only the live read.
+2. **P25d (a named arm of P25)** — the response-side DB eligibility seal's
+   OWN hostile probes; PROVES: a direct `DecisionConsultationResponse`
+   INSERT against an ineligible decision, and one attributed to a
+   non-consultee responder, are both refused at the database.
+3. **P38c/P40c (named arms of P38/P40)** — the consultation push families
+   instantiate the §A.3 class standing rule; PROVES: a consultee removed —
+   or a requester demoted — between enqueue and claim never receives
+   decision content (re-targeted or dropped with the cancellation mark).
 
 **To the 4d plan unit** (architect, forwarding, countersign):
-4. EVERY `DecisionApprovalRevision` INSERT pairs with its same-transaction
-   approval act and authorized decider — under an ACTIVE chain AND an
-   INACTIVE one: a revision born `finalized=true` with no approval transition
-   on a still-`pending` decision must be unrepresentable, or the widened
-   finality FK lets provenance trust an approval that never happened.
-5. Bidirectional pairing is not one-to-one pairing: EXACTLY ONE matching
-   fact per transition (two matching `DecisionForward` rows over one holder
-   mutation, or two `DecisionCountersign` rows over one flip, both refused),
-   duplicate-row hostile probes for both fact types. (Absorbed into §B.3's
-   obligation 2 for every future fact.)
-6. The `countersign_rejection` `ChangeRequest` joins the uniform contract as
-   a full row: its INSERT pairs bidirectionally with the exact
-   `awaiting_countersign → change` transition, validated for an ACTIVE
-   architect requester and awaiting subject — a forged disagreement bundle
-   attributed to an unrelated user must be unrepresentable.
+4. **P31b/P42b (named arms of P31/P42)** — EVERY `DecisionApprovalRevision`
+   INSERT pairs with its same-transaction approval act and authorized
+   decider, under an ACTIVE chain AND an INACTIVE one; PROVES: a revision
+   born `finalized=true` with no approval transition on a still-`pending`
+   decision is unrepresentable, so the widened finality FK can never let
+   provenance trust an approval that never happened.
+5. **P31c/P34b (named arms of P31/P34)** — EXACTLY ONE matching fact per
+   paired transition; PROVES: two matching `DecisionForward` rows over one
+   holder mutation, and two `DecisionCountersign` rows over one flip, are
+   both refused. (Also absorbed into §B.3's obligation 2 for every future
+   fact.)
+6. **P33b (a named arm of P33)** — the `countersign_rejection`
+   `ChangeRequest` joins the uniform contract as a full row; PROVES: its
+   INSERT pairs bidirectionally with the exact `awaiting_countersign →
+   change` transition, validated for an ACTIVE architect requester and an
+   awaiting subject — a forged disagreement bundle attributed to an
+   unrelated user is unrepresentable.
 
 ## §E — Staging, review units, and order
 

@@ -15,7 +15,8 @@ with no two-step.
 | `c5255c0` | round-2 batch + this packet opened | 6 (2 P1, 4 P2) | corrected on `bb28589` |
 | `bb28589` | round-3 batch, carrying BOTH trailers (`Review-Convergence` + the deferral) | 9 (6 P1, 3 P2) | corrected on `a0f6d78`, which also stated the generative rule as the plan's §C.3 uniform seal contract |
 | `a0f6d78` | round-4 batch + the §C.3 contract | 4 (2 P1, 2 P2) | corrected on `6a53aae`; the lifecycle advisory fired and the restructure pre-commitment became binding |
-| `6a53aae` | round-5 batch | 8 (4 P1, 4 P2) | the SIXTH finding head — the pre-commitment is HONORED on this head: the unit NARROWS to the 4b plan (`2026-08-14-decision-workflow-4b.md`); the 4c/4d designs remain readable at `6a53aae` as the successors' starting material |
+| `6a53aae` | round-5 batch | 8 (4 P1, 4 P2) | the SIXTH finding head — the pre-commitment is HONORED on `7d3c65a`: the unit NARROWS to the 4b plan (`2026-08-14-decision-workflow-4b.md`); the 4c/4d designs remain readable at `6a53aae` as the successors' starting material |
+| `7d3c65a` | the NARROWED 4b plan's first reviewed head | 4 (2 P1, 2 P2) | corrected on this head — the narrowed unit's first correction; if the NEXT round also returns findings, the run STOPS and the full history goes to the owner |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -211,15 +212,50 @@ plan, five CARRIED by name in its §D (nothing dismissed):
   sealed bidirectionally to its transition with an active-architect
   requester (P1).
 
+## Round 7 — the narrowed unit's first review
+
+Four findings on the narrowed head `7d3c65a` (2 P1, 2 P2), all verified
+real, all corrected in one head:
+
+- **The deferral must name probes, not prose (F1, P1)**: §D listed the five
+  carried obligations without probe names, and the ledger pointed at
+  successor tables that do not exist yet — deferring open questions to
+  probes that are not in the plan. §D now binds each carried question to a
+  NAMED probe (P25c/P25d, P38c/P40c, P31b/P42b, P31c/P34b, P33b — the
+  P23–P42 numbering held RESERVED to the successor units) with a one-line
+  PROVES statement each; the successor plans elaborate the full rows those
+  named probes execute.
+- **The recorded author needs a standing primitive (F3, P1)**: nothing at
+  the DB validated `authorId` on a terminal `recorded` insert — a row born
+  permanent, attributed to nobody. The orgs primitives gain
+  user-decision-authority (active decision-creating membership OR the
+  membership-less org-admin case), consumed by the recorded-insert seal
+  (P18's author arm).
+- **The decider needs a shipped creation UI (F2, P2)**: the create modal
+  gains the decider picker (client default byte-identical, pmc, named
+  ACTIVE member via the participant-loaded candidates, record-only) — a
+  contract field no screen can set is not a product path (P16's UI arm).
+- **A private draft must not block a removal (F4, P2)**: the holder freeze
+  now binds AT PUBLICATION (draft holder edits legal, publish atomically
+  re-validates standing, the stranded draft is fixed by editing), and the
+  holder-removal guard — both layers — scopes to PUBLISHED open decisions
+  (P17/P39 arms).
+
+**The stop rule, stated plainly**: this was the narrowed unit's first
+correction. If the next review round returns further findings, no further
+correction is pushed — the run stops and the full seven-round history goes
+to the owner for direction.
+
 ## Deferral ledger
 
-Nothing is disputed: all forty-two findings across six rounds were verified
-real; thirty-four were corrected in place, three more are folded into the
-narrowed 4b plan, and five are carried BY NAME to the pre-declared 4c/4d
-plan units (§D of the 4b plan) whose own exact-head reviews will adjudicate
-them — the same deferral discipline, applied at the unit seam. No
-refutations were posted on this PR. Every head past the third finding head
-carries `Review-Deferred-To-Probes: phase-6-task-4` beside
-`Review-Convergence: complete`; the probes (P15–P22, P39 here; the
-successors' tables in their plans) are the executable deferral targets, and
-the exact-head gate still fails closed on any current-head finding.
+Nothing is disputed: all forty-six findings across seven rounds were
+verified real; thirty-eight were corrected in place (rounds 1–5 and 7),
+three were folded into the narrowed 4b plan, and five are carried as NAMED
+PROBES (§D of the 4b plan: P25c, P25d, P38c/P40c, P31b/P42b, P31c/P34b,
+P33b — numbering reserved to the pre-declared 4c/4d plan units whose own
+exact-head reviews adjudicate them) — the same deferral discipline, applied
+at the unit seam. No refutations were posted on this PR. Every head past
+the third finding head carries `Review-Deferred-To-Probes: phase-6-task-4`
+beside `Review-Convergence: complete`; the probes are the executable
+deferral targets, and the exact-head gate still fails closed on any
+current-head finding.
