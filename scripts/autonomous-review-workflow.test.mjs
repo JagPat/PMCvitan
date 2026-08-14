@@ -1873,7 +1873,7 @@ test('workflow recovery is exact-head serialized and has terminal time budget', 
   assert.match(gate, /event\.inputs\?\.terminal_status_id/);
   assert.match(workflow, /needs:\s*\[request-recovery\]/);
   assert.match(workflow, /autonomous-review-owner-/);
-  assert.match(workflow, /timeout-minutes:\s*60/);
+  assert.match(workflow, /timeout-minutes:\s*90/);
 });
 
 test('operator recovery documents the required current head SHA', async () => {
