@@ -57,10 +57,12 @@ moved identity. Two seals close this: the Decision INSERT/holder-write seal
 validates the named membership is ACTIVE — a standing read through the
 ORGS-OWNED DB primitive under the try-advisory protocol, both defined in §B
 and introduced WITH this 4b seal, reused by every later one — and
-`Membership.userId` joins an orgs-owned identity freeze: a membership row is
-BORN bound to its user and never re-keys (display identity changes are
-display-column changes; a new person is a NEW membership). Both hostile
-shapes probed (P17). Membership FACTS (active standing, held role) are
+`Membership.userId` AND `Membership.projectId` join an orgs-owned identity
+freeze (`projectId` round 8): a membership row is BORN bound to its user and
+its project and never re-keys either — a direct project-move would strand
+every decision holding it as silently as a user re-key (display identity
+changes are display-column changes; a new person or a new project is a NEW
+membership). All hostile shapes probed (P17/P39). Membership FACTS (active standing, held role) are
 orgs-owned reads at EVERY layer: in TypeScript,
 `decisionsManifest.workflowParticipants` gains `orgs` and every consumer
 routes through the named orgs participant (the 7B-iii-g
@@ -108,13 +110,24 @@ freeze binds WITH publication, exactly like the recorded evidence freeze:
 while `publishedAt IS NULL` the author edits the holder like any other draft
 field; the PUBLISH transition atomically re-validates the named holder's
 ACTIVE standing under the readiness lock (a stranded draft refuses to
-publish, naming the fix — edit the draft's holder); from publication the
+publish, naming the fix — edit the draft's holder, THROUGH the shipped
+`decisions.updateDraft` command this unit adds (round 8): contract + service
++ the Drafts screen's edit affordance, legal only while `publishedAt IS
+NULL`, covering the holder and the other draft fields — the recovery is a
+product path, not a database operation, exercised in P17); from publication the
 BEFORE UPDATE trigger refuses ANY holder change (no 4b service path needs
 one), hostile-update probed alongside the legal draft re-point (P17); 4d
 LOOSENS that trigger to exactly one opening — a change accompanied by its
-same-transaction `DecisionForward` row, designed in the 4d plan unit. The
-freeze comes with the act that gives the columns weight; the door comes with
-the act that justifies it.
+same-transaction `DecisionForward` row, designed in the 4d plan unit.
+**And publication itself is one-way** (round 9): keying the freeze to the
+CURRENT `publishedAt` invites the two-transaction bypass — clear
+`publishedAt`, re-point the holder through the now-legal draft door,
+republish. `publishedAt` is therefore WRITE-ONCE for every decision (the 4a
+withdrawn entry-freeze generalized): a published→draft transition is refused
+by trigger for all kinds, so the draft door exists only for rows that were
+NEVER published; the bypass is probed in P17. The freeze comes with the act
+that gives the columns weight; the door comes with the act that justifies
+it.
 
 **The ROUTE ceiling widens with it** (round 2): `ROLE_POLICY['decision.approve']`
 admits only client/pmc today, so a contractor named as decider meets a 403
@@ -131,7 +144,12 @@ decision (`pending`, `change` — and from 4d, `awaiting_countersign`; always
 `publishedAt IS NOT NULL`) cannot be removed. A private DRAFT never blocks a
 removal — it is weightless, and its holder is editable until publish (above),
 so the draft that names a since-removed member is fixed by editing, never by
-forcing publication.
+forcing publication. **And the REOPEN path re-validates too** (round 8): the
+guard cannot see an `approved` decision, so its member holder may legally
+leave while it is closed — `requestChange` (`approved → change`) therefore
+re-validates the holder's ACTIVE standing atomically under the readiness
+lock, refusing 409 with withdraw-and-reissue named as the escape when the
+holder is gone; a reopened decision can never be born holderless (P39/P22).
 The refusal lives in the orgs member-removal command, which already consults
 participants for standing questions; it asks the NEW decisions-owned
 participant answer `decisions.holdsOpenDecisions({ membershipId, role,
@@ -163,8 +181,13 @@ alternatives. **Relaxing the contract alone leaves the product path broken**
 `lead.swatch`, so `options: []` would throw before persistence. 4b reworks the
 create path for the zero-option shape — the option-sourced presentation columns
 become nullable-or-defaulted for a record (an additive migration + serializer
-arm), the web create form supports filing without options, and P19 asserts the
-FULL path (create → persist → serialize → register render), never contract
+arm), the web create form supports filing without options — and the DRAFT
+path publishes too (round 8): `DraftsScreen` readiness currently hard-codes
+`options.length >= 2`, which would strand a saved zero-option record as
+permanently unpublishable; readiness derives from the KIND (a record is
+ready with zero options; every other kind keeps the two-option floor), and
+P20 walks save-as-draft → publish for a record. P19 asserts the FULL path
+(create → persist → serialize → register render), never contract
 acceptance alone. **The create/publish side effects branch too** (round 2):
 today's path unconditionally appends the "Decision awaiting approval" notice
 and pushes `decision.published` at the pending audience — a false approval
@@ -188,11 +211,17 @@ evidence freeze round 6): a BEFORE UPDATE trigger refuses any transition out
 of it; the 4a no-delete seal (`Decision_t4a_d_no_delete`) extends its refusal
 to `recorded` rows; and — because a permanent register entry whose CONTENT can
 be rewritten is not permanent — the PUBLISHED record's question and option
-evidence freeze exactly like the withdrawn seal network's: title, room/space
-linkage, `publishedAt`, and the record's `DecisionOption` rows (where any
-exist) are immutable once `status='recorded'` AND published, with the
-DRAFT-edit path retained until publish (an unpublished record is still the
-author's to fix). Without the freeze, hostile SQL could retitle the filed
+evidence freeze exactly like the withdrawn seal network's: title, room/space linkage, `publishedAt`, `authorId` (round 8 — a permanent
+record must keep its attribution), `projectId` (round 9 — a permanent record
+must stay in the register it was filed in), and the record's
+`DecisionOption` rows (where any exist) are immutable once
+`status='recorded'` AND published, with the DRAFT-edit path retained until
+publish (an unpublished record is still the author's to fix). **And a
+record can never carry approval evidence** (round 9): a coherence CHECK
+requires every approval-derived column (`approvedOption`, `approvedById`,
+`approver`, `onBehalfOf`) to be NULL while `status='recorded'`, on INSERT
+and UPDATE — the unapprovable permanent record can neither be born with nor
+later gain a forged approval surface (P18). Without the freeze, hostile SQL could retitle the filed
 issue, move it, clear `publishedAt`, or replace its options while
 `status='recorded'` — the register and any gate linkage no longer preserving
 what was filed. All probed directly (P18): the hostile `recorded → approved`
@@ -258,9 +287,16 @@ owner/admin operating as `pmc` legitimately has NO project `Membership` row, so
 a membership-keyed target would drop them or fan out to every pmc. The push
 intent gains an optional user target beside its role ceiling (a membership
 designation RESOLVES to its user at dispatch; an org-admin actor already IS a
-user), the subscription→user linkage is added where the owning module holds it,
-and the probe pair proves BOTH directions: the target receives; a same-role
-non-target does NOT (P21). The static catalog names the CEILING audience and
+user), the subscription→user linkage is added where the owning module holds it —
+**and STAGED honestly over the existing devices** (round 9): today's
+`PushSubscription` rows carry no owner, and a backfill cannot invent one.
+The linkage lands first (attributed opportunistically on the next
+authenticated app open); the decider-targeted NARROWING activates
+per-subscription only where the link exists, an unlinked device continuing
+to receive exactly the ROLE-ceiling behavior it receives today — no
+regression, no silent drop — until its owner reappears. P21 includes a
+pre-migration subscription in both arms. The probe pair proves BOTH
+directions: the target receives; a same-role non-target does NOT (P21). The static catalog names the CEILING audience and
 the dispatch site narrows to the actual decider; `buildDispatchIntent`'s
 mismatch refusal treats the catalog as the ceiling.
 
@@ -314,7 +350,13 @@ point, holding no other locks); on a DIRECT write with the key CONTENDED it
 REFUSES the write outright — a seal refuses, it never waits inside a trigger,
 so no lock-order inversion exists. All pairings are deterministic:
 service/service serializes on the blocking lock; service/hostile and
-hostile/hostile resolve by try-acquire-or-refuse. 4b introduces the protocol
+hostile/hostile resolve by try-acquire-or-refuse — and every ordering probe
+uses the repository's DETERMINISTIC readiness-lock barrier discipline
+(round 8): each session is held at its intended lock point and confirmed
+blocked/positioned before the competing write proceeds — never a sleep —
+and the probe asserts the FINAL holder-standing invariant directly, so the
+try-acquire/refusal interleaving is actually exercised (P17/P39). 4b
+introduces the protocol
 with its decider-standing seal and binds the `Membership` writes that can
 flip holder-relevant standing (activation, removal/restore — hard DELETE
 included — and role change: the same set the §A lock-coverage enumeration
@@ -332,15 +374,26 @@ tripwires can walk them:
 
 - ORGS-owned primitives (created by an orgs migration, callable by
   decisions-owned seals): membership-is-active for a `(projectId,
-  membershipId)`; active-member-count for a `(projectId, role)`; and
-  **user-decision-authority for a `(projectId, userId)`** (this plan's
-  round 7) — does this user currently hold standing that authorizes
-  creating decisions on this project: an ACTIVE membership in a
+  membershipId)`; **effective-role-standing** for a `(projectId, role)`
+  (renamed round 8 from active-member-count, because a bare membership
+  count does not model the plan's own authority rule — it counts ACTIVE
+  memberships in the role PLUS, for `pmc`, owner/admin standing on the
+  project's org with the same precedence as authorization, so removing the
+  last PMC membership while an org owner still covers the role is NOT a
+  holder-orphaning and is not refused — probed in P39); and
+  **user-decision-authority for a `(projectId, userId)`** (round 7;
+  operability round 9) — does this user currently hold standing that
+  authorizes creating decisions on this project: an ACTIVE membership in a
   decision-creating role OR owner/admin standing on the project's org (the
-  membership-less pmc case). The recorded-insert seal consumes it to
-  validate `authorId`: a terminal `recorded` row is BORN permanent with no
-  later act to catch a forged author, so a direct insert attributed to an
-  unrelated or null actor must be unrepresentable (P18).
+  membership-less pmc case), AND the project itself is OPERABLE — the
+  primitive judges `archivedAt` while holding the `Project` row lock, the
+  same order `ProjectAccessService.authorize` implies, so an
+  already-archived insert is refused and an archive committing concurrently
+  either waits or is seen (both shapes probed, P18). The recorded-insert
+  seal consumes it to validate `authorId`: a terminal `recorded` row is
+  BORN permanent with no later act to catch a forged author, so a direct
+  insert attributed to an unrelated or null actor must be unrepresentable
+  (P18).
 - DECISIONS-owned primitive (callable by the orgs-owned membership seal):
   does-any-open-decision-name-this-holder for a `(projectId, membershipId,
   role)` — the DB re-judgement of `holdsOpenDecisions`, mirroring the

@@ -17,7 +17,8 @@ with no two-step.
 | `a0f6d78` | round-4 batch + the §C.3 contract | 4 (2 P1, 2 P2) | corrected on `6a53aae`; the lifecycle advisory fired and the restructure pre-commitment became binding |
 | `6a53aae` | round-5 batch | 8 (4 P1, 4 P2) | the SIXTH finding head — the pre-commitment is HONORED on `7d3c65a`: the unit NARROWS to the 4b plan (`2026-08-14-decision-workflow-4b.md`); the 4c/4d designs remain readable at `6a53aae` as the successors' starting material |
 | `7d3c65a` | the NARROWED 4b plan's first reviewed head | 4 (2 P1, 2 P2) | corrected on `2228e2d` — the narrowed unit's first correction, carrying the stop rule |
-| `2228e2d` | round-7 batch | 7 (3 P1, 4 P2) | **THE STOP RULE EXECUTED** — no further correction is pushed; this head records the stop and the run awaits OWNER direction |
+| `2228e2d` | round-7 batch | 7 (3 P1, 4 P2) | the stop rule executed on `536b6da` (packet-only) — held for owner direction |
+| `536b6da` | the stop record | 6 (4 P1, 2 P2) — one of them ON THE STOP ITSELF | the stop is SUPERSEDED on this head: the reviewer correctly cited AGENTS.md's non-blocking rule, so the loop resumes — the held round-8 findings AND the round-9 plan findings fold in one batched head; the owner escalation remains posted as the asynchronous channel |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -271,24 +272,40 @@ correction is pushed:
   record draft unpublishable through the UI.
 - (P2) the concurrency probes do not mandate deterministic barriers.
 
-**Why the stop is the right call**: eight review rounds (7, 8, 6, 9, 4, 8,
-4, 7 findings — 53 total, every one verified real, none disputed, none
-refuted) show a stream that does not converge, INCLUDING after the round-6
-narrowing shrank the surface by two-thirds. The findings are real instances
-of enumerable classes — column enumerations, product paths, lifecycle
-edges, probe rigor — and a plan written in prose can absorb such instances
-indefinitely: this is exactly the "a plan can always be specified further"
-pathology `docs/AUTONOMOUS_LOOP.md` §Bounded-plan-review names, now
-demonstrated to outlast both the deferral trailer and a structural
-narrowing. Continuing to correct would trade unbounded review cycles for
-diminishing prose precision while the stronger instrument — the
-implementation review stops, where every probe executes RED→GREEN against
-real code and the exact-head gate fails closed — sits unused. The decision
-of how to proceed belongs to the owner and is requested in the PR thread.
+**Why the stop seemed right**: eight rounds (53 findings, every one real)
+showed a stream that did not converge even after the narrowing — the "a
+plan can always be specified further" pathology. The stop escalated the
+how-to-proceed decision to the owner in the PR thread.
+
+## Round 9 — the stop superseded: the loop resumes
+
+The round-9 review of the stop-record head returned six findings — five
+more real plan findings, and one P1 on the STOP ITSELF: halting the run to
+await an owner contradicts AGENTS.md's explicit non-blocking rule ("do not
+block on human sign-off — no one is standing by to give it"), the same
+principle `scripts/review-lifecycle.mjs` states as its own design
+rationale. The reviewer is right about the constitution: the stop rule was
+SELF-imposed at round 7, and the repository's design is that the loop
+continues autonomously while the owner intervenes ASYNCHRONOUSLY if they
+choose. So the stop is superseded, recorded honestly: the loop resumes with
+one batched head folding the seven held round-8 findings and the five
+round-9 plan findings (Membership.projectId in the identity freeze; the
+requestChange reopen revalidation; authorId + projectId in the recorded
+freeze + the approval-columns-NULL coherence; effective-role-standing
+covering the membership-less org-admin PMC; the shipped decisions.updateDraft
+path; zero-option record drafts publishable; deterministic barriers
+mandated; publishedAt write-once for every decision — killing the
+unpublish-repoint-republish bypass; project operability in the authority
+primitive under the Project row lock; the staged push-subscription user
+attribution with no regression for unlinked devices). The owner escalation
+comment REMAINS POSTED as the standing asynchronous channel — any direction
+given there overrides the loop's course. Nothing in this resumption merges
+anything: the exact-head gate still fails closed on any current-head
+finding.
 
 ## Deferral ledger
 
-Nothing is disputed: all fifty-three findings across eight rounds were
+Nothing is disputed: all fifty-nine findings across nine rounds were
 verified real; thirty-eight were corrected in place (rounds 1–5 and 7),
 three were folded into the narrowed 4b plan, five are carried as NAMED
 PROBES (§D of the 4b plan: P25c, P25d, P38c/P40c, P31b/P42b, P31c/P34b,
