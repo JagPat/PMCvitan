@@ -288,6 +288,49 @@ BEGIN
       FROM "DecisionProjection" dp
       JOIN "Decision" d ON d."id" = dp."decisionId"
      WHERE dp."generationId" = g."id";
+    -- Round 13 (Codex): the copy above can only CORRECT rows that exist — the never-applied
+    -- shape (a withdrawn decision with NO projection row, a case the stale predicate itself
+    -- names) would otherwise produce a caught-up replacement that still omits the withdrawal,
+    -- and projectionSlice() would serve it as complete. The missing rows are seeded from
+    -- CANONICAL truth, composing the dto exactly as serializeDecision writes it: nullable
+    -- columns are ABSENT when NULL (the `?? undefined` mappings), photoSwatch/draft/options
+    -- always present, options ordered by "order" with photoUrl absent when null — pinned by
+    -- the probe's storedDecisionRows == computeDecisionRows equality.
+    INSERT INTO "DecisionProjection"
+      ("id", "generationId", "projectId", "decisionId", "status", "publishedAt", "authorId", "dto", "updatedAt")
+    SELECT gen_random_uuid()::text, newid, d."projectId", d."id", 'withdrawn', d."publishedAt", d."authorId",
+           (jsonb_build_object(
+              'id', d."id",
+              'title', d."title",
+              'room', d."room",
+              'status', 'withdrawn',
+              'draft', (d."publishedAt" IS NULL),
+              'photoSwatch', d."photoSwatch",
+              'options', COALESCE((
+                SELECT jsonb_agg(
+                         jsonb_build_object(
+                           'label', o."label", 'key', o."optionKey", 'material', o."material",
+                           'delta', o."delta", 'swatch', o."swatch", 'recommended', o."recommended")
+                         || CASE WHEN o."photoUrl" IS NOT NULL THEN jsonb_build_object('photoUrl', o."photoUrl") ELSE '{}'::jsonb END
+                         ORDER BY o."order" ASC)
+                  FROM "DecisionOption" o WHERE o."decisionId" = d."id"), '[]'::jsonb)))
+           || CASE WHEN d."nodeId" IS NOT NULL THEN jsonb_build_object('nodeId', d."nodeId") ELSE '{}'::jsonb END
+           || CASE WHEN d."ageDays" IS NOT NULL THEN jsonb_build_object('ageDays', d."ageDays") ELSE '{}'::jsonb END
+           || CASE WHEN d."approvedOption" IS NOT NULL THEN jsonb_build_object('approvedOption', d."approvedOption") ELSE '{}'::jsonb END
+           || CASE WHEN d."material" IS NOT NULL THEN jsonb_build_object('material', d."material") ELSE '{}'::jsonb END
+           || CASE WHEN d."approver" IS NOT NULL THEN jsonb_build_object('approver', d."approver") ELSE '{}'::jsonb END
+           || CASE WHEN d."onBehalfOf" IS NOT NULL THEN jsonb_build_object('onBehalfOf', d."onBehalfOf") ELSE '{}'::jsonb END
+           || CASE WHEN d."date" IS NOT NULL THEN jsonb_build_object('date', d."date") ELSE '{}'::jsonb END
+           || CASE WHEN d."cost" IS NOT NULL THEN jsonb_build_object('cost', d."cost") ELSE '{}'::jsonb END
+           || CASE WHEN d."withdrawnAt" IS NOT NULL THEN jsonb_build_object('withdrawnAt', to_char(d."withdrawnAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) ELSE '{}'::jsonb END
+           || CASE WHEN d."withdrawnByName" IS NOT NULL THEN jsonb_build_object('withdrawnBy', d."withdrawnByName") ELSE '{}'::jsonb END
+           || CASE WHEN d."withdrawReason" IS NOT NULL THEN jsonb_build_object('withdrawReason', d."withdrawReason") ELSE '{}'::jsonb END,
+           now()
+      FROM "Decision" d
+     WHERE d."projectId" = g."projectId" AND d."status"::text = 'withdrawn'
+       AND NOT EXISTS (
+         SELECT 1 FROM "DecisionProjection" dp2
+          WHERE dp2."generationId" = g."id" AND dp2."decisionId" = d."id");
   END LOOP;
 END $mig$;
 
@@ -441,14 +484,14 @@ BEGIN
     -- this. (A pre-withdrawal edit in an EARLIER transaction is outside this seal's scope —
     -- tampering with a LIVE pending question is client-visible and its own problem; what can
     -- never happen is the WITHDRAWING statement swapping the question it freezes.)
-    IF to_regclass('pg_temp."_t4a_options_touched"') IS NOT NULL THEN
-      DECLARE touched BOOLEAN;
-      BEGIN
-        EXECUTE 'SELECT EXISTS (SELECT 1 FROM pg_temp."_t4a_options_touched" WHERE "decisionId" = $1)' INTO touched USING NEW."id";
-        IF touched THEN
-          RAISE EXCEPTION 'phase6-t4a: the decision''s options were modified in the withdrawing transaction — the frozen question must be the question that was published (decision %)', OLD."id";
-        END IF;
-      END;
+    -- Round 13 (Codex): the note lived in pg_temp, which the SAME session could DROP with no
+    -- privilege on the app schema at all — erasing the evidence between the edit and the
+    -- withdraw. It now lives in the REAL "DecisionOptionTouch" table (below), keyed by
+    -- txid_current() — the TOP-LEVEL transaction id, so a SAVEPOINT cannot detach the note
+    -- from its write (they share the same subtransaction fate) — and its guard refuses
+    -- same-transaction erasure. Same-tx rows are always visible, so a plain read suffices.
+    IF EXISTS (SELECT 1 FROM "DecisionOptionTouch" tn WHERE tn."decisionId" = NEW."id" AND tn."txid" = txid_current()) THEN
+      RAISE EXCEPTION 'phase6-t4a: the decision''s options were modified in the withdrawing transaction — the frozen question must be the question that was published (decision %)', OLD."id";
     END IF;
     -- Round 9 (Codex): existence is not standing. The attribution FK proves the membership
     -- ROW; the command requires it ACTIVE (the locked participant check). Guarded on NOT NULL
@@ -545,6 +588,15 @@ BEGIN
       RAISE EXCEPTION 'phase6-t4a: decision % is withdrawn — an approval event can no longer be recorded', NEW."decisionId";
     END IF;
   END IF;
+  -- Round 13 (Codex): the type freeze alone left the event's DECISION mutable — an UPDATE
+  -- keeping the approval type while changing `decisionId` re-points a legacy decision's only
+  -- approval evidence at some other LIVE decision (the round-10 arm above judges only what it
+  -- lands ON), and the pending row withdraws afterwards. Approval evidence stays with its
+  -- decision; a non-approval event remains re-pointable. Placed AFTER the target check so a
+  -- re-point onto a withdrawn decision keeps its established refusal.
+  IF TG_OP = 'UPDATE' AND OLD."type" IN ('approved', 'reapproved') AND NEW."decisionId" IS DISTINCT FROM OLD."decisionId" THEN
+    RAISE EXCEPTION 'phase6-t4a: event % is approval evidence — it cannot be re-pointed away from decision %', OLD."id", OLD."decisionId";
+  END IF;
   RETURN NEW;
 END $fn$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS "DecisionEvent_no_withdrawn_approval" ON "DecisionEvent";
@@ -583,20 +635,67 @@ CREATE TRIGGER "DecisionOption_t4a_frozen"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4a_option_frozen_after_withdraw();
 
 -- Round 12 (Codex): the withdrawing TRANSACTION must not rewrite the question first. Every
--- option write leaves a per-transaction touch note (a temp table, ON COMMIT DROP) naming the
--- parent decision(s); the withdrawal-entry seal refuses when the decision being withdrawn was
--- touched in the SAME transaction — catching UPDATE, INSERT and DELETE alike (xmin cannot see
--- deleted rows). Outside a withdrawing transaction the note simply evaporates at commit, so
--- every ordinary flow — create-with-options, fixtures, the destructive resets — is untouched.
+-- option write leaves a per-transaction touch note naming the parent decision(s); the
+-- withdrawal-entry seal refuses when the decision being withdrawn was touched in the SAME
+-- transaction — catching UPDATE, INSERT and DELETE alike (xmin cannot see deleted rows).
+-- Ordinary transactions never withdraw, so create-with-options, fixtures and the destructive
+-- resets are untouched.
+-- Round 13 (Codex): the round-12 note was an ON COMMIT DROP temp table — which the SAME
+-- session could DROP with NO privilege on the app schema (a session owns its pg_temp
+-- namespace), erasing the evidence between the edit and the withdraw. The note is now a REAL
+-- table keyed by (decisionId, txid_current()):
+--   - txid_current() is the TOP-LEVEL transaction id, so the note and the option write share
+--     the same (sub)transaction fate — a SAVEPOINT rollback undoes both, a commit keeps both;
+--   - the guard trigger below refuses erasing or rewriting a note in the transaction that
+--     wrote it, so the only way around the seal is ALTER TABLE ... DISABLE TRIGGER — the same
+--     OWNERSHIP privilege every sanctioned bypass in this seal network already requires
+--     (dropping a pg_temp table required none, which was the finding);
+--   - notes from COMMITTED transactions are inert history (the entry seal matches only the
+--     CURRENT txid); they are swept by the decision's ON DELETE CASCADE, and a cascade (FK
+--     depth > 1) passes the guard so the sanctioned destructive resets need no new bypass;
+--   - the old pg_temp plan-cache footgun is gone with the temp table: a real table has a
+--     stable oid, so plain static SQL is correct here.
+CREATE TABLE IF NOT EXISTS "DecisionOptionTouch" (
+  "decisionId" TEXT NOT NULL,
+  "txid" BIGINT NOT NULL,
+  CONSTRAINT "DecisionOptionTouch_pkey" PRIMARY KEY ("decisionId", "txid"),
+  CONSTRAINT "DecisionOptionTouch_decisionId_fkey" FOREIGN KEY ("decisionId")
+    REFERENCES "Decision"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+
+CREATE OR REPLACE FUNCTION phase6_t4a_touch_guard() RETURNS trigger AS $fn$
+BEGIN
+  -- pg_trigger_depth() = 1 is a DIRECT statement on the note table; a cascaded FK action
+  -- (deleting or re-keying the decision itself) arrives at depth 2 and passes — erasing the
+  -- decision row is a different act with its own seals, not a way to blind this one.
+  IF TG_OP = 'UPDATE' AND pg_trigger_depth() = 1 THEN
+    RAISE EXCEPTION 'phase6-t4a: option touch notes are evidence rows — they cannot be updated (decision %)', OLD."decisionId";
+  END IF;
+  IF TG_OP = 'DELETE' AND OLD."txid" = txid_current() AND pg_trigger_depth() = 1 THEN
+    RAISE EXCEPTION 'phase6-t4a: the option touch note cannot be erased by the transaction that wrote it (decision %)', OLD."decisionId";
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END $fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS "DecisionOptionTouch_guard" ON "DecisionOptionTouch";
+CREATE TRIGGER "DecisionOptionTouch_guard"
+  BEFORE UPDATE OR DELETE ON "DecisionOptionTouch"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4a_touch_guard();
+
 CREATE OR REPLACE FUNCTION phase6_t4a_option_touch_note() RETURNS trigger AS $fn$
 BEGIN
-  -- dynamic SQL throughout: an ON COMMIT DROP temp table gets a NEW oid every transaction, and
-  -- a static plpgsql statement would cache the dropped one (the classic temp-table plan-cache
-  -- footgun — the second transaction on a pooled connection would die on a vanished relation)
-  EXECUTE 'CREATE TEMP TABLE IF NOT EXISTS "_t4a_options_touched" ("decisionId" TEXT PRIMARY KEY) ON COMMIT DROP';
-  EXECUTE 'INSERT INTO pg_temp."_t4a_options_touched" VALUES ($1) ON CONFLICT DO NOTHING' USING COALESCE(OLD."decisionId", NEW."decisionId");
+  -- OLD is a NULL RECORD on INSERT and NEW on DELETE (plpgsql-trigger docs: "This variable is
+  -- null in statement-level triggers and for INSERT operations") — a field of a null record
+  -- reads as NULL, never an error, so the COALESCE lands on the populated side. Round 13
+  -- claimed this raises; refuted by execution — probe R13-F1 runs both verbs through this
+  -- trigger and asserts their notes.
+  INSERT INTO "DecisionOptionTouch"("decisionId", "txid")
+  VALUES (COALESCE(OLD."decisionId", NEW."decisionId"), txid_current())
+  ON CONFLICT DO NOTHING;
   IF TG_OP = 'UPDATE' AND NEW."decisionId" IS DISTINCT FROM OLD."decisionId" THEN
-    EXECUTE 'INSERT INTO pg_temp."_t4a_options_touched" VALUES ($1) ON CONFLICT DO NOTHING' USING NEW."decisionId";
+    INSERT INTO "DecisionOptionTouch"("decisionId", "txid")
+    VALUES (NEW."decisionId", txid_current())
+    ON CONFLICT DO NOTHING;
   END IF;
   IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
   RETURN NEW;

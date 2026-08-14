@@ -15,6 +15,7 @@ import { PushService } from '../../src/push/push.service';
 import { PUSH_CONSUMER } from '../../src/platform/outbox/consumers';
 import { cancelQueuedPushBySubject } from '../../src/platform/outbox/cancellation';
 import { emitEvent } from '../../src/platform/events';
+import { computeDecisionRows, storedDecisionRows } from '../../src/decisions/decisions.projection';
 import { pendingDecisionNotice, withdrawnDecisionNotice, isWithdrawnDecisionNotice } from '../../src/domain/notifications';
 import { deriveDecisionReading } from '@vitan/shared';
 import type { AuthUser } from '../../src/common/auth';
@@ -1498,6 +1499,208 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${uid}, "withdrawnByName"='Active contractor', "withdrawReason"='no authority' WHERE "id"=${id}`,
       ).rejects.toThrow(/ACTIVE pmc member/);
       expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+    });
+  });
+
+  describe('round 13 (Codex): unerasable touch evidence, frozen event identity, complete projection repair, the daily-log write path', () => {
+    // R13-F1 (REFUTED with evidence) — the claim: the touch trigger's unconditional
+    // `COALESCE(OLD."decisionId", NEW."decisionId")` "will raise on every DecisionOption
+    // insert" and "touch an unavailable NEW record on deletes". Since PostgreSQL 11 the
+    // plpgsql OLD/NEW variables are NULL RECORDS when not applicable ("This variable is null
+    // in statement-level triggers and for INSERT operations" — current docs, plpgsql-trigger),
+    // and a field of a null record reads as NULL, so the COALESCE lands on the populated
+    // side. Verified by EXECUTION on PostgreSQL 16: both verbs run through the trigger AND
+    // record their note (the note table makes the firing itself assertable).
+    it('R13-F1 (refuted): plain option INSERT and DELETE run through the touch trigger — OLD/NEW are null records, and both verbs record their note', async () => {
+      const id = await seed({ title: 'Null-record row images' });
+      expect(
+        await t.prisma.$executeRaw`INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order") VALUES ('r13-f1-opt',${id},'C','c','Marble',5,'sw3',false,2)`,
+      ).toBe(1);
+      expect(await t.prisma.$executeRaw`DELETE FROM "DecisionOption" WHERE "id"='r13-f1-opt'`).toBe(1);
+      // two single-statement transactions → two per-tx notes for this decision
+      const notes = await t.prisma.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM "DecisionOptionTouch" WHERE "decisionId"=${id}`;
+      expect(Number(notes[0]!.n)).toBeGreaterThanOrEqual(2);
+    });
+
+    // R13-F2 — the round-12 note lived in pg_temp, which the SAME session can DROP with no
+    // privilege on the app schema at all: [edit option, DROP the temp note, withdraw] committed
+    // a withdrawal whose frozen question was edited in the withdrawing transaction. The note
+    // now lives in a REAL table whose guard refuses same-transaction erasure — the only way
+    // around it is ALTER TABLE ... DISABLE TRIGGER, the same ownership privilege every
+    // sanctioned bypass in this seal network already requires.
+    it('R13-F2: the touch note cannot be erased by its own transaction — the temp-drop bypass is gone and the direct erase refuses', async () => {
+      const id = await seed({ title: 'Note erase attack' });
+      // the a58e949 bypass, verbatim: DROP the (now nonexistent) temp note between edit and withdraw
+      await expect(
+        t.prisma.$transaction([
+          t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped then hidden' WHERE "decisionId"=${id} AND "optionKey"='a'`,
+          t.prisma.$executeRawUnsafe('DROP TABLE IF EXISTS pg_temp."_t4a_options_touched"'),
+          t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='hidden swap' WHERE "id"=${id}`,
+        ]),
+      ).rejects.toThrow(/withdrawing transaction/);
+      // erasing the REAL note directly is itself refused inside the writing transaction
+      await expect(
+        t.prisma.$transaction([
+          t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped again' WHERE "decisionId"=${id} AND "optionKey"='a'`,
+          t.prisma.$executeRaw`DELETE FROM "DecisionOptionTouch" WHERE "decisionId"=${id}`,
+          t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='erased note' WHERE "id"=${id}`,
+        ]),
+      ).rejects.toThrow(/cannot be erased/);
+      // and re-writing a note (re-pointing it at another decision) is refused too
+      await t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Committed edit' WHERE "decisionId"=${id} AND "optionKey"='a'`;
+      await expect(
+        t.prisma.$executeRaw`UPDATE "DecisionOptionTouch" SET "txid"=0 WHERE "decisionId"=${id}`,
+      ).rejects.toThrow(/cannot be updated/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+      // notes from COMMITTED transactions are inert history: a clean later withdrawal succeeds
+      await svc.withdraw(f.projectA.id, id, { reason: 'clean withdrawal after' }, pmc());
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('withdrawn');
+    });
+
+    // R13-F3 — the event seal froze the TYPE (round 12) but not the event's DECISION: an
+    // UPDATE keeping `type='approved'` while changing `decisionId` re-points a legacy
+    // decision's only approval evidence at some other live decision, and the pending row
+    // withdraws afterwards. Approval evidence now stays with its decision.
+    it('R13-F3: an approval event cannot be re-pointed AWAY from its decision — the laundered withdrawal stays refused', async () => {
+      const id = await seed({ title: 'Re-point-away target' });
+      const other = await seed({ title: 'Innocent recipient' });
+      await t.prisma.decisionEvent.create({ data: { id: 'r13-appr', decisionId: id, type: 'approved', actor: 'Legacy Client' } });
+      await expect(
+        t.prisma.$executeRaw`UPDATE "DecisionEvent" SET "decisionId"=${other} WHERE "id"='r13-appr'`,
+      ).rejects.toThrow(/re-pointed/);
+      // the evidence stands, so the withdrawal stays refused
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='laundered by re-point' WHERE "id"=${id}`,
+      ).rejects.toThrow(/legacy approval event/);
+      // precision: a NON-approval event can still be re-pointed onto a live decision
+      await t.prisma.decisionEvent.create({ data: { id: 'r13-benign', decisionId: id, type: 'published', actor: 'System' } });
+      expect(await t.prisma.$executeRaw`UPDATE "DecisionEvent" SET "decisionId"=${other} WHERE "id"='r13-benign'`).toBe(1);
+      await t.prisma.decisionEvent.delete({ where: { id: 'r13-benign' } });
+    });
+
+    // R13-F4 — the replacement generation copied only rows that EXIST in the retired one, so
+    // the never-applied shape (a withdrawn decision with NO projection row — a case the stale
+    // predicate itself names) produced a caught-up replacement that still omits the
+    // withdrawal. The missing rows are now seeded from CANONICAL truth with the dto composed
+    // exactly as serializeDecision writes it.
+    it('R13-F4: the migration seeds the MISSING withdrawn row — the replacement equals canonical row-for-row and the next delivery applies', async () => {
+      const { execFileSync } = await import('node:child_process');
+      const migrationPath = join(dirname(fileURLToPath(import.meta.url)), '../../prisma/migrations/20270810000000_phase6_t4a_withdraw/migration.sql');
+      const dbUrl = (process.env.DATABASE_URL ?? '').split('?')[0]!;
+      const projW = `it-t4a-r13w-${Date.now() % 1e6}`;
+      await t.prisma.project.create({
+        data: { id: projW, orgId: f.orgA.id, name: projW, short: 'W', descriptor: '', stage: 'x', siteCode: 'W', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+      });
+      await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      const idW = 'DL-t4a-r13w';
+      const idK = 'DL-t4a-r13k';
+      for (const [id, title] of [[idW, 'Never applied'], [idK, 'Healthy sibling']] as const) {
+        await t.prisma.decision.create({
+          data: { id, projectId: projW, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+        });
+        await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+      }
+      const drain = async (): Promise<void> => {
+        for (let pass = 0; pass < 50; pass++) {
+          const ds = await t.prisma.outboxDelivery.findMany({
+            where: { consumer: 'decisions.inbox', projectId: projW, status: { in: ['pending', 'leased'] } },
+            orderBy: { streamPosition: 'asc' },
+          });
+          if (!ds.length) break;
+          for (const d of ds) await relay.dispatchOne(d.id);
+        }
+      };
+      try {
+        for (const id of [idW, idK]) {
+          await t.prisma.$transaction(async (tx) => {
+            await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id, payload: {}, effectKey: 'decision.published', dispatch: {} });
+          });
+        }
+        await drain();
+        const before = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
+        expect(before.appliedPosition).not.toBeNull();
+        // the pre-withdrawn shape + the NEVER-APPLIED shape: coherent raw withdrawal, then the
+        // generation's row for it removed entirely (the partial apply that never reached idW)
+        await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply, no row' WHERE "id"=${idW}`;
+        await t.prisma.decisionProjection.deleteMany({ where: { generationId: before.id, decisionId: idW } });
+        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
+        expect(replacement.id).not.toBe(before.id);
+        expect(replacement.appliedPosition).toBe(before.appliedPosition);
+        // the COMPLETENESS pin: the replacement equals canonical ROW-FOR-ROW — the seeded
+        // missing row's dto byte-equals serializeDecision through the operator diagnostic's
+        // own comparators, and the healthy sibling is untouched
+        const stored = await storedDecisionRows(t.prisma, replacement.id);
+        const canonical = await computeDecisionRows(t.prisma, projW);
+        expect(stored).toEqual(canonical);
+        expect(stored.map((r) => r.decisionId).sort()).toEqual([idK, idW].sort());
+        // the pmc register SERVES the withdrawal from the replacement generation
+        expect((await query.projectionSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === idW)?.status).toBe('withdrawn');
+        for (const role of ['pmc', 'engineer'] as const) {
+          const live = await query.snapshotSlice(projW, role, f.memberUser.id);
+          const proj = await query.projectionSlice(projW, role, f.memberUser.id);
+          expect(proj.decisions, `role=${role}`).toEqual(live.decisions);
+        }
+        // and the consumer continues: the next delivery APPLIES against the copied checkpoint
+        const id2 = 'DL-t4a-r13w-2';
+        await t.prisma.decision.create({
+          data: { id: id2, projectId: projW, title: 'Post-repair decision', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+        });
+        await t.prisma.$transaction(async (tx) => {
+          await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published', dispatch: {} });
+        });
+        await drain();
+        expect(await t.prisma.outboxDelivery.count({ where: { consumer: 'decisions.inbox', projectId: projW, status: { in: ['pending', 'leased'] } } })).toBe(0);
+      } finally {
+        await t.prisma.$executeRawUnsafe(
+          'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "CommandExecution" CASCADE',
+        );
+        await t.prisma.notification.deleteMany({ where: { projectId: projW } });
+        await t.prisma.auditLog.deleteMany({ where: { projectId: projW } });
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+        await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: projW } } });
+        await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: projW } } });
+        await t.prisma.decision.deleteMany({ where: { projectId: projW } });
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
+        await t.prisma.membership.deleteMany({ where: { projectId: projW } });
+        await t.prisma.project.deleteMany({ where: { id: projW } });
+      }
+    });
+
+    // R13-F5 — the daily-log material link validated only EXISTENCE, so a stale/offline
+    // client or a direct POST could record a new matched delivery against a withdrawn
+    // decision. The write path now uses the same linkability authority as activities
+    // (pre-check fast-fail + the in-tx recheck under the decisions-owned row share lock),
+    // with the refusal audience-shaped: pmc gets the honest reason, every other role gets
+    // the same 'Unknown decision' the visibility rule implies.
+    it('R13-F5: the daily-log material write refuses a withdrawn decision link — audience-shaped for engineer vs pmc; a live decision still links', async () => {
+      const withdrawn = await seed({ title: 'Withdrawn material link' });
+      await svc.withdraw(f.projectA.id, withdrawn, { reason: 'not this material' }, pmc());
+      const live = await seed({ title: 'Live material link' });
+      const log = await t.prisma.dailyLog.create({ data: { projectId: f.projectA.id, date: '14 Aug 2026' } });
+      const engUid = await roleUser('engineer');
+      const post = (token: string, body: Record<string, unknown>) =>
+        http().post(`/projects/${f.projectA.id}/daily-log/materials`).set('Authorization', `Bearer ${token}`).send(body);
+      try {
+        const eng = await post(t.issueProjectToken(engUid, f.projectA.id, 'engineer'), { name: 'Cement', qty: '10 bags', decisionId: withdrawn });
+        expect(eng.status).toBe(400);
+        expect(eng.body.message).toBe('Unknown decision for this project');
+        const asPmc = await post(t.issueProjectToken(f.memberUser.id, f.projectA.id, 'pmc'), { name: 'Cement', qty: '10 bags', decisionId: withdrawn });
+        expect(asPmc.status).toBe(400);
+        expect(asPmc.body.message).toContain('withdrawn');
+        expect(await t.prisma.siteMaterial.count({ where: { decisionId: withdrawn } })).toBe(0);
+        // precision: a LIVE decision still links
+        const ok = await post(t.issueProjectToken(engUid, f.projectA.id, 'engineer'), { name: 'Cement', qty: '10 bags', decisionId: live });
+        expect(ok.status).toBe(201);
+        expect(await t.prisma.siteMaterial.count({ where: { decisionId: live } })).toBe(1);
+      } finally {
+        await t.prisma.siteMaterial.deleteMany({ where: { dailyLogId: log.id } });
+        await t.prisma.dailyLog.delete({ where: { id: log.id } });
+      }
     });
   });
 

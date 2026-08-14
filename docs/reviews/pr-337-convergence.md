@@ -24,7 +24,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `c2d3a1a` | round-11 correction; the third consecutive in-window verdict (attempt 1/2, 14 min): **6 P2 findings**, all REAL — the widest round since round 1 | the round-8 projection retirement WEDGED the consumer (no replacement checkpoint); a one-transaction option-edit-then-withdraw bypassed the round-11 seal; the round-11 "unchanged link" decision used a stale pre-tx read; the primary `id` outside the identity freeze (children are ON UPDATE CASCADE); approval EVENTS erasable/downgradable before withdrawing; active membership accepted as authority |
 | `04bcbc3` | the round-12 correction + this audit extended; its CI api battery caught what the pre-push literal grep could not | 1 CI defect: three suites (phase3-requirements, phase4-t1-labour, projection-rebuild-upgrade) wipe decision events through a DYNAMIC table-driven `deleteMany` loop, so their resets hit the new approval-evidence seal — fixed as `4b7b9e2` |
 | `4b7b9e2` | the test-only CI follow-up (the three dynamic-wipe suites join the sanctioned `wipeDecisionEvents` reset; full battery 1171/1171). It carried the convergence TRAILER but not the PACKET — past the convergence threshold every head owes both, and the gate correctly required this audit's currency | 1 gate requirement (not a Codex finding): missing packet on the head commit |
-| (this head) | packet-only: this audit brought current through `4b7b9e2`. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–12 have touched no command-semantics or §A.4 runtime-arm surface — round 12 makes the projection repair HEAL instead of wedge and completes the durability of every component the frozen question depends on (id, options, evidence events, standing) | — |
+| `a58e949` | packet-only (this audit brought current through `4b7b9e2`); the fourth consecutive in-window verdict: **5 findings (1×P1, 4×P2)** — the P1 REFUTED by execution | a claimed plpgsql error on every option INSERT (OLD/NEW are NULL records since PG 11 — refuted on PostgreSQL 16.13 with the docs citation + probe); the pg_temp touch note erasable by its own session with NO privilege; an approval event re-pointable AWAY while keeping its type; the replacement generation unable to seed a row the retired generation never had; the daily-log material write accepting a withdrawn decision link |
+| (this head) | the round-13 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–13 have touched no command-semantics or §A.4 runtime-arm surface — round 13 upgrades the round-12 seals' STORAGE to the network's own privilege standard (evidence a caller cannot erase), completes the projection repair for the never-applied shape, and closes the last unlinked write path (daily-log materials) | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -147,6 +148,21 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   register in undeletability (R12-F5 — erasure is the reverse of the re-point round 10
   sealed). And standing becomes AUTHORITY: active pmc, not active anything (R12-F6 — the DB
   twin of the command's own policy).
+- Round 13 measures round 12's own fixes against the network's standards — and one of them
+  fell short of the privilege standard: the touch note lived in pg_temp, erasable by its
+  writing session with NO privilege at all, while every other bypass in this network costs
+  `DISABLE TRIGGER` ownership. The note moves to a REAL owned table whose guard refuses
+  same-transaction erasure, restoring the uniform rule: blinding any seal costs the same
+  ownership privilege (R13-F2). Two completions of the same shape: the round-12 event freeze
+  covered type but not the event's DECISION (re-point-away laundering, R13-F3), and the
+  round-12 replacement could only correct rows the retired generation HAD — the never-applied
+  shape is now seeded from canonical truth through the operator diagnostic's own comparators
+  (R13-F4). The daily-log material link was the last write path still validating existence
+  instead of linkability — it adopts the activities authority with an audience-shaped refusal
+  (R13-F5). And the round's one P1 dissolved under execution: plpgsql OLD/NEW have been NULL
+  records since PostgreSQL 11, so the claimed insert-time error cannot occur — refuted with
+  the docs citation, a live PG 16.13 run, and a pinning probe rather than patched around
+  (R13-F1, the third refutation of the review cycle).
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
@@ -191,7 +207,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all twelve rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
+Every finding from all thirteen rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

@@ -3439,6 +3439,21 @@ $PSQL -q -c "INSERT INTO \"User\"(\"id\",\"projectId\",\"role\",\"name\",\"email
 assert_rejects "4a seal 3 (round 12): attributing a withdrawal to an ACTIVE membership WITHOUT pmc standing — active is not authority" \
   "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-3', \"withdrawnByName\"='Active Contractor', \"withdrawReason\"='no authority' WHERE \"id\"='UP4A-D2'" "ACTIVE pmc member"
 
+# ── round 13 (Codex): unerasable touch evidence + frozen approval-event identity ───────────
+# The round-12 note lived in pg_temp, which the writing session could DROP with no privilege
+# on the app schema at all. The note now lives in the real "DecisionOptionTouch" table: the
+# old drop is a no-op against the seal, and erasing or rewriting the real note inside the
+# writing transaction is itself refused — blinding the seal now takes DISABLE TRIGGER, the
+# same ownership privilege as every sanctioned bypass.
+assert_rejects "4a seal 3 (round 13): the pg_temp drop bypass is dead — edit an option, drop the defunct temp note, withdraw: still refused" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap' WHERE \"id\"='UP4A-O1'; DROP TABLE IF EXISTS pg_temp.\"_t4a_options_touched\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden swap' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+assert_rejects "4a seal 3 (round 13): erasing the REAL touch note in the transaction that wrote it" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap 2' WHERE \"id\"='UP4A-O1'; DELETE FROM \"DecisionOptionTouch\" WHERE \"decisionId\"='UP4A-D2'; COMMIT" "cannot be erased"
+assert_rejects "4a seal 3 (round 13): rewriting a touch note — evidence rows never update" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap 3' WHERE \"id\"='UP4A-O1'; UPDATE \"DecisionOptionTouch\" SET \"txid\"=0 WHERE \"decisionId\"='UP4A-D2'; COMMIT" "cannot be updated"
+assert_rejects "4a seal 3 reverse (round 13): RE-POINTING an approval event AWAY from its decision (onto a LIVE target) — laundering by relocation is refused like erasure" \
+  "UPDATE \"DecisionEvent\" SET \"decisionId\"='UP4A-D3' WHERE \"id\"='UP4A-LEV'" "re-pointed away"
+
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN

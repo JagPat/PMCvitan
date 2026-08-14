@@ -2016,6 +2016,7 @@ model Decision {
   materials      SiteMaterial[]
   media          Media[]
   drawings       Drawing[]
+  optionTouches  DecisionOptionTouch[] // phase6-4a round 13 — per-tx option touch notes
 
   // composite identity so referencing models can carry (projectId, decisionId)
   // foreign keys — the DB itself rejects a cross-project link (Phase 0 Task 5)
@@ -2043,6 +2044,22 @@ model DecisionOption {
   // the approval register (and requirement provenance behind it) pins an option by
   // (decisionId, optionKey) — the pair is a database-enforced candidate key
   @@unique([decisionId, optionKey])
+}
+
+// Phase 6 task 4a (round 13) — the per-transaction OPTION TOUCH NOTE behind the withdrawal
+// entry seal. Written ONLY by the `DecisionOption_t4a_touch` DB trigger (never by application
+// code): every option write records (decisionId, txid_current()), and the withdrawal-entry
+// seal refuses a decision whose options were touched in the SAME transaction. The round-12
+// note lived in pg_temp, which the writing session could DROP with no privilege at all; this
+// real table's guard trigger refuses same-transaction erasure, so blinding the seal now needs
+// ALTER TABLE ... DISABLE TRIGGER — the same ownership privilege as every sanctioned bypass.
+// Rows for COMMITTED transactions are inert history, swept by the decision's delete cascade.
+model DecisionOptionTouch {
+  decisionId String
+  txid       BigInt
+  decision   Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([decisionId, txid])
 }
 
 // The IMMUTABLE approval register of a decision (Phase 3 Task 1 correction round 2, finding 1).
