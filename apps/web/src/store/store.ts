@@ -1960,6 +1960,15 @@ export const useStore = create<Store>()(
         if (d && d.status === 'pending') {
           d.status = 'withdrawn';
           d.withdrawReason = reason;
+          // round 8 (Codex): the demo/no-API path mirrors the server's notice retirement — a
+          // bell row still saying "awaiting approval" for a decision every surface now hides
+          // is a live false instruction. Demo notices carry no decisionId, so retirement
+          // matches the canonical text shape, multiplicity-guarded exactly like the server:
+          // if another still-pending decision shares the title, the text is ambiguous and the
+          // row is LEFT, never guessed at.
+          const noticeText = `Decision awaiting approval: ${d.title}`;
+          const sharers = s.decisions.filter((o) => o.id !== d.id && o.title === d.title && o.status === 'pending' && !o.draft).length;
+          if (sharers === 0) s.notifications = s.notifications.filter((n) => n.text !== noticeText);
         }
         s.modal = { type: null };
       });

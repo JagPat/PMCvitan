@@ -194,6 +194,40 @@ WHERE e."eventType" = 'decision.published'
                    WHERE d."eventId" = e."eventId" AND d."consumer" = 'webpush.notify')
 ON CONFLICT DO NOTHING;
 
+-- Round 8 (Codex): a pre-withdrawn decision's OTHER stale surfaces, with the command's exact
+-- semantics — no future `decisions.withdraw` will ever run for it.
+-- (a) NOTICES: the stamped pending bell row retires by IDENTITY; a LEGACY unstamped row
+-- retires by the canonical text shape (`pendingDecisionNotice`: 'Decision awaiting approval:
+-- <title>'), multiplicity-guarded exactly like the command — if another still-pending
+-- published decision shares the title, the text is ambiguous and the row is LEFT, never
+-- guessed at. Idempotent (DELETEs).
+DELETE FROM "Notification" n
+USING "Decision" dec
+WHERE n."projectId" = dec."projectId" AND n."decisionId" = dec."id"
+  AND dec."status"::text = 'withdrawn';
+DELETE FROM "Notification" n
+USING "Decision" dec
+WHERE n."projectId" = dec."projectId"
+  AND n."decisionId" IS NULL
+  AND dec."status"::text = 'withdrawn'
+  AND n."text" = 'Decision awaiting approval: ' || dec."title"
+  AND NOT EXISTS (
+    SELECT 1 FROM "Decision" o
+     WHERE o."projectId" = dec."projectId" AND o."title" = dec."title"
+       AND o."status"::text = 'pending' AND o."publishedAt" IS NOT NULL
+       AND o."id" <> dec."id");
+-- (b) PROJECTIONS: the partial apply emitted no DomainEvent, so a servable `decisions.inbox`
+-- generation can still claim the row is pending while `readServableGeneration` calls it
+-- caught-up. RETIRE the active generation for affected projects: reads fall back to canonical
+-- truth (null generation → live slice) until the next delivery/rebuild builds a fresh one.
+-- Rows are retired, never edited or fabricated. Idempotent (scoped to still-active rows).
+UPDATE "ProjectionGeneration" g
+SET "status" = 'retired', "updatedAt" = now()
+FROM (SELECT DISTINCT "projectId" FROM "Decision" WHERE "status"::text = 'withdrawn') w
+WHERE g."projectId" = w."projectId"
+  AND g."consumer" = 'decisions.inbox'
+  AND g."status" = 'active';
+
 -- ── seal 1: terminal, and the evidence FROZEN with it ────────────────────────────────────────
 -- Trigger NAMES are load-bearing: PostgreSQL fires same-event triggers in name order, so the
 -- `t4a_a/_b/_c` prefixes make the TERMINAL seal answer first (a transition out of `withdrawn`

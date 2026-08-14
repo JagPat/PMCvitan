@@ -3319,6 +3319,22 @@ assert_rejects "4a seal 3 forward: a decision cannot be BORN withdrawn" \
   "INSERT INTO \"Decision\" (\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"withdrawnAt\",\"withdrawnById\",\"withdrawnByName\",\"withdrawReason\") VALUES ('UP4A-D9','p1','Born','Hall','withdrawn','stone',now(),'USER-1','X','r')" "created withdrawn"
 assert_rejects "4a seal 3 reverse: an approval revision recorded against the withdrawn decision" \
   "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\") VALUES('UP4A-R1','p1','UP4A-D1',1,'a',now(),'USER-1')" "withdrawn"
+# round 8 (Codex, REFUTED WITH EVIDENCE): the described re-point — mint a revision against a
+# non-withdrawn dummy, then UPDATE its identity onto the withdrawn decision so the INSERT-time
+# reverse arm never runs — fails one seal earlier: the Phase-3 append-only register refuses
+# EVERY UPDATE unconditionally (DecisionApprovalRevision_append_only, 20261212000000). Placed
+# LAST in the battery: the revision this plants on UP4A-D2 makes the register-count arm answer
+# first for any later withdraw attempt on that row, so the earlier per-seal messages stay exact.
+# (the register's own composite FK also demands a REAL option of the named decision — a second
+#  pre-existing seal the re-point would have to defeat)
+$PSQL -q <<'SQL' || { echo "4a round-8 refutation plant failed"; FAIL=1; }
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-O1','UP4A-D2','A','a','Granite',0,'stone') ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+VALUES ('UP4A-R8','p1','UP4A-D2',1,'a',now(),'USER-1') ON CONFLICT DO NOTHING;
+SQL
+assert_rejects "4a reverse register (round 8, refuting the re-point): UPDATEing an approval revision's identity onto the withdrawn decision — the Phase-3 append-only seal refuses before the reverse arm is consulted" \
+  "UPDATE \"DecisionApprovalRevision\" SET \"decisionId\"='UP4A-D1' WHERE \"id\"='UP4A-R8'" "append-only"
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
@@ -3354,6 +3370,25 @@ VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatc
        -- command will ever run for it, so the MIGRATION must perform the cancellation itself.
        ('UP4A-DEL3','UP4A-EV3','p1','webpush.notify','unordered',900003,'dispatch','pending','{"body":"stale announcement (pre-withdrawn)"}',now()),
        ('UP4A-DEL4','UP4A-EV4','p1','webpush.notify','unordered',900004,'dispatch','dead','{"body":"stale announcement (pre-withdrawn, dead)"}',now());
+-- round 8 (Codex): the pre-withdrawn decision's OTHER stale surfaces. A second withdrawn
+-- decision with a UNIQUE title (UP4A-D4) carries an unambiguous legacy notice the migration
+-- must retire; UP4A-D3 stays PENDING sharing UP4A-D1's title, so D1's legacy notice is
+-- AMBIGUOUS and must survive (the command's multiplicity guard, mirrored). The stamped notice
+-- on D1 retires by identity. And a servable decisions.inbox generation that still claims the
+-- withdrawn row is pending must be RETIRED so reads fall back to canonical truth.
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+VALUES ('UP4A-D3','p1','Withdrawable','Hall','pending','stone',now()),
+       ('UP4A-D4','p1','Uniquely withdrawn','Hall','pending','stone',now())
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"='USER-1', "withdrawnByName"='Legacy PMC', "withdrawReason"='pre-existing withdrawal' WHERE "id"='UP4A-D4' AND "status"::text='pending';
+INSERT INTO "Notification"("id","projectId","text","color","time","decisionId")
+VALUES ('UP4A-N1','p1','Decision awaiting approval: Withdrawable','#C08A2D','2d ago','UP4A-D1'),
+       ('UP4A-N2','p1','Decision awaiting approval: Uniquely withdrawn','#C08A2D','2d ago',NULL),
+       ('UP4A-N3','p1','Decision awaiting approval: Withdrawable','#C08A2D','2d ago',NULL)
+ON CONFLICT DO NOTHING;
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","appliedPosition","cursorStatus","updatedAt")
+VALUES ('UP4A-GEN1','decisions.inbox','p1',999,'active',900010,'live',now())
+ON CONFLICT DO NOTHING;
 SQL
 $PSQL -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null || { echo "FAILED  4a migration re-run (rerunnable-by-design) did not apply"; FAIL=1; }
 assert "4a: the subject backfill reached the pre-4a undelivered decision.published push rows — pending AND dead (copied from each event's entityId, never invented)" \
@@ -3371,6 +3406,12 @@ assert "4a round 5: the migration writes the recovery-gap TOMBSTONE for a pre-wi
 assert "4a round 5 precision: the LIVE decision's recovery-gap event gets NO tombstone — recovery legitimately owes it a pending delivery" \
   "SELECT COUNT(*)::text FROM \"OutboxDelivery\" WHERE \"eventId\"='UP4A-EV6' AND \"consumer\"='webpush.notify';" \
   "0"
+assert "4a round 8 (R8-F3): the migration retires the pre-withdrawn decisions' notices — the stamped row by identity, the UNAMBIGUOUS legacy row by text; the AMBIGUOUS legacy row (a pending decision shares the title) SURVIVES per the multiplicity guard" \
+  "SELECT string_agg(\"id\", ',' ORDER BY \"id\") FROM \"Notification\" WHERE \"id\" IN ('UP4A-N1','UP4A-N2','UP4A-N3');" \
+  "UP4A-N3"
+assert "4a round 8 (R8-F2): the servable decisions.inbox generation claiming the pre-withdrawn row is pending is RETIRED — reads fall back to canonical truth until the next delivery/rebuild" \
+  "SELECT \"status\" FROM \"ProjectionGeneration\" WHERE \"id\"='UP4A-GEN1';" \
+  "retired"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

@@ -270,3 +270,22 @@ already-withdrawn row must also guard the single statement that CREATES the with
 Round-7 gates: probe file 35/35; `pnpm check` EXIT 0 (web 762/762, API 791/791);
 `upgrade-proof.sh` PASSED — **563 assertions** incl. both round-7 rejections; the full
 integration battery via the required `api` CI check.
+
+## Round 8 — the four Codex P2 findings on head `f1700af` (three fixed, one refuted with evidence)
+
+The eighth finding-bearing head. Codex's attempt-2 review again landed AFTER the orchestrator's
+two-timeout verdict (7.5 minutes this time) and is treated as the review of record. Three
+findings extend accepted arms to the last untouched surfaces (the demo store, the migration's
+notice/projection duties for pre-withdrawn rows); the fourth describes an attack a Phase-3 seal
+already makes unrepresentable, and is answered with EVIDENCE rather than code.
+
+| # | finding | resolution |
+|---|---|---|
+| R8-F1 (P2) | the LOCAL (demo/no-API) withdraw flipped the status but left the local pending bell notice — demo mode never refetches, so the feed kept sending the viewer to a decision the selectors now hide | the local mutation mirrors the server's retirement exactly: the canonical text shape is removed, multiplicity-guarded (a still-pending decision sharing the title leaves the text ambiguous and the row is LEFT); web test RED at `f1700af` → GREEN covering both arms |
+| R8-F2 (P2) | the migration accepted a pre-withdrawn row but left the servable `decisions.inbox` generation claiming it pending (the partial apply emitted no DomainEvent, so `readServableGeneration` still called it caught-up) | the migration RETIRES the active generation for affected projects — `readServableGeneration` returns null and every read falls back to canonical truth until the next delivery/rebuild; rows retired, never edited; upgrade-proof plants a servable generation and asserts it retired (RED → GREEN) |
+| R8-F3 (P2) | the migration never retired a pre-withdrawn decision's pending bell notices — stamped or legacy — and no future command will | the migration mirrors the command's retirement: stamped rows by IDENTITY, legacy rows by the canonical `pendingDecisionNotice` text shape with the exact multiplicity guard; upgrade-proof plants all three shapes and asserts stamped+unambiguous deleted, ambiguous SURVIVES (RED → GREEN) |
+| R8-F4 (P2) | claimed: an approval revision minted against a dummy decision can be UPDATEd onto a withdrawn decision, bypassing the INSERT-only reverse arm | **REFUTED WITH EVIDENCE** — `DecisionApprovalRevision_append_only` (Phase 3, `20261212000000`) fires BEFORE UPDATE OR DELETE and refuses every register update unconditionally; the register's composite FK `(decisionId, optionKey)` → `DecisionOption` is a second pre-existing seal. The probe executes the exact attack (mint on a dummy, re-point at the withdrawn row) and asserts the `append-only` rejection; an upgrade-proof rejection proves it over the migrated legacy DB; replied on the thread |
+
+Round-8 gates: probe file 36/36; web `decision-withdraw` 11/11; `pnpm check` EXIT 0 (web
+763/763, API 791/791); `upgrade-proof.sh` PASSED — **566 assertions**; the full integration
+battery via the required `api` CI check.

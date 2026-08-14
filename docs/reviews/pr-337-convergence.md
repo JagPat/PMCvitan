@@ -17,7 +17,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `b24d36e` | round-4 correction; Codex attempt on it: **2 P2 findings** — both deployment-harness completions of the round-3/4 arms, no runtime surface | the migration's cancellation lacked its recovery-gap tombstone arm (it only UPDATEd rows that exist); the seed's guarded decision wipe sat AFTER `membership.deleteMany()`, which the new `withdrawnById` FK refuses while a withdrawn decision exists |
 | `2e15eba` | round-5 correction — the review-lifecycle limit (5 finding heads) reached; Codex attempt 2 timed out at the orchestrator but its review LANDED 43s later: **4 P2 findings**, treated as the review of record | the diagnostics accepted a pre-withdrawn row whose approval evidence is the LEGACY class (empty register, approved events/columns); the mixed-version leased-sender window; the Site Map (and same-class screens) filtering `s.decisions` outside the shared audience rule; the seed's trigger bypass not failure-safe |
 | `fbe760d` | round-6 correction (the STAYS-WHOLE rationale recorded); Codex attempt on it: **2 P2 findings** — entry-transition twins of already-sealed arms | the projectId freeze fired only on already-withdrawn rows (one statement could withdraw AND move); approval columns could be ADDED in the statement that enters withdrawal (the terminal freeze covers only the withdrawal columns) |
-| (this head) | the round-7 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit (the enum and its readers are indivisible), rounds 4–7 have touched no command or runtime-arm surface — round 7 is two trigger-arm additions — and a split now would separate the readers from the status they read, the exact cut §F forbids | — |
+| `f1700af` | round-7 correction; Codex's review again LANDED after the two-timeout verdict (7.5 min late — the established pattern) with **4 P2 findings**, treated as the review of record | the demo store's local withdraw left the local pending notice; the migration left pre-withdrawn rows' projections servable-stale and their notices unretired; and a claimed revision re-point that the Phase-3 append-only register seal ALREADY makes unrepresentable — REFUTED WITH EVIDENCE (probe + upgrade-proof rejection + thread reply) |
+| (this head) | the round-8 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit, rounds 4–8 have touched no command or runtime-arm surface, and round 8 is the first round to contain a REFUTED finding — the enumeration is meeting seals that already exist | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -74,7 +75,18 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   the single statement that CREATES it. The projectId freeze moves into the entry arm (R7-F1),
   and the no-approval-evidence rule moves into coherence, where it judges every withdrawn write
   — entry and later alike (R7-F2). Both are trigger-arm additions mirroring rules the seals
-  already stated elsewhere (the round-4 terminal freeze; the round-6 diagnostic). The
+  already stated elsewhere (the round-4 terminal freeze; the round-6 diagnostic).
+- Round 8 reached the demo store and the migration's LAST stand-in duties, and — for the first
+  time — a seal that already existed. The no-API demo path is a WRITER too and mirrors the
+  command's notice retirement, multiplicity guard included (R8-F1). When the migration accepts
+  a pre-withdrawn row it must retire EVERYTHING the command would have: the queued pushes
+  (rounds 4–5), the bell notices (R8-F3), and the servable projection generation that still
+  claims the row is pending — retired so reads fall back to canonical truth, never edited
+  (R8-F2). And the claimed revision re-point (R8-F4) is REFUTED WITH EVIDENCE: the Phase-3
+  append-only register seal refuses every UPDATE before the reverse arm is consulted — proven
+  by a probe executing the exact attack, an upgrade-proof rejection, and answered on the
+  thread. An enumeration that has begun meeting pre-existing seals is measuring its own
+  completeness. The
   convergence trajectory: 5 (runtime lifecycle) → 4 (mixed) → 3 (access paths/boundary) → 4
   (deployment eras) → 2 (harness completions) → 4 (a diagnostic, a documented boundary, a
   selector class, a harness hardening) → 2 (entry-transition twins of sealed arms) — since
@@ -124,7 +136,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all seven rounds is fixed in-branch with reproduce-first evidence (probes,
+Every finding from all eight rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

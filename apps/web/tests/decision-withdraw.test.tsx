@@ -122,6 +122,38 @@ describe('P10 (web half): a withdrawn decision is pmc-only on every selector sur
     }
   });
 
+  // ── round 8 (Codex): the LOCAL (demo/no-API) withdraw mirrors the server's notice retirement ──
+  it('R8-F1: a local withdraw retires the local pending bell notice — multiplicity-guarded exactly like the server', () => {
+    useStore.setState({
+      role: 'pmc',
+      decisions: [dec({ id: 'DL-L', title: 'Local counter', status: 'pending' })],
+      notifications: [
+        { text: 'Decision awaiting approval: Local counter', time: 'just now', color: '#C08A2D' },
+        { text: 'Drawing issued: D-1 — unrelated', time: '1h ago', color: '#C08A2D' },
+      ],
+    });
+    s().openWithdraw('DL-L');
+    s().setWithdrawReason('asked in error');
+    s().confirmWithdraw();
+    expect(s().decisions.find((d) => d.id === 'DL-L')?.status).toBe('withdrawn');
+    const texts = s().notifications.map((n) => n.text);
+    expect(texts).not.toContain('Decision awaiting approval: Local counter'); // retired
+    expect(texts).toContain('Drawing issued: D-1 — unrelated'); // untouched
+    // the multiplicity guard: a SECOND still-pending decision sharing the title makes the
+    // text ambiguous — the notice is LEFT, never guessed at (the server's exact rule)
+    useStore.setState({
+      decisions: [
+        dec({ id: 'DL-M1', title: 'Shared title', status: 'pending' }),
+        dec({ id: 'DL-M2', title: 'Shared title', status: 'pending' }),
+      ],
+      notifications: [{ text: 'Decision awaiting approval: Shared title', time: 'just now', color: '#C08A2D' }],
+    });
+    s().openWithdraw('DL-M1');
+    s().setWithdrawReason('one of two');
+    s().confirmWithdraw();
+    expect(s().notifications.map((n) => n.text)).toContain('Decision awaiting approval: Shared title');
+  });
+
   it('R6-F3: the Site Map, Schedule, Daily Log and Portfolio read decision rows THROUGH the shared rule — no ad-hoc s.decisions filter remains', () => {
     const screens: Array<[string, string]> = [
       ['PlacesScreen', placesSrc],

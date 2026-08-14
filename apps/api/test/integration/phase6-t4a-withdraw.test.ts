@@ -972,6 +972,27 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     });
   });
 
+  // ── Round 8 — the four Codex findings on head f1700af ──
+  // (R8-F1 is a web-store fix proven in apps/web/tests/decision-withdraw.test.tsx; R8-F2/R8-F3
+  //  are migration-level facts proven in upgrade-proof.sh. R8-F4 is REFUTED WITH EVIDENCE here.)
+  describe('round 8 (Codex): the reverse register is already sealed against re-pointing', () => {
+    it('R8-F4 (refuted with evidence): an approval revision cannot be UPDATEd onto a withdrawn decision — the Phase-3 append-only seal refuses EVERY update before the reverse arm is consulted', async () => {
+      // the described attack: mint a revision against a non-withdrawn dummy decision, then
+      // re-point its identity at a withdrawn one so the INSERT-time reverse arm never runs.
+      // It fails one seal earlier: DecisionApprovalRevision_append_only (Phase 3,
+      // 20261212000000) refuses ALL UPDATE/DELETE on the register unconditionally.
+      const withdrawn = await seed({ title: 'Repoint target' });
+      await svc.withdraw(f.projectA.id, withdrawn, { reason: 'sealed register' }, pmc());
+      const dummy = await seed({ title: 'Dummy approved' });
+      await t.prisma.$executeRaw`INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+        VALUES ('r8-rev', ${f.projectA.id}, ${dummy}, 1, 'a', now(), ${f.memberUser.id})`;
+      await expect(
+        t.prisma.$executeRaw`UPDATE "DecisionApprovalRevision" SET "decisionId" = ${withdrawn} WHERE "id" = 'r8-rev'`,
+      ).rejects.toThrow(/append-only/);
+      expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId: withdrawn } })).toBe(0);
+    });
+  });
+
   // ── P13 — the projection across a withdraw ──
   it('P13: decisions.inbox — live == projection == rebuild across a withdraw; the rebuild emits zero events', async () => {
     // a FRESH project: the ordered projection cursor consumes contiguously from stream position
