@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1067,6 +1067,170 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       // precision: the register's own non-approval events (the 'withdrawn' entry the command
       // wrote) exist and future non-approval inserts stay legal
       expect(await t.prisma.decisionEvent.count({ where: { decisionId: id, type: 'withdrawn' } })).toBe(1);
+    });
+  });
+
+  describe('round 10 (Codex): in-tx linkability, membership row lock, event re-point, tombstone id cast (refuted)', () => {
+    // R10-F1 — the pre-tx linkability read is UX; the AUTHORITY must hold inside the command
+    // transaction. The probe drives the reviewer's exact interleave deterministically: the
+    // pre-tx check answers 'linkable', the withdrawal then COMMITS before the activity
+    // command's transaction runs. At f841907 the stale pre-check was the only guard and the
+    // link committed; the in-tx FOR SHARE re-check now refuses.
+    const linkRace = async (drive: (decisionId: string) => Promise<void>): Promise<string> => {
+      const id = await seed({ title: 'TOCTOU target' });
+      const original = query.linkableInProject.bind(query);
+      let fired = false;
+      const spy = vi.spyOn(query, 'linkableInProject').mockImplementation(async (projectId, decisionId, tx?) => {
+        const verdict = await original(projectId, decisionId, tx);
+        if (!tx && !fired && decisionId === id) {
+          fired = true;
+          // the concurrent withdrawal wins the window between the check and the transaction
+          await svc.withdraw(f.projectA.id, id, { reason: 'raced the link' }, pmc());
+        }
+        return verdict;
+      });
+      try {
+        await drive(id);
+      } finally {
+        spy.mockRestore();
+      }
+      return id;
+    };
+
+    it('R10-F1 (update): a withdraw committing between the pre-check and the transaction cannot produce a fresh link — the in-tx re-check refuses', async () => {
+      const actId = `it-t4a-r10-u-${seq}`;
+      await t.prisma.activity.create({
+        data: { id: actId, projectId: f.projectA.id, name: 'TOCTOU update probe', zone: 'GF', plannedStart: 0, plannedEnd: 1, gateMaterial: 'na', gateTeam: 'na' },
+      });
+      await linkRace(async (id) => {
+        await expect(activities.update(f.projectA.id, actId, { decisionId: id }, pmc())).rejects.toMatchObject({
+          status: 400,
+          message: expect.stringContaining('withdrawn'),
+        });
+      });
+      expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: actId } })).decisionId).toBeNull();
+    });
+
+    it('R10-F1 (create): the same interleave against activities.create — no activity is planned against the terminal decision', async () => {
+      await linkRace(async (id) => {
+        await expect(
+          activities.create(
+            f.projectA.id,
+            { name: 'TOCTOU create probe', zone: 'GF', plannedStart: 0, plannedEnd: 1, decisionId: id, gateMaterial: 'na', gateTeam: 'na' } as Parameters<ActivitiesService['create']>[1],
+            pmc(),
+          ),
+        ).rejects.toMatchObject({ status: 400, message: expect.stringContaining('withdrawn') });
+      });
+      expect(await t.prisma.activity.count({ where: { projectId: f.projectA.id, name: 'TOCTOU create probe' } })).toBe(0);
+    });
+
+    // R10-F4 — the entry seal's ACTIVE-membership read must LOCK the membership row. Ordering
+    // A (removal commits first → the withdrawal is refused) is round 9's R9-F2. This is
+    // ordering B: the withdrawal is held open UNCOMMITTED after its UPDATE ran the trigger;
+    // a concurrent membership removal must BLOCK on the row lock until the withdrawal
+    // commits — at f841907 it committed straight through, attributing the permanent record
+    // to a member already removed at commit time.
+    it('R10-F4 (ordering B): an in-flight withdrawal holds the membership row — the concurrent removal BLOCKS until the withdrawal commits', async () => {
+      const id = await seed({ title: 'Membership lock race' });
+      const uid = 'it-t4a-u-lockrace';
+      await t.prisma.user.upsert({
+        where: { id: uid },
+        update: {},
+        create: { id: uid, projectId: f.projectA.id, name: 'Lock race member', email: `${uid}@t.local`, role: 'pmc' },
+      });
+      await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: uid, role: 'pmc', status: 'active' } });
+
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let updated!: () => void;
+      const updatedP = new Promise<void>((r) => (updated = r));
+      const a = raceDb.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            `UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=$2, "withdrawnByName"='Lock race member', "withdrawReason"='held for the lock probe' WHERE "id"=$1`,
+            id,
+            uid,
+          );
+          updated();
+          await gate;
+        },
+        { timeout: 20_000, maxWait: 10_000 },
+      );
+      // a RED failure below never awaits `a` — mark it handled so the aborting held
+      // transaction cannot surface as an unhandled rejection
+      a.catch(() => undefined);
+      await updatedP;
+      const reflect = <T,>(p: Promise<T>): Promise<{ status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown }> =>
+        p.then((value) => ({ status: 'fulfilled' as const, value }), (reason) => ({ status: 'rejected' as const, reason }));
+      const b = reflect(
+        t.prisma.$executeRawUnsafe(
+          `UPDATE "Membership" SET "status"='removed' WHERE "projectId"=$1 AND "userId"=$2`,
+          f.projectA.id,
+          uid,
+        ),
+      );
+      // condition-based, not a sleep: the removal backend must appear BLOCKED on the lock
+      let blocked = false;
+      for (let i = 0; i < 200; i++) {
+        const rows = await raceDb.$queryRawUnsafe<Array<{ c: number }>>(
+          `SELECT COUNT(*)::int AS c FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE $1`,
+          `%UPDATE "Membership" SET "status"='removed'%`,
+        );
+        if (Number(rows[0]!.c) >= 1) {
+          blocked = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(blocked, 'the membership removal must block on the entry seal\'s row lock while the withdrawal is uncommitted').toBe(true);
+      release();
+      await a;
+      const rb = await b;
+      expect(rb.status).toBe('fulfilled');
+      // serialized truth: the attribution was ACTIVE at the moment the withdrawal committed;
+      // the removal landed strictly after
+      const d = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
+      expect(d.status).toBe('withdrawn');
+      expect(d.withdrawnById).toBe(uid);
+      expect((await t.prisma.membership.findFirstOrThrow({ where: { projectId: f.projectA.id, userId: uid } })).status).toBe('removed');
+    });
+
+    // R10-F5 — DecisionEvent carries no append-only seal, so the reverse arm must cover
+    // UPDATE: at f841907 an existing benign event could be RE-POINTED (decisionId and/or
+    // type) into approval evidence against a withdrawn decision.
+    it('R10-F5: an existing event cannot be re-pointed into approval evidence on a withdrawn decision — the reverse seal covers UPDATE', async () => {
+      const withdrawn = await seed({ title: 'Re-point target' });
+      await svc.withdraw(f.projectA.id, withdrawn, { reason: 'sealed against re-points' }, pmc());
+      const live = await seed({ title: 'Benign event host' });
+      await t.prisma.decisionEvent.create({ data: { id: 'r10-ev', decisionId: live, type: 'published', actor: 'Benign' } });
+      // re-point the event at the withdrawn decision while flipping it to approval evidence
+      await expect(
+        t.prisma.$executeRaw`UPDATE "DecisionEvent" SET "decisionId"=${withdrawn}, "type"='approved' WHERE "id"='r10-ev'`,
+      ).rejects.toThrow(/withdrawn/);
+      // flip the register's own 'withdrawn' entry in place
+      await expect(
+        t.prisma.$executeRaw`UPDATE "DecisionEvent" SET "type"='approved' WHERE "decisionId"=${withdrawn} AND "type"='withdrawn'`,
+      ).rejects.toThrow(/withdrawn/);
+      // precision: benign updates on live decisions stay legal
+      expect(await t.prisma.$executeRaw`UPDATE "DecisionEvent" SET "actor"='Still benign' WHERE "id"='r10-ev'`).toBe(1);
+      expect(await t.prisma.decisionEvent.count({ where: { decisionId: withdrawn, type: { in: ['approved', 'reapproved'] } } })).toBe(0);
+    });
+
+    // R10-F2 — REFUTED with evidence: the reviewer read `gen_random_uuid()` into the TEXT
+    // `OutboxDelivery.id` as a type error, but PostgreSQL applies its automatic I/O-conversion
+    // cast in assignment context for string-type targets (pg_cast holds NO uuid→text row; the
+    // conversion is the documented always-available string-type assignment path). R3-F3
+    // exercises this exact INSERT on every run; this probe pins the landed id's canonical
+    // 36-char uuid TEXT form so the claim stays refuted by execution, not by argument.
+    it('R10-F2 (refuted): the recovery-gap tombstone id lands as canonical uuid text', async () => {
+      const id = await seed({ title: 'Tombstone cast' });
+      const deliveryId = await emitQueuedPush(id, 'Tombstone cast');
+      await t.prisma.outboxDelivery.delete({ where: { id: deliveryId } });
+      await svc.withdraw(f.projectA.id, id, { reason: 'cast probe' }, pmc());
+      const tomb = await t.prisma.outboxDelivery.findFirstOrThrow({ where: { consumer: PUSH_CONSUMER, projectId: f.projectA.id, subject: id } });
+      expect(tomb.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+      expect(tomb.status).toBe('succeeded');
+      expect(tomb.cancelledAt).not.toBeNull();
     });
   });
 

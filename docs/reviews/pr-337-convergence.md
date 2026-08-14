@@ -19,7 +19,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `fbe760d` | round-6 correction (the STAYS-WHOLE rationale recorded); Codex attempt on it: **2 P2 findings** — entry-transition twins of already-sealed arms | the projectId freeze fired only on already-withdrawn rows (one statement could withdraw AND move); approval columns could be ADDED in the statement that enters withdrawal (the terminal freeze covers only the withdrawal columns) |
 | `f1700af` | round-7 correction; Codex's review again LANDED after the two-timeout verdict (7.5 min late — the established pattern) with **4 P2 findings**, treated as the review of record | the demo store's local withdraw left the local pending notice; the migration left pre-withdrawn rows' projections servable-stale and their notices unretired; and a claimed revision re-point that the Phase-3 append-only register seal ALREADY makes unrepresentable — REFUTED WITH EVIDENCE (probe + upgrade-proof rejection + thread reply) |
 | `b99f792` | round-8 correction; the late-landing review of record again (7 min): **4 P2 findings**, all verified REAL against existing seals before fixing | the QUESTION identity (`title`/`room`/`nodeId`) outside the frozen set; attribution standing (the FK proves the row, not ACTIVE); the picker rule client-only (`assertRefs` accepted withdrawn references); the entry/reverse seals blind to the legacy approval EVENTS the round-6 diagnostic itself established as evidence |
-| (this head) | the round-9 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–9 have touched no command or runtime-arm surface — round 9 completes the freeze/standing/linkability/legacy-parity arms of rules stated in earlier rounds | — |
+| `f841907` | round-9 correction; the FIRST verdict the orchestrator classified IN-WINDOW (attempt 2/2): **5 P2 findings**, each verified against the seal network first — four REAL, one refuted by execution | the round-9 linkability guard ran OUTSIDE the command transaction (a TOCTOU window vs a concurrent withdraw); a claimed uuid-into-text type error in the runtime tombstone that PostgreSQL's I/O-conversion assignment cast makes a non-event — REFUTED WITH EVIDENCE; the shared web selector missing the AUTH-02 pending split; the ACTIVE-membership entry read unlocked (a removal could commit mid-withdrawal); the event reverse arm INSERT-only over a table with no append-only seal |
+| (this head) | the round-10 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–10 have touched no command-semantics or §A.4 runtime-arm surface — round 10 moves round-9 arms to their correct transaction/lock scope, completes the audience mirror, and refutes a second already-impossible attack | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -95,12 +96,29 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   existence, is what a NEW reference asks (R9-F3 — the server twin of round 6's picker rule,
   via the owned `decisions.linkableInProject` contract); and the legacy approval EVENTS the
   round-6 diagnostic established as evidence are counted by the entry, belt, and reverse seals
-  exactly like the register (R9-F4). The
+  exactly like the register (R9-F4).
+- Round 10 moved the round-9 arms to their correct SCOPE — the last coat of the same root.
+  A validity check is only as strong as the transaction it runs in: the linkability guard
+  becomes an in-tx authority under a decision row share lock (R10-F1, the transactional twin
+  of R9-F3), and the ACTIVE-standing read locks the membership row it judges (R10-F4, the
+  concurrency twin of R9-F2 — proven by a held-open withdrawal that BLOCKS the concurrent
+  removal). A reverse seal must cover every verb its table admits: `DecisionEvent` has no
+  append-only trigger, so INSERT-only coverage left UPDATE open (R10-F5 — the register
+  equivalent was round 8's REFUTED attack precisely because the register IS append-only). The
+  shared selector mirrors the WHOLE server rule, not the arm this PR added (R10-F3 — the
+  AUTH-02 pending split joins the round-6 withdrawn split). And a second finding met an
+  already-impossible attack: the claimed uuid-into-text tombstone type error is a non-event
+  under PostgreSQL's I/O-conversion assignment cast, refuted by execution (R10-F2 — pg_cast
+  holds no uuid→text row; the R3-F3 probe runs the exact INSERT every round; a plan-time type
+  error would have failed every withdraw probe since round 3). The
   convergence trajectory: 5 (runtime lifecycle) → 4 (mixed) → 3 (access paths/boundary) → 4
   (deployment eras) → 2 (harness completions) → 4 (a diagnostic, a documented boundary, a
-  selector class, a harness hardening) → 2 (entry-transition twins of sealed arms) — since
-  round 3, no finding has touched the command, the seals' INTENT, or a §A.4 runtime arm; the
-  later rounds each re-state an accepted rule on one more path.
+  selector class, a harness hardening) → 2 (entry-transition twins of sealed arms) → 4 (arm
+  completions, one refuted) → 4+1-refuted (scope/lock corrections of the round-9 arms, one
+  refuted) — since round 3, no finding has touched the command's semantics, the seals' INTENT,
+  or a §A.4 runtime arm; the later rounds each re-state an accepted rule on one more path,
+  and two of the last three rounds contained findings the existing seal network already
+  answers.
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
@@ -145,7 +163,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all nine rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
+Every finding from all ten rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

@@ -383,9 +383,15 @@ BEGIN
     -- Round 9 (Codex): existence is not standing. The attribution FK proves the membership
     -- ROW; the command requires it ACTIVE (the locked participant check). Guarded on NOT NULL
     -- so an evidence-less withdrawal still falls through to coherence's own message.
+    -- Round 10 (Codex): the read LOCKS the membership row (`FOR UPDATE`) so it serializes
+    -- with a concurrent status flip: a removal committing mid-withdrawal now either waits
+    -- for the withdrawal (attribution was active AT commit) or, having won the lock, makes
+    -- this re-evaluated read see 'removed' and refuse. The service path already holds this
+    -- lock (OrgsParticipant.lockActiveMembership), so re-locking there is a no-op.
     IF NEW."withdrawnById" IS NOT NULL THEN
       PERFORM 1 FROM "Membership" m
-       WHERE m."projectId" = NEW."projectId" AND m."userId" = NEW."withdrawnById" AND m."status" = 'active';
+       WHERE m."projectId" = NEW."projectId" AND m."userId" = NEW."withdrawnById" AND m."status" = 'active'
+       FOR UPDATE;
       IF NOT FOUND THEN
         RAISE EXCEPTION 'phase6-t4a: a withdrawal must be attributed to an ACTIVE member of the project (decision %, member %)', NEW."id", NEW."withdrawnById";
       END IF;
@@ -440,6 +446,10 @@ CREATE TRIGGER "DecisionApprovalRevision_no_withdrawn"
 -- for the PR-#192 legacy class; the reverse seal must reach them exactly as it reaches the
 -- register. Same FOR UPDATE serialization as the revision arm; every other event type — the
 -- register's own 'withdrawn' entry included — passes untouched.
+-- Round 10 (Codex): the trigger covers UPDATE too — `DecisionEvent` carries no append-only
+-- seal (unlike the register), so an existing benign event could otherwise be RE-POINTED
+-- (`decisionId` and/or `type`) into approval evidence against a withdrawn decision. The
+-- NEW-row check is the single rule for both verbs; benign updates on live decisions pass.
 CREATE OR REPLACE FUNCTION phase6_t4a_no_approval_event_after_withdraw() RETURNS trigger AS $fn$
 DECLARE dstatus TEXT;
 BEGIN
@@ -453,5 +463,5 @@ BEGIN
 END $fn$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS "DecisionEvent_no_withdrawn_approval" ON "DecisionEvent";
 CREATE TRIGGER "DecisionEvent_no_withdrawn_approval"
-  BEFORE INSERT ON "DecisionEvent"
+  BEFORE INSERT OR UPDATE ON "DecisionEvent"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4a_no_approval_event_after_withdraw();

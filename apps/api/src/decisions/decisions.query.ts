@@ -150,8 +150,22 @@ export class DecisionsQueryService {
    *  terminal, so new work must never pin itself to it (the gate would wait forever on a
    *  question nobody is being asked). The write-path twin of the web picker rule: the caller
    *  distinguishes the two refusals because `activity.manage` is a pmc authority and the
-   *  honest withdrawn reason is the right answer there. */
-  async linkableInProject(projectId: string, decisionId: string): Promise<'linkable' | 'withdrawn' | 'missing'> {
+   *  honest withdrawn reason is the right answer there.
+   *
+   *  Round 10 (Codex): a plain read is UX only — the AUTHORITY is the tx-bearing form. Called
+   *  inside the consumer's command transaction it takes `FOR SHARE` on the decision row, so it
+   *  serializes with `decisions.withdraw` (whose CAS updates this row): a withdrawal committing
+   *  between a stale pre-check and the link is seen by the re-check, and a link holding the
+   *  share lock delays the withdrawal until the (legitimately pre-terminal) link commits. */
+  async linkableInProject(projectId: string, decisionId: string, tx?: Prisma.TransactionClient): Promise<'linkable' | 'withdrawn' | 'missing'> {
+    if (tx) {
+      const rows = await tx.$queryRaw<Array<{ status: string }>>`
+        SELECT "status"::text AS status FROM "Decision"
+         WHERE "id" = ${decisionId} AND "projectId" = ${projectId}
+         FOR SHARE`;
+      if (rows.length === 0) return 'missing';
+      return rows[0]!.status === 'withdrawn' ? 'withdrawn' : 'linkable';
+    }
     const row = await this.prisma.decision.findFirst({ where: { id: decisionId, projectId }, select: { status: true } });
     if (!row) return 'missing';
     return (row.status as string) === 'withdrawn' ? 'withdrawn' : 'linkable';

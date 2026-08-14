@@ -201,6 +201,19 @@ export class ActivitiesService {
     await resolveProjectNode(this.prisma, projectId, nodeId);
   }
 
+  /** Round 10 (Codex): the pre-tx linkability check above is fast-fail UX; THIS is the
+   *  authority — re-checked INSIDE the command transaction, where the decisions-owned query
+   *  takes a row share lock, so a `decisions.withdraw` committing between the two reads can
+   *  never leave new work pinned to a terminal decision (both interleavings are serialized
+   *  on the decision row: link-then-withdraw is the handled post-hoc state, withdraw-then-link
+   *  is this refusal). */
+  private async assertDecisionLinkableInTx(tx: Prisma.TransactionClient, projectId: string, decisionId: string | null | undefined): Promise<void> {
+    if (!decisionId) return;
+    const linkable = await this.decisions.linkableInProject(projectId, decisionId, tx);
+    if (linkable === 'missing') throw new BadRequestException('Unknown decision for this project');
+    if (linkable === 'withdrawn') throw new BadRequestException('This decision was withdrawn — link a live decision or re-issue it');
+  }
+
   /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links).
    *  Task 10 (Module 4): idempotent under `Idempotency-Key` (Task 5 ledger) — a retried plan
    *  (network retry / offline replay / double-tap) applies exactly once; a keyed REPLAY
@@ -233,6 +246,7 @@ export class ActivitiesService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'activities.create', idempotencyKey, requestHash,
       run: async (tx) => {
+        await this.assertDecisionLinkableInTx(tx, projectId, input.decisionId);
         // Phase 4 Task 4 (§A): a labour-pilot project derives the Team gate from canonical
         // facts — an explicit non-default stored team flag at creation would seed a second
         // writable truth and is refused (the zod default 'na' passes untouched).
@@ -314,6 +328,7 @@ export class ActivitiesService {
       run: async (tx) => {
         // stored material/team flags and the decision link move readiness (finding 1)
         await lockProjectReadiness(tx, projectId);
+        await this.assertDecisionLinkableInTx(tx, projectId, input.decisionId);
         // Phase 4 Task 4 (§A): when the labour capability is ON, the Team gate derives ENTIRELY
         // from canonical labour facts — the stored flag is a second writable truth and its
         // mutation is REJECTED. Off-pilot (legacy projects) the stored stub stays byte-identical.

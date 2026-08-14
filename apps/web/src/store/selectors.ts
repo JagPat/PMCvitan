@@ -55,7 +55,14 @@ export function selectLogDecisions(s: AppState): Decision[] {
  *  the REASON is what the viewer rule redacts (`readinessFor`). */
 export function selectVisibleDecisions(s: AppState): Decision[] {
   if (s.role !== 'pmc') {
-    return s.decisions.filter((d) => d.status !== 'withdrawn' && !d.draft);
+    // The COMPLETE server audience rule (decisionVisibleToViewer), not just the withdrawn
+    // arm: drafts are author-private (only the pmc authors decisions here), PENDING is
+    // pmc/client-only (AUTH-02), WITHDRAWN is pmc-only. A persona switch over a still-loaded
+    // store — or demo mode, which never refetches — must not render rows the server filters
+    // (round 6 + round 10).
+    return s.decisions.filter(
+      (d) => !d.draft && d.status !== 'withdrawn' && (s.role === 'client' || d.status !== 'pending'),
+    );
   }
   return s.decisions.filter((d) => !d.draft);
 }

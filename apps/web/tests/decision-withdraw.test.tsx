@@ -111,14 +111,24 @@ describe('P10 (web half): a withdrawn decision is pmc-only on every selector sur
   // The Site Map (and Schedule/Daily-Log pickers, Portfolio) filtered `s.decisions` ad hoc, so
   // a persona switch over a still-loaded store — or demo mode, which never refetches — rendered
   // a withdrawn decision's title/location to roles the server filters it from.
-  it('R6-F3: selectVisibleDecisions — pmc keeps the withdrawn register row; every other role never receives it', () => {
+  it('R6-F3 + R10-F3: selectVisibleDecisions mirrors the server audience rule COMPLETELY — withdrawn pmc-only, pending pmc/client-only (AUTH-02), approved project-wide', () => {
     seed('pmc');
-    expect(selectVisibleDecisions(s()).map((d) => d.id)).toContain('DL-W');
-    for (const role of ['contractor', 'engineer', 'client', 'consultant'] as Role[]) {
+    expect(selectVisibleDecisions(s()).map((d) => d.id)).toEqual(expect.arrayContaining(['DL-P', 'DL-A', 'DL-W']));
+    // the client IS the pending audience — AUTH-02 keeps the approval request in front of them
+    seed('client');
+    const clientIds = selectVisibleDecisions(s()).map((d) => d.id);
+    expect(clientIds).toContain('DL-P');
+    expect(clientIds).toContain('DL-A');
+    expect(clientIds).not.toContain('DL-W');
+    // round 10 (Codex): contractor/engineer/consultant never receive PENDING either — the
+    // server hides it from them (decisionVisibleToViewer), and a persona switch over a
+    // still-loaded store (or demo mode, which never refetches) must not out-render the server
+    for (const role of ['contractor', 'engineer', 'consultant'] as Role[]) {
       seed(role);
       const ids = selectVisibleDecisions(s()).map((d) => d.id);
       expect(ids, `role=${role}`).not.toContain('DL-W');
-      expect(ids, `role=${role}`).toContain('DL-P'); // the rule hides ONLY the withdrawal
+      expect(ids, `role=${role}`).not.toContain('DL-P');
+      expect(ids, `role=${role}`).toContain('DL-A'); // everything else stays project-wide
     }
   });
 

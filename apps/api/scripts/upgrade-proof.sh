@@ -3377,6 +3377,19 @@ SQL
 assert_rejects "4a reverse register (round 8, refuting the re-point): UPDATEing an approval revision's identity onto the withdrawn decision — the Phase-3 append-only seal refuses before the reverse arm is consulted" \
   "UPDATE \"DecisionApprovalRevision\" SET \"decisionId\"='UP4A-D1' WHERE \"id\"='UP4A-R8'" "append-only"
 
+# ── round 10 (Codex): DecisionEvent carries NO append-only seal (unlike the register), so the
+# reverse arm itself must cover UPDATE — the same re-point attack round 8 refuted for the
+# register is REAL for events. UP4A-LEV (planted round 9, type 'approved', on the LIVE UP4A-D2)
+# is the ready-made hostile vehicle.
+assert_rejects "4a seal 3 reverse (round 10): RE-POINTING an existing approval event onto the withdrawn decision — the reverse seal covers UPDATE, since DecisionEvent has no append-only trigger" \
+  "UPDATE \"DecisionEvent\" SET \"decisionId\"='UP4A-D1' WHERE \"id\"='UP4A-LEV'" "approval event can no longer be recorded"
+$PSQL -q -c "INSERT INTO \"DecisionEvent\"(\"id\",\"decisionId\",\"type\",\"actor\") VALUES ('UP4A-EV-BENIGN','UP4A-D2','published','Benign') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-10 benign-event plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 reverse (round 10): flipping a benign event's TYPE into approval evidence while re-pointing it at the withdrawn decision" \
+  "UPDATE \"DecisionEvent\" SET \"decisionId\"='UP4A-D1', \"type\"='approved' WHERE \"id\"='UP4A-EV-BENIGN'" "approval event can no longer be recorded"
+$PSQL -q -c "UPDATE \"DecisionEvent\" SET \"actor\"='Still benign' WHERE \"id\"='UP4A-EV-BENIGN';" >/dev/null || { echo "FAILED  4a round-10 precision: the benign event UPDATE on a live decision was rejected"; FAIL=1; }
+assert "4a seal 3 reverse (round 10, precision): a benign UPDATE on a live decision's event still passes — the seal blocks approval evidence on withdrawn rows, nothing else" \
+  "SELECT count(*) FROM \"DecisionEvent\" WHERE \"id\"='UP4A-EV-BENIGN' AND \"actor\"='Still benign'" "1"
+
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN
