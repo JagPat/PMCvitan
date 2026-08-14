@@ -79,11 +79,18 @@ a membership that is the decider designation of any OPEN decision (`pending`,
 `change` — and from 4d, `awaiting_countersign`) cannot be removed. The refusal
 lives in the orgs member-removal command, which already consults participants
 for standing questions; it asks the NEW decisions-owned participant answer
-`decisions.holdsOpenDecisions(membershipId)` through the declared
-`orgs ⇄ decisions` participant channels (cycle-exempt, both directions already
-exist in the module graph: `orgs.dependsOn` includes `decisions`). The 409
-names the escape: in 4b, withdraw-and-reissue (4a ships it); from 4d, forward.
-Never a silent orphaning — probed (P39).
+`decisions.holdsOpenDecisions({ membershipId, role, projectId })` through the
+declared `orgs ⇄ decisions` participant channels (cycle-exempt, both
+directions already exist in the module graph: `orgs.dependsOn` includes
+`decisions`). **The check covers BOTH holder designations** (this plan's round
+2): a `membershipId` match alone covers named-member holders, but a
+ROLE-designated holder (`client`, `pmc` — and from 4d, `architect`, including
+a forwarded-to role) is orphaned just the same when the LAST ACTIVE member of
+that role leaves; the participant therefore also answers "is this membership
+the last active holder of a role named by any open decision", and removal or
+role-change of that last holder is refused with the same 409. The escape: in
+4b, withdraw-and-reissue (4a ships it); from 4d, forward. Never a silent
+orphaning — both designations probed (P39).
 
 ### 2. `none` — the record-only issue
 
@@ -116,10 +123,15 @@ record refuses to start until publish. Pending surfaces exclude `recorded`
 structurally; the register shows a RECORDED state; visibility is the ordinary
 published-decision audience (a team record, not a pending approval — AUTH-02's
 pending-narrowing does not apply); the `as const` reader maps force every miss
-to a compile error. **`recorded` is TERMINAL and sealed like `withdrawn`**
-(round 1): a BEFORE UPDATE trigger refuses any transition out of it, probed
-directly (P18) — hostile SQL flipping a record to `approved` would manufacture
-a locked approval the activity gate then trusts. **And the kind–status pair is
+to a compile error. **`recorded` is TERMINAL and sealed like `withdrawn` — in
+BOTH verbs** (round 1; the DELETE arm this plan's round 2): a BEFORE UPDATE
+trigger refuses any transition out of it, and the 4a no-delete seal
+(`Decision_t4a_d_no_delete`) extends its refusal to `recorded` rows — a filed
+issue is a permanent register entry exactly like a withdrawal, and without the
+delete arm hostile SQL could erase the record the gate and the team trust
+(the sanctioned destructive resets keep their existing named-trigger bypass —
+no new bypass site). Both probed directly (P18): the hostile
+`recorded → approved` flip AND the hostile DELETE. **And the kind–status pair is
 DB-COHERENT in BOTH directions** (this plan's round 1): the member⟺membershipId
 CHECK alone leaves `deciderKind='none', status='pending'` representable — a
 published decision with no possible approver still driving every pending and
@@ -267,10 +279,16 @@ enums, `PushRole`, `decisionsManifest.permissions`, the membership-role comment
 in `schema.prisma`, and every `ROLE_POLICY` entry the role belongs in (the
 exact policy row set is the unit's FIRST deliverable — `project.read` certainly
 among them, `decision.create` deliberately NOT: issuing stays the PMC's) — with
-the `route-policy.test.ts` identity walk pinning whatever it says (P28). The
-role is a project MEMBERSHIP role like the other five; `worker` stays
-deliberately absent from the zod allowlists. Where the controller prose already
-says "PMC/architect", the allowlist finally matches the words.
+the `route-policy.test.ts` identity walk pinning whatever it says (P28). **The
+fan-out includes the PRODUCT PATH that mints memberships** (this plan's round
+2): the Team screen's role picker and role labels (and every web role list the
+mirrors walk reaches) gain `architect`, or a PMC could deploy the role with no
+UI path to add an active architect — the countersign chain then activates only
+through direct API calls, which is not a shipped feature. P28's identity walk
+covers the web lists beside the backend mirrors. The role is a project
+MEMBERSHIP role like the other five; `worker` stays deliberately absent from
+the zod allowlists. Where the controller prose already says "PMC/architect",
+the allowlist finally matches the words.
 
 ### 2. Orchestration
 
@@ -296,7 +314,15 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   designations and re-home the holder to a third member with the trigger
   satisfied — authority, counts and pushes following an unrecorded transition.
   The seal compares the transition to its evidence field-for-field;
-  hostile-probed BOTH ways — no row at all, and a mismatched row (P34). **Forwarding is
+  hostile-probed BOTH ways — no row at all, and a mismatched row (P34).
+  **And the pairing is sealed in BOTH directions** (this plan's round 2): a
+  `DecisionForward` INSERT is itself refused unless the SAME transaction
+  carries the matching holder mutation — otherwise a direct insert fabricates
+  immutable handoff evidence (`forwardedById`, `reason`) for a handoff that
+  never happened, and the chain/register reports it as history. A DEFERRED
+  constraint trigger checks the pair at commit from the forward side exactly
+  as the holder trigger checks it from the decision side; the orphan-row
+  hostile insert is probed (P34). **Forwarding is
   legal only in states the NEW HOLDER can act on** (rounds 3–4): `pending` and
   `change` ONLY, CAS'd on status; terminal states refuse, and
   `awaiting_countersign` is EXCLUDED from the generic command — that status is
@@ -357,6 +383,18 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   provenance TARGET, so the row carries `finalized` — born `true` outside a
   chain (today's behavior byte-identical), born `false` under a chain, flipped
   `true` by the countersign as its ONE permitted transition, trigger-sealed.
+  **And the countersign fact is a ROW, not a boolean** (this plan's round 2):
+  "flipped by the countersign" is unenforceable while the countersign has no
+  shape of its own — hostile SQL could flip `finalized` and approve, leaving
+  finality with no separately attributed act behind it. The second register
+  act is therefore a concrete append-only `DecisionCountersign` table
+  (`projectId`, `decisionId`, the exact `revisionId` countersigned,
+  `countersignedById` + frozen display name, `at`; composite FKs same-project,
+  immutable like the register), and the `finalized` false→true flip is
+  trigger-PAIRED to a same-transaction `DecisionCountersign` row for that
+  exact revision — the forward-door discipline applied to finality. A
+  finalized-only flip with no countersign row is unrepresentable, probed
+  directly (P31).
   **The transition EMITS its own truth** (round 3): `decision.awaiting_countersign`
   joins the catalog (`invalidate: true`, targeted push at the ARCHITECT); the
   countersign emits the real `decision.approved`; the re-seal chain is 4a's
@@ -366,20 +404,40 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   stays unreachable after any approval act, so 4a's eligibility proof survives
   4d intact.
 - **EVERY entry into `approved` is DB-SEALED behind the chain** (round-5
-  obligation 1; widened this plan's round 1): sealing only the
-  `awaiting_countersign → approved` edge leaves the direct road open — hostile
-  SQL under an ACTIVE chain could mark the head revision finalized and move
-  `pending`/`change` straight to `approved`, never traversing the awaiting
-  state. The BEFORE UPDATE trigger therefore judges ANY transition INTO
-  `approved`: it reads architect-chain presence (an ACTIVE architect
-  membership — the same cross-table read the 4a entry seal already performs on
-  `Membership`); with the chain ACTIVE, the only legal entry is FROM
-  `awaiting_countersign` WITH the head revision `finalized = true` (the
-  countersign fact); `pending`/`change` → `approved` is refused outright. With
-  the chain INACTIVE, direct approval stays legal (finality born true — 
-  today's behavior, and outcome (a) of the stranded resolution). Probed with
-  the direct `pending → approved` hostile flip under an active chain, the
-  stale awaiting-flip without finality, and the legal countersign path (P37).
+  obligation 1; widened this plan's round 1; serialized and made precise this
+  plan's round 2): sealing only the `awaiting_countersign → approved` edge
+  leaves the direct road open — hostile SQL under an ACTIVE chain could mark
+  the head revision finalized and move `pending`/`change` straight to
+  `approved`, never traversing the awaiting state. The BEFORE UPDATE trigger
+  therefore judges ANY transition INTO `approved`, with THREE precisions:
+  **(i) the presence read SERIALIZES** — a row-level `FOR UPDATE` on the
+  architect memberships cannot do this (a FIRST activation has no architect
+  row to lock — the classic phantom), so the seal takes the SAME per-project
+  advisory lock the service commands take (`pg_advisory_xact_lock` over the
+  `readiness:<projectId>` key, which `readiness-lock.ts` exports precisely so
+  a caller outside `lockProjectReadiness` takes the SAME lock, never one that
+  merely looks like it) BEFORE it reads architect presence, and the
+  `Membership` writes that can flip that presence (an INSERT, or an UPDATE
+  moving `architect` standing in or out) are trigger-bound to take the same
+  lock — the service path (P36's `lockProjectReadiness`) AND hostile direct
+  SQL on either table then serialize on one lock, so a first-architect
+  activation committing concurrently either waits for the approval or is
+  seen by it; the hostile-direct-update barrier is probed in both orderings
+  beside the service-path P36 races. **(ii) with the
+  chain ACTIVE**, the legal entries are: FROM `awaiting_countersign` WITH a
+  same-or-prior-transaction `DecisionCountersign` row finalizing the head
+  revision (the attributed fact, not the boolean); or FROM `change` as the
+  standard `withdrawChange` RESTORATION — the open request is `origin =
+  'standard'` AND the head revision is ALREADY `finalized = true` from its
+  original countersign (the ordinary correction path this seal must not
+  strand); `pending → approved` and any `change → approved` on an unfinalized
+  head or a `countersign_rejection` request are refused outright. **(iii)
+  with the chain INACTIVE**, direct approval stays legal (finality born
+  true — today's behavior, and outcome (a) of the stranded resolution).
+  Probed: the direct `pending → approved` hostile flip under an active chain,
+  the finalized-boolean-only flip, the stale awaiting-flip without the
+  countersign row, the standard restoration PASSING, the rejection-request
+  restoration REFUSED, and the activation-vs-approval barrier (P37).
 - **The finality key, stated exactly** (round-5 obligation 6): the existing
   Phase-3/4 provenance rows (`MaterialRequirementSpec`, `LabourRequirementSpec`)
   FK onto the register's candidate key
@@ -406,10 +464,14 @@ The settled design, plus the owner's 2026-08-13 amendment, as behavior:
   which on a disagreement request would complete an approval WITHOUT its
   countersign, so `withdrawChange` refuses `countersign_rejection` requests
   with a 409 naming re-approval as the only way forward (P33). **The request's
-  EVIDENCE freezes with its origin** (round 4): the freeze trigger covers
-  `reason`/`costImpact`/`timeImpactDays`/`requestedById` for EVERY
-  `ChangeRequest` row (the class, not the instance), with the close transitions
-  as the only permitted mutations (P33). The disagreement command accepts the
+  EVIDENCE freezes with its origin — and with its DECISION** (round 4;
+  `decisionId` this plan's round 2): the freeze trigger covers `decisionId`,
+  `reason`, `costImpact`, `timeImpactDays` and `requestedById` for EVERY
+  `ChangeRequest` row (the class, not the instance), with the close
+  transitions as the only permitted mutations — an open request re-pointed at
+  another decision would strip the change-state decision of the one open
+  request its machinery requires while attaching the reason to the wrong
+  register entry; the re-point is probed hostile (P33). The disagreement command accepts the
   impacts as OPTIONAL inputs defaulting to 0 (round 3). The two paths:
   **REJECT BACK** keeps the original decider as holder — they re-approve and
   the chain runs again; **FORWARD ON** re-points the holder to the decider the
@@ -439,12 +501,12 @@ symbol). Red sites name where today's behavior lives.
 | P15 | default-decider byte-identity: with no caller opting in, every surface (approve authority, notice, push, counts, badges) behaves byte-for-byte as before the migration | the full existing decisions test surface re-run over a `deciderKind`-bearing schema; plus an explicit fixture asserting `'client'` backfill on legacy rows |
 | P16 | member-decider authority: the named contractor approves through the widened ceiling; a same-role non-decider is 403/refused at the SERVICE, not the route | `ROLE_POLICY['decision.approve']` + `decisions.service.ts` approve authority |
 | P17 | decider CHECKs (`member` ⟺ membershipId), the cross-project membership FK refusal, and the holder columns write-once (hostile UPDATE refused) | the new columns' migration; `Membership @@unique([projectId, id])` |
-| P18 | `recorded` born terminal: no pending surface, no awaiting notice, no push intent; the "Issue recorded" notice at ordinary audience; the hostile `recorded → approved` flip refused by trigger; the INVERSE coherence arm — `deciderKind='none'` with `status='pending'` refused by CHECK on insert AND update, and `recorded` refused for every other kind | `decisions.service.ts` create/publish side effects; the terminal seal + the pair CHECK |
+| P18 | `recorded` born terminal: no pending surface, no awaiting notice, no push intent; the "Issue recorded" notice at ordinary audience; the hostile `recorded → approved` flip AND the hostile DELETE both refused by trigger; the INVERSE coherence arm — `deciderKind='none'` with `status='pending'` refused by CHECK on insert AND update, and `recorded` refused for every other kind | `decisions.service.ts` create/publish side effects; the terminal + no-delete seals + the pair CHECK |
 | P19 | the zero-option record files through the FULL product path: create → persist → serialize → register render, web form included | `DecisionsService.create` lead-presentation derivation (`input.options[0]`) |
 | P20 | a DRAFT record gates `wait` ("publish it"); a published record gates `na` | the gate reader's recorded arm consulting the draft flag |
 | P21 | the targeted push reaches the decider USER and only them: target receives; same-role non-target does not; the org-admin (membership-less) target receives | the outbox role-audience shape; the new user-target column + subscription linkage |
 | P22 | the WHOLE audience follows the decider: bell notice (decider vs same-role non-decider vs client), reapproval surfaces through approve → requestChange → re-approve, viewer-scoped `countPending` (two-engineers-one-decider) | `countPending`; AUTH-02 narrowing in `decision-serialize.ts`; `selectActionItems`; `isPendingDecisionNotice` stripping |
-| P39 | removing the current-holder membership is refused 409 through the participant, naming the escape; a non-holder membership still removes | the orgs member-removal command + the new `holdsOpenDecisions` participant answer |
+| P39 | removing the current-holder membership is refused 409 through the participant for BOTH designations — the named-member holder AND the last active member of a ROLE named by an open decision (role-change of that last holder refused too); a non-holder membership still removes | the orgs member-removal command + the widened `holdsOpenDecisions` participant answer |
 
 ### Unit 4c
 
@@ -461,17 +523,17 @@ symbol). Red sites name where today's behavior lives.
 
 | probe | proves | red site / staging |
 |---|---|---|
-| P28 | the role in every mirror: TokenRole, both zod enums, PushRole, policy rows — the identity walk pins the set | `types.ts`, `contracts.ts`, `external-effects.ts`, `ROLE_POLICY` |
+| P28 | the role in every mirror: TokenRole, both zod enums, PushRole, policy rows, AND the web team-management role pickers/labels — the identity walk pins the set; a membership with the new role is mintable through the shipped UI | `types.ts`, `contracts.ts`, `external-effects.ts`, `ROLE_POLICY`, the Team screen role lists |
 | P29 | no-active-architect byte-identity: with no architect membership ever, approve lands `approved` directly — the whole 4b/4c surface byte-identical | the chain switch |
 | P29b | removed-architect deactivation + the stranded decision: the chain deactivates for NEW approvals; `decisions.resolveStrandedCountersign` drives BOTH outcomes (complete-under-no-chain → `approved` with finality + emission; return-to-decider → `change` with the origin-stamped open request) end-to-end through re-approval; refused while an architect is still active; the architect-reappears race deterministic | the new resolution command + the switch |
 | P30 | forward authority (holder/PMC/architect), ACTIVE target only, eligible states only — terminal AND `awaiting_countersign` refusals both probed | the forward command |
-| P31 | the `awaiting_countersign` lifecycle: approval under a chain lands it with `finalized=false`; the countersign flips finality + emits `decision.approved`; `decision.awaiting_countersign` emits at entry with the architect-targeted push; the register's finalized-flip trigger seal | the approve CAS; the catalog |
+| P31 | the `awaiting_countersign` lifecycle: approval under a chain lands it with `finalized=false`; the countersign writes its attributed `DecisionCountersign` ROW, flips finality (trigger-PAIRED to that same-tx row — the boolean-only hostile flip refused) + emits `decision.approved`; `decision.awaiting_countersign` emits at entry with the architect-targeted push | the approve CAS; the new countersign table; the catalog |
 | P32 | self-countersign is TWO attributed acts under two idempotency keys — one combined act is refused | the countersign command |
-| P33 | both disagreement outcomes: origin-stamped open `ChangeRequest`, `withdrawChange` refusal on `countersign_rejection`, the class-wide evidence freeze, impacts rendered, reject-back AND forward-on driven through re-approval to completion | the `ChangeRequest` machinery |
-| P34 | the forward chain: attribution (actor vs displaced holder), the `decision.forwarded` emission + re-seal, non-blank reason, and the holder-mutation-only-with-MATCHING-forward seal — hostile holder UPDATE refused with NO same-tx forward row AND with a MISMATCHED one (from/to ≠ the actual transition) | the 4b write-once trigger's one door |
+| P33 | both disagreement outcomes: origin-stamped open `ChangeRequest`, `withdrawChange` refusal on `countersign_rejection`, the class-wide evidence freeze INCLUDING `decisionId` (the hostile re-point to another decision refused), impacts rendered, reject-back AND forward-on driven through re-approval to completion | the `ChangeRequest` machinery |
+| P34 | the forward chain: attribution (actor vs displaced holder), the `decision.forwarded` emission + re-seal, non-blank reason, and the PAIRING sealed in BOTH directions — hostile holder UPDATE refused with NO same-tx forward row AND with a MISMATCHED one; a hostile ORPHAN `DecisionForward` insert (no same-tx holder mutation) refused by the deferred reverse seal | the 4b write-once trigger's one door + the reverse constraint trigger |
 | P35 | the forward-vs-approve barrier: both orderings deterministic, exactly one surviving outcome, a coherent holder | the row-lock serialization |
 | P36 | the switch-writers barrier: architect role-change vs approve, activation AND deactivation, both orderings | `lockProjectReadiness` on the orgs role mutations |
-| P37 | EVERY entry into `approved` sealed behind the chain: under an ACTIVE chain the direct `pending → approved` hostile flip refused, the stale awaiting-flip without finality refused, the legal countersign path passes; under an INACTIVE chain direct approval stays legal | the new status-transition seal reading chain presence |
+| P37 | EVERY entry into `approved` sealed behind the chain, SERIALIZED: under an ACTIVE chain the direct `pending → approved` hostile flip refused, the finalized-boolean-only flip refused, the awaiting-flip without the countersign ROW refused, the standard `withdrawChange` restoration (finalized head, `standard` open request) PASSES, the `countersign_rejection` restoration refused; the first-architect-activation-vs-approval barrier deterministic in both orderings (the seal AND the architect-standing `Membership` writes take the same per-project readiness advisory lock before the presence read); under an INACTIVE chain direct approval stays legal | the new status-transition seal + its advisory-locked presence read |
 | P38 | the pre-send eligibility guard generalized to EVERY targeted decision push through PER-EVENT-FAMILY predicates (decider→holder+status; consultation→standing+open-eligible; countersign→awaiting+active architect; forward→installed holder): one positive AND one negative probed per family — a valid consultee push is NOT dropped by the decider predicate | the 4a pre-send re-check, generalized per family |
 | P40 | claim-time per-family re-check: a forward between commit and claim re-targets or drops the pending DECIDER push, recorded — the displaced holder is never notified to decide — while a still-standing consultee push SURVIVES the same forward | the delivery claim path |
 | P42 | the finality candidate key over the ACTUAL provenance columns: provenance onto an unfinalized revision unrepresentable; `finalized → false` under reference refused by the FK; the additive backfill leaves every legacy row `finalized=true` | `DecisionApprovalRevision_provenance_target_key` + the two spec FKs |
