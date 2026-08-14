@@ -3502,7 +3502,10 @@ UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"
 INSERT INTO "Notification"("id","projectId","text","color","time","decisionId")
 VALUES ('UP4A-N1','p1','Decision awaiting approval: Withdrawable','#C08A2D','2d ago','UP4A-D1'),
        ('UP4A-N2','p1','Decision awaiting approval: Uniquely withdrawn','#C08A2D','2d ago',NULL),
-       ('UP4A-N3','p1','Decision awaiting approval: Withdrawable','#C08A2D','2d ago',NULL)
+       ('UP4A-N3','p1','Decision awaiting approval: Withdrawable','#C08A2D','2d ago',NULL),
+       -- round 14 (Codex): the WITHDRAWAL notice the runtime command writes carries the SAME
+       -- decisionId stamp — a re-run must retire pending bells only, never this record
+       ('UP4A-N4','p1','Decision withdrawn: Uniquely withdrawn — pre-existing withdrawal','#6B665C','2d ago','UP4A-D4')
 ON CONFLICT DO NOTHING;
 INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","appliedPosition","cursorStatus","updatedAt")
 VALUES ('UP4A-GEN1','decisions.inbox','p1',999,'active',900010,'live',now())
@@ -3524,9 +3527,9 @@ assert "4a round 5: the migration writes the recovery-gap TOMBSTONE for a pre-wi
 assert "4a round 5 precision: the LIVE decision's recovery-gap event gets NO tombstone — recovery legitimately owes it a pending delivery" \
   "SELECT COUNT(*)::text FROM \"OutboxDelivery\" WHERE \"eventId\"='UP4A-EV6' AND \"consumer\"='webpush.notify';" \
   "0"
-assert "4a round 8 (R8-F3): the migration retires the pre-withdrawn decisions' notices — the stamped row by identity, the UNAMBIGUOUS legacy row by text; the AMBIGUOUS legacy row (a pending decision shares the title) SURVIVES per the multiplicity guard" \
-  "SELECT string_agg(\"id\", ',' ORDER BY \"id\") FROM \"Notification\" WHERE \"id\" IN ('UP4A-N1','UP4A-N2','UP4A-N3');" \
-  "UP4A-N3"
+assert "4a round 8 (R8-F3) + round 14 (R14-F1): the migration retires the pre-withdrawn decisions' notices — the stamped PENDING row by identity+shape, the UNAMBIGUOUS legacy row by text; the AMBIGUOUS legacy row SURVIVES per the multiplicity guard, and the stamped WITHDRAWAL notice SURVIVES every re-run" \
+  "SELECT string_agg(\"id\", ',' ORDER BY \"id\") FROM \"Notification\" WHERE \"id\" IN ('UP4A-N1','UP4A-N2','UP4A-N3','UP4A-N4');" \
+  "UP4A-N3,UP4A-N4"
 assert "4a round 8 (R8-F2): the servable decisions.inbox generation claiming the pre-withdrawn row is pending is RETIRED — reads fall back to canonical truth until the next delivery/rebuild" \
   "SELECT \"status\" FROM \"ProjectionGeneration\" WHERE \"id\"='UP4A-GEN1';" \
   "retired"

@@ -97,15 +97,19 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // approval EVENTS are undeletable evidence (`DecisionEvent_no_withdrawn_approval`, round
     // 12); this destructive test reset disables the named seals for exactly this wipe — the
     // same sanctioned-bypass contract as the TRUNCATE above (which fires no row-level trigger).
-    await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
-    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
-    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-    await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
-    await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
-    await t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
-    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
-    await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
+    // R14-F2: ONE transaction — a failed wipe rolls the DISABLE back (the R6-F4 seed shape),
+    // so no failure path leaves the shared database's evidence seals off for later probes.
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } }),
+      t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } }),
+      t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
+    ]);
     await t.prisma.membership.deleteMany({ where: { userId: { startsWith: 'it-t4a-u-' } } });
     await t.prisma.user.deleteMany({ where: { id: { startsWith: 'it-t4a-u-' } } });
     roleUsers.clear();
@@ -771,9 +775,11 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
       await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
       await expect(t.prisma.decisionOption.deleteMany({ where: { decisionId: id } })).rejects.toThrow(/frozen question/);
-      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
-      await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
-      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
+      await t.prisma.$transaction([
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+        t.prisma.decisionOption.deleteMany({ where: { decisionId: id } }),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
+      ]); // R14-F2: atomic — a failed wipe rolls the disable back
       await expect(t.prisma.$executeRaw`DELETE FROM "Decision" WHERE "id" = ${id}`).rejects.toThrow(/permanent register entry/);
       expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('withdrawn');
       // precision, not mere strictness: a NON-withdrawn decision is still deletable
@@ -850,9 +856,11 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // OPTION children need the sanctioned bypass since round 11 froze them
         await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
         await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
-        await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
+        await t.prisma.$transaction([
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.decisionOption.deleteMany({ where: { decisionId: id } }),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
+        ]); // R14-F2: atomic — a failed wipe rolls the disable back
         await expect(
           t.prisma.$executeRaw`UPDATE "Decision" SET "projectId" = ${f.projectB.id} WHERE "id" = ${id}`,
         ).rejects.toThrow(/projectId is frozen/);
@@ -1377,15 +1385,17 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         );
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });
         await t.prisma.auditLog.deleteMany({ where: { projectId: projW } });
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-        await t.prisma.decisionEvent.deleteMany({ where: { decisionId: { in: [id, 'DL-t4a-r12w-2'] } } });
-        await t.prisma.decisionOption.deleteMany({ where: { decisionId: { in: [id, 'DL-t4a-r12w-2'] } } });
-        await t.prisma.decision.deleteMany({ where: { projectId: projW } });
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
+        await t.prisma.$transaction([
+          t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.decisionEvent.deleteMany({ where: { decisionId: { in: [id, 'DL-t4a-r12w-2'] } } }),
+          t.prisma.decisionOption.deleteMany({ where: { decisionId: { in: [id, 'DL-t4a-r12w-2'] } } }),
+          t.prisma.decision.deleteMany({ where: { projectId: projW } }),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
+        ]); // R14-F2: atomic — a failed wipe rolls the disables back
         await t.prisma.membership.deleteMany({ where: { projectId: projW } });
         await t.prisma.project.deleteMany({ where: { id: projW } });
       }
@@ -1657,15 +1667,17 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         );
         await t.prisma.notification.deleteMany({ where: { projectId: projW } });
         await t.prisma.auditLog.deleteMany({ where: { projectId: projW } });
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-        await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: projW } } });
-        await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: projW } } });
-        await t.prisma.decision.deleteMany({ where: { projectId: projW } });
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
-        await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
+        await t.prisma.$transaction([
+          t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: projW } } }),
+          t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: projW } } }),
+          t.prisma.decision.deleteMany({ where: { projectId: projW } }),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
+        ]); // R14-F2: atomic — a failed wipe rolls the disables back
         await t.prisma.membership.deleteMany({ where: { projectId: projW } });
         await t.prisma.project.deleteMany({ where: { id: projW } });
       }
@@ -1701,6 +1713,50 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await t.prisma.siteMaterial.deleteMany({ where: { dailyLogId: log.id } });
         await t.prisma.dailyLog.delete({ where: { id: log.id } });
       }
+    });
+  });
+
+  describe('round 14 (Codex): re-run-safe notice retirement, failure-safe resets', () => {
+    // R14-F1 — the migration's identity-keyed notice retirement deleted EVERY notification
+    // stamped with a withdrawn decision — but the withdraw command itself writes a
+    // decisionId-STAMPED withdrawal notice, so an operator re-run of the rerunnable file
+    // erased the withdrawal record's own notice. The retire arm is now identity + the PENDING
+    // text shape: stale bells retire, the withdrawal notice survives every re-run.
+    it('R14-F1: a migration re-run retires the stale stamped pending bell but NEVER the withdrawal notice the command wrote', async () => {
+      const { execFileSync } = await import('node:child_process');
+      const migrationPath = join(dirname(fileURLToPath(import.meta.url)), '../../prisma/migrations/20270810000000_phase6_t4a_withdraw/migration.sql');
+      const dbUrl = (process.env.DATABASE_URL ?? '').split('?')[0]!;
+      const id = await seed({ title: 'Rerun survivor' });
+      await svc.withdraw(f.projectA.id, id, { reason: 'the notice must survive re-runs' }, pmc());
+      const notice = await t.prisma.notification.findFirstOrThrow({ where: { decisionId: id } });
+      expect(notice.text.startsWith('Decision withdrawn')).toBe(true);
+      // the stale shape the retire arm EXISTS for: a stamped pending bell a partial/manual
+      // apply left behind (no command ever retired it)
+      await t.prisma.notification.create({
+        data: { projectId: f.projectA.id, decisionId: id, text: 'Decision awaiting approval: Rerun survivor', color: '#C08A2D', time: '2d ago' },
+      });
+      execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+      const after = await t.prisma.notification.findMany({ where: { decisionId: id } });
+      expect(after.map((n) => n.text.split(':')[0])).toEqual(['Decision withdrawn']);
+    });
+
+    // R14-F2 — the destructive resets in THIS suite toggled the seals with sequential awaits:
+    // a wipe failing mid-sequence (a future child FK, a lock timeout) would skip the ENABLE
+    // statements and leave the shared database's evidence seals off for every later probe.
+    // Every disable → wipe → enable trio is now ONE `$transaction([...])` array — the same
+    // R6-F4 discipline the seed's wipe already pins — so a failed wipe rolls the DISABLE back.
+    it('R14-F2: every seal toggle in this suite is atomic — no standalone awaited DISABLE/ENABLE remains', () => {
+      const self = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+      // the sequential shape is unrepresentable: an awaited raw ALTER is spelled as
+      // an await-prefixed executeRawUnsafe ALTER — while the atomic arrays carry the same
+      // calls WITHOUT the await prefix as `$transaction` items. (The regex below is escaped,
+      // so neither it nor this comment can match it.)
+      expect(self).not.toMatch(/await t\.prisma\.\$executeRawUnsafe\('ALTER TABLE/);
+      // and the trios exist: every DISABLE has its ENABLE in the same file
+      const disables = (self.match(/DISABLE TRIGGER/g) ?? []).length;
+      const enables = (self.match(/ENABLE TRIGGER/g) ?? []).length;
+      expect(disables).toBeGreaterThan(0);
+      expect(enables).toBeGreaterThanOrEqual(disables - 2); // the two seed-source index probes count once each
     });
   });
 
@@ -1752,15 +1808,17 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.auditLog.deleteMany({ where: { projectId: proj13 } });
       // this probe's row IS withdrawn — the same sanctioned destructive-reset bypass as
       // cleanup(), covering the option/event seals (rounds 11-12) and the delete arm alike
-      await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
-      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
-      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-      await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
-      await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
-      await t.prisma.decision.deleteMany({ where: { id } });
-      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
-      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
-      await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
+      await t.prisma.$transaction([
+        t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+        t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } }),
+        t.prisma.decisionOption.deleteMany({ where: { decisionId: id } }),
+        t.prisma.decision.deleteMany({ where: { id } }),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
+      ]); // R14-F2: atomic — a failed wipe rolls the disables back
       await t.prisma.membership.deleteMany({ where: { projectId: proj13 } });
       await t.prisma.project.deleteMany({ where: { id: proj13 } });
     }

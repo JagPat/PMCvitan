@@ -378,3 +378,19 @@ API 791/791); upgrade-proof extended (the round-13 battery block: the dead pg_te
 note erase, the note rewrite, the approval-event re-point-away); the full battery via the
 required `api` CI check. The `decisionOptionTouch` model joins the decisions manifest
 (`ownsModels` + `readEncapsulated`), the MODEL_OWNER map, and the read-encapsulation pin.
+
+## Round 14 — the three Codex P2 findings on head `ecd46af`, one batched head
+
+The fifth consecutive in-window verdict. Two findings REAL and reproduced RED first; the third's
+predicted failure REFUTED by execution — but the refutation probe surfaced a REAL adjacent
+analyzer blind spot, fixed reproduce-first in the same head.
+
+| # | finding | fix |
+|---|---|---|
+| R14-F1 (P2) | the migration's identity-keyed notice retirement deleted EVERY notification stamped with a withdrawn decision's id — but the withdraw COMMAND writes a decisionId-stamped WITHDRAWAL notice (`withdrawnDecisionNotice`), so an operator re-run of the rerunnable file erased the withdrawal record's own notice | the retire arm is now identity + the PENDING text shape (`n."text" LIKE 'Decision awaiting approval:%'`): stale bells retire, the withdrawal notice survives every re-run. Probed end-to-end (a real service withdrawal + a planted stale stamped bell → re-run → the bell is gone, the withdrawal notice stands) + the upgrade-proof notice battery gains the stamped-withdrawal survivor (UP4A-N4) |
+| R14-F2 (P2) | the probe suite's destructive resets toggled the seals with SEQUENTIAL awaits — a wipe failing mid-sequence (a future child FK, a lock timeout) would skip the ENABLEs and leave the shared database's evidence seals off for every later probe | every disable → wipe → enable trio in the suite (cleanup(), the two single-trigger bypasses, and the three probe finallys — six sites) is now ONE `$transaction([...])` array, the same R6-F4 discipline the seed's wipe already pins: a failed wipe rolls the DISABLE back. The R14-F2 source pin makes the sequential shape unrepresentable (no awaited raw ALTER remains in the file) |
+| R14-F3 (P2, claim **REFUTED**; adjacent gap REAL and fixed) | claim: `cancelQueuedPushBySubject` holds two raw writes under one (file, symbol) waiver, so the analyzer "will fail" with `ambiguous-raw-waiver` | the predicted failure cannot occur and demonstrably does not (the boundary suite is green on this exact head in CI, the local battery, and a direct analyzer run returning ZERO findings): the two statements resolve to DIFFERENT enclosing symbols, so the one-waiver-one-site rule was never violated. But the probe exposed WHY no second waiver was ever demanded: `UPDATE_RE` required the table token immediately before SET, so the ALIASED set-based update (`UPDATE "OutboxDelivery" d SET … FROM …`) was invisible to the raw-write tripwire entirely — unwaived AND unflagged. Fixed forward: the regex admits an optional alias (bare or `AS`-prefixed, with a lookahead keeping `UPDATE "T" SET` and `SELECT … FOR UPDATE` semantics intact), the nested pass is NAMED `cancelPass` so the now-visible statement carries its own reviewed waiver, the raw-writes pin grows to the four sites, and two adversarial fixtures pin the aliased shapes RED-against-the-old-regex |
+
+Round-14 gates: probe file 61/61 (RED 3/3 at `ecd46af` — R14-F1, the R14-F2 pin, and the
+aliased-UPDATE fixture); boundary suite 44/44; `pnpm check` EXIT 0 (web 764/764, API 793/793);
+upgrade-proof extended (UP4A-N4); the full battery via the required `api` CI check.

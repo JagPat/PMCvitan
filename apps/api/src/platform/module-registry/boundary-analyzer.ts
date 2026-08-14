@@ -324,7 +324,12 @@ export interface PersistenceResult {
 const INSERT_RE = /\binsert\s+into\b/i;
 const DELETE_RE = /\bdelete\s+from\b/i;
 // A real UPDATE writes `UPDATE <table> SET …` (a `SELECT … FOR UPDATE` row lock has no SET).
-const UPDATE_RE = /\bupdate\s+(?:"[^"]+"|[a-z_][\w.]*)\s+set\b/i;
+// Round 14 (Codex, PR #337): the table may carry an ALIAS — `UPDATE "T" d SET … FROM …` is the
+// set-based join-update shape — and requiring the table token IMMEDIATELY before SET made that
+// statement invisible to the raw-write tripwire entirely (unwaived AND unflagged). The optional
+// alias token (bare or `AS`-prefixed) admits it; the `(?!set\b)` lookahead keeps `UPDATE "T"
+// SET` parsing as table+SET so the un-aliased shape and the FOR UPDATE row lock are unchanged.
+const UPDATE_RE = /\bupdate\s+(?:"[^"]+"|[a-z_][\w.]*)(?:\s+(?:as\s+)?(?!set\b)[a-z_][\w]*)?\s+set\b/i;
 // An UPDATE whose table was interpolated away (`UPDATE ${Prisma.raw(t)} SET …` → "UPDATE  SET …"
 // after the interpolation is gathered out): still a write, and must not slip past classification.
 const UPDATE_INTERP_RE = /\bupdate\s+set\b/i;

@@ -76,7 +76,9 @@ export async function cancelQueuedPushBySubject(
     event: { is: { eventType: args.eventType } },
   } as const;
   // One pass of the three set-based mutations, over the platform's OWN tables only.
-  const pass = async (): Promise<{ neutralized: number; marked: number }> => {
+  // Round 14 (Codex, PR #337): NAMED so the boundary analyzer attributes the subject-stamp
+  // raw UPDATE below to its own waiver symbol (`cancelPass`) — one waiver, one reviewed site.
+  const cancelPass = async (): Promise<{ neutralized: number; marked: number }> => {
     // round 4 — restore the identity an old-instance writer omitted, from the row's own event
     await tx.$executeRaw`
       UPDATE "OutboxDelivery" d
@@ -99,7 +101,7 @@ export async function cancelQueuedPushBySubject(
     return { neutralized: neutralized.count, marked: marked.count };
   };
 
-  const first = await pass();
+  const first = await cancelPass();
   // The recovery-gap tombstone (round 3). Guarded on the catalog contract row twice over: a
   // delivery must name a declared (consumer, kind) — and an instance with no catalog row never
   // expands the gap either.
@@ -120,7 +122,7 @@ export async function cancelQueuedPushBySubject(
      ON CONFLICT DO NOTHING`;
   // round 4 — the repeat pass: catch any row that committed between the first pass and the
   // insert's resolution (see the SCANNER INTERLEAVE bullet above).
-  const second = await pass();
+  const second = await cancelPass();
 
   return {
     neutralized: first.neutralized + second.neutralized,

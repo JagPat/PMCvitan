@@ -25,7 +25,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `04bcbc3` | the round-12 correction + this audit extended; its CI api battery caught what the pre-push literal grep could not | 1 CI defect: three suites (phase3-requirements, phase4-t1-labour, projection-rebuild-upgrade) wipe decision events through a DYNAMIC table-driven `deleteMany` loop, so their resets hit the new approval-evidence seal — fixed as `4b7b9e2` |
 | `4b7b9e2` | the test-only CI follow-up (the three dynamic-wipe suites join the sanctioned `wipeDecisionEvents` reset; full battery 1171/1171). It carried the convergence TRAILER but not the PACKET — past the convergence threshold every head owes both, and the gate correctly required this audit's currency | 1 gate requirement (not a Codex finding): missing packet on the head commit |
 | `a58e949` | packet-only (this audit brought current through `4b7b9e2`); the fourth consecutive in-window verdict: **5 findings (1×P1, 4×P2)** — the P1 REFUTED by execution | a claimed plpgsql error on every option INSERT (OLD/NEW are NULL records since PG 11 — refuted on PostgreSQL 16.13 with the docs citation + probe); the pg_temp touch note erasable by its own session with NO privilege; an approval event re-pointable AWAY while keeping its type; the replacement generation unable to seed a row the retired generation never had; the daily-log material write accepting a withdrawn decision link |
-| (this head) | the round-13 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–13 have touched no command-semantics or §A.4 runtime-arm surface — round 13 upgrades the round-12 seals' STORAGE to the network's own privilege standard (evidence a caller cannot erase), completes the projection repair for the never-applied shape, and closes the last unlinked write path (daily-log materials) | — |
+| `ecd46af` | the round-13 correction + this audit extended; the fifth consecutive in-window verdict: **3 P2 findings** — one REFUTED by execution with a REAL adjacent gap surfaced | the rerunnable migration's identity-keyed notice retirement erasing the withdraw command's OWN stamped notice on re-runs; the suite's sequential seal toggles skipping their ENABLEs on a failed wipe; a claimed `ambiguous-raw-waiver` failure that cannot occur (distinct enclosing symbols; the check is green on the exact head) — but whose probe exposed `UPDATE_RE` blind to ALIASED set-based updates, an invisible-unwaived raw write |
+| (this head) | the round-14 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–14 have touched no command-semantics or §A.4 runtime-arm surface — round 14 makes the operator re-run conservative (retire bells, never records), the test resets failure-safe, and the raw-write tripwire complete over the aliased UPDATE shape | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -163,6 +164,20 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   records since PostgreSQL 11, so the claimed insert-time error cannot occur — refuted with
   the docs citation, a live PG 16.13 run, and a pinning probe rather than patched around
   (R13-F1, the third refutation of the review cycle).
+- Round 14 is conservatism at the edges. The rerunnable migration's retire arm was too eager —
+  identity alone also matched the withdrawal notice the COMMAND writes, so an operator re-run
+  ate the record's own notice; the arm now names the pending SHAPE it exists to retire
+  (R14-F1). The suite's own destructive resets were the last sequential disable→wipe→enable
+  paths — six sites join the R6-F4 atomic-transaction discipline the seed already pins, and a
+  source pin makes the sequential shape unrepresentable (R14-F2). And the round's third
+  finding predicted a failure that cannot occur — the two cancellation statements resolve to
+  DIFFERENT enclosing symbols, so the one-waiver-one-site rule was never violated, proven by
+  the green check on the exact head and a direct analyzer run — but refuting it exposed a REAL
+  blind spot: `UPDATE_RE` could not see an ALIASED set-based update at all, so the
+  subject-stamp statement was unwaived AND unflagged. The refutation and the fix ship
+  together: the regex admits the alias, the statement gets its named waiver, and two
+  adversarial fixtures pin the shape (R14-F3 — the fourth refutation, and the first whose
+  probe found an adjacent defect the finding itself missed).
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
@@ -207,7 +222,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all thirteen rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
+Every finding from all fourteen rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

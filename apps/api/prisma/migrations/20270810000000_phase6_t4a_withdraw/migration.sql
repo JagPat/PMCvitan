@@ -213,15 +213,21 @@ ON CONFLICT DO NOTHING;
 
 -- Round 8 (Codex): a pre-withdrawn decision's OTHER stale surfaces, with the command's exact
 -- semantics — no future `decisions.withdraw` will ever run for it.
--- (a) NOTICES: the stamped pending bell row retires by IDENTITY; a LEGACY unstamped row
--- retires by the canonical text shape (`pendingDecisionNotice`: 'Decision awaiting approval:
--- <title>'), multiplicity-guarded exactly like the command — if another still-pending
--- published decision shares the title, the text is ambiguous and the row is LEFT, never
--- guessed at. Idempotent (DELETEs).
+-- (a) NOTICES: the stamped pending bell row retires by IDENTITY AND the pending text shape; a
+-- LEGACY unstamped row retires by the canonical text shape (`pendingDecisionNotice`:
+-- 'Decision awaiting approval: <title>'), multiplicity-guarded exactly like the command — if
+-- another still-pending published decision shares the title, the text is ambiguous and the
+-- row is LEFT, never guessed at. Idempotent (DELETEs).
+-- Round 14 (Codex): identity alone over-reached — the withdraw COMMAND writes a
+-- decisionId-stamped WITHDRAWAL notice (`withdrawnDecisionNotice`), so a bare identity delete
+-- erased the withdrawal record's own notice on every operator re-run of this rerunnable file.
+-- The retire arm's job is the stale PENDING bell; the shape predicate makes a re-run after
+-- legitimate withdrawals a no-op on their notices.
 DELETE FROM "Notification" n
 USING "Decision" dec
 WHERE n."projectId" = dec."projectId" AND n."decisionId" = dec."id"
-  AND dec."status"::text = 'withdrawn';
+  AND dec."status"::text = 'withdrawn'
+  AND n."text" LIKE 'Decision awaiting approval:%';
 DELETE FROM "Notification" n
 USING "Decision" dec
 WHERE n."projectId" = dec."projectId"
