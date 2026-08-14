@@ -5,7 +5,7 @@
   "terminals": [
     {
       "name": "api",
-      "command": "pnpm --filter api start"
+      "command": "bash -lc 'set -a && source apps/api/.env && set +a && pnpm --filter api start'"
     },
     {
       "name": "web",
