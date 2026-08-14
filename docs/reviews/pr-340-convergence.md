@@ -13,7 +13,8 @@ with no two-step.
 | `29eeeef` | round-1 batch | none of its own — superseded unreviewed by the conflict-shepherd merge before any verdict | counts once with `d387412` |
 | `d387412` | `29eeeef` + `origin/main` merged (shepherd directive; the plan bytes unchanged by the merge) | 8 (4 P1, 4 P2) | corrected on `c5255c0` |
 | `c5255c0` | round-2 batch + this packet opened | 6 (2 P1, 4 P2) | corrected on `bb28589` |
-| `bb28589` | round-3 batch, carrying BOTH trailers (`Review-Convergence` + the deferral) | 9 (6 P1, 3 P2) | corrected on this head — and the generative rule behind all four rounds is now stated as the plan's §C.3 uniform seal contract |
+| `bb28589` | round-3 batch, carrying BOTH trailers (`Review-Convergence` + the deferral) | 9 (6 P1, 3 P2) | corrected on `a0f6d78`, which also stated the generative rule as the plan's §C.3 uniform seal contract |
+| `a0f6d78` | round-4 batch + the §C.3 contract | 4 (2 P1, 2 P2) | corrected on this head — the FIFTH finding head; the lifecycle advisory has fired and the restructure pre-commitment below is now binding |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -143,11 +144,39 @@ Omitting an obligation on a future fact is now a defect by construction,
 not a per-round discovery, and each unit's review packet walks the table
 for every fact it ships.
 
+## Round 5 — the contract doing its job, and the lifecycle advisory
+
+The rate finally fell (7 → 8 → 6 → 9 → **4**), and the shape of the four
+findings is exactly what the §C.3 contract was built to produce: two are
+CELL corrections to the contract's own table (the consultation fact's
+actor-standing cell validated the consultee but not the RECORDED actor
+`requestedById` — F4; the stranded pairing cell named the transition but
+not the `countersign_rejection` request the `'returned'` bundle must carry
+— F2), one is a structural uniqueness the response fact was missing (one
+response per consultation — F3), and one closes the last content gap in the
+§C.2(i) membership seal (timing was serialized but the holder-orphaning
+predicate was not re-judged, so a direct write could still strand an open
+decision's holder — F1). All four fixed in one head; the table and probe
+rows updated in place.
+
+**The lifecycle advisory fired on this head**: "This unit has 5
+finding-bearing heads (limit 5), with findings up to critical. Consider
+splitting it into a smaller review unit." Recorded here verbatim, not
+argued with. The observation is advisory by design (it decides nothing and
+blocks nothing — `review-lifecycle.mjs` states why), and this round's
+declining, contract-shaped findings justify ONE more correction head. The
+pre-commitment, binding on the next round: **if the round-6 review of this
+head returns further findings, this unit is RESTRUCTURED, not corrected
+again** — split along the unit seam the plan itself defines (§A/4b, §B/4c,
+§C/4d each becoming its own docs-only review unit, the cleared sections
+carried verbatim), the PR #335 narrowing precedent applied at the same
+limit that forced it there.
+
 ## Deferral ledger
 
-Nothing is disputed: all thirty findings across four rounds were verified
-real and corrected; no refutations were posted on this PR. From the head
-after the third finding-bearing head onward, every head carries
+Nothing is disputed: all thirty-four findings across five rounds were
+verified real and corrected; no refutations were posted on this PR. From
+the head after the third finding-bearing head onward, every head carries
 `Review-Deferred-To-Probes: phase-6-task-4` beside `Review-Convergence:
 complete`: every finding is converted into named probe arms in the plan
 itself (the §C.3 table and the P15–P42 rows name the exact hostile shapes),
