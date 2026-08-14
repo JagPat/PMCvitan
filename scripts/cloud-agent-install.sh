@@ -14,5 +14,5 @@ pnpm --filter api build
 
 # Browser for Playwright e2e (demo + API acceptance).
 cd apps/web
-pnpm exec playwright install chromium
+pnpm exec playwright install --with-deps chromium
 cd ../..

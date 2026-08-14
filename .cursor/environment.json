@@ -5,7 +5,7 @@
   "terminals": [
     {
       "name": "api",
-      "command": "bash -lc 'set -a && source apps/api/.env && set +a && pnpm --filter api start'"
+      "command": "bash -lc 'PRE_DB=\"${DATABASE_URL:-}\"; set -a && source apps/api/.env && set +a; [ -n \"$PRE_DB\" ] && export DATABASE_URL=\"$PRE_DB\"; pnpm --filter api start'"
     },
     {
       "name": "web",
