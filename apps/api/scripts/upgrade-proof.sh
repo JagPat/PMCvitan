@@ -3301,6 +3301,10 @@ assert_rejects "4a seal 1 delete arm (round 3): DELETING the withdrawn register 
   "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-D1'" "permanent register entry"
 assert_rejects "4a seal 1 (round 4): MOVING the withdrawn register entry to another project — projectId joins the write-once set, so the record cannot vanish from its project's register" \
   "UPDATE \"Decision\" SET \"projectId\"='p2' WHERE \"id\"='UP4A-D1'" "projectId is frozen"
+assert_rejects "4a seal 3 (round 7): ONE statement withdrawing AND moving the decision — the entry transition carries the projectId freeze too" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='moved on entry', \"projectId\"='p2' WHERE \"id\"='UP4A-D2'" "projectId is frozen on entry"
+assert_rejects "4a seal 2 (round 7): ONE statement withdrawing AND adding approval evidence — coherence refuses approval signals on every withdrawn write" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='forged approval alongside', \"approvedById\"='USER-1', \"approver\"='Forged', \"approvedOption\"='A' WHERE \"id\"='UP4A-D2'" "cannot carry approval evidence"
 assert_rejects "4a seal 2: an UNATTRIBUTED withdrawal (no evidence at all)" \
   "UPDATE \"Decision\" SET \"status\"='withdrawn' WHERE \"id\"='UP4A-D2'" "must carry"
 assert_rejects "4a seal 2: a tabs-and-newlines-only reason (the full-whitespace btrim class)" \

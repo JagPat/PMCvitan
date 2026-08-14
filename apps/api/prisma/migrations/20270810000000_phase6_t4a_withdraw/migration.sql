@@ -271,6 +271,14 @@ BEGIN
     IF NEW."publishedAt" IS NULL THEN
       RAISE EXCEPTION 'phase6-t4a: a withdrawn decision must remain PUBLISHED — the register keeps the record (decision %)', NEW."id";
     END IF;
+    -- Round 7 (Codex): the entry guard judges the OLD row and the register; a single statement
+    -- could ADD the legacy approval columns while entering withdrawal, and the terminal freeze
+    -- covers only the withdrawal columns. Coherence judges every withdrawn NEW row, so the
+    -- contradiction is unrepresentable on entry AND on any later write to a withdrawn row —
+    -- the same signals the round-6 migration diagnostic quarantines in pre-existing data.
+    IF NEW."approvedById" IS NOT NULL OR NEW."approver" IS NOT NULL OR NEW."approvedOption" IS NOT NULL THEN
+      RAISE EXCEPTION 'phase6-t4a: a withdrawn decision cannot carry approval evidence (approvedById/approver/approvedOption) — the register would contradict the withdrawal (decision %)', NEW."id";
+    END IF;
   ELSE
     IF NEW."withdrawnAt" IS NOT NULL OR NEW."withdrawnById" IS NOT NULL
        OR NEW."withdrawnByName" IS NOT NULL OR NEW."withdrawReason" IS NOT NULL THEN
@@ -302,6 +310,13 @@ BEGIN
     RETURN NEW;
   END IF;
   IF NEW."status"::text = 'withdrawn' AND OLD."status"::text <> 'withdrawn' THEN
+    -- Round 7 (Codex): the round-4 freeze fires only when OLD.status is already withdrawn, so
+    -- ONE statement could withdraw AND move the row to a project where the withdrawer holds a
+    -- membership — the FK passes, the record vanishes from the original register. The entry
+    -- transition carries the freeze too.
+    IF NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN
+      RAISE EXCEPTION 'phase6-t4a: a withdrawal cannot move the decision — projectId is frozen on entry (decision %)', OLD."id";
+    END IF;
     IF OLD."status"::text <> 'pending' OR OLD."publishedAt" IS NULL THEN
       RAISE EXCEPTION 'phase6-t4a: only a published pending decision can be withdrawn (decision %, status %, published %)', OLD."id", OLD."status", (OLD."publishedAt" IS NOT NULL);
     END IF;

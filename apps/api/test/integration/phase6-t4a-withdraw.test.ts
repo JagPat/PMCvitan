@@ -938,6 +938,40 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     });
   });
 
+  // ── Round 7 — the two Codex findings on head fbe760d: ENTRY-transition twins of sealed arms ──
+  describe('round 7 (Codex): the entry transition carries the freezes too', () => {
+    it('R7-F1: one statement cannot withdraw AND move the decision — projectId is frozen on the entry transition, not only on already-withdrawn rows', async () => {
+      const id = await seed({ title: 'Withdraw-and-move' });
+      // the destination membership makes the FK pass — the coherence/FK arms alone would
+      // accept the moved row (the round-4 freeze fires only when OLD.status is withdrawn)
+      await t.prisma.membership.create({ data: { projectId: f.projectB.id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      try {
+        await expect(
+          t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='moved on entry', "projectId"=${f.projectB.id} WHERE "id"=${id}`,
+        ).rejects.toThrow(/projectId is frozen on entry/);
+        const after = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
+        expect(after.status).toBe('pending');
+        expect(after.projectId).toBe(f.projectA.id);
+      } finally {
+        await t.prisma.membership.deleteMany({ where: { projectId: f.projectB.id, userId: f.memberUser.id } });
+      }
+    });
+
+    it('R7-F2: one statement cannot withdraw AND add approval evidence — the coherence seal refuses approval signals on any withdrawn row', async () => {
+      const id = await seed({ title: 'Withdraw-with-approval' });
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='forged approval alongside', "approvedById"=${f.memberUser.id}, "approver"='Forged Client', "approvedOption"='A' WHERE "id"=${id}`,
+      ).rejects.toThrow(/cannot carry approval evidence/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+      // …and the arm also guards an ALREADY-withdrawn row (the terminal freeze covers only the
+      // withdrawal columns; approval columns are refused by coherence on every withdrawn write)
+      await svc.withdraw(f.projectA.id, id, { reason: 'legitimately withdrawn' }, pmc());
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "approvedById"=${f.memberUser.id} WHERE "id"=${id}`,
+      ).rejects.toThrow(/cannot carry approval evidence/);
+    });
+  });
+
   // ── P13 — the projection across a withdraw ──
   it('P13: decisions.inbox — live == projection == rebuild across a withdraw; the rebuild emits zero events', async () => {
     // a FRESH project: the ordered projection cursor consumes contiguously from stream position

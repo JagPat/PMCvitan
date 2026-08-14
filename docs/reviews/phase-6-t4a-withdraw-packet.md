@@ -255,3 +255,18 @@ answers them — a new head restarts the loop, mooting the stale timeout status.
 Round-6 gates: probe file 33/33; web `decision-withdraw` 10/10; `pnpm check` EXIT 0 (web
 762/762, API 791/791); `upgrade-proof.sh` PASSED — **561 assertions** incl. the R6-F1
 plant/abort stage; the full integration battery via the required `api` CI check.
+
+## Round 7 — the two Codex P2 findings on head `fbe760d`, one batched head
+
+The seventh finding-bearing head. Both findings are ENTRY-TRANSITION twins of arms already
+sealed on other paths — the same coat, one transition earlier: a freeze that guards an
+already-withdrawn row must also guard the single statement that CREATES the withdrawn state.
+
+| # | finding | fix |
+|---|---|---|
+| R7-F1 (P2) | the round-4 projectId freeze fires only when `OLD.status` is already `withdrawn` — ONE statement could flip a published pending row to `withdrawn` AND move `projectId` to a project where the withdrawer holds a membership; entry/coherence/FK all pass and the permanent record vanishes from the original register | the ENTRY arm (`phase6_t4a_withdraw_entry`) refuses `NEW.projectId IS DISTINCT FROM OLD.projectId` on the pending→withdrawn transition; probed with a real destination membership (RED at `fbe760d`: the move succeeded) and an upgrade-proof hostile rejection |
+| R7-F2 (P2) | the entry guard judges the OLD row and the register — a single statement could ADD `approvedById`/`approver`/`approvedOption` while entering withdrawal, and the terminal freeze covers only the withdrawal columns, leaving a terminal row carrying the approval contradiction the seals exist to make unrepresentable | the COHERENCE seal (`phase6_t4a_withdrawn_coherent`) refuses approval signals on EVERY withdrawn NEW row — entry and any later write to an already-withdrawn row alike (probed both ways; RED at `fbe760d`), mirroring in trigger form the same signals the round-6 diagnostic quarantines in pre-existing data; upgrade-proof hostile rejection added |
+
+Round-7 gates: probe file 35/35; `pnpm check` EXIT 0 (web 762/762, API 791/791);
+`upgrade-proof.sh` PASSED — **563 assertions** incl. both round-7 rejections; the full
+integration battery via the required `api` CI check.
