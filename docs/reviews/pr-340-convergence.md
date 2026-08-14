@@ -16,7 +16,8 @@ with no two-step.
 | `bb28589` | round-3 batch, carrying BOTH trailers (`Review-Convergence` + the deferral) | 9 (6 P1, 3 P2) | corrected on `a0f6d78`, which also stated the generative rule as the plan's §C.3 uniform seal contract |
 | `a0f6d78` | round-4 batch + the §C.3 contract | 4 (2 P1, 2 P2) | corrected on `6a53aae`; the lifecycle advisory fired and the restructure pre-commitment became binding |
 | `6a53aae` | round-5 batch | 8 (4 P1, 4 P2) | the SIXTH finding head — the pre-commitment is HONORED on `7d3c65a`: the unit NARROWS to the 4b plan (`2026-08-14-decision-workflow-4b.md`); the 4c/4d designs remain readable at `6a53aae` as the successors' starting material |
-| `7d3c65a` | the NARROWED 4b plan's first reviewed head | 4 (2 P1, 2 P2) | corrected on this head — the narrowed unit's first correction; if the NEXT round also returns findings, the run STOPS and the full history goes to the owner |
+| `7d3c65a` | the NARROWED 4b plan's first reviewed head | 4 (2 P1, 2 P2) | corrected on `2228e2d` — the narrowed unit's first correction, carrying the stop rule |
+| `2228e2d` | round-7 batch | 7 (3 P1, 4 P2) | **THE STOP RULE EXECUTED** — no further correction is pushed; this head records the stop and the run awaits OWNER direction |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -246,16 +247,56 @@ correction. If the next review round returns further findings, no further
 correction is pushed — the run stops and the full seven-round history goes
 to the owner for direction.
 
+## Round 8 — STOPPED, awaiting owner direction
+
+Round 8 returned seven findings on `2228e2d` (3 P1, 4 P2). All seven are
+verified REAL and are recorded here honestly, but per the stop rule NO
+correction is pushed:
+
+- (P1) `Membership.projectId` is absent from the identity-freeze
+  enumeration — a direct project-move of the last holder membership strands
+  a published decision with `status`/`role` untouched.
+- (P1) the `approved → change` reopen path (`requestChange`) does not
+  revalidate the holder — a member removed while the decision was
+  `approved` (legal: the guard scopes to OPEN decisions) leaves the
+  reopened decision with no valid decider and no 4b repair command.
+- (P1) `authorId` is absent from the published-record evidence freeze — a
+  permanent `recorded` row can be reattributed after publication.
+- (P2) the `active-member-count` primitive does not model membership-less
+  org-admin-as-PMC effective standing — a false 409 can block removing the
+  last PMC membership indefinitely.
+- (P2) the round-7 "edit the draft's holder" recovery has no shipped draft
+  UPDATE command/UI.
+- (P2) `DraftsScreen` readiness (`options.length >= 2`) makes a zero-option
+  record draft unpublishable through the UI.
+- (P2) the concurrency probes do not mandate deterministic barriers.
+
+**Why the stop is the right call**: eight review rounds (7, 8, 6, 9, 4, 8,
+4, 7 findings — 53 total, every one verified real, none disputed, none
+refuted) show a stream that does not converge, INCLUDING after the round-6
+narrowing shrank the surface by two-thirds. The findings are real instances
+of enumerable classes — column enumerations, product paths, lifecycle
+edges, probe rigor — and a plan written in prose can absorb such instances
+indefinitely: this is exactly the "a plan can always be specified further"
+pathology `docs/AUTONOMOUS_LOOP.md` §Bounded-plan-review names, now
+demonstrated to outlast both the deferral trailer and a structural
+narrowing. Continuing to correct would trade unbounded review cycles for
+diminishing prose precision while the stronger instrument — the
+implementation review stops, where every probe executes RED→GREEN against
+real code and the exact-head gate fails closed — sits unused. The decision
+of how to proceed belongs to the owner and is requested in the PR thread.
+
 ## Deferral ledger
 
-Nothing is disputed: all forty-six findings across seven rounds were
+Nothing is disputed: all fifty-three findings across eight rounds were
 verified real; thirty-eight were corrected in place (rounds 1–5 and 7),
-three were folded into the narrowed 4b plan, and five are carried as NAMED
+three were folded into the narrowed 4b plan, five are carried as NAMED
 PROBES (§D of the 4b plan: P25c, P25d, P38c/P40c, P31b/P42b, P31c/P34b,
 P33b — numbering reserved to the pre-declared 4c/4d plan units whose own
-exact-head reviews adjudicate them) — the same deferral discipline, applied
-at the unit seam. No refutations were posted on this PR. Every head past
-the third finding head carries `Review-Deferred-To-Probes: phase-6-task-4`
+exact-head reviews adjudicate them), and the seven round-8 findings are
+RECORDED above under the executed stop — held for owner direction, not
+dismissed. No refutations were posted on this PR. Every head past the
+third finding head carries `Review-Deferred-To-Probes: phase-6-task-4`
 beside `Review-Convergence: complete`; the probes are the executable
 deferral targets, and the exact-head gate still fails closed on any
 current-head finding.
