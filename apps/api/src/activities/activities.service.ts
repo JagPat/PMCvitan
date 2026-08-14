@@ -190,7 +190,12 @@ export class ActivitiesService {
       if (!p || p.projectId !== projectId) throw new BadRequestException('Unknown phase for this project');
     }
     if (decisionId) {
-      if (!(await this.decisions.existsInProject(projectId, decisionId))) throw new BadRequestException('Unknown decision for this project');
+      // round 9 (Codex): the picker rule enforced at the WRITE path — a stale/offline client
+      // or a direct API call must not pin new work to a terminal decision. `activity.manage`
+      // is a pmc authority, so the honest withdrawn reason is the right refusal.
+      const linkable = await this.decisions.linkableInProject(projectId, decisionId);
+      if (linkable === 'missing') throw new BadRequestException('Unknown decision for this project');
+      if (linkable === 'withdrawn') throw new BadRequestException('This decision was withdrawn — link a live decision or re-issue it');
     }
     // Location spine: resolveProjectNode throws for an unknown/cross-project node.
     await resolveProjectNode(this.prisma, projectId, nodeId);

@@ -289,3 +289,20 @@ already makes unrepresentable, and is answered with EVIDENCE rather than code.
 Round-8 gates: probe file 36/36; web `decision-withdraw` 11/11; `pnpm check` EXIT 0 (web
 763/763, API 791/791); `upgrade-proof.sh` PASSED — **566 assertions**; the full integration
 battery via the required `api` CI check.
+
+## Round 9 — the four Codex P2 findings on head `b99f792`, one batched head
+
+The ninth finding-bearing head — the late-landing review of record again (7 minutes after the
+two-timeout verdict). All four verified as REAL gaps against the existing seals before fixing.
+
+| # | finding | fix |
+|---|---|---|
+| R9-F1 (P2) | the frozen set omitted the QUESTION identity — `title`/`room`/`nodeId` stayed editable on a withdrawn row and in the withdrawing statement, attaching the frozen actor/reason to a different register entry | both arms freeze the identity: the terminal seal refuses any change on a withdrawn row, the entry seal refuses it in the withdrawing statement (no service path updates these columns post-create, so nothing legitimate breaks); probed three ways + two upgrade-proof rejections |
+| R9-F2 (P2) | the attribution FK proves the membership ROW, not its standing — a withdrawal could be hand-attributed to a `removed` membership, and the migration accepted pre-existing rows so attributed | the entry seal requires an ACTIVE membership (guarded on NOT NULL so evidence-less withdrawals keep coherence's own message; the ghost-actor forgery now gets the seal's answer BEFORE the FK, which stays the structural backstop — the P8 probe and the proof assert updated to the stronger refusal); a new unconditional diagnostic quarantines pre-existing withdrawn rows attributed to non-active memberships, stated honestly for repair re-runs; partial-apply stage 4 plants the ghost attribution (RED at `b99f792`: the migration ACCEPTED it → GREEN, abort by name) |
+| R9-F3 (P2) | the round-6 picker rule was client-only — `assertRefs` validated decision references with bare existence, so a stale client or direct API call could pin a NEW activity to a terminal decision | the decisions contract gains `decisions.linkableInProject` (`linkable`/`withdrawn`/`missing` — existence is not linkability), declared in the shared contract + manifest + contract-test pins; `assertRefs` refuses the withdrawn case with the honest pmc-facing reason (`activity.manage` is a pmc authority); probed both ways (withdrawn refused with no write; a live decision still links) |
+| R9-F4 (P2) | the entry/reverse seals counted only register revisions, but the round-6 diagnostic itself establishes legacy `approved`/`reapproved` DecisionEvents as approval evidence — a legacy-approved published-pending row could be withdrawn, and a legacy approval event could be recorded against a withdrawn row | the entry seal and the SERVICE belt count the legacy events exactly like the register; a new reverse trigger (`DecisionEvent_no_withdrawn_approval`, same FOR UPDATE serialization as the revision arm) refuses approval-event inserts against withdrawn rows while every other event type — the register's own `withdrawn` entry included — passes; probed at the service (409) and both DB directions + two upgrade-proof rejections |
+
+Round-9 gates: probe file 41/41; `pnpm check` EXIT 0 (web 763/763, API 791/791; the shared
+`DECISION_QUERIES` contract advanced with the manifest); `upgrade-proof.sh` PASSED — **572
+assertions** incl. the five new rejections and the fourth partial-apply stage; the full
+integration battery via the required `api` CI check.

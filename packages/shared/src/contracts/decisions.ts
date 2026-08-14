@@ -32,6 +32,10 @@ export const DECISION_QUERIES = [
   // Task 9 — the same decision slice served from the module's rebuildable projection (query-time authz)
   'decisions.projectionSlice',
   'decisions.existsInProject',
+  // Phase 6 task 4a round 9 (Codex) — existence is not LINKABILITY: a withdrawn decision is
+  // terminal, so a consumer validating a NEW reference asks this instead of bare existence
+  // (activities' assertRefs; the write-path twin of the web picker rule).
+  'decisions.linkableInProject',
   'decisions.resolveRef',
   'decisions.countByNodeIds',
   'decisions.countPending',

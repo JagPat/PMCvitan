@@ -146,6 +146,17 @@ export class DecisionsQueryService {
     return row !== null;
   }
 
+  /** Phase 6 task 4a round 9 (Codex): existence is not LINKABILITY — a WITHDRAWN decision is
+   *  terminal, so new work must never pin itself to it (the gate would wait forever on a
+   *  question nobody is being asked). The write-path twin of the web picker rule: the caller
+   *  distinguishes the two refusals because `activity.manage` is a pmc authority and the
+   *  honest withdrawn reason is the right answer there. */
+  async linkableInProject(projectId: string, decisionId: string): Promise<'linkable' | 'withdrawn' | 'missing'> {
+    const row = await this.prisma.decision.findFirst({ where: { id: decisionId, projectId }, select: { status: true } });
+    if (!row) return 'missing';
+    return (row.status as string) === 'withdrawn' ? 'withdrawn' : 'linkable';
+  }
+
   /**
    * Resolve an OPTIONAL decision reference the same way `resolveProjectRef('decision', …)` did before
    * extraction: null/undefined pass through; a present id must belong to THIS project or the write is

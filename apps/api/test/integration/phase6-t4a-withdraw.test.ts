@@ -310,7 +310,9 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       // a forged withdrawer naming no real member of THIS project (the FK)
       await expect(
         raw(`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"='ghost-user', "withdrawnByName"='Ghost', "withdrawReason"='forged' WHERE "id"=$1`, id),
-      ).rejects.toThrow(/foreign key|violates/i);
+        // round 9: the entry seal's ACTIVE-standing check now answers BEFORE the FK (a ghost
+        // has no membership row at all, active or otherwise); the FK stays the structural backstop
+      ).rejects.toThrow(/ACTIVE member|foreign key|violates/i);
       // withdrawal evidence on a NON-withdrawn row (the inverse arm)
       await expect(raw(`UPDATE "Decision" SET "withdrawReason"='orphan' WHERE "id"=$1`, id)).rejects.toThrow(/only on a withdrawn/);
       // and a decision cannot be BORN withdrawn
@@ -990,6 +992,81 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         t.prisma.$executeRaw`UPDATE "DecisionApprovalRevision" SET "decisionId" = ${withdrawn} WHERE "id" = 'r8-rev'`,
       ).rejects.toThrow(/append-only/);
       expect(await t.prisma.decisionApprovalRevision.count({ where: { decisionId: withdrawn } })).toBe(0);
+    });
+  });
+
+  // ── Round 9 — the four Codex findings on head b99f792 ──
+  describe('round 9 (Codex): identity freeze, active attribution, server-side linkability, legacy approval events', () => {
+    it('R9-F1: the withdrawn QUESTION identity is frozen — title/room/nodeId cannot change on a withdrawn row nor in the withdrawing statement', async () => {
+      const id = await seed({ title: 'Kitchen counter' });
+      await svc.withdraw(f.projectA.id, id, { reason: 'frozen identity' }, pmc());
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "title" = 'Rewritten question' WHERE "id" = ${id}`,
+      ).rejects.toThrow(/identity is frozen/);
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "room" = 'Elsewhere' WHERE "id" = ${id}`,
+      ).rejects.toThrow(/identity is frozen/);
+      // …and the withdrawing statement itself cannot rewrite the question either
+      const id2 = await seed({ title: 'Original question' });
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='retitled on entry', "title"='Different question' WHERE "id"=${id2}`,
+      ).rejects.toThrow(/identity is frozen/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: id2 } })).status).toBe('pending');
+    });
+
+    it('R9-F2: a withdrawal cannot be attributed to a REMOVED membership — existence is not standing', async () => {
+      const id = await seed({ title: 'Removed attribution' });
+      await t.prisma.user.upsert({
+        where: { id: 'it-t4a-u-removed' },
+        update: {},
+        create: { id: 'it-t4a-u-removed', projectId: f.projectA.id, name: 'Removed member', email: 'it-t4a-removed@example.com', role: 'pmc' },
+      });
+      await t.prisma.membership.create({ data: { projectId: f.projectA.id, userId: 'it-t4a-u-removed', role: 'pmc', status: 'removed' } });
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"='it-t4a-u-removed', "withdrawnByName"='Removed member', "withdrawReason"='ghost authority' WHERE "id"=${id}`,
+      ).rejects.toThrow(/ACTIVE member/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+    });
+
+    it('R9-F3: the SERVER refuses linking an activity to a withdrawn decision — the picker rule enforced at the write path; a live decision still links', async () => {
+      const withdrawn = await seed({ title: 'Terminal link target' });
+      await svc.withdraw(f.projectA.id, withdrawn, { reason: 'no new work links here' }, pmc());
+      const actId = `it-t4a-r9-${seq}`;
+      await t.prisma.activity.create({
+        data: { id: actId, projectId: f.projectA.id, name: 'Link probe', zone: 'GF', plannedStart: 0, plannedEnd: 1, gateMaterial: 'na', gateTeam: 'na' },
+      });
+      await expect(activities.update(f.projectA.id, actId, { decisionId: withdrawn }, pmc())).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringContaining('withdrawn'),
+      });
+      expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: actId } })).decisionId).toBeNull();
+      const live = await seed({ title: 'Live link target' });
+      await activities.update(f.projectA.id, actId, { decisionId: live }, pmc());
+      expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: actId } })).decisionId).toBe(live);
+    });
+
+    it('R9-F4a: a published pending decision carrying a LEGACY approval EVENT (empty register) cannot be withdrawn — the service belt AND the entry seal', async () => {
+      const id = await seed({ title: 'Legacy approved' });
+      await t.prisma.decisionEvent.create({ data: { decisionId: id, type: 'approved', actor: 'Legacy Client' } });
+      await expect(svc.withdraw(f.projectA.id, id, { reason: 'over legacy approval' }, pmc())).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining('approval evidence'),
+      });
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='hostile over legacy approval' WHERE "id"=${id}`,
+      ).rejects.toThrow(/legacy approval event/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+    });
+
+    it('R9-F4b: a legacy approval EVENT cannot be recorded against a withdrawn decision — the reverse seal covers DecisionEvent like the register', async () => {
+      const id = await seed({ title: 'Withdrawn then legacy-approved' });
+      await svc.withdraw(f.projectA.id, id, { reason: 'sealed against legacy events' }, pmc());
+      await expect(
+        t.prisma.$executeRaw`INSERT INTO "DecisionEvent"("id","decisionId","type","actor") VALUES ('r9-ev', ${id}, 'approved', 'Hostile')`,
+      ).rejects.toThrow(/withdrawn/);
+      // precision: the register's own non-approval events (the 'withdrawn' entry the command
+      // wrote) exist and future non-approval inserts stay legal
+      expect(await t.prisma.decisionEvent.count({ where: { decisionId: id, type: 'withdrawn' } })).toBe(1);
     });
   });
 

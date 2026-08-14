@@ -77,6 +77,21 @@ BEGIN
   IF bad > 0 THEN
     RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) carry LEGACY approval signals (approval columns or approved/reapproved events, with or without register rows) — a decision with approval evidence can never be withdrawn (sample: %). Resolve by hand, then redeploy.', bad, sample;
   END IF;
+  -- Round 9 (Codex): existence is not standing — a pre-existing withdrawn row attributed to a
+  -- membership that is not ACTIVE is quarantined (the FK proves the row exists; the command
+  -- requires the standing at withdrawal time; a hand-minted attribution to a removed member is
+  -- a false permanent record). Stated honestly for re-runs: after 4a is live, a LEGITIMATE
+  -- withdrawal whose member was since removed would also be flagged on a repair re-run — the
+  -- named remedy (restore the membership or resolve the row) covers both readings, and the
+  -- migration only re-runs inside operator repair flows.
+  SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
+    SELECT d."id" FROM "Decision" d
+    JOIN "Membership" m ON m."projectId" = d."projectId" AND m."userId" = d."withdrawnById"
+    WHERE d."status"::text = 'withdrawn' AND m."status" <> 'active'
+    LIMIT 20) x;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) are attributed to a NON-ACTIVE membership (sample: %). Restore the membership or resolve the row by hand, then redeploy.', bad, sample;
+  END IF;
   -- Round 2 (Codex F1): the INVERSE arm of coherence, back-checked. The trigger below refuses
   -- orphan evidence only on FUTURE writes; a partial/manual apply that already added the
   -- columns can leave a non-withdrawn row carrying withdrawal claims, which the withdrawn-only
@@ -262,6 +277,13 @@ BEGIN
     IF NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN
       RAISE EXCEPTION 'phase6-t4a: a withdrawn decision stays on its project''s register — projectId is frozen (decision %)', OLD."id";
     END IF;
+    -- Round 9 (Codex): the QUESTION identity is part of the frozen record — retitling or
+    -- relocating a withdrawn row attaches the frozen actor/reason to a DIFFERENT register
+    -- entry ("Kitchen counter" was withdrawn; the row now says something else was).
+    IF NEW."title" IS DISTINCT FROM OLD."title" OR NEW."room" IS DISTINCT FROM OLD."room"
+       OR NEW."nodeId" IS DISTINCT FROM OLD."nodeId" THEN
+      RAISE EXCEPTION 'phase6-t4a: a withdrawn decision''s question identity is frozen — title/room/nodeId cannot change (decision %)', OLD."id";
+    END IF;
   END IF;
   RETURN NEW;
 END $fn$ LANGUAGE plpgsql;
@@ -351,12 +373,38 @@ BEGIN
     IF NEW."projectId" IS DISTINCT FROM OLD."projectId" THEN
       RAISE EXCEPTION 'phase6-t4a: a withdrawal cannot move the decision — projectId is frozen on entry (decision %)', OLD."id";
     END IF;
+    -- Round 9 (Codex): the withdrawing statement cannot rewrite the QUESTION either — the
+    -- entry-transition twin of the terminal identity freeze (the command's CAS only ever
+    -- writes the status and the evidence columns).
+    IF NEW."title" IS DISTINCT FROM OLD."title" OR NEW."room" IS DISTINCT FROM OLD."room"
+       OR NEW."nodeId" IS DISTINCT FROM OLD."nodeId" THEN
+      RAISE EXCEPTION 'phase6-t4a: a withdrawal cannot rewrite the question — the identity is frozen on entry (decision %)', OLD."id";
+    END IF;
+    -- Round 9 (Codex): existence is not standing. The attribution FK proves the membership
+    -- ROW; the command requires it ACTIVE (the locked participant check). Guarded on NOT NULL
+    -- so an evidence-less withdrawal still falls through to coherence's own message.
+    IF NEW."withdrawnById" IS NOT NULL THEN
+      PERFORM 1 FROM "Membership" m
+       WHERE m."projectId" = NEW."projectId" AND m."userId" = NEW."withdrawnById" AND m."status" = 'active';
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'phase6-t4a: a withdrawal must be attributed to an ACTIVE member of the project (decision %, member %)', NEW."id", NEW."withdrawnById";
+      END IF;
+    END IF;
     IF OLD."status"::text <> 'pending' OR OLD."publishedAt" IS NULL THEN
       RAISE EXCEPTION 'phase6-t4a: only a published pending decision can be withdrawn (decision %, status %, published %)', OLD."id", OLD."status", (OLD."publishedAt" IS NOT NULL);
     END IF;
     SELECT count(*) INTO approvals FROM "DecisionApprovalRevision" WHERE "decisionId" = OLD."id";
     IF approvals > 0 THEN
       RAISE EXCEPTION 'phase6-t4a: decision % carries % approval revision(s) — it can never be withdrawn', OLD."id", approvals;
+    END IF;
+    -- Round 9 (Codex): the round-6 diagnostic establishes approved/reapproved DecisionEvents
+    -- as approval evidence for the PR-#192 legacy class — the ENTRY seal must count them
+    -- exactly as it counts the register, or a legacy-approved published-pending row could be
+    -- withdrawn by direct SQL.
+    SELECT count(*) INTO approvals FROM "DecisionEvent" e
+     WHERE e."decisionId" = OLD."id" AND e."type" IN ('approved', 'reapproved');
+    IF approvals > 0 THEN
+      RAISE EXCEPTION 'phase6-t4a: decision % carries % legacy approval event(s) — it can never be withdrawn', OLD."id", approvals;
     END IF;
   END IF;
   RETURN NEW;
@@ -386,3 +434,24 @@ DROP TRIGGER IF EXISTS "DecisionApprovalRevision_no_withdrawn" ON "DecisionAppro
 CREATE TRIGGER "DecisionApprovalRevision_no_withdrawn"
   BEFORE INSERT ON "DecisionApprovalRevision"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4a_no_approval_after_withdraw();
+
+-- ── seal 3 (reverse arm, round 9): no LEGACY approval EVENT against a withdrawn decision ─────
+-- The round-6 diagnostic establishes approved/reapproved DecisionEvents as approval evidence
+-- for the PR-#192 legacy class; the reverse seal must reach them exactly as it reaches the
+-- register. Same FOR UPDATE serialization as the revision arm; every other event type — the
+-- register's own 'withdrawn' entry included — passes untouched.
+CREATE OR REPLACE FUNCTION phase6_t4a_no_approval_event_after_withdraw() RETURNS trigger AS $fn$
+DECLARE dstatus TEXT;
+BEGIN
+  IF NEW."type" IN ('approved', 'reapproved') THEN
+    SELECT d."status"::text INTO dstatus FROM "Decision" d WHERE d."id" = NEW."decisionId" FOR UPDATE;
+    IF dstatus = 'withdrawn' THEN
+      RAISE EXCEPTION 'phase6-t4a: decision % is withdrawn — an approval event can no longer be recorded', NEW."decisionId";
+    END IF;
+  END IF;
+  RETURN NEW;
+END $fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS "DecisionEvent_no_withdrawn_approval" ON "DecisionEvent";
+CREATE TRIGGER "DecisionEvent_no_withdrawn_approval"
+  BEFORE INSERT ON "DecisionEvent"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4a_no_approval_event_after_withdraw();

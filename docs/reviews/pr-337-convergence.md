@@ -18,7 +18,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `2e15eba` | round-5 correction — the review-lifecycle limit (5 finding heads) reached; Codex attempt 2 timed out at the orchestrator but its review LANDED 43s later: **4 P2 findings**, treated as the review of record | the diagnostics accepted a pre-withdrawn row whose approval evidence is the LEGACY class (empty register, approved events/columns); the mixed-version leased-sender window; the Site Map (and same-class screens) filtering `s.decisions` outside the shared audience rule; the seed's trigger bypass not failure-safe |
 | `fbe760d` | round-6 correction (the STAYS-WHOLE rationale recorded); Codex attempt on it: **2 P2 findings** — entry-transition twins of already-sealed arms | the projectId freeze fired only on already-withdrawn rows (one statement could withdraw AND move); approval columns could be ADDED in the statement that enters withdrawal (the terminal freeze covers only the withdrawal columns) |
 | `f1700af` | round-7 correction; Codex's review again LANDED after the two-timeout verdict (7.5 min late — the established pattern) with **4 P2 findings**, treated as the review of record | the demo store's local withdraw left the local pending notice; the migration left pre-withdrawn rows' projections servable-stale and their notices unretired; and a claimed revision re-point that the Phase-3 append-only register seal ALREADY makes unrepresentable — REFUTED WITH EVIDENCE (probe + upgrade-proof rejection + thread reply) |
-| (this head) | the round-8 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit, rounds 4–8 have touched no command or runtime-arm surface, and round 8 is the first round to contain a REFUTED finding — the enumeration is meeting seals that already exist | — |
+| `b99f792` | round-8 correction; the late-landing review of record again (7 min): **4 P2 findings**, all verified REAL against existing seals before fixing | the QUESTION identity (`title`/`room`/`nodeId`) outside the frozen set; attribution standing (the FK proves the row, not ACTIVE); the picker rule client-only (`assertRefs` accepted withdrawn references); the entry/reverse seals blind to the legacy approval EVENTS the round-6 diagnostic itself established as evidence |
+| (this head) | the round-9 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–9 have touched no command or runtime-arm surface — round 9 completes the freeze/standing/linkability/legacy-parity arms of rules stated in earlier rounds | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -86,7 +87,15 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   append-only register seal refuses every UPDATE before the reverse arm is consulted — proven
   by a probe executing the exact attack, an upgrade-proof rejection, and answered on the
   thread. An enumeration that has begun meeting pre-existing seals is measuring its own
-  completeness. The
+  completeness.
+- Round 9 completed four arms of rules earlier rounds stated: the frozen record includes the
+  QUESTION itself (R9-F1 — the identity twin of rounds 4/7's projectId freezes); standing, not
+  existence, is what attribution means (R9-F2 — the DB twin of the round-1 locked participant
+  check, with the ghost-actor forgery now answered by the seal before the FK); linkability, not
+  existence, is what a NEW reference asks (R9-F3 — the server twin of round 6's picker rule,
+  via the owned `decisions.linkableInProject` contract); and the legacy approval EVENTS the
+  round-6 diagnostic established as evidence are counted by the entry, belt, and reverse seals
+  exactly like the register (R9-F4). The
   convergence trajectory: 5 (runtime lifecycle) → 4 (mixed) → 3 (access paths/boundary) → 4
   (deployment eras) → 2 (harness completions) → 4 (a diagnostic, a documented boundary, a
   selector class, a harness hardening) → 2 (entry-transition twins of sealed arms) — since
@@ -136,7 +145,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all eight rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
+Every finding from all nine rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

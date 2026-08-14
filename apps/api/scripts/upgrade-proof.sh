@@ -475,6 +475,31 @@ SQL
   fi
   echo "ok      4a R6-F1: abort names the legacy approval signals (UP4A-LEGACYAPPR)"
   $PSQL -q -c "DELETE FROM \"DecisionEvent\" WHERE \"id\"='UP4A-LEGACYAPPR-EV'; DELETE FROM \"Decision\" WHERE \"id\"='UP4A-LEGACYAPPR';" || { echo "4a R6-F1 repair failed"; exit 1; }
+
+  # ── round 9 (Codex): a withdrawn row attributed to a NON-ACTIVE membership. The FK the
+  # migration installs proves the membership ROW exists; the command requires it ACTIVE at
+  # withdrawal time. A partial fork can hand-mint the false permanent attribution, so the
+  # diagnostic quarantines it — the plant passes every OTHER diagnostic (full evidence,
+  # publishedAt, no approval signals) so the abort proven here is BY the standing diagnostic.
+  echo "=== Phase 6 4a (R9-F2): planting a withdrawn row attributed to a REMOVED membership ==="
+  $PSQL -q <<'SQL' || { echo "4a R9-F2 plant failed"; exit 1; }
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES ('UP4A-M2','p1','USER-2','pmc','removed') ON CONFLICT DO NOTHING;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt","withdrawnAt","withdrawnById","withdrawnByName","withdrawReason")
+VALUES ('UP4A-NONACT','p1','Ghost authority','Hall','pending','stone',now(),now(),'USER-2','Removed member','attributed to a removed membership');
+UPDATE "Decision" SET "status"='withdrawn' WHERE "id"='UP4A-NONACT';
+SQL
+  echo "=== Phase 6 4a (R9-F2): the migration must ABORT on the non-active attribution ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4a R9-F2: the migration ACCEPTED a withdrawn row attributed to a removed membership"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'NON-ACTIVE membership'; then
+    echo "FAILED  4a R9-F2: aborted, but not by the standing diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  echo "ok      4a R9-F2: abort names the non-active attribution (UP4A-NONACT)"
+  $PSQL -q -c "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-NONACT';" || { echo "4a R9-F2 repair failed"; exit 1; }
 }
 
 plant_pre_phase6_firms() {
@@ -3309,8 +3334,8 @@ assert_rejects "4a seal 2: an UNATTRIBUTED withdrawal (no evidence at all)" \
   "UPDATE \"Decision\" SET \"status\"='withdrawn' WHERE \"id\"='UP4A-D2'" "must carry"
 assert_rejects "4a seal 2: a tabs-and-newlines-only reason (the full-whitespace btrim class)" \
   "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"=E'\t\n \x0B' WHERE \"id\"='UP4A-D2'" "non-blank"
-assert_rejects "4a seal 2: a FORGED withdrawer naming no member of the project (the FK)" \
-  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='GHOST', \"withdrawnByName\"='Ghost', \"withdrawReason\"='forged' WHERE \"id\"='UP4A-D2'" "foreign key"
+assert_rejects "4a seal 2: a FORGED withdrawer naming no member of the project — the round-9 ACTIVE-standing seal answers first; the FK remains the structural backstop" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='GHOST', \"withdrawnByName\"='Ghost', \"withdrawReason\"='forged' WHERE \"id\"='UP4A-D2'" "ACTIVE member"
 assert_rejects "4a seal 2: withdrawal evidence on a NON-withdrawn row (the inverse arm)" \
   "UPDATE \"Decision\" SET \"withdrawReason\"='orphan' WHERE \"id\"='UP4A-D2'" "only on a withdrawn"
 assert_rejects "4a seal 3 forward: the LEGACY approved-with-EMPTY-register class (DL-2, the PR-#192 backfill shape) — source state, not register emptiness, is the guard" \
@@ -3319,6 +3344,22 @@ assert_rejects "4a seal 3 forward: a decision cannot be BORN withdrawn" \
   "INSERT INTO \"Decision\" (\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"withdrawnAt\",\"withdrawnById\",\"withdrawnByName\",\"withdrawReason\") VALUES ('UP4A-D9','p1','Born','Hall','withdrawn','stone',now(),'USER-1','X','r')" "created withdrawn"
 assert_rejects "4a seal 3 reverse: an approval revision recorded against the withdrawn decision" \
   "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\") VALUES('UP4A-R1','p1','UP4A-D1',1,'a',now(),'USER-1')" "withdrawn"
+# ── round 9 (Codex): identity freeze, active attribution, legacy approval events ──
+assert_rejects "4a seal 1 (round 9): retitling the WITHDRAWN question — the frozen actor/reason must never attach to a different register entry" \
+  "UPDATE \"Decision\" SET \"title\"='Rewritten question' WHERE \"id\"='UP4A-D1'" "identity is frozen"
+assert_rejects "4a seal 3 (round 9): ONE statement withdrawing AND rewriting the question — the entry transition freezes the identity too" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='retitled on entry', \"title\"='Different question' WHERE \"id\"='UP4A-D2'" "identity is frozen"
+# a membership ROW that is not ACTIVE — existence is not standing
+$PSQL -q -c "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4A-M2','p1','USER-2','pmc','removed') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-9 membership plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 (round 9): attributing a withdrawal to a REMOVED membership — the FK proves the row, the seal requires the standing" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-2', \"withdrawnByName\"='Removed member', \"withdrawReason\"='ghost authority' WHERE \"id\"='UP4A-D2'" "ACTIVE member"
+# the PR-#192 legacy class: an approval whose ONLY trace is a DecisionEvent (empty register)
+$PSQL -q -c "INSERT INTO \"DecisionEvent\"(\"id\",\"decisionId\",\"type\",\"actor\") VALUES ('UP4A-LEV','UP4A-D2','approved','Legacy Client') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-9 legacy-event plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 (round 9): withdrawing a decision carrying a LEGACY approval EVENT — the entry seal counts DecisionEvents exactly as it counts the register" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hostile over legacy approval' WHERE \"id\"='UP4A-D2'" "legacy approval event"
+assert_rejects "4a seal 3 reverse (round 9): a legacy approval EVENT recorded against the withdrawn decision — the reverse seal covers DecisionEvent like the register" \
+  "INSERT INTO \"DecisionEvent\"(\"id\",\"decisionId\",\"type\",\"actor\") VALUES ('UP4A-EV-HOSTILE','UP4A-D1','approved','Hostile')" "approval event can no longer be recorded"
+
 # round 8 (Codex, REFUTED WITH EVIDENCE): the described re-point — mint a revision against a
 # non-withdrawn dummy, then UPDATE its identity onto the withdrawn decision so the INSERT-time
 # reverse arm never runs — fails one seal earlier: the Phase-3 append-only register refuses

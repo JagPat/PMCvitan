@@ -472,6 +472,11 @@ export class DecisionsService {
         // 409 is an answer and a trigger error is a crash — refuse here first.
         const approvals = await tx.decisionApprovalRevision.count({ where: { decisionId } });
         if (approvals > 0) throw new ConflictException('This decision carries approval evidence — it can never be withdrawn');
+        // round 9 (Codex): the PR-#192 legacy class holds approvals whose ONLY trace is a
+        // DecisionEvent (an empty register) — the same evidence the entry seal and the
+        // migration diagnostic count. The belt answers with a 409 before the trigger crashes.
+        const legacyApprovals = await tx.decisionEvent.count({ where: { decisionId, type: { in: ['approved', 'reapproved'] } } });
+        if (legacyApprovals > 0) throw new ConflictException('This decision carries approval evidence — it can never be withdrawn');
         // CAS: the transition commits only from the published-pending state the eligibility
         // checks saw — a concurrent approve/withdraw makes count 0 and this caller loses.
         const now = new Date();
