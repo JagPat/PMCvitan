@@ -14,6 +14,9 @@ const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'decision.approve': ['client', 'pmc'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
+  // that is the practice's call alone.
+  'decision.withdraw': ['pmc'],
   'requirement.manage': ['pmc'],
   'requirement.read': ['pmc', 'engineer'],
   'substitution.manage': ['pmc'],

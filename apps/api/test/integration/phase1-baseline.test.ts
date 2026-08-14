@@ -32,7 +32,9 @@ describe('phase 1 baseline characterization (integration)', () => {
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await t.prisma.$transaction([
       t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId } } }),
       t.prisma.inspection.deleteMany({ where: { projectId } }),

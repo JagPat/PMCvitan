@@ -175,6 +175,19 @@ export class DailyLogService {
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 
+  /** Round 13 (Codex): the shared refusal for an unlinkable material decision. Audience-shaped:
+   *  a withdrawn decision is pmc-only (`decisionVisibleToViewer`), so to every other role it
+   *  does not exist and the refusal must not reveal it — the pmc gets the honest terminal
+   *  reason (the activities wording), everyone else the same 'Unknown decision' a nonexistent
+   *  id produces. A 'linkable' verdict passes. */
+  private refuseUnlinkableDecision(linkable: 'linkable' | 'withdrawn' | 'missing', user: AuthUser): void {
+    if (linkable === 'linkable') return;
+    if (linkable === 'withdrawn' && user.role === 'pmc') {
+      throw new BadRequestException('This decision was withdrawn — link a live decision or re-issue it');
+    }
+    throw new BadRequestException('Unknown decision for this project');
+  }
+
   /** Engineer records a material delivery on the open log (optionally linked to the
    *  decision that approved it, which is what mismatch-flagging keys off).
    *
@@ -192,7 +205,11 @@ export class DailyLogService {
     if (!log) throw new NotFoundException('No daily log for this project — start one first');
     if (log.submitted) throw new ConflictException('This log is already submitted — start a new day first');
     if (input.decisionId) {
-      if (!(await this.decisions.existsInProject(projectId, input.decisionId))) throw new BadRequestException('Unknown decision for this project');
+      // Round 13 (Codex): the picker rule enforced at THIS write path too — a withdrawn
+      // decision is terminal and must not gain a new matched delivery (the activities
+      // precedent, rounds 9/10). This pre-check is fast-fail UX; the in-tx recheck below is
+      // the authority.
+      this.refuseUnlinkableDecision(await this.decisions.linkableInProject(projectId, input.decisionId), user);
     }
     // Location spine: validate the place this material was delivered to.
     const nodeId = await resolveProjectNode(this.prisma, projectId, input.nodeId);
@@ -201,6 +218,13 @@ export class DailyLogService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'daily-log.addMaterial', idempotencyKey, requestHash,
       run: async (tx) => {
+        if (input.decisionId) {
+          // Round 13 (Codex): the AUTHORITY — re-checked inside the command transaction under
+          // the decisions-owned row share lock (the activities round-10 precedent), so a
+          // withdraw committing between the pre-check and this write can never record a new
+          // matched delivery against the terminal decision.
+          this.refuseUnlinkableDecision(await this.decisions.linkableInProject(projectId, input.decisionId, tx), user);
+        }
         const mat = await tx.siteMaterial.create({
           data: { projectId, dailyLogId: log.id, name: input.name, qty: input.qty, zone: input.zone, decisionId: input.decisionId ?? null, swatch: input.swatch, matched: true, nodeId, order },
         });

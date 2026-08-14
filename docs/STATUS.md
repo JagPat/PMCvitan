@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 27c484b
-open_pr: none
+reviewed_merge: 4664da3
+open_pr: 337
 next_task: none
 blocking_directive: none
 updated: 2026-08-13
@@ -49,10 +49,13 @@ architect once one exists) keep their SCOPE in the plan's §B and receive their
 design in a dedicated "4b–4d plan" unit bound by the packet's obligations and
 the named probes P15–P42.
 
-**The execution order inside task 4:** 4a implementation (NEXT — branch
-`claude/phase6-task4a-withdraw`, plan §A, probes P1–P14 staged RED first) →
-the 4b–4d plan unit (docs-only, its own exact-head review) → 4b → 4c → 4d,
-one unit per PR, the folded-STATUS convention on each work PR.
+**The execution order inside task 4:** 4a implementation (**IN REVIEW — PR
+#337**, branch `claude/phase6-task4a-withdraw` from `4664da3`; plan §A
+implemented verbatim, probes P1–P14 staged RED at the in-branch shape commit
+per the nested-locations §D discipline, packet
+`docs/reviews/phase-6-t4a-withdraw-packet.md`) → the 4b–4d plan unit
+(docs-only, its own exact-head review) → 4b → 4c → 4d, one unit per PR, the
+folded-STATUS convention on each work PR.
 
 The REMAINING gated successors, as data:
 

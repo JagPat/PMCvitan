@@ -172,6 +172,11 @@ const SECTION_A_COMMANDS: Array<{ label: string; file: string; method: string }>
   // Phase 5 Task 2 (§B) — a budget revision MOVES HEADROOM and raises/clears the exception from
   // commitment facts, so it serializes with the PO lifecycle exactly as the attribution writes do.
   { label: 'commercial.budget.set', file: 'commercial/commercial-budget.service.ts', method: 'setBudget' },
+  // Phase 6 task 4a — withdraw moves decision status (the activity gate's input), so it takes the
+  // SAME project readiness lock as approve/requestChange/withdrawChange: by CLASS (a command that
+  // mutates a fact the readiness read consumes), even though `pending` and `withdrawn` both read
+  // `wait` today.
+  { label: 'decisions.withdraw', file: 'decisions/decisions.service.ts', method: 'withdraw' },
 ];
 
 /** The body of `async <method>(` up to the next same-indent `async ` (or end of file). */
@@ -202,6 +207,6 @@ describe('readiness-lock §A COMMAND-LEVEL coverage (Phase 3 Task 6)', () => {
     // Phase 4 Task 4 added the three capacity-commitment lifecycle commands — forecast cover).
     // Adding a §A command without listing it here is a visible, reviewed change.
     // Phase 5 Task 1 adds the two commercial write paths (activation + re-attribution).
-    expect(SECTION_A_COMMANDS).toHaveLength(37);
+    expect(SECTION_A_COMMANDS).toHaveLength(38);
   });
 });

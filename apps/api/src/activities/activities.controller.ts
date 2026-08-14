@@ -20,8 +20,10 @@ export class ActivitiesController {
    *  baked FRESH from the foreign query contracts on both paths, so a projection read is never stale. */
   @Get()
   @RolesFor('project.read')
-  read(@Param('projectId') projectId: string) {
-    return this.activitiesQuery.moduleActivities(projectId);
+  read(@Param('projectId') projectId: string, @CurrentUser() user: AuthUser) {
+    // Phase 6 task 4a round 1 (Codex F5): only the pmc sees the honest withdrawn-decision
+    // gate reason; the verdict is identical for every role.
+    return this.activitiesQuery.moduleActivities(projectId, user.role === 'pmc');
   }
 
   /** Phase 3 Task 7 — the pilot MATERIAL-READINESS view (per-requirement coverage + shortage

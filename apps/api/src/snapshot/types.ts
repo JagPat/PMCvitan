@@ -48,7 +48,7 @@ export interface DecisionDto {
   room: string;
   /** the location-tree node this decision attaches to (null/absent = ungrouped, legacy `room`) */
   nodeId?: string;
-  status: 'pending' | 'approved' | 'change';
+  status: 'pending' | 'approved' | 'change' | 'withdrawn';
   ageDays?: number;
   photoSwatch: string;
   options: OptionDto[];
@@ -63,6 +63,12 @@ export interface DecisionDto {
   changeRequest?: { reason: string; costImpact: number; timeImpactDays: number; requestedById?: string };
   /** a private, unpublished DRAFT — only ever present in its own author's snapshot */
   draft?: boolean;
+  /** withdrawal evidence while status='withdrawn' (Phase 6 task 4a) — pmc audience only:
+   *  the visibility rule removes the whole row for every other viewer */
+  withdrawnAt?: string;
+  /** the withdrawer's display identity, frozen at withdraw time (the `approver` precedent) */
+  withdrawnBy?: string;
+  withdrawReason?: string;
 }
 
 /** One derived gate value with its provenance (Phase 1 Task 6). */

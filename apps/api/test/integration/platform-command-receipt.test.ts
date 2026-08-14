@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import type { AuthUser } from '../../src/common/auth';
 
@@ -44,7 +44,7 @@ describe('Platform — the command receipt protocol is database-enforced (live P
     // creates neither today, and a future probe that does should not silently strand rows.
     const inProject = { decision: { projectId: f.projectA.id } };
     await t?.prisma.decisionOption.deleteMany({ where: inProject });
-    await t?.prisma.decisionEvent.deleteMany({ where: inProject });
+    if (t) await wipeDecisionEvents(t.prisma, inProject);
     await t?.prisma.changeRequest.deleteMany({ where: inProject });
     await t?.prisma.decisionApprovalRevision.deleteMany({ where: { projectId: f.projectA.id } });
     await t?.prisma.decision.deleteMany({ where: { projectId: f.projectA.id } });

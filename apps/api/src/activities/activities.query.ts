@@ -122,7 +122,7 @@ export class ActivitiesQueryService {
   /** Fetch the FOREIGN readiness inputs fresh — through the owning modules' query contracts. The
    *  snapshot passes its already-fetched decision status map to avoid a duplicate read; the module GET
    *  fetches its own. */
-  private async bakeInputs(projectId: string, decisionStatuses?: ReadonlyMap<string, string>): Promise<ActivitiesBakeInputs> {
+  private async bakeInputs(projectId: string, decisionStatuses?: ReadonlyMap<string, string>, withdrawnReasonVisible = false): Promise<ActivitiesBakeInputs> {
     const [statuses, inspections, drawings, activeMembers, materialCoverage, labourCoverage, labourMismatchBlocked] = await Promise.all([
       decisionStatuses ?? this.decisionsQuery.statusMap(projectId),
       this.inspectionsQuery.readinessSlice(projectId),
@@ -134,6 +134,7 @@ export class ActivitiesQueryService {
     ]);
     return {
       decisionStatuses: statuses,
+      withdrawnReasonVisible,
       inspections,
       drawings,
       activeMemberIds: activeMembers.map((m) => m.userId),
@@ -150,10 +151,10 @@ export class ActivitiesQueryService {
    * reuse the id→status map it already fetched from the decisions query (identical data — the bake result
    * cannot differ).
    */
-  async snapshotSlice(projectId: string, opts: { decisionStatuses?: ReadonlyMap<string, string> } = {}): Promise<ActivitiesSlices> {
+  async snapshotSlice(projectId: string, opts: { decisionStatuses?: ReadonlyMap<string, string>; withdrawnReasonVisible?: boolean } = {}): Promise<ActivitiesSlices> {
     const [base, inputs] = await Promise.all([
       computeActivitiesBase(this.prisma, projectId),
-      this.bakeInputs(projectId, opts.decisionStatuses),
+      this.bakeInputs(projectId, opts.decisionStatuses, opts.withdrawnReasonVisible ?? false),
     ]);
     return bakeActivities(base, inputs);
   }
@@ -170,7 +171,7 @@ export class ActivitiesQueryService {
    * no-op-bootstrapped (no row), lagging or blocked generation returns `generation: null` and the caller
    * falls back to the canonical live slice.
    */
-  async projectionSlice(projectId: string): Promise<{ slices: ActivitiesSlices; generation: number | null }> {
+  async projectionSlice(projectId: string, withdrawnReasonVisible = false): Promise<{ slices: ActivitiesSlices; generation: number | null }> {
     const gen = await readServableGeneration(this.prisma, ACTIVITIES_PROJECTION, projectId);
     const empty: ActivitiesSlices = { activities: [], phases: [] };
     if (!gen) return { slices: empty, generation: null };
@@ -182,7 +183,7 @@ export class ActivitiesQueryService {
     // A caught-up generation with NO row yet is not authoritative-empty data — fall back to canonical.
     if (!row) return { slices: empty, generation: null };
     const base = row.dto as unknown as ActivitiesBase;
-    return { slices: bakeActivities(base, await this.bakeInputs(projectId)), generation: gen.generation };
+    return { slices: bakeActivities(base, await this.bakeInputs(projectId, undefined, withdrawnReasonVisible)), generation: gen.generation };
   }
 
   /**
@@ -192,12 +193,12 @@ export class ActivitiesQueryService {
    * rebuilt) — additive and correct, never empty during warm-up. `source` tells the client which path
    * served the base (the slices are byte-identical either way; readiness is fresh on both paths).
    */
-  async moduleActivities(projectId: string): Promise<ActivitiesModuleResult> {
-    const proj = await this.projectionSlice(projectId);
+  async moduleActivities(projectId: string, withdrawnReasonVisible = false): Promise<ActivitiesModuleResult> {
+    const proj = await this.projectionSlice(projectId, withdrawnReasonVisible);
     if (proj.generation !== null) {
       return { ...proj.slices, source: 'projection', generation: proj.generation };
     }
-    const live = await this.snapshotSlice(projectId);
+    const live = await this.snapshotSlice(projectId, { withdrawnReasonVisible });
     return { ...live, source: 'live', generation: null };
   }
 

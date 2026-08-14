@@ -1,6 +1,7 @@
 import { useEffect, useMemo, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
+import { selectVisibleDecisions } from '@/store/selectors';
 import { API_BASE } from '@/data/apiGateway';
 import { Eyebrow, Button, EmptyState } from '@/components';
 import { ArrowRight } from '@/lib/icons';
@@ -34,7 +35,8 @@ export function PortfolioScreen() {
   const activities = useStore(useShallow((s) => s.activities));
   const phases = useStore(useShallow((s) => s.phases));
   // exclude private drafts from the cross-project pending-decision rollup
-  const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
+  // Phase 6 task 4a round 6 (Codex): the shared audience rule (withdrawn is pmc-only)
+  const decisions = useStore(useShallow(selectVisibleDecisions));
   const reviews = useStore(useShallow((s) => s.reviews));
   const role = useStore((s) => s.role);
 

@@ -47,6 +47,17 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
             requestedById: d.changeRequests[0].requestedById ?? undefined,
           }
         : undefined,
+    // Phase 6 task 4a — the withdrawal evidence travels through the CONTRACT (not just the
+    // screen): frozen at withdraw time (the `approver` precedent, so the stored projection DTO
+    // never drifts from a later user rename). Only ever delivered to pmc — the visibility rule
+    // below removes the whole row for every other viewer.
+    ...(d.status === 'withdrawn'
+      ? {
+          withdrawnAt: d.withdrawnAt?.toISOString(),
+          withdrawnBy: d.withdrawnByName ?? undefined,
+          withdrawReason: d.withdrawReason ?? undefined,
+        }
+      : {}),
     options: d.options.map((o) => ({
       label: o.label,
       key: o.optionKey,
@@ -64,6 +75,7 @@ export function serializeDecision(d: DecisionRow): DecisionDto {
  * query so a projection is NEVER an RBAC bypass:
  *   - a DRAFT (publishedAt null) is author-private — visible only to its creator;
  *   - a published-but-`pending` decision is visible only to pmc/client (AUTH-02);
+ *   - a WITHDRAWN decision is pmc-only (Phase 6 task 4a — withdrawal never widens an audience);
  *   - everything else is visible to the project.
  */
 export function decisionVisibleToViewer(
@@ -72,6 +84,10 @@ export function decisionVisibleToViewer(
   userId?: string,
 ): boolean {
   if (d.publishedAt === null) return !!userId && d.authorId === userId;
+  // Phase 6 task 4a — a WITHDRAWN decision is pmc-only: it was pmc/client-visible while
+  // pending, contractor/engineer/consultant NEVER saw it, and withdrawal must not widen an
+  // audience — including to the client, for whom nothing is awaited any more.
+  if (d.status === 'withdrawn') return role === 'pmc';
   const hidePending = role !== 'pmc' && role !== 'client';
   return !(hidePending && d.status === 'pending');
 }

@@ -1068,3 +1068,17 @@ unexpected build is deployed — go back to step 2).
 
 Done. Any deviation at a gate: stay (or return to) legacy/shadow mode — it is always safe — and
 investigate with the audit trail (`OutboxOperatorAction`, ordered by `at`).
+
+## §P6-4a. Phase 6 task 4a — the withdraw deploy must not overlap senders across it
+
+`decisions.withdraw` cancels queued `decision.published` pushes; for a row a relay has already
+LEASED, the cancellation relies on the sender's final pre-send re-check of its own row — a check
+that exists only in 4a-and-later code. A PRE-4a relay process still running beside a new API
+instance would send a leased stale push regardless of the cancellation mark.
+
+This platform's deploy model already excludes that state: one service, whose OLD process stops
+before `scripts/migrate.sh` runs and the NEW process starts (the same drain-first discipline as
+cutover step 1 above). Keep it that way for the 4a rollout specifically: do NOT run pre-4a and
+post-4a application processes side by side. If a multi-instance rolling strategy is ever
+introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
+ships 4a — after that, every sender carries the pre-send re-check.

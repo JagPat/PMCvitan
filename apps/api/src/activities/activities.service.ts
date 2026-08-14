@@ -190,10 +190,28 @@ export class ActivitiesService {
       if (!p || p.projectId !== projectId) throw new BadRequestException('Unknown phase for this project');
     }
     if (decisionId) {
-      if (!(await this.decisions.existsInProject(projectId, decisionId))) throw new BadRequestException('Unknown decision for this project');
+      // round 9 (Codex): the picker rule enforced at the WRITE path — a stale/offline client
+      // or a direct API call must not pin new work to a terminal decision. `activity.manage`
+      // is a pmc authority, so the honest withdrawn reason is the right refusal.
+      const linkable = await this.decisions.linkableInProject(projectId, decisionId);
+      if (linkable === 'missing') throw new BadRequestException('Unknown decision for this project');
+      if (linkable === 'withdrawn') throw new BadRequestException('This decision was withdrawn — link a live decision or re-issue it');
     }
     // Location spine: resolveProjectNode throws for an unknown/cross-project node.
     await resolveProjectNode(this.prisma, projectId, nodeId);
+  }
+
+  /** Round 10 (Codex): the pre-tx linkability check above is fast-fail UX; THIS is the
+   *  authority — re-checked INSIDE the command transaction, where the decisions-owned query
+   *  takes a row share lock, so a `decisions.withdraw` committing between the two reads can
+   *  never leave new work pinned to a terminal decision (both interleavings are serialized
+   *  on the decision row: link-then-withdraw is the handled post-hoc state, withdraw-then-link
+   *  is this refusal). */
+  private async assertDecisionLinkableInTx(tx: Prisma.TransactionClient, projectId: string, decisionId: string | null | undefined): Promise<void> {
+    if (!decisionId) return;
+    const linkable = await this.decisions.linkableInProject(projectId, decisionId, tx);
+    if (linkable === 'missing') throw new BadRequestException('Unknown decision for this project');
+    if (linkable === 'withdrawn') throw new BadRequestException('This decision was withdrawn — link a live decision or re-issue it');
   }
 
   /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links).
@@ -228,6 +246,7 @@ export class ActivitiesService {
     const outcome = await executeCommand(this.prisma, {
       scope, actor, commandType: 'activities.create', idempotencyKey, requestHash,
       run: async (tx) => {
+        await this.assertDecisionLinkableInTx(tx, projectId, input.decisionId);
         // Phase 4 Task 4 (§A): a labour-pilot project derives the Team gate from canonical
         // facts — an explicit non-default stored team flag at creation would seed a second
         // writable truth and is refused (the zod default 'na' passes untouched).
@@ -276,7 +295,12 @@ export class ActivitiesService {
     const ps = input.plannedStart ?? a.plannedStart;
     const pe = input.plannedEnd ?? a.plannedEnd;
     if (pe < ps) throw new BadRequestException('plannedEnd must be on or after plannedStart');
-    await this.assertRefs(projectId, input.phaseId, input.decisionId, input.nodeId);
+    // Round 11 (Codex): link-then-withdraw is the ALLOWED state — the Plan Activity modal
+    // re-sends the CURRENT decisionId on every edit, so only a NEWLY introduced link is
+    // validated for linkability. The unchanged link needs no revalidation (it is already the
+    // stored, FK-valid reference); clearing (null) always passes.
+    const introducedDecisionId = input.decisionId != null && input.decisionId !== a.decisionId ? input.decisionId : null;
+    await this.assertRefs(projectId, input.phaseId, introducedDecisionId, input.nodeId);
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const anchor = toIsoCivilDate(project.scheduleStartDate);
     const { plannedStartDate: inputStartDate, plannedEndDate: inputEndDate, ...rest } = input;
@@ -309,6 +333,17 @@ export class ActivitiesService {
       run: async (tx) => {
         // stored material/team flags and the decision link move readiness (finding 1)
         await lockProjectReadiness(tx, projectId);
+        // Round 12 (Codex): the pre-tx `introducedDecisionId` came from a STALE read — a
+        // concurrent update can clear/relink this activity between our read and this lock,
+        // making the re-sent id a REINTRODUCTION. The current link is re-read UNDER the
+        // readiness lock (every activity update holds it), and only a genuinely new link is
+        // validated; the pre-tx check above stays as fast-fail UX.
+        if (input.decisionId != null) {
+          const current = await tx.activity.findUniqueOrThrow({ where: { id: activityId }, select: { decisionId: true } });
+          if (input.decisionId !== current.decisionId) {
+            await this.assertDecisionLinkableInTx(tx, projectId, input.decisionId);
+          }
+        }
         // Phase 4 Task 4 (§A): when the labour capability is ON, the Team gate derives ENTIRELY
         // from canonical labour facts — the stored flag is a second writable truth and its
         // mutation is REJECTED. Off-pilot (legacy projects) the stored stub stays byte-identical.
@@ -374,6 +409,9 @@ export class ActivitiesService {
     projectId: string,
     activity: { id: string; gateMaterial: GateState; gateTeam: GateState; decision: { status: string } | null },
     db: Prisma.TransactionClient = this.prisma,
+    // Phase 6 task 4a round 1 (Codex F5): the withdrawn-decision gate REASON is pmc-only —
+    // fail-closed, so an unlabelled caller gets the redacted wording (the verdict is identical).
+    withdrawnReasonVisible = false,
   ): Promise<ActivityReadiness> {
     const [inspections, drawings, activeMembers, overrides] = await Promise.all([
       // Task 10 (Module 3) — the inspection-gate readiness input comes from the inspections module's query
@@ -385,6 +423,7 @@ export class ActivitiesService {
     ]);
     return deriveReadiness(activity.id, {
       decisionStatus: activity.decision ? (activity.decision.status as DecisionStatus) : null,
+      withdrawnReasonVisible,
       gateMaterial: activity.gateMaterial,
       gateTeam: activity.gateTeam,
       inspections,
@@ -431,7 +470,7 @@ export class ActivitiesService {
         if (a.status !== 'not_started') throw new ConflictException('Activity is not in a startable state');
         const decisionStatus = a.decisionId ? await this.decisions.statusOf(projectId, a.decisionId, tx) : null;
 
-        const readiness = await this.loadReadiness(projectId, { ...a, decision: decisionStatus ? { status: decisionStatus } : null }, tx);
+        const readiness = await this.loadReadiness(projectId, { ...a, decision: decisionStatus ? { status: decisionStatus } : null }, tx, user.role === 'pmc');
         // Phase 3 Task 6 (§A): on a PILOT project, the material gate is CANONICAL coverage — never
         // the stored flag or a projection. Evaluated on THIS transaction under the readiness lock,
         // so a concurrent reservation/issue/adjustment/requirement-revision/substitution-revocation

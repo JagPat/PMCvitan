@@ -44,7 +44,11 @@ export function makePushConsumer(push: PushService): OutboxConsumer {
     // historical push from an old payload.
     deliveryFor: (meta) => {
       const push = meta.dispatchIntent?.push;
-      return push?.body ? { action: 'dispatch', payload: { body: push.body, roles: push.roles ?? null } } : { action: 'noop' };
+      // `subject` = the emitting module's entityId (Phase 6 task 4a): the domain that later
+      // learns this announcement went stale cancels by this key — never by reading the queue.
+      return push?.body
+        ? { action: 'dispatch', payload: { body: push.body, roles: push.roles ?? null }, subject: meta.entityId }
+        : { action: 'noop' };
     },
     handle: async (ctx) => {
       const p = (ctx.delivery.payload ?? null) as { body?: string; roles?: string[] | null } | null;

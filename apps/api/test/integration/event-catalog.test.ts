@@ -37,7 +37,17 @@ describe('Phase 2 Task 4 — event catalog dual-write (live PG)', () => {
     // clear the domain rows this suite created (append-only DomainEvent + the pillar entities)
     // so the fixture can delete the project; TRUNCATE fires no row trigger and CASCADE handles
     // child rows (options/items/revisions/…). The suite runs serially against a disposable DB.
-    await t?.prisma.$executeRawUnsafe('TRUNCATE "Decision","Activity","Phase","Inspection","Drawing","DailyLog","SiteMaterial","Media","DomainEvent" CASCADE');
+    // Phase 6 4a (round 15): the CASCADE reaches "DecisionEvent", whose statement-level
+    // truncate guard refuses while approval evidence exists — this destructive reset disables
+    // the named guard for exactly its wipe (the same sanctioned-bypass contract as the
+    // row-trigger disables elsewhere), atomically so a failed wipe rolls the disable back.
+    if (t) {
+      await t.prisma.$transaction([
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4a_no_truncate"'),
+        t.prisma.$executeRawUnsafe('TRUNCATE "Decision","Activity","Phase","Inspection","Drawing","DailyLog","SiteMaterial","Media","DomainEvent" CASCADE'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4a_no_truncate"'),
+      ]);
+    }
     await f?.cleanup();
     await t?.close();
   });

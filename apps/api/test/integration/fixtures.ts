@@ -104,3 +104,20 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
 
   return { orgA, orgB, projectA, projectB, memberUser, ownerUser, otherUser, strangerUser, cleanup };
 }
+
+/** Phase 6 task 4a (round 12) — approval `DecisionEvent` rows are undeletable EVIDENCE
+ *  (`DecisionEvent_no_withdrawn_approval` refuses their DELETE, so erasing one cannot launder a
+ *  legacy approval before a withdrawal). Suites that approve decisions therefore wipe events
+ *  through THIS sanctioned destructive-reset helper, which disables the named seal for exactly
+ *  the wipe — the same contract as the DomainEvent TRUNCATE and the seed's guarded transaction. */
+export async function wipeDecisionEvents(
+  prisma: PrismaService,
+  where: Record<string, unknown>,
+): Promise<void> {
+  await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+  try {
+    await prisma.decisionEvent.deleteMany({ where });
+  } finally {
+    await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+  }
+}

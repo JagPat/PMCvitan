@@ -110,8 +110,11 @@ const EXPECT: Record<string, Spec> = {
     optional: [], nullable: ['scheduleStartDate', 'scheduleEndDate'].sort(),
   },
   DecisionDto: {
-    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft'].sort(),
-    optional: ['nodeId', 'ageDays', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft'].sort(), nullable: [],
+    // Phase 6 task 4a — the withdrawal evidence travels through the CONTRACT (pmc-audience only;
+    // the visibility rule removes the whole row for every other viewer): withdrawnAt, the
+    // withdrawer's frozen display identity, and the reason.
+    keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(),
+    optional: ['nodeId', 'ageDays', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
   },
   OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['photoUrl'], nullable: [] },
   ActivityDto: {

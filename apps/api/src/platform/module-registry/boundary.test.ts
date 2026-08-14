@@ -168,15 +168,20 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     const declared = MODULE_MANIFESTS.flatMap((m) => m.routes);
     expect([...derived.keys()].sort()).toEqual([...declared].sort());
     expect(declared.length).toBe(new Set(declared).size); // globally unique
-    expect(declared.length).toBe(167); // the documented command inventory §4 (+1: Phase-5 Task-5B §I sod-grant)
+    expect(declared.length).toBe(168); // the documented command inventory §4 (+1: Phase-6 task-4a decisions.withdraw)
     // no route contributed by two controllers or two manifests, no missing/unexpected route
     expect(analysis.routeFindings).toEqual([]);
   });
 
   it('NO analyzed persistence write crosses a module boundary except the declared waivers', () => {
     expect(analysis.persistence.findings).toEqual([]);
-    // the only runtime raw writes are the outbox relay's two lease claims (both waived)
+    // the only runtime raw writes are the outbox relay's two lease claims and the 4a
+    // cancellation pair — the tombstone INSERT and (visible since the round-14 aliased-UPDATE
+    // detection) the subject-stamp UPDATE, each under its OWN named waiver symbol (all four
+    // waived, all four platform-own-table writes)
     expect(analysis.persistence.rawWrites.map((r) => `${r.file}:${r.symbol}`).sort()).toEqual([
+      'platform/outbox/cancellation.ts:cancelPass',
+      'platform/outbox/cancellation.ts:cancelQueuedPushBySubject',
       'platform/outbox/relay.service.ts:claim',
       'platform/outbox/relay.service.ts:claimExternalRecovery',
     ]);
@@ -191,7 +196,9 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     const decisions = MODULE_MANIFESTS.find((m) => m.id === 'decisions');
     // Task 9 adds `decisionProjection` — the module's own rebuildable read-model table, also read-encapsulated.
     // The Phase-3 Task-1 round-2 correction adds `decisionApprovalRevision` — the immutable approval register.
-    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
+    // Phase 6 task 4a round 13 adds `decisionOptionTouch` — the per-transaction option touch
+    // note behind the withdrawal entry seal (written only by DB trigger, read by no module).
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
     // it declares the queries other modules reach it through, and depends on nothing
     expect(decisions?.queries.length).toBeGreaterThan(0);
     // and every module that reads decisions now declares the dependency
@@ -567,6 +574,32 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
       expect(f).toHaveLength(1);
       expect(f[0].code).toBe('raw-write-unwaived');
       expect(f[0].symbol).toBe('evilInsert');
+    });
+
+    // Round 14 (Codex, PR #337): `UPDATE "T" alias SET …` slipped past `isWriteSql` — the
+    // UPDATE_RE required the table token IMMEDIATELY before SET, so an aliased set-based
+    // update (the `UPDATE … FROM` join shape) was invisible to the raw-write tripwire
+    // entirely: unwaived AND unflagged. The alias (bare or `AS`-prefixed) is now admitted;
+    // the `SELECT … FOR UPDATE` row lock stays a non-write (the lookahead keeps
+    // `UPDATE "T" SET` parsing as table+SET, never table+alias).
+    it('an ALIASED raw UPDATE (UPDATE "T" alias SET … FROM …) is a raw write → raw-write-unwaived', () => {
+      const f = analyzeFixture({
+        'decisions/evil-aliased-update.ts': `export async function evilAliasedUpdate(prisma: PrismaLike) { await prisma.$executeRawUnsafe('UPDATE "Decision" d SET "title" = o."label" FROM "DecisionOption" o WHERE o."decisionId" = d."id"'); }`,
+      });
+      expect(f).toHaveLength(1);
+      expect(f[0].code).toBe('raw-write-unwaived');
+      expect(f[0].symbol).toBe('evilAliasedUpdate');
+    });
+
+    it('an AS-aliased raw UPDATE is a raw write; a SELECT … FOR UPDATE row lock still is NOT', () => {
+      const f = analyzeFixture({
+        'decisions/evil-as-update.ts': `export async function evilAsUpdate(prisma: PrismaLike) { await prisma.$executeRawUnsafe('UPDATE "Decision" AS d SET "title" = $1'); }`,
+      });
+      expect(f.map((x) => x.code)).toEqual(['raw-write-unwaived']);
+      const lock = analyzeFixture({
+        'decisions/row-lock.ts': `export async function lockRow(prisma: PrismaLike) { await prisma.$queryRawUnsafe('SELECT 1 FROM "Decision" WHERE "id" = $1 FOR UPDATE'); }`,
+      });
+      expect(lock.filter((x) => x.code === 'raw-write-unwaived')).toHaveLength(0);
     });
 
     it('a writable CTE with no waiver → raw-write-unwaived', () => {

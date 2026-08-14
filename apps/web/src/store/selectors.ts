@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { deriveReadiness, drawingDisciplineFor, readinessReady, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
+import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -31,8 +31,38 @@ export function selectReapproval(s: AppState): Decision[] {
 /** Decision log is permission-filtered: contractor & engineer never see pending rows.
  *  Private drafts are excluded for everyone — they live only in the Drafts workspace. */
 export function selectLogDecisions(s: AppState): Decision[] {
-  if (s.role === 'contractor' || s.role === 'engineer') {
-    return s.decisions.filter((d) => d.status !== 'pending' && !d.draft);
+  // Phase 6 task 4a — a WITHDRAWN decision is pmc-only (the server's decisionVisibleToViewer
+  // is the authority; this selector mirrors it): withdrawal never widens an audience, and the
+  // old `status !== 'pending'` negative filter would otherwise LEAK a withdrawn decision to
+  // roles that never saw it while it was pending.
+  if (s.role !== 'pmc') {
+    if (s.role === 'contractor' || s.role === 'engineer') {
+      return s.decisions.filter((d) => d.status !== 'pending' && d.status !== 'withdrawn' && !d.draft);
+    }
+    return s.decisions.filter((d) => d.status !== 'withdrawn' && !d.draft);
+  }
+  return s.decisions.filter((d) => !d.draft);
+}
+
+/** Phase 6 task 4a round 6 (Codex) — the ONE audience rule for decision ROWS on every surface
+ *  outside the log: a WITHDRAWN decision is pmc-only (server parity: `decisionVisibleToViewer`),
+ *  and drafts live only in the Drafts workspace. The Site Map, Schedule, Daily Log and Portfolio
+ *  read THROUGH this instead of filtering `s.decisions` ad hoc, so a persona switch over a
+ *  still-loaded store (or demo mode, which never refetches) can never render a withdrawn
+ *  decision's title/location to a role the server would filter it from. The log keeps its own
+ *  stricter selector (`selectLogDecisions` also hides pending rows from contractor/engineer);
+ *  by-id STATUS reads for gate derivation stay raw deliberately — the gate needs the status and
+ *  the REASON is what the viewer rule redacts (`readinessFor`). */
+export function selectVisibleDecisions(s: AppState): Decision[] {
+  if (s.role !== 'pmc') {
+    // The COMPLETE server audience rule (decisionVisibleToViewer), not just the withdrawn
+    // arm: drafts are author-private (only the pmc authors decisions here), PENDING is
+    // pmc/client-only (AUTH-02), WITHDRAWN is pmc-only. A persona switch over a still-loaded
+    // store — or demo mode, which never refetches — must not render rows the server filters
+    // (round 6 + round 10).
+    return s.decisions.filter(
+      (d) => !d.draft && d.status !== 'withdrawn' && (s.role === 'client' || d.status !== 'pending'),
+    );
   }
   return s.decisions.filter((d) => !d.draft);
 }
@@ -112,9 +142,15 @@ export function gateDStateFor(s: AppState, a: Activity): Gate {
  * inspection from the stored prototype flags, honestly labeled 'stored'.
  */
 export function readinessFor(s: AppState, a: Activity): ActivityReadiness {
-  if (a.readiness) return a.readiness;
+  // Round 11 (Codex): a server-baked DTO carries the withdrawn-gate text of the viewer it was
+  // baked FOR; after a persona switch (or during a pending refetch) the cached pmc text must be
+  // re-redacted for viewers the server hides withdrawn decisions from.
+  if (a.readiness) return redactWithdrawnReadinessForViewer(a.readiness, s.role === 'pmc');
   const r = deriveReadiness(a.id, {
     decisionStatus: a.decisionId ? decStatusOf(s, a.decisionId) : null,
+    // Phase 6 task 4a round 1 (Codex F5): the withdrawn-decision gate reason is pmc-only —
+    // the demo derivation mirrors the server's viewer rule.
+    withdrawnReasonVisible: s.role === 'pmc',
     gateMaterial: a.gm,
     gateTeam: a.gt,
     inspections: [], // demo checklists carry no requirement edges — the stored flag stands in below

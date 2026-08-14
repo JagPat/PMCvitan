@@ -26,6 +26,9 @@ export const ROLE_POLICY = {
   // withdraw an open change request — endpoint allowlist; the SERVICE narrows it to the
   // actual requester or the PMC, so the UI must also check requestedById (Phase 1 Task 2)
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
+  // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;
+  // that is the practice's call alone (the client never had authority over the asking either).
+  'decision.withdraw': ['pmc'],
   // Phase 3 Task 1 — the ActivityRequirement demand contract is authored by the PMC (plan §H matrix)
   'requirement.manage': ['pmc'],
   // the full requirement register read (§H): pmc + engineer; the client sees only the readiness
