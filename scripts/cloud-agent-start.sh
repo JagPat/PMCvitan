@@ -2,24 +2,12 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=cloud-agent-env.sh
+source "$(dirname "$0")/cloud-agent-env.sh"
 
-DEFAULT_DATABASE_URL='postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public'
-SEED_PROJECT_ID='ambli'
-
-set_env_var() {
-  local file="$1" key="$2" value="$3"
-  touch "$file"
-  if grep -q "^${key}=" "$file"; then
-    local escaped="${value//\\/\\\\}"
-    escaped="${escaped//|/\\|}"
-    sed -i "s|^${key}=.*|${key}=\"${escaped}\"|" "$file"
-  else
-    echo "${key}=\"${value}\"" >>"$file"
-  fi
-}
-
-export DATABASE_URL="${DATABASE_URL:-$DEFAULT_DATABASE_URL}"
-PSQL_URL="${DATABASE_URL%%\?*}"
+resolve_database_url
+PSQL_URL="$(psql_database_url "$DATABASE_URL")"
+DB_LABEL="$(database_url_log_label "$DATABASE_URL")"
 
 if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ]; then
   # Local compose-equivalent Postgres on the VM.
@@ -63,20 +51,12 @@ else
   done
 
   if ! psql "$PSQL_URL" -tc "SELECT 1" >/dev/null 2>&1; then
-    echo "[cloud-agent-start] Database is not reachable at ${PSQL_URL}" >&2
+    echo "[cloud-agent-start] Database is not reachable at ${DB_LABEL}" >&2
     exit 1
   fi
 fi
 
-if [ ! -f apps/api/.env ]; then
-  cp apps/api/.env.example apps/api/.env
-fi
-
-# Dev-friendly cloud defaults — empty CORS_ORIGINS lets resolveCorsOrigins() reflect preview origins.
-set_env_var apps/api/.env DATABASE_URL "$DATABASE_URL"
-set_env_var apps/api/.env JWT_SECRET "dev-secret-change-in-prod"
-set_env_var apps/api/.env ALLOW_DEV_AUTH "true"
-set_env_var apps/api/.env CORS_ORIGINS ""
+ensure_api_env
 
 if [ ! -f apps/web/.env ]; then
   cat >apps/web/.env <<'EOF'
@@ -87,10 +67,13 @@ fi
 
 pnpm --filter api prisma:migrate
 
-# Seed once when demo data is absent (migrations create empty tables).
-if ! psql "$PSQL_URL" -tc "SELECT 1 FROM \"Project\" WHERE id = '${SEED_PROJECT_ID}'" 2>/dev/null | grep -q 1; then
-  echo "[cloud-agent-start] No seed project '${SEED_PROJECT_ID}' — running seed"
-  pnpm --filter api seed
+if seed_permitted; then
+  if ! psql "$PSQL_URL" -tc "SELECT 1 FROM \"Project\" WHERE id = '${SEED_PROJECT_ID}'" 2>/dev/null | grep -q 1; then
+    echo "[cloud-agent-start] No seed project '${SEED_PROJECT_ID}' — running seed"
+    pnpm --filter api seed
+  fi
+else
+  echo "[cloud-agent-start] Skipping seed (external DATABASE_URL; set CLOUD_AGENT_ALLOW_SEED=true to opt in)"
 fi
 
 echo "[cloud-agent-start] Ready (Postgres :5432, API :3000, web :5173)"

@@ -2,11 +2,15 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=cloud-agent-env.sh
+source "$(dirname "$0")/cloud-agent-env.sh"
 
 corepack enable
 corepack prepare pnpm@10.33.3 --activate
 
 pnpm install --frozen-lockfile
+
+ensure_api_env
 
 pnpm build:shared
 pnpm --filter api prisma:generate
