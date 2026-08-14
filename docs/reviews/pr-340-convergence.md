@@ -14,7 +14,8 @@ with no two-step.
 | `d387412` | `29eeeef` + `origin/main` merged (shepherd directive; the plan bytes unchanged by the merge) | 8 (4 P1, 4 P2) | corrected on `c5255c0` |
 | `c5255c0` | round-2 batch + this packet opened | 6 (2 P1, 4 P2) | corrected on `bb28589` |
 | `bb28589` | round-3 batch, carrying BOTH trailers (`Review-Convergence` + the deferral) | 9 (6 P1, 3 P2) | corrected on `a0f6d78`, which also stated the generative rule as the plan's §C.3 uniform seal contract |
-| `a0f6d78` | round-4 batch + the §C.3 contract | 4 (2 P1, 2 P2) | corrected on this head — the FIFTH finding head; the lifecycle advisory has fired and the restructure pre-commitment below is now binding |
+| `a0f6d78` | round-4 batch + the §C.3 contract | 4 (2 P1, 2 P2) | corrected on `6a53aae`; the lifecycle advisory fired and the restructure pre-commitment became binding |
+| `6a53aae` | round-5 batch | 8 (4 P1, 4 P2) | the SIXTH finding head — the pre-commitment is HONORED on this head: the unit NARROWS to the 4b plan (`2026-08-14-decision-workflow-4b.md`); the 4c/4d designs remain readable at `6a53aae` as the successors' starting material |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -172,14 +173,53 @@ again** — split along the unit seam the plan itself defines (§A/4b, §B/4c,
 carried verbatim), the PR #335 narrowing precedent applied at the same
 limit that forced it there.
 
+## Round 6 — the pre-commitment honored: the unit narrows
+
+Round 6 returned eight findings (4 P1, 4 P2), all verified real — the rate
+went back UP (4 → 8), and the round-5 pre-commitment therefore binds: **no
+seventh correction head.** The unit narrows in place, the PR #335 precedent
+applied literally: the document becomes the 4b-ONLY plan
+(`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md`, replacing the
+joint `…-4b-4d.md`), carrying the seal architecture every later unit cites
+(the try-acquire protocol, the cross-module DB primitive rule, the uniform
+contract), while the 4c and 4d designs remain readable at head `6a53aae` as
+the pre-declared STARTING MATERIAL of their own follow-up plan units. The
+staging is per-unit and plan-first: 4b plan → 4b impl → 4c plan → 4c impl →
+4d plan → 4d impl.
+
+Disposition of the eight round-6 findings — three FOLDED into the narrowed
+plan, five CARRIED by name in its §D (nothing dismissed):
+
+- FOLDED — the published `recorded` decision's question/option evidence
+  freeze (P1 → the 4b plan §A.2, probed in P18, draft edits retained).
+- FOLDED — membership seals behind the orgs boundary (P1): a decisions-owned
+  trigger must not SELECT the orgs-owned table, so the plan defines OWNED,
+  DECLARED SQL primitives per module — the DB analogue of the participant
+  channels (§B.2) — with the orgs-owned membership seal calling the
+  decisions-owned open-holder predicate and vice versa. This is
+  ARCHITECTURAL and correct: the joint plan's trigger reads would have
+  crossed the module boundary at the database layer.
+- FOLDED — target standing joins the push-predicate CLASS (P2 → §A.3 as a
+  class rule; the consultation instance carried to 4c).
+- CARRIED to the 4c plan (§D 1–3): the consultation audience in the
+  servable projection (P2); the response-side hostile eligibility probes
+  (P2); the consultation families' standing predicates (P2 instance).
+- CARRIED to the 4d plan (§D 4–6): revision INSERTs paired with their
+  approval act under BOTH chain states (P1); exactly-ONE fact per paired
+  transition, duplicate-row probes (P2 — also absorbed into the contract's
+  obligation 2 for every future fact); the `countersign_rejection` request
+  sealed bidirectionally to its transition with an active-architect
+  requester (P1).
+
 ## Deferral ledger
 
-Nothing is disputed: all thirty-four findings across five rounds were
-verified real and corrected; no refutations were posted on this PR. From
-the head after the third finding-bearing head onward, every head carries
-`Review-Deferred-To-Probes: phase-6-task-4` beside `Review-Convergence:
-complete`: every finding is converted into named probe arms in the plan
-itself (the §C.3 table and the P15–P42 rows name the exact hostile shapes),
-and phase-6-task-4's unit review stops (4b → 4c → 4d, each staged-red) are
-where those probes execute RED→GREEN. Nothing is dismissed; the exact-head
-gate still fails closed on any current-head finding.
+Nothing is disputed: all forty-two findings across six rounds were verified
+real; thirty-four were corrected in place, three more are folded into the
+narrowed 4b plan, and five are carried BY NAME to the pre-declared 4c/4d
+plan units (§D of the 4b plan) whose own exact-head reviews will adjudicate
+them — the same deferral discipline, applied at the unit seam. No
+refutations were posted on this PR. Every head past the third finding head
+carries `Review-Deferred-To-Probes: phase-6-task-4` beside
+`Review-Convergence: complete`; the probes (P15–P22, P39 here; the
+successors' tables in their plans) are the executable deferral targets, and
+the exact-head gate still fails closed on any current-head finding.
