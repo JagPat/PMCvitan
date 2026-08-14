@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { MembersService } from '../../src/orgs/members.service';
@@ -71,10 +71,12 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
   });
   afterEach(async () => {
     await t.prisma.$executeRawUnsafe(TRUNCATE);
+    // approval DecisionEvents are undeletable evidence (round 12) — the sanctioned
+    // destructive-reset helper wipes them with the named seal disabled
+    await wipeDecisionEvents(t.prisma, { decision: { projectId: { startsWith: 'it-p3-' } } });
     for (const [model, where] of [
       ['notification', { projectId: { startsWith: 'it-p3-' } }],
       ['changeRequest', { decision: { projectId: { startsWith: 'it-p3-' } } }],
-      ['decisionEvent', { decision: { projectId: { startsWith: 'it-p3-' } } }],
       ['decisionOption', { decision: { projectId: { startsWith: 'it-p3-' } } }],
       ['decision', { projectId: { startsWith: 'it-p3-' } }],
       ['activity', { projectId: { startsWith: 'it-p3-' } }],
