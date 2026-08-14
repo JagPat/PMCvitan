@@ -109,8 +109,11 @@ re-pointing; the only exit would force private content to publish). So the
 freeze binds WITH publication, exactly like the recorded evidence freeze:
 while `publishedAt IS NULL` the author edits the holder like any other draft
 field; the PUBLISH transition atomically re-validates the named holder's
-ACTIVE standing under the readiness lock (a stranded draft refuses to
-publish, naming the fix — edit the draft's holder, THROUGH the shipped
+ACTIVE standing under the readiness lock — and a ROLE-held decider
+symmetrically through `effective-role-standing` (round 10: publishing a
+client-held decision into a project with no active client would birth the
+zero-holder state the removal guard exists to prevent; refused, P17/P39) —
+(a stranded draft refuses to publish, naming the fix — edit the draft's holder, THROUGH the shipped
 `decisions.updateDraft` command this unit adds (round 8): contract + service
 + the Drafts screen's edit affordance, legal only while `publishedAt IS
 NULL`, covering the holder and the other draft fields — the recovery is a
@@ -148,8 +151,12 @@ forcing publication. **And the REOPEN path re-validates too** (round 8): the
 guard cannot see an `approved` decision, so its member holder may legally
 leave while it is closed — `requestChange` (`approved → change`) therefore
 re-validates the holder's ACTIVE standing atomically under the readiness
-lock, refusing 409 with withdraw-and-reissue named as the escape when the
-holder is gone; a reopened decision can never be born holderless (P39/P22).
+lock. When the holder is GONE the 409 names the TRUE 4b state (round 10:
+`withdraw` covers only published `pending` rows, so it is NOT the escape
+here): the approved outcome STANDS — a changed need is a NEW decision, the
+register's append-only answer — and re-homing an approved decision for
+reopening is exactly the 4d forward's job, deferred to it by name. A
+reopened decision can never be born holderless (P39/P22).
 The refusal lives in the orgs member-removal command, which already consults
 participants for standing questions; it asks the NEW decisions-owned
 participant answer `decisions.holdsOpenDecisions({ membershipId, role,
@@ -216,12 +223,21 @@ record must keep its attribution), `projectId` (round 9 — a permanent record
 must stay in the register it was filed in), and the record's
 `DecisionOption` rows (where any exist) are immutable once
 `status='recorded'` AND published, with the DRAFT-edit path retained until
-publish (an unpublished record is still the author's to fix). **And a
+publish (an unpublished record is still the author's to fix). **And publication re-validates the record's identity tuple** (round 10):
+`authorId`/`projectId` are draft-editable, so the publish transition re-runs
+the user-decision-authority primitive over the FINAL tuple atomically — a
+draft re-attributed or re-homed by direct SQL cannot launder itself into a
+frozen published record (P18). **And a
 record can never carry approval evidence** (round 9): a coherence CHECK
-requires every approval-derived column (`approvedOption`, `approvedById`,
-`approver`, `onBehalfOf`) to be NULL while `status='recorded'`, on INSERT
-and UPDATE — the unapprovable permanent record can neither be born with nor
-later gain a forged approval surface (P18). Without the freeze, hostile SQL could retitle the filed
+requires EVERY approval-derived column — `approvedOption`, `approvedById`,
+`approver`, `onBehalfOf`, AND the approval-written `material`/`cost`/`date`
+(round 10: the full set `DecisionsService.approve` writes, since
+`serializeDecision` exposes all of them) — to be NULL while
+`status='recorded'`, on INSERT and UPDATE; and the CHILD evidence is sealed
+too (round 10): the `DecisionApprovalRevision_no_withdrawn` reverse seal and
+the approved/reapproved `DecisionEvent` seal both extend to `recorded`, so a
+record can carry approval evidence in NO table — the provenance FK can never
+be satisfied from a record. All hostile shapes probed (P18). Without the freeze, hostile SQL could retitle the filed
 issue, move it, clear `publishedAt`, or replace its options while
 `status='recorded'` — the register and any gate linkage no longer preserving
 what was filed. All probed directly (P18): the hostile `recorded → approved`
@@ -291,11 +307,15 @@ user), the subscription→user linkage is added where the owning module holds it
 **and STAGED honestly over the existing devices** (round 9): today's
 `PushSubscription` rows carry no owner, and a backfill cannot invent one.
 The linkage lands first (attributed opportunistically on the next
-authenticated app open); the decider-targeted NARROWING activates
-per-subscription only where the link exists, an unlinked device continuing
-to receive exactly the ROLE-ceiling behavior it receives today — no
-regression, no silent drop — until its owner reappears. P21 includes a
-pre-migration subscription in both arms. The probe pair proves BOTH
+authenticated app open); once TARGETED delivery activates, a targeted event
+is delivered ONLY to linked subscriptions of the target user — an unlinked
+device receives NO targeted content (round 10: the round-9 role-ceiling
+fallback would leak decider-only content to same-role devices,
+contradicting P21's exclusion; correctness wins over delivery — an unlinked
+decider's device misses pushes until its owner next opens the app, and the
+bell notice still carries the demand). Non-targeted events are unaffected.
+P21 includes a pre-migration subscription on BOTH sides: the unlinked
+non-target receives nothing; the re-linked target receives. The probe pair proves BOTH
 directions: the target receives; a same-role non-target does NOT (P21). The static catalog names the CEILING audience and
 the dispatch site narrows to the actual decider; `buildDispatchIntent`'s
 mismatch refusal treats the catalog as the ceiling.

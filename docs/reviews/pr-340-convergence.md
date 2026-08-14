@@ -18,7 +18,8 @@ with no two-step.
 | `6a53aae` | round-5 batch | 8 (4 P1, 4 P2) | the SIXTH finding head — the pre-commitment is HONORED on `7d3c65a`: the unit NARROWS to the 4b plan (`2026-08-14-decision-workflow-4b.md`); the 4c/4d designs remain readable at `6a53aae` as the successors' starting material |
 | `7d3c65a` | the NARROWED 4b plan's first reviewed head | 4 (2 P1, 2 P2) | corrected on `2228e2d` — the narrowed unit's first correction, carrying the stop rule |
 | `2228e2d` | round-7 batch | 7 (3 P1, 4 P2) | the stop rule executed on `536b6da` (packet-only) — held for owner direction |
-| `536b6da` | the stop record | 6 (4 P1, 2 P2) — one of them ON THE STOP ITSELF | the stop is SUPERSEDED on this head: the reviewer correctly cited AGENTS.md's non-blocking rule, so the loop resumes — the held round-8 findings AND the round-9 plan findings fold in one batched head; the owner escalation remains posted as the asynchronous channel |
+| `536b6da` | the stop record | 6 (4 P1, 2 P2) — one ON THE STOP ITSELF | the stop SUPERSEDED per AGENTS.md's non-blocking rule; rounds 8+9 folded on `af8d6be`; the owner escalation remains the asynchronous channel |
+| `af8d6be` | rounds 8+9 folded | 7 (6 P1, 1 P2) — three on the round-8/9 fixes, one a packet bookkeeping error | corrected on this head, MINIMALLY: full approval-column + child-evidence seals on recorded rows; targeted events never fan to unlinked devices; publish validates role-held deciders + the record identity tuple; the departed-approved-holder 409 names the TRUE state; this ledger reconciled |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -310,9 +311,9 @@ verified real; thirty-eight were corrected in place (rounds 1–5 and 7),
 three were folded into the narrowed 4b plan, five are carried as NAMED
 PROBES (§D of the 4b plan: P25c, P25d, P38c/P40c, P31b/P42b, P31c/P34b,
 P33b — numbering reserved to the pre-declared 4c/4d plan units whose own
-exact-head reviews adjudicate them), and the seven round-8 findings are
-RECORDED above under the executed stop — held for owner direction, not
-dismissed. No refutations were posted on this PR. Every head past the
+exact-head reviews adjudicate them), and the rounds 8–10 findings were FOLDED by the resumed corrections
+(heads `af8d6be` and the current one) — every disposition lives in the head
+table above, none held, none dismissed. No refutations were posted on this PR. Every head past the
 third finding head carries `Review-Deferred-To-Probes: phase-6-task-4`
 beside `Review-Convergence: complete`; the probes are the executable
 deferral targets, and the exact-head gate still fails closed on any
