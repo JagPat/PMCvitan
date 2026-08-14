@@ -11,7 +11,8 @@ with no two-step.
 |---|---|---|---|
 | `3ba1688` | the plan + a folded STATUS flip | 7 (3 P1, 4 P2) | STATUS reverted, the flip split out as PR #341; corrected on `29eeeef` |
 | `29eeeef` | round-1 batch | none of its own — superseded unreviewed by the conflict-shepherd merge before any verdict | counts once with `d387412` |
-| `d387412` | `29eeeef` + `origin/main` merged (shepherd directive; the plan bytes unchanged by the merge) | 8 (4 P1, 4 P2) | corrected on this head |
+| `d387412` | `29eeeef` + `origin/main` merged (shepherd directive; the plan bytes unchanged by the merge) | 8 (4 P1, 4 P2) | corrected on `c5255c0` |
+| `c5255c0` | round-2 batch + this packet opened | 6 (2 P1, 4 P2) | corrected on this head — the THIRD finding head, so this head also carries `Review-Deferred-To-Probes: phase-6-task-4` |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -83,10 +84,48 @@ a seal was named but not yet attributable, serialized, or two-sided.
   head). The seal now carves that exact arm: `origin='standard'` AND head
   already finalized; `countersign_rejection` restoration stays refused (P37).
 
+## Round 3 — round 2's own corrections, held to their own standard again
+
+Three of the six findings land directly on text I wrote in round 2, and the
+packet names them plainly:
+
+- **The lock protocol I chose could deadlock (F4, P2)**: binding the
+  `Membership` seal trigger to BLOCK on the readiness advisory lock inverts
+  the service's lock order — a direct write holds its row lock before its
+  trigger runs, so it waits on the key while a service command holding the
+  key waits on the row. Restated as TRY-ACQUIRE-OR-REFUSE: reentrant success
+  on the service path, hold-to-commit when free, deterministic refusal when
+  contended — a seal refuses, it never waits inside a trigger (P37).
+- **"Same-or-prior-transaction" was the split act (F5, P1)**: my round-2
+  arm (ii) accepted a PRIOR-transaction countersign row, which is exactly the
+  hostile shape — row + flip planted first, status flipped later. The
+  countersign is now ONE atomic transaction sealed from BOTH sides: a
+  deferred reverse seal refuses a `DecisionCountersign` insert without its
+  same-tx flip AND `awaiting_countersign → approved` transition (P31).
+- **The inactive-chain arm I added opened the stranded bypass (F2, P1)**:
+  round 2's arm (iii) legalized ANY direct approval under an inactive chain,
+  including `awaiting_countersign → approved` — ending a countersign-required
+  approval with no resolution evidence. The arm narrows to `pending`/`change`
+  (approvals born under no chain), and the awaiting exit always demands
+  paired evidence: the countersign row, or the stranded resolution — which
+  becomes a concrete append-only `DecisionStrandedResolution` fact with its
+  own reverse pairing (P29b/P37).
+
+The other three are coverage gaps of the same class as rounds 1–2: the
+forward TARGET's standing sealed at the DB, not only the service 409 (F1,
+P2 → P34); the decider audience carried into the SERVABLE `decisions.inbox`
+projection row/fold/filter, probed on the projected slice (F3, P2 → P22);
+and the on-behalf approval evidence freezing the EXACT holder tuple so a
+later forward cannot orphan the consent record (F6, P2 → P16).
+
 ## Deferral ledger
 
-Nothing is disputed: all fifteen findings were verified real and corrected;
-no refutations were posted on this PR. Should a third finding round land, the
-answering head owes `Review-Deferred-To-Probes: phase-6-task-4` beside this
-packet's update — the probes P15–P42 are exactly the executable targets that
-trailer names, and this diff (STATUS-free) can carry it.
+Nothing is disputed: all twenty-one findings across three rounds were
+verified real and corrected; no refutations were posted on this PR. This
+correction head follows the third finding-bearing head, so it carries
+`Review-Deferred-To-Probes: phase-6-task-4` beside `Review-Convergence:
+complete`: every round-3 finding is converted into named probe arms in the
+plan itself (P16, P22, P29b, P31, P34, P37 — the rows name the exact hostile
+shapes), and phase-6-task-4's unit review stops (4b → 4c → 4d, each
+staged-red) are where those probes execute RED→GREEN. Nothing is dismissed;
+the exact-head gate still fails closed on any current-head finding.
