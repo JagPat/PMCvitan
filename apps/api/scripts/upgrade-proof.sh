@@ -3390,6 +3390,25 @@ $PSQL -q -c "UPDATE \"DecisionEvent\" SET \"actor\"='Still benign' WHERE \"id\"=
 assert "4a seal 3 reverse (round 10, precision): a benign UPDATE on a live decision's event still passes — the seal blocks approval evidence on withdrawn rows, nothing else" \
   "SELECT count(*) FROM \"DecisionEvent\" WHERE \"id\"='UP4A-EV-BENIGN' AND \"actor\"='Still benign'" "1"
 
+# ── round 11 (Codex): the frozen question includes its CHOICES — DecisionOption is sealed ──
+# UP4A-D1 was withdrawn without options, so the probe plants one THROUGH the sanctioned
+# named-trigger bypass (the destructive-reset contract) purely as the mutation target.
+$PSQL -q <<'SQL' || { echo "4a round-11 option plant failed"; FAIL=1; }
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen";
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-OW','UP4A-D1','A','a','Granite',0,'stone') ON CONFLICT DO NOTHING;
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen";
+SQL
+assert_rejects "4a seal 5 (round 11): rewriting a withdrawn decision's option — the choices ARE the frozen question" \
+  "UPDATE \"DecisionOption\" SET \"material\"='Swapped' WHERE \"id\"='UP4A-OW'" "frozen question"
+assert_rejects "4a seal 5 (round 11): deleting a withdrawn decision's option" \
+  "DELETE FROM \"DecisionOption\" WHERE \"id\"='UP4A-OW'" "frozen question"
+assert_rejects "4a seal 5 (round 11): adding a NEW option to a withdrawn decision" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-ONEW','UP4A-D1','B','b','Quartz',5,'sw2')" "frozen question"
+$PSQL -q -c "UPDATE \"DecisionOption\" SET \"material\"='Refined granite' WHERE \"id\"='UP4A-O1';" >/dev/null || { echo "FAILED  4a round-11 precision: the benign option UPDATE on a live decision was rejected"; FAIL=1; }
+assert "4a seal 5 (round 11, precision): a LIVE decision's options stay mutable — the seal freezes withdrawn questions, nothing else" \
+  "SELECT count(*) FROM \"DecisionOption\" WHERE \"id\"='UP4A-O1' AND \"material\"='Refined granite'" "1"
+
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN

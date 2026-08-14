@@ -172,10 +172,25 @@ export function deriveDecisionReading(decisionStatus: DecisionStatus | null, wit
           ? 'Change requested — awaiting the client’s re-approval'
           : decisionStatus === 'withdrawn'
             ? withdrawnReasonVisible
-              ? 'The linked decision was withdrawn — re-issue or relink'
-              : 'Awaiting the PMC on the linked decision'
+              ? WITHDRAWN_REASON_HONEST
+              : WITHDRAWN_REASON_REDACTED
             : 'Awaiting the client’s approval';
   return { v, source: 'derived', reason };
+}
+
+/** The two viewer-dependent texts of the withdrawn decision gate (round 11, Codex): ONE source
+ *  so the derivation and the client-side re-redaction can never drift apart. */
+export const WITHDRAWN_REASON_HONEST = 'The linked decision was withdrawn — re-issue or relink';
+export const WITHDRAWN_REASON_REDACTED = 'Awaiting the PMC on the linked decision';
+
+/** Round 11 (Codex): a server-baked readiness DTO carries the VIEWER-SPECIFIC withdrawn-gate
+ *  text of the snapshot it was baked for. A client store can outlive a persona switch (or hold
+ *  a stale DTO while a refetch is pending), so a viewer who cannot see withdrawn decisions must
+ *  have the honest text re-redacted at read time — the verdict, source and every other gate are
+ *  untouched; only the pmc-only sentence is swapped for the server's own redacted one. */
+export function redactWithdrawnReadinessForViewer(r: ActivityReadiness, canSeeWithdrawn: boolean): ActivityReadiness {
+  if (canSeeWithdrawn || r.decision.reason !== WITHDRAWN_REASON_HONEST) return r;
+  return { ...r, decision: { ...r.decision, reason: WITHDRAWN_REASON_REDACTED } };
 }
 
 /** The five-gate readiness derivation — an unexpired override supersedes ITS gate. */

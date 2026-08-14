@@ -8,7 +8,7 @@
  * surface for the core loop.
  */
 
-import { deriveReadiness, drawingDisciplineFor, readinessReady, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
+import { deriveReadiness, drawingDisciplineFor, readinessReady, redactWithdrawnReadinessForViewer, type Activity, type ActivityReadiness, type Decision, type DecisionStatus, type Drawing, type Gate, type Phase, type Review, type ScreenKey } from '@vitan/shared';
 import type { AppState } from './store';
 
 /** Day window for the schedule timeline (1 Jun .. 15 Aug). */
@@ -142,7 +142,10 @@ export function gateDStateFor(s: AppState, a: Activity): Gate {
  * inspection from the stored prototype flags, honestly labeled 'stored'.
  */
 export function readinessFor(s: AppState, a: Activity): ActivityReadiness {
-  if (a.readiness) return a.readiness;
+  // Round 11 (Codex): a server-baked DTO carries the withdrawn-gate text of the viewer it was
+  // baked FOR; after a persona switch (or during a pending refetch) the cached pmc text must be
+  // re-redacted for viewers the server hides withdrawn decisions from.
+  if (a.readiness) return redactWithdrawnReadinessForViewer(a.readiness, s.role === 'pmc');
   const r = deriveReadiness(a.id, {
     decisionStatus: a.decisionId ? decStatusOf(s, a.decisionId) : null,
     // Phase 6 task 4a round 1 (Codex F5): the withdrawn-decision gate reason is pmc-only —

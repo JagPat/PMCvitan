@@ -20,7 +20,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `f1700af` | round-7 correction; Codex's review again LANDED after the two-timeout verdict (7.5 min late — the established pattern) with **4 P2 findings**, treated as the review of record | the demo store's local withdraw left the local pending notice; the migration left pre-withdrawn rows' projections servable-stale and their notices unretired; and a claimed revision re-point that the Phase-3 append-only register seal ALREADY makes unrepresentable — REFUTED WITH EVIDENCE (probe + upgrade-proof rejection + thread reply) |
 | `b99f792` | round-8 correction; the late-landing review of record again (7 min): **4 P2 findings**, all verified REAL against existing seals before fixing | the QUESTION identity (`title`/`room`/`nodeId`) outside the frozen set; attribution standing (the FK proves the row, not ACTIVE); the picker rule client-only (`assertRefs` accepted withdrawn references); the entry/reverse seals blind to the legacy approval EVENTS the round-6 diagnostic itself established as evidence |
 | `f841907` | round-9 correction; the FIRST verdict the orchestrator classified IN-WINDOW (attempt 2/2): **5 P2 findings**, each verified against the seal network first — four REAL, one refuted by execution | the round-9 linkability guard ran OUTSIDE the command transaction (a TOCTOU window vs a concurrent withdraw); a claimed uuid-into-text type error in the runtime tombstone that PostgreSQL's I/O-conversion assignment cast makes a non-event — REFUTED WITH EVIDENCE; the shared web selector missing the AUTH-02 pending split; the ACTIVE-membership entry read unlocked (a removal could commit mid-withdrawal); the event reverse arm INSERT-only over a table with no append-only seal |
-| (this head) | the round-10 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–10 have touched no command-semantics or §A.4 runtime-arm surface — round 10 moves round-9 arms to their correct transaction/lock scope, completes the audience mirror, and refutes a second already-impossible attack | — |
+| `3a972ae` | round-10 correction (with `origin/main` merged in — PR #339's orchestrator windows); the SECOND consecutive in-window verdict (attempt 1/2, 14 min): **3 P2 findings**, all REAL | the frozen question excluded its CHOICES (`DecisionOption` unsealed); the update path revalidated the CURRENT link, breaking edits on the allowed link-then-withdraw state; the BAKED viewer-specific readiness text survived a persona switch in the client store |
+| (this head) | the round-11 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–11 have touched no command-semantics or §A.4 runtime-arm surface — round 11 completes the freeze over the question's LAST component (its options), corrects the round-10 guard's over-reach, and closes the audience mirror's cached-DTO tail | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -115,10 +116,18 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   (deployment eras) → 2 (harness completions) → 4 (a diagnostic, a documented boundary, a
   selector class, a harness hardening) → 2 (entry-transition twins of sealed arms) → 4 (arm
   completions, one refuted) → 4+1-refuted (scope/lock corrections of the round-9 arms, one
-  refuted) — since round 3, no finding has touched the command's semantics, the seals' INTENT,
-  or a §A.4 runtime arm; the later rounds each re-state an accepted rule on one more path,
-  and two of the last three rounds contained findings the existing seal network already
-  answers.
+  refuted) → 3 (the question's last component, an over-reach correction, a cached-DTO tail) —
+  since round 3, no finding has touched the command's semantics, the seals' INTENT, or a §A.4
+  runtime arm; the later rounds each re-state an accepted rule on one more path, and two of
+  rounds 8–10 contained findings the existing seal network already answers.
+- Round 11 closed three tails of rules already stated. The frozen QUESTION (round 9) includes
+  its CHOICES — the option rows define what was asked, so seal 5 freezes them with the same
+  destructive-reset bypass contract as the delete arm (R11-F1). A guard moved to its correct
+  scope (round 10) must not over-reach: link-then-withdraw is the ALLOWED state, so only a
+  NEWLY introduced link is validated — the modal's re-sent current link passes (R11-F2). And
+  the audience mirror (rounds 6/10) covers the BAKED text too: the readiness reason a PMC
+  snapshot baked is re-redacted at read time for viewers the server would redact it from,
+  via one shared pair of constants (R11-F3).
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
@@ -163,7 +172,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all ten rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
+Every finding from all eleven rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

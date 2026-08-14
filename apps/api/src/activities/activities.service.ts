@@ -295,7 +295,12 @@ export class ActivitiesService {
     const ps = input.plannedStart ?? a.plannedStart;
     const pe = input.plannedEnd ?? a.plannedEnd;
     if (pe < ps) throw new BadRequestException('plannedEnd must be on or after plannedStart');
-    await this.assertRefs(projectId, input.phaseId, input.decisionId, input.nodeId);
+    // Round 11 (Codex): link-then-withdraw is the ALLOWED state — the Plan Activity modal
+    // re-sends the CURRENT decisionId on every edit, so only a NEWLY introduced link is
+    // validated for linkability. The unchanged link needs no revalidation (it is already the
+    // stored, FK-valid reference); clearing (null) always passes.
+    const introducedDecisionId = input.decisionId != null && input.decisionId !== a.decisionId ? input.decisionId : null;
+    await this.assertRefs(projectId, input.phaseId, introducedDecisionId, input.nodeId);
     const project = await this.prisma.project.findUniqueOrThrow({ where: { id: projectId } });
     const anchor = toIsoCivilDate(project.scheduleStartDate);
     const { plannedStartDate: inputStartDate, plannedEndDate: inputEndDate, ...rest } = input;
@@ -328,7 +333,7 @@ export class ActivitiesService {
       run: async (tx) => {
         // stored material/team flags and the decision link move readiness (finding 1)
         await lockProjectReadiness(tx, projectId);
-        await this.assertDecisionLinkableInTx(tx, projectId, input.decisionId);
+        await this.assertDecisionLinkableInTx(tx, projectId, introducedDecisionId);
         // Phase 4 Task 4 (§A): when the labour capability is ON, the Team gate derives ENTIRELY
         // from canonical labour facts — the stored flag is a second writable truth and its
         // mutation is REJECTED. Off-pilot (legacy projects) the stored stub stays byte-identical.

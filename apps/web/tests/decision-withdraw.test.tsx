@@ -7,7 +7,8 @@ import dailyLogSrc from '@/screens/DailyLogScreen.tsx?raw';
 import portfolioSrc from '@/screens/PortfolioScreen.tsx?raw';
 import { render, cleanup } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
-import { selectPending, selectReapproval, selectLogDecisions, selectActionItems, selectVisibleDecisions } from '@/store/selectors';
+import { selectPending, selectReapproval, selectLogDecisions, selectActionItems, selectVisibleDecisions, readinessFor } from '@/store/selectors';
+import type { Activity } from '@vitan/shared';
 import { replayOutboxOp, type ApiGateway, type ApiSnapshot, type OutboxOp } from '@/data/apiGateway';
 import { DecisionLogScreen } from '@/screens/DecisionLogScreen';
 import type { Decision, Role } from '@vitan/shared';
@@ -130,6 +131,41 @@ describe('P10 (web half): a withdrawn decision is pmc-only on every selector sur
       expect(ids, `role=${role}`).not.toContain('DL-P');
       expect(ids, `role=${role}`).toContain('DL-A'); // everything else stays project-wide
     }
+  });
+
+  // ── round 11 (Codex): the BAKED readiness reason is viewer-specific too ──
+  // A PMC snapshot bakes the honest withdrawn reason into the activity DTO; after a persona
+  // switch (or while a refetch is pending) that cached DTO must not surface the pmc-only text
+  // to a viewer the server would redact it from.
+  it('R11-F3: a cached PMC-baked readiness reason is re-redacted for viewers who cannot see withdrawn decisions', () => {
+    const honest = 'The linked decision was withdrawn — re-issue or relink';
+    const redacted = 'Awaiting the PMC on the linked decision';
+    const baked = {
+      id: 'ACT-1',
+      name: 'Gated work',
+      zone: 'GF',
+      plannedStart: 0,
+      plannedEnd: 1,
+      decisionId: 'DL-W',
+      gm: 'na',
+      gt: 'na',
+      gi: 'na',
+      readiness: {
+        decision: { v: 'wait', source: 'derived', reason: honest },
+        material: { v: 'na', source: 'stored', reason: 'Stored site flag — material on site' },
+        team: { v: 'na', source: 'stored', reason: 'Stored site flag — team present' },
+        inspection: { v: 'na', source: 'derived', reason: 'No linked inspection' },
+        drawing: { v: 'na', source: 'derived', reason: 'No linked drawing' },
+      },
+    } as unknown as Activity;
+    for (const role of ['client', 'engineer', 'contractor', 'consultant'] as Role[]) {
+      useStore.setState({ role, activities: [baked] });
+      const r = readinessFor(s(), baked);
+      expect(r.decision.reason, `role=${role}`).toBe(redacted);
+      expect(r.decision.v, `role=${role}`).toBe('wait'); // the verdict never changes — only the text
+    }
+    useStore.setState({ role: 'pmc', activities: [baked] });
+    expect(readinessFor(s(), baked).decision.reason).toBe(honest);
   });
 
   // ── round 8 (Codex): the LOCAL (demo/no-API) withdraw mirrors the server's notice retirement ──

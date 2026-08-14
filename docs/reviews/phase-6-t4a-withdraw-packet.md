@@ -325,3 +325,17 @@ Round-10 gates: probe file 46/46 (r10-red: 4 failed / 1 refutation-passed at `f8
 `decision-withdraw` 11/11 (RED: the rewritten R6-F3 assertion failed at `f841907`);
 `upgrade-proof.sh` PASSED with the three new battery lines; `pnpm check` EXIT 0; the full
 integration battery via the required `api` CI check.
+
+## Round 11 — the three Codex P2 findings on head `3a972ae`, one batched head
+
+The second consecutive IN-WINDOW verdict (attempt 1/2, 14 minutes — the PR-#339 orchestrator
+windows working). All three verified REAL before fixing.
+
+| # | finding | fix |
+|---|---|---|
+| R11-F1 (P2) | the frozen question excluded its CHOICES — `DecisionOption` rows of a withdrawn decision stayed mutable/deletable/insertable (the R3-F1 probe itself deleted them as "children cleared"), so the frozen withdrawer/reason could later display against a different set of options | seal 5: `DecisionOption_t4a_frozen` (BEFORE INSERT OR UPDATE OR DELETE; a cross-decision re-point is judged on BOTH parents; same FOR UPDATE serialization). The sanctioned destructive resets extend their named-trigger bypass to it (probe cleanup, P13-finally, R3-F1/R4-F2 child-clearing, and the seed's guarded wipe — the option wipe joins the SAME atomic transaction, preserving the R5-F2 ordering and R6-F4 atomicity pins). Probed all three verbs + live-decision precision; three upgrade-proof rejections + a benign live-option pass |
+| R11-F2 (P2) | `activities.update` revalidated the CURRENT decision link — the Plan Activity modal re-sends `decisionId` on every edit, so editing an unrelated field on an activity already carrying the (allowed) link-then-withdraw state got a 400 | only a NEWLY introduced link (`input.decisionId != null && !== a.decisionId`) passes through the pre-tx check and the in-tx authority; the unchanged link needs no revalidation (it is the stored, FK-valid reference) and explicit null still clears. Probed: same-link re-send with a rename succeeds; a NEW withdrawn link still 400s; null clears |
+| R11-F3 (P2) | the BAKED readiness reason is viewer-specific, but a cached PMC DTO survives a persona switch (or a pending refetch), so the pmc-only text `The linked decision was withdrawn — re-issue or relink` could render to client/engineer via the Schedule tooltip | the two texts move to shared constants (`WITHDRAWN_REASON_HONEST`/`REDACTED` — one source, no drift) and `redactWithdrawnReadinessForViewer` re-redacts at read time in the web's single readiness funnel (`readinessFor`): verdict/source untouched, only the sentence swaps; pmc keeps the honest text; the demo derivation was already viewer-correct. Probed for all four non-pmc roles + pmc |
+
+Round-11 gates: probe file 48/48 (RED at `3a972ae`: 2 failed API + 1 failed web); web
+`decision-withdraw` 12/12; `pnpm check` EXIT 0; the full battery via the required `api` CI check.

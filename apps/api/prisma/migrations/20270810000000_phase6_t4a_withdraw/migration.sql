@@ -465,3 +465,33 @@ DROP TRIGGER IF EXISTS "DecisionEvent_no_withdrawn_approval" ON "DecisionEvent";
 CREATE TRIGGER "DecisionEvent_no_withdrawn_approval"
   BEFORE INSERT OR UPDATE ON "DecisionEvent"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4a_no_approval_event_after_withdraw();
+
+-- ── seal 5 (round 11, Codex — the frozen question includes its CHOICES) ──────────────────────
+-- The option rows define what was asked: their count, materials, cost deltas and swatches ARE
+-- the question the withdrawer took back. A withdrawn decision's `DecisionOption` rows are
+-- frozen — no UPDATE, DELETE or INSERT while the parent is withdrawn (an UPDATE that re-points
+-- an option ACROSS decisions is judged on BOTH parents). Same FOR UPDATE serialization as the
+-- other reverse arms. The sanctioned destructive resets (the seed wipe, the test cleanups)
+-- disable this named trigger for exactly their wipe, like `Decision_t4a_d_no_delete`.
+CREATE OR REPLACE FUNCTION phase6_t4a_option_frozen_after_withdraw() RETURNS trigger AS $fn$
+DECLARE dstatus TEXT;
+BEGIN
+  IF TG_OP IN ('DELETE', 'UPDATE') THEN
+    SELECT d."status"::text INTO dstatus FROM "Decision" d WHERE d."id" = OLD."decisionId" FOR UPDATE;
+    IF dstatus = 'withdrawn' THEN
+      RAISE EXCEPTION 'phase6-t4a: decision % is withdrawn — its options are part of the frozen question and cannot change', OLD."decisionId";
+    END IF;
+  END IF;
+  IF TG_OP IN ('INSERT', 'UPDATE') AND (TG_OP = 'INSERT' OR NEW."decisionId" IS DISTINCT FROM OLD."decisionId") THEN
+    SELECT d."status"::text INTO dstatus FROM "Decision" d WHERE d."id" = NEW."decisionId" FOR UPDATE;
+    IF dstatus = 'withdrawn' THEN
+      RAISE EXCEPTION 'phase6-t4a: decision % is withdrawn — its options are part of the frozen question and cannot change', NEW."decisionId";
+    END IF;
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END $fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS "DecisionOption_t4a_frozen" ON "DecisionOption";
+CREATE TRIGGER "DecisionOption_t4a_frozen"
+  BEFORE INSERT OR UPDATE OR DELETE ON "DecisionOption"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4a_option_frozen_after_withdraw();

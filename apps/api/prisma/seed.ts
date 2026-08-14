@@ -83,13 +83,15 @@ async function main(): Promise<void> {
   await prisma.drawingAck.deleteMany();
   await prisma.drawingRevision.deleteMany();
   await prisma.drawing.deleteMany();
-  await prisma.decisionOption.deleteMany();
   await prisma.activity.deleteMany();
   // Phase 6 task 4a — the decision wipe runs BEFORE the membership wipe (round 5, Codex):
   // `Decision.withdrawnById` FKs `Membership(projectId, userId)` ON DELETE NO ACTION, so a
   // database holding a withdrawn decision refuses membership deletion until the decision rows
-  // are gone. Every Decision child (options, events, change requests, media, notifications,
-  // activities) is already cleared above. The delete seal (`Decision_t4a_d_no_delete`) refuses
+  // are gone. Every OTHER Decision child (events, change requests, media, notifications,
+  // activities) is already cleared above; the OPTION wipe joins the guarded transaction below
+  // (round 11, Codex) because a withdrawn decision's options are frozen
+  // (`DecisionOption_t4a_frozen`) and the sanctioned reset disables that named seal for
+  // exactly this wipe, atomically with the delete seal. The delete seal (`Decision_t4a_d_no_delete`) refuses
   // withdrawn-row deletes — in a LIVE database the register entry is permanent — and this seed
   // is the sanctioned destructive reset (the same contract that lets the TRUNCATE above bypass
   // the DomainEvent append-only trigger), so the named seal is disabled for exactly this wipe.
@@ -100,7 +102,14 @@ async function main(): Promise<void> {
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
     ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'; END IF; END $$;`,
+    ),
+    prisma.decisionOption.deleteMany(),
     prisma.decision.deleteMany(),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'; END IF; END $$;`,
+    ),
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
     ),

@@ -92,12 +92,15 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     await t.prisma.activity.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
     await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
-    await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
-    // withdrawn rows are permanent in a LIVE register (`Decision_t4a_d_no_delete`); this
-    // destructive test reset disables the named seal for exactly this wipe — the same
+    // withdrawn rows are permanent in a LIVE register (`Decision_t4a_d_no_delete`), and their
+    // OPTIONS are part of the frozen question (`DecisionOption_t4a_frozen`, round 11); this
+    // destructive test reset disables the named seals for exactly this wipe — the same
     // sanctioned-bypass contract as the TRUNCATE above (which fires no row-level trigger).
     await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
+    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
+    await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } });
     await t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
+    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
     await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
     await t.prisma.membership.deleteMany({ where: { userId: { startsWith: 'it-t4a-u-' } } });
     await t.prisma.user.deleteMany({ where: { id: { startsWith: 'it-t4a-u-' } } });
@@ -757,11 +760,16 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     it('R3-F1: a withdrawn decision cannot be DELETED — the register entry is permanent; a non-withdrawn decision (children cleared) still can be', async () => {
       const id = await seed({ title: 'Delete attempt' });
       await svc.withdraw(f.projectA.id, id, { reason: 'then attacked' }, pmc());
-      // hostile SQL clears the children first (a FK refusal would otherwise mask the seal —
-      // though BEFORE DELETE fires before FK evaluation, the probe proves the seal alone)
+      // hostile SQL tries to clear the children first — the OPTION children now refuse on
+      // their own (round 11: the frozen question includes its choices), so the child-clearing
+      // step uses the sanctioned bypass; the Decision DELETE arm is then proven alone
+      // (BEFORE DELETE fires before FK evaluation, so it never depended on children anyway)
       await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
       await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
+      await expect(t.prisma.decisionOption.deleteMany({ where: { decisionId: id } })).rejects.toThrow(/frozen question/);
+      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
       await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
+      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
       await expect(t.prisma.$executeRaw`DELETE FROM "Decision" WHERE "id" = ${id}`).rejects.toThrow(/permanent register entry/);
       expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('withdrawn');
       // precision, not mere strictness: a NON-withdrawn decision is still deletable
@@ -834,10 +842,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.membership.create({ data: { projectId: f.projectB.id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
       try {
         // children cleared so the RED capture demonstrates the real hole (the seal, once
-        // installed, fires BEFORE any FK evaluation and needs no surviving children)
+        // installed, fires BEFORE any FK evaluation and needs no surviving children); the
+        // OPTION children need the sanctioned bypass since round 11 froze them
         await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
         await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
         await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
+        await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
         await expect(
           t.prisma.$executeRaw`UPDATE "Decision" SET "projectId" = ${f.projectB.id} WHERE "id" = ${id}`,
         ).rejects.toThrow(/projectId is frozen/);
@@ -1234,6 +1245,57 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     });
   });
 
+  describe('round 11 (Codex): frozen options, preserved links on edits', () => {
+    // R11-F1 — the frozen question includes its CHOICES: the option rows define what was asked
+    // (count, materials, cost range, swatches). At 3a972ae a direct UPDATE/DELETE/INSERT on
+    // `DecisionOption` never touched the sealed `Decision` row, so the frozen withdrawer/reason
+    // could later display against a different set of options.
+    it('R11-F1: a withdrawn decision\'s options are frozen — UPDATE, DELETE and INSERT all refuse; a live decision\'s options stay mutable', async () => {
+      const id = await seed({ title: 'Frozen options' });
+      await svc.withdraw(f.projectA.id, id, { reason: 'options sealed' }, pmc());
+      await expect(
+        t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped material' WHERE "decisionId"=${id} AND "optionKey"='a'`,
+      ).rejects.toThrow(/frozen question/);
+      await expect(
+        t.prisma.$executeRaw`DELETE FROM "DecisionOption" WHERE "decisionId"=${id} AND "optionKey"='b'`,
+      ).rejects.toThrow(/frozen question/);
+      await expect(
+        t.prisma.$executeRaw`INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order") VALUES ('r11-opt',${id},'C','c','Marble',5,'sw3',false,2)`,
+      ).rejects.toThrow(/frozen question/);
+      expect(await t.prisma.decisionOption.count({ where: { decisionId: id } })).toBe(2);
+      // precision: a LIVE decision's options are untouched by the seal
+      const live = await seed({ title: 'Editable options' });
+      expect(await t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Refined granite' WHERE "decisionId"=${live} AND "optionKey"='a'`).toBe(1);
+    });
+
+    // R11-F2 — link-then-withdraw is the ALLOWED state, so editing an unrelated field on an
+    // activity that already carries the withdrawn link must not 400: the Plan Activity modal
+    // always sends the current decisionId. Only a NEWLY introduced link is validated.
+    it('R11-F2: editing an activity that already links the withdrawn decision succeeds (same link re-sent); a NEW withdrawn link is still refused; explicit null clears', async () => {
+      const linked = await seed({ title: 'Linked then withdrawn' });
+      const actId = `it-t4a-r11-${seq}`;
+      await t.prisma.activity.create({
+        data: { id: actId, projectId: f.projectA.id, name: 'Edit probe', zone: 'GF', plannedStart: 0, plannedEnd: 1, decisionId: linked, gateMaterial: 'na', gateTeam: 'na' },
+      });
+      await svc.withdraw(f.projectA.id, linked, { reason: 'link-then-withdraw' }, pmc());
+      // the unrelated edit re-sends the CURRENT link (the modal's shape) — allowed
+      await activities.update(f.projectA.id, actId, { name: 'Edit probe renamed', decisionId: linked }, pmc());
+      const after = await t.prisma.activity.findUniqueOrThrow({ where: { id: actId } });
+      expect(after.name).toBe('Edit probe renamed');
+      expect(after.decisionId).toBe(linked);
+      // a NEW withdrawn link is still refused
+      const otherWithdrawn = await seed({ title: 'Other terminal' });
+      await svc.withdraw(f.projectA.id, otherWithdrawn, { reason: 'never a new link' }, pmc());
+      await expect(activities.update(f.projectA.id, actId, { decisionId: otherWithdrawn }, pmc())).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringContaining('withdrawn'),
+      });
+      // explicit null clears the stale link
+      await activities.update(f.projectA.id, actId, { decisionId: null }, pmc());
+      expect((await t.prisma.activity.findUniqueOrThrow({ where: { id: actId } })).decisionId).toBeNull();
+    });
+  });
+
   // ── P13 — the projection across a withdraw ──
   it('P13: decisions.inbox — live == projection == rebuild across a withdraw; the rebuild emits zero events', async () => {
     // a FRESH project: the ordered projection cursor consumes contiguously from stream position
@@ -1281,10 +1343,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.notification.deleteMany({ where: { projectId: proj13 } });
       await t.prisma.auditLog.deleteMany({ where: { projectId: proj13 } });
       await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
-      await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
-      // this probe's row IS withdrawn — the same sanctioned destructive-reset bypass as cleanup()
+      // this probe's row IS withdrawn — the same sanctioned destructive-reset bypass as
+      // cleanup(), covering the option seal (round 11) and the delete arm alike
       await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
+      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"');
+      await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
       await t.prisma.decision.deleteMany({ where: { id } });
+      await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"');
       await t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
       await t.prisma.membership.deleteMany({ where: { projectId: proj13 } });
       await t.prisma.project.deleteMany({ where: { id: proj13 } });
