@@ -72,7 +72,6 @@ async function main(): Promise<void> {
   await prisma.securityAuditEvent.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.notification.deleteMany();
-  await prisma.decisionEvent.deleteMany();
   await prisma.changeRequest.deleteMany();
   await prisma.media.deleteMany();
   await prisma.inspectionItem.deleteMany();
@@ -87,11 +86,12 @@ async function main(): Promise<void> {
   // Phase 6 task 4a — the decision wipe runs BEFORE the membership wipe (round 5, Codex):
   // `Decision.withdrawnById` FKs `Membership(projectId, userId)` ON DELETE NO ACTION, so a
   // database holding a withdrawn decision refuses membership deletion until the decision rows
-  // are gone. Every OTHER Decision child (events, change requests, media, notifications,
-  // activities) is already cleared above; the OPTION wipe joins the guarded transaction below
-  // (round 11, Codex) because a withdrawn decision's options are frozen
-  // (`DecisionOption_t4a_frozen`) and the sanctioned reset disables that named seal for
-  // exactly this wipe, atomically with the delete seal. The delete seal (`Decision_t4a_d_no_delete`) refuses
+  // are gone. Every OTHER Decision child (change requests, media, notifications, activities)
+  // is already cleared above; the OPTION and EVENT wipes join the guarded transaction below
+  // (rounds 11–12, Codex) because a withdrawn decision's options are frozen
+  // (`DecisionOption_t4a_frozen`) and approval events are undeletable evidence
+  // (`DecisionEvent_no_withdrawn_approval`) — the sanctioned reset disables those named seals
+  // for exactly this wipe, atomically with the delete seal. The delete seal (`Decision_t4a_d_no_delete`) refuses
   // withdrawn-row deletes — in a LIVE database the register entry is permanent — and this seed
   // is the sanctioned destructive reset (the same contract that lets the TRUNCATE above bypass
   // the DomainEvent append-only trigger), so the named seal is disabled for exactly this wipe.
@@ -105,8 +105,15 @@ async function main(): Promise<void> {
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'; END IF; END $$;`,
     ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
+    ),
+    prisma.decisionEvent.deleteMany(),
     prisma.decisionOption.deleteMany(),
     prisma.decision.deleteMany(),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
+    ),
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'; END IF; END $$;`,
     ),

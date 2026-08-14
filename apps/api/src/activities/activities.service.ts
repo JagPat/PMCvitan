@@ -333,7 +333,17 @@ export class ActivitiesService {
       run: async (tx) => {
         // stored material/team flags and the decision link move readiness (finding 1)
         await lockProjectReadiness(tx, projectId);
-        await this.assertDecisionLinkableInTx(tx, projectId, introducedDecisionId);
+        // Round 12 (Codex): the pre-tx `introducedDecisionId` came from a STALE read — a
+        // concurrent update can clear/relink this activity between our read and this lock,
+        // making the re-sent id a REINTRODUCTION. The current link is re-read UNDER the
+        // readiness lock (every activity update holds it), and only a genuinely new link is
+        // validated; the pre-tx check above stays as fast-fail UX.
+        if (input.decisionId != null) {
+          const current = await tx.activity.findUniqueOrThrow({ where: { id: activityId }, select: { decisionId: true } });
+          if (input.decisionId !== current.decisionId) {
+            await this.assertDecisionLinkableInTx(tx, projectId, input.decisionId);
+          }
+        }
         // Phase 4 Task 4 (§A): when the labour capability is ON, the Team gate derives ENTIRELY
         // from canonical labour facts — the stored flag is a second writable truth and its
         // mutation is REJECTED. Off-pilot (legacy projects) the stored stub stays byte-identical.

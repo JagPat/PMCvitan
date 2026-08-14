@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
 
 /**
  * Phase 1 Task 6 — readiness derived from explicit links, against live
@@ -56,7 +56,7 @@ describe('derived readiness + gate overrides (integration)', () => {
     await t.prisma.activity.deleteMany({ where: { projectId } });
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
-    await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } });
+    await wipeDecisionEvents(t.prisma, { decision: { projectId } });
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } });
     await t.prisma.decision.deleteMany({ where: { projectId } });
     await t.prisma.membership.deleteMany({ where: { projectId, userId: { in: [f.ownerUser.id, f.strangerUser.id] } } });

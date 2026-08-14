@@ -84,13 +84,15 @@ BEGIN
   -- withdrawal whose member was since removed would also be flagged on a repair re-run — the
   -- named remedy (restore the membership or resolve the row) covers both readings, and the
   -- migration only re-runs inside operator repair flows.
+  -- Round 12 (Codex): the standing requirement is ACTIVE **pmc** — active membership alone is
+  -- not the authority the command requires (live authz derives the token role from this row).
   SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
     SELECT d."id" FROM "Decision" d
     JOIN "Membership" m ON m."projectId" = d."projectId" AND m."userId" = d."withdrawnById"
-    WHERE d."status"::text = 'withdrawn' AND m."status" <> 'active'
+    WHERE d."status"::text = 'withdrawn' AND (m."status" <> 'active' OR m."role" <> 'pmc')
     LIMIT 20) x;
   IF bad > 0 THEN
-    RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) are attributed to a NON-ACTIVE membership (sample: %). Restore the membership or resolve the row by hand, then redeploy.', bad, sample;
+    RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) are attributed to a NON-ACTIVE membership or one without pmc standing (sample: %). Restore the membership or resolve the row by hand, then redeploy.', bad, sample;
   END IF;
   -- Round 2 (Codex F1): the INVERSE arm of coherence, back-checked. The trigger below refuses
   -- orphan evidence only on FUTURE writes; a partial/manual apply that already added the
@@ -233,15 +235,61 @@ WHERE n."projectId" = dec."projectId"
        AND o."id" <> dec."id");
 -- (b) PROJECTIONS: the partial apply emitted no DomainEvent, so a servable `decisions.inbox`
 -- generation can still claim the row is pending while `readServableGeneration` calls it
--- caught-up. RETIRE the active generation for affected projects: reads fall back to canonical
--- truth (null generation → live slice) until the next delivery/rebuild builds a fresh one.
--- Rows are retired, never edited or fabricated. Idempotent (scoped to still-active rows).
-UPDATE "ProjectionGeneration" g
-SET "status" = 'retired', "updatedAt" = now()
-FROM (SELECT DISTINCT "projectId" FROM "Decision" WHERE "status"::text = 'withdrawn') w
-WHERE g."projectId" = w."projectId"
-  AND g."consumer" = 'decisions.inbox'
-  AND g."status" = 'active';
+-- caught-up. Round 12 (Codex): retiring WITHOUT a replacement wedged the consumer — the next
+-- delivery bootstrapped a fresh generation at `appliedPosition = NULL` (expecting position 0)
+-- while the stream is at head+1, releasing every delivery as 'wait' forever. So the stale
+-- generation is RETIRED and REPLACED in one step: the replacement copies the retired
+-- generation's rows AND its `appliedPosition` VERBATIM (the withdrawal emitted no event, so
+-- the checkpoint is still exact), correcting ONLY the withdrawn rows to canonical truth (the
+-- same three-key dto extension `serializeDecision` writes — pinned by the integration probe's
+-- projection==live slice equality). Scoped to STALE pairs (an active generation whose
+-- projection row still claims a withdrawn decision is not withdrawn), so a re-run — or a run
+-- after normal operation resumed — is a no-op.
+DO $mig$
+DECLARE
+  g RECORD;
+  newid TEXT;
+BEGIN
+  FOR g IN
+    SELECT pg."id", pg."consumer", pg."projectId", pg."appliedPosition"
+      FROM "ProjectionGeneration" pg
+     WHERE pg."consumer" = 'decisions.inbox' AND pg."status" = 'active'
+       AND EXISTS (
+         -- stale = a withdrawn decision this generation either claims is NOT withdrawn or has
+         -- no row for at all (a generation that never applied the decision is equally stale)
+         SELECT 1 FROM "Decision" d
+          WHERE d."projectId" = pg."projectId"
+            AND d."status"::text = 'withdrawn'
+            AND NOT EXISTS (
+              SELECT 1 FROM "DecisionProjection" dp
+               WHERE dp."generationId" = pg."id" AND dp."decisionId" = d."id"
+                 AND dp."status" = 'withdrawn'))
+  LOOP
+    UPDATE "ProjectionGeneration" SET "status" = 'retired', "updatedAt" = now() WHERE "id" = g."id";
+    newid := gen_random_uuid()::text;
+    INSERT INTO "ProjectionGeneration"
+      ("id", "consumer", "projectId", "generation", "status", "appliedPosition", "cursorStatus", "activatedAt", "createdAt", "updatedAt")
+    SELECT newid, g."consumer", g."projectId",
+           (SELECT COALESCE(MAX("generation"), 0) + 1 FROM "ProjectionGeneration" WHERE "consumer" = g."consumer" AND "projectId" = g."projectId"),
+           'active', g."appliedPosition", 'live', now(), now(), now();
+    INSERT INTO "DecisionProjection"
+      ("id", "generationId", "projectId", "decisionId", "status", "publishedAt", "authorId", "dto", "updatedAt")
+    SELECT gen_random_uuid()::text, newid, dp."projectId", dp."decisionId",
+           CASE WHEN d."status"::text = 'withdrawn' THEN 'withdrawn' ELSE dp."status" END,
+           dp."publishedAt", dp."authorId",
+           CASE WHEN d."status"::text = 'withdrawn'
+                THEN dp."dto"::jsonb || jsonb_build_object(
+                       'status', 'withdrawn',
+                       'withdrawnAt', to_char(d."withdrawnAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                       'withdrawnBy', d."withdrawnByName",
+                       'withdrawReason', d."withdrawReason")
+                ELSE dp."dto"::jsonb END,
+           now()
+      FROM "DecisionProjection" dp
+      JOIN "Decision" d ON d."id" = dp."decisionId"
+     WHERE dp."generationId" = g."id";
+  END LOOP;
+END $mig$;
 
 -- ── seal 1: terminal, and the evidence FROZEN with it ────────────────────────────────────────
 -- Trigger NAMES are load-bearing: PostgreSQL fires same-event triggers in name order, so the
@@ -280,9 +328,12 @@ BEGIN
     -- Round 9 (Codex): the QUESTION identity is part of the frozen record — retitling or
     -- relocating a withdrawn row attaches the frozen actor/reason to a DIFFERENT register
     -- entry ("Kitchen counter" was withdrawn; the row now says something else was).
+    -- Round 12 (Codex): the primary `id` joins the frozen set — every child FK is ON UPDATE
+    -- CASCADE, so re-keying the row would drag the children to a new key and the register
+    -- would no longer hold the withdrawn entry under the id that was actually issued.
     IF NEW."title" IS DISTINCT FROM OLD."title" OR NEW."room" IS DISTINCT FROM OLD."room"
-       OR NEW."nodeId" IS DISTINCT FROM OLD."nodeId" THEN
-      RAISE EXCEPTION 'phase6-t4a: a withdrawn decision''s question identity is frozen — title/room/nodeId cannot change (decision %)', OLD."id";
+       OR NEW."nodeId" IS DISTINCT FROM OLD."nodeId" OR NEW."id" IS DISTINCT FROM OLD."id" THEN
+      RAISE EXCEPTION 'phase6-t4a: a withdrawn decision''s question identity is frozen — id/title/room/nodeId cannot change (decision %)', OLD."id";
     END IF;
   END IF;
   RETURN NEW;
@@ -375,10 +426,29 @@ BEGIN
     END IF;
     -- Round 9 (Codex): the withdrawing statement cannot rewrite the QUESTION either — the
     -- entry-transition twin of the terminal identity freeze (the command's CAS only ever
-    -- writes the status and the evidence columns).
+    -- writes the status and the evidence columns). Round 12: `id` joins the entry freeze too
+    -- (the terminal arm's re-key refusal, applied to the withdrawing statement itself).
     IF NEW."title" IS DISTINCT FROM OLD."title" OR NEW."room" IS DISTINCT FROM OLD."room"
-       OR NEW."nodeId" IS DISTINCT FROM OLD."nodeId" THEN
+       OR NEW."nodeId" IS DISTINCT FROM OLD."nodeId" OR NEW."id" IS DISTINCT FROM OLD."id" THEN
       RAISE EXCEPTION 'phase6-t4a: a withdrawal cannot rewrite the question — the identity is frozen on entry (decision %)', OLD."id";
+    END IF;
+    -- Round 12 (Codex): the CHOICES are part of the question the withdrawer takes back. The
+    -- option seal judges option writes against the parent's status AT THE TIME OF THE WRITE,
+    -- so ONE transaction could edit the published options and then withdraw. The option touch
+    -- trigger (below) leaves a per-transaction note naming every decision whose options this
+    -- transaction wrote — UPDATE, INSERT and DELETE alike — and a withdrawal of a noted
+    -- decision refuses: the command never touches options, so no legitimate withdrawal trips
+    -- this. (A pre-withdrawal edit in an EARLIER transaction is outside this seal's scope —
+    -- tampering with a LIVE pending question is client-visible and its own problem; what can
+    -- never happen is the WITHDRAWING statement swapping the question it freezes.)
+    IF to_regclass('pg_temp."_t4a_options_touched"') IS NOT NULL THEN
+      DECLARE touched BOOLEAN;
+      BEGIN
+        EXECUTE 'SELECT EXISTS (SELECT 1 FROM pg_temp."_t4a_options_touched" WHERE "decisionId" = $1)' INTO touched USING NEW."id";
+        IF touched THEN
+          RAISE EXCEPTION 'phase6-t4a: the decision''s options were modified in the withdrawing transaction — the frozen question must be the question that was published (decision %)', OLD."id";
+        END IF;
+      END;
     END IF;
     -- Round 9 (Codex): existence is not standing. The attribution FK proves the membership
     -- ROW; the command requires it ACTIVE (the locked participant check). Guarded on NOT NULL
@@ -388,12 +458,15 @@ BEGIN
     -- for the withdrawal (attribution was active AT commit) or, having won the lock, makes
     -- this re-evaluated read see 'removed' and refuse. The service path already holds this
     -- lock (OrgsParticipant.lockActiveMembership), so re-locking there is a no-op.
+    -- Round 12 (Codex): active membership is not AUTHORITY — `decisions.withdraw` is a pmc
+    -- command and live authz derives the token role FROM the membership row, so the attributed
+    -- member must hold ACTIVE pmc standing, not merely an active row of any role.
     IF NEW."withdrawnById" IS NOT NULL THEN
       PERFORM 1 FROM "Membership" m
-       WHERE m."projectId" = NEW."projectId" AND m."userId" = NEW."withdrawnById" AND m."status" = 'active'
+       WHERE m."projectId" = NEW."projectId" AND m."userId" = NEW."withdrawnById" AND m."status" = 'active' AND m."role" = 'pmc'
        FOR UPDATE;
       IF NOT FOUND THEN
-        RAISE EXCEPTION 'phase6-t4a: a withdrawal must be attributed to an ACTIVE member of the project (decision %, member %)', NEW."id", NEW."withdrawnById";
+        RAISE EXCEPTION 'phase6-t4a: a withdrawal must be attributed to an ACTIVE pmc member of the project (decision %, member %)', NEW."id", NEW."withdrawnById";
       END IF;
     END IF;
     IF OLD."status"::text <> 'pending' OR OLD."publishedAt" IS NULL THEN
@@ -453,6 +526,19 @@ CREATE TRIGGER "DecisionApprovalRevision_no_withdrawn"
 CREATE OR REPLACE FUNCTION phase6_t4a_no_approval_event_after_withdraw() RETURNS trigger AS $fn$
 DECLARE dstatus TEXT;
 BEGIN
+  -- Round 12 (Codex): approval events are EVIDENCE the entry seal counts, so they must be as
+  -- durable as the register — erasing one (DELETE) or downgrading its type would launder a
+  -- PR-#192 legacy approval away and let the pending row be withdrawn afterwards. The
+  -- sanctioned destructive resets disable this named trigger for exactly their wipe.
+  IF TG_OP = 'DELETE' THEN
+    IF OLD."type" IN ('approved', 'reapproved') THEN
+      RAISE EXCEPTION 'phase6-t4a: event % is approval evidence — it cannot be deleted (decision %)', OLD."id", OLD."decisionId";
+    END IF;
+    RETURN OLD;
+  END IF;
+  IF TG_OP = 'UPDATE' AND OLD."type" IN ('approved', 'reapproved') AND NEW."type" NOT IN ('approved', 'reapproved') THEN
+    RAISE EXCEPTION 'phase6-t4a: event % is approval evidence — its type cannot be downgraded (decision %)', OLD."id", OLD."decisionId";
+  END IF;
   IF NEW."type" IN ('approved', 'reapproved') THEN
     SELECT d."status"::text INTO dstatus FROM "Decision" d WHERE d."id" = NEW."decisionId" FOR UPDATE;
     IF dstatus = 'withdrawn' THEN
@@ -463,7 +549,7 @@ BEGIN
 END $fn$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS "DecisionEvent_no_withdrawn_approval" ON "DecisionEvent";
 CREATE TRIGGER "DecisionEvent_no_withdrawn_approval"
-  BEFORE INSERT OR UPDATE ON "DecisionEvent"
+  BEFORE INSERT OR UPDATE OR DELETE ON "DecisionEvent"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4a_no_approval_event_after_withdraw();
 
 -- ── seal 5 (round 11, Codex — the frozen question includes its CHOICES) ──────────────────────
@@ -495,3 +581,27 @@ DROP TRIGGER IF EXISTS "DecisionOption_t4a_frozen" ON "DecisionOption";
 CREATE TRIGGER "DecisionOption_t4a_frozen"
   BEFORE INSERT OR UPDATE OR DELETE ON "DecisionOption"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4a_option_frozen_after_withdraw();
+
+-- Round 12 (Codex): the withdrawing TRANSACTION must not rewrite the question first. Every
+-- option write leaves a per-transaction touch note (a temp table, ON COMMIT DROP) naming the
+-- parent decision(s); the withdrawal-entry seal refuses when the decision being withdrawn was
+-- touched in the SAME transaction — catching UPDATE, INSERT and DELETE alike (xmin cannot see
+-- deleted rows). Outside a withdrawing transaction the note simply evaporates at commit, so
+-- every ordinary flow — create-with-options, fixtures, the destructive resets — is untouched.
+CREATE OR REPLACE FUNCTION phase6_t4a_option_touch_note() RETURNS trigger AS $fn$
+BEGIN
+  -- dynamic SQL throughout: an ON COMMIT DROP temp table gets a NEW oid every transaction, and
+  -- a static plpgsql statement would cache the dropped one (the classic temp-table plan-cache
+  -- footgun — the second transaction on a pooled connection would die on a vanished relation)
+  EXECUTE 'CREATE TEMP TABLE IF NOT EXISTS "_t4a_options_touched" ("decisionId" TEXT PRIMARY KEY) ON COMMIT DROP';
+  EXECUTE 'INSERT INTO pg_temp."_t4a_options_touched" VALUES ($1) ON CONFLICT DO NOTHING' USING COALESCE(OLD."decisionId", NEW."decisionId");
+  IF TG_OP = 'UPDATE' AND NEW."decisionId" IS DISTINCT FROM OLD."decisionId" THEN
+    EXECUTE 'INSERT INTO pg_temp."_t4a_options_touched" VALUES ($1) ON CONFLICT DO NOTHING' USING NEW."decisionId";
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END $fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS "DecisionOption_t4a_touch" ON "DecisionOption";
+CREATE TRIGGER "DecisionOption_t4a_touch"
+  AFTER INSERT OR UPDATE OR DELETE ON "DecisionOption"
+  FOR EACH ROW EXECUTE FUNCTION phase6_t4a_option_touch_note();

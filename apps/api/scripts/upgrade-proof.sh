@@ -3335,7 +3335,7 @@ assert_rejects "4a seal 2: an UNATTRIBUTED withdrawal (no evidence at all)" \
 assert_rejects "4a seal 2: a tabs-and-newlines-only reason (the full-whitespace btrim class)" \
   "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"=E'\t\n \x0B' WHERE \"id\"='UP4A-D2'" "non-blank"
 assert_rejects "4a seal 2: a FORGED withdrawer naming no member of the project — the round-9 ACTIVE-standing seal answers first; the FK remains the structural backstop" \
-  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='GHOST', \"withdrawnByName\"='Ghost', \"withdrawReason\"='forged' WHERE \"id\"='UP4A-D2'" "ACTIVE member"
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='GHOST', \"withdrawnByName\"='Ghost', \"withdrawReason\"='forged' WHERE \"id\"='UP4A-D2'" "ACTIVE pmc member"
 assert_rejects "4a seal 2: withdrawal evidence on a NON-withdrawn row (the inverse arm)" \
   "UPDATE \"Decision\" SET \"withdrawReason\"='orphan' WHERE \"id\"='UP4A-D2'" "only on a withdrawn"
 assert_rejects "4a seal 3 forward: the LEGACY approved-with-EMPTY-register class (DL-2, the PR-#192 backfill shape) — source state, not register emptiness, is the guard" \
@@ -3352,7 +3352,7 @@ assert_rejects "4a seal 3 (round 9): ONE statement withdrawing AND rewriting the
 # a membership ROW that is not ACTIVE — existence is not standing
 $PSQL -q -c "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4A-M2','p1','USER-2','pmc','removed') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-9 membership plant failed"; FAIL=1; }
 assert_rejects "4a seal 3 (round 9): attributing a withdrawal to a REMOVED membership — the FK proves the row, the seal requires the standing" \
-  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-2', \"withdrawnByName\"='Removed member', \"withdrawReason\"='ghost authority' WHERE \"id\"='UP4A-D2'" "ACTIVE member"
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-2', \"withdrawnByName\"='Removed member', \"withdrawReason\"='ghost authority' WHERE \"id\"='UP4A-D2'" "ACTIVE pmc member"
 # the PR-#192 legacy class: an approval whose ONLY trace is a DecisionEvent (empty register)
 $PSQL -q -c "INSERT INTO \"DecisionEvent\"(\"id\",\"decisionId\",\"type\",\"actor\") VALUES ('UP4A-LEV','UP4A-D2','approved','Legacy Client') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-9 legacy-event plant failed"; FAIL=1; }
 assert_rejects "4a seal 3 (round 9): withdrawing a decision carrying a LEGACY approval EVENT — the entry seal counts DecisionEvents exactly as it counts the register" \
@@ -3406,8 +3406,38 @@ assert_rejects "4a seal 5 (round 11): deleting a withdrawn decision's option" \
 assert_rejects "4a seal 5 (round 11): adding a NEW option to a withdrawn decision" \
   "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-ONEW','UP4A-D1','B','b','Quartz',5,'sw2')" "frozen question"
 $PSQL -q -c "UPDATE \"DecisionOption\" SET \"material\"='Refined granite' WHERE \"id\"='UP4A-O1';" >/dev/null || { echo "FAILED  4a round-11 precision: the benign option UPDATE on a live decision was rejected"; FAIL=1; }
-assert "4a seal 5 (round 11, precision): a LIVE decision's options stay mutable — the seal freezes withdrawn questions, nothing else" \
-  "SELECT count(*) FROM \"DecisionOption\" WHERE \"id\"='UP4A-O1' AND \"material\"='Refined granite'" "1"
+# round 12 (Codex): the freeze now starts at PUBLICATION — the benign counter-example moves to
+# a DRAFT decision's option (a published pending option is no longer mutable, asserted below).
+$PSQL -q <<'SQL' || { echo "4a round-12 draft plant failed"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
+VALUES ('UP4A-D5','p1','Draft under edit','Kitchen','pending','sw1') ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-OD','UP4A-D5','A','a','Granite',0,'stone') ON CONFLICT DO NOTHING;
+SQL
+$PSQL -q -c "UPDATE \"DecisionOption\" SET \"material\"='Refined granite' WHERE \"id\"='UP4A-OD';" >/dev/null || { echo "FAILED  4a round-12 precision: the DRAFT option UPDATE was rejected"; FAIL=1; }
+assert "4a seal 5 (rounds 11-12, precision): a DRAFT decision's options stay mutable — the freeze starts at publication, nothing earlier" \
+  "SELECT count(*) FROM \"DecisionOption\" WHERE \"id\"='UP4A-OD' AND \"material\"='Refined granite'" "1"
+
+# ── round 12 (Codex): id freeze, published-option freeze, evidence durability, pmc standing,
+# the same-transaction option attack ──
+assert_rejects "4a seal 1 (round 12): RE-KEYING the withdrawn register entry — every child FK is ON UPDATE CASCADE, so the id joins the frozen identity" \
+  "UPDATE \"Decision\" SET \"id\"='UP4A-REKEYED' WHERE \"id\"='UP4A-D1'" "identity is frozen"
+assert_rejects "4a seal 3 (round 12): ONE transaction rewriting an option and withdrawing — the touch note refuses the withdrawal (UPDATE verb)" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Swapped in-flight' WHERE \"id\"='UP4A-O1'; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='swapped question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+# (UP4A-O1 carries the round-8 revision's composite FK, which would answer before the touch
+#  note — the DELETE probe gets its own unreferenced option)
+$PSQL -q -c "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-O2','UP4A-D2','Z','z','Slate',3,'sw4') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-12 option plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 (round 12): ONE transaction deleting an option and withdrawing — the touch note sees DELETE too (xmin never could)" \
+  "BEGIN; DELETE FROM \"DecisionOption\" WHERE \"id\"='UP4A-O2'; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='thinned question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+assert_rejects "4a seal 3 (round 12): ONE transaction padding the options and withdrawing — the entry seal refuses options written in the withdrawing transaction" \
+  "BEGIN; INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-OTX','UP4A-D2','X','x','Padded',9,'sw9'); UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='padded question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+assert_rejects "4a seal 3 reverse (round 12): DELETING an approval event — evidence the entry seal counts cannot be erased" \
+  "DELETE FROM \"DecisionEvent\" WHERE \"id\"='UP4A-LEV'" "approval evidence"
+assert_rejects "4a seal 3 reverse (round 12): DOWNGRADING an approval event's type — laundering by rewrite is refused like erasure" \
+  "UPDATE \"DecisionEvent\" SET \"type\"='note' WHERE \"id\"='UP4A-LEV'" "downgraded"
+$PSQL -q -c "INSERT INTO \"User\"(\"id\",\"projectId\",\"role\",\"name\",\"email\") VALUES ('USER-3','p1','contractor','Active Contractor','u3@up4a.local') ON CONFLICT DO NOTHING; INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4A-M3','p1','USER-3','contractor','active') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-12 contractor plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 (round 12): attributing a withdrawal to an ACTIVE membership WITHOUT pmc standing — active is not authority" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-3', \"withdrawnByName\"='Active Contractor', \"withdrawReason\"='no authority' WHERE \"id\"='UP4A-D2'" "ACTIVE pmc member"
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by

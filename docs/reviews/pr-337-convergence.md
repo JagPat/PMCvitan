@@ -21,7 +21,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `b99f792` | round-8 correction; the late-landing review of record again (7 min): **4 P2 findings**, all verified REAL against existing seals before fixing | the QUESTION identity (`title`/`room`/`nodeId`) outside the frozen set; attribution standing (the FK proves the row, not ACTIVE); the picker rule client-only (`assertRefs` accepted withdrawn references); the entry/reverse seals blind to the legacy approval EVENTS the round-6 diagnostic itself established as evidence |
 | `f841907` | round-9 correction; the FIRST verdict the orchestrator classified IN-WINDOW (attempt 2/2): **5 P2 findings**, each verified against the seal network first — four REAL, one refuted by execution | the round-9 linkability guard ran OUTSIDE the command transaction (a TOCTOU window vs a concurrent withdraw); a claimed uuid-into-text type error in the runtime tombstone that PostgreSQL's I/O-conversion assignment cast makes a non-event — REFUTED WITH EVIDENCE; the shared web selector missing the AUTH-02 pending split; the ACTIVE-membership entry read unlocked (a removal could commit mid-withdrawal); the event reverse arm INSERT-only over a table with no append-only seal |
 | `3a972ae` | round-10 correction (with `origin/main` merged in — PR #339's orchestrator windows); the SECOND consecutive in-window verdict (attempt 1/2, 14 min): **3 P2 findings**, all REAL | the frozen question excluded its CHOICES (`DecisionOption` unsealed); the update path revalidated the CURRENT link, breaking edits on the allowed link-then-withdraw state; the BAKED viewer-specific readiness text survived a persona switch in the client store |
-| (this head) | the round-11 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–11 have touched no command-semantics or §A.4 runtime-arm surface — round 11 completes the freeze over the question's LAST component (its options), corrects the round-10 guard's over-reach, and closes the audience mirror's cached-DTO tail | — |
+| `c2d3a1a` | round-11 correction; the third consecutive in-window verdict (attempt 1/2, 14 min): **6 P2 findings**, all REAL — the widest round since round 1 | the round-8 projection retirement WEDGED the consumer (no replacement checkpoint); a one-transaction option-edit-then-withdraw bypassed the round-11 seal; the round-11 "unchanged link" decision used a stale pre-tx read; the primary `id` outside the identity freeze (children are ON UPDATE CASCADE); approval EVENTS erasable/downgradable before withdrawing; active membership accepted as authority |
+| (this head) | the round-12 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–12 have touched no command-semantics or §A.4 runtime-arm surface — round 12 makes the projection repair HEAL instead of wedge and completes the durability of every component the frozen question depends on (id, options, evidence events, standing) | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -128,6 +129,22 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   the audience mirror (rounds 6/10) covers the BAKED text too: the readiness reason a PMC
   snapshot baked is re-redacted at read time for viewers the server would redact it from,
   via one shared pair of constants (R11-F3).
+- Round 12 is the durability round: a REPAIR must heal, and EVIDENCE must be as permanent as
+  the record it justifies. The round-8 retirement was honest about serving (fall back to
+  canonical) but left the consumer with no checkpoint to continue from — the replacement
+  generation carries the rows and checkpoint forward, correcting only the withdrawn rows,
+  pinned by slice equality and a post-repair delivery that APPLIES (R12-F1). The option seal
+  judged writes at write time, so the withdrawing TRANSACTION could rewrite the question first
+  — every option write now leaves a per-transaction touch note and the entry seal refuses a
+  withdrawal whose transaction touched the options (UPDATE, INSERT and DELETE alike); a
+  publication-wide freeze was prototyped and REJECTED for breaking twelve suites' sanctioned
+  resets, and the earlier-transaction edit is named for what it is — tampering with a live
+  pending question, outside the withdrawal seal's scope (R12-F2). The round-11 unchanged-link decision moves under the lock it
+  depends on (R12-F3 — the same stale-read root as R10-F1, one read further out). The primary
+  `id` joins the frozen identity (R12-F4 — CASCADE re-keying). Approval events join the
+  register in undeletability (R12-F5 — erasure is the reverse of the re-point round 10
+  sealed). And standing becomes AUTHORITY: active pmc, not active anything (R12-F6 — the DB
+  twin of the command's own policy).
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
@@ -172,7 +189,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all eleven rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
+Every finding from all twelve rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the
