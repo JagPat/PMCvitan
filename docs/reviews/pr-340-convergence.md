@@ -12,7 +12,8 @@ with no two-step.
 | `3ba1688` | the plan + a folded STATUS flip | 7 (3 P1, 4 P2) | STATUS reverted, the flip split out as PR #341; corrected on `29eeeef` |
 | `29eeeef` | round-1 batch | none of its own — superseded unreviewed by the conflict-shepherd merge before any verdict | counts once with `d387412` |
 | `d387412` | `29eeeef` + `origin/main` merged (shepherd directive; the plan bytes unchanged by the merge) | 8 (4 P1, 4 P2) | corrected on `c5255c0` |
-| `c5255c0` | round-2 batch + this packet opened | 6 (2 P1, 4 P2) | corrected on this head — the THIRD finding head, so this head also carries `Review-Deferred-To-Probes: phase-6-task-4` |
+| `c5255c0` | round-2 batch + this packet opened | 6 (2 P1, 4 P2) | corrected on `bb28589` |
+| `bb28589` | round-3 batch, carrying BOTH trailers (`Review-Convergence` + the deferral) | 9 (6 P1, 3 P2) | corrected on this head — and the generative rule behind all four rounds is now stated as the plan's §C.3 uniform seal contract |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -118,14 +119,38 @@ projection row/fold/filter, probed on the projected slice (F3, P2 → P22);
 and the on-behalf approval evidence freezing the EXACT holder tuple so a
 later forward cannot orphan the consent record (F6, P2 → P16).
 
+## Round 4 — the generative rule named, and stated as the contract
+
+Round 4's nine findings do not have nine root causes; they have ONE. Every
+round of this review has walked instances of the same generative rule —
+*each fact table needs the same INSERT-side pairing, actor-standing, and
+subject-eligibility seals its siblings got* — one instance per finding: the
+revision's BIRTH value (F1), the countersigner's architect standing (F2),
+`origin` in the freeze list my own round-2 expansion omitted (F3), the
+forward ACTOR's standing (F4), the decider membership's standing + the
+`Membership.userId` re-key (F5), the door's status gate (F6), the member
+decider's approval ROUTE (F7), the stranded reason's non-blank discipline
+(F8), and the consultation row's eligibility (F9). The finding rate did not
+decline (7 → 8 → 6 → 9) because enumerating instances cannot close a
+generative class.
+
+The round-4 correction therefore does BOTH things: it fixes all nine
+instances, and it states the rule itself as the plan's §C.3 **uniform seal
+contract** — five obligations (append-only+freeze, bidirectional transition
+pairing, actor standing, subject eligibility, same-project FKs) with a
+CLOSED table mapping every 4b–4d fact to each obligation and its probe.
+Omitting an obligation on a future fact is now a defect by construction,
+not a per-round discovery, and each unit's review packet walks the table
+for every fact it ships.
+
 ## Deferral ledger
 
-Nothing is disputed: all twenty-one findings across three rounds were
-verified real and corrected; no refutations were posted on this PR. This
-correction head follows the third finding-bearing head, so it carries
+Nothing is disputed: all thirty findings across four rounds were verified
+real and corrected; no refutations were posted on this PR. From the head
+after the third finding-bearing head onward, every head carries
 `Review-Deferred-To-Probes: phase-6-task-4` beside `Review-Convergence:
-complete`: every round-3 finding is converted into named probe arms in the
-plan itself (P16, P22, P29b, P31, P34, P37 — the rows name the exact hostile
-shapes), and phase-6-task-4's unit review stops (4b → 4c → 4d, each
-staged-red) are where those probes execute RED→GREEN. Nothing is dismissed;
-the exact-head gate still fails closed on any current-head finding.
+complete`: every finding is converted into named probe arms in the plan
+itself (the §C.3 table and the P15–P42 rows name the exact hostile shapes),
+and phase-6-task-4's unit review stops (4b → 4c → 4d, each staged-red) are
+where those probes execute RED→GREEN. Nothing is dismissed; the exact-head
+gate still fails closed on any current-head finding.
