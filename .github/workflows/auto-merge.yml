@@ -62,7 +62,9 @@ jobs:
       group: autonomous-review-owner-${{ github.event.workflow_run.pull_requests[0].number || inputs.pr_number || github.run_id }}-${{ github.event.workflow_run.head_sha || inputs.head_sha || github.run_id }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Terminal budget above the worst-case wait: 25m check settle + two 25m
+    # review attempts + polling overhead.
+    timeout-minutes: 90
     steps:
       - name: Check out trusted default-branch automation
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
