@@ -248,6 +248,10 @@ WHERE n."projectId" = dec."projectId"
 -- generation's rows AND its `appliedPosition` VERBATIM (the withdrawal emitted no event, so
 -- the checkpoint is still exact), correcting ONLY the withdrawn rows to canonical truth (the
 -- same three-key dto extension `serializeDecision` writes — pinned by the integration probe's
+-- projection==live slice equality. Round 15 (Codex): the column is a WITHOUT-time-zone UTC
+-- timestamp, and `AT TIME ZONE 'UTC'` re-rendered it in the SESSION timezone (correct only
+-- under a UTC session) — plain to_char formats the stored UTC digits with no session
+-- dependence, in BOTH repair arms (this correction and the missing-row seed below).
 -- projection==live slice equality). Scoped to STALE pairs (an active generation whose
 -- projection row still claims a withdrawn decision is not withdrawn), so a re-run — or a run
 -- after normal operation resumed — is a no-op.
@@ -286,7 +290,7 @@ BEGIN
            CASE WHEN d."status"::text = 'withdrawn'
                 THEN dp."dto"::jsonb || jsonb_build_object(
                        'status', 'withdrawn',
-                       'withdrawnAt', to_char(d."withdrawnAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                       'withdrawnAt', to_char(d."withdrawnAt", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
                        'withdrawnBy', d."withdrawnByName",
                        'withdrawReason', d."withdrawReason")
                 ELSE dp."dto"::jsonb END,
@@ -328,7 +332,7 @@ BEGIN
            || CASE WHEN d."onBehalfOf" IS NOT NULL THEN jsonb_build_object('onBehalfOf', d."onBehalfOf") ELSE '{}'::jsonb END
            || CASE WHEN d."date" IS NOT NULL THEN jsonb_build_object('date', d."date") ELSE '{}'::jsonb END
            || CASE WHEN d."cost" IS NOT NULL THEN jsonb_build_object('cost', d."cost") ELSE '{}'::jsonb END
-           || CASE WHEN d."withdrawnAt" IS NOT NULL THEN jsonb_build_object('withdrawnAt', to_char(d."withdrawnAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) ELSE '{}'::jsonb END
+           || CASE WHEN d."withdrawnAt" IS NOT NULL THEN jsonb_build_object('withdrawnAt', to_char(d."withdrawnAt", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')) ELSE '{}'::jsonb END
            || CASE WHEN d."withdrawnByName" IS NOT NULL THEN jsonb_build_object('withdrawnBy', d."withdrawnByName") ELSE '{}'::jsonb END
            || CASE WHEN d."withdrawReason" IS NOT NULL THEN jsonb_build_object('withdrawReason', d."withdrawReason") ELSE '{}'::jsonb END,
            now()
@@ -480,6 +484,13 @@ BEGIN
     IF NEW."title" IS DISTINCT FROM OLD."title" OR NEW."room" IS DISTINCT FROM OLD."room"
        OR NEW."nodeId" IS DISTINCT FROM OLD."nodeId" OR NEW."id" IS DISTINCT FROM OLD."id" THEN
       RAISE EXCEPTION 'phase6-t4a: a withdrawal cannot rewrite the question — the identity is frozen on entry (decision %)', OLD."id";
+    END IF;
+    -- Round 15 (Codex): the PUBLICATION FACT joins the entry freeze — the terminal arm freezes
+    -- publishedAt only once the row is ALREADY withdrawn, so the withdrawing statement itself
+    -- could forge the issue time the permanent register records (the source-state arm below
+    -- proves only that the OLD row was published, never that the timestamp is unchanged).
+    IF NEW."publishedAt" IS DISTINCT FROM OLD."publishedAt" THEN
+      RAISE EXCEPTION 'phase6-t4a: a withdrawal cannot rewrite the publication fact — publishedAt is frozen on entry (decision %)', OLD."id";
     END IF;
     -- Round 12 (Codex): the CHOICES are part of the question the withdrawer takes back. The
     -- option seal judges option writes against the parent's status AT THE TIME OF THE WRITE,
@@ -710,3 +721,44 @@ DROP TRIGGER IF EXISTS "DecisionOption_t4a_touch" ON "DecisionOption";
 CREATE TRIGGER "DecisionOption_t4a_touch"
   AFTER INSERT OR UPDATE OR DELETE ON "DecisionOption"
   FOR EACH ROW EXECUTE FUNCTION phase6_t4a_option_touch_note();
+
+-- Round 15 (Codex): TRUNCATE fires no ROW trigger, so evidence could be erased WHOLESALE where
+-- a row-wise DELETE is refused — and TRUNCATE is grantable separately from ownership
+-- (GRANT TRUNCATE), making it WEAKER than the ALTER TABLE ... DISABLE TRIGGER boundary the
+-- sanctioned bypasses standardize on. Two STATEMENT-level guards, each PRECISE (a BEFORE
+-- TRUNCATE trigger still sees the rows):
+--   - "DecisionEvent": refused while ANY approval-type row exists — truncating them wholesale
+--     would launder the evidence the entry seal counts. An approval-free table truncates
+--     freely, and the one sanctioned reset that reaches this table by TRUNCATE CASCADE
+--     (event-catalog's disposable-database wipe) disables the guard BY NAME like every other
+--     sanctioned bypass.
+--   - "DecisionOptionTouch": refused only when the TRUNCATING TRANSACTION itself wrote notes —
+--     the laundering chain [edit options, truncate the notes, withdraw] dies at the truncate,
+--     while a housekeeping truncate from any OTHER transaction passes (committed notes are
+--     inert history the entry seal never matches).
+-- Stated honestly: the register ("DecisionApprovalRevision") keeps its row-level append-only
+-- seal ONLY — forty-six sanctioned shared-database resets truncate it by contract, and the
+-- entry seal holds further independent arms (the source state, the approval columns via
+-- coherence, the legacy events above). Widening that reset contract is a named follow-up for
+-- its own review, not a correction-round side effect.
+CREATE OR REPLACE FUNCTION phase6_t4a_no_evidence_truncate() RETURNS trigger AS $fn$
+BEGIN
+  IF TG_TABLE_NAME = 'DecisionEvent' THEN
+    IF EXISTS (SELECT 1 FROM "DecisionEvent" WHERE "type" IN ('approved', 'reapproved')) THEN
+      RAISE EXCEPTION 'phase6-t4a: TRUNCATE would erase approval evidence — approval events cannot be truncated away';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'DecisionOptionTouch' THEN
+    IF EXISTS (SELECT 1 FROM "DecisionOptionTouch" WHERE "txid" = txid_current()) THEN
+      RAISE EXCEPTION 'phase6-t4a: the option touch notes cannot be truncated by the transaction that wrote them';
+    END IF;
+  END IF;
+  RETURN NULL;
+END $fn$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS "DecisionEvent_t4a_no_truncate" ON "DecisionEvent";
+CREATE TRIGGER "DecisionEvent_t4a_no_truncate"
+  BEFORE TRUNCATE ON "DecisionEvent"
+  FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4a_no_evidence_truncate();
+DROP TRIGGER IF EXISTS "DecisionOptionTouch_t4a_no_truncate" ON "DecisionOptionTouch";
+CREATE TRIGGER "DecisionOptionTouch_t4a_no_truncate"
+  BEFORE TRUNCATE ON "DecisionOptionTouch"
+  FOR EACH STATEMENT EXECUTE FUNCTION phase6_t4a_no_evidence_truncate();

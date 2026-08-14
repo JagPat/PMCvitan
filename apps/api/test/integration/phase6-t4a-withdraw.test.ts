@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture } from './fixtures';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { ActivitiesService } from '../../src/activities/activities.service';
@@ -1757,6 +1757,131 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const enables = (self.match(/ENABLE TRIGGER/g) ?? []).length;
       expect(disables).toBeGreaterThan(0);
       expect(enables).toBeGreaterThanOrEqual(disables - 2); // the two seed-source index probes count once each
+    });
+  });
+
+  describe('round 15 (Codex): the publication fact on entry, session-timezone-proof repair, TRUNCATE-proof evidence', () => {
+    // R15-F1 — the entry arm proved the old row WAS published but never froze the timestamp on
+    // the transition, so the withdrawing statement itself could forge the issue time the
+    // permanent register records (the terminal arm freezes it only once already withdrawn).
+    it('R15-F1: the withdrawing statement cannot rewrite publishedAt — the publication fact is frozen on entry', async () => {
+      const id = await seed({ title: 'Forged issue time' });
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "publishedAt"=now() - interval '400 days', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='forged issue time' WHERE "id"=${id}`,
+      ).rejects.toThrow(/publishedAt is frozen on entry/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+    });
+
+    // R15-F2 — `ts AT TIME ZONE 'UTC'` on a WITHOUT-time-zone column re-renders the timestamp
+    // in the SESSION timezone, so an operator running the migration through a non-UTC psql
+    // (psqlrc, PGTZ) wrote shifted withdrawnAt strings into the repaired dtos. The formatter
+    // now renders the stored UTC digits directly — session-independent — in BOTH repair arms
+    // (the stale-row correction and the missing-row seed), pinned by running the REAL file
+    // under an Asia/Kolkata session and comparing through the operator diagnostic.
+    it('R15-F2: the projection repair serializes withdrawnAt identically under a non-UTC session — both repair arms', async () => {
+      const { execFileSync } = await import('node:child_process');
+      const migrationPath = join(dirname(fileURLToPath(import.meta.url)), '../../prisma/migrations/20270810000000_phase6_t4a_withdraw/migration.sql');
+      const dbUrl = (process.env.DATABASE_URL ?? '').split('?')[0]!;
+      const projW = `it-t4a-r15w-${Date.now() % 1e6}`;
+      await t.prisma.project.create({
+        data: { id: projW, orgId: f.orgA.id, name: projW, short: 'W', descriptor: '', stage: 'x', siteCode: 'W', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
+      });
+      await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      const idMissing = 'DL-t4a-r15m';
+      const idStale = 'DL-t4a-r15s';
+      for (const [id, title] of [[idMissing, 'Missing-row arm'], [idStale, 'Stale-row arm']] as const) {
+        await t.prisma.decision.create({
+          data: { id, projectId: projW, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+        });
+        await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+      }
+      const drain = async (): Promise<void> => {
+        for (let pass = 0; pass < 50; pass++) {
+          const ds = await t.prisma.outboxDelivery.findMany({
+            where: { consumer: 'decisions.inbox', projectId: projW, status: { in: ['pending', 'leased'] } },
+            orderBy: { streamPosition: 'asc' },
+          });
+          if (!ds.length) break;
+          for (const d of ds) await relay.dispatchOne(d.id);
+        }
+      };
+      try {
+        for (const id of [idMissing, idStale]) {
+          await t.prisma.$transaction(async (tx) => {
+            await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id, payload: {}, effectKey: 'decision.published', dispatch: {} });
+          });
+        }
+        await drain();
+        const gen = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
+        await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='tz probe' WHERE "id" IN (${idMissing}, ${idStale})`;
+        // the two stale shapes: idMissing has NO row (seed arm); idStale keeps its pending row (correction arm)
+        await t.prisma.decisionProjection.deleteMany({ where: { generationId: gen.id, decisionId: idMissing } });
+        // the operator's psql session is NOT UTC — the repair must not care
+        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe', env: { ...process.env, PGTZ: 'Asia/Kolkata' } });
+        const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
+        const stored = await storedDecisionRows(t.prisma, replacement.id);
+        const canonical = await computeDecisionRows(t.prisma, projW);
+        expect(stored).toEqual(canonical);
+      } finally {
+        await t.prisma.$executeRawUnsafe(
+          'TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection", "CommandExecution" CASCADE',
+        );
+        await t.prisma.notification.deleteMany({ where: { projectId: projW } });
+        await t.prisma.auditLog.deleteMany({ where: { projectId: projW } });
+        await t.prisma.$transaction([
+          t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: projW } } }),
+          t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: projW } } }),
+          t.prisma.decision.deleteMany({ where: { projectId: projW } }),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
+        ]); // R14-F2: atomic — a failed wipe rolls the disables back
+        await t.prisma.membership.deleteMany({ where: { projectId: projW } });
+        await t.prisma.project.deleteMany({ where: { id: projW } });
+      }
+    });
+
+    // R15-F3 — TRUNCATE fires no row trigger, so the approval events the entry seal counts
+    // could be erased WHOLESALE where a row-wise DELETE is refused (and TRUNCATE is grantable
+    // separately from ownership — WEAKER than the DISABLE TRIGGER boundary). The statement
+    // guard is conditional (precision, not mere strictness): an approval-free table still
+    // truncates.
+    it('R15-F3: TRUNCATE of DecisionEvent refuses while approval evidence exists — and passes once none does', async () => {
+      const id = await seed({ title: 'Truncate laundering' });
+      await t.prisma.decisionEvent.create({ data: { id: 'r15-lev', decisionId: id, type: 'approved', actor: 'Legacy Client' } });
+      await expect(t.prisma.$executeRawUnsafe('TRUNCATE "DecisionEvent"')).rejects.toThrow(/approval evidence/);
+      // the evidence stands, so the laundered withdrawal stays refused
+      await expect(
+        t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='laundered by truncate' WHERE "id"=${id}`,
+      ).rejects.toThrow(/legacy approval event/);
+      // precision: with the approval evidence gone through the SANCTIONED reset, truncate passes
+      await wipeDecisionEvents(t.prisma, { id: 'r15-lev' });
+      expect(await t.prisma.$executeRawUnsafe('TRUNCATE "DecisionEvent"')).toBeDefined();
+    });
+
+    // R15-F4 — the touch-note guard was row-level only: one transaction could edit a published
+    // pending decision's options, TRUNCATE the note table (no row trigger fires), then
+    // withdraw. The statement guard refuses a truncate from any transaction that wrote notes
+    // ITSELF; committed notes from other transactions are inert history, so housekeeping
+    // truncates pass.
+    it('R15-F4: the withdrawing transaction cannot TRUNCATE its own touch notes — and a separate-transaction truncate still passes', async () => {
+      const id = await seed({ title: 'Truncate the note' });
+      await expect(
+        t.prisma.$transaction([
+          t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped under truncate' WHERE "decisionId"=${id} AND "optionKey"='a'`,
+          t.prisma.$executeRawUnsafe('TRUNCATE "DecisionOptionTouch"'),
+          t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='hidden by truncate' WHERE "id"=${id}`,
+        ]),
+      ).rejects.toThrow(/cannot be truncated/);
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
+      // precision: a SEPARATE transaction (no own notes) may truncate the inert history
+      expect(await t.prisma.$executeRawUnsafe('TRUNCATE "DecisionOptionTouch"')).toBeDefined();
+      // and a clean later withdrawal still succeeds
+      await svc.withdraw(f.projectA.id, id, { reason: 'clean withdrawal after' }, pmc());
+      expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('withdrawn');
     });
   });
 

@@ -26,7 +26,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `4b7b9e2` | the test-only CI follow-up (the three dynamic-wipe suites join the sanctioned `wipeDecisionEvents` reset; full battery 1171/1171). It carried the convergence TRAILER but not the PACKET — past the convergence threshold every head owes both, and the gate correctly required this audit's currency | 1 gate requirement (not a Codex finding): missing packet on the head commit |
 | `a58e949` | packet-only (this audit brought current through `4b7b9e2`); the fourth consecutive in-window verdict: **5 findings (1×P1, 4×P2)** — the P1 REFUTED by execution | a claimed plpgsql error on every option INSERT (OLD/NEW are NULL records since PG 11 — refuted on PostgreSQL 16.13 with the docs citation + probe); the pg_temp touch note erasable by its own session with NO privilege; an approval event re-pointable AWAY while keeping its type; the replacement generation unable to seed a row the retired generation never had; the daily-log material write accepting a withdrawn decision link |
 | `ecd46af` | the round-13 correction + this audit extended; the fifth consecutive in-window verdict: **3 P2 findings** — one REFUTED by execution with a REAL adjacent gap surfaced | the rerunnable migration's identity-keyed notice retirement erasing the withdraw command's OWN stamped notice on re-runs; the suite's sequential seal toggles skipping their ENABLEs on a failed wipe; a claimed `ambiguous-raw-waiver` failure that cannot occur (distinct enclosing symbols; the check is green on the exact head) — but whose probe exposed `UPDATE_RE` blind to ALIASED set-based updates, an invisible-unwaived raw write |
-| (this head) | the round-14 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–14 have touched no command-semantics or §A.4 runtime-arm surface — round 14 makes the operator re-run conservative (retire bells, never records), the test resets failure-safe, and the raw-write tripwire complete over the aliased UPDATE shape | — |
+| `5f9d894` | the round-14 correction + this audit extended; the sixth consecutive in-window verdict: **4 P2 findings**, all REAL | the withdrawing statement able to forge `publishedAt` (the entry freeze covered identity but not the publication fact); the repair dtos rendering `withdrawnAt` in the SESSION timezone under a non-UTC psql; TRUNCATE erasing approval events wholesale where the row-wise DELETE is refused; TRUNCATE erasing the touch notes inside the withdrawing transaction |
+| (this head) | the round-15 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit; rounds 4–15 have touched no command-semantics or §A.4 runtime-arm surface — round 15 completes the entry freeze over the publication fact, makes the projection repair session-independent, and extends the evidence seals from the row verb to the STATEMENT verb (TRUNCATE), with the register's truncate surface named as the one deliberate residual of the shared-reset contract | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -178,6 +179,18 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   together: the regex admits the alias, the statement gets its named waiver, and two
   adversarial fixtures pin the shape (R14-F3 — the fourth refutation, and the first whose
   probe found an adjacent defect the finding itself missed).
+- Round 15 extends accepted rules along two axes. The entry freeze (rounds 7/9/12) gains its
+  last column: the PUBLICATION FACT, forgeable in the withdrawing statement itself while the
+  terminal arm froze it one transition too late (R15-F1). The projection repair becomes
+  session-independent — `AT TIME ZONE 'UTC'` on a without-time-zone column re-rendered the
+  stored UTC digits in the operator's psql session timezone, correct only under UTC (R15-F2).
+  And the evidence seals move up a VERB: row triggers cannot see TRUNCATE, which is grantable
+  separately from ownership and therefore WEAKER than the DISABLE TRIGGER boundary the
+  sanctioned bypasses standardize on — two precise statement-level guards close it (approval
+  events while any exist; touch notes only against the transaction that wrote them), the one
+  affected sanctioned reset gains the named bypass, and the register's truncate surface is
+  NAMED as the deliberate residual: forty-six shared-database resets truncate it by contract,
+  and widening that contract belongs to its own review, not a correction round (R15-F3/F4).
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
@@ -222,7 +235,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all fourteen rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
+Every finding from all fifteen rounds is fixed in-branch or refuted with executable evidence with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the

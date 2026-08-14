@@ -394,3 +394,19 @@ analyzer blind spot, fixed reproduce-first in the same head.
 Round-14 gates: probe file 61/61 (RED 3/3 at `ecd46af` — R14-F1, the R14-F2 pin, and the
 aliased-UPDATE fixture); boundary suite 44/44; `pnpm check` EXIT 0 (web 764/764, API 793/793);
 upgrade-proof extended (UP4A-N4); the full battery via the required `api` CI check.
+
+## Round 15 — the four Codex P2 findings on head `5f9d894`, one batched head
+
+The sixth consecutive in-window verdict. All four REAL, reproduced RED first (4/4 at `5f9d894`).
+
+| # | finding | fix |
+|---|---|---|
+| R15-F1 (P2) | the entry arm proved only that the OLD row was published — the withdrawing statement itself could forge `publishedAt`, and the terminal arm then froze the forged issue time into the permanent register | `publishedAt` joins the ENTRY freeze (`NEW IS DISTINCT FROM OLD` refuses — the entry-transition-twin pattern of rounds 7/9/12); probed + an upgrade-proof rejection |
+| R15-F2 (P2) | `d."withdrawnAt" AT TIME ZONE 'UTC'` on a WITHOUT-time-zone column re-renders the timestamp in the SESSION timezone — an operator running the rerunnable migration through a non-UTC psql (psqlrc, PGTZ) wrote shifted `withdrawnAt` strings into the repaired dtos, served until the next rebuild | both repair arms (the stale-row correction and the missing-row seed) now format the stored UTC digits directly (`to_char` without the conversion) — session-independent. Pinned by running the REAL migration file under `PGTZ=Asia/Kolkata` on a fresh project exercising BOTH arms and comparing through `storedDecisionRows == computeDecisionRows` |
+| R15-F3 (P2) | TRUNCATE fires no row trigger, so the approval EVENTS the entry seal counts could be erased wholesale where the row-wise DELETE is refused — and TRUNCATE is grantable separately from ownership (`GRANT TRUNCATE`), making it WEAKER than the `DISABLE TRIGGER` boundary the sanctioned bypasses standardize on | a statement-level guard refuses `TRUNCATE "DecisionEvent"` while ANY approval-type row exists (a BEFORE TRUNCATE trigger still sees the rows); an approval-free table truncates freely (precision), and the ONE sanctioned reset that reaches the table by `TRUNCATE "Decision" CASCADE` (event-catalog's disposable-DB wipe) disables the guard BY NAME, atomically. Stated honestly: the register (`DecisionApprovalRevision`) keeps its row-level append-only seal only — forty-six sanctioned shared-DB resets truncate it by contract, the entry seal holds further independent arms (source state, approval columns via coherence, the guarded legacy events), and widening that reset contract is a named follow-up for its own review, not a correction-round side effect |
+| R15-F4 (P2) | the round-13 note table was guarded row-wise only — one transaction could edit a published pending decision's options, `TRUNCATE "DecisionOptionTouch"` (no row trigger fires), then withdraw with the entry seal blinded | the statement guard refuses a truncate from any transaction that wrote notes ITSELF (`EXISTS … WHERE txid = txid_current()` — the laundering chain dies at the truncate), while a housekeeping truncate from any OTHER transaction passes: committed notes are inert history the entry seal never matches, so the guard is precise, not merely strict. Probed both ways + an upgrade-proof rejection |
+
+Round-15 gates: probe file 65/65 (RED 4/4 at `5f9d894`); event-catalog 8/8 (its reset gains the
+named atomic bypass); `pnpm check` EXIT 0 (web 764/764, API 793/793); upgrade-proof extended
+(the publishedAt entry rejection, the two truncate rejections); the full battery via the
+required `api` CI check.

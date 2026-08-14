@@ -3454,6 +3454,14 @@ assert_rejects "4a seal 3 (round 13): rewriting a touch note — evidence rows n
 assert_rejects "4a seal 3 reverse (round 13): RE-POINTING an approval event AWAY from its decision (onto a LIVE target) — laundering by relocation is refused like erasure" \
   "UPDATE \"DecisionEvent\" SET \"decisionId\"='UP4A-D3' WHERE \"id\"='UP4A-LEV'" "re-pointed away"
 
+# ── round 15 (Codex): the publication fact on entry + TRUNCATE-proof evidence ──────────────
+assert_rejects "4a seal 3 (round 15): the withdrawing statement rewriting publishedAt — the publication fact joins the entry freeze" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"publishedAt\"=now() - interval '400 days', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='forged issue time' WHERE \"id\"='UP4A-D2'" "publishedAt is frozen on entry"
+assert_rejects "4a seal 3 reverse (round 15): TRUNCATE of DecisionEvent while approval evidence exists — wholesale erasure is refused like the row-wise DELETE" \
+  "TRUNCATE \"DecisionEvent\"" "approval evidence"
+assert_rejects "4a seal 3 (round 15): one transaction editing an option, TRUNCATING its own touch notes and withdrawing — the truncate refuses first" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden by truncate' WHERE \"id\"='UP4A-O1'; TRUNCATE \"DecisionOptionTouch\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden by truncate' WHERE \"id\"='UP4A-D2'; COMMIT" "cannot be truncated"
+
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN
