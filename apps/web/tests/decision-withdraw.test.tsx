@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// the four screens' own source text, via Vite's `?raw` loader (the commercial.test.ts
+// mechanism) — the round-6 pin asserts they read decision rows THROUGH the shared rule
+import placesSrc from '@/screens/PlacesScreen.tsx?raw';
+import scheduleSrc from '@/screens/ScheduleScreen.tsx?raw';
+import dailyLogSrc from '@/screens/DailyLogScreen.tsx?raw';
+import portfolioSrc from '@/screens/PortfolioScreen.tsx?raw';
 import { render, cleanup } from '@testing-library/react';
 import { useStore, getInitialState } from '@/store/store';
-import { selectPending, selectReapproval, selectLogDecisions, selectActionItems } from '@/store/selectors';
+import { selectPending, selectReapproval, selectLogDecisions, selectActionItems, selectVisibleDecisions } from '@/store/selectors';
 import { replayOutboxOp, type ApiGateway, type ApiSnapshot, type OutboxOp } from '@/data/apiGateway';
 import { DecisionLogScreen } from '@/screens/DecisionLogScreen';
 import type { Decision, Role } from '@vitan/shared';
@@ -99,6 +105,34 @@ describe('P10 (web half): a withdrawn decision is pmc-only on every selector sur
     seed('client');
     const badge = s().decisions.filter((d) => d.status === 'pending' && !d.draft).length;
     expect(badge).toBe(1); // DL-W contributes nothing
+  });
+
+  // ── round 6 (Codex): the surfaces OUTSIDE the log read through the shared audience rule ──
+  // The Site Map (and Schedule/Daily-Log pickers, Portfolio) filtered `s.decisions` ad hoc, so
+  // a persona switch over a still-loaded store — or demo mode, which never refetches — rendered
+  // a withdrawn decision's title/location to roles the server filters it from.
+  it('R6-F3: selectVisibleDecisions — pmc keeps the withdrawn register row; every other role never receives it', () => {
+    seed('pmc');
+    expect(selectVisibleDecisions(s()).map((d) => d.id)).toContain('DL-W');
+    for (const role of ['contractor', 'engineer', 'client', 'consultant'] as Role[]) {
+      seed(role);
+      const ids = selectVisibleDecisions(s()).map((d) => d.id);
+      expect(ids, `role=${role}`).not.toContain('DL-W');
+      expect(ids, `role=${role}`).toContain('DL-P'); // the rule hides ONLY the withdrawal
+    }
+  });
+
+  it('R6-F3: the Site Map, Schedule, Daily Log and Portfolio read decision rows THROUGH the shared rule — no ad-hoc s.decisions filter remains', () => {
+    const screens: Array<[string, string]> = [
+      ['PlacesScreen', placesSrc],
+      ['ScheduleScreen', scheduleSrc],
+      ['DailyLogScreen', dailyLogSrc],
+      ['PortfolioScreen', portfolioSrc],
+    ];
+    for (const [screen, src] of screens) {
+      expect(src, `${screen} routes through selectVisibleDecisions`).toContain('selectVisibleDecisions');
+      expect(src, `${screen} keeps no ad-hoc decision-row filter`).not.toContain('s.decisions.filter((d) => !d.draft)');
+    }
   });
 });
 

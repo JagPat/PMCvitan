@@ -44,6 +44,22 @@ export function selectLogDecisions(s: AppState): Decision[] {
   return s.decisions.filter((d) => !d.draft);
 }
 
+/** Phase 6 task 4a round 6 (Codex) — the ONE audience rule for decision ROWS on every surface
+ *  outside the log: a WITHDRAWN decision is pmc-only (server parity: `decisionVisibleToViewer`),
+ *  and drafts live only in the Drafts workspace. The Site Map, Schedule, Daily Log and Portfolio
+ *  read THROUGH this instead of filtering `s.decisions` ad hoc, so a persona switch over a
+ *  still-loaded store (or demo mode, which never refetches) can never render a withdrawn
+ *  decision's title/location to a role the server would filter it from. The log keeps its own
+ *  stricter selector (`selectLogDecisions` also hides pending rows from contractor/engineer);
+ *  by-id STATUS reads for gate derivation stay raw deliberately — the gate needs the status and
+ *  the REASON is what the viewer rule redacts (`readinessFor`). */
+export function selectVisibleDecisions(s: AppState): Decision[] {
+  if (s.role !== 'pmc') {
+    return s.decisions.filter((d) => d.status !== 'withdrawn' && !d.draft);
+  }
+  return s.decisions.filter((d) => !d.draft);
+}
+
 /** Private, unpublished draft decisions — the author's Drafts workspace. */
 export function selectDraftDecisions(s: AppState): Decision[] {
   return s.decisions.filter((d) => d.draft);

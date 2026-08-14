@@ -233,3 +233,25 @@ the withdrawal evidence joined.
 Round-5 gates: probe file 32/32 (incl. the ordering pin); `pnpm check` EXIT 0 (web 760/760,
 API 791/791); `upgrade-proof.sh` PASSED — **560 assertions** incl. the two new round-5 stages;
 the full integration battery via the required `api` CI check.
+
+## Round 6 — the four Codex P2 findings on head `2e15eba`, one batched head
+
+The sixth finding-bearing head — past the orchestrator's advisory review-lifecycle limit. The
+unit stays whole deliberately: plan §F pre-authorizes it (the enum and its readers are
+indivisible), these findings are again the enumeration's TAIL (a diagnostic completion, a
+deployment-model boundary, one web selector class, one harness hardening — none touch the
+command, the seals' semantics, or the §A.4 runtime arms), and a split now would separate the
+readers from the status they read. Codex's attempt-2 review arrived 43s AFTER the orchestrator's
+timeout verdict; the findings are treated as the review of record for `2e15eba` and this head
+answers them — a new head restarts the loop, mooting the stale timeout status.
+
+| # | finding | fix |
+|---|---|---|
+| R6-F1 (P2) | the diagnostics accepted a pre-existing withdrawn row whose approval evidence is the LEGACY class — an EMPTY `DecisionApprovalRevision` register but `approved`/`reapproved` `DecisionEvent` rows and/or the approval columns (the PR-#192 backfill shape); the entry trigger cannot recover a hand-flipped source status, so the seals would install around an approval-bearing withdrawn decision | a fifth unconditional diagnostic quarantines any withdrawn row carrying `approvedById`/`approver`/`approvedOption` OR an approved/reapproved event; upgrade-proof stage (the plant passes every OTHER diagnostic and holds a REAL membership so nothing aborts incidentally): RED at `2e15eba` — the migration fully ACCEPTED the row — → GREEN, abort by the named diagnostic (561 assertions) |
+| R6-F2 (P2) | mixed-version senders: an OLD relay process (no pre-send re-check) holding a lease sends the stale push regardless of the mark | the finding's own first remedy, made concrete: the DEPLOYMENT model is the gate — this platform deploys as one service whose old process stops before `migrate.sh` runs and the new process starts, so no pre-4a sender is alive by the first moment `decisions.withdraw` exists; stated in the §A.4 boundary (`cancellation.ts` docstring) and operationalized as `docs/RUNBOOK.md §P6-4a` (do not overlap pre/post-4a processes for this one rollout); if ever run multi-instance, the exposure is bounded to the one 4a rollout window — the same already-sent class as the accepted check→send residual |
+| R6-F3 (P2) | not every web reader went through `selectLogDecisions`: the Site Map (`PlacesScreen`) — and, same class, the Schedule/Daily-Log pickers and Portfolio — filtered `s.decisions` ad hoc, so a persona switch over a still-loaded store (or demo mode, which never refetches) rendered a withdrawn decision's title/location to roles the server filters it from | ONE shared audience rule `selectVisibleDecisions` (withdrawn is pmc-only; drafts excluded) with all four screens routed through it; the two PICKERS additionally exclude withdrawn for EVERY role — a terminal decision is not linkable/matchable; web tests RED at `2e15eba` → GREEN: the selector behaviour per role + a `?raw` source pin that the four screens contain no ad-hoc `s.decisions` row filter |
+| R6-F4 (P2) | the seed's disable → wipe → enable trio was three independent round-trips — a wipe that throws leaves `Decision_t4a_d_no_delete` DISABLED, weakening the write-once evidence outside the sanctioned reset | the trio is ONE `prisma.$transaction`: PG DDL is transactional, so any failure rolls the DISABLE back with it — no failure path can leave the seal off; the probe file's ordering pin gains the atomicity assertion (one transaction, no awaited statement between open and re-enable), RED at `2e15eba` → GREEN |
+
+Round-6 gates: probe file 33/33; web `decision-withdraw` 10/10; `pnpm check` EXIT 0 (web
+762/762, API 791/791); `upgrade-proof.sh` PASSED — **561 assertions** incl. the R6-F1
+plant/abort stage; the full integration battery via the required `api` CI check.

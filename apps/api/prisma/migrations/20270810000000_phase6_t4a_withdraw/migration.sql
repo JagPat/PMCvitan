@@ -62,6 +62,21 @@ BEGIN
   IF bad > 0 THEN
     RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) carry approval revisions — a decision with approval evidence can never be withdrawn (sample: %). Resolve by hand, then redeploy.', bad, sample;
   END IF;
+  -- Round 6 (Codex): the register is NOT the only approval evidence. The PR-#192 legacy class
+  -- holds approvals whose only trace is DecisionEvent rows and/or the approval columns (an
+  -- EMPTY DecisionApprovalRevision register), and the entry trigger cannot recover a
+  -- hand-flipped row's source status after the fact. A withdrawn row carrying ANY approval
+  -- signal is quarantined here, never accepted.
+  SELECT count(*), COALESCE(string_agg(x.id, ', ' ORDER BY x.id), '') INTO bad, sample FROM (
+    SELECT d."id" FROM "Decision" d
+    WHERE d."status"::text = 'withdrawn'
+      AND (d."approvedById" IS NOT NULL OR d."approver" IS NOT NULL OR d."approvedOption" IS NOT NULL
+           OR EXISTS (SELECT 1 FROM "DecisionEvent" e
+                       WHERE e."decisionId" = d."id" AND e."type" IN ('approved', 'reapproved')))
+    LIMIT 20) x;
+  IF bad > 0 THEN
+    RAISE EXCEPTION 'phase6-t4a: % withdrawn decision(s) carry LEGACY approval signals (approval columns or approved/reapproved events, with or without register rows) — a decision with approval evidence can never be withdrawn (sample: %). Resolve by hand, then redeploy.', bad, sample;
+  END IF;
   -- Round 2 (Codex F1): the INVERSE arm of coherence, back-checked. The trigger below refuses
   -- orphan evidence only on FUTURE writes; a partial/manual apply that already added the
   -- columns can leave a non-withdrawn row carrying withdrawal claims, which the withdrawn-only

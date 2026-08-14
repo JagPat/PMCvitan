@@ -445,6 +445,36 @@ SQL
   fi
   echo "ok      4a R2-F1: abort names the orphaned evidence (UP4A-ORPHAN)"
   $PSQL -q -c "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-ORPHAN';" || { echo "4a R2-F1 repair failed"; exit 1; }
+
+  # ── round 6 (Codex): a withdrawn row whose approval evidence is the LEGACY class — an EMPTY
+  # DecisionApprovalRevision register but an 'approved' DecisionEvent (the PR-#192 backfill
+  # shape) and/or the approval columns. The register-count diagnostic alone accepts it, the
+  # entry trigger cannot recover the hand-flipped source status, and the seals would install
+  # around an approval-bearing withdrawn decision. The plant passes every OTHER diagnostic
+  # (complete evidence + publishedAt + zero register rows) so the abort proven here is BY the
+  # new legacy-signal diagnostic and nothing else.
+  echo "=== Phase 6 4a (R6-F1): planting a withdrawn row with LEGACY approval signals (empty register + approved event) ==="
+  # the withdrawer holds a REAL membership so the attribution FK passes — without this the FK
+  # ALTER would abort incidentally and mask the acceptance this stage exists to refute
+  $PSQL -q <<'SQL' || { echo "4a R6-F1 plant failed"; exit 1; }
+INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('UP4A-M1','p1','USER-1','pmc','active') ON CONFLICT DO NOTHING;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt","withdrawnAt","withdrawnById","withdrawnByName","withdrawReason")
+VALUES ('UP4A-LEGACYAPPR','p1','Legacy approved, hand-withdrawn','Hall','pending','stone',now(),now(),'USER-1','Legacy PMC','hand-flipped in a partial fork');
+UPDATE "Decision" SET "status"='withdrawn' WHERE "id"='UP4A-LEGACYAPPR';
+INSERT INTO "DecisionEvent" ("id","decisionId","type","actor")
+VALUES ('UP4A-LEGACYAPPR-EV','UP4A-LEGACYAPPR','approved','Legacy Client');
+SQL
+  echo "=== Phase 6 4a (R6-F1): the migration must ABORT on the legacy approval signal ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4a R6-F1: the migration ACCEPTED a withdrawn row carrying legacy approval signals (empty register, approved event)"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'LEGACY approval signals'; then
+    echo "FAILED  4a R6-F1: aborted, but not by the legacy-signal diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  echo "ok      4a R6-F1: abort names the legacy approval signals (UP4A-LEGACYAPPR)"
+  $PSQL -q -c "DELETE FROM \"DecisionEvent\" WHERE \"id\"='UP4A-LEGACYAPPR-EV'; DELETE FROM \"Decision\" WHERE \"id\"='UP4A-LEGACYAPPR';" || { echo "4a R6-F1 repair failed"; exit 1; }
 }
 
 plant_pre_phase6_firms() {

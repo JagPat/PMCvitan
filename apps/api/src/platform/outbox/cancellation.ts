@@ -52,7 +52,16 @@ import { PUSH_CONSUMER } from './consumers';
  * The guarantee's true boundary, stated rather than overclaimed: a cancellation landing in the
  * instant between the sender's final pre-send check and the external notify call is
  * unrecallable — exactly as an already-sent push is. What is guaranteed: NO stale push is sent
- * whose delivery had not yet passed its final pre-send check when this transaction committed.
+ * whose delivery had not yet passed its final pre-send check when this transaction committed —
+ * BY A SENDER RUNNING THIS CODE. The leased arm relies on the sender's pre-send re-check, which
+ * a PRE-4a sender does not have (round 6, Codex): if an old relay process were still running
+ * beside a new API instance, a row it leased before this cancellation would be sent regardless
+ * of the mark. That mixed-sender state is excluded by the DEPLOYMENT model, not by code: this
+ * platform deploys as a single service whose old process stops before `migrate.sh` runs and the
+ * new process starts (see docs/RUNBOOK.md §P6-4a), so by the first moment `decisions.withdraw`
+ * exists to call this function, no pre-4a sender is alive. If the platform is ever run with
+ * overlapping instances, the exposure is bounded to rows leased by old senders during the ONE
+ * rollout that ships 4a — the same already-sent class as the check→send residual above.
  */
 export async function cancelQueuedPushBySubject(
   tx: Prisma.TransactionClient,

@@ -92,15 +92,19 @@ async function main(): Promise<void> {
   // activities) is already cleared above. The delete seal (`Decision_t4a_d_no_delete`) refuses
   // withdrawn-row deletes — in a LIVE database the register entry is permanent — and this seed
   // is the sanctioned destructive reset (the same contract that lets the TRUNCATE above bypass
-  // the DomainEvent append-only trigger), so the named seal is disabled for exactly this wipe
-  // and re-enabled immediately after. Guarded: a pre-4a database has no such trigger.
-  await prisma.$executeRawUnsafe(
-    `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
-  );
-  await prisma.decision.deleteMany();
-  await prisma.$executeRawUnsafe(
-    `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
-  );
+  // the DomainEvent append-only trigger), so the named seal is disabled for exactly this wipe.
+  // Guarded: a pre-4a database has no such trigger. ONE transaction (round 6, Codex): PG DDL is
+  // transactional, so a wipe that throws rolls the DISABLE back with it — no failure path can
+  // leave the seal off; a bare disable/delete/enable sequence could.
+  await prisma.$transaction([
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
+    ),
+    prisma.decision.deleteMany(),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
+    ),
+  ]);
   // every Membership child (recipients, assignees, completion claims) is gone now
   await prisma.membership.deleteMany();
   await prisma.orgMembership.deleteMany();

@@ -15,7 +15,8 @@ the next correction is not another isolated patch — it carries this architectu
 | `74af426` | round-2 correction + this audit; Codex attempt on it: **3 P2 findings** | DELETE outside the terminal seal; the round-1 attribution fix's raw `Membership` read (an undeclared decisions→orgs edge); the recovery scanner resurrecting a push whose delivery row did not exist at cancellation time |
 | `e759832` / `31f3fba` | round-3 correction (same tree; re-pushed to place the trailer in the commit's final trailer block); Codex attempt on `31f3fba`: **4 P2 findings** | subjectless rows written by an OLD instance during a rolling deploy; `projectId` outside the write-once set; a scanner row committing BETWEEN the cancellation passes and the tombstone insert; queued pushes of an ALREADY-withdrawn decision that no future command will ever cancel |
 | `b24d36e` | round-4 correction; Codex attempt on it: **2 P2 findings** — both deployment-harness completions of the round-3/4 arms, no runtime surface | the migration's cancellation lacked its recovery-gap tombstone arm (it only UPDATEd rows that exist); the seed's guarded decision wipe sat AFTER `membership.deleteMany()`, which the new `withdrawnById` FK refuses while a withdrawn decision exists |
-| (this head) | the round-5 correction + this audit extended — the review-lifecycle limit (5 finding heads) is reached at this head | — |
+| `2e15eba` | round-5 correction — the review-lifecycle limit (5 finding heads) reached; Codex attempt 2 timed out at the orchestrator but its review LANDED 43s later: **4 P2 findings**, treated as the review of record | the diagnostics accepted a pre-withdrawn row whose approval evidence is the LEGACY class (empty register, approved events/columns); the mixed-version leased-sender window; the Site Map (and same-class screens) filtering `s.decisions` outside the shared audience rule; the seed's trigger bypass not failure-safe |
+| (this head) | the round-6 correction + this audit extended. THE UNIT STAYS WHOLE past the advisory limit: plan §F pre-authorizes the single unit (the enum and its readers are indivisible), the round-6 findings are the enumeration's tail (diagnostic completion, deployment boundary, one selector class, one harness hardening — no command/seal/runtime-arm surface), and a split now would separate the readers from the status they read — the exact cut §F forbids | — |
 
 ## Root analysis — why the rounds happened, and what closes the class
 
@@ -57,11 +58,20 @@ project-member, pmc-viewer case; each round found the SAME invariant one state f
   carries, including the round-3 recovery-gap tombstone it initially lacked (R5-F1). And a
   new FK re-orders the world for every writer that deletes its target: the destructive seed's
   membership wipe now sits BELOW the decision wipe in the dependency order, because
-  `withdrawnById` made memberships load-bearing for withdrawn history (R5-F2). The convergence
-  trajectory is itself evidence: 5 findings (runtime lifecycle) → 4 (mixed) → 3 (access
-  paths/boundary) → 4 (deployment eras) → 2 (harness completions of already-accepted arms) —
-  each round's surface narrower and further from the user-facing workflow, which is what a
-  closing enumeration looks like from outside.
+  `withdrawnById` made memberships load-bearing for withdrawn history (R5-F2).
+- Round 6 closed four residues of the same coats. The diagnostics must judge withdrawn rows by
+  EVERY approval signal the codebase has ever written, not just the register the current code
+  writes (R6-F1 — the PR-#192 legacy class the entry guard already knew about, applied to the
+  partial-apply state). The leased arm's guarantee names its own precondition — a sender running
+  THIS code — and the deployment model is what excludes the pre-4a sender, now stated in §A.4
+  and RUNBOOK §P6-4a rather than implied (R6-F2). The §A.3 reader closure includes every screen
+  that renders a decision ROW, not only the log: one shared `selectVisibleDecisions` now carries
+  the audience rule the four ad-hoc filters bypassed (R6-F3). And a sanctioned seal bypass must
+  be UNABLE to strand the seal off — the seed's trio is one transaction whose failure rolls the
+  disable back (R6-F4). The convergence trajectory: 5 (runtime lifecycle) → 4 (mixed) → 3
+  (access paths/boundary) → 4 (deployment eras) → 2 (harness completions) → 4 (a diagnostic, a
+  documented boundary, a selector class, a harness hardening) — since round 3, no finding has
+  touched the command, the seals' semantics, or a §A.4 runtime arm.
 
 **The closing move is enumeration, not another spot fix.** The round-2 correction pins the full
 matrix explicitly, and round 3 extends it along the two axes its findings named:
@@ -106,7 +116,7 @@ The remaining known boundary is stated, not hidden: the check→send in-flight r
 
 ## Deferral ledger
 
-Every finding from all five rounds is fixed in-branch with reproduce-first evidence (probes,
+Every finding from all six rounds is fixed in-branch with reproduce-first evidence (probes,
 the ratchet, or upgrade-proof stages); no finding was disputed. ONE named deferral, created by
 round 3 and guarded rather than open: the three PRE-EXISTING raw `Membership` reads
 (`activities.complete`, `requirements.responsible`, `inspections.assign`) predate the
