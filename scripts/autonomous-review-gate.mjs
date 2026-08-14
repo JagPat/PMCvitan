@@ -41,8 +41,22 @@ const STATUS_CONTEXT = 'codex-current-head';
 const RECOVERY_CONTEXT_PREFIX = 'codex-recovery-request/';
 const COMMENT_MARKER = '<!-- autonomous-review-state -->';
 const API_ROOT = 'https://api.github.com';
-const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 10 * 60_000);
-const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 15 * 60_000);
+// The settle window must exceed the LONGEST required CI job. The api battery
+// runs ~11-13 minutes; a 10-minute window made every orchestrator instance
+// woken early (e.g. by a metadata-only `edited` CI run completing while the
+// synchronize run's battery was still going) publish a false
+// "Checks did not settle" block that only healed when the real run's
+// completion re-triggered the workflow. 25 minutes covers the battery with
+// headroom and costs nothing when checks are already green.
+const CHECK_TIMEOUT_MS = Number(process.env.CHECK_TIMEOUT_MS ?? 25 * 60_000);
+// Codex reviews of this repository land 13-23 minutes after their
+// draft-to-ready trigger (measured over PR #337's ten rounds). A 15-minute
+// attempt window expired before nearly every real review, burning the retry
+// on a review that was already in flight and ending runs in a false
+// "timed out after two attempts" terminal state minutes before the review
+// arrived. 25 minutes covers the observed latency; the two-attempt budget
+// still bounds the run.
+const REVIEW_TIMEOUT_MS = Number(process.env.REVIEW_TIMEOUT_MS ?? 25 * 60_000);
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS ?? 15_000);
 
 export function requiredChecksForPullRequest(pullRequestNumber) {
