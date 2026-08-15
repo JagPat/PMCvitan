@@ -77,8 +77,42 @@ The seals caught real defects during the build, most of them mine:
 Two of 4b's seals are strictly stronger than what the suites were written against, and the sweep is
 where that shows. Neither seal was relaxed to make a fixture pass.
 
-*(section completed after the sweep — see the Verification block)*
+Three fixture families, across ~20 suites, each modelling a state the product now forbids:
+
+1. **A project with no client.** `createTwoProjectFixture` built two projects with a pmc and nobody
+   to decide anything, and 18 files published decisions into it. That is not a smaller world, it is
+   an impossible one — which is exactly why the default decider is the client and why the removal
+   guard exists. The client moved into the shared fixture; ad-hoc projects use `seedProjectClient`,
+   which adds a MEMBERSHIP only (standing is what the seal reads, and a new `User` would carry a
+   project FK every caller's teardown would have to order around).
+2. **A published decision with fewer than two options** — approvable by nobody. Present in test
+   seeds, inline seeds, `upgrade-proof.sh`, `prisma/seed.ts`, and the demo data itself (`DL-003`
+   shipped REOPENED with zero options, waiting on a re-approval nobody could give). The subtlest
+   form was a nested `options: { create: [...] }` behind a published parent: Prisma writes the
+   parent first, so the INSERT-door floor counts zero children however many the block declares.
+3. **Destructive resets predating the seals.** Consolidated into `wipeDecisions`, which disables
+   exactly the four named triggers for exactly the wipe.
+
+**Teardown ORDER is load-bearing, and 4b tightened it twice.** Decisions must go BEFORE memberships
+(a membership holding a published open decision cannot be removed) and AFTER the activities that
+reference them. The shared fixture's wipe is also CONDITIONAL: `ALTER TABLE` takes an ACCESS
+EXCLUSIVE lock on all three decision tables, and an unconditional one in every teardown deadlocks
+against suites that keep concurrent clients open for race probes. That was found the hard way — an
+unconditional version produced 102 deadlocks and 28 cascading FK failures across a full run.
 
 ## Verification
 
-*(completed at the end of the sweep)*
+| Gate | Result |
+| --- | --- |
+| `phase6-t4b-decider.test.ts` | 12 passed / 3 scoped to 4b-ii (from 12-of-15 RED at the staged shape) |
+| Full integration suite, pristine DB | **93 files, 1194 passed / 3 skipped / 0 failed, 0 deadlocks** |
+| `pnpm check` (repo root) | **EXIT 0** — web 786/786, API 793/793 |
+| `upgrade-proof.sh` | **594 assertions, EXIT 0** over the migrated legacy DB |
+| `test:e2e:api` | 31 passed / 6 skipped, against a MIGRATED database with the seals live |
+| Demo seed re-runnability | two consecutive seeds, first 0, second 0 |
+| Migration retry-safety | re-applies cleanly over an already-migrated database |
+
+Two notes on what counts as evidence here. The e2e figure is from a database with the 4b migration
+APPLIED — an earlier local run passed against an unmigrated `pmcvitan_e2e` and proved nothing. And
+the seed figure is the RE-SEED: the first seed of an empty database deletes nothing and would pass
+with or without the fix.
