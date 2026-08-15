@@ -28,6 +28,7 @@ with no two-step.
 | `4ea5cf0` | round-15 batch | 4 (3 P1, 1 P2) | corrected on this head: the claim-time credential facts route through the orgs BOUNDARY (platform-owned link snapshot + a declared `sessionStillValid` primitive — never a direct User read); the migration's orphan audit holds every audited project's readiness key through guard installation (a mid-deployment removal cannot orphan between check and seal); publish takes the decision row lock BEFORE reading its snapshot (the edit-vs-publish race could publish another revision's evidence); the child seal is ONE-WAY (`none` ⇒ zero options) so the round-13 conversion lifecycle survives — the two-option floor stays a publication check |
 | `7bc1975` | round-16 batch | 2 (2 P1) | corrected on this head: the migration audit serializes against PRE-4B writers — advisory readiness keys bind only participants that take them, and `MembersService.updateRole`/`OrgsService.updateOrgMemberRole`/`removeOrgMember` write standing directly, so the migration takes `LOCK TABLE "Membership","OrgMembership","Project" IN SHARE ROW EXCLUSIVE MODE` (conflicting with every concurrent row write, old code included) through audit + guard installation, the readiness keys kept as the new-writer supplement, P15's barrier arm re-shaped to the raw no-advisory-lock demotion; and the two-option floor joins the DATABASE publication trigger — the round-16 one-way child seal left direct SQL able to set `publishedAt` on a zero-option ordinary draft, publishing a forever-unapprovable `pending` decision; the `publishedAt NULL → NOT NULL` trigger now re-counts children (≥2 for non-record kinds, exactly 0 for `none`), drafts stay free, P17/P20 gain the hostile publication arm |
 | `ef3b32e` | round-17 batch (the `7bc1975` fold, amended once for trailer contiguity) | 5 (5 P1) | corrected on this head: the reopen (`approved → change`) re-validates holder standing in the DATABASE trigger through the orgs primitive, not the service alone (P39 hostile direct-reopen arm); `Decision` joins the migration's `LOCK TABLE` list — with only membership-side tables locked, an old `create(publish=true)` could birth a published decision mid-audit and survive backfill holderless (P15 birth arm); the migration takes NO advisory readiness keys — reversing round 17's supplement, which inverted lock order against an already-rolled 4b writer (advisory→row vs table→advisory, an AB-BA deadlock; P15 4b-writer barrier arm pins the no-advisory design); the publication trigger covers BOTH doors (the `NULL → NOT NULL` UPDATE and an already-published INSERT), forcing the immediate-choice create to birth the head unpublished, insert options, then publish in the same transaction (P17/P20 both-door + happy-path arms); and change-request evidence is sealed two-sided against records — the conversion entry check verifies zero `ChangeRequest` children and the reverse seal family refuses a `ChangeRequest` INSERT on a `recorded` parent (P18 plant-then-convert + direct-attach arms) |
+| `9ff8ba6` | round-18 batch | 3 (3 P1) | corrected on this head: the option floor SURVIVES publication — the child-side seal extends from `withdrawn`-only to EVERY published parent (no `DecisionOption` INSERT/DELETE/UPDATE once `publishedAt` is set, re-points judged on both parents; a direct post-publication DELETE of both options could otherwise strand a published pending decision optionless; P17/P20 deletion + re-point arms); `ChangeRequest.decisionId` joins the identity-freeze CLASS — the freely-updatable column let hostile SQL re-point a legitimate open request onto a published record with neither planned seal firing (P18 re-point arm); and the ACTIVATION arm judges standing DISPLACEMENT — `MembersService.add` upserting an active `client` membership for a membership-less org admin who is the sole effective PMC is neither removal nor demotion, yet precedence re-classifies them and the holder is gone; both layers re-derive the displaced roles and refuse the stranding activation (P39 activation-displacement arm) |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -348,7 +349,11 @@ text: the reopen transition sealed at the database; `Decision` joining
 the lock list against mid-audit births; the advisory keys dropped
 outright after their retention created the AB-BA inversion; the
 publication trigger covering the INSERT door and re-ordering create;
-change-request evidence joining the record seals)
+change-request evidence joining the record seals), and round 19 (three
+P1s on `9ff8ba6` — the round-18 seals' own text: the option floor made
+durable past publication; the change-request parent identity frozen
+against re-pointing; the activation arm widened from loss-by-removal to
+standing displacement)
 all land on the
 rounds-8/9 corrections' own text, and every finding is an enumerable-class
 instance of a rule the plan already states: a freeze list missing a column
@@ -363,22 +368,22 @@ one internal contradiction between two of the plan's own corrections
 (unconditional `recorded` terminality vs the round-8 draft-edit path —
 resolved at the publication boundary every other 4b freeze binds at, with
 the one coherent unpublished kind+status transition admitted explicitly).
-All thirty-nine verified real, none disputed, none refuted. The correction
+All forty-two verified real, none disputed, none refuted. The correction
 pattern stays minimal-edit; the lifecycle observation stands recorded —
-eighteen finding-bearing heads against an advisory limit of five — and the
+nineteen finding-bearing heads against an advisory limit of five — and the
 owner escalation thread on this PR remains the standing asynchronous
 channel that can override the loop's course at any time.
 
 ## Deferral ledger
 
-Nothing is disputed: all ninety-eight findings across eighteen rounds were
+Nothing is disputed: all one hundred one findings across nineteen rounds were
 verified real; thirty-eight were corrected in place (rounds 1–5 and 7),
 three were folded into the narrowed 4b plan, five are carried as NAMED
 PROBES (§D of the 4b plan: P25c, P25d, P38c/P40c, P31b/P42b, P31c/P34b,
 P33b — numbering reserved to the pre-declared 4c/4d plan units whose own
-exact-head reviews adjudicate them), and the rounds 8–18 findings were FOLDED by the resumed corrections
+exact-head reviews adjudicate them), and the rounds 8–19 findings were FOLDED by the resumed corrections
 (heads `af8d6be`, `56d09c0`, `d93859d`, `1c9f2c7`, `716b707`, `9d0e1cf`,
-`4ea5cf0`, `7bc1975`, `ef3b32e`, and the current one) — every disposition lives
+`4ea5cf0`, `7bc1975`, `ef3b32e`, `9ff8ba6`, and the current one) — every disposition lives
 in the head table above, none held, none dismissed. No refutations were posted on this PR. Every head past the
 third finding head carries `Review-Deferred-To-Probes: phase-6-task-4`
 beside `Review-Convergence: complete`; the probes are the executable

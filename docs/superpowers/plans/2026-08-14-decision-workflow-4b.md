@@ -370,8 +370,16 @@ claim that serialization hides and that neither `requestChange` nor
 `withdrawChange` can ever close, the head being terminal): the entry
 check verifies ZERO `ChangeRequest` children at conversion, and the
 reverse child-seal family gains a `ChangeRequest` arm refusing any
-INSERT whose parent is `recorded` (P18's change-request arms:
-plant-then-convert AND direct-attach both refused); and the conversion
+INSERT whose parent is `recorded` — and `ChangeRequest.decisionId` is
+IDENTITY-FROZEN (round 19: the column is freely updatable today, so
+hostile SQL could RE-POINT a legitimate open request from its `change`
+decision onto an already-published record — no INSERT, no head
+transition, so neither planned seal fires — stranding the source
+decision's required request while the permanent record gains a hidden,
+unclosable claim; a child's parent identity joins the identity-freeze
+CLASS, so re-pointing is unrepresentable and INSERT, already judged by
+the reverse seal, is the only door) (P18's change-request arms:
+plant-then-convert, direct-attach, AND re-point all refused); and the conversion
 RE-ARMS the option floor (round 13): a `none` draft legally holds zero
 options, so a draft converted to an ordinary kind may reach the publish
 door under the record form's shape; the PUBLISH transition re-judges the
@@ -399,7 +407,21 @@ observable result unchanged), so the zero-option converted draft, the
 hostile direct-SQL publication UPDATE, and the hostile published INSERT
 are all refused alike while every normal immediate choice still
 publishes — probed in P17/P20, which gain the hostile publication arms
-(both doors) and the re-ordered create's happy path; from publication the
+(both doors) and the re-ordered create's happy path. And the floor
+SURVIVES publication (round 19): counting only AT publication leaves a
+later direct `DELETE` of a published pending decision's two
+`DecisionOption` rows unrefused — the existing `DecisionOption_t4a_frozen`
+child trigger guards only `withdrawn` parents, and no head transition
+fires the publication trigger — leaving a published decision with no
+approvable option. The child-side seal therefore extends from
+`withdrawn`-only to EVERY PUBLISHED parent: once `publishedAt` is set,
+the decision's `DecisionOption` rows admit no INSERT, DELETE, or UPDATE
+(re-pointing included — an UPDATE of an option's `decisionId` is judged
+against BOTH the old and the new parent), the same question-and-option
+evidence freeze the published record already carries, now stated for
+every kind; no product path edits options after publication, so the
+seal costs nothing legal — P17/P20 gain the post-publication deletion
+and re-point arms; from publication the
 terminal refusal is unconditional — the same publication boundary every
 other 4b freeze binds at. The legal draft kind-change and the hostile
 published flip are both probed (P17/P18) — **and the door is sealed in
@@ -639,8 +661,21 @@ flip holder-relevant standing (activation, removal/restore — hard DELETE
 included — and role change: the same set the §A lock-coverage enumeration
 already binds on the service path) — AND the ORG-membership writes that
 flip membership-less effective-PMC standing (round 11:
-`removeOrgMember`/`updateOrgMemberRole`, the §A.1 org-write guard);
-probed in both orderings (P17/P39).
+`removeOrgMember`/`updateOrgMemberRole`, the §A.1 org-write guard).
+The ACTIVATION arm judges standing DISPLACEMENT, not merely
+loss-by-removal (round 19): with a membership-less org admin as the
+sole effective PMC holding a published open `pmc` decision,
+`MembersService.add` upserting an ACTIVE `client` membership for that
+user is neither a removal nor a demotion — yet the explicit-membership
+precedence instantly re-classifies them as client and the PMC holder is
+gone. Every membership INSERT or reactivation therefore re-derives, at
+BOTH layers (the command under the readiness lock; the orgs-owned DB
+membership seal calling the decisions open-holder predicate), the
+effective roles the activation would DISPLACE for that user, refusing
+when a published open decision's holder standing would be lost — the
+stranded state is fixed by covering the decision first, never by an
+activation silently un-holdering it. Probed in both orderings
+(P17/P39, P39 gaining the activation-displacement arm).
 
 ### 2. Cross-module facts at the DB layer — owned primitives, never table reads
 
