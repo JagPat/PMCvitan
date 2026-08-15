@@ -35,7 +35,11 @@ describe('phase 1 baseline characterization (integration)', () => {
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      // Phase 6 task 4b: a published decision's options are frozen — the reset disables that
+      // named seal for exactly this wipe, the same contract as the event seal above
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
       t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
       t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId } } }),
       t.prisma.inspection.deleteMany({ where: { projectId } }),
       t.prisma.activity.deleteMany({ where: { projectId } }),

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
 
 const uid = (label: string) => `it-${label}-${randomUUID().slice(0, 8)}`;
 
@@ -24,15 +24,22 @@ describe('project reference integrity (database constraints)', () => {
     activityA = await t.prisma.activity.create({
       data: { id: uid('act'), projectId: f.projectA.id, name: 'Waterproofing', zone: 'Terrace', plannedStart: 1, plannedEnd: 2, order: 1 },
     });
+    // Phase 6 task 4b: born unpublished, optioned, then published — the two-option floor is
+    // judged at BOTH publication doors
     decisionA = await t.prisma.decision.create({
-      data: { id: uid('dl'), projectId: f.projectA.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: new Date() },
+      data: { id: uid('dl'), projectId: f.projectA.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: null },
     });
+    await t.prisma.decisionOption.createMany({ data: [
+      { decisionId: decisionA.id, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
+      { decisionId: decisionA.id, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 },
+    ] });
+    await t.prisma.decision.update({ where: { id: decisionA.id }, data: { publishedAt: new Date() } });
   });
 
   afterAll(async () => {
     await t.prisma.media.deleteMany({ where: { id: { in: created.media } } });
     await t.prisma.drawing.deleteMany({ where: { id: { in: created.drawings } } });
-    await t.prisma.decision.deleteMany({ where: { id: decisionA?.id } });
+    await wipeDecisions(t.prisma, { id: decisionA?.id });
     await t.prisma.activity.deleteMany({ where: { id: activityA?.id } });
     await f?.cleanup();
     await t?.close();

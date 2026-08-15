@@ -50,7 +50,11 @@ describe('start vs readiness concurrency (integration)', () => {
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
     await wipeDecisionEvents(t.prisma, { decision: { projectId } });
+    // Phase 6 task 4b: a published decision's options are frozen — the reset disables that
+    // named seal for exactly this wipe
+    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"');
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } });
+    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"');
     await t.prisma.decision.deleteMany({ where: { projectId } });
     await f?.cleanup();
     await t?.close();

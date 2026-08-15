@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { ConflictException, BadRequestException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
 import { executeCommand, hashRequest, type CommandScope } from '../../src/platform/commands';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import type { Actor } from '../../src/common/actor';
@@ -245,8 +245,10 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
 
   /** seed one published, pending decision with two options. */
   const seedDecision = async (id: string): Promise<string> => {
+    // Phase 6 task 4b: the two-option floor is judged at BOTH publication doors, so the row is
+    // born unpublished, gets its options, and only then publishes
     await t.prisma.decision.create({
-      data: { id, projectId: f.projectA.id, title: `Counter ${id}`, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+      data: { id, projectId: f.projectA.id, title: `Counter ${id}`, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
     });
     await t.prisma.decisionOption.createMany({
       data: [
@@ -254,6 +256,7 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
         { decisionId: id, label: 'Quartz', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
       ],
     });
+    await t.prisma.decision.update({ where: { id }, data: { publishedAt: new Date() } });
     return id;
   };
   const cleanupDecision = async (id: string) => {
@@ -264,8 +267,8 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await t.prisma.changeRequest.deleteMany({ where: { decisionId: id } });
     await wipeDecisionEvents(t.prisma, { decisionId: id });
-    await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
-    await t.prisma.decision.deleteMany({ where: { id } });
+    // Phase 6 task 4b: a published decision's options are frozen — the sanctioned named-seal reset
+    await wipeDecisions(t.prisma, { id });
   };
 
   it('approving twice with the SAME key locks the decision exactly once and replays the same result', async () => {

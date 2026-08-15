@@ -114,7 +114,11 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     await t.prisma.gateOverride.deleteMany({ where: { projectId: pid } });
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
     await wipeDecisionEvents(t.prisma, { decision: { projectId: pid } });
+    // Phase 6 task 4b: a published decision's options are frozen — the reset disables that
+    // named seal for exactly this wipe
+    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"');
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
+    await t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"');
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: pid } } });
     await t.prisma.activity.deleteMany({ where: { projectId: pid } });
     await t.prisma.decision.deleteMany({ where: { projectId: pid } });
@@ -535,7 +539,13 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     });
 
     it('flagMismatch: material.mismatch(attributed — Task 3) + 1 notif + CROSS-MODULE activity gate/block + push[pmc,contractor]', async () => {
-      const dec = await t.prisma.decision.create({ data: { id: sk('p2c-dec-mm'), projectId: pid, title: 'Tile', room: 'GF', photoSwatch: 'marble', status: 'approved', publishedAt: new Date(), authorId: uid } });
+      // Phase 6 task 4b: born unpublished, optioned, then published — the floor binds at BOTH doors
+      const dec = await t.prisma.decision.create({ data: { id: sk('p2c-dec-mm'), projectId: pid, title: 'Tile', room: 'GF', photoSwatch: 'marble', status: 'approved', publishedAt: null, authorId: uid } });
+      await t.prisma.decisionOption.createMany({ data: [
+        { decisionId: dec.id, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
+        { decisionId: dec.id, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 },
+      ] });
+      await t.prisma.decision.update({ where: { id: dec.id }, data: { publishedAt: new Date() } });
       await t.prisma.activity.create({ data: { id: sk('p2c-act-mm'), projectId: pid, name: 'Tiling', zone: 'GF', status: 'in_progress', plannedStart: 0, plannedEnd: 3, decisionId: dec.id } });
       const log = await t.prisma.dailyLog.findFirstOrThrow({ where: { projectId: pid } });
       await t.prisma.siteMaterial.create({ data: { id: sk('p2c-mat-mm'), projectId: pid, dailyLogId: log.id, name: 'Tile', qty: '5', zone: 'GF', decisionId: dec.id, swatch: 'tile', matched: true } });

@@ -194,9 +194,17 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     INSP_ID = s('p2-insp'); ACT_ID = s('p2-act'); DWG_ID = s('p2-dwg'); REV_ID = s('p2-rev');
     DRAFT_DEC = s('p2-draft-dec'); DRAFT_DWG = s('p2-draft-dwg'); DRAFT_NODE = s('p2-draft-node');
 
-    await t.prisma.decision.create({ data: { id: PENDING_ID, projectId: pid, title: 'Flooring', room: 'Living', photoSwatch: 'marble', status: 'pending', publishedAt: new Date(), authorId: uid } });
-    await t.prisma.decision.create({ data: { id: APPROVED_ID, projectId: pid, title: 'Veneer', room: 'Study', photoSwatch: 'teak', status: 'approved', publishedAt: new Date(), authorId: uid, approvedOption: 'Teak', material: 'Teak', approver: 'Client', date: '2026-06-01', cost: 0 } });
+    // Phase 6 task 4b: a published ordinary decision needs TWO options — the floor is judged at
+    // BOTH publication doors, so each row is born unpublished, optioned, and only then published
+    await t.prisma.decision.create({ data: { id: PENDING_ID, projectId: pid, title: 'Flooring', room: 'Living', photoSwatch: 'marble', status: 'pending', publishedAt: null, authorId: uid } });
+    await t.prisma.decision.create({ data: { id: APPROVED_ID, projectId: pid, title: 'Veneer', room: 'Study', photoSwatch: 'teak', status: 'approved', publishedAt: null, authorId: uid, approvedOption: 'Teak', material: 'Teak', approver: 'Client', date: '2026-06-01', cost: 0 } });
     await t.prisma.decisionOption.create({ data: { decisionId: APPROVED_ID, label: 'Teak', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'teak', order: 0, photoUrl: 'x' } });
+    await t.prisma.decisionOption.create({ data: { decisionId: APPROVED_ID, label: 'Oak', optionKey: 'b', material: 'Oak', delta: 0, swatch: 'oak', order: 1 } });
+    await t.prisma.decisionOption.createMany({ data: [
+      { decisionId: PENDING_ID, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
+      { decisionId: PENDING_ID, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 },
+    ] });
+    await t.prisma.decision.updateMany({ where: { id: { in: [PENDING_ID, APPROVED_ID] } }, data: { publishedAt: new Date() } });
 
     await t.prisma.projectNode.create({ data: { id: NODE_ID, projectId: pid, name: 'Ground Floor', kind: 'zone', order: 0, publishedAt: new Date() } });
     // a placed, submitted-but-undecided REVIEW → a pmc review + a pmc/engineer placed inspection
