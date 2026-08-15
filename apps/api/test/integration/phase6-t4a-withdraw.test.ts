@@ -1358,9 +1358,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
       const id = 'DL-t4a-r12w';
       await t.prisma.decision.create({
-        data: { id, projectId: projW, title: 'Wedge probe', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+        data: { id, projectId: projW, title: 'Wedge probe', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
       });
       await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+      // Phase 6 task 4b: a PUBLISHED ordinary decision must be approvable, so it needs two
+      // options and they must exist BEFORE publication. This fixture modelled a state the
+      // product now forbids (published with fewer than two options, approvable by nobody).
+      await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 1000, swatch: 'sw2', recommended: false, order: 1 } });
+      await t.prisma.decision.update({ where: { id: id }, data: { publishedAt: new Date() } });
       const drain = async (): Promise<void> => {
         for (let pass = 0; pass < 50; pass++) {
           const ds = await t.prisma.outboxDelivery.findMany({
@@ -1636,9 +1641,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const idK = 'DL-t4a-r13k';
       for (const [id, title] of [[idW, 'Never applied'], [idK, 'Healthy sibling']] as const) {
         await t.prisma.decision.create({
-          data: { id, projectId: projW, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+          data: { id, projectId: projW, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
         });
         await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+        // Phase 6 task 4b: a PUBLISHED ordinary decision must be approvable, so it needs two
+        // options and they must exist BEFORE publication. This fixture modelled a state the
+        // product now forbids (published with fewer than two options, approvable by nobody).
+        await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 1000, swatch: 'sw2', recommended: false, order: 1 } });
+        await t.prisma.decision.update({ where: { id: id }, data: { publishedAt: new Date() } });
       }
       const drain = async (): Promise<void> => {
         for (let pass = 0; pass < 50; pass++) {
@@ -1821,9 +1831,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const idStale = 'DL-t4a-r15s';
       for (const [id, title] of [[idMissing, 'Missing-row arm'], [idStale, 'Stale-row arm']] as const) {
         await t.prisma.decision.create({
-          data: { id, projectId: projW, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+          data: { id, projectId: projW, title, room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
         });
         await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+        // Phase 6 task 4b: a PUBLISHED ordinary decision must be approvable, so it needs two
+        // options and they must exist BEFORE publication. This fixture modelled a state the
+        // product now forbids (published with fewer than two options, approvable by nobody).
+        await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 1000, swatch: 'sw2', recommended: false, order: 1 } });
+        await t.prisma.decision.update({ where: { id: id }, data: { publishedAt: new Date() } });
       }
       const drain = async (): Promise<void> => {
         for (let pass = 0; pass < 50; pass++) {
@@ -1927,9 +1942,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     await t.prisma.membership.create({ data: { projectId: proj13, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
     const id = 'DL-t4a-p13';
     await t.prisma.decision.create({
-      data: { id, projectId: proj13, title: 'Projected', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+      data: { id, projectId: proj13, title: 'Projected', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
     });
     await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+    // Phase 6 task 4b: a PUBLISHED ordinary decision must be approvable, so it needs two
+    // options and they must exist BEFORE publication. This fixture modelled a state the
+    // product now forbids (published with fewer than two options, approvable by nobody).
+    await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 1000, swatch: 'sw2', recommended: false, order: 1 } });
+    await t.prisma.decision.update({ where: { id: id }, data: { publishedAt: new Date() } });
     try {
       const asPmc = { sub: f.memberUser.id, role: 'pmc', projectId: proj13 } as AuthUser;
       await svc.withdraw(proj13, id, { reason: 'projected truth' }, asPmc);
