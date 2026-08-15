@@ -91,7 +91,14 @@ export const SEED_DECISIONS: SeedDecision[] = [
   {
     id: 'DL-003', title: 'Kitchen Counter Top', room: 'Ground Floor · Kitchen', nodeId: 'r-kitchen', status: 'change', photoSwatch: 'quartz',
     approvedOption: 'Option A', material: 'Quartz (Statuario)', approver: 'Mr. Shah', date: '28 May 2026', cost: 118000,
-    options: [],
+    // Phase 6 task 4b: this row was published with ZERO options, which the two-option floor now
+    // refuses — and rightly: it is REOPENED ('change'), so it is waiting on a re-approval that
+    // nobody could ever give. The demo's own recorded approval names Option A, so the question it
+    // was approved from is restored here rather than the row being demoted to a draft.
+    options: [
+      { label: 'Option A', optionKey: 'A', material: 'Quartz (Statuario)', delta: 0, swatch: 'quartz', recommended: true, order: 0 },
+      { label: 'Option B', optionKey: 'B', material: 'Granite (Absolute Black)', delta: -22000, swatch: 'granite', recommended: false, order: 1 },
+    ],
   },
 ];
 
