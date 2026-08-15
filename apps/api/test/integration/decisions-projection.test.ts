@@ -50,6 +50,8 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
     await t.prisma.decision.deleteMany({ where: { projectId: { startsWith: 'it-dpj-' } } });
+    await t.prisma.membership.deleteMany({ where: { projectId: { startsWith: 'it-dpj-' } } });
+    await t.prisma.user.deleteMany({ where: { projectId: { startsWith: 'it-dpj-' } } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-dpj-' } } });
   });
 
@@ -58,6 +60,14 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     await t.prisma.project.create({
       data: { id, orgId: f.orgA.id, name: id, short: 'O', descriptor: '', stage: 'x', siteCode: 'O', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
+    // Phase 6 task 4b: the default decider is `client`, and publishing into a project with no
+    // active client is refused (`Decision_t4b_publication_seal`) — it would birth the holderless
+    // state the removal guard exists to prevent. Every real project has one; so does this one.
+    const clientId = `${id}-client`;
+    await t.prisma.user.create({
+      data: { id: clientId, projectId: id, role: 'client', name: 'Projection Client', email: `${clientId}@test.local` },
+    });
+    await t.prisma.membership.create({ data: { projectId: id, userId: clientId, role: 'client', status: 'active' } });
     return id;
   };
 
@@ -69,11 +79,14 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     opts: { status?: 'pending' | 'approved' | 'change'; draft?: boolean; withChangeRequest?: boolean } = {},
   ): Promise<void> => {
     const status = opts.status ?? 'pending';
-    const publishedAt = opts.draft ? null : new Date();
+    // 4b: an ordinary decision needs at least TWO options to publish, and the floor is judged at
+    // BOTH publication doors — so the row is born unpublished, gets its options, then publishes
     await t.prisma.decision.create({
-      data: { id, projectId, title: `Title ${id}`, room: 'GF · Living', status, ageDays: 2, photoSwatch: 'marble', publishedAt, authorId },
+      data: { id, projectId, title: `Title ${id}`, room: 'GF · Living', status, ageDays: 2, photoSwatch: 'marble', publishedAt: null, authorId },
     });
     await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 1000, swatch: 'teak', recommended: true, order: 0 } });
+    await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 2000, swatch: 'oak', recommended: false, order: 1 } });
+    if (!opts.draft) await t.prisma.decision.update({ where: { id }, data: { publishedAt: new Date() } });
     if (opts.withChangeRequest) {
       await t.prisma.changeRequest.create({ data: { decisionId: id, reason: 'reopen', costImpact: 500, timeImpactDays: 3, status: 'open', requestedById: authorId } });
     }
@@ -182,8 +195,10 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     // projectA carries an active pmc membership for memberUser (the fixture) — hit the real routes.
     const pid = f.projectA.id;
     const token = t.issueProjectToken(f.memberUser.id, pid, 'pmc');
-    await t.prisma.decision.create({ data: { id: 'DL-HTTP', projectId: pid, title: 'Wired', room: 'GF', status: 'pending', ageDays: 1, photoSwatch: 'marble', publishedAt: new Date(), authorId: f.memberUser.id } });
+    await t.prisma.decision.create({ data: { id: 'DL-HTTP', projectId: pid, title: 'Wired', room: 'GF', status: 'pending', ageDays: 1, photoSwatch: 'marble', publishedAt: null, authorId: f.memberUser.id } });
     await t.prisma.decisionOption.create({ data: { decisionId: 'DL-HTTP', label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 } });
+    await t.prisma.decisionOption.create({ data: { decisionId: 'DL-HTTP', label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'oak', order: 1 } });
+    await t.prisma.decision.update({ where: { id: 'DL-HTTP' }, data: { publishedAt: new Date() } });
     try {
       const shell = await request(t.app.getHttpServer()).get(`/projects/${pid}/shell`).set('Authorization', `Bearer ${token}`).expect(200);
       expect(shell.body.id).toBe(pid);
