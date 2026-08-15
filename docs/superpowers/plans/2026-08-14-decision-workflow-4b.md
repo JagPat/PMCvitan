@@ -239,8 +239,18 @@ orphaning — both designations, both layers, probed (P39).
 
 `deciderKind: 'none'` answers the owner's first question: the decision is born
 PUBLISHED-or-draft as usual but in a new terminal **`recorded`** status —
-filed, team-visible, approvable by nobody. Its contract relaxes `options` from
-`min(2)` to `min(0)`; every other kind keeps `min(2)` — a CHOICE still needs
+filed, team-visible, approvable by nobody. Its contract requires EXACTLY ZERO
+options (round 15, replacing the round-1 `min(0)` relaxation): a record
+FILES an issue — options are the approvable alternatives of a CHOICE, and
+an optioned record is a category error. The exactly-zero rule also closes
+a real seal-ordering trap the relaxation opened: `create` writes the
+published head before `decisionOption.createMany`, so an optioned
+`publish=true` record would have its children REJECTED by the published-
+record freeze mid-request. `max(0)` at the contract, and the kind⟺status
+CHECK family extends to the children: `deciderKind='none'` ⟺ zero
+`DecisionOption` rows, sealed at commit (P18/P19 both arms: the optioned
+record request refused at the CONTRACT; the hostile direct child insert
+refused at the DB). Every other kind keeps `min(2)` — a CHOICE still needs
 alternatives. **Relaxing the contract alone leaves the product path broken**
 (round 1): `DecisionsService.create` derives its lead presentation from
 `input.options[0]` and writes the REQUIRED `Decision.photoSwatch` from
@@ -280,7 +290,14 @@ because re-pointing an unpublished `none` draft to any other kind MUST
 carry `recorded → pending` in the SAME update to satisfy the bidirectional
 kind⟺status CHECK below. While `publishedAt IS NULL`,
 `decisions.updateDraft` changes kind and status together as one coherent
-pair (either alone still refused by the CHECK) — and the conversion
+pair (either alone still refused by the CHECK) — and the ENTRY into
+`recorded` is APPROVAL-CLEAN (round 15): the reverse child seals fire on
+INSERTS into an already-recorded parent, so hostile SQL could plant a
+`DecisionApprovalRevision` or approved `DecisionEvent` on a still-`pending`
+unpublished draft and THEN convert it — the entry trigger therefore
+verifies ZERO approval children and NULL approval columns at the moment of
+conversion, refusing an approval-bearing draft from ever becoming a
+record (P18's ordering arm: plant-then-convert refused); and the conversion
 RE-ARMS the option floor (round 13): a `none` draft legally holds zero
 options, so a draft converted to an ordinary kind may reach the publish
 door under the record form's shape; the PUBLISH transition re-judges the
@@ -309,7 +326,8 @@ recorded row is doubly sealed), `photoSwatch` (round 13 —
 `serializeDecision` reads the head column directly, so the register's
 rendered visual evidence must freeze with the content it illustrates),
 and the record's
-`DecisionOption` rows (where any exist) are immutable once
+ZERO-option invariant (round 15 — no `DecisionOption` row may ever attach)
+holds once
 `status='recorded'` AND published, with the DRAFT-edit path retained until
 publish (an unpublished record is still the author's to fix). **And the identity tuple is frozen FROM BIRTH** (round 14, superseding the
 round-10 publish-time revalidation as insufficient): re-checking the FINAL
@@ -441,9 +459,15 @@ just revoked. The subscription linkage therefore RECORDS the
 `credentialVersion` at attribution, and the claim-time predicate re-checks
 it beside standing: a link whose recorded version no longer matches the
 user's current one is treated as UNLINKED (no targeted delivery) until the
-next authenticated open re-attributes it. P21 gains the password-reset
-arm: reset → an already-enqueued targeted push is not delivered to the
-stale-versioned endpoint. The probe pair proves BOTH
+next authenticated open re-attributes it — and the linkage carries the
+SESSION'S OWN EXPIRY too (round 15): a naturally expiring 12-hour JWT
+never bumps `credentialVersion`, so the version check alone would leave an
+abandoned shared browser linked indefinitely. The attribution records the
+authenticating token's `exp` beside the version, and the claim treats a
+link past its recorded expiry as unlinked — link validity is
+min(token expiry, version match), re-established on every authenticated
+open. P21 gains BOTH arms: password reset AND natural expiry → an
+already-enqueued targeted push is not delivered to the stale link. The probe pair proves BOTH
 directions: the target receives; a same-role non-target does NOT (P21). The static catalog names the CEILING audience and
 the dispatch site narrows to the actual decider; `buildDispatchIntent`'s
 mismatch refusal treats the catalog as the ceiling.
@@ -534,9 +558,14 @@ tripwires can walk them:
   holder-orphaning and is not refused — probed in P39); and
   **user-decision-authority for a `(projectId, userId)`** (round 7;
   operability round 9) — does this user currently hold standing that
-  authorizes creating decisions on this project: an ACTIVE membership in a
-  decision-creating role OR owner/admin standing on the project's org (the
-  membership-less pmc case), AND the project itself is OPERABLE — the
+  authorizes creating decisions on this project: the user's EFFECTIVE project role
+  satisfies decision-create authority — resolved with the SAME precedence
+  as `ProjectAccessService.authorize` (round 15: an explicit membership
+  WINS over org standing, so an org owner/admin who also holds an active
+  `client` membership resolves to `client` and is REFUSED exactly as every
+  request path refuses them; the owner/admin arm applies ONLY
+  membership-less, the same precedence the effective-PMC standing rule
+  already uses), AND the project itself is OPERABLE — the
   primitive judges `archivedAt` while holding the `Project` row lock, the
   same order `ProjectAccessService.authorize` implies, so an
   already-archived insert is refused and an archive committing concurrently
