@@ -173,3 +173,8 @@ happened to run first.
 replay every migration that sorts AFTER N. Prisma's directory names are the ordering, so round 3 gets
 this for free, and the restoration is ASSERTED from `pg_proc` rather than assumed. A future
 migration that is not re-runnable fails there loudly, which is the outcome to want.
+
+Convergence audit (owed at the second finding-bearing head):
+`docs/reviews/pr-344-convergence.md` — the one generative class behind all sixteen findings, the
+structural closures this head makes, and the boundary-analyzer gap carried forward with its
+measurement.

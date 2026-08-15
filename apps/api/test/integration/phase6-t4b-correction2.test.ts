@@ -239,6 +239,29 @@ describe('Phase 6 unit 4b-i round 2 — the four Codex findings (live PG)', () =
     await t.prisma.changeRequest.deleteMany({ where: { decisionId: id } });
   });
 
+  // ── the convergence pin (see docs/reviews/pr-344-convergence.md) ───────────────────────────
+  it('CONVERGENCE: the recorded seal is registered for EVERY verb — the enumeration is pinned, not re-argued', async () => {
+    // F1 and R2-2 are the same shape one level apart: a rule stated at SOME of the ways into a
+    // state. F1 was a missing VERB (the seal fired on INSERT/UPDATE, so a published record could
+    // be DELETED); R2-2 was a missing DOOR within a verb (the author predicate ran on INSERT-of-
+    // `recorded` but not on the UPDATE that converts into it). The door-level enumeration is
+    // pinned behaviourally by R2-2 above; this pins the VERB-level one structurally, so the next
+    // seal that forgets a verb fails a test instead of waiting for a reviewer.
+    const verbs = await t.prisma.$queryRawUnsafe<Array<{ trigger_name: string; events: string }>>(
+      `SELECT trigger_name, string_agg(DISTINCT event_manipulation, ',' ORDER BY event_manipulation) AS events
+         FROM information_schema.triggers
+        WHERE trigger_name IN ('Decision_t4b_recorded_seal', 'ChangeRequest_t4b_seal')
+        GROUP BY trigger_name ORDER BY trigger_name`,
+    );
+    expect(Object.fromEntries(verbs.map((r) => [r.trigger_name, r.events]))).toEqual({
+      // a record is permanent: it cannot be rewritten, converted out of, OR deleted
+      Decision_t4b_recorded_seal: 'DELETE,INSERT,UPDATE',
+      // a claim is refused at birth and cannot be re-pointed onto a record afterwards; a DELETE
+      // of an unraised claim is ordinary housekeeping and deliberately unguarded
+      ChangeRequest_t4b_seal: 'INSERT,UPDATE',
+    });
+  });
+
   it('the round-2 migration is RE-RUNNABLE — every statement in it is a CREATE OR REPLACE', async () => {
     // The operator path is `prisma migrate deploy`, but a partially-applied deploy is retried, and
     // a correction that only works once is a correction that cannot be retried. Demonstrated, not
