@@ -3307,9 +3307,24 @@ assert "4a: legacy DB upgrades ROW-FREE (no withdrawn rows) with the four Decisi
 # the attribution FK target (idempotent), and two published pending decisions minted for the probes
 $PSQL -q >/dev/null <<'SQL'
 INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('UP4A-M1','p1','USER-1','pmc','active') ON CONFLICT DO NOTHING;
+-- Phase 6 task 4b: publishing a client-held decision into a project with no ACTIVE CLIENT is
+-- refused (`Decision_t4b_publication_seal`) — it would birth the holderless state the removal
+-- guard exists to prevent. The legacy fixture modelled a project without one; a real one has it.
+INSERT INTO "User"("id","projectId","role","name","email","passwordHash")
+VALUES ('USER-C','p1','client','Legacy Client','legacyclient@vitan.in','legacy-bcrypt-hash-c') ON CONFLICT DO NOTHING;
+INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('UP4A-MC','p1','USER-C','client','active') ON CONFLICT DO NOTHING;
+-- ...and 4b judges the two-option floor at BOTH publication doors, so these two are born
+-- unpublished, get their options, and only then publish. The option ids are the ones the later
+-- probes target, so their own ON CONFLICT plants become no-ops rather than duplicates.
 INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
-VALUES ('UP4A-D1','p1','Withdrawable','Hall','pending','stone',now()),
-       ('UP4A-D2','p1','Still pending','Hall','pending','stone',now());
+VALUES ('UP4A-D1','p1','Withdrawable','Hall','pending','stone',NULL),
+       ('UP4A-D2','p1','Still pending','Hall','pending','stone',NULL);
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-OW','UP4A-D1','A','a','Granite',0,'stone'),
+       ('UP4A-OWB','UP4A-D1','B','b','Quartz',5,'sw2'),
+       ('UP4A-O1','UP4A-D2','A','a','Granite',0,'stone'),
+       ('UP4A-O1B','UP4A-D2','B','b','Quartz',5,'sw2');
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id" IN ('UP4A-D1','UP4A-D2');
 SQL
 
 $PSQL -q -c "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='Legacy PMC', \"withdrawReason\"='asked in error' WHERE \"id\"='UP4A-D1';" >/dev/null \
@@ -3369,8 +3384,10 @@ assert_rejects "4a seal 3 reverse (round 9): a legacy approval EVENT recorded ag
 # (the register's own composite FK also demands a REAL option of the named decision — a second
 #  pre-existing seal the re-point would have to defeat)
 $PSQL -q <<'SQL' || { echo "4a round-8 refutation plant failed"; FAIL=1; }
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen";
 INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
 VALUES ('UP4A-O1','UP4A-D2','A','a','Granite',0,'stone') ON CONFLICT DO NOTHING;
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen";
 INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
 VALUES ('UP4A-R8','p1','UP4A-D2',1,'a',now(),'USER-1') ON CONFLICT DO NOTHING;
 SQL
@@ -3395,8 +3412,10 @@ assert "4a seal 3 reverse (round 10, precision): a benign UPDATE on a live decis
 # named-trigger bypass (the destructive-reset contract) purely as the mutation target.
 $PSQL -q <<'SQL' || { echo "4a round-11 option plant failed"; FAIL=1; }
 ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen";
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen";
 INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
 VALUES ('UP4A-OW','UP4A-D1','A','a','Granite',0,'stone') ON CONFLICT DO NOTHING;
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen";
 ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen";
 SQL
 assert_rejects "4a seal 5 (round 11): rewriting a withdrawn decision's option — the choices ARE the frozen question" \
@@ -3405,7 +3424,12 @@ assert_rejects "4a seal 5 (round 11): deleting a withdrawn decision's option" \
   "DELETE FROM \"DecisionOption\" WHERE \"id\"='UP4A-OW'" "frozen question"
 assert_rejects "4a seal 5 (round 11): adding a NEW option to a withdrawn decision" \
   "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-ONEW','UP4A-D1','B','b','Quartz',5,'sw2')" "frozen question"
-$PSQL -q -c "UPDATE \"DecisionOption\" SET \"material\"='Refined granite' WHERE \"id\"='UP4A-O1';" >/dev/null || { echo "FAILED  4a round-11 precision: the benign option UPDATE on a live decision was rejected"; FAIL=1; }
+# Phase 6 task 4b (round 19): the option floor SURVIVES publication, so a PUBLISHED pending
+# decision's options are frozen outright — the round-11 "benign live edit" counter-example is no
+# longer legal anywhere above a draft, and it is asserted here as the refusal it now is. The
+# precision claim it carried moves entirely to the DRAFT arm below, which 4b leaves untouched.
+assert_rejects "4b seal (round 19): editing a PUBLISHED pending decision's option — the floor survives publication, so the choices are frozen from publication, not merely from withdrawal" \
+  "UPDATE \"DecisionOption\" SET \"material\"='Refined granite' WHERE \"id\"='UP4A-O1'" "options of a published decision are frozen"
 # round 12 (Codex): the freeze now starts at PUBLICATION — the benign counter-example moves to
 # a DRAFT decision's option (a published pending option is no longer mutable, asserted below).
 $PSQL -q <<'SQL' || { echo "4a round-12 draft plant failed"; FAIL=1; }
@@ -3423,14 +3447,19 @@ assert "4a seal 5 (rounds 11-12, precision): a DRAFT decision's options stay mut
 assert_rejects "4a seal 1 (round 12): RE-KEYING the withdrawn register entry — every child FK is ON UPDATE CASCADE, so the id joins the frozen identity" \
   "UPDATE \"Decision\" SET \"id\"='UP4A-REKEYED' WHERE \"id\"='UP4A-D1'" "identity is frozen"
 assert_rejects "4a seal 3 (round 12): ONE transaction rewriting an option and withdrawing — the touch note refuses the withdrawal (UPDATE verb)" \
-  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Swapped in-flight' WHERE \"id\"='UP4A-O1'; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='swapped question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+  "BEGIN; ALTER TABLE \"DecisionOption\" DISABLE TRIGGER \"DecisionOption_t4b_published_frozen\"; UPDATE \"DecisionOption\" SET \"material\"='Swapped in-flight' WHERE \"id\"='UP4A-O1'; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='swapped question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
 # (UP4A-O1 carries the round-8 revision's composite FK, which would answer before the touch
 #  note — the DELETE probe gets its own unreferenced option)
-$PSQL -q -c "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-O2','UP4A-D2','Z','z','Slate',3,'sw4') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-12 option plant failed"; FAIL=1; }
+$PSQL -q <<'SQL' >/dev/null || { echo "4a round-12 option plant failed"; FAIL=1; }
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen";
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-O2','UP4A-D2','Z','z','Slate',3,'sw4') ON CONFLICT DO NOTHING;
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen";
+SQL
 assert_rejects "4a seal 3 (round 12): ONE transaction deleting an option and withdrawing — the touch note sees DELETE too (xmin never could)" \
-  "BEGIN; DELETE FROM \"DecisionOption\" WHERE \"id\"='UP4A-O2'; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='thinned question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+  "BEGIN; ALTER TABLE \"DecisionOption\" DISABLE TRIGGER \"DecisionOption_t4b_published_frozen\"; DELETE FROM \"DecisionOption\" WHERE \"id\"='UP4A-O2'; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='thinned question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
 assert_rejects "4a seal 3 (round 12): ONE transaction padding the options and withdrawing — the entry seal refuses options written in the withdrawing transaction" \
-  "BEGIN; INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-OTX','UP4A-D2','X','x','Padded',9,'sw9'); UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='padded question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+  "BEGIN; ALTER TABLE \"DecisionOption\" DISABLE TRIGGER \"DecisionOption_t4b_published_frozen\"; INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-OTX','UP4A-D2','X','x','Padded',9,'sw9'); UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='padded question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
 assert_rejects "4a seal 3 reverse (round 12): DELETING an approval event — evidence the entry seal counts cannot be erased" \
   "DELETE FROM \"DecisionEvent\" WHERE \"id\"='UP4A-LEV'" "approval evidence"
 assert_rejects "4a seal 3 reverse (round 12): DOWNGRADING an approval event's type — laundering by rewrite is refused like erasure" \
@@ -3446,11 +3475,11 @@ assert_rejects "4a seal 3 (round 12): attributing a withdrawal to an ACTIVE memb
 # writing transaction is itself refused — blinding the seal now takes DISABLE TRIGGER, the
 # same ownership privilege as every sanctioned bypass.
 assert_rejects "4a seal 3 (round 13): the pg_temp drop bypass is dead — edit an option, drop the defunct temp note, withdraw: still refused" \
-  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap' WHERE \"id\"='UP4A-O1'; DROP TABLE IF EXISTS pg_temp.\"_t4a_options_touched\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden swap' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+  "BEGIN; ALTER TABLE \"DecisionOption\" DISABLE TRIGGER \"DecisionOption_t4b_published_frozen\"; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap' WHERE \"id\"='UP4A-O1'; DROP TABLE IF EXISTS pg_temp.\"_t4a_options_touched\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden swap' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
 assert_rejects "4a seal 3 (round 13): erasing the REAL touch note in the transaction that wrote it" \
-  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap 2' WHERE \"id\"='UP4A-O1'; DELETE FROM \"DecisionOptionTouch\" WHERE \"decisionId\"='UP4A-D2'; COMMIT" "cannot be erased"
+  "BEGIN; ALTER TABLE \"DecisionOption\" DISABLE TRIGGER \"DecisionOption_t4b_published_frozen\"; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap 2' WHERE \"id\"='UP4A-O1'; DELETE FROM \"DecisionOptionTouch\" WHERE \"decisionId\"='UP4A-D2'; COMMIT" "cannot be erased"
 assert_rejects "4a seal 3 (round 13): rewriting a touch note — evidence rows never update" \
-  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap 3' WHERE \"id\"='UP4A-O1'; UPDATE \"DecisionOptionTouch\" SET \"txid\"=0 WHERE \"decisionId\"='UP4A-D2'; COMMIT" "cannot be updated"
+  "BEGIN; ALTER TABLE \"DecisionOption\" DISABLE TRIGGER \"DecisionOption_t4b_published_frozen\"; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap 3' WHERE \"id\"='UP4A-O1'; UPDATE \"DecisionOptionTouch\" SET \"txid\"=0 WHERE \"decisionId\"='UP4A-D2'; COMMIT" "cannot be updated"
 assert_rejects "4a seal 3 reverse (round 13): RE-POINTING an approval event AWAY from its decision (onto a LIVE target) — laundering by relocation is refused like erasure" \
   "UPDATE \"DecisionEvent\" SET \"decisionId\"='UP4A-D3' WHERE \"id\"='UP4A-LEV'" "re-pointed away"
 
@@ -3460,7 +3489,7 @@ assert_rejects "4a seal 3 (round 15): the withdrawing statement rewriting publis
 assert_rejects "4a seal 3 reverse (round 15): TRUNCATE of DecisionEvent while approval evidence exists — wholesale erasure is refused like the row-wise DELETE" \
   "TRUNCATE \"DecisionEvent\"" "approval evidence"
 assert_rejects "4a seal 3 (round 15): one transaction editing an option, TRUNCATING its own touch notes and withdrawing — the truncate refuses first" \
-  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden by truncate' WHERE \"id\"='UP4A-O1'; TRUNCATE \"DecisionOptionTouch\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden by truncate' WHERE \"id\"='UP4A-D2'; COMMIT" "cannot be truncated"
+  "BEGIN; ALTER TABLE \"DecisionOption\" DISABLE TRIGGER \"DecisionOption_t4b_published_frozen\"; UPDATE \"DecisionOption\" SET \"material\"='Hidden by truncate' WHERE \"id\"='UP4A-O1'; TRUNCATE \"DecisionOptionTouch\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden by truncate' WHERE \"id\"='UP4A-D2'; COMMIT" "cannot be truncated"
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
