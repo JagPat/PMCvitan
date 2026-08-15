@@ -103,9 +103,15 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_publication_seal"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_recorded_seal"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } }),
       t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } }),
       t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_recorded_seal"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_publication_seal"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
@@ -128,7 +134,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         ageDays: 0,
         photoSwatch: 'sw1',
         authorId: f.memberUser.id,
-        publishedAt: over.draft ? null : new Date(),
+        publishedAt: null, // set after the options exist (see below)
       },
     });
     await t.prisma.decisionOption.createMany({
@@ -137,6 +143,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         { decisionId: id, label: 'Quartz', optionKey: 'b', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false, order: 1 },
       ],
     });
+    // Phase 6 task 4b: publication happens AFTER the options exist. The 4b publication seal
+    // counts a decision's options at both doors, so a fixture that inserts an already-published
+    // head with no children is refused — the same ordering the production create path now uses.
+    if (!over.draft) await t.prisma.decision.update({ where: { id }, data: { publishedAt: new Date() } });
     return id;
   };
 
