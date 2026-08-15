@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { parseCivilDate } from './common/civil-date';
-import { DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SOD_RULES } from '@vitan/shared';
+import { DECIDER_KINDS, DEDUCTION_TYPES, MONEY_STRING, QUANTITY_STRING, SOD_RULES } from '@vitan/shared';
 
 export const sessionSchema = z.object({
   role: z.enum(['pmc', 'client', 'engineer', 'contractor', 'consultant']),
@@ -470,19 +470,66 @@ const decisionOptionInput = z.object({
   photoUrl: z.string().trim().optional(),
   recommended: z.boolean().default(false),
 });
-export const createDecisionSchema = z.object({
-  title: z.string().trim().min(1),
-  // Location: either a tree node (authoritative) or the legacy free-text room. At least
-  // one is required — the service derives the display `room` from the node path when nodeId
-  // is set. `room` stays for back-compat and for decisions authored without the tree.
-  nodeId: z.string().trim().min(1).optional(),
-  room: z.string().trim().default(''),
-  options: z.array(decisionOptionInput).min(2).max(4),
-  // Draft → Publish lifecycle: default is to save a PRIVATE DRAFT (author-only, no client
-  // notice). Pass `publish: true` to create it already-published (the one-step "issue now").
-  publish: z.boolean().default(false),
-});
+export const createDecisionSchema = z
+  .object({
+    title: z.string().trim().min(1),
+    // Location: either a tree node (authoritative) or the legacy free-text room. At least
+    // one is required — the service derives the display `room` from the node path when nodeId
+    // is set. `room` stays for back-compat and for decisions authored without the tree.
+    nodeId: z.string().trim().min(1).optional(),
+    room: z.string().trim().default(''),
+    // Phase 6 task 4b: the option floor depends on the KIND (refinement below). A record
+    // (`deciderKind: 'none'`) FILES an issue and carries EXACTLY ZERO options — options are
+    // the approvable alternatives of a CHOICE, and an optioned record is a category error.
+    // Every other kind keeps the two-option floor.
+    options: z.array(decisionOptionInput).max(4).default([]),
+    // Draft → Publish lifecycle: default is to save a PRIVATE DRAFT (author-only, no client
+    // notice). Pass `publish: true` to create it already-published (the one-step "issue now").
+    publish: z.boolean().default(false),
+    // Phase 6 task 4b — WHO must decide. Default 'client' keeps every existing caller
+    // byte-identical; 'architect' joins IN UNIT 4d with the role itself.
+    deciderKind: z.enum(DECIDER_KINDS).default('client'),
+    // Required iff deciderKind='member' (refinement below); the service validates the named
+    // membership is ACTIVE in THIS project through the orgs-owned primitive.
+    deciderMembershipId: z.string().trim().min(1).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.deciderKind === 'member' && !v.deciderMembershipId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['deciderMembershipId'], message: 'A member-held decision needs the named member' });
+    }
+    if (v.deciderKind !== 'member' && v.deciderMembershipId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['deciderMembershipId'], message: 'Only a member-held decision names a member' });
+    }
+    if (v.deciderKind === 'none' && v.options.length > 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: 'A recorded issue carries no options' });
+    }
+    if (v.deciderKind !== 'none' && v.options.length < 2) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: 'A decision needs at least two options' });
+    }
+  });
 export type CreateDecisionInput = z.infer<typeof createDecisionSchema>;
+
+/** Phase 6 task 4b (plan §A.1, round 8) — edit an UNPUBLISHED draft: the holder and the
+ *  other draft fields. Every field optional (a partial edit); the service refuses once the
+ *  decision is published (holder columns are write-once FROM publication). */
+export const updateDecisionDraftSchema = z
+  .object({
+    title: z.string().trim().min(1).optional(),
+    nodeId: z.string().trim().min(1).optional(),
+    room: z.string().trim().optional(),
+    options: z.array(decisionOptionInput).max(4).optional(),
+    deciderKind: z.enum(DECIDER_KINDS).optional(),
+    deciderMembershipId: z.string().trim().min(1).nullable().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.deciderKind === 'member' && !v.deciderMembershipId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['deciderMembershipId'], message: 'A member-held decision needs the named member' });
+    }
+    if (v.deciderKind && v.deciderKind !== 'member' && v.deciderMembershipId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['deciderMembershipId'], message: 'Only a member-held decision names a member' });
+    }
+  });
+export type UpdateDecisionDraftInput = z.infer<typeof updateDecisionDraftSchema>;
 
 // ── Location tree (zones → rooms → elements) ─────────────────────────────────
 export const NODE_KINDS = ['zone', 'room', 'element'] as const;

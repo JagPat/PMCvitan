@@ -10,7 +10,7 @@ import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
 import { pendingDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
 import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
-import type { ApproveInput, ChangeInput, CreateDecisionInput, WithdrawDecisionInput } from '../contracts';
+import type { ApproveInput, ChangeInput, CreateDecisionInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
 import { recordAudit } from '../platform/audit';
 import { emitEvent } from '../platform/events';
@@ -541,6 +541,31 @@ export class DecisionsService {
     });
 
     if (!outcome.replayed) await this.dispatcher.dispatchCommitted(outcome.events);
+    return this.snapshot.build(projectId, user.role, user.sub);
+  }
+
+  /**
+   * Phase 6 task 4b (plan §A.1, round 8) — edit an UNPUBLISHED draft: the decider holder and
+   * the other draft fields. This is the recovery path for a draft naming a since-removed
+   * member (withdraw covers only published rows, and a write-once column would otherwise
+   * force private content to publish), legal ONLY while `publishedAt IS NULL`, taking the
+   * decision row lock that publish also takes so an edit can never race a publish into
+   * carrying another revision's evidence.
+   *
+   * SHAPE STAGE: deliberately a no-op so P17's draft-re-point arm fails on BEHAVIOR, never on
+   * a missing symbol. The transaction, the row lock, the standing validation and the audit
+   * land with the §A.1 implementation.
+   */
+  async updateDraft(
+    projectId: string,
+    decisionId: string,
+    input: UpdateDecisionDraftInput,
+    user: AuthUser,
+    idempotencyKey?: string,
+  ): Promise<SnapshotDto> {
+    void decisionId;
+    void input;
+    void idempotencyKey;
     return this.snapshot.build(projectId, user.role, user.sub);
   }
 }

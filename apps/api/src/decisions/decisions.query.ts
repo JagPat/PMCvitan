@@ -195,7 +195,12 @@ export class DecisionsQueryService {
    *  (`publishedAt` null) is weightless — it is not awaiting the client, and counting it here leaked
    *  an author-private draft into every PMC/client member's portfolio rollup while the shell,
    *  dashboard and inbox surfaces all excluded it (cross-surface disagreement + a privacy leak). */
-  countPending(projectId: string): Promise<number> {
+  countPending(projectId: string, viewer?: { role: string; userId?: string }): Promise<number> {
+    // Phase 6 task 4b SHAPE: `viewer` is accepted but NOT yet consulted. The plan's §A.3
+    // audience rule makes this count VIEWER-SCOPED — a decision counts as pending only for
+    // the role or named member who must actually decide it — and P22 fails here until the
+    // narrowing lands with the decider audience.
+    void viewer;
     return this.prisma.decision.count({ where: { projectId, status: 'pending', publishedAt: { not: null } } });
   }
   /**
