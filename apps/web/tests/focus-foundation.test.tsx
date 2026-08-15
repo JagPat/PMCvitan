@@ -190,6 +190,68 @@ describe('F-1a Modal focus trap', () => {
     elsewhere.remove();
   });
 
+  it('the opener-gone fallback preserves RELATIVE POSITION — the nearest FOLLOWING control wins over an earlier one', () => {
+    // wrapper > [cardA, cardB(opener), cardC]: approving away the MIDDLE card
+    // must continue keyboard flow to cardC's control, never jump backward to
+    // cardA's just because it is first in the container.
+    const wrapper = document.createElement('div');
+    const cardA = document.createElement('div');
+    const btnA = document.createElement('button');
+    btnA.textContent = 'earlier decision';
+    cardA.appendChild(btnA);
+    const cardB = document.createElement('div');
+    const opener = document.createElement('button');
+    opener.textContent = 'approve middle';
+    cardB.appendChild(opener);
+    const cardC = document.createElement('div');
+    const btnC = document.createElement('button');
+    btnC.textContent = 'next decision';
+    cardC.appendChild(btnC);
+    wrapper.append(cardA, cardB, cardC);
+    document.body.appendChild(wrapper);
+    opener.focus();
+    const { unmount } = render(
+      <Modal onClose={() => {}}>
+        <button>Confirm</button>
+      </Modal>,
+    );
+    cardB.remove();
+    unmount();
+    expect(document.activeElement).toBe(btnC);
+    wrapper.remove();
+  });
+
+  it('a PRECEDING control is chosen only when nothing focusable FOLLOWS the vanished opener', () => {
+    // Same shape, but the following card is ALSO gone — only then may focus
+    // fall back to the earlier card.
+    const wrapper = document.createElement('div');
+    const cardA = document.createElement('div');
+    const btnA = document.createElement('button');
+    btnA.textContent = 'earlier decision';
+    cardA.appendChild(btnA);
+    const cardB = document.createElement('div');
+    const opener = document.createElement('button');
+    opener.textContent = 'approve last';
+    cardB.appendChild(opener);
+    const cardC = document.createElement('div');
+    const btnC = document.createElement('button');
+    btnC.textContent = 'also dismissed';
+    cardC.appendChild(btnC);
+    wrapper.append(cardA, cardB, cardC);
+    document.body.appendChild(wrapper);
+    opener.focus();
+    const { unmount } = render(
+      <Modal onClose={() => {}}>
+        <button>Confirm</button>
+      </Modal>,
+    );
+    cardB.remove();
+    cardC.remove();
+    unmount();
+    expect(document.activeElement).toBe(btnA);
+    wrapper.remove();
+  });
+
   it('a Tab from focus STRANDED ON BODY (the modal removed its focused control) is recaptured into the dialog', () => {
     openerButton();
     const { rerender } = render(

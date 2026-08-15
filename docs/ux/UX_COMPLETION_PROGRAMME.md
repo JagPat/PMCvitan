@@ -143,7 +143,7 @@ The "generate the weekly report" step was removed from the PMC scenario — see 
 
 ## 5. Surface map
 
-23 surfaces: 18 screens plus 5 shared dialogs/pickers. **Re-derive this list after Phase 6 closes.**
+24 surfaces: 18 screens plus 6 shared dialogs/pickers (`components/PhotoViewer` added 2026-08-15 — it is one of the four true dialogs and was missing from the map). **Re-derive this list after Phase 6 closes.**
 
 | Surface | Waves | What changes | Effort |
 |---|---|---|---|
@@ -164,11 +164,12 @@ The "generate the weekly report" step was removed from the PMC scenario — see 
 | `LabourScreen` | 0 | Sweep; forecast verdicts need a non-colour cue | S |
 | `PlacesScreen` | 0 | Sweep; tree nodes need keyboard traversal | S |
 | `DraftsScreen` / `PortfolioScreen` | 0 | Sweep | S |
-| `layout/ProjectSwitcher` | 0 | Field to 16px; focus ring; focus trap (it is a dialog) | S |
+| `layout/ProjectSwitcher` | 0 | Field to 16px; focus ring; non-modal disclosure per the Wave-0 amendment (2026-08-15): `aria-expanded` trigger, `role="group"` panel, root Escape, light dismiss — NO trap, it is not a dialog | S |
 | `components/LocationPicker` | 0 | `outline:none` removed; field to 16px; listbox keyboard semantics | S |
 | `modals/ApproveModal` | 0 | Focus ring + trap; **confirmation wording preserved** | S |
 | `modals/ChangeModal` | 0 | `outline:none` removed; trap; field to 16px | S |
 | `modals/QrModal` | 0 | Focus ring + trap; dismiss reachable by keyboard | S |
+| `components/PhotoViewer` | 0 | Focus ring + trap (the fourth true dialog); ink-surface opt-in | S |
 
 ---
 

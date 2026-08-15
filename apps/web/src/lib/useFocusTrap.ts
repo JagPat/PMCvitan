@@ -3,6 +3,15 @@ import { useEffect, type RefObject } from 'react';
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+type OpenerAnchor = {
+  ancestor: HTMLElement;
+  /** The child of `ancestor` the opener lived under (the opener itself at depth 0). */
+  branch: Element | null;
+  /** `branch`'s siblings at dialog-open time, nearest first. */
+  following: Element[];
+  preceding: Element[];
+};
+
 /** Dialog focus discipline (Wave 0 / F-1a): focus moves into the dialog on
  *  open, Tab cycles inside while open, and focus returns to the opener on
  *  close. Esc stays the dialog's own binding — every dialog already closes on
@@ -10,21 +19,36 @@ const FOCUSABLE =
  *  boundary keydown is prevented and redirected, so the trap never fights the
  *  browser's own focus sequencing. When the OPENER itself is gone at close
  *  (the dialog's action removed it — approve dismisses the pending card), the
- *  fallback is the first focusable inside the nearest still-connected
- *  ancestor of where the opener lived, so keyboard flow resumes beside the
- *  vanished control instead of restarting at the shell. */
+ *  fallback preserves RELATIVE POSITION: at each still-connected ancestor of
+ *  where the opener lived, the nearest FOLLOWING sibling with a focusable
+ *  wins, then the opener's own branch, then a PRECEDING sibling only as a
+ *  last resort — so keyboard flow continues to the next item instead of
+ *  jumping backward across surviving content, and an emptied ancestor yields
+ *  to the next one out instead of stranding focus on body. */
 export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true): void {
   useEffect(() => {
     if (!active) return;
     const container = ref.current;
     if (!container) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    // The opener's ancestor chain, captured NOW — if the opener is removed
-    // while the dialog is open, the closest surviving ancestor anchors the
-    // focus fallback.
-    const openerChain: HTMLElement[] = [];
-    for (let node = opener?.parentElement ?? null; node; node = node.parentElement) {
-      openerChain.push(node);
+    // Per-ancestor POSITION anchors, captured NOW — sibling lists are frozen
+    // at open time because a removed node loses its live sibling links, so
+    // they cannot be walked after the fact.
+    const anchors: OpenerAnchor[] = [];
+    {
+      let branch: Element | null = opener;
+      for (let node = opener?.parentElement ?? null; node; node = node.parentElement) {
+        const following: Element[] = [];
+        for (let sib = branch?.nextElementSibling ?? null; sib; sib = sib.nextElementSibling) {
+          following.push(sib);
+        }
+        const preceding: Element[] = [];
+        for (let sib = branch?.previousElementSibling ?? null; sib; sib = sib.previousElementSibling) {
+          preceding.push(sib);
+        }
+        anchors.push({ ancestor: node, branch, following, preceding });
+        branch = node;
+      }
     }
     const focusables = () => Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
 
@@ -60,6 +84,18 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true):
       }
     };
 
+    // Focus the root itself if it is focusable, else its first focusable
+    // descendant. Returns whether focus was placed.
+    const focusIn = (root: Element): boolean => {
+      const target =
+        root instanceof HTMLElement && root.matches(FOCUSABLE)
+          ? root
+          : root.querySelector<HTMLElement>(FOCUSABLE);
+      if (!target) return false;
+      target.focus();
+      return true;
+    };
+
     document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
@@ -67,16 +103,22 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true):
         opener.focus();
         return;
       }
-      // Walk the WHOLE captured chain, not just the nearest survivor: the
-      // nearest connected ancestor may be an emptied container (the last
-      // pending card approved away), and stopping there strands focus on
-      // body. Each successive ancestor widens the search until something
-      // focusable exists.
-      for (const node of openerChain) {
-        if (!node.isConnected) continue;
-        const target = node.querySelector<HTMLElement>(FOCUSABLE);
-        if (target) {
-          target.focus();
+      // Walk the captured chain outward until focus is successfully placed.
+      // At each connected ancestor, relative position decides: following
+      // siblings (nearest first), then the branch's own survivors, then
+      // preceding siblings, then anything the ancestor gained since open.
+      for (const { ancestor, branch, following, preceding } of anchors) {
+        if (!ancestor.isConnected) continue;
+        for (const sib of following) {
+          if (sib.isConnected && focusIn(sib)) return;
+        }
+        if (branch?.isConnected && focusIn(branch)) return;
+        for (const sib of preceding) {
+          if (sib.isConnected && focusIn(sib)) return;
+        }
+        const gained = ancestor.querySelector<HTMLElement>(FOCUSABLE);
+        if (gained) {
+          gained.focus();
           return;
         }
       }

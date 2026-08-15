@@ -13,6 +13,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 
 | `b0ce976` | round-4 fold | 2 (1 P1, 1 P2) | corrected on this head: the DURABLE HANDOFF records F-1a as LANDED — the README amendment supersedes "do not open a PR yet" (owner parallel directive), and the STATUS gated-successor row now says F-1a is implemented (PR #342) with the resume action repointed at F-1b (§6.7-gated) → F-1c, so the post-task-4 runner can never re-schedule the shipped unit; and BOTH five-dialog completion criteria (WAVE_0 "Done when" + the master brief F-1a line) become FOUR dialogs + the ProjectSwitcher disclosure |
 
+| `bfd12f4` | round-5 fold | 2 (2 P2) | corrected on this head: the opener-gone fallback preserves RELATIVE POSITION — per-ancestor anchors captured at open (branch + frozen sibling lists) let close prefer the nearest FOLLOWING control, then the branch's survivors, then a PRECEDING control, then anything the ancestor gained, still walking past emptied ancestors (dismissing the middle card no longer jumps keyboard flow backward to the first); and the surface map catches up with the settled semantics — the `ProjectSwitcher` row becomes the non-modal disclosure, `components/PhotoViewer` (one of the four true dialogs) joins the map, count 23 → 24 surfaces |
+
 ## Root analysis — one generative class
 
 All ten findings across both rounds are instances of ONE rule: **a focus
@@ -36,9 +38,14 @@ the symptom; the probes pin every moved mechanism (15 arms).
 
 ## Disposition
 
-Eighteen findings across five rounds — every one verified real, none
-disputed, none refuted. Probes 18/18 at this head; full web suite 782/782;
-`pnpm check` EXIT 0. The round-3 doc finding is the one NON-focus item:
-the human-only completion gate, resolved by naming its OWNER rather than
-deleting the owner's mandate. No product write path, schema, or API surface was ever
-touched; the unit remains presentation-layer only.
+Twenty findings across six rounds — every one verified real, none
+disputed, none refuted. Probes 20/20 at this head; full web suite 784/784;
+`pnpm check` EXIT 0. The round-6 fallback finding is another instance of
+the one generative class: restoration was keyed to CONTAINER-FIRST-MATCH
+when the true owner of "where next" is the opener's POSITION — the anchors
+move the mechanism to that owner. The round-3 and round-5/6 doc findings
+are the NON-focus items: the human-only completion gate (resolved by
+naming its OWNER rather than deleting the owner's mandate) and the durable
+handoff/surface map catching up with the settled semantics. No product
+write path, schema, or API surface was ever touched; the unit remains
+presentation-layer only.

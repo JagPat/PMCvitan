@@ -198,6 +198,30 @@ EXIT 0.
 
 Probes 18/18; full web 782/782; `pnpm check` EXIT 0.
 
+## Round 6 — two Codex findings on head `bfd12f4`, folded as one batch
+
+1. **(P2)** the opener-gone fallback preserves RELATIVE POSITION: the flat
+   ancestor-wide `querySelector` picked the FIRST control in the surviving
+   container, jumping keyboard flow backward across earlier cards when a
+   MIDDLE card was approved away. The trap now captures per-ancestor
+   position anchors at open (the branch the opener lived under plus its
+   frozen sibling lists — a removed node loses its live sibling links, so
+   they cannot be walked after the fact) and on close walks each connected
+   ancestor in order: FOLLOWING siblings nearest-first, then the branch's
+   own survivors, then PRECEDING siblings only as a fallback, then
+   anything the ancestor gained since open — still walking past emptied
+   ancestors (the round-3 behavior is preserved). Two new arms: dismissing
+   the middle of three cards focuses the NEXT card's control (RED on the
+   pre-fix walk, which chose the first card), and the earlier card is
+   chosen only when the following card is also gone.
+2. **(P2)** the surface map caught up with the settled semantics: the
+   `ProjectSwitcher` row no longer prescribes "focus trap (it is a
+   dialog)" — it now records the non-modal disclosure (2026-08-15) —
+   `components/PhotoViewer`, one of the four true dialogs, joins the map,
+   and the count is 24 surfaces (18 screens + 6 shared dialogs/pickers).
+
+Probes 20/20; full web 784/784; `pnpm check` EXIT 0.
+
 ## Round 5 — two Codex findings on head `b0ce976`, folded as one batch
 
 1. **(P1)** the durable handoff now records F-1a as LANDED: the README's
