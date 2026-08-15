@@ -106,9 +106,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_publication_seal"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_recorded_seal"'),
+      // The 4b Membership seal guards DELETE (it refuses removing a holder of a published open
+      // decision), so a reset that WIPES memberships extends the same named-bypass contract.
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Membership" DISABLE TRIGGER "Membership_t4b_holder_seal"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } }),
       t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } }),
       t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Membership" ENABLE TRIGGER "Membership_t4b_holder_seal"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_recorded_seal"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_publication_seal"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
