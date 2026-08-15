@@ -183,3 +183,17 @@ EXIT 0. Convergence audit added per protocol:
 
 Probes 17/17 (2 new arms + 2 extended); full web 781/781; `pnpm check`
 EXIT 0.
+
+## Round 4 — two Codex findings on head `a2d9fa1`, folded as one batch
+
+1. **(P2)** Escape moves to the switcher ROOT: Shift+Tab from the first row
+   lands focus back on the trigger with the popup still open, where a
+   panel-only handler was deaf. One handler on the shared root covers the
+   trigger and the panel alike (new probe arm).
+2. **(P2)** the landed `WAVE_0_FOUNDATION.md` still classified
+   `ProjectSwitcher` as a trapped dialog — F-1c's acceptance would have
+   demanded undoing rounds 1–3. A dated amendment records the chosen
+   NON-MODAL disclosure semantics and their acceptance checks; the four
+   true dialogs keep the trap contract unchanged.
+
+Probes 18/18; full web 782/782; `pnpm check` EXIT 0.

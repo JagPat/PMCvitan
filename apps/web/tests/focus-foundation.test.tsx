@@ -301,6 +301,19 @@ describe('F-1a ProjectSwitcher dropdown focus', () => {
     outside.remove();
   });
 
+  it('Escape closes the open popup even when focus is back ON THE TRIGGER (Shift+Tab landed there)', async () => {
+    const ProjectSwitcher = await loadSwitcher();
+    render(<ProjectSwitcher />);
+    const trigger = screen.getByTestId('project-switcher');
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(screen.getAllByRole('button', { name: /Beta/ }).length).toBeGreaterThan(0);
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'Escape' });
+    expect(screen.queryByRole('button', { name: /Beta/ })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('a switcher that CANNOT open claims no disclosure state', async () => {
     vi.stubEnv('VITE_API_URL', 'http://api.test');
     vi.resetModules();

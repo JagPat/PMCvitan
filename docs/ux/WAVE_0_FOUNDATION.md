@@ -64,6 +64,18 @@ Re-measure if any palette value changes. Do not assume a token passes because it
 
 `ProjectSwitcher`, `ApproveModal`, `ChangeModal`, `QrModal`, `PhotoViewer`: focus moves in on open, is trapped while open, returns to the trigger on close, `Esc` dismisses. `Modal.tsx` already has `aria-labelledby` and a keydown handler — **extend it there once**, not in each modal.
 
+> **Amendment (2026-08-15, PR #342 review rounds 1–4):** `ProjectSwitcher`
+> is NOT a dialog and does not trap — trapping a popup while the page stays
+> interactive contradicted both its behavior and its ARIA claims (review
+> findings). Its recorded semantics are a **non-modal disclosure**:
+> `aria-expanded` on the trigger (only when it can open), a nameable
+> `role="group"` panel, focus into the panel on open, `Esc` closes from
+> anywhere within the switcher and restores the trigger, internal actions
+> park focus on the trigger before their row unmounts, and outside
+> interaction light-dismisses without stealing focus. F-1c validates THESE
+> semantics for the switcher; the four true dialogs above keep the trap
+> contract unchanged.
+
 **Preserve confirmation and attribution wording exactly.** This unit changes focus only — no copy changes.
 
 **Done when:** focus coverage on every interactive primitive; no bare `outline:none` without replacement; both tokens contrast-verified in test; all 5 dialogs trap and restore focus and dismiss on `Esc`; confirmation wording unchanged.

@@ -54,6 +54,12 @@ export function ProjectSwitcher() {
     <div
       ref={rootRef}
       style={{ position: 'relative' }}
+      onKeyDown={(e) => {
+        // Escape closes from ANYWHERE in the switcher — Shift+Tab can put
+        // focus back on the trigger while the popup is still open, and a
+        // panel-only handler would go deaf there.
+        if (open && e.key === 'Escape') closeToTrigger();
+      }}
       onBlurCapture={(e) => {
         // Focus leaving the whole switcher (trigger + panel) light-dismisses.
         if (open && e.relatedTarget instanceof Node && !rootRef.current?.contains(e.relatedTarget)) {
@@ -79,9 +85,6 @@ export function ProjectSwitcher() {
           style={panel}
           role="group"
           aria-label="Switch project"
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') closeToTrigger();
-          }}
         >
           {memberships.map((m) => {
             const on = m.projectId === activeProjectId;
