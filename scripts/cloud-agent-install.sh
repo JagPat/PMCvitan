@@ -10,7 +10,7 @@ corepack prepare pnpm@10.33.3 --activate
 
 pnpm install --frozen-lockfile
 
-ensure_api_env
+ensure_api_env_database
 
 pnpm build:shared
 pnpm --filter api prisma:generate

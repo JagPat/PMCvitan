@@ -3,6 +3,8 @@
 
 DEFAULT_DATABASE_URL='postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public'
 SEED_PROJECT_ID='ambli'
+# Created near the end of apps/api/prisma/seed.ts — absent if seed was interrupted early.
+SEED_COMPLETION_MARK='test-drawing-a'
 
 resolve_database_url() {
   export DATABASE_URL="${DATABASE_URL:-$DEFAULT_DATABASE_URL}"
@@ -32,6 +34,19 @@ else:
     out = urlunsplit((parts.scheme, parts.netloc, parts.path, query_string, parts.fragment))
 
 print(out)
+PY
+}
+
+# Prisma schema= query param (libpq uses search_path instead).
+prisma_schema_from_url() {
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import parse_qsl, urlsplit
+
+for key, value in parse_qsl(urlsplit(sys.argv[1]).query, keep_blank_values=True):
+    if key == "schema" and value:
+        print(value)
+        break
 PY
 }
 
@@ -70,13 +85,43 @@ pathlib.Path(path).write_text(text, encoding="utf-8")
 PY
 }
 
-ensure_api_env() {
+env_var_present() {
+  local key="$1" file="$2"
+  if [ -n "${!key}" ]; then
+    return 0
+  fi
+  [ -f "$file" ] && grep -q "^${key}=" "$file"
+}
+
+ensure_api_env_database() {
   resolve_database_url
   touch apps/api/.env
   set_env_var apps/api/.env DATABASE_URL "$DATABASE_URL"
-  set_env_var apps/api/.env JWT_SECRET "dev-secret-change-in-prod"
-  set_env_var apps/api/.env ALLOW_DEV_AUTH "true"
-  set_env_var apps/api/.env CORS_ORIGINS ""
+}
+
+ensure_api_env() {
+  ensure_api_env_database
+  if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ]; then
+    set_env_var apps/api/.env JWT_SECRET "dev-secret-change-in-prod"
+    set_env_var apps/api/.env ALLOW_DEV_AUTH "true"
+    set_env_var apps/api/.env CORS_ORIGINS ""
+    return 0
+  fi
+  if ! env_var_present JWT_SECRET apps/api/.env; then
+    echo "[cloud-agent-env] External DATABASE_URL requires JWT_SECRET (environment or apps/api/.env)" >&2
+    exit 1
+  fi
+}
+
+# psql helper: honour Prisma schema= via search_path (libpq URLs omit schema=).
+psql_tc() {
+  local sql="$1"
+  local schema="${2:-}"
+  if [ -n "$schema" ]; then
+    psql "$PSQL_URL" -v ON_ERROR_STOP=1 -tc "SET search_path TO \"${schema}\"; ${sql}"
+  else
+    psql "$PSQL_URL" -tc "$sql"
+  fi
 }
 
 seed_permitted() {

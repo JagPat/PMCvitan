@@ -7,6 +7,7 @@ source "$(dirname "$0")/cloud-agent-env.sh"
 
 resolve_database_url
 PSQL_URL="$(psql_database_url "$DATABASE_URL")"
+PSQL_SCHEMA="$(prisma_schema_from_url "$DATABASE_URL" || true)"
 DB_LABEL="$(database_url_log_label "$DATABASE_URL")"
 
 if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ]; then
@@ -29,7 +30,7 @@ if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ]; then
     exit 1
   fi
 
-  if ! psql "$PSQL_URL" -tc "SELECT 1" >/dev/null 2>&1; then
+  if ! psql_tc "SELECT 1" "$PSQL_SCHEMA" >/dev/null 2>&1; then
     if sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='vitan'" 2>/dev/null | grep -q 1; then
       :
     else
@@ -44,13 +45,13 @@ if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ]; then
 else
   # Cursor secret / external Postgres — connect to the configured URL only.
   for _ in $(seq 1 30); do
-    if psql "$PSQL_URL" -tc "SELECT 1" >/dev/null 2>&1; then
+    if psql_tc "SELECT 1" "$PSQL_SCHEMA" >/dev/null 2>&1; then
       break
     fi
     sleep 1
   done
 
-  if ! psql "$PSQL_URL" -tc "SELECT 1" >/dev/null 2>&1; then
+  if ! psql_tc "SELECT 1" "$PSQL_SCHEMA" >/dev/null 2>&1; then
     echo "[cloud-agent-start] Database is not reachable at ${DB_LABEL}" >&2
     exit 1
   fi
@@ -68,8 +69,8 @@ fi
 pnpm --filter api prisma:migrate
 
 if seed_permitted; then
-  if ! psql "$PSQL_URL" -tc "SELECT 1 FROM \"Project\" WHERE id = '${SEED_PROJECT_ID}'" 2>/dev/null | grep -q 1; then
-    echo "[cloud-agent-start] No seed project '${SEED_PROJECT_ID}' — running seed"
+  if ! psql_tc "SELECT 1 FROM \"Drawing\" WHERE id = '${SEED_COMPLETION_MARK}'" "$PSQL_SCHEMA" 2>/dev/null | grep -q 1; then
+    echo "[cloud-agent-start] Seed fixture incomplete (missing '${SEED_COMPLETION_MARK}') — running seed"
     pnpm --filter api seed
   fi
 else

@@ -74,6 +74,9 @@ each secret/config key before shipping.
 | seed wipes staging | unconditional seed | `seed_permitted` + opt-in flag | external DB startup |
 | psql SSL dropped | naive `?` truncation | Python URL parse, strip `schema` only | Cloud SQL / SSL URLs |
 | empty-host URI broken | `urlunsplit` drops `//` netloc | emit `postgresql:///dbname?...` form | Cloud SQL socket URLs |
+| dev auth on external DB | `ensure_api_env` always wrote dev JWT/ALLOW_DEV_AUTH | dev defaults only on default local URL; external requires `JWT_SECRET` | staging token forgery |
+| psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
+| partial seed skip | early `ambli` row before seed finishes | sentinel `test-drawing-a` (late seed row) | interrupted seed restart |
 | `.env` corruption | `sed` `&` metacharacter | Python `set_env_var` | multi-param `DATABASE_URL` |
 | secret in logs | full URL in `echo` | `database_url_log_label` | failed external connect |
 | compiled API stale | `start` not `start:dev` | **documented** trade-off; matches CI e2e | API source edits need rebuild |
@@ -89,11 +92,8 @@ each secret/config key before shipping.
 
 ## Status
 
-Thirteen distinct findings across three finding-bearing heads (8 + 4 + 1 post-convergence).
-All product findings are corrected in the scripts; the compiled-API choice is documented as an
-accepted trade-off. Round-4 (head `4a2f604`) found one P2: `urlunsplit` collapsed
-`postgresql:///dbname?host=...` to `postgresql:/dbname?...`; fixed by preserving the empty-host
-libpq form when stripping `schema=` only (`scripts/ci-cloud-agent-env.test.mjs` pins it).
-CI battery green; `codex-current-head` awaited re-review on the correction head.
+Thirteen distinct findings across three finding-bearing heads (8 + 4 + 1 post-convergence), plus
+round 5 on head `d296fea` (auth safeguards, Prisma schema/search_path, seed-completion sentinel).
+All findings are corrected in the scripts; the compiled-API choice remains a documented trade-off.
 
 Review-Convergence: complete
