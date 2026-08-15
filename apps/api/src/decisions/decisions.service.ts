@@ -86,8 +86,15 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
+        // Phase 6 task 4b (plan §A.2, round 18) — the head is born UNPUBLISHED even for a
+        // one-step issue, and the guarded publication UPDATE runs LAST in this same transaction.
+        // The publication seal counts a decision's options at BOTH doors (the NULL → NOT NULL
+        // update and an already-published INSERT), so inserting the published head before its
+        // children would be refused at a zero count — and the option floor cannot be dropped,
+        // because that is the seal keeping a published decision approvable. Atomic to every
+        // reader: the command's observable result is unchanged.
         await tx.decision.create({
-          data: { id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0, photoSwatch: lead.swatch, authorId: user.sub, publishedAt },
+          data: { id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0, photoSwatch: lead.swatch, authorId: user.sub, publishedAt: null },
         });
         await tx.decisionOption.createMany({
           data: input.options.map((o, i) => ({
@@ -102,6 +109,8 @@ export class DecisionsService {
             order: i,
           })),
         });
+        // the guarded publication, AFTER the options exist (round 18)
+        if (publishedAt) await tx.decision.update({ where: { id }, data: { publishedAt } });
         await tx.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } });
         if (input.publish) {
           // Phase 6 task 4a — decision-notice writers stamp `decisionId`, so a later withdrawal

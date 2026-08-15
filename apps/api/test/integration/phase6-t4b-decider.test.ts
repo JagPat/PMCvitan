@@ -52,6 +52,7 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
   let svc: DecisionsService;
   let query: DecisionsQueryService;
   let raceDb: PrismaClient;
+  let clientUserId = '';
   let seq = 0;
 
   const pmc = (): AuthUser => ({ sub: f.memberUser.id, role: 'pmc', projectId: f.projectA.id }) as AuthUser;
@@ -62,9 +63,23 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
     svc = t.app.get(DecisionsService);
     query = t.app.get(DecisionsQueryService);
     raceDb = new PrismaClient();
+    // A CLIENT holder must exist for the default (client-held) decisions these probes publish:
+    // 4b refuses to publish a decision into a project with no effective holder (plan §A.1
+    // round 10), which is the zero-holder state the removal guard exists to prevent. Every real
+    // project has a client; the shared fixture models tenancy, not the decision audience.
+    clientUserId = `t4b-client-${f.projectA.id}`;
+    await t.prisma.user.create({
+      data: { id: clientUserId, projectId: f.projectA.id, role: 'client', name: 'T4B Client', email: `${clientUserId}@test.local` },
+    });
+    await t.prisma.membership.create({
+      data: { projectId: f.projectA.id, userId: clientUserId, role: 'client', status: 'active' },
+    });
   });
   afterAll(async () => {
     await cleanup();
+    // the standing client is beforeAll-scoped: it must go before the fixture drops the project
+    await t.prisma.membership.deleteMany({ where: { userId: clientUserId } });
+    await t.prisma.user.deleteMany({ where: { id: clientUserId } });
     await raceDb?.$disconnect();
     await f?.cleanup();
     await t?.close();
@@ -87,15 +102,26 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+      // 4b's child seal is STRICTER than 4a's (every PUBLISHED parent, not only withdrawn ones),
+      // so this sanctioned destructive reset must disable it by name too — the same
+      // named-bypass contract, extended to the seal this unit adds.
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_publication_seal"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_recorded_seal"'),
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } }),
       t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [f.projectA.id, f.projectB.id] } } } }),
       t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_recorded_seal"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_publication_seal"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
       t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
     ]);
     await t.prisma.membership.deleteMany({ where: { userId: { startsWith: 'it-t4b-u-' } } });
     await t.prisma.user.deleteMany({ where: { id: { startsWith: 'it-t4b-u-' } } });
+    // NOTE: the beforeAll client holder ('t4b-client') deliberately SURVIVES the per-test reset —
+    // it is the project's standing client, not a per-probe fixture.
   }
 
   /** An ACTIVE project membership in the given role — the decider candidate pool. */
