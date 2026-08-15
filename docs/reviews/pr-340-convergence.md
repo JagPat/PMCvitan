@@ -307,6 +307,16 @@ given there overrides the loop's course. Nothing in this resumption merges
 anything: the exact-head gate still fails closed on any current-head
 finding.
 
+## Shepherded main-merges
+
+The orchestrator's behind-main shepherd directed merging `origin/main`
+into this branch after PR #343 (the deterministic pillar-chain e2e waits)
+merged; the merge head carries main's test-infrastructure change verbatim
+and alters NO plan or packet content. This note exists because the
+convergence protocol requires every pushed head past the third finding
+head to touch this packet and carry both trailers — a shepherded merge
+commit is a pushed head like any other.
+
 ## Rounds 10–13 — instances of settled classes, folded minimally
 
 Round 10 (seven findings on `af8d6be`, folded on `56d09c0`), round 11
