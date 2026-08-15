@@ -58,18 +58,12 @@ else
 fi
 
 ensure_api_env
-
-if [ ! -f apps/web/.env ]; then
-  cat >apps/web/.env <<'EOF'
-VITE_API_URL="http://localhost:3000"
-VITE_ALLOW_DEV_AUTH="true"
-EOF
-fi
+ensure_web_env
 
 pnpm --filter api prisma:migrate
 
 if seed_permitted; then
-  if ! psql_tc "SELECT 1 FROM \"Drawing\" WHERE id = '${SEED_COMPLETION_MARK}'" "$PSQL_SCHEMA" 2>/dev/null | grep -q 1; then
+  if ! psql_tc "SELECT 1 FROM \"Notification\" WHERE id = '${SEED_COMPLETION_MARK}'" "$PSQL_SCHEMA" 2>/dev/null | grep -q 1; then
     echo "[cloud-agent-start] Seed fixture incomplete (missing '${SEED_COMPLETION_MARK}') — running seed"
     pnpm --filter api seed
   fi

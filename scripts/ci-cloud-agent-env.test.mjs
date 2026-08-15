@@ -123,3 +123,67 @@ test('ensure_api_env rejects leftover local-dev JWT when switching to an externa
     assert.doesNotMatch(text, /ALLOW_DEV_AUTH="true"/);
   });
 });
+
+test('ensure_api_env rejects apps/api/.env.example JWT_SECRET=change-me on an external database', () => {
+  withApiEnv((apiEnv) => {
+    execSync(
+      `printf '%s\\n' 'DATABASE_URL="postgresql://remote:secret@db.example.com:5432/staging"' 'JWT_SECRET="change-me"' 'ALLOW_DEV_AUTH="true"' > ${JSON.stringify(apiEnv)}`,
+      { cwd: root },
+    );
+    assert.throws(
+      () => bashEval(
+        `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+        + `export DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging' && `
+        + `unset JWT_SECRET && unset ALLOW_DEV_AUTH && ensure_api_env`,
+      ),
+      (err) => err.status !== 0,
+    );
+    const text = execSync(`cat ${JSON.stringify(apiEnv)}`, { cwd: root, encoding: 'utf8' });
+    assert.doesNotMatch(text, /JWT_SECRET="change-me"/);
+  });
+});
+
+test('ensure_api_env clears ALLOW_DEV_AUTH when the override is empty', () => {
+  withApiEnv((apiEnv) => {
+    bashEval(
+      `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+      + `export DATABASE_URL='postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public' && ensure_api_env`,
+    );
+    bashEval(
+      `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+      + `export DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging' && `
+      + `export JWT_SECRET='operator-secret-not-a-placeholder' && `
+      + `export ALLOW_DEV_AUTH='' && ensure_api_env`,
+    );
+    const text = execSync(`cat ${JSON.stringify(apiEnv)}`, { cwd: root, encoding: 'utf8' });
+    assert.doesNotMatch(text, /ALLOW_DEV_AUTH=/);
+  });
+});
+
+test('ensure_web_env disables VITE_ALLOW_DEV_AUTH for an external database', () => {
+  const webEnv = join(root, 'apps/web/.env');
+  const backup = `${webEnv}.ci-backup`;
+  const hadBackup = execSync(`test -f ${JSON.stringify(webEnv)} && echo yes || echo no`, {
+    cwd: root,
+    encoding: 'utf8',
+  }).trim() === 'yes';
+  try {
+    if (hadBackup) {
+      execSync(`cp ${JSON.stringify(webEnv)} ${JSON.stringify(backup)}`, { cwd: root });
+    }
+    execSync(`rm -f ${JSON.stringify(webEnv)}`, { cwd: root });
+    bashEval(
+      `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+      + `export DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging' && `
+      + `unset ALLOW_DEV_AUTH && ensure_web_env`,
+    );
+    const text = execSync(`cat ${JSON.stringify(webEnv)}`, { cwd: root, encoding: 'utf8' });
+    assert.match(text, /VITE_ALLOW_DEV_AUTH="false"/);
+  } finally {
+    if (hadBackup) {
+      execSync(`mv ${JSON.stringify(backup)} ${JSON.stringify(webEnv)}`, { cwd: root });
+    } else {
+      execSync(`rm -f ${JSON.stringify(webEnv)}`, { cwd: root });
+    }
+  }
+});

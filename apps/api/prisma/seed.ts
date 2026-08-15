@@ -400,6 +400,18 @@ async function main(): Promise<void> {
   // "G+2 Residence" preset, so New project opens to a ready menu.
   const seededLibrary = await createStarterLibrary(prisma, org.id);
 
+  // Completion marker for cloud-agent-start: written LAST so a partial seed cannot
+  // skip re-running. Id is stable; the row is truncated with the rest on re-seed.
+  await prisma.notification.create({
+    data: {
+      id: 'cloud-agent-seed-complete',
+      projectId: PROJECT_ID,
+      text: 'cloud-agent-seed-complete',
+      time: 'seed',
+      color: '#3F7A54',
+    },
+  });
+
   // eslint-disable-next-line no-console
   console.log(
     'Seeded org Vitan Architecture + project', PROJECT_ID,

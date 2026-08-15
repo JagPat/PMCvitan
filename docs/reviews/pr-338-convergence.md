@@ -76,9 +76,14 @@ each secret/config key before shipping.
 | empty-host URI broken | `urlunsplit` drops `//` netloc | emit `postgresql:///dbname?...` form | Cloud SQL socket URLs |
 | dev auth on external DB | `ensure_api_env` always wrote dev JWT/ALLOW_DEV_AUTH | dev defaults only on default local URL; external requires `JWT_SECRET` | staging token forgery |
 | stale local JWT on external | presence-only check accepted leftover generated `.env` | strip generated JWT/`ALLOW_DEV_AUTH`; require operator secret | local→external restart |
+| example JWT `change-me` | only `dev-secret-change-in-prod` was rejected | reject the placeholder set (incl. `.env.example`) | copied example `.env` |
+| empty ALLOW_DEV_AUTH | `${VAR+x}` is set for empty, so stale `true` stayed | treat empty as unset and strip the file line | `ALLOW_DEV_AUTH=` |
+| web always ALLOW_DEV_AUTH | first-write `VITE_ALLOW_DEV_AUTH=true` | derive from local DB or explicit API flag | external preview AuthGate |
+| sourced `.env` clobbers secrets | terminal restored only DB/JWT/dev-auth | restore every pre-source `export -p` binding | `WORKER_ENROLL_SECRET` |
+| psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
 | psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
 | Prisma pool args in psql | only `schema=` stripped | drop Prisma-only query keys (`connection_limit`, `pool_timeout`, …) | mixed Prisma+libpq URL |
-| partial seed skip | early `ambli` row before seed finishes | sentinel `test-drawing-a` (late seed row) | interrupted seed restart |
+| partial seed skip | early `ambli` / `test-drawing-a` before later writes | sentinel `cloud-agent-seed-complete` after the library | interrupted seed restart |
 | `.env` corruption | `sed` `&` metacharacter | Python `set_env_var` | multi-param `DATABASE_URL` |
 | secret in logs | full URL in `echo` | `database_url_log_label` | failed external connect |
 | compiled API stale | `start` not `start:dev` | **documented** trade-off; matches CI e2e | API source edits need rebuild |
@@ -94,8 +99,9 @@ each secret/config key before shipping.
 
 ## Status
 
-Round 6 on head `8fd1e1c` (stale generated JWT after a local→external switch; Prisma
-`connection_limit`/`pool_timeout` left in `psql` URLs) is corrected on this head. The compiled-API
-choice remains a documented trade-off.
+Round 7 on head `92ca148` (example JWT `change-me`, empty `ALLOW_DEV_AUTH` leftover,
+seed marker still mid-fixture, web always enabling dev auth, sourced `.env` blanking
+`WORKER_ENROLL_SECRET`) is corrected on this head. The compiled-API choice remains a
+documented trade-off.
 
 Review-Convergence: complete

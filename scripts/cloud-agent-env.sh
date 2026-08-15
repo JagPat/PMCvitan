@@ -3,9 +3,13 @@
 
 DEFAULT_DATABASE_URL='postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public'
 DEV_JWT_SECRET='dev-secret-change-in-prod'
+# Public placeholders that must never sign tokens against an external database.
+PLACEHOLDER_JWT_SECRETS='dev-secret-change-in-prod
+change-me
+change-me-too'
 SEED_PROJECT_ID='ambli'
-# Created near the end of apps/api/prisma/seed.ts — absent if seed was interrupted early.
-SEED_COMPLETION_MARK='test-drawing-a'
+# Written last in apps/api/prisma/seed.ts — after drawing, media, notices, and the starter library.
+SEED_COMPLETION_MARK='cloud-agent-seed-complete'
 # Prisma connector args that libpq/psql reject (keep sslmode, host, etc.).
 PRISMA_ONLY_QUERY_KEYS='schema connection_limit pool_timeout pgbouncer statement_cache_size socket_timeout sslidentity sslpassword sslaccept max_idle_connection_lifetime'
 
@@ -129,7 +133,9 @@ PY
 }
 
 jwt_is_generated() {
-  [ "${1:-}" = "$DEV_JWT_SECRET" ]
+  local value="${1:-}"
+  [ -n "$value" ] || return 1
+  printf '%s\n' "$PLACEHOLDER_JWT_SECRETS" | grep -Fxq -- "$value"
 }
 
 external_jwt_supplied() {
@@ -164,13 +170,25 @@ ensure_api_env() {
   if jwt_is_generated "$file_jwt"; then
     unset_env_var apps/api/.env JWT_SECRET
   fi
-  if [ -z "${ALLOW_DEV_AUTH+x}" ]; then
+  if [ -z "${ALLOW_DEV_AUTH:-}" ]; then
     unset_env_var apps/api/.env ALLOW_DEV_AUTH
+    unset ALLOW_DEV_AUTH || true
   fi
   if ! external_jwt_supplied; then
     echo "[cloud-agent-env] External DATABASE_URL requires JWT_SECRET (environment or apps/api/.env); generated local-dev secrets are not accepted" >&2
     exit 1
   fi
+}
+
+ensure_web_env() {
+  resolve_database_url
+  local dev_auth='false'
+  if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ] || [ "${ALLOW_DEV_AUTH:-}" = 'true' ]; then
+    dev_auth='true'
+  fi
+  touch apps/web/.env
+  set_env_var apps/web/.env VITE_API_URL 'http://localhost:3000'
+  set_env_var apps/web/.env VITE_ALLOW_DEV_AUTH "$dev_auth"
 }
 
 # psql helper: honour Prisma schema= via search_path (libpq URLs omit schema=).

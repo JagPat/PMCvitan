@@ -5,7 +5,7 @@
   "terminals": [
     {
       "name": "api",
-      "command": "bash -lc 'PRE_DB=\"${DATABASE_URL:-}\"; PRE_JWT=\"${JWT_SECRET:-}\"; PRE_DEV_AUTH=\"${ALLOW_DEV_AUTH:-}\"; set -a && source apps/api/.env && set +a; [ -n \"$PRE_DB\" ] && export DATABASE_URL=\"$PRE_DB\"; [ -n \"$PRE_JWT\" ] && export JWT_SECRET=\"$PRE_JWT\"; [ -n \"$PRE_DEV_AUTH\" ] && export ALLOW_DEV_AUTH=\"$PRE_DEV_AUTH\"; pnpm --filter api start'"
+      "command": "bash -lc 'mapfile -t _pre < <(export -p); set -a && [ -f apps/api/.env ] && source apps/api/.env; set +a; for _line in \"${_pre[@]}\"; do eval \"$_line\"; done; pnpm --filter api start'"
     },
     {
       "name": "web",
