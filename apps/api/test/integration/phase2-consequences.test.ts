@@ -180,8 +180,9 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
       expect((await lastAudit('decision.approve'))?.actorId).toBe(uid);
       expect(await t.prisma.decisionEvent.findFirst({ where: { decisionId: sk('p2c-dec-pub'), type: 'approved' } })).toBeTruthy();
       expect(await notifCount()).toBe(before + 1);
-      // the announcement names WHO approved on behalf of the client + the material (option A)
-      expectPushMatching(/ approved Sanitary on behalf of the client — A$/, ['pmc', 'contractor', 'engineer']);
+      // the announcement names WHO approved, and WHOSE authority they used, + the material
+      // (option A). Round 1 (Codex P2): the holder is named rather than assumed to be the client.
+      expectPushMatching(/ approved Sanitary on behalf of Client — A$/, ['pmc', 'contractor', 'engineer']);
       expectSignal();
     });
 

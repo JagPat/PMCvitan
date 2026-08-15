@@ -289,7 +289,10 @@ describe('decision change-control (integration)', () => {
     const behalfNotice = await t.prisma.notification.findFirstOrThrow({
       where: { projectId: f.projectA.id, AND: [{ text: { contains: 'Vanity light' } }, { text: { contains: 'approved' } }] },
     });
-    expect(behalfNotice.text).toMatch(/^member \(PMC\) approved Vanity light on behalf of the client/);
+    // Phase 6 task 4b round 1 (Codex P2): the announcement NAMES the holder it acted for, so it
+    // cannot contradict the `onBehalfOf` the same act persists. These decisions are client-held,
+    // so the holder renders as `Client`.
+    expect(behalfNotice.text).toMatch(/^member \(PMC\) approved Vanity light on behalf of Client/);
     expect(behalfNotice.text).not.toMatch(/^Client approved/); // never disguised
   });
 
