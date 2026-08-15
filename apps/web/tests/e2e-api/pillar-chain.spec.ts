@@ -18,7 +18,8 @@ import { test, expect, type Page, type APIRequestContext } from '@playwright/tes
  * seeded org owner) so the frozen recipient set is exactly the cast and the
  * isolation re-proof against the seeded projects is meaningful. Human steps
  * run in the BROWSER; PMC authoring uses the API (the same contracts the UI
- * calls). Serial — one worker, one database.
+ * calls). Serial — one worker, one database, and `mode: 'serial'` below so a
+ * failed head SKIPS its dependents instead of poisoning them.
  */
 
 const API = 'http://localhost:3000';
@@ -76,8 +77,24 @@ async function signInToChain(page: Page, email: string, chainName: string): Prom
 }
 
 // ── chain state shared across the serial tests ──────────────────────────────
+// ONE dependent chain over one project: a failed head must SKIP its dependents
+// (serial mode), not poison them — half-mutated chain state turns every later
+// test into a cascade victim, and the old per-test CI retry re-ran lone POSTs
+// against the already-mutated database (the documented
+// DrawingRevision_drawingId_rev_key duplicate). In serial mode a retry re-runs
+// the WHOLE file; beforeAll then builds a FRESH chain project (see chainName
+// below) so the re-run starts from authored truth, not from the failed
+// attempt's leftovers.
+test.describe.configure({ mode: 'serial' });
+
 let chainId = '';
 const CHAIN_NAME = 'Chain Acceptance Site';
+// The name of THIS attempt's chain project. A serial retry re-runs the whole
+// file, so the first attempt's project is abandoned mid-state — the retry gets
+// a FRESH project (suffixed with the attempt number) instead of re-authoring
+// into the mutated one, where the wait-gate assertions and the unique
+// (drawing, rev) labels no longer hold. Set in beforeAll before any test runs.
+let chainName = CHAIN_NAME;
 let pmcToken = '';
 let engToken = '';
 let conToken = '';
@@ -106,6 +123,34 @@ async function pollStatus(request: APIRequestContext, want: string): Promise<voi
     .toBe(want);
 }
 
+/** SERVER truth for a browser submit. The click's own reply can come back 'superseded': the
+ *  media upload just before it makes the server emit `changed`, a socket-driven refresh takes
+ *  a NEWER snapshot lease (the store's write path captures its lease BEFORE the request), and
+ *  the button label — driven by `checklist.submitted` — only flips when the deferred reconcile
+ *  lands, which under CI load can exceed the expect timeout. The snapshot's placedInspections
+ *  carry every inspection's submitted/decided flags, so this poll is not defeated by the
+ *  superseded-lease branch. */
+async function pollChecklistSubmitted(request: APIRequestContext, title: string): Promise<void> {
+  await expect
+    .poll(async () => {
+      const snap = await snapshot(request, pmcToken);
+      return ((snap.placedInspections ?? []) as Array<{ title: string; submitted: boolean }>)
+        .find((i) => i.title === title)?.submitted ?? false;
+    }, { timeout: 15_000 })
+    .toBe(true);
+}
+
+/** The engineer's Inbox row is composed CLIENT-side from the load-time snapshot's `checklist`
+ *  slice — a fresh ENG session races the PMC's still-in-flight /decide commit, and the
+ *  readiness-gate poll does not cover it (the gate can read 'fail' before the reinspection
+ *  checklist row exists in a fresh snapshot). Poll the ENGINEER's own snapshot until the named
+ *  checklist IS the served field view; only then may the browser assert on it. */
+async function pollEngChecklist(request: APIRequestContext, title: string): Promise<void> {
+  await expect
+    .poll(async () => ((await snapshot(request, engToken)).checklist as { title?: string } | null)?.title ?? '', { timeout: 15_000 })
+    .toBe(title);
+}
+
 /** Worker restarts wipe module state — re-derive the chain ids by their KNOWN names. */
 async function ensureIds(request: APIRequestContext): Promise<void> {
   if (decisionId && activityId && inspectionId) return;
@@ -115,21 +160,24 @@ async function ensureIds(request: APIRequestContext): Promise<void> {
   inspectionId ||= ((snap.placedInspections ?? []) as Array<{ id: string; title: string }>).find((i) => i.title === 'Chain quality check')?.id ?? '';
 }
 
-test.beforeAll(async ({ request }) => {
+test.beforeAll(async ({ request }, testInfo) => {
+  // A serial retry re-runs the WHOLE file — name THIS attempt's project so the retry
+  // authors a fresh chain instead of colliding with the failed attempt's mutated one.
+  chainName = testInfo.retry === 0 ? CHAIN_NAME : `${CHAIN_NAME} R${testInfo.retry + 1}`;
   // the org owner creates the chain project and enrols the cast with real roles
   const owner = await login(request, PMC);
   const orgs = await (await request.get(`${API}/me/orgs`, { headers: bearer(owner) })).json();
   const orgId = orgs[0].id;
   // idempotent: a worker restart re-runs this hook against the same database —
-  // reuse the chain project if an earlier worker already created it
+  // reuse this attempt's chain project if an earlier worker already created it
   const existing = await (await request.get(`${API}/orgs/${orgId}/projects`, { headers: bearer(owner) })).json();
-  const found = (existing as Array<{ id: string; name: string }>).find((x) => x.name === CHAIN_NAME);
+  const found = (existing as Array<{ id: string; name: string }>).find((x) => x.name === chainName);
   if (found) {
     chainId = found.id;
   } else {
     const created = await request.post(`${API}/orgs/${orgId}/projects`, {
       headers: bearer(owner),
-      data: { name: CHAIN_NAME, short: CHAIN_NAME, descriptor: 'Task 7 acceptance', stage: 'Finishing', siteCode: 'CHN-1' },
+      data: { name: chainName, short: chainName, descriptor: 'Task 7 acceptance', stage: 'Finishing', siteCode: 'CHN-1' },
     });
     expect(created.ok(), `create project → ${created.status()}`).toBeTruthy();
     chainId = (await created.json()).id;
@@ -198,7 +246,7 @@ test('the chain is AUTHORED: decision, linked activity, frozen drawing, linked c
 
 test('the CLIENT approves in the browser — attributed, and the decision gate flips', async ({ page, request }) => {
   await ensureIds(request);
-  await signInToChain(page, CLIENT, CHAIN_NAME);
+  await signInToChain(page, CLIENT, chainName);
   await page.getByRole('button', { name: 'Decisions Waiting' }).click();
   await expect(page.getByText('Chain floor finish')).toBeVisible();
   await page.getByTestId(`approve-${decisionId}-a`).click();
@@ -214,7 +262,7 @@ test('the CLIENT approves in the browser — attributed, and the decision gate f
 
 test('the frozen distribution acknowledges — engineer in the browser, contractor over the API — and the drawing gate follows the set', async ({ page, request }) => {
   await ensureIds(request);
-  await signInToChain(page, ENG, CHAIN_NAME);
+  await signInToChain(page, ENG, chainName);
   await page.getByRole('button', { name: 'Drawings' }).click();
   await page.getByTestId('drawing-CH-100').click();
   await page.getByTestId('ack-drawing').click();
@@ -231,29 +279,44 @@ test('the frozen distribution acknowledges — engineer in the browser, contract
 test('the ENGINEER fails an item with a REAL photo; the PMC rejects; the linked reinspection lands in the engineer’s Inbox', async ({ page, request }) => {
   await ensureIds(request);
   // the evidence rule end-to-end: the failed item carries a LINKED photo
-  await signInToChain(page, ENG, CHAIN_NAME);
+  await signInToChain(page, ENG, chainName);
   await page.getByRole('button', { name: "Today's Checklist" }).click();
   await expect(page.getByText('Chain quality check')).toBeVisible();
   await page.getByRole('button', { name: 'Fail' }).click();
   await page.getByPlaceholder(/describe the issue/i).fill('Hollow patch near the door');
   await page.getByTestId('evidence-file-input').setInputFiles({ name: 'defect.png', mimeType: 'image/png', buffer: PX });
-  await expect(page.getByText(/uploaded and linked/i)).toBeVisible();
+  // DURABLE evidence state, not the upload toast (the toast is lease-gated in the store and
+  // legitimately suppressible): the linked thumbnail renders once the reconciled snapshot
+  // lands — which also guarantees the store KNOWS the photo before the submit click below
+  // (the fail-needs-photo guard reads local state, so a stale store would swallow the click)
+  await expect(page.getByAltText('Evidence 1 — Level within tolerance')).toBeVisible();
+  // the submit's own reply can be 'superseded' by the upload's socket refresh — await the
+  // POST itself, then poll SERVER truth (the button label only flips on a deferred reconcile)
+  const submitDone = page.waitForResponse((r) => r.url().includes(`/projects/${chainId}/inspections/`) && r.url().endsWith('/submit') && r.request().method() === 'POST' && r.status() < 400);
   await page.getByTestId('submit-inspection').click();
-  await expect(page.getByTestId('submit-inspection')).toContainText(/submitted/i);
+  await submitDone;
+  await pollChecklistSubmitted(request, 'Chain quality check');
 
   // the PMC rejects the failed work in the browser
-  await signInToChain(page, PMC, CHAIN_NAME);
+  await signInToChain(page, PMC, chainName);
   await page.getByRole('button', { name: 'Inspection Review' }).click();
   await expect(page.getByText('Chain quality check').first()).toBeVisible();
   await page.getByRole('button', { name: 'Reject item' }).click(); // the PMC NAMES the rejected work
+  const decideDone = page.waitForResponse((r) => r.url().includes(`/projects/${chainId}/inspections/`) && r.url().endsWith('/decide') && r.request().method() === 'POST' && r.status() < 400);
   await page.getByTestId('send-reinspection').click();
-  await expect(page.getByText(/re-inspection task/i).first()).toBeVisible();
+  await decideDone;
+  // DURABLE decided state, not the transient toast: this was the only pending review, so the
+  // decided review LEAVES the queue and the empty state renders once the reconciled read lands
+  await expect(page.getByText(/No inspections awaiting review/)).toBeVisible();
 
   // the correction chain is OPEN — the gate reads FAIL until the fix is accepted
   await pollGate(request, 'inspection', 'fail');
+  // …the gate poll covers the GATE, not the checklist row the Inbox composes — wait until the
+  // engineer's own snapshot serves the reinspection before the fresh ENG session loads
+  await pollEngChecklist(request, 'Re-inspection: Chain quality check');
 
   // …and it appears in the ENGINEER's Inbox as their work
-  await signInToChain(page, ENG, CHAIN_NAME);
+  await signInToChain(page, ENG, chainName);
   await page.getByRole('button', { name: 'For You' }).click();
   await expect(page.getByTestId('inbox-item-eng-checklist')).toContainText('Re-inspection: Chain quality check');
 });
@@ -261,24 +324,27 @@ test('the ENGINEER fails an item with a REAL photo; the PMC rejects; the linked 
 test('the engineer PASSES the reinspection with evidence; the PMC accepts; the activity becomes ready, starts, completes and is SIGNED OFF done', async ({ page, request }) => {
   await ensureIds(request);
   // engineer corrects the work: pass WITH a supporting photo
-  await signInToChain(page, ENG, CHAIN_NAME);
+  await signInToChain(page, ENG, chainName);
   await page.getByRole('button', { name: "Today's Checklist" }).click();
   await expect(page.getByText('Re-inspection: Chain quality check')).toBeVisible();
   await page.getByRole('button', { name: 'Pass' }).click(); // mark FIRST — the upload's snapshot refresh preserves marks
   await page.getByTestId('evidence-file-input').setInputFiles({ name: 'fixed.png', mimeType: 'image/png', buffer: PX });
-  await expect(page.getByText(/uploaded and linked/i)).toBeVisible();
+  // durable evidence state, not the lease-gated upload toast (same mechanism as the fail leg)
+  await expect(page.getByAltText('Evidence 1 — Level within tolerance')).toBeVisible();
+  const submitDone = page.waitForResponse((r) => r.url().includes(`/projects/${chainId}/inspections/`) && r.url().endsWith('/submit') && r.request().method() === 'POST' && r.status() < 400);
   await page.getByTestId('submit-inspection').click();
-  await expect(page.getByTestId('submit-inspection')).toContainText(/submitted/i);
+  await submitDone;
+  await pollChecklistSubmitted(request, 'Re-inspection: Chain quality check');
 
   // the PMC ACCEPTS the correction — the chain closes, the gate turns ok
-  await signInToChain(page, PMC, CHAIN_NAME);
+  await signInToChain(page, PMC, chainName);
   await page.getByRole('button', { name: 'Inspection Review' }).click();
   await page.getByRole('button', { name: 'Approve Inspection' }).click();
   await expect(page.getByText(/approved/i).first()).toBeVisible();
   await pollGate(request, 'inspection', 'ok');
 
   // START in the browser — every derived gate now aligns
-  await signInToChain(page, ENG, CHAIN_NAME);
+  await signInToChain(page, ENG, chainName);
   await page.getByRole('button', { name: 'Site Schedule' }).click();
   await page.getByTestId(`start-${activityId}`).click();
   await expect(page.getByRole('button', { name: /mark complete/i })).toBeVisible();
@@ -289,7 +355,7 @@ test('the engineer PASSES the reinspection with evidence; the PMC accepts; the a
   await pollStatus(request, 'awaiting-signoff');
 
   // ONLY the PMC's closing approval writes done
-  await signInToChain(page, PMC, CHAIN_NAME);
+  await signInToChain(page, PMC, chainName);
   await page.getByRole('button', { name: 'Inspection Review' }).click();
   await expect(page.getByTestId('closing-signoff-label')).toBeVisible();
   await page.getByRole('button', { name: 'Approve Inspection' }).click();
@@ -304,7 +370,7 @@ test('the CHANGE LOOP: a change request reverts readiness; the client re-approve
   })).ok()).toBeTruthy();
   await pollGate(request, 'decision', 'wait'); // the reopening reverts readiness automatically
 
-  await signInToChain(page, CLIENT, CHAIN_NAME);
+  await signInToChain(page, CLIENT, chainName);
   await page.getByRole('button', { name: 'Decisions Waiting' }).click();
   await page.getByTestId(`approve-${decisionId}-a`).click();
   await page.getByTestId('approve-lock').click();
@@ -318,11 +384,15 @@ test('the CHANGE LOOP: a change request reverts readiness; the client re-approve
 
 test('NEGATIVES: review copies never govern; same-room inspections are invisible; a review-only drawing degrades the gate; non-PMC cannot override', async ({ request }) => {
   await ensureIds(request);
-  // a for_review issue does NOT displace the governing set
-  expect((await request.post(`${API}/projects/${chainId}/drawings`, {
+  // a for_review issue does NOT displace the governing set. RETRY-TOLERANT: an unkeyed
+  // re-POST of the same (number, rev) after an earlier attempt already issued it hits the
+  // DrawingRevision_drawingId_rev_key unique and is the server's deterministic 409 — accept
+  // either outcome; the assertions below check the GOVERNING SET, which both leave identical.
+  const revB = await request.post(`${API}/projects/${chainId}/drawings`, {
     headers: bearer(pmcToken),
     data: { number: 'CH-100', title: 'Chain flooring layout', discipline: 'architectural', rev: 'B', status: 'for_review', mime: 'application/pdf', data: Buffer.from('%PDF-1.4 review').toString('base64') },
-  })).ok()).toBeTruthy();
+  });
+  expect(revB.ok() || revB.status() === 409, `CH-100 rev B → ${revB.status()}`).toBeTruthy();
   let snap = await snapshot(request, pmcToken);
   const dwg = snap.drawings.find((d: { number: string }) => d.number === 'CH-100');
   expect(dwg.current.rev).toBe('A');
@@ -338,10 +408,12 @@ test('NEGATIVES: review copies never govern; same-room inspections are invisible
   expect(readinessOf(snap).inspection.v).toBe('ok');
 
   // a SECOND linked drawing whose only revision is a review copy → aggregate fail
-  expect((await request.post(`${API}/projects/${chainId}/drawings`, {
+  // (same retry tolerance — a prior attempt may already have issued CH-101 rev A)
+  const ch101 = await request.post(`${API}/projects/${chainId}/drawings`, {
     headers: bearer(pmcToken),
     data: { number: 'CH-101', title: 'Review-only detail', discipline: 'architectural', rev: 'A', status: 'for_review', mime: 'application/pdf', data: Buffer.from('%PDF-1.4 detail').toString('base64'), publish: true, activityId },
-  })).ok()).toBeTruthy();
+  });
+  expect(ch101.ok() || ch101.status() === 409, `CH-101 rev A → ${ch101.status()}`).toBeTruthy();
   snap = await snapshot(request, pmcToken);
   expect(readinessOf(snap).drawing.v).toBe('fail');
 
@@ -359,7 +431,7 @@ test('ISOLATION re-proof: the chain is invisible from every other project, and o
   const pmcAmbli = await login(request, PMC); // home = ambli
   const ambliSnap = await (await request.get(`${API}/projects/ambli/snapshot`, { headers: bearer(pmcAmbli) })).json();
   const flat = JSON.stringify(ambliSnap);
-  for (const marker of ['Chain floor finish', 'Chain flooring', 'CH-100', 'Chain quality check', CHAIN_NAME]) {
+  for (const marker of ['Chain floor finish', 'Chain flooring', 'CH-100', 'Chain quality check', chainName]) {
     expect(flat).not.toContain(marker);
   }
 
@@ -389,7 +461,7 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
   })).ok()).toBeTruthy();
   await request.post(`${API}/projects/${chainId}/daily-log/start`, { headers: bearer(engToken) });
 
-  await signInToChain(page, ENG, CHAIN_NAME);
+  await signInToChain(page, ENG, chainName);
 
   // go OFFLINE (the app's own connectivity switch — the queue is the contract)
   await page.getByRole('button', { name: 'Daily Site Log' }).click();
@@ -412,7 +484,7 @@ test('OFFLINE EVIDENCE: a captured photo survives a reload and replays exactly o
   await signIn(page, ENG);
   await expect(page.getByTestId('project-switcher')).toBeVisible();
   // one-unit open-and-pick retry (a re-render can close the dropdown and swallow the pick)
-  const chainOption = page.getByRole('button', { name: new RegExp(CHAIN_NAME) }).first();
+  const chainOption = page.getByRole('button', { name: new RegExp(chainName) }).first();
   await expect(async () => {
     if (!(await chainOption.isVisible())) await page.getByTestId('project-switcher').click();
     await chainOption.click({ timeout: 2000 });
