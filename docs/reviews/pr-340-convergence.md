@@ -19,7 +19,8 @@ with no two-step.
 | `7d3c65a` | the NARROWED 4b plan's first reviewed head | 4 (2 P1, 2 P2) | corrected on `2228e2d` — the narrowed unit's first correction, carrying the stop rule |
 | `2228e2d` | round-7 batch | 7 (3 P1, 4 P2) | the stop rule executed on `536b6da` (packet-only) — held for owner direction |
 | `536b6da` | the stop record | 6 (4 P1, 2 P2) — one ON THE STOP ITSELF | the stop SUPERSEDED per AGENTS.md's non-blocking rule; rounds 8+9 folded on `af8d6be`; the owner escalation remains the asynchronous channel |
-| `af8d6be` | rounds 8+9 folded | 7 (6 P1, 1 P2) — three on the round-8/9 fixes, one a packet bookkeeping error | corrected on this head, MINIMALLY: full approval-column + child-evidence seals on recorded rows; targeted events never fan to unlinked devices; publish validates role-held deciders + the record identity tuple; the departed-approved-holder 409 names the TRUE state; this ledger reconciled |
+| `af8d6be` | rounds 8+9 folded | 7 (6 P1, 1 P2) — three on the round-8/9 fixes, one a packet bookkeeping error | corrected on `56d09c0`, MINIMALLY: full approval-column + child-evidence seals on recorded rows; targeted events never fan to unlinked devices; publish validates role-held deciders + the record identity tuple; the departed-approved-holder 409 names the TRUE state; this ledger reconciled |
+| `56d09c0` | round-10 batch | 4 (2 P1, 2 P2) | corrected on this head, MINIMALLY: `Decision.id` joins the publication-entry + terminal freezes; the holder-orphan guard reaches the org-membership writes (`removeOrgMember`/`updateOrgMemberRole` demoting the last effective PMC refused, both layers); the portfolio caller passes the viewer into `countPending` for every decider-capable role; `recorded` terminality binds at PUBLICATION, admitting the one coherent unpublished kind+status draft edit the round-8 path requires |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -304,16 +305,39 @@ given there overrides the loop's course. Nothing in this resumption merges
 anything: the exact-head gate still fails closed on any current-head
 finding.
 
+## Rounds 10–11 — instances of settled classes, folded minimally
+
+Round 10 (seven findings on `af8d6be`, folded on `56d09c0`) and round 11
+(four findings on `56d09c0`, folded on the current head) both land on the
+rounds-8/9 corrections' own text, and every finding is an enumerable-class
+instance of a rule the plan already states: a freeze list missing a column
+(the approval-written `material`/`cost`/`date`; then `Decision.id` itself),
+a guard bound to one table while the standing it protects spans two (the
+org-membership writes that flip membership-less effective-PMC standing), a
+caller not yet passing what its callee gained (the portfolio viewer into
+`countPending`), a fallback that traded correctness for delivery (the
+unlinked-device role fan-out, replaced by suppression), a named escape that
+did not cover the state it was named for (withdraw on approved rows), and
+one internal contradiction between two of the plan's own corrections
+(unconditional `recorded` terminality vs the round-8 draft-edit path —
+resolved at the publication boundary every other 4b freeze binds at, with
+the one coherent unpublished kind+status transition admitted explicitly).
+All eleven verified real, none disputed, none refuted. The correction
+pattern stays minimal-edit; the lifecycle observation stands recorded —
+eleven finding-bearing heads against an advisory limit of five — and the
+owner escalation thread on this PR remains the standing asynchronous
+channel that can override the loop's course at any time.
+
 ## Deferral ledger
 
-Nothing is disputed: all fifty-nine findings across nine rounds were
+Nothing is disputed: all seventy findings across eleven rounds were
 verified real; thirty-eight were corrected in place (rounds 1–5 and 7),
 three were folded into the narrowed 4b plan, five are carried as NAMED
 PROBES (§D of the 4b plan: P25c, P25d, P38c/P40c, P31b/P42b, P31c/P34b,
 P33b — numbering reserved to the pre-declared 4c/4d plan units whose own
-exact-head reviews adjudicate them), and the rounds 8–10 findings were FOLDED by the resumed corrections
-(heads `af8d6be` and the current one) — every disposition lives in the head
-table above, none held, none dismissed. No refutations were posted on this PR. Every head past the
+exact-head reviews adjudicate them), and the rounds 8–11 findings were FOLDED by the resumed corrections
+(heads `af8d6be`, `56d09c0`, and the current one) — every disposition lives
+in the head table above, none held, none dismissed. No refutations were posted on this PR. Every head past the
 third finding head carries `Review-Deferred-To-Probes: phase-6-task-4`
 beside `Review-Convergence: complete`; the probes are the executable
 deferral targets, and the exact-head gate still fails closed on any

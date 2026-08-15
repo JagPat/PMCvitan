@@ -128,7 +128,12 @@ CURRENT `publishedAt` invites the two-transaction bypass — clear
 republish. `publishedAt` is therefore WRITE-ONCE for every decision (the 4a
 withdrawn entry-freeze generalized): a published→draft transition is refused
 by trigger for all kinds, so the draft door exists only for rows that were
-NEVER published; the bypass is probed in P17. The freeze comes with the act
+NEVER published; the bypass is probed in P17 — and `Decision.id` joins this
+publication-entry freeze (round 11): once `publishedAt` is set the primary
+key itself is immutable beside it, because a direct re-key cascades child
+FKs to the new key while non-FK evidence — event and outbox entity
+identifiers — keeps the old one, splitting a published decision from its
+own trail (the hostile re-key probed in P18). The freeze comes with the act
 that gives the columns weight; the door comes with the act that justifies
 it.
 
@@ -172,7 +177,18 @@ role-change of that last holder is refused with the same 409. **And the DB
 seal judges the same content** (round 5): the orgs-owned membership seal of
 §B.2 re-judges the holder-orphaning predicate on DIRECT writes — a hostile
 soft-removal or role-change that would strand an open decision's holder is
-refused at the database, not only at the command. The escape: in 4b,
+refused at the database, not only at the command. **And the guard reaches
+the ORG-membership writes** (round 11): effective PMC standing deliberately
+includes the membership-less org owner/admin (§B.2), so the write that
+orphans a `pmc`-held decision is not always a project-`Membership` write —
+`removeOrgMember`/`updateOrgMemberRole` removing or demoting the LAST
+effective PMC does it without touching `Membership` at all. The same
+holder-orphan guard therefore binds those org-membership writes at BOTH
+layers: the command asks the same participant question over every project
+the org covers, and an orgs-owned seal on the org-membership table
+re-judges it under the §B.1 protocol per affected project — refused if any
+project's open `pmc`-held decision would lose its last effective PMC;
+probed as P39's org-write arm. The escape: in 4b,
 withdraw-and-reissue (4a ships it); from 4d, forward. Never a silent
 orphaning — both designations, both layers, probed (P39).
 
@@ -215,12 +231,24 @@ pending-narrowing does not apply); the `as const` reader maps force every miss
 to a compile error. **`recorded` is TERMINAL and sealed like `withdrawn` — in
 BOTH verbs AND in its EVIDENCE** (round 1; the DELETE arm round 2; the
 evidence freeze round 6): a BEFORE UPDATE trigger refuses any transition out
-of it; the 4a no-delete seal (`Decision_t4a_d_no_delete`) extends its refusal
+of it FOR A PUBLISHED row — with exactly ONE unpublished door (round 11):
+an unconditional refusal would contradict the round-8 draft-edit path,
+because re-pointing an unpublished `none` draft to any other kind MUST
+carry `recorded → pending` in the SAME update to satisfy the bidirectional
+kind⟺status CHECK below. While `publishedAt IS NULL`,
+`decisions.updateDraft` changes kind and status together as one coherent
+pair (either alone still refused by the CHECK); from publication the
+terminal refusal is unconditional — the same publication boundary every
+other 4b freeze binds at. The legal draft kind-change and the hostile
+published flip are both probed (P17/P18); the 4a no-delete seal (`Decision_t4a_d_no_delete`) extends its refusal
 to `recorded` rows; and — because a permanent register entry whose CONTENT can
 be rewritten is not permanent — the PUBLISHED record's question and option
 evidence freeze exactly like the withdrawn seal network's: title, room/space linkage, `publishedAt`, `authorId` (round 8 — a permanent
 record must keep its attribution), `projectId` (round 9 — a permanent record
-must stay in the register it was filed in), and the record's
+must stay in the register it was filed in), `id` itself (round 11 — the
+identity under which the issue was FILED: the publication-entry freeze
+above already forbids the re-key, and the terminal freeze restates it so a
+recorded row is doubly sealed), and the record's
 `DecisionOption` rows (where any exist) are immutable once
 `status='recorded'` AND published, with the DRAFT-edit path retained until
 publish (an unpublished record is still the author's to fix). **And publication re-validates the record's identity tuple** (round 10):
@@ -268,8 +296,15 @@ each of these routes to THE DECIDER — and "each" means ALL of them (round 2):
   action item, the readiness wording: a reopened decision is the SAME approval
   obligation with the same audience, so decider-follows covers `pending` AND
   `change`, probed through approve → requestChange → re-approve (P22);
-- **`countPending` gains the VIEWER** — it counts the decisions THAT VIEWER
-  decides (pmc seeing all), probed on the two-engineers-one-decider case (P22);
+- **`countPending` gains the VIEWER — and so does its CALLER** (the caller
+  round 11) — it counts the decisions THAT VIEWER decides (pmc seeing
+  all); but `OrgsService.portfolio` today invokes it only when the
+  viewer's role is `pmc` or `client`, passing only the `projectId`, so an
+  engineer-decider would see the decision inside the project while their
+  portfolio card reports zero pending work. The portfolio caller passes
+  the viewer's identity through and invokes the count for EVERY
+  decider-capable role; probed on the two-engineers-one-decider case AND
+  on the portfolio card itself (P22);
 - **the SERVABLE projection carries the decider** (round 3) — the
   `decisions.inbox` projection path filters rows on `publishedAt`/`authorId`/
   `status` alone today, so a projection read cannot tell a named engineer-
@@ -380,7 +415,10 @@ introduces the protocol
 with its decider-standing seal and binds the `Membership` writes that can
 flip holder-relevant standing (activation, removal/restore — hard DELETE
 included — and role change: the same set the §A lock-coverage enumeration
-already binds on the service path); probed in both orderings (P17/P39).
+already binds on the service path) — AND the ORG-membership writes that
+flip membership-less effective-PMC standing (round 11:
+`removeOrgMember`/`updateOrgMemberRole`, the §A.1 org-write guard);
+probed in both orderings (P17/P39).
 
 ### 2. Cross-module facts at the DB layer — owned primitives, never table reads
 
