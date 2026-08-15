@@ -48,7 +48,12 @@ effective-holder existence — the same effective-role-standing the guard
 consumes — and ABORTS with a bounded per-project sample when an orphaned
 row exists, the operator repair documented in `docs/RUNBOOK.md`
 (withdraw-and-reissue, or restore a covering membership) — never inventing
-a holder. The legacy orphan shape joins the migration probe: P15 gains the
+a holder. The audit is SERIALIZED with live traffic (round 16): it
+acquires the readiness key of every audited project (ascending order, the
+§B.1 service discipline) BEFORE auditing and HOLDS them through guard
+installation, so a pre-4b membership removal committing mid-deployment
+cannot orphan a row between the audit's check and the guard's arrival —
+P15 gains the barrier-controlled removal-during-migration arm. The legacy orphan shape joins the migration probe: P15 gains the
 abort arm, and a clean register backfills untouched)
 and `deciderMembershipId` (nullable, same-project composite FK, required iff
 `kind='member'`, sealed by CHECK). **The 4b contract admits
@@ -136,7 +141,15 @@ zero-holder state the removal guard exists to prevent; refused, P17/P39) —
 `decisions.updateDraft` command this unit adds (round 8): contract + service
 + the Drafts screen's edit affordance, legal only while `publishedAt IS
 NULL`, covering the holder and the other draft fields — the recovery is a
-product path, not a database operation, exercised in P17); from publication the
+product path, not a database operation, exercised in P17 — and once the
+draft-edit door exists, PUBLISH takes the decision ROW LOCK before reading
+its snapshot (round 16): today's `publish()` reads the draft, then derives
+the notice/event from that read, so an edit committing between read and
+publish would let the published head carry ANOTHER revision's evidence
+(a stale title in the notice). Publish `SELECT … FOR UPDATE`s the row
+FIRST and derives holder, option count, and rendered evidence from the
+locked head; `updateDraft` takes the same lock; the edit-vs-publish
+barrier probe runs BOTH orderings, P17); from publication the
 BEFORE UPDATE trigger refuses ANY holder change (no 4b service path needs
 one), hostile-update probed alongside the legal draft re-point (P17); 4d
 LOOSENS that trigger to exactly one opening — a change accompanied by its
@@ -247,10 +260,16 @@ a real seal-ordering trap the relaxation opened: `create` writes the
 published head before `decisionOption.createMany`, so an optioned
 `publish=true` record would have its children REJECTED by the published-
 record freeze mid-request. `max(0)` at the contract, and the kind⟺status
-CHECK family extends to the children: `deciderKind='none'` ⟺ zero
-`DecisionOption` rows, sealed at commit (P18/P19 both arms: the optioned
-record request refused at the CONTRACT; the hostile direct child insert
-refused at the DB). Every other kind keeps `min(2)` — a CHOICE still needs
+CHECK family extends to the children ONE-WAY (direction fixed round 16):
+`deciderKind='none'` ⇒ zero `DecisionOption` rows, sealed at commit — the
+REVERSE is deliberately not sealed, because an ordinary-kind UNPUBLISHED
+draft legally holds zero options while it is being assembled (the
+round-13 conversion lifecycle: the kind change succeeds, and the
+two-option floor binds at PUBLICATION, which is where a zero-option
+ordinary decision is refused). P18/P19 arms: the optioned record request
+refused at the CONTRACT; the hostile direct child insert refused at the
+DB; the zero-option converted draft still converts and still refuses to
+publish. Every other kind keeps `min(2)` — a CHOICE still needs
 alternatives. **Relaxing the contract alone leaves the product path broken**
 (round 1): `DecisionsService.create` derives its lead presentation from
 `input.options[0]` and writes the REQUIRED `Decision.photoSwatch` from
@@ -466,8 +485,17 @@ abandoned shared browser linked indefinitely. The attribution records the
 authenticating token's `exp` beside the version, and the claim treats a
 link past its recorded expiry as unlinked — link validity is
 min(token expiry, version match), re-established on every authenticated
-open. P21 gains BOTH arms: password reset AND natural expiry → an
-already-enqueued targeted push is not delivered to the stale link. The probe pair proves BOTH
+open. **And the claim reads these facts through the BOUNDARY** (round 16):
+`User.credentialVersion` is orgs-owned and the push claim is platform
+code — the claim never reads the orgs table directly. The linkage's OWN
+snapshot (userId, recorded version, recorded expiry) is platform-owned
+state written at attribution from the authenticated request context; the
+LIVE current-version comparison routes through a declared orgs
+participant/primitive (`sessionStillValid(userId, recordedVersion)` —
+§B.2's ownership rule applied to the platform module), the declared edge
+probed as part of P21. P21 gains BOTH arms: password reset AND natural
+expiry → an already-enqueued targeted push is not delivered to the stale
+link. The probe pair proves BOTH
 directions: the target receives; a same-role non-target does NOT (P21). The static catalog names the CEILING audience and
 the dispatch site narrows to the actual decider; `buildDispatchIntent`'s
 mismatch refusal treats the catalog as the ceiling.

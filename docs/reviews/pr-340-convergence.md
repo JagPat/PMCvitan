@@ -25,6 +25,7 @@ with no two-step.
 | `1c9f2c7` | round-12 batch | 7 (4 P1, 3 P2) | corrected on `716b707`: the identity-freeze CLASS stated once over the whole standing-derivation chain (`Membership.userId/projectId` + `OrgMembership.userId/orgId` + `Project.orgId` — re-homing any link is removal+addition, closing the per-column enumeration); ascending-order multi-project lock acquisition; sign-out UNLINKS the push subscription; `photoSwatch` joins the terminal freeze; the decider tuple joins the create idempotency preimage; the converted draft re-judges the two-option floor at publish |
 | `716b707` + `185879c`/`a32d592` (the shepherded main-merge + its protocol note) | round-13 batch | 3 (3 P1) | corrected on this head: `authorId`/`projectId` INSERT-frozen for every decision (the round-10 publish-time re-check accepts a forged-but-authorized identity; the freeze forecloses the launder — no product path ever edits identity); the `'client'` backfill is DIAGNOSTIC-FIRST (aborts on a pre-existing published open decision with no effective holder — never births the zero-holder state the guard refuses); the push link records `credentialVersion` at attribution and the claim re-checks it (a password reset severs targeted delivery without a browser sign-out) |
 | `9d0e1cf` | round-14 batch | 4 (3 P1, 1 P2) | corrected on this head: records carry EXACTLY zero options (closing the create-order seal trap the min(0) relaxation opened); link validity = min(token expiry, credentialVersion match) — a naturally expiring JWT unlinks too; the `recorded` entry trigger verifies zero approval children at conversion (plant-then-convert refused); the author primitive resolves the EFFECTIVE role with explicit-membership precedence (an org admin with an active client membership is refused, matching every request path) |
+| `4ea5cf0` | round-15 batch | 4 (3 P1, 1 P2) | corrected on this head: the claim-time credential facts route through the orgs BOUNDARY (platform-owned link snapshot + a declared `sessionStillValid` primitive — never a direct User read); the migration's orphan audit holds every audited project's readiness key through guard installation (a mid-deployment removal cannot orphan between check and seal); publish takes the decision row lock BEFORE reading its snapshot (the edit-vs-publish race could publish another revision's evidence); the child seal is ONE-WAY (`none` ⇒ zero options) so the round-13 conversion lifecycle survives — the two-option floor stays a publication check |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -319,7 +320,7 @@ convergence protocol requires every pushed head past the third finding
 head to touch this packet and carry both trailers — a shepherded merge
 commit is a pushed head like any other.
 
-## Rounds 10–15 — instances of settled classes, folded minimally
+## Rounds 10–16 — instances of settled classes, folded minimally
 
 Round 10 (seven findings on `af8d6be`, folded on `56d09c0`), round 11
 (four findings on `56d09c0`, folded on `d93859d`), and round 12 (three
@@ -334,7 +335,9 @@ current one — the birth-freeze superseding publish-time revalidation, the
 diagnostic-first backfill preflight, the credential-version claim check), and round 15 (four on `9d0e1cf` —
 exactly-zero record options, session-expiry link validity, the
 approval-clean conversion entry, effective-role precedence in the author
-seal) all land on the
+seal), and round 16 (four on `4ea5cf0` — the boundary-routed credential
+claim, the lock-held migration audit, the publish row lock, the one-way
+child seal) all land on the
 rounds-8/9 corrections' own text, and every finding is an enumerable-class
 instance of a rule the plan already states: a freeze list missing a column
 (the approval-written `material`/`cost`/`date`; then `Decision.id` itself),
@@ -348,22 +351,22 @@ one internal contradiction between two of the plan's own corrections
 (unconditional `recorded` terminality vs the round-8 draft-edit path —
 resolved at the publication boundary every other 4b freeze binds at, with
 the one coherent unpublished kind+status transition admitted explicitly).
-All twenty-eight verified real, none disputed, none refuted. The correction
+All thirty-two verified real, none disputed, none refuted. The correction
 pattern stays minimal-edit; the lifecycle observation stands recorded —
-fifteen finding-bearing heads against an advisory limit of five — and the
+sixteen finding-bearing heads against an advisory limit of five — and the
 owner escalation thread on this PR remains the standing asynchronous
 channel that can override the loop's course at any time.
 
 ## Deferral ledger
 
-Nothing is disputed: all eighty-seven findings across fifteen rounds were
+Nothing is disputed: all ninety-one findings across sixteen rounds were
 verified real; thirty-eight were corrected in place (rounds 1–5 and 7),
 three were folded into the narrowed 4b plan, five are carried as NAMED
 PROBES (§D of the 4b plan: P25c, P25d, P38c/P40c, P31b/P42b, P31c/P34b,
 P33b — numbering reserved to the pre-declared 4c/4d plan units whose own
-exact-head reviews adjudicate them), and the rounds 8–15 findings were FOLDED by the resumed corrections
+exact-head reviews adjudicate them), and the rounds 8–16 findings were FOLDED by the resumed corrections
 (heads `af8d6be`, `56d09c0`, `d93859d`, `1c9f2c7`, `716b707`, `9d0e1cf`,
-and the current one) — every disposition lives
+`4ea5cf0`, and the current one) — every disposition lives
 in the head table above, none held, none dismissed. No refutations were posted on this PR. Every head past the
 third finding head carries `Review-Deferred-To-Probes: phase-6-task-4`
 beside `Review-Convergence: complete`; the probes are the executable
