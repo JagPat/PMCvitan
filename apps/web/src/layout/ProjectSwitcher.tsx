@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Modal } from '@/components';
@@ -15,6 +15,31 @@ export function ProjectSwitcher() {
   const setScreen = useStore((s) => s.setScreen);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  // Wave 0 / F-1a: the switcher is a NON-MODAL disclosure popup, not a dialog
+  // and not a menu — no focus trap, no aria-modal, no aria-haspopup claim
+  // (its rows are plain Tab-driven buttons; aria-expanded on the trigger is
+  // the honest disclosure semantics). Focus moves to the first option on
+  // open, Escape closes and returns focus to the trigger, any OUTSIDE
+  // interaction light-dismisses without stealing focus back — and every
+  // INTERNAL action parks focus on the trigger BEFORE its row unmounts, so
+  // focus never falls to body (and a modal it opens captures the trigger,
+  // not body, as its opener).
+  const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeToTrigger = () => {
+    triggerRef.current?.focus();
+    setOpen(false);
+  };
+  useEffect(() => {
+    if (!open) return;
+    panelRef.current?.querySelector<HTMLElement>('button')?.focus();
+    const onOutside = (e: MouseEvent) => {
+      if (e.target instanceof Node && !rootRef.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
+  }, [open]);
 
   const liveShort = useStore((s) => s.short);
   const active = memberships.find((m) => m.projectId === activeProjectId);
@@ -26,11 +51,28 @@ export function ProjectSwitcher() {
   const canSwitch = memberships.length > 1 || Boolean(adminOrg);
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div
+      ref={rootRef}
+      style={{ position: 'relative' }}
+      onKeyDown={(e) => {
+        // Escape closes from ANYWHERE in the switcher — Shift+Tab can put
+        // focus back on the trigger while the popup is still open, and a
+        // panel-only handler would go deaf there.
+        if (open && e.key === 'Escape') closeToTrigger();
+      }}
+      onBlurCapture={(e) => {
+        // Focus leaving the whole switcher (trigger + panel) light-dismisses.
+        if (open && e.relatedTarget instanceof Node && !rootRef.current?.contains(e.relatedTarget)) {
+          setOpen(false);
+        }
+      }}
+    >
       <div style={label0}>PROJECT</div>
       <button
+        ref={triggerRef}
         onClick={() => canSwitch && setOpen((v) => !v)}
         data-testid="project-switcher"
+        aria-expanded={canSwitch ? open : undefined}
         style={{ ...pill, cursor: canSwitch ? 'pointer' : 'default' }}
       >
         <span style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
@@ -38,11 +80,16 @@ export function ProjectSwitcher() {
       </button>
 
       {open && (
-        <div style={panel}>
+        <div
+          ref={panelRef}
+          style={panel}
+          role="group"
+          aria-label="Switch project"
+        >
           {memberships.map((m) => {
             const on = m.projectId === activeProjectId;
             return (
-              <button key={m.projectId} onClick={() => { setOpen(false); switchProject(m.projectId); }} style={row(on)}>
+              <button key={m.projectId} onClick={() => { closeToTrigger(); switchProject(m.projectId); }} style={row(on)}>
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.short}</span>
                 <span style={roleTag}>{m.role}</span>
                 {on && <Check size={13} color="#8fce9f" />}
@@ -50,11 +97,11 @@ export function ProjectSwitcher() {
             );
           })}
           {adminOrg && (
-            <button onClick={() => { setOpen(false); setCreating(true); }} style={{ ...row(false), color: 'var(--accent)' }}>
+            <button onClick={() => { closeToTrigger(); setCreating(true); }} style={{ ...row(false), color: 'var(--accent)' }}>
               <Plus size={14} /> <span>New project</span>
             </button>
           )}
-          <button onClick={() => { setOpen(false); setScreen('team'); }} style={row(false)}>
+          <button onClick={() => { closeToTrigger(); setScreen('team'); }} style={row(false)}>
             Manage team →
           </button>
         </div>

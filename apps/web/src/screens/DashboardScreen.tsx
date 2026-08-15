@@ -107,7 +107,7 @@ export function DashboardScreen() {
       </div>
 
       {/* live from site today */}
-      <div style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', borderRadius: 12, padding: '16px 22px', marginBottom: 22, display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
+      <div data-surface="ink" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', borderRadius: 12, padding: '16px 22px', marginBottom: 22, display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, paddingRight: 22, borderRight: '1px solid rgba(237,231,218,.14)' }}>
           <span style={{ width: 8, height: 8, borderRadius: '50%', background: siteDot }} />
           <div>

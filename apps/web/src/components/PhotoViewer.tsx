@@ -1,12 +1,16 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { X } from '@/lib/icons';
+import { useFocusTrap } from '@/lib/useFocusTrap';
 
 /**
  * Full-screen zoomable photo viewer. Photos are first-class in the product
  * (site evidence), so any thumbnail taps open here at full size. Click the
- * backdrop or press Escape to close.
+ * backdrop or press Escape to close. Focus follows the dialog discipline
+ * (Wave 0 / F-1a): in on open, trapped while open, restored on close.
  */
 export function PhotoViewer({ url, onClose }: { url: string; onClose: () => void }) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(overlayRef);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -17,6 +21,9 @@ export function PhotoViewer({ url, onClose }: { url: string; onClose: () => void
 
   return (
     <div
+      ref={overlayRef}
+      tabIndex={-1}
+      data-surface="ink"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
