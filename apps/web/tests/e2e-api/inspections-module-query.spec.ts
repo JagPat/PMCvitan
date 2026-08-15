@@ -51,12 +51,19 @@ test.describe('inspections module-owned read (moduleQuery)', () => {
 
     await page.goto('/');
     await signIn(page, 'test-pmc@vitan.in');
-    // switch to Project A (the PMC's home may be B) if the switcher isn't already there
+    // switch to Project A (the PMC's home may be B) if the switcher isn't already there.
+    // The open-and-pick retries as ONE unit (the pillar-chain signInToChain pattern): a
+    // post-sign-in re-render can close the just-opened dropdown before the option is
+    // clicked — deterministic on slow containers, amplified when every module read
+    // fetches on load.
     const switcher = page.getByTestId('project-switcher');
-    if (!(await switcher.textContent())?.includes('Residence at Ambli')) {
-      await switcher.click();
-      await page.getByRole('button', { name: /Residence at Ambli/ }).click();
-    }
+    await expect(switcher).toBeVisible();
+    const option = page.getByRole('button', { name: /Residence at Ambli/ }).first();
+    await expect(async () => {
+      if (((await switcher.textContent()) ?? '').includes('Residence at Ambli')) return;
+      if (!(await option.isVisible())) await switcher.click();
+      await option.click({ timeout: 2000 });
+    }).toPass();
     await expect(switcher).toContainText('Residence at Ambli');
 
     // the module-owned GET is fetched alongside the snapshot on load — proving moduleQuery is live
