@@ -113,9 +113,15 @@ async function main(): Promise<void> {
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4b_published_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'; END IF; END $$;`,
     ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b_recorded_seal') THEN EXECUTE 'ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_recorded_seal"'; END IF; END $$;`,
+    ),
     prisma.decisionEvent.deleteMany(),
     prisma.decisionOption.deleteMany(),
     prisma.decision.deleteMany(),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b_recorded_seal') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_recorded_seal"'; END IF; END $$;`,
+    ),
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4b_published_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'; END IF; END $$;`,
     ),

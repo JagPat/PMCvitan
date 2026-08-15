@@ -411,7 +411,9 @@ describe('DecisionsService — change control & mandatory re-approval (Phase 1 T
     const behalf = makeLifecycle('pending');
     await behalf.svc.approve('proj-1', 'DL-1', { optionIndex: 0 }, user); // the PMC, 'Ar. Meghna'
     const text = behalf.notices.find((n) => n.includes('approved'));
-    expect(text).toMatch(/^Ar\. Meghna \(PMC\) approved Kitchen counter top on behalf of the client/);
-    expect(dispatchedIntents(behalf.dispatcher)[0]).toMatchObject({ effectKey: 'decision.approved', invalidate: true, push: { body: expect.stringContaining('on behalf of the client'), roles: ['pmc', 'contractor', 'engineer'] } });
+    // Phase 6 task 4b round 1 (Codex P2): the announcement NAMES the holder it acted for, so it
+    // cannot contradict the `onBehalfOf` the same act persists. This decision is client-held.
+    expect(text).toMatch(/^Ar\. Meghna \(PMC\) approved Kitchen counter top on behalf of Client/);
+    expect(dispatchedIntents(behalf.dispatcher)[0]).toMatchObject({ effectKey: 'decision.approved', invalidate: true, push: { body: expect.stringContaining('on behalf of Client'), roles: ['pmc', 'contractor', 'engineer'] } });
   });
 });

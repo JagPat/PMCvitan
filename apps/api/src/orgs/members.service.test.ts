@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { MembersService } from './members.service';
+import type { DecisionsParticipant } from '../decisions/decisions.participant';
 import type { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 
@@ -44,7 +45,14 @@ function make(orgRole: string | null = null) {
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   };
-  const svc = new MembersService(prisma as unknown as PrismaService);
+  // Phase 6 task 4b round 1 (Codex P2): removal/role-change now ASK the decisions owner first, so
+  // the caller gets an actionable 409 instead of the holder seal's raw PostgreSQL error. Nothing
+  // in this suite models an open decision, so the participant answers "no holder is stranded".
+  const decisions = { holdsOpenDecisions: vi.fn(async () => false) };
+  const svc = new MembersService(
+    prisma as unknown as PrismaService,
+    decisions as unknown as DecisionsParticipant,
+  );
   return { svc, users, memberships };
 }
 

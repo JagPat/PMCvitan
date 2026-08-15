@@ -1,5 +1,6 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { lockProjectReadiness } from '../common/readiness-lock';
+import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { PrismaService } from '../prisma.service';
 import type { AuthUser } from '../common/auth';
 import type { AddMemberInput, UpdateMemberInput } from '../contracts';
@@ -26,7 +27,10 @@ export interface MemberDto {
  */
 @Injectable()
 export class MembersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly decisions: DecisionsParticipant,
+  ) {}
 
   /** True if the requester may manage this project's team (project PMC or org owner/admin). */
   private async canManage(projectId: string, user: AuthUser): Promise<boolean> {
@@ -104,6 +108,17 @@ export class MembersService {
     if (!existing) throw new NotFoundException('Member not found on this project');
     const actor = await resolveActor(this.prisma, requester);
     const membership = await this.prisma.$transaction(async (tx) => {
+      // Round 1 (Codex P2) — a role change removes standing from the DEPARTING role. It does NOT
+      // displace a named-membership holder: the membership stays active, so it stays the holder
+      // (the seal's own F11 correction). Only the role arm is asked here.
+      if (input.role !== existing.role) {
+        const held = await this.decisions.holdsOpenDecisions(tx, projectId, null, existing.role);
+        if (held) {
+          throw new ConflictException(
+            `Changing this role would leave a published open decision with no ${existing.role} to decide it — cover the role first`,
+          );
+        }
+      }
       const m = await tx.membership.update({
         where: { projectId_userId: { projectId, userId } },
         data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
@@ -128,6 +143,18 @@ export class MembersService {
     // (gate finding 1), serialized against start()
     await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
+      // Phase 6 task 4b, round 1 (Codex P2) — ask the decisions owner BEFORE the write. The
+      // `Membership_t4b_holder_seal` refuses this at PostgreSQL and stays the authority, but its
+      // exception reaches the caller as a 500; a member who still holds an open decision is an
+      // ordinary, actionable conflict and deserves to be told so.
+      const held = await this.decisions.holdsOpenDecisions(
+        tx, projectId, existing.id, existing.role,
+      );
+      if (held) {
+        throw new ConflictException(
+          'This member holds a published open decision — withdraw and reissue it, or cover the role, before removing them',
+        );
+      }
       await tx.membership.update({ where: { projectId_userId: { projectId, userId } }, data: { status: 'removed' } });
       await emitEvent(tx, { projectId, actor, eventType: 'membership.removed', entityType: 'Membership', entityId: userId, effectKey: 'membership.removed', dispatch: {} });
     });

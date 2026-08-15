@@ -167,6 +167,41 @@ export class OrgsParticipant {
   }
 
   /**
+   * Phase 6 task 4b, round 1 (Codex P1) — describe a NAMED membership holder: is it still active,
+   * whose it is, and what name the register should render for it.
+   *
+   * `DecisionsService.approve` needs all three when a decision is member-held — is the caller the
+   * holder, and what label does the frozen act tuple record — and it reached for the orgs-owned
+   * `Membership` and `User` tables directly to get them. That is the same undeclared decisions→orgs
+   * edge `lockActiveMembership` above was created to close, in its OTHER spelling: the ratchet that
+   * keeps raw `Membership` SQL out of foreign modules never saw it, because this read went through
+   * the Prisma client rather than raw SQL. One question, one owner, one answer.
+   *
+   * Returns null when the membership does not exist on this project. `active` is reported rather
+   * than assumed, because the caller's two uses differ: authority demands an ACTIVE holder, while
+   * the display label is wanted even for a holder who has since left — history renders as it stood.
+   */
+  async describeMembership(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    membershipId: string,
+  ): Promise<{ userId: string; active: boolean; name: string | null } | null> {
+    if (!membershipId) return null;
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<
+      Array<{ userId: string; status: string; name: string | null }>
+    >(
+      `SELECT m."userId", m."status", u."name"
+         FROM "Membership" m
+         LEFT JOIN "User" u ON u."id" = m."userId"
+        WHERE m."projectId" = $1 AND m."id" = $2`,
+      projectId, membershipId,
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return { userId: row.userId, active: row.status === 'active', name: row.name ?? null };
+  }
+
+  /**
    * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
    * role is one of `roles`, or (when `roles` admits `pmc` AND the user holds NO active membership
    * on this project) owner/admin of the project's org? Same rule, same PRECEDENCE as

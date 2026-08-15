@@ -172,13 +172,20 @@ export async function wipeDecisions(prisma: PrismaService, where: Record<string,
     ['DecisionOption', 'DecisionOption_t4a_frozen'],
     ['DecisionOption', 'DecisionOption_t4b_published_frozen'],
     ['Decision', 'Decision_t4a_d_no_delete'],
+    // round 1 (Codex P1): the recorded seal now covers DELETE too — a published record is a
+    // permanent register entry — so the sanctioned reset names it like the rest
+    ['Decision', 'Decision_t4b_recorded_seal'],
     ['DecisionEvent', 'DecisionEvent_no_withdrawn_approval'],
+    // the immutable approval register FKs the options, so it goes first and needs its own bypass
+    ['DecisionApprovalRevision', 'DecisionApprovalRevision_append_only'],
+    ['DecisionApprovalRevision', 'DecisionApprovalRevision_no_withdrawn'],
   ];
   for (const [table, trigger] of seals) {
     await prisma.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`);
   }
   try {
     await prisma.decisionEvent.deleteMany({ where: { decision: where } });
+    await prisma.decisionApprovalRevision.deleteMany({ where: { decision: where } });
     await prisma.decisionOption.deleteMany({ where: { decision: where } });
     await prisma.changeRequest.deleteMany({ where: { decision: where } });
     await prisma.decision.deleteMany({ where });

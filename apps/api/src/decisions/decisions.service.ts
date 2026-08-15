@@ -90,7 +90,8 @@ export class DecisionsService {
     // The side effects BRANCH on the kind (plan §A.2, round 2): today's path unconditionally
     // appends "Decision awaiting approval" and pushes at the pending audience — a false
     // approval demand for a record nobody can approve.
-    const notice = deciderKind === 'none' ? recordedIssueNotice(input.title) : pendingDecisionNotice(input.title);
+    const isRecord = deciderKind === 'none';
+    const notice = isRecord ? recordedIssueNotice(input.title) : pendingDecisionNotice(input.title);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -140,12 +141,16 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: input.publish ? 'decision.create' : 'decision.draft', entity: 'Decision', entityId: id });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: input.publish ? 'decision.published' : 'decision.drafted', entityType: 'Decision', entityId: id, payload: { title: input.title },
-          effectKey: input.publish ? 'decision.published' : 'decision.drafted',
+          effectKey: input.publish ? (isRecord ? 'decision.recorded' : 'decision.published') : 'decision.drafted',
           // A one-step ISSUE carries the client push; a draft is weightless (no invalidate, no push).
           // The persisted intent is the ONLY source of the send — the dispatcher reads it post-commit.
           // The push body is the client-facing announcement (distinct from the persisted Notification
           // row text `notice`), preserved exactly as the pre-PR-C in-request push sent it.
-          dispatch: input.publish ? { push: { body: `New decision awaiting your approval: ${input.title}` } } : {},
+          //
+          // Round 1 (Codex P1): the WHOLE bundle branches on the kind, not just the notice text. A
+          // record has no approver, so "awaiting your approval" is a false demand — `decision.recorded`
+          // carries the same event type and invalidation with NO push at all.
+          dispatch: input.publish && !isRecord ? { push: { body: `New decision awaiting your approval: ${input.title}` } } : {},
         });
         return { resultRef: id, events: [ev] };
       },
@@ -172,7 +177,10 @@ export class DecisionsService {
     const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.publishedAt) throw new ConflictException('Decision is already published');
-    const notice = pendingDecisionNotice(d.title);
+    // Round 1 (Codex P1): publishing a SAVED record draft used the pending notice and the client
+    // push unconditionally — the same false approval demand the create path branches away from.
+    const isRecord = (d.deciderKind as string) === 'none';
+    const notice = isRecord ? recordedIssueNotice(d.title) : pendingDecisionNotice(d.title);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -195,10 +203,11 @@ export class DecisionsService {
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
           projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
-          effectKey: 'decision.published',
+          effectKey: isRecord ? 'decision.recorded' : 'decision.published',
           // client-facing push body (the Notification row keeps `notice`), preserved from the
-          // pre-PR-C in-request push so the pinned behaviour is unchanged.
-          dispatch: { push: { body: `New decision awaiting your approval: ${d.title}` } },
+          // pre-PR-C in-request push so the pinned behaviour is unchanged — except for a record,
+          // which announces to nobody.
+          dispatch: isRecord ? {} : { push: { body: `New decision awaiting your approval: ${d.title}` } },
         });
         return { resultRef: decisionId, events: [ev] };
       },
@@ -247,12 +256,15 @@ export class DecisionsService {
     // the holder, or is the PMC acting ON their behalf, recorded honestly. `onBehalfOf`
     // generalizes from the hard-coded 'client' to the decider's DESIGNATION.
     const holderKind = d.deciderKind as 'client' | 'pmc' | 'member' | 'none';
+    // Round 1 (Codex P1) — the membership facts come from their OWNER. Reading `Membership` here
+    // (even through the Prisma client rather than raw SQL) is the undeclared decisions→orgs edge
+    // `OrgsParticipant.lockActiveMembership` already exists to close.
+    const holder = holderKind === 'member'
+      ? await this.orgsParticipant.describeMembership(this.prisma, projectId, d.deciderMembershipId ?? '')
+      : null;
     const actorIsHolder =
       holderKind === 'member'
-        ? (await this.prisma.membership.findFirst({
-            where: { id: d.deciderMembershipId ?? '', projectId, userId: user.sub, status: 'active' },
-            select: { id: true },
-          })) !== null
+        ? holder !== null && holder.active && holder.userId === user.sub
         : user.role === holderKind;
     if (!actorIsHolder && user.role !== 'pmc') {
       // narrowed at the SERVICE, not the route: the route ceiling admits every role that CAN
@@ -264,15 +276,16 @@ export class DecisionsService {
     // attributable once the holder later changes (4d forwarding), so the act keeps kind, the
     // named membership, and the display identity the register rendered.
     const holderLabel = holderKind === 'member'
-      ? (await this.prisma.membership.findUnique({
-          where: { id: d.deciderMembershipId ?? '' },
-          select: { user: { select: { name: true } } },
-        }))?.user?.name ?? null
+      ? holder?.name ?? null
       : ROLE_LABEL[holderKind] ?? holderKind;
-    // ...and the ANNOUNCEMENT says so too (gate finding 7): who exercised the authority
+    // ...and the ANNOUNCEMENT says so too (gate finding 7, corrected round 1 Codex P2): who
+    // exercised the authority, and WHOSE authority it was. The old text said "Client approved"
+    // for every decider and "on behalf of the client" for every delegation, so a PMC-held or
+    // member-held approval contradicted the `onBehalfOf` the same act persisted.
+    const holderName = holderLabel ?? (ROLE_LABEL[holderKind] ?? holderKind);
     const announce = onBehalfOf
-      ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of the client — ${o.material}`
-      : `Client approved ${d.title} — ${o.material}`;
+      ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of ${holderName} — ${o.material}`
+      : `${holderName} approved ${d.title} — ${o.material}`;
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -395,6 +408,20 @@ export class DecisionsService {
         try {
           // reopening reverts readiness — a readiness write (gate finding 1)
           await lockProjectReadiness(tx, projectId);
+          // Round 1 (Codex P2) — the holder is re-validated HERE, under the lock, before the head
+          // moves. The removal guard cannot see an `approved` decision, so a member holder may
+          // legally leave while it is closed; `decision_t4b_reopen_seal` then refuses the reopen
+          // with a raw PostgreSQL exception that Prisma surfaces as a 500. The valid stale-holder
+          // case deserves the actionable conflict, and the DB seal stays as the backstop for a
+          // direct transaction that never comes through here.
+          if ((d.deciderKind as string) === 'member') {
+            const holder = await this.orgsParticipant.describeMembership(tx, projectId, d.deciderMembershipId ?? '');
+            if (!holder || !holder.active) {
+              throw new ConflictException(
+                `The decider of ${decisionId} has left the project — the approved outcome stands; a changed need is a NEW decision`,
+              );
+            }
+          }
           const { count } = await tx.decision.updateMany({
             where: { id: decisionId, projectId, status: 'approved' },
             data: { status: 'change' },

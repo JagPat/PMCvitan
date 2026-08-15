@@ -18,7 +18,10 @@ of the register entirely. Every decision now carries a per-decision DECIDER: the
 byte-for-byte unchanged), the PMC, or a NAMED ACTIVE member. One fact, one owner: the decision row
 carries its holder, the `Membership` row carries the identity that holder resolves to, and the
 approval act freezes the holder tuple it was made under — because a designation stops being
-attributable the moment the holder later changes.
+attributable the moment the holder later changes. (Round 1, Codex P1: that sentence was true of
+the DESIGN and false of the code — nothing froze those three columns until `20270816000000`. It is
+recorded here as a claim that ran ahead of its evidence, which is the failure mode the invariant
+matrix exists to prevent.)
 
 This unit ships the FACT model and its seals. The audience and the surface are 4b-ii.
 
@@ -116,3 +119,25 @@ Two notes on what counts as evidence here. The e2e figure is from a database wit
 APPLIED — an earlier local run passed against an unmigrated `pmcvitan_e2e` and proved nothing. And
 the seed figure is the RE-SEED: the first seed of an empty database deletes nothing and would pass
 with or without the fix.
+
+## Round 1 — the twelve Codex findings on `ed72636`
+
+Eight P1 and four P2, answered in ONE batched head. Seven of the eight probes in
+`phase6-t4b-correction.test.ts` are RED at `ed72636` and green after; the eighth (F6) is a race
+whose first draft was not deterministic — it is now condition-based, and the honest note is that
+its RED was observed only after that rewrite, not in the first reproduction pass.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| F1 | a published `recorded` issue could be DELETED — the seal fired on INSERT/UPDATE only, and 4a's no-delete covers `withdrawn` | the seal gains its DELETE arm; an unpublished record draft stays deletable |
+| F2 | approval EVENTS were not counted at conversion, and none was sealed after it | the conversion counts `DecisionEvent` as well as the revision register, and a new reverse trigger refuses approval evidence against a record |
+| F3 | a record-only issue still pushed "awaiting your approval", on BOTH publish paths | the whole side-effect bundle branches: a new `decision.recorded` effect key, same event type, same invalidation, no push |
+| F4 | the "frozen" approval-holder tuple was frozen by nothing | write-once from the moment the act records it, and unplantable on a row that carries no approval |
+| F5 | no audit for ALREADY-published decisions holding fewer than two options — the freeze made them unrepairable | a diagnostic-first audit that ABORTS naming the rows, with the repair proven in the probe |
+| F6 | the option guard read publication status unlocked, so a delete could slip past an in-flight publish | `FOR SHARE` on the head row serializes the two |
+| F7 | the DB author predicate admitted `engineer`; `ROLE_POLICY['decision.create']` admits only `pmc` | the predicate matches the shared policy |
+| F8 | `approve` read the orgs-owned `Membership` table directly, twice | `OrgsParticipant.describeMembership` — one question, one owner. The existing ratchet never saw it because it guards raw `Membership` SQL, and this read went through the Prisma client |
+| F9 | a reopen after the holder left raised a raw PG error → 500 | `requestChange` validates standing under the lock and returns the actionable 409; the seal stays the backstop |
+| F10 | announcements said "Client approved" for every decider | the announcement names the actual holder, so it cannot contradict the `onBehalfOf` the same act persists |
+| F11 | an ACTIVE role change was refused for a named holder that keeps its standing | the membership id is passed only when the write ends that membership's active standing |
+| F12 | a blocked member removal surfaced as a 500 | a new `DecisionsParticipant.holdsOpenDecisions` — calling the SAME SQL predicate the seal calls, so the two cannot drift — asked before the write |

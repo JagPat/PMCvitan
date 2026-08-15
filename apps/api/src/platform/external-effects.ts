@@ -41,6 +41,12 @@ export const EXTERNAL_EFFECTS = {
   // ── decisions ──────────────────────────────────────────────────────────────────────────────
   'decision.drafted': { eventType: 'decision.drafted', invalidate: false, push: null },
   'decision.published': { eventType: 'decision.published', invalidate: true, push: ['client'] },
+  // Phase 6 task 4b, round 1 (Codex P1) — a RECORD-ONLY issue publishes through its own key.
+  // `decision.published` pushes `['client']` with an approval demand; a record has no approver,
+  // so that push is a false instruction. Same event type (the register and every projection read
+  // one publication fact), same invalidation, NO push — the §J narrowing of §A.3's decider-routed
+  // dispatch to the empty decider set.
+  'decision.recorded': { eventType: 'decision.published', invalidate: true, push: null },
   'decision.approved': { eventType: 'decision.approved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
   'decision.reapproved': { eventType: 'decision.reapproved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
   'decision.change_requested': { eventType: 'decision.change_requested', invalidate: true, push: null },
