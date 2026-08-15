@@ -187,7 +187,7 @@ The "generate the weekly report" step was removed from the PMC scenario — see 
 
 **6.6 Audio for Listen — two layers.** Settle before Wave 4 opens. Fixed controls use bundled versioned recordings in en/hi/gu. Project-specific content — the task and the approved material — cannot be bundled and needs an **attributable voice briefing recorded by the engineer or PMC**, bound to the assignment revision or fingerprint and cached offline, invalidated when the assignment changes. Browser speech synthesis is ruled out for both layers: no guaranteed installed Hindi or Gujarati voice, and no offline guarantee. Decide who records, when they are prompted, and what happens when a briefing is missing.
 
-**6.7 Field style sharing.** The eight sub-16px field styles are separate per-screen objects, not shared constants. Either introduce a real shared field primitive (preferred — makes the property structurally guaranteed) or verify with Playwright computed-style assertions per surface. Decide before F-1b opens; it changes the unit's size.
+**6.7 Field style sharing.** The eight sub-16px field styles are separate per-screen objects, not shared constants. Either introduce a real shared field primitive (preferred — makes the property structurally guaranteed) or verify with Playwright computed-style assertions per surface. Decide before F-1b opens; it changes the unit's size. **Decided (2026-08-15, autonomous loop, per the non-blocking rule — F-1b is loop-assigned work):** the shared field primitive, this section's preferred option; the Wave-0 doc carries the full dated amendment, and the owner may override asynchronously.
 
 ---
 

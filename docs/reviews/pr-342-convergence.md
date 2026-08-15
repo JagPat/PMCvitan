@@ -15,6 +15,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 
 | `bfd12f4` | round-5 fold | 2 (2 P2) | corrected on this head: the opener-gone fallback preserves RELATIVE POSITION — per-ancestor anchors captured at open (branch + frozen sibling lists) let close prefer the nearest FOLLOWING control, then the branch's survivors, then a PRECEDING control, then anything the ancestor gained, still walking past emptied ancestors (dismissing the middle card no longer jumps keyboard flow backward to the first); and the surface map catches up with the settled semantics — the `ProjectSwitcher` row becomes the non-modal disclosure, `components/PhotoViewer` (one of the four true dialogs) joins the map, count 23 → 24 surfaces |
 
+| `3b4bf1e` | round-6 fold | 1 (1 P1) | corrected on this head: the F-1b opening gate is no longer owner-only — §6.7 records an AUTONOMOUS default (the shared field primitive, the foundation doc's own preferred option) because F-1b is loop-assigned work and the non-blocking rule forbids gating loop work on a human standing by; every handoff surface stating the gate (WAVE_0, README, STATUS, §6.7) carries the dated amendment, and the owner may override asynchronously |
+
 ## Root analysis — one generative class
 
 All ten findings across both rounds are instances of ONE rule: **a focus
@@ -38,9 +40,12 @@ the symptom; the probes pin every moved mechanism (15 arms).
 
 ## Disposition
 
-Twenty findings across six rounds — every one verified real, none
+Twenty-one findings across seven rounds — every one verified real, none
 disputed, none refuted. Probes 20/20 at this head; full web suite 784/784;
-`pnpm check` EXIT 0. The round-6 fallback finding is another instance of
+`pnpm check` EXIT 0. The round-7 finding is the one PROCESS item: an
+owner-only gate on loop-assigned work, resolved by recording the
+autonomous default the owner can override asynchronously — the same
+supersession discipline the primary track already established. The round-6 fallback finding is another instance of
 the one generative class: restoration was keyed to CONTAINER-FIRST-MATCH
 when the true owner of "where next" is the opener's POSITION — the anchors
 move the mechanism to that owner. The round-3 and round-5/6 doc findings

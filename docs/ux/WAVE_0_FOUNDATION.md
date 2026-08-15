@@ -26,6 +26,17 @@ Run against current `HEAD` — **after Phase 6 closes**, since the surface inven
 > - **Preferred:** introduce a real shared field primitive (`components/Field.tsx` or an exported style constant) in F-1b and migrate the eight call sites to it. The diff is larger but the property becomes structurally guaranteed and testable at source.
 > - **Otherwise:** assert with **Playwright computed-style checks** on a rendered input per surface, not a source-level test. Slower and per-surface, but honest about what is actually shared.
 > Decide before F-1b opens; it changes the unit's size.
+>
+> **Amendment (2026-08-15, autonomous loop — the decision, recorded):**
+> F-1b is loop-assigned implementation work, so per the repository's
+> non-blocking rule this choice cannot wait on a human standing by. The
+> loop selects the option this document already marks **Preferred**: the
+> shared field primitive (`components/Field.tsx` or an exported style
+> constant), migrating the eight call sites so the ≥16px property is
+> structurally guaranteed and testable at source. The Playwright
+> computed-style pass remains F-1c's per-surface verification, not the
+> mechanism of the guarantee. The owner may override asynchronously — a
+> genuine owner reply choosing otherwise re-plans F-1b at that point.
 
 ---
 

@@ -95,8 +95,12 @@ red was a behavior failure, never a missing symbol.
 
 ## Deliberately NOT in this unit
 
-- **F-1b** (16px fields, critical-type, 44×44 touch targets) — blocked on
-  the §6.7 field-primitive decision the programme owes the OWNER (shared
+- **F-1b** (16px fields, critical-type, 44×44 touch targets) — at
+  delivery, gated on the §6.7 field-primitive decision (superseded in
+  round 7: §6.7 now records an AUTONOMOUS default — the shared field
+  primitive — because F-1b is loop-assigned work and the non-blocking
+  rule forbids waiting on a human; the owner may override
+  asynchronously) (shared
   `Field` primitive vs Playwright computed-style assertions; it changes the
   unit's size). The doc's shared RED step names a fields-≥16px test; that
   probe ships WITH F-1b, since a red test cannot merge.
@@ -197,6 +201,30 @@ EXIT 0.
    true dialogs keep the trap contract unchanged.
 
 Probes 18/18; full web 782/782; `pnpm check` EXIT 0.
+
+## Round 7 — one Codex finding on head `3b4bf1e`, folded
+
+1. **(P1)** the F-1b opening gate was OWNER-ONLY: the handoff let the
+   next Wave-0 unit open only after "the owner's §6.7 field-primitive
+   decision", so no repository event could ever advance the programme —
+   the same non-blocking-rule violation class as the PR #340 stop-rule
+   supersession. Unlike the round-3 observed-stakeholder amendment
+   (a genuinely owner-executed acceptance act), F-1b is implementation
+   work ASSIGNED TO THE LOOP. The correction records an autonomous
+   default in §6.7 itself and in every handoff surface that stated the
+   gate (`WAVE_0_FOUNDATION.md` — the full dated amendment;
+   `docs/ux/README.md` — both gate statements; `docs/STATUS.md` — the
+   gated-successor row): the loop selects the option the foundation doc
+   already marks **Preferred** (the shared field primitive, migrating
+   the eight call sites so ≥16px is structurally guaranteed and
+   testable at source; Playwright computed-style checks remain F-1c's
+   per-surface verification, not the mechanism of the guarantee), and
+   the owner may override asynchronously — a genuine owner reply
+   choosing otherwise re-plans F-1b at that point. F-1b now opens on
+   PR #342 merging, with no human standing by required.
+
+Docs-only round; probes 20/20 and `pnpm check` EXIT 0 re-run at this
+head.
 
 ## Round 6 — two Codex findings on head `bfd12f4`, folded as one batch
 
