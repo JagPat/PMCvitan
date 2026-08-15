@@ -49,28 +49,43 @@ consumes — and ABORTS with a bounded per-project sample when an orphaned
 row exists, the operator repair documented in `docs/RUNBOOK.md`
 (withdraw-and-reissue, or restore a covering membership) — never inventing
 a holder. The audit is SERIALIZED with live traffic (rounds
-16–17): advisory readiness keys serialize only participants that TAKE
+16–18): advisory readiness keys serialize only participants that TAKE
 them, and the pre-4b writers this deployment window is about
 (`MembersService.updateRole`, `OrgsService.updateOrgMemberRole`/
-`removeOrgMember`) write `Membership`/`OrgMembership` directly with no
-`lockProjectReadiness` — so the migration's serialization rests on locks
-those writers ALREADY conflict with: inside its one transaction it takes
-`LOCK TABLE "Membership", "OrgMembership", "Project" IN SHARE ROW
-EXCLUSIVE MODE` (conflicting with the ROW EXCLUSIVE lock every concurrent
+`removeOrgMember`, and `DecisionsService.create(..., publish=true)`)
+write their tables directly with no `lockProjectReadiness` — so the
+migration's serialization rests on locks those writers ALREADY conflict
+with: inside its one transaction it takes `LOCK TABLE "Decision",
+"Membership", "OrgMembership", "Project" IN SHARE ROW EXCLUSIVE MODE`
+(conflicting with the ROW EXCLUSIVE lock every concurrent
 INSERT/UPDATE/DELETE holds — old-version app instances included — and
 self-conflicting, so two deploy runs serialize too) BEFORE auditing and
-holds them through guard installation. A pre-4b role change or removal
+holds them through guard installation. `Decision` is IN the list
+(round 18) because standing writes are only half the race: with only the
+membership-side tables locked, the audit can observe a project with a
+PMC but no active client and PASS, after which the old create path
+INSERTS a published decision touching none of the locked tables — a row
+then backfilled `'client'` that survives guard installation holderless;
+locking `Decision` blocks old births and publications until the guards
+exist to judge them. And the migration takes NO advisory readiness keys
+(round 18, reversing round 17's supplement): with the four-table list
+covering every table whose writes the audit depends on, old AND new
+writers alike serialize on the row-vs-table conflict, so the advisory
+acquisition adds no exclusion — while HOLDING it inverts lock order
+against an already-rolled 4b writer (the writer acquires its readiness
+key THEN its `Membership` row lock; a migration holding table locks and
+then requesting that same key completes the AB-BA cycle and PostgreSQL
+must abort one side). A pre-4b role change, removal, or decision birth
 therefore either commits BEFORE the audit begins (and is observed by it)
-or blocks UNTIL the guards exist (and is judged by them); the audited
-projects' readiness keys are STILL acquired (ascending order, the §B.1
-service discipline) so any already-rolled 4b writer serializes under the
-same protocol — but they are the supplement, not the mechanism, because
-an advisory key cannot exclude a writer that never requests it. P15's
-barrier-controlled removal-during-migration arm runs the OLD-WRITER
-shape: a raw `Membership` demotion taking NO advisory lock, proven
-BLOCKED (`pg_stat_activity`) while the migration transaction holds the
-table locks, then judged by the installed guard at its commit — both
-orderings. The legacy orphan shape joins the migration probe: P15 gains the
+or blocks UNTIL the guards exist (and is judged by them). P15's
+barrier-controlled during-migration arms run BOTH writer shapes: the
+OLD-WRITER shape (a raw `Membership` demotion taking NO advisory lock,
+and a raw published-decision INSERT, each proven BLOCKED via
+`pg_stat_activity` while the migration transaction holds the table
+locks, then judged by the installed guards at commit — both orderings)
+and the 4B-WRITER shape (a writer holding a readiness key mid-transaction
+while the migration runs — proven to serialize WITHOUT a deadlock abort,
+pinning the no-advisory design). The legacy orphan shape joins the migration probe: P15 gains the
 abort arm, and a clean register backfills untouched)
 and `deciderMembershipId` (nullable, same-project composite FK, required iff
 `kind='member'`, sealed by CHECK). **The 4b contract admits
@@ -201,11 +216,20 @@ decision (`pending`, `change` — and from 4d, `awaiting_countersign`; always
 `publishedAt IS NOT NULL`) cannot be removed. A private DRAFT never blocks a
 removal — it is weightless, and its holder is editable until publish (above),
 so the draft that names a since-removed member is fixed by editing, never by
-forcing publication. **And the REOPEN path re-validates too** (round 8): the
+forcing publication. **And the REOPEN path re-validates too — at BOTH layers** (rounds
+8 + 18): the
 guard cannot see an `approved` decision, so its member holder may legally
 leave while it is closed — `requestChange` (`approved → change`) therefore
 re-validates the holder's ACTIVE standing atomically under the readiness
-lock. When the holder is GONE the 409 names the TRUE 4b state (round 10:
+lock; and because a service check binds only the product path (round 18 —
+a direct transaction can flip the head to `change` and insert its open
+`ChangeRequest` without touching the frozen holder or any membership row,
+so no planned seal would fire and the published decision becomes openly
+holderless), the DATABASE seals the same transition: the head-status
+trigger's `approved → change` arm re-validates the frozen holder's
+CURRENT standing through the same orgs-owned primitive under the §B.1
+try-acquire protocol, refusing the hostile reopen outright — P39 gains
+the hostile direct-reopen arm. When the holder is GONE the 409 names the TRUE 4b state (round 10:
 `withdraw` covers only published `pending` rows, so it is NOT the escape
 here): the approved outcome STANDS — a changed need is a NEW decision, the
 register's append-only answer — and re-homing an approved decision for
@@ -273,10 +297,12 @@ filed, team-visible, approvable by nobody. Its contract requires EXACTLY ZERO
 options (round 15, replacing the round-1 `min(0)` relaxation): a record
 FILES an issue — options are the approvable alternatives of a CHOICE, and
 an optioned record is a category error. The exactly-zero rule also closes
-a real seal-ordering trap the relaxation opened: `create` writes the
+a real seal-ordering trap the relaxation opened: `create` wrote the
 published head before `decisionOption.createMany`, so an optioned
 `publish=true` record would have its children REJECTED by the published-
-record freeze mid-request. `max(0)` at the contract, and the kind⟺status
+record freeze mid-request (round 18's create re-order — the head births
+unpublished and publishes LAST in the same transaction — closes that trap
+a second way; the category-error rationale stands on its own). `max(0)` at the contract, and the kind⟺status
 CHECK family extends to the children ONE-WAY (direction fixed round 16):
 `deciderKind='none'` ⇒ zero `DecisionOption` rows, sealed at commit — the
 REVERSE is deliberately not sealed, because an ordinary-kind UNPUBLISHED
@@ -335,7 +361,17 @@ INSERTS into an already-recorded parent, so hostile SQL could plant a
 unpublished draft and THEN convert it — the entry trigger therefore
 verifies ZERO approval children and NULL approval columns at the moment of
 conversion, refusing an approval-bearing draft from ever becoming a
-record (P18's ordering arm: plant-then-convert refused); and the conversion
+record (P18's ordering arm: plant-then-convert refused) — and the same
+two-sided seal covers CHANGE-REQUEST evidence (round 18: the approval
+seals alone leave a `ChangeRequest` plantable on a pending draft to
+survive conversion, or attachable by direct INSERT to an
+already-published record — a permanent entry carrying an open change
+claim that serialization hides and that neither `requestChange` nor
+`withdrawChange` can ever close, the head being terminal): the entry
+check verifies ZERO `ChangeRequest` children at conversion, and the
+reverse child-seal family gains a `ChangeRequest` arm refusing any
+INSERT whose parent is `recorded` (P18's change-request arms:
+plant-then-convert AND direct-attach both refused); and the conversion
 RE-ARMS the option floor (round 13): a `none` draft legally holds zero
 options, so a draft converted to an ordinary kind may reach the publish
 door under the record form's shape; the PUBLISH transition re-judges the
@@ -351,9 +387,19 @@ binds at — re-counts the `DecisionOption` children in the DATABASE,
 refusing publication of any non-record kind with fewer than two options
 and of a `none` record with any option at all (the round-15 child seal
 stays ONE-WAY for drafts — assembly remains free — and becomes
-bidirectional exactly AT publication), so the zero-option converted
-draft and the hostile direct-SQL publication are refused alike — probed
-in P17/P20, which gain the hostile publication arm; from publication the
+bidirectional exactly AT publication). The trigger covers BOTH doors
+(round 18): the publication UPDATE and any INSERT arriving
+already-published — and that forces a create-path re-order, because
+today's ordinary `create(..., publish=true)` inserts the published head
+BEFORE `decisionOption.createMany`, which the INSERT arm would refuse at
+a zero count. The immediate-choice path therefore births the head
+UNPUBLISHED, inserts its options, and performs the guarded publication
+UPDATE in the SAME transaction (atomic to every reader; the command's
+observable result unchanged), so the zero-option converted draft, the
+hostile direct-SQL publication UPDATE, and the hostile published INSERT
+are all refused alike while every normal immediate choice still
+publishes — probed in P17/P20, which gain the hostile publication arms
+(both doors) and the re-ordered create's happy path; from publication the
 terminal refusal is unconditional — the same publication boundary every
 other 4b freeze binds at. The legal draft kind-change and the hostile
 published flip are both probed (P17/P18) — **and the door is sealed in
