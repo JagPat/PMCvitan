@@ -7,7 +7,13 @@ import test from 'node:test';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 function bashEval(script) {
-  return execSync(`bash -lc ${JSON.stringify(script)}`, { cwd: root, encoding: 'utf8' }).trim();
+  // Pass the script via env so the outer `sh -c` from execSync cannot expand
+  // `$PORT` / `$NODE_ENV` before bash -lc runs.
+  return execSync('bash -lc "$CLOUD_AGENT_EVAL_SCRIPT"', {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, CLOUD_AGENT_EVAL_SCRIPT: script },
+  }).trim();
 }
 
 function psqlDatabaseUrl(input) {
@@ -186,4 +192,48 @@ test('ensure_web_env disables VITE_ALLOW_DEV_AUTH for an external database', () 
       execSync(`rm -f ${JSON.stringify(webEnv)}`, { cwd: root });
     }
   }
+});
+
+test('pin_api_runtime_env forces PORT=3000 and production OTP stubs on an external DB', () => {
+  const out = bashEval(
+    `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+    + `export PORT=8080 && export NODE_ENV=development && `
+    + `export DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging' && `
+    + `unset CLOUD_AGENT_ALLOW_AUTH_STUBS && pin_api_runtime_env && `
+    + `printf 'PORT=%s NODE_ENV=%s\\n' "$PORT" "$NODE_ENV"`,
+  );
+  assert.equal(out, 'PORT=3000 NODE_ENV=production');
+});
+
+test('pin_api_runtime_env keeps local disposable DB off production stubs', () => {
+  const out = bashEval(
+    `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+    + `export PORT=8080 && unset NODE_ENV && `
+    + `export DATABASE_URL='postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public' && `
+    + `pin_api_runtime_env && printf 'PORT=%s NODE_ENV=%s\\n' "$PORT" "\${NODE_ENV-}"`,
+  );
+  assert.equal(out, 'PORT=3000 NODE_ENV=');
+});
+
+test('apply_api_env_defaults restores inherited secrets then pins PORT=3000', () => {
+  const out = bashEval(
+    `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+    + `export PORT=8080 && export DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging' && `
+    + `export JWT_SECRET='operator-staging-secret' && `
+    + `apply_api_env_defaults && printf 'PORT=%s JWT=%s NODE_ENV=%s\\n' "$PORT" "$JWT_SECRET" "$NODE_ENV"`,
+  );
+  assert.equal(out, 'PORT=3000 JWT=operator-staging-secret NODE_ENV=production');
+});
+
+test('seed.ts drops the completion marker before TRUNCATE and writes it last as AuditLog', () => {
+  const text = execSync('cat apps/api/prisma/seed.ts', { cwd: root, encoding: 'utf8' });
+  const drop = text.indexOf("auditLog.deleteMany({ where: { id: 'cloud-agent-seed-complete' } })");
+  const truncate = text.indexOf('TRUNCATE TABLE');
+  const library = text.indexOf('createStarterLibrary');
+  const create = text.lastIndexOf("prisma.auditLog.create");
+  const marker = text.lastIndexOf("id: 'cloud-agent-seed-complete'");
+  assert.ok(drop >= 0 && truncate >= 0 && library >= 0 && create >= 0 && marker >= 0);
+  assert.ok(drop < truncate, 'marker must be removed before the first TRUNCATE');
+  assert.ok(library < create && create < marker, 'marker must be written last as AuditLog after the starter library');
+  assert.doesNotMatch(text, /prisma\.notification\.create\([\s\S]{0,200}cloud-agent-seed-complete/u);
 });

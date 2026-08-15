@@ -5,7 +5,7 @@
   "terminals": [
     {
       "name": "api",
-      "command": "bash -lc 'mapfile -t _pre < <(export -p); set -a && [ -f apps/api/.env ] && source apps/api/.env; set +a; for _line in \"${_pre[@]}\"; do eval \"$_line\"; done; pnpm --filter api start'"
+      "command": "bash scripts/cloud-agent-api.sh"
     },
     {
       "name": "web",

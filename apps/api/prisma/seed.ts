@@ -24,6 +24,9 @@ const SCHEDULE_ANCHOR = '2026-06-01';
 const atDay = (offset: number): Date => fromIsoCivilDate(addCivilDays(SCHEDULE_ANCHOR, offset))!;
 
 async function main(): Promise<void> {
+  // Drop the cloud-agent completion marker BEFORE any destructive reset so a
+  // failed reseed cannot leave a stale "complete" row while fixture data is gone.
+  await prisma.auditLog.deleteMany({ where: { id: 'cloud-agent-seed-complete' } });
   // wipe (children first) for an idempotent seed. A previous suite run can
   // leave rows in every NO ACTION child table, so the order must hold for a
   // FULLY populated database, not just the fixture this seed creates:
@@ -400,15 +403,16 @@ async function main(): Promise<void> {
   // "G+2 Residence" preset, so New project opens to a ready menu.
   const seededLibrary = await createStarterLibrary(prisma, org.id);
 
-  // Completion marker for cloud-agent-start: written LAST so a partial seed cannot
-  // skip re-running. Id is stable; the row is truncated with the rest on re-seed.
-  await prisma.notification.create({
+  // Completion marker for cloud-agent-start: AuditLog is not in the snapshot
+  // notification feed. Written LAST so a partial seed cannot skip recovery.
+  await prisma.auditLog.create({
     data: {
       id: 'cloud-agent-seed-complete',
       projectId: PROJECT_ID,
-      text: 'cloud-agent-seed-complete',
-      time: 'seed',
-      color: '#3F7A54',
+      actor: 'seed',
+      action: 'cloud-agent-seed-complete',
+      entity: 'seed',
+      entityId: PROJECT_ID,
     },
   });
 

@@ -80,6 +80,10 @@ each secret/config key before shipping.
 | empty ALLOW_DEV_AUTH | `${VAR+x}` is set for empty, so stale `true` stayed | treat empty as unset and strip the file line | `ALLOW_DEV_AUTH=` |
 | web always ALLOW_DEV_AUTH | first-write `VITE_ALLOW_DEV_AUTH=true` | derive from local DB or explicit API flag | external preview AuthGate |
 | sourced `.env` clobbers secrets | terminal restored only DB/JWT/dev-auth | restore every pre-source `export -p` binding | `WORKER_ENROLL_SECRET` |
+| inherited PORT vs exposed 3000 | restore replayed `PORT` | pin `PORT=3000` after restore (`cloud-agent-api.sh`) | `PORT=8080` launch |
+| OTP stubs on external DB | stubs key off `NODE_ENV`, not JWT | pin `NODE_ENV=production` unless `CLOUD_AGENT_ALLOW_AUTH_STUBS` | email/phone OTP takeover |
+| seed marker in notification feed | `Notification` is snapshotted to the bell | `AuditLog` row `cloud-agent-seed-complete` | demo bell count |
+| stale marker after failed reseed | TRUNCATE left the marker table | delete marker before first TRUNCATE | overlapping `pnpm seed` |
 | psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
 | psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
 | Prisma pool args in psql | only `schema=` stripped | drop Prisma-only query keys (`connection_limit`, `pool_timeout`, …) | mixed Prisma+libpq URL |
@@ -99,9 +103,9 @@ each secret/config key before shipping.
 
 ## Status
 
-Round 7 on head `92ca148` (example JWT `change-me`, empty `ALLOW_DEV_AUTH` leftover,
-seed marker still mid-fixture, web always enabling dev auth, sourced `.env` blanking
-`WORKER_ENROLL_SECRET`) is corrected on this head. The compiled-API choice remains a
-documented trade-off.
+Round 8 on head `c502455` (OTP stubs still live on an external DB, inherited `PORT`
+steering the API off :3000, the seed marker living in the notification feed, and a
+failed reseed leaving that marker) is corrected on this head. The compiled-API choice
+remains a documented trade-off.
 
 Review-Convergence: complete

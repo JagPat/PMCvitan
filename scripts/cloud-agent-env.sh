@@ -8,7 +8,7 @@ PLACEHOLDER_JWT_SECRETS='dev-secret-change-in-prod
 change-me
 change-me-too'
 SEED_PROJECT_ID='ambli'
-# Written last in apps/api/prisma/seed.ts — after drawing, media, notices, and the starter library.
+# Written last in apps/api/prisma/seed.ts as an AuditLog row (not a user-facing notice).
 SEED_COMPLETION_MARK='cloud-agent-seed-complete'
 # Prisma connector args that libpq/psql reject (keep sslmode, host, etc.).
 PRISMA_ONLY_QUERY_KEYS='schema connection_limit pool_timeout pgbouncer statement_cache_size socket_timeout sslidentity sslpassword sslaccept max_idle_connection_lifetime'
@@ -189,6 +189,38 @@ ensure_web_env() {
   touch apps/web/.env
   set_env_var apps/web/.env VITE_API_URL 'http://localhost:3000'
   set_env_var apps/web/.env VITE_ALLOW_DEV_AUTH "$dev_auth"
+}
+
+# After sourcing .env and restoring inherited secrets: pin listen port and
+# fail-closed OTP stubs on an external database unless explicitly opted in.
+# declare -g: these run from apply_api_env_defaults, where `declare -x` (export -p)
+# would otherwise restore bindings as function-locals that vanish on return.
+pin_api_runtime_env() {
+  declare -gx PORT=3000
+  resolve_database_url
+  if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ]; then
+    return 0
+  fi
+  case "${CLOUD_AGENT_ALLOW_AUTH_STUBS:-}" in
+    1 | true | TRUE | yes | YES) return 0 ;;
+  esac
+  declare -gx NODE_ENV=production
+}
+
+apply_api_env_defaults() {
+  local -a _pre=()
+  mapfile -t _pre < <(export -p)
+  set -a
+  if [ -f apps/api/.env ]; then
+    # shellcheck disable=SC1091
+    source apps/api/.env
+  fi
+  set +a
+  local _line
+  for _line in "${_pre[@]}"; do
+    eval "${_line/declare -x/declare -gx}"
+  done
+  pin_api_runtime_env
 }
 
 # psql helper: honour Prisma schema= via search_path (libpq URLs omit schema=).
