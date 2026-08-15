@@ -243,8 +243,32 @@ export class DecisionsService {
 
     const prior = d.status; // 'pending' (first approval) or 'change' (re-approval)
     const today = ddMmmYyyy(new Date());
-    // a PMC approving records the client's consent ON BEHALF — the fact is never disguised
-    const onBehalfOf = user.role === 'client' ? null : 'client';
+    // Phase 6 task 4b (plan §A.1, round 3) — the AUTHORITY is the decider: the actor either IS
+    // the holder, or is the PMC acting ON their behalf, recorded honestly. `onBehalfOf`
+    // generalizes from the hard-coded 'client' to the decider's DESIGNATION.
+    const holderKind = d.deciderKind as 'client' | 'pmc' | 'member' | 'none';
+    const actorIsHolder =
+      holderKind === 'member'
+        ? (await this.prisma.membership.findFirst({
+            where: { id: d.deciderMembershipId ?? '', projectId, userId: user.sub, status: 'active' },
+            select: { id: true },
+          })) !== null
+        : user.role === holderKind;
+    if (!actorIsHolder && user.role !== 'pmc') {
+      // narrowed at the SERVICE, not the route: the route ceiling admits every role that CAN
+      // hold a decision, and only the service knows who holds THIS one.
+      throw new ForbiddenException('Only the decider of this decision may approve it');
+    }
+    const onBehalfOf = actorIsHolder ? null : holderKind;
+    // The act freezes the holder TUPLE as it stood AT THE ACT: a designation alone stops being
+    // attributable once the holder later changes (4d forwarding), so the act keeps kind, the
+    // named membership, and the display identity the register rendered.
+    const holderLabel = holderKind === 'member'
+      ? (await this.prisma.membership.findUnique({
+          where: { id: d.deciderMembershipId ?? '' },
+          select: { user: { select: { name: true } } },
+        }))?.user?.name ?? null
+      : ROLE_LABEL[holderKind] ?? holderKind;
     // ...and the ANNOUNCEMENT says so too (gate finding 7): who exercised the authority
     const announce = onBehalfOf
       ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of the client — ${o.material}`
@@ -271,6 +295,10 @@ export class DecisionsService {
             approver: actor.actorName,
             approvedById: actor.actorId,
             onBehalfOf,
+            // the act's own history (round 3) — never rewritten by a later holder change
+            approvedDeciderKind: holderKind,
+            approvedDeciderMembershipId: holderKind === 'member' ? d.deciderMembershipId : null,
+            approvedDeciderLabel: holderLabel,
             date: today,
             photoSwatch: o.swatch,
           },
