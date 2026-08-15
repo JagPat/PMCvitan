@@ -73,6 +73,7 @@ each secret/config key before shipping.
 | socket vs TCP role check | `sudo postgres psql` not on service URL | gate local bootstrap to default URL only | compose/external Postgres |
 | seed wipes staging | unconditional seed | `seed_permitted` + opt-in flag | external DB startup |
 | psql SSL dropped | naive `?` truncation | Python URL parse, strip `schema` only | Cloud SQL / SSL URLs |
+| empty-host URI broken | `urlunsplit` drops `//` netloc | emit `postgresql:///dbname?...` form | Cloud SQL socket URLs |
 | `.env` corruption | `sed` `&` metacharacter | Python `set_env_var` | multi-param `DATABASE_URL` |
 | secret in logs | full URL in `echo` | `database_url_log_label` | failed external connect |
 | compiled API stale | `start` not `start:dev` | **documented** trade-off; matches CI e2e | API source edits need rebuild |
@@ -88,9 +89,11 @@ each secret/config key before shipping.
 
 ## Status
 
-Twelve distinct findings across two finding-bearing heads (8 + 4). All product findings are
-corrected in the scripts; the compiled-API choice is documented as an accepted trade-off, not
-dismissed. No domain invariants apply. CI battery green on head `09c6bb3`; only
-`codex-current-head` awaited this packet.
+Thirteen distinct findings across three finding-bearing heads (8 + 4 + 1 post-convergence).
+All product findings are corrected in the scripts; the compiled-API choice is documented as an
+accepted trade-off. Round-4 (head `4a2f604`) found one P2: `urlunsplit` collapsed
+`postgresql:///dbname?host=...` to `postgresql:/dbname?...`; fixed by preserving the empty-host
+libpq form when stripping `schema=` only (`scripts/ci-cloud-agent-env.test.mjs` pins it).
+CI battery green; `codex-current-head` awaited re-review on the correction head.
 
 Review-Convergence: complete

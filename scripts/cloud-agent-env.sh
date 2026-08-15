@@ -17,7 +17,21 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 raw = sys.argv[1]
 parts = urlsplit(raw)
 query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "schema"]
-print(urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)))
+query_string = urlencode(query)
+
+if parts.netloc:
+    out = urlunsplit((parts.scheme, parts.netloc, parts.path, query_string, parts.fragment))
+elif parts.scheme in ("postgresql", "postgres") and parts.path.startswith("/"):
+    # libpq empty-host form: postgresql:///dbname?host=... (urlunsplit drops the "//").
+    out = f"{parts.scheme}:///{parts.path.lstrip('/')}"
+    if query_string:
+        out += f"?{query_string}"
+    if parts.fragment:
+        out += f"#{parts.fragment}"
+else:
+    out = urlunsplit((parts.scheme, parts.netloc, parts.path, query_string, parts.fragment))
+
+print(out)
 PY
 }
 
