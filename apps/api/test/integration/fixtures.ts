@@ -8,6 +8,10 @@ export interface TwoProjectFixture {
   projectB: { id: string };
   /** active pmc membership on projectA */
   memberUser: { id: string };
+  /** active CLIENT membership on projectA — Phase 6 task 4b (see below) */
+  clientUser: { id: string };
+  /** active CLIENT membership on projectB */
+  otherClientUser: { id: string };
   /** owner of orgA with NO project membership (super-admin path) */
   ownerUser: { id: string };
   /** active pmc membership on projectB (the other tenant) */
@@ -18,10 +22,17 @@ export interface TwoProjectFixture {
 }
 
 /**
- * Two isolated organizations, each with one project, plus four users with
+ * Two isolated organizations, each with one project, plus six users with
  * deterministic memberships — the minimum world in which tenant isolation
  * and live access can be PROVEN rather than assumed. Every id is unique per
  * run so suites can never collide with each other or with leftover rows.
+ *
+ * Phase 6 task 4b: each project also carries an ACTIVE CLIENT. A decision's default decider is
+ * the client, and `Decision_t4b_publication_seal` refuses publishing into a project with no
+ * active one — it would birth the holderless state the removal guard exists to prevent. A
+ * clientless project is not a smaller world, it is an IMPOSSIBLE one, and eighteen suites were
+ * publishing decisions into it. The client belongs in the minimum world, not in eighteen copies
+ * of a per-suite workaround.
  */
 export async function createTwoProjectFixture(prisma: PrismaService): Promise<TwoProjectFixture> {
   const run = randomUUID().slice(0, 8);
@@ -52,9 +63,13 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
   const ownerUser = await prisma.user.create({ data: { ...user('owner'), projectId: projectA.id } });
   const otherUser = await prisma.user.create({ data: { ...user('other'), projectId: projectB.id } });
   const strangerUser = await prisma.user.create({ data: { ...user('stranger') } });
+  const clientUser = await prisma.user.create({ data: { ...user('client'), role: 'client' } });
+  const otherClientUser = await prisma.user.create({ data: { ...user('otherclient'), projectId: projectB.id, role: 'client' } });
 
   await prisma.membership.create({ data: { projectId: projectA.id, userId: memberUser.id, role: 'pmc', status: 'active' } });
   await prisma.membership.create({ data: { projectId: projectB.id, userId: otherUser.id, role: 'pmc', status: 'active' } });
+  await prisma.membership.create({ data: { projectId: projectA.id, userId: clientUser.id, role: 'client', status: 'active' } });
+  await prisma.membership.create({ data: { projectId: projectB.id, userId: otherClientUser.id, role: 'client', status: 'active' } });
   await prisma.orgMembership.create({ data: { orgId: orgA.id, userId: ownerUser.id, role: 'owner' } });
 
   const cleanup = async (): Promise<void> => {
@@ -72,8 +87,8 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
       // them before the project/org rows they hang off (their tenant FK is ON DELETE CASCADE,
       // but an explicit delete keeps the disposable test DB tidy for cross-suite reuse).
       prisma.commandExecution.deleteMany({ where: { OR: [{ projectId: { in: [projectA.id, projectB.id] } }, { organizationId: { in: [orgA.id, orgB.id] } }] } }),
-      prisma.securityAuditEvent.deleteMany({ where: { targetUserId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
-      prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
+      prisma.securityAuditEvent.deleteMany({ where: { targetUserId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id, clientUser.id, otherClientUser.id] } } }),
+      prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id, clientUser.id, otherClientUser.id] } } }),
       prisma.auditLog.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.notification.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.membership.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
@@ -93,7 +108,7 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
       prisma.projectParty.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.vendor.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
       prisma.externalParty.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
-      prisma.user.deleteMany({ where: { id: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id] } } }),
+      prisma.user.deleteMany({ where: { id: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id, clientUser.id, otherClientUser.id] } } }),
       prisma.projectNode.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.project.deleteMany({ where: { id: { in: [projectA.id, projectB.id] } } }),
       prisma.templateModule.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
@@ -102,7 +117,7 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
     ]);
   };
 
-  return { orgA, orgB, projectA, projectB, memberUser, ownerUser, otherUser, strangerUser, cleanup };
+  return { orgA, orgB, projectA, projectB, memberUser, clientUser, otherClientUser, ownerUser, otherUser, strangerUser, cleanup };
 }
 
 /** Phase 6 task 4a (round 12) — approval `DecisionEvent` rows are undeletable EVIDENCE

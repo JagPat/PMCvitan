@@ -74,24 +74,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     rebuilder = t.app.get(ProjectionRebuilder);
     (human as { actorId: string }).actorId = f.memberUser.id;
     raceDb = new PrismaClient();
-    // Phase 6 task 4b: the default decider is `client`, and 4b refuses to publish a decision
-    // into a project with no effective holder — the zero-holder state its removal guard exists
-    // to prevent. Every real project has a client; this seeds the standard cast for THIS suite
-    // (run-unique, torn down in afterAll) rather than changing the shared fixture, which other
-    // suites' membership counts and audience assertions read.
-    t4bClientId = `t4a-client-${f.projectA.id}`;
-    await t.prisma.user.create({
-      data: { id: t4bClientId, projectId: f.projectA.id, role: 'client', name: 'T4A Client', email: `${t4bClientId}@test.local` },
-    });
-    await t.prisma.membership.create({
-      data: { projectId: f.projectA.id, userId: t4bClientId, role: 'client', status: 'active' },
-    });
+    // Phase 6 task 4b: the default decider is `client`, and 4b refuses to publish a decision into
+    // a project with no effective holder. The client now lives in the SHARED fixture — a project
+    // without one is an impossible world, not a smaller one — so this suite reads it rather than
+    // minting a second one, which would put two clients in every audience assertion below.
+    t4bClientId = f.clientUser.id;
   });
   afterAll(async () => {
     await cleanup();
-    // the suite's standing client is beforeAll-scoped: it goes before the fixture drops the project
-    await t.prisma.membership.deleteMany({ where: { userId: t4bClientId } });
-    await t.prisma.user.deleteMany({ where: { id: t4bClientId } });
     await raceDb?.$disconnect();
     await f?.cleanup();
     await t?.close();
