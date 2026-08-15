@@ -177,7 +177,12 @@ describe('DecisionsService — draft → publish lifecycle', () => {
  */
 interface LifecycleRow {
   id: string; projectId: string; title: string; status: string;
+  // Phase 6 task 4b — every decision carries its DECIDER. `client` is the column default and the
+  // value the migration backfills onto every pre-4b row, so it is what this stand-in models: these
+  // probes were written for the client-decided world, which is still the ordinary one.
+  deciderKind: 'client' | 'pmc' | 'member' | 'none'; deciderMembershipId: string | null;
   approver?: string; approvedById?: string | null; onBehalfOf?: string | null;
+  approvedDeciderKind?: string | null; approvedDeciderMembershipId?: string | null; approvedDeciderLabel?: string | null;
 }
 interface CrRow {
   id: string; decisionId: string; status: string; reason?: string;
@@ -185,7 +190,7 @@ interface CrRow {
 }
 
 function makeLifecycle(status: string) {
-  const row: LifecycleRow = { id: 'DL-1', projectId: 'proj-1', title: 'Kitchen counter top', status };
+  const row: LifecycleRow = { id: 'DL-1', projectId: 'proj-1', title: 'Kitchen counter top', status, deciderKind: 'client', deciderMembershipId: null };
   const options = [{ label: 'Option A', optionKey: 'a', material: 'Granite', delta: 0, swatch: 'sw1', order: 0 }];
   const changeRequests: CrRow[] = [];
   const events: Array<{ type: string; actor: string; actorId?: string; actorName?: string; actorRole?: string; payload?: Record<string, unknown> }> = [];
