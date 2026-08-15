@@ -48,12 +48,29 @@ effective-holder existence — the same effective-role-standing the guard
 consumes — and ABORTS with a bounded per-project sample when an orphaned
 row exists, the operator repair documented in `docs/RUNBOOK.md`
 (withdraw-and-reissue, or restore a covering membership) — never inventing
-a holder. The audit is SERIALIZED with live traffic (round 16): it
-acquires the readiness key of every audited project (ascending order, the
-§B.1 service discipline) BEFORE auditing and HOLDS them through guard
-installation, so a pre-4b membership removal committing mid-deployment
-cannot orphan a row between the audit's check and the guard's arrival —
-P15 gains the barrier-controlled removal-during-migration arm. The legacy orphan shape joins the migration probe: P15 gains the
+a holder. The audit is SERIALIZED with live traffic (rounds
+16–17): advisory readiness keys serialize only participants that TAKE
+them, and the pre-4b writers this deployment window is about
+(`MembersService.updateRole`, `OrgsService.updateOrgMemberRole`/
+`removeOrgMember`) write `Membership`/`OrgMembership` directly with no
+`lockProjectReadiness` — so the migration's serialization rests on locks
+those writers ALREADY conflict with: inside its one transaction it takes
+`LOCK TABLE "Membership", "OrgMembership", "Project" IN SHARE ROW
+EXCLUSIVE MODE` (conflicting with the ROW EXCLUSIVE lock every concurrent
+INSERT/UPDATE/DELETE holds — old-version app instances included — and
+self-conflicting, so two deploy runs serialize too) BEFORE auditing and
+holds them through guard installation. A pre-4b role change or removal
+therefore either commits BEFORE the audit begins (and is observed by it)
+or blocks UNTIL the guards exist (and is judged by them); the audited
+projects' readiness keys are STILL acquired (ascending order, the §B.1
+service discipline) so any already-rolled 4b writer serializes under the
+same protocol — but they are the supplement, not the mechanism, because
+an advisory key cannot exclude a writer that never requests it. P15's
+barrier-controlled removal-during-migration arm runs the OLD-WRITER
+shape: a raw `Membership` demotion taking NO advisory lock, proven
+BLOCKED (`pg_stat_activity`) while the migration transaction holds the
+table locks, then judged by the installed guard at its commit — both
+orderings. The legacy orphan shape joins the migration probe: P15 gains the
 abort arm, and a clean register backfills untouched)
 and `deciderMembershipId` (nullable, same-project composite FK, required iff
 `kind='member'`, sealed by CHECK). **The 4b contract admits
@@ -265,8 +282,10 @@ CHECK family extends to the children ONE-WAY (direction fixed round 16):
 REVERSE is deliberately not sealed, because an ordinary-kind UNPUBLISHED
 draft legally holds zero options while it is being assembled (the
 round-13 conversion lifecycle: the kind change succeeds, and the
-two-option floor binds at PUBLICATION, which is where a zero-option
-ordinary decision is refused). P18/P19 arms: the optioned record request
+two-option floor binds at PUBLICATION — in the publication TRIGGER as
+well as the service since round 17, so the draft-assembly freedom opens
+no hostile-SQL door — which is where a zero-option ordinary decision is
+refused). P18/P19 arms: the optioned record request
 refused at the CONTRACT; the hostile direct child insert refused at the
 DB; the zero-option converted draft still converts and still refuses to
 publish. Every other kind keeps `min(2)` — a CHOICE still needs
@@ -320,9 +339,21 @@ record (P18's ordering arm: plant-then-convert refused); and the conversion
 RE-ARMS the option floor (round 13): a `none` draft legally holds zero
 options, so a draft converted to an ordinary kind may reach the publish
 door under the record form's shape; the PUBLISH transition re-judges the
-canonical child count SERVER-side for every non-record kind (the create
-schema's two-option floor, not merely the Drafts button state), refusing
-the zero-option converted draft — probed in P17/P20; from publication the
+canonical child count at BOTH layers (rounds 13 + 17 — a server-only
+recheck leaves hostile SQL able to set `publishedAt` on a zero-option
+ordinary draft directly: it bypasses the service, satisfies the
+kind⟺status CHECKs and the one-way child seal, and commits a published
+`pending` decision no one can ever approve): the service re-checks the
+create schema's two-option floor under the publish row lock (not merely
+the Drafts button state), AND the publication trigger — the same
+`publishedAt NULL → NOT NULL` boundary the publication-entry freeze
+binds at — re-counts the `DecisionOption` children in the DATABASE,
+refusing publication of any non-record kind with fewer than two options
+and of a `none` record with any option at all (the round-15 child seal
+stays ONE-WAY for drafts — assembly remains free — and becomes
+bidirectional exactly AT publication), so the zero-option converted
+draft and the hostile direct-SQL publication are refused alike — probed
+in P17/P20, which gain the hostile publication arm; from publication the
 terminal refusal is unconditional — the same publication boundary every
 other 4b freeze binds at. The legal draft kind-change and the hostile
 published flip are both probed (P17/P18) — **and the door is sealed in
