@@ -95,7 +95,9 @@ async function main(): Promise<void> {
   // withdrawn-row deletes — in a LIVE database the register entry is permanent — and this seed
   // is the sanctioned destructive reset (the same contract that lets the TRUNCATE above bypass
   // the DomainEvent append-only trigger), so the named seal is disabled for exactly this wipe.
-  // Guarded: a pre-4a database has no such trigger. ONE transaction (round 6, Codex): PG DDL is
+  // Phase 6 task 4b adds a SECOND option seal (the options of a PUBLISHED decision are frozen,
+  // whatever its status), which stands in front of the same wipe — so it is disabled here too.
+  // Guarded: a pre-4a/pre-4b database has no such trigger. ONE transaction (round 6, Codex): PG DDL is
   // transactional, so a wipe that throws rolls the DISABLE back with it — no failure path can
   // leave the seal off; a bare disable/delete/enable sequence could.
   await prisma.$transaction([
@@ -108,9 +110,15 @@ async function main(): Promise<void> {
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
     ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4b_published_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'; END IF; END $$;`,
+    ),
     prisma.decisionEvent.deleteMany(),
     prisma.decisionOption.deleteMany(),
     prisma.decision.deleteMany(),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4b_published_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'; END IF; END $$;`,
+    ),
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
     ),
