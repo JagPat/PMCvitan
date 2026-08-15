@@ -203,6 +203,19 @@ export class OutboxRelay implements OnModuleDestroy {
       await this.prisma.outboxDelivery.update({ where: { id: delivery.id }, data: { status: 'succeeded', deliveryAction: 'noop', leaseOwner: null, leaseExpiresAt: null, lastError: null } });
       return 'succeeded';
     }
+    // Phase 6 task 4a — the final PRE-SEND re-check of THIS row's own cancellation mark
+    // (a platform-internal read of the platform's own table; no module boundary crossed).
+    // `cancelQueuedPushBySubject` neutralizes still-pending rows in place, but a row LEASED
+    // moments before the cancelling transaction committed would slip past that filter — so the
+    // sender re-reads its own row here, immediately before the notify handoff, and a
+    // cancellation that landed during the lease window drops the send with the drop recorded
+    // (succeeded/noop, payload preserved, `cancelledAt` says why). The residual window is
+    // check→send external-call latency — bounded, and identical to the already-sent case.
+    const fresh = await this.prisma.outboxDelivery.findUnique({ where: { id: delivery.id }, select: { cancelledAt: true } });
+    if (fresh?.cancelledAt) {
+      await this.prisma.outboxDelivery.update({ where: { id: delivery.id }, data: { status: 'succeeded', deliveryAction: 'noop', leaseOwner: null, leaseExpiresAt: null, lastError: null } });
+      return 'succeeded';
+    }
     try {
       await consumer.handle({ delivery: ctxDelivery, meta, senderMode: outboxSenderMode() });
       await this.prisma.outboxDelivery.update({ where: { id: delivery.id }, data: { status: 'succeeded', leaseOwner: null, leaseExpiresAt: null, lastError: null } });
@@ -396,6 +409,10 @@ export class OutboxRelay implements OnModuleDestroy {
               eventId: event.eventId, projectId: event.projectId, consumer: cat.consumer, consumerKind: consumer.kind,
               streamPosition: event.streamPosition, deliveryAction: plan.action, status,
               ...(plan.action === 'dispatch' && plan.payload !== undefined ? { payload: plan.payload } : {}),
+              // Phase 6 task 4a round 1 (Codex F1): the SUBJECT is part of the plan, in EVERY
+              // delivery-creation path — a crash-gap row recovered here without it would be
+              // born uncancellable by `cancelQueuedPushBySubject`.
+              ...(plan.action === 'dispatch' && plan.subject !== undefined ? { subject: plan.subject } : {}),
             },
           });
           created++;

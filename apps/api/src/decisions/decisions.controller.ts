@@ -4,7 +4,7 @@ import { DecisionsQueryService } from './decisions.query';
 import { ZodPipe } from '../common/zod.pipe';
 import { CurrentUser, JwtGuard, type AuthUser } from '../common/auth';
 import { RolesFor, RolesGuard } from '../common/roles';
-import { approveSchema, changeSchema, createDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput } from '../contracts';
+import { approveSchema, changeSchema, createDecisionSchema, withdrawDecisionSchema, type ApproveInput, type ChangeInput, type CreateDecisionInput, type WithdrawDecisionInput } from '../contracts';
 
 @Controller('projects/:projectId/decisions')
 @UseGuards(JwtGuard, RolesGuard)
@@ -77,6 +77,22 @@ export class DecisionsController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.decisions.requestChange(projectId, decisionId, body, user, idempotencyKey);
+  }
+
+  /** Withdraw a PUBLISHED, never-approved decision — the PMC takes back a question that
+   *  should not have been asked (Phase 6 task 4a). Terminal; the reason is required; a
+   *  draft or an approved/reopened decision is refused (409). Distinct from the change-
+   *  request withdrawal below, which closes a reopening on an APPROVED decision. */
+  @Post(':decisionId/withdraw')
+  @RolesFor('decision.withdraw')
+  withdraw(
+    @Param('projectId') projectId: string,
+    @Param('decisionId') decisionId: string,
+    @Body(new ZodPipe(withdrawDecisionSchema)) body: WithdrawDecisionInput,
+    @CurrentUser() user: AuthUser,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.decisions.withdraw(projectId, decisionId, body, user, idempotencyKey);
   }
 
   /** Withdraw the open change request — same roles that may raise one; the service

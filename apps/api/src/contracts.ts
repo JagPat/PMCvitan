@@ -84,6 +84,12 @@ export type GoogleSignInInput = z.infer<typeof googleSignInSchema>;
 export const approveSchema = z.object({ optionIndex: z.number().int().min(0) });
 export type ApproveInput = z.infer<typeof approveSchema>;
 
+/** Phase 6 task 4a — the withdrawal reason is REQUIRED and non-blank at the contract:
+ *  a withdrawal without one is the silent delete this design refuses (zod's .trim() strips
+ *  the full whitespace class, so a tabs-and-newlines-only reason is a 400 here). */
+export const withdrawDecisionSchema = z.object({ reason: z.string().trim().min(1, 'A withdrawal needs a reason') });
+export type WithdrawDecisionInput = z.infer<typeof withdrawDecisionSchema>;
+
 export const changeSchema = z.object({
   reason: z.string().min(1),
   costImpact: z.number().int(),

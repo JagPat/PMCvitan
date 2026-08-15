@@ -42,6 +42,8 @@ describe('Task 8 — the decisions module implements its shared command/query co
         'decision.drafted',
         'decision.published',
         'decision.reapproved',
+        // Phase 6 task 4a
+        'decision.withdrawn',
       ].sort(),
     );
     // an extracted module reaches no other module's persistence — it depends on nothing
@@ -49,7 +51,7 @@ describe('Task 8 — the decisions module implements its shared command/query co
   });
 
   it('the query service implements every declared query (reachable read surface)', () => {
-    for (const method of ['snapshotSlice', 'projectionSlice', 'existsInProject', 'resolveRefInProject', 'countByNodeIds', 'countPending'] as const) {
+    for (const method of ['snapshotSlice', 'projectionSlice', 'existsInProject', 'linkableInProject', 'resolveRefInProject', 'countByNodeIds', 'countPending'] as const) {
       expect(typeof DecisionsQueryService.prototype[method]).toBe('function');
     }
   });

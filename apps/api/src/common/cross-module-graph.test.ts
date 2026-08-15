@@ -57,7 +57,7 @@ const controllerFiles = ALL_FILES.filter((f) => isSrc(f, '.controller.ts')).sort
 // Prisma model → the domain (boundary unit) that OWNS its table. A write to a
 // model whose owner ≠ the writing service's domain is a cross-module edge.
 const MODEL_OWNER: Record<string, string> = {
-  decision: 'decisions', decisionOption: 'decisions', decisionEvent: 'decisions', changeRequest: 'decisions',
+  decision: 'decisions', decisionOption: 'decisions', decisionOptionTouch: 'decisions', decisionEvent: 'decisions', changeRequest: 'decisions',
   // Task-1 correction round 2 — the immutable approval register, written only by decisions.approve
   decisionApprovalRevision: 'decisions',
   activity: 'activities', gateOverride: 'activities',
@@ -169,7 +169,7 @@ const MODEL_OWNER: Record<string, string> = {
 // mirrors the pre-PR-C `changed`-emission count (one per emitting command); the total is
 // unchanged at 30.
 const SERVICES: Record<string, { domain: string; foreign: Record<string, number>; dispatch: number }> = {
-  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 5 },
+  'decisions/decisions.service.ts': { domain: 'decisions', foreign: {}, dispatch: 6 },
   // edge 1 (closing inspection) → inspection.participant; edge 5 (drawing unlink) → FK SET NULL
   'activities/activities.service.ts': { domain: 'activities', foreign: {}, dispatch: 8 },
   // edge 6 (phase→activity detach) → FK SET NULL (phaseId)
@@ -389,7 +389,7 @@ const CONTROLLER_ROUTES: Record<string, string[]> = {
     "Post('projects/:projectId/drawings/rev/:revId/ack')", "Patch('projects/:projectId/drawings/:drawingId/node')", "Delete('drawings/:id')",
   ],
   'nodes/nodes.controller.ts': ['Post()', "Patch(':nodeId')", "Post(':nodeId/move')", "Post(':nodeId/publish')", "Delete(':nodeId')"],
-  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/change/withdraw')"],
+  'decisions/decisions.controller.ts': ['Post()', "Post(':decisionId/publish')", "Post(':decisionId/approve')", "Post(':decisionId/change')", "Post(':decisionId/withdraw')", "Post(':decisionId/change/withdraw')"],
   'daily-log/daily-log.controller.ts': ["Post('start')", "Post('materials')", "Post('flag-mismatch')", "Post('resolve-mismatch')", "Post('submit')"],
   'orgs/members.controller.ts': ['Post()', "Patch(':userId')", "Delete(':userId')"],
   'orgs/companies.controller.ts': ['Post()', "Patch(':companyId')", "Delete(':companyId')"],
@@ -585,9 +585,9 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
       });
     }
 
-    it('80 external-effect dispatch sites total across the pillar services (77 + Phase-4 Task-5 §E mismatch record/resolve + §I output)', () => {
+    it('81 external-effect dispatch sites total across the pillar services (80 + Phase-6 task-4a decisions.withdraw)', () => {
       const total = Object.keys(SERVICES).reduce((n, f) => n + dispatchCalls(read(f)).length, 0);
-      expect(total).toBe(80);
+      expect(total).toBe(81);
     });
   });
 
@@ -598,12 +598,12 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         expect(routeSignatures(read(file)), `${file} route signatures changed — update §4 of the command inventory`).toEqual(sigs);
       });
     }
-    it('167 mutating routes total (§4 command inventory; +1 Phase-5 Task-6C §H advance)', () => {
+    it('168 mutating routes total (§4 command inventory; +1 Phase-6 task-4a decisions.withdraw)', () => {
       const total = Object.values(CONTROLLER_ROUTES).reduce((s, sigs) => s + sigs.length, 0);
-      expect(total).toBe(167);
+      expect(total).toBe(168);
       // and the source agrees, route-for-route
       const live = Object.keys(CONTROLLER_ROUTES).reduce((s, f) => s + routeSignatures(read(f)).length, 0);
-      expect(live).toBe(167);
+      expect(live).toBe(168);
     });
   });
 
@@ -638,6 +638,38 @@ describe('Phase 2 Task 1 — cross-module call-graph classifier', () => {
         }
         // PR C: the in-request RealtimeGateway is replaced by the single sender in every emitter.
         expect(read(file), `${file} no longer injects ExternalEffectDispatcher`).toContain('ExternalEffectDispatcher');
+      }
+    });
+  });
+
+  describe('Phase 6 task 4a round 3 (Codex P2) — raw Membership SQL is a RATCHET: the owner answers, the legacy list may only shrink', () => {
+    // `Membership` is orgs-owned. A foreign module that needs the membership/standing answer asks
+    // the owner — `OrgsParticipant` (hasProjectRoleStanding, lockActiveMembership) — inside its
+    // own transaction, through a DECLARED workflowParticipants edge. The withdraw attribution
+    // check (round 1, Codex F4) was first spelled as a raw `SELECT … FROM "Membership"` inside
+    // the decisions service: an UNDECLARED synchronous decisions→orgs read edge (round 3 finding).
+    // It is now routed through the owner, and this ratchet keeps the class closed going forward.
+    //
+    // The three LEGACY sites predate the participant (the very precedent the withdraw check
+    // copied) and are pinned here so the list can only SHRINK — routing them through the owner is
+    // tracked maintenance work, and a NEW raw read anywhere else fails this test immediately.
+    const LEGACY_RAW_MEMBERSHIP = [
+      'activities/activities.service.ts', // activities.complete attribution (the copied precedent)
+      'activities/requirements.service.ts', // responsible-member validation (Phase 3 Task 1)
+      'inspections/inspections.service.ts', // assignee validation
+    ];
+    it('no file outside src/orgs/ reads the Membership table with raw SQL (three pinned legacy sites excepted)', () => {
+      const offenders = ALL_FILES
+        .filter((f) => f.endsWith('.ts') && !f.includes('.test.') && !f.includes('.spec.') && !f.startsWith('orgs/'))
+        .filter((f) => read(f).includes('FROM "Membership"'))
+        .sort();
+      expect(offenders).toEqual([...LEGACY_RAW_MEMBERSHIP].sort());
+    });
+    it('the pinned legacy sites still contain the raw read (a routed one leaves the list)', () => {
+      // the inverse pin: when a legacy site is routed through the owner, this fails until the
+      // list shrinks — the ratchet cannot silently go stale.
+      for (const f of LEGACY_RAW_MEMBERSHIP) {
+        expect(read(f), `${f} still carries the pinned legacy raw read`).toContain('FROM "Membership"');
       }
     });
   });

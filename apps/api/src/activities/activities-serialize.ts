@@ -87,6 +87,9 @@ export interface ActivitiesSlices {
  *  time through the owning modules' query contracts (never stored in the base). */
 export interface ActivitiesBakeInputs {
   decisionStatuses: ReadonlyMap<string, string>;
+  /** Phase 6 task 4a round 1 (Codex F5): pmc viewers get the honest withdrawn-decision gate
+   *  reason; every other role gets the non-disclosing wording (same verdict). */
+  withdrawnReasonVisible?: boolean;
   inspections: ReadinessInspection[];
   drawings: ReadinessDrawing[];
   activeMemberIds: string[];
@@ -188,6 +191,7 @@ export function bakeActivities(base: ActivitiesBase, inputs: ActivitiesBakeInput
   const activityDtos: ActivityDto[] = base.activities.map((a) => {
     const readiness = deriveReadiness(a.id, {
       decisionStatus: a.decisionId ? ((decisionStatuses.get(a.decisionId) as DecisionStatus | undefined) ?? null) : null,
+      withdrawnReasonVisible: inputs.withdrawnReasonVisible ?? false,
       gateMaterial: a.gateMaterial as ActivityDto['gm'],
       gateTeam: a.gateTeam as ActivityDto['gt'],
       inspections,

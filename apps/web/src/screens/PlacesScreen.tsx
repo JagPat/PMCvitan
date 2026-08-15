@@ -1,6 +1,7 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
+import { selectVisibleDecisions } from '@/store/selectors';
 import { resolveDrawingUrl } from '@/data/apiGateway';
 import { Eyebrow, DecisionChip, ActivityChip, Swatch, PhotoViewer } from '@/components';
 import { DrawingViewer } from '@/screens/DrawingsScreen';
@@ -27,7 +28,9 @@ export function PlacesScreen() {
   // draft decisions/drawings below) are excluded here. A PMC publishes a draft location from
   // the Decision Log's Locations editor; only then does it appear on the map.
   const nodes = useStore(useShallow((s) => s.nodes.filter((n) => !n.draft)));
-  const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
+  // Phase 6 task 4a round 6 (Codex): the shared audience rule — a withdrawn decision's
+  // title/location never renders to a role the server filters it from
+  const decisions = useStore(useShallow(selectVisibleDecisions));
   // drafts are private WIP — the Site Map shows only published drawings
   const drawings = useStore(useShallow((s) => s.drawings.filter((d) => !d.draft)));
   const photos = useStore(useShallow((s) => s.photos));

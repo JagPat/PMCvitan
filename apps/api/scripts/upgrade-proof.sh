@@ -391,6 +391,117 @@ SQL
 # table would pass while proving nothing. These two are planted on the PRE-Phase-6 schema, where
 # `orgId` and `partyId` do not exist yet, which is exactly the state the backfill exists for.
 # (The vendor side already has legacy subjects: `UPT4-VEN`/`UPT4-PV` are planted pre-Task-4.)
+# ── Phase 6 task 4a round 1 (Codex F2) — the PARTIAL-APPLY quarantine ─────────────────────────
+# A partially-applied fork of the 4a migration (or hand-minted SQL between deploys) can leave the
+# 'withdrawn' enum value — and a row in it — WITHOUT the evidence columns. The migration's
+# diagnostics are UNCONDITIONAL precisely so that state ABORTS the deploy instead of gaining
+# NULL evidence around a row the seals are never asked to judge. Proven here by planting exactly
+# that state, applying the migration EXPECTING the named abort, repairing, and letting the real
+# apply proceed.
+plant_and_prove_t4a_partial_apply() {
+  local d="$1" out
+  echo ""
+  echo "=== Phase 6 4a (F2): planting the PARTIAL-APPLY state (enum value + withdrawn row, NO evidence columns) ==="
+  # the enum value commits on its own (a new value is unusable inside its adding transaction)
+  $PSQL -q -c "ALTER TYPE \"DecisionStatus\" ADD VALUE IF NOT EXISTS 'withdrawn';" || { echo "4a F2 plant (enum) failed"; exit 1; }
+  $PSQL -q <<'SQL' || { echo "4a F2 plant (row) failed"; exit 1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+VALUES ('UP4A-PARTIAL','p1','Hand-minted','Hall','pending','stone',now());
+UPDATE "Decision" SET "status"='withdrawn' WHERE "id"='UP4A-PARTIAL';
+SQL
+  echo "=== Phase 6 4a (F2): the migration must ABORT on the evidence-less withdrawn row ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4a F2: the migration ACCEPTED a withdrawn row with no evidence (the unconditional diagnostic is gone)"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'incomplete withdrawal evidence'; then
+    echo "FAILED  4a F2: the migration aborted, but not by the named diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  echo "ok      4a F2: abort names the evidence-less withdrawn row (UP4A-PARTIAL)"
+  # operator repair per the diagnostic's remedy (re-issue/remove), then the real apply proceeds
+  $PSQL -q -c "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-PARTIAL';" || { echo "4a F2 repair failed"; exit 1; }
+
+  # ── round 2 (Codex F1): the INVERSE state — a NON-withdrawn row carrying withdrawal claims.
+  # A partial fork that already added the columns can leave orphan evidence on a pending row;
+  # the coherence trigger fires only on future writes, so the diagnostic must quarantine it.
+  echo "=== Phase 6 4a (R2-F1): planting ORPHAN withdrawal evidence on a NON-withdrawn row ==="
+  $PSQL -q <<'SQL' || { echo "4a R2-F1 plant failed"; exit 1; }
+ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnAt" TIMESTAMP(3);
+ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnById" TEXT;
+ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawnByName" TEXT;
+ALTER TABLE "Decision" ADD COLUMN IF NOT EXISTS "withdrawReason" TEXT;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt","withdrawReason")
+VALUES ('UP4A-ORPHAN','p1','Orphan claims','Hall','pending','stone',now(),'stray claim from a partial fork');
+SQL
+  echo "=== Phase 6 4a (R2-F1): the migration must ABORT on the orphaned evidence ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4a R2-F1: the migration ACCEPTED a non-withdrawn row carrying withdrawal evidence"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'carry withdrawal evidence'; then
+    echo "FAILED  4a R2-F1: aborted, but not by the orphan-evidence diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  echo "ok      4a R2-F1: abort names the orphaned evidence (UP4A-ORPHAN)"
+  $PSQL -q -c "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-ORPHAN';" || { echo "4a R2-F1 repair failed"; exit 1; }
+
+  # ── round 6 (Codex): a withdrawn row whose approval evidence is the LEGACY class — an EMPTY
+  # DecisionApprovalRevision register but an 'approved' DecisionEvent (the PR-#192 backfill
+  # shape) and/or the approval columns. The register-count diagnostic alone accepts it, the
+  # entry trigger cannot recover the hand-flipped source status, and the seals would install
+  # around an approval-bearing withdrawn decision. The plant passes every OTHER diagnostic
+  # (complete evidence + publishedAt + zero register rows) so the abort proven here is BY the
+  # new legacy-signal diagnostic and nothing else.
+  echo "=== Phase 6 4a (R6-F1): planting a withdrawn row with LEGACY approval signals (empty register + approved event) ==="
+  # the withdrawer holds a REAL membership so the attribution FK passes — without this the FK
+  # ALTER would abort incidentally and mask the acceptance this stage exists to refute
+  $PSQL -q <<'SQL' || { echo "4a R6-F1 plant failed"; exit 1; }
+INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('UP4A-M1','p1','USER-1','pmc','active') ON CONFLICT DO NOTHING;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt","withdrawnAt","withdrawnById","withdrawnByName","withdrawReason")
+VALUES ('UP4A-LEGACYAPPR','p1','Legacy approved, hand-withdrawn','Hall','pending','stone',now(),now(),'USER-1','Legacy PMC','hand-flipped in a partial fork');
+UPDATE "Decision" SET "status"='withdrawn' WHERE "id"='UP4A-LEGACYAPPR';
+INSERT INTO "DecisionEvent" ("id","decisionId","type","actor")
+VALUES ('UP4A-LEGACYAPPR-EV','UP4A-LEGACYAPPR','approved','Legacy Client');
+SQL
+  echo "=== Phase 6 4a (R6-F1): the migration must ABORT on the legacy approval signal ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4a R6-F1: the migration ACCEPTED a withdrawn row carrying legacy approval signals (empty register, approved event)"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'LEGACY approval signals'; then
+    echo "FAILED  4a R6-F1: aborted, but not by the legacy-signal diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  echo "ok      4a R6-F1: abort names the legacy approval signals (UP4A-LEGACYAPPR)"
+  $PSQL -q -c "DELETE FROM \"DecisionEvent\" WHERE \"id\"='UP4A-LEGACYAPPR-EV'; DELETE FROM \"Decision\" WHERE \"id\"='UP4A-LEGACYAPPR';" || { echo "4a R6-F1 repair failed"; exit 1; }
+
+  # ── round 9 (Codex): a withdrawn row attributed to a NON-ACTIVE membership. The FK the
+  # migration installs proves the membership ROW exists; the command requires it ACTIVE at
+  # withdrawal time. A partial fork can hand-mint the false permanent attribution, so the
+  # diagnostic quarantines it — the plant passes every OTHER diagnostic (full evidence,
+  # publishedAt, no approval signals) so the abort proven here is BY the standing diagnostic.
+  echo "=== Phase 6 4a (R9-F2): planting a withdrawn row attributed to a REMOVED membership ==="
+  $PSQL -q <<'SQL' || { echo "4a R9-F2 plant failed"; exit 1; }
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES ('UP4A-M2','p1','USER-2','pmc','removed') ON CONFLICT DO NOTHING;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt","withdrawnAt","withdrawnById","withdrawnByName","withdrawReason")
+VALUES ('UP4A-NONACT','p1','Ghost authority','Hall','pending','stone',now(),now(),'USER-2','Removed member','attributed to a removed membership');
+UPDATE "Decision" SET "status"='withdrawn' WHERE "id"='UP4A-NONACT';
+SQL
+  echo "=== Phase 6 4a (R9-F2): the migration must ABORT on the non-active attribution ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4a R9-F2: the migration ACCEPTED a withdrawn row attributed to a removed membership"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'NON-ACTIVE membership'; then
+    echo "FAILED  4a R9-F2: aborted, but not by the standing diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  echo "ok      4a R9-F2: abort names the non-active attribution (UP4A-NONACT)"
+  $PSQL -q -c "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-NONACT';" || { echo "4a R9-F2 repair failed"; exit 1; }
+}
+
 plant_pre_phase6_firms() {
   echo ""
   echo "=== planting PRE-Phase-6 directory rows (the §A party backfill subjects) ==="
@@ -426,6 +537,8 @@ for d in "${phase3_r2_dirs[@]}"; do
     20270420000000_*) plant_pre_t4_chains ;;
     # ── Phase 6 unit 6.1a STOP — the §A party BACKFILL needs directory rows to back-fill ──────
     20270801000000_*) plant_pre_phase6_firms ;;
+    # ── Phase 6 task 4a STOP — the F2 partial-apply state must ABORT, then repair + real apply ─
+    20270810000000_*) plant_and_prove_t4a_partial_apply "$d" ;;
   esac
   apply_one "$d"
 done
@@ -3181,6 +3294,253 @@ SQL
 assert "6.1a F1: the company and its source are gone, the association survives on the binding" \
   "SELECT (SELECT COUNT(*)::text FROM \"ProjectPartyCompanySource\" WHERE \"projectCompanyId\" = 'UP6-BOTHC') || '|' || (SELECT COUNT(*)::text FROM \"ProjectParty\" WHERE \"id\" = 'UP6-BOTH');" \
   "0|1"
+
+
+# ---- Phase 6 task 4a: decisions.withdraw — enum + evidence + the three seals + the subject backfill ----
+echo ""
+echo "=== Phase 6 task 4a: the withdraw seals over the migrated legacy DB ==="
+
+assert "4a: legacy DB upgrades ROW-FREE (no withdrawn rows) with the four Decision seals (incl. the round-3 delete arm), the reverse-arm trigger, and the attribution FK installed" \
+  "SELECT (SELECT COUNT(*) FROM \"Decision\" WHERE \"status\"::text='withdrawn')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Decision_t4a_a_terminal','Decision_t4a_b_entry','Decision_t4a_c_coherent','Decision_t4a_d_no_delete','DecisionApprovalRevision_no_withdrawn'))::text || '|' || (SELECT COUNT(*) FROM pg_constraint WHERE conname='Decision_projectId_withdrawnById_fkey')::text || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='Notification' AND column_name='decisionId')::text || '|' || (SELECT COUNT(*) FROM information_schema.columns WHERE table_name='OutboxDelivery' AND column_name IN ('subject','cancelledAt'))::text;" \
+  "0|5|1|1|2"
+
+# the attribution FK target (idempotent), and two published pending decisions minted for the probes
+$PSQL -q >/dev/null <<'SQL'
+INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('UP4A-M1','p1','USER-1','pmc','active') ON CONFLICT DO NOTHING;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+VALUES ('UP4A-D1','p1','Withdrawable','Hall','pending','stone',now()),
+       ('UP4A-D2','p1','Still pending','Hall','pending','stone',now());
+SQL
+
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='Legacy PMC', \"withdrawReason\"='asked in error' WHERE \"id\"='UP4A-D1';" >/dev/null \
+  || { echo "FAILED  4a: the COHERENT withdrawal was refused — the seals are blanket, not precise"; FAIL=1; }
+assert "4a: a COHERENT withdrawal of a published pending decision by a REAL member is ACCEPTED — the seals are precise, not blanket" \
+  "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4A-D1';" \
+  "withdrawn"
+
+assert_rejects "4a seal 1: any transition OUT of withdrawn (terminal)" \
+  "UPDATE \"Decision\" SET \"status\"='pending' WHERE \"id\"='UP4A-D1'" "terminal"
+assert_rejects "4a seal 1: rewriting the frozen evidence on a withdrawn row" \
+  "UPDATE \"Decision\" SET \"withdrawReason\"='rewritten' WHERE \"id\"='UP4A-D1'" "write-once"
+assert_rejects "4a seal 1 delete arm (round 3): DELETING the withdrawn register entry — BEFORE DELETE fires before FK evaluation, so the refusal never depends on surviving children" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-D1'" "permanent register entry"
+assert_rejects "4a seal 1 (round 4): MOVING the withdrawn register entry to another project — projectId joins the write-once set, so the record cannot vanish from its project's register" \
+  "UPDATE \"Decision\" SET \"projectId\"='p2' WHERE \"id\"='UP4A-D1'" "projectId is frozen"
+assert_rejects "4a seal 3 (round 7): ONE statement withdrawing AND moving the decision — the entry transition carries the projectId freeze too" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='moved on entry', \"projectId\"='p2' WHERE \"id\"='UP4A-D2'" "projectId is frozen on entry"
+assert_rejects "4a seal 2 (round 7): ONE statement withdrawing AND adding approval evidence — coherence refuses approval signals on every withdrawn write" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='forged approval alongside', \"approvedById\"='USER-1', \"approver\"='Forged', \"approvedOption\"='A' WHERE \"id\"='UP4A-D2'" "cannot carry approval evidence"
+assert_rejects "4a seal 2: an UNATTRIBUTED withdrawal (no evidence at all)" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn' WHERE \"id\"='UP4A-D2'" "must carry"
+assert_rejects "4a seal 2: a tabs-and-newlines-only reason (the full-whitespace btrim class)" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"=E'\t\n \x0B' WHERE \"id\"='UP4A-D2'" "non-blank"
+assert_rejects "4a seal 2: a FORGED withdrawer naming no member of the project — the round-9 ACTIVE-standing seal answers first; the FK remains the structural backstop" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='GHOST', \"withdrawnByName\"='Ghost', \"withdrawReason\"='forged' WHERE \"id\"='UP4A-D2'" "ACTIVE pmc member"
+assert_rejects "4a seal 2: withdrawal evidence on a NON-withdrawn row (the inverse arm)" \
+  "UPDATE \"Decision\" SET \"withdrawReason\"='orphan' WHERE \"id\"='UP4A-D2'" "only on a withdrawn"
+assert_rejects "4a seal 3 forward: the LEGACY approved-with-EMPTY-register class (DL-2, the PR-#192 backfill shape) — source state, not register emptiness, is the guard" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hide it' WHERE \"id\"='DL-2'" "only a published pending"
+assert_rejects "4a seal 3 forward: a decision cannot be BORN withdrawn" \
+  "INSERT INTO \"Decision\" (\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"withdrawnAt\",\"withdrawnById\",\"withdrawnByName\",\"withdrawReason\") VALUES ('UP4A-D9','p1','Born','Hall','withdrawn','stone',now(),'USER-1','X','r')" "created withdrawn"
+assert_rejects "4a seal 3 reverse: an approval revision recorded against the withdrawn decision" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"version\",\"optionKey\",\"approvedAt\",\"approvedById\") VALUES('UP4A-R1','p1','UP4A-D1',1,'a',now(),'USER-1')" "withdrawn"
+# ── round 9 (Codex): identity freeze, active attribution, legacy approval events ──
+assert_rejects "4a seal 1 (round 9): retitling the WITHDRAWN question — the frozen actor/reason must never attach to a different register entry" \
+  "UPDATE \"Decision\" SET \"title\"='Rewritten question' WHERE \"id\"='UP4A-D1'" "identity is frozen"
+assert_rejects "4a seal 3 (round 9): ONE statement withdrawing AND rewriting the question — the entry transition freezes the identity too" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='retitled on entry', \"title\"='Different question' WHERE \"id\"='UP4A-D2'" "identity is frozen"
+# a membership ROW that is not ACTIVE — existence is not standing
+$PSQL -q -c "INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4A-M2','p1','USER-2','pmc','removed') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-9 membership plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 (round 9): attributing a withdrawal to a REMOVED membership — the FK proves the row, the seal requires the standing" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-2', \"withdrawnByName\"='Removed member', \"withdrawReason\"='ghost authority' WHERE \"id\"='UP4A-D2'" "ACTIVE pmc member"
+# the PR-#192 legacy class: an approval whose ONLY trace is a DecisionEvent (empty register)
+$PSQL -q -c "INSERT INTO \"DecisionEvent\"(\"id\",\"decisionId\",\"type\",\"actor\") VALUES ('UP4A-LEV','UP4A-D2','approved','Legacy Client') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-9 legacy-event plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 (round 9): withdrawing a decision carrying a LEGACY approval EVENT — the entry seal counts DecisionEvents exactly as it counts the register" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hostile over legacy approval' WHERE \"id\"='UP4A-D2'" "legacy approval event"
+assert_rejects "4a seal 3 reverse (round 9): a legacy approval EVENT recorded against the withdrawn decision — the reverse seal covers DecisionEvent like the register" \
+  "INSERT INTO \"DecisionEvent\"(\"id\",\"decisionId\",\"type\",\"actor\") VALUES ('UP4A-EV-HOSTILE','UP4A-D1','approved','Hostile')" "approval event can no longer be recorded"
+
+# round 8 (Codex, REFUTED WITH EVIDENCE): the described re-point — mint a revision against a
+# non-withdrawn dummy, then UPDATE its identity onto the withdrawn decision so the INSERT-time
+# reverse arm never runs — fails one seal earlier: the Phase-3 append-only register refuses
+# EVERY UPDATE unconditionally (DecisionApprovalRevision_append_only, 20261212000000). Placed
+# LAST in the battery: the revision this plants on UP4A-D2 makes the register-count arm answer
+# first for any later withdraw attempt on that row, so the earlier per-seal messages stay exact.
+# (the register's own composite FK also demands a REAL option of the named decision — a second
+#  pre-existing seal the re-point would have to defeat)
+$PSQL -q <<'SQL' || { echo "4a round-8 refutation plant failed"; FAIL=1; }
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-O1','UP4A-D2','A','a','Granite',0,'stone') ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+VALUES ('UP4A-R8','p1','UP4A-D2',1,'a',now(),'USER-1') ON CONFLICT DO NOTHING;
+SQL
+assert_rejects "4a reverse register (round 8, refuting the re-point): UPDATEing an approval revision's identity onto the withdrawn decision — the Phase-3 append-only seal refuses before the reverse arm is consulted" \
+  "UPDATE \"DecisionApprovalRevision\" SET \"decisionId\"='UP4A-D1' WHERE \"id\"='UP4A-R8'" "append-only"
+
+# ── round 10 (Codex): DecisionEvent carries NO append-only seal (unlike the register), so the
+# reverse arm itself must cover UPDATE — the same re-point attack round 8 refuted for the
+# register is REAL for events. UP4A-LEV (planted round 9, type 'approved', on the LIVE UP4A-D2)
+# is the ready-made hostile vehicle.
+assert_rejects "4a seal 3 reverse (round 10): RE-POINTING an existing approval event onto the withdrawn decision — the reverse seal covers UPDATE, since DecisionEvent has no append-only trigger" \
+  "UPDATE \"DecisionEvent\" SET \"decisionId\"='UP4A-D1' WHERE \"id\"='UP4A-LEV'" "approval event can no longer be recorded"
+$PSQL -q -c "INSERT INTO \"DecisionEvent\"(\"id\",\"decisionId\",\"type\",\"actor\") VALUES ('UP4A-EV-BENIGN','UP4A-D2','published','Benign') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-10 benign-event plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 reverse (round 10): flipping a benign event's TYPE into approval evidence while re-pointing it at the withdrawn decision" \
+  "UPDATE \"DecisionEvent\" SET \"decisionId\"='UP4A-D1', \"type\"='approved' WHERE \"id\"='UP4A-EV-BENIGN'" "approval event can no longer be recorded"
+$PSQL -q -c "UPDATE \"DecisionEvent\" SET \"actor\"='Still benign' WHERE \"id\"='UP4A-EV-BENIGN';" >/dev/null || { echo "FAILED  4a round-10 precision: the benign event UPDATE on a live decision was rejected"; FAIL=1; }
+assert "4a seal 3 reverse (round 10, precision): a benign UPDATE on a live decision's event still passes — the seal blocks approval evidence on withdrawn rows, nothing else" \
+  "SELECT count(*) FROM \"DecisionEvent\" WHERE \"id\"='UP4A-EV-BENIGN' AND \"actor\"='Still benign'" "1"
+
+# ── round 11 (Codex): the frozen question includes its CHOICES — DecisionOption is sealed ──
+# UP4A-D1 was withdrawn without options, so the probe plants one THROUGH the sanctioned
+# named-trigger bypass (the destructive-reset contract) purely as the mutation target.
+$PSQL -q <<'SQL' || { echo "4a round-11 option plant failed"; FAIL=1; }
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen";
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-OW','UP4A-D1','A','a','Granite',0,'stone') ON CONFLICT DO NOTHING;
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen";
+SQL
+assert_rejects "4a seal 5 (round 11): rewriting a withdrawn decision's option — the choices ARE the frozen question" \
+  "UPDATE \"DecisionOption\" SET \"material\"='Swapped' WHERE \"id\"='UP4A-OW'" "frozen question"
+assert_rejects "4a seal 5 (round 11): deleting a withdrawn decision's option" \
+  "DELETE FROM \"DecisionOption\" WHERE \"id\"='UP4A-OW'" "frozen question"
+assert_rejects "4a seal 5 (round 11): adding a NEW option to a withdrawn decision" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-ONEW','UP4A-D1','B','b','Quartz',5,'sw2')" "frozen question"
+$PSQL -q -c "UPDATE \"DecisionOption\" SET \"material\"='Refined granite' WHERE \"id\"='UP4A-O1';" >/dev/null || { echo "FAILED  4a round-11 precision: the benign option UPDATE on a live decision was rejected"; FAIL=1; }
+# round 12 (Codex): the freeze now starts at PUBLICATION — the benign counter-example moves to
+# a DRAFT decision's option (a published pending option is no longer mutable, asserted below).
+$PSQL -q <<'SQL' || { echo "4a round-12 draft plant failed"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
+VALUES ('UP4A-D5','p1','Draft under edit','Kitchen','pending','sw1') ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-OD','UP4A-D5','A','a','Granite',0,'stone') ON CONFLICT DO NOTHING;
+SQL
+$PSQL -q -c "UPDATE \"DecisionOption\" SET \"material\"='Refined granite' WHERE \"id\"='UP4A-OD';" >/dev/null || { echo "FAILED  4a round-12 precision: the DRAFT option UPDATE was rejected"; FAIL=1; }
+assert "4a seal 5 (rounds 11-12, precision): a DRAFT decision's options stay mutable — the freeze starts at publication, nothing earlier" \
+  "SELECT count(*) FROM \"DecisionOption\" WHERE \"id\"='UP4A-OD' AND \"material\"='Refined granite'" "1"
+
+# ── round 12 (Codex): id freeze, published-option freeze, evidence durability, pmc standing,
+# the same-transaction option attack ──
+assert_rejects "4a seal 1 (round 12): RE-KEYING the withdrawn register entry — every child FK is ON UPDATE CASCADE, so the id joins the frozen identity" \
+  "UPDATE \"Decision\" SET \"id\"='UP4A-REKEYED' WHERE \"id\"='UP4A-D1'" "identity is frozen"
+assert_rejects "4a seal 3 (round 12): ONE transaction rewriting an option and withdrawing — the touch note refuses the withdrawal (UPDATE verb)" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Swapped in-flight' WHERE \"id\"='UP4A-O1'; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='swapped question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+# (UP4A-O1 carries the round-8 revision's composite FK, which would answer before the touch
+#  note — the DELETE probe gets its own unreferenced option)
+$PSQL -q -c "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-O2','UP4A-D2','Z','z','Slate',3,'sw4') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-12 option plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 (round 12): ONE transaction deleting an option and withdrawing — the touch note sees DELETE too (xmin never could)" \
+  "BEGIN; DELETE FROM \"DecisionOption\" WHERE \"id\"='UP4A-O2'; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='thinned question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+assert_rejects "4a seal 3 (round 12): ONE transaction padding the options and withdrawing — the entry seal refuses options written in the withdrawing transaction" \
+  "BEGIN; INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UP4A-OTX','UP4A-D2','X','x','Padded',9,'sw9'); UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='padded question' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+assert_rejects "4a seal 3 reverse (round 12): DELETING an approval event — evidence the entry seal counts cannot be erased" \
+  "DELETE FROM \"DecisionEvent\" WHERE \"id\"='UP4A-LEV'" "approval evidence"
+assert_rejects "4a seal 3 reverse (round 12): DOWNGRADING an approval event's type — laundering by rewrite is refused like erasure" \
+  "UPDATE \"DecisionEvent\" SET \"type\"='note' WHERE \"id\"='UP4A-LEV'" "downgraded"
+$PSQL -q -c "INSERT INTO \"User\"(\"id\",\"projectId\",\"role\",\"name\",\"email\") VALUES ('USER-3','p1','contractor','Active Contractor','u3@up4a.local') ON CONFLICT DO NOTHING; INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UP4A-M3','p1','USER-3','contractor','active') ON CONFLICT DO NOTHING;" >/dev/null || { echo "4a round-12 contractor plant failed"; FAIL=1; }
+assert_rejects "4a seal 3 (round 12): attributing a withdrawal to an ACTIVE membership WITHOUT pmc standing — active is not authority" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-3', \"withdrawnByName\"='Active Contractor', \"withdrawReason\"='no authority' WHERE \"id\"='UP4A-D2'" "ACTIVE pmc member"
+
+# ── round 13 (Codex): unerasable touch evidence + frozen approval-event identity ───────────
+# The round-12 note lived in pg_temp, which the writing session could DROP with no privilege
+# on the app schema at all. The note now lives in the real "DecisionOptionTouch" table: the
+# old drop is a no-op against the seal, and erasing or rewriting the real note inside the
+# writing transaction is itself refused — blinding the seal now takes DISABLE TRIGGER, the
+# same ownership privilege as every sanctioned bypass.
+assert_rejects "4a seal 3 (round 13): the pg_temp drop bypass is dead — edit an option, drop the defunct temp note, withdraw: still refused" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap' WHERE \"id\"='UP4A-O1'; DROP TABLE IF EXISTS pg_temp.\"_t4a_options_touched\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden swap' WHERE \"id\"='UP4A-D2'; COMMIT" "withdrawing transaction"
+assert_rejects "4a seal 3 (round 13): erasing the REAL touch note in the transaction that wrote it" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap 2' WHERE \"id\"='UP4A-O1'; DELETE FROM \"DecisionOptionTouch\" WHERE \"decisionId\"='UP4A-D2'; COMMIT" "cannot be erased"
+assert_rejects "4a seal 3 (round 13): rewriting a touch note — evidence rows never update" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden swap 3' WHERE \"id\"='UP4A-O1'; UPDATE \"DecisionOptionTouch\" SET \"txid\"=0 WHERE \"decisionId\"='UP4A-D2'; COMMIT" "cannot be updated"
+assert_rejects "4a seal 3 reverse (round 13): RE-POINTING an approval event AWAY from its decision (onto a LIVE target) — laundering by relocation is refused like erasure" \
+  "UPDATE \"DecisionEvent\" SET \"decisionId\"='UP4A-D3' WHERE \"id\"='UP4A-LEV'" "re-pointed away"
+
+# ── round 15 (Codex): the publication fact on entry + TRUNCATE-proof evidence ──────────────
+assert_rejects "4a seal 3 (round 15): the withdrawing statement rewriting publishedAt — the publication fact joins the entry freeze" \
+  "UPDATE \"Decision\" SET \"status\"='withdrawn', \"publishedAt\"=now() - interval '400 days', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='forged issue time' WHERE \"id\"='UP4A-D2'" "publishedAt is frozen on entry"
+assert_rejects "4a seal 3 reverse (round 15): TRUNCATE of DecisionEvent while approval evidence exists — wholesale erasure is refused like the row-wise DELETE" \
+  "TRUNCATE \"DecisionEvent\"" "approval evidence"
+assert_rejects "4a seal 3 (round 15): one transaction editing an option, TRUNCATING its own touch notes and withdrawing — the truncate refuses first" \
+  "BEGIN; UPDATE \"DecisionOption\" SET \"material\"='Hidden by truncate' WHERE \"id\"='UP4A-O1'; TRUNCATE \"DecisionOptionTouch\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden by truncate' WHERE \"id\"='UP4A-D2'; COMMIT" "cannot be truncated"
+
+# the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
+# down) must be backfilled from its own event's entityId when the migration runs — proven by
+# planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN
+# (this re-run also proves the diagnostics accept a database whose withdrawn rows are coherent).
+$PSQL -q >/dev/null <<'SQL'
+INSERT INTO "OutboxConsumerCatalog"("consumer","consumerKind","consumerEffect","catalogVersion","active","updatedAt")
+VALUES ('webpush.notify','unordered','external',1,true,now()) ON CONFLICT DO NOTHING;
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV1','decision.published',p."orgId",p."id",900001,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV2','decision.published',p."orgId",p."id",900002,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV3','decision.published',p."orgId",p."id",900003,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV4','decision.published',p."orgId",p."id",900004,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+-- round 5 (Codex): recovery-gap events with NO delivery row at all — one about the withdrawn
+-- UP4A-D1 (the migration must write the same cancelled tombstone the runtime cancellation
+-- writes, or the next recovery pass materializes it PENDING and nothing ever cancels it) and
+-- one about the LIVE UP4A-D2 (which must get NO tombstone — recovery legitimately owes it a
+-- pending delivery).
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV5','decision.published',p."orgId",p."id",900005,'USER-1','human','Decision','UP4A-D1' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "DomainEvent"("eventId","eventType","organizationId","projectId","streamPosition","actorId","actorKind","entityType","entityId")
+SELECT 'UP4A-EV6','decision.published',p."orgId",p."id",900006,'USER-1','human','Decision','UP4A-D2' FROM "Project" p WHERE p."id"='p1';
+INSERT INTO "OutboxDelivery"("id","eventId","projectId","consumer","consumerKind","streamPosition","deliveryAction","status","payload","updatedAt")
+VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatch','pending','{"body":"stale announcement"}',now()),
+       -- round 2 (Codex F4): a push that EXHAUSTED its retries before the deploy — the subject
+       -- must reach it too, or an operator redrive would slip past the cancellation mark
+       ('UP4A-DEL2','UP4A-EV2','p1','webpush.notify','unordered',900002,'dispatch','dead','{"body":"stale announcement (dead)"}',now()),
+       -- round 4 (Codex): queued pushes about UP4A-D1 — a decision ALREADY withdrawn when the
+       -- migration runs (the accepted partial/manual-apply shape). No future decisions.withdraw
+       -- command will ever run for it, so the MIGRATION must perform the cancellation itself.
+       ('UP4A-DEL3','UP4A-EV3','p1','webpush.notify','unordered',900003,'dispatch','pending','{"body":"stale announcement (pre-withdrawn)"}',now()),
+       ('UP4A-DEL4','UP4A-EV4','p1','webpush.notify','unordered',900004,'dispatch','dead','{"body":"stale announcement (pre-withdrawn, dead)"}',now());
+-- round 8 (Codex): the pre-withdrawn decision's OTHER stale surfaces. A second withdrawn
+-- decision with a UNIQUE title (UP4A-D4) carries an unambiguous legacy notice the migration
+-- must retire; UP4A-D3 stays PENDING sharing UP4A-D1's title, so D1's legacy notice is
+-- AMBIGUOUS and must survive (the command's multiplicity guard, mirrored). The stamped notice
+-- on D1 retires by identity. And a servable decisions.inbox generation that still claims the
+-- withdrawn row is pending must be RETIRED so reads fall back to canonical truth.
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+VALUES ('UP4A-D3','p1','Withdrawable','Hall','pending','stone',now()),
+       ('UP4A-D4','p1','Uniquely withdrawn','Hall','pending','stone',now())
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"='USER-1', "withdrawnByName"='Legacy PMC', "withdrawReason"='pre-existing withdrawal' WHERE "id"='UP4A-D4' AND "status"::text='pending';
+INSERT INTO "Notification"("id","projectId","text","color","time","decisionId")
+VALUES ('UP4A-N1','p1','Decision awaiting approval: Withdrawable','#C08A2D','2d ago','UP4A-D1'),
+       ('UP4A-N2','p1','Decision awaiting approval: Uniquely withdrawn','#C08A2D','2d ago',NULL),
+       ('UP4A-N3','p1','Decision awaiting approval: Withdrawable','#C08A2D','2d ago',NULL),
+       -- round 14 (Codex): the WITHDRAWAL notice the runtime command writes carries the SAME
+       -- decisionId stamp — a re-run must retire pending bells only, never this record
+       ('UP4A-N4','p1','Decision withdrawn: Uniquely withdrawn — pre-existing withdrawal','#6B665C','2d ago','UP4A-D4')
+ON CONFLICT DO NOTHING;
+INSERT INTO "ProjectionGeneration"("id","consumer","projectId","generation","status","appliedPosition","cursorStatus","updatedAt")
+VALUES ('UP4A-GEN1','decisions.inbox','p1',999,'active',900010,'live',now())
+ON CONFLICT DO NOTHING;
+SQL
+$PSQL -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null || { echo "FAILED  4a migration re-run (rerunnable-by-design) did not apply"; FAIL=1; }
+assert "4a: the subject backfill reached the pre-4a undelivered decision.published push rows — pending AND dead (copied from each event's entityId, never invented)" \
+  "SELECT string_agg(\"id\" || '=' || COALESCE(\"subject\",'<null>'), ',' ORDER BY \"id\") FROM \"OutboxDelivery\" WHERE \"id\" IN ('UP4A-DEL1','UP4A-DEL2');" \
+  "UP4A-DEL1=UP4A-D2,UP4A-DEL2=UP4A-D2"
+assert "4a round 4: the migration CANCELS the queued pushes of an ALREADY-withdrawn decision — pending neutralized in place (payload preserved), dead marked for the pre-send re-check" \
+  "SELECT string_agg(\"id\" || '=' || \"status\" || '/' || \"deliveryAction\" || '/' || (\"cancelledAt\" IS NOT NULL)::text || '/' || COALESCE(\"subject\",'<null>'), ',' ORDER BY \"id\") FROM \"OutboxDelivery\" WHERE \"id\" IN ('UP4A-DEL3','UP4A-DEL4');" \
+  "UP4A-DEL3=succeeded/noop/true/UP4A-D1,UP4A-DEL4=dead/dispatch/true/UP4A-D1"
+assert "4a round 4 precision: the LIVE decision's queued pushes are NOT cancelled by the migration — only already-withdrawn subjects are" \
+  "SELECT string_agg(\"id\" || '=' || \"status\" || '/' || (\"cancelledAt\" IS NULL)::text, ',' ORDER BY \"id\") FROM \"OutboxDelivery\" WHERE \"id\" IN ('UP4A-DEL1','UP4A-DEL2');" \
+  "UP4A-DEL1=pending/true,UP4A-DEL2=dead/true"
+assert "4a round 5: the migration writes the recovery-gap TOMBSTONE for a pre-withdrawn decision's event with NO delivery row — the next recovery pass finds it present and resurrects nothing" \
+  "SELECT \"status\" || '/' || \"deliveryAction\" || '/' || (\"cancelledAt\" IS NOT NULL)::text || '/' || COALESCE(\"subject\",'<null>') FROM \"OutboxDelivery\" WHERE \"eventId\"='UP4A-EV5' AND \"consumer\"='webpush.notify';" \
+  "succeeded/noop/true/UP4A-D1"
+assert "4a round 5 precision: the LIVE decision's recovery-gap event gets NO tombstone — recovery legitimately owes it a pending delivery" \
+  "SELECT COUNT(*)::text FROM \"OutboxDelivery\" WHERE \"eventId\"='UP4A-EV6' AND \"consumer\"='webpush.notify';" \
+  "0"
+assert "4a round 8 (R8-F3) + round 14 (R14-F1): the migration retires the pre-withdrawn decisions' notices — the stamped PENDING row by identity+shape, the UNAMBIGUOUS legacy row by text; the AMBIGUOUS legacy row SURVIVES per the multiplicity guard, and the stamped WITHDRAWAL notice SURVIVES every re-run" \
+  "SELECT string_agg(\"id\", ',' ORDER BY \"id\") FROM \"Notification\" WHERE \"id\" IN ('UP4A-N1','UP4A-N2','UP4A-N3','UP4A-N4');" \
+  "UP4A-N3,UP4A-N4"
+assert "4a round 8 (R8-F2): the servable decisions.inbox generation claiming the pre-withdrawn row is pending is RETIRED — reads fall back to canonical truth until the next delivery/rebuild" \
+  "SELECT \"status\" FROM \"ProjectionGeneration\" WHERE \"id\"='UP4A-GEN1';" \
+  "retired"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

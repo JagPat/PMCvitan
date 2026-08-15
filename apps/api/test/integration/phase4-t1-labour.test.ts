@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { LabourService } from '../../src/labour/labour.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
@@ -53,11 +53,13 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
   });
   afterEach(async () => {
     await t.prisma.$executeRawUnsafe(TRUNCATE);
+    // approval DecisionEvents are undeletable evidence (round 12) — the sanctioned
+    // destructive-reset helper wipes them with the named seal disabled
+    await wipeDecisionEvents(t.prisma, { decision: { projectId: { startsWith: 'it-p4-' } } });
     for (const [model, where] of [
       ['auditLog', { projectId: { startsWith: 'it-p4-' } }],
       ['activity', { projectId: { startsWith: 'it-p4-' } }],
       ['membership', { projectId: { startsWith: 'it-p4-' } }],
-      ['decisionEvent', { decision: { projectId: { startsWith: 'it-p4-' } } }],
       ['decisionOption', { decision: { projectId: { startsWith: 'it-p4-' } } }],
       ['decision', { projectId: { startsWith: 'it-p4-' } }],
       ['project', { id: { startsWith: 'it-p4-' } }],

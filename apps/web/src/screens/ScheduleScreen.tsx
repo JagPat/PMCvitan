@@ -1,7 +1,7 @@
 import { useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
-import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase } from '@/store/selectors';
+import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activitiesInPhase, selectVisibleDecisions } from '@/store/selectors';
 import { Eyebrow, GateDot, ActivityChip, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
@@ -406,7 +406,9 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
   const deleteActivity = useStore((s) => s.deleteActivity);
   const phases = useStore(useShallow((s) => s.phases));
   // only a published decision can be linked to an activity — never an unpublished draft
-  const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
+  // …and a WITHDRAWN decision is terminal: no new work links to it (re-issue instead), so the
+  // picker excludes it for EVERY role on top of the shared audience rule (4a round 6, Codex)
+  const decisions = useStore(useShallow((s) => selectVisibleDecisions(s).filter((d) => d.status !== 'withdrawn')));
   const [name, setName] = useState(activity?.name ?? '');
   const [zone, setZone] = useState(activity?.zone ?? '');
   const [ps, setPs] = useState(String(activity?.ps ?? 0));

@@ -45,6 +45,9 @@ export const EXTERNAL_EFFECTS = {
   'decision.reapproved': { eventType: 'decision.reapproved', invalidate: true, push: ['pmc', 'contractor', 'engineer'] },
   'decision.change_requested': { eventType: 'decision.change_requested', invalidate: true, push: null },
   'decision.change_withdrawn': { eventType: 'decision.change_withdrawn', invalidate: true, push: null },
+  // Phase 6 task 4a — surfaces refresh; no push (`change_requested`/`change_withdrawn` set the
+  // precedent for lifecycle corrections, and the pmc who acted needs no announcement).
+  'decision.withdrawn': { eventType: 'decision.withdrawn', invalidate: true, push: null },
   // ── activities ─────────────────────────────────────────────────────────────────────────────
   'activity.created': { eventType: 'activity.created', invalidate: true, push: ['engineer', 'contractor'] },
   'activity.updated': { eventType: 'activity.updated', invalidate: true, push: null },

@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import request from 'supertest';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
 import { RealtimeGateway } from '../../src/realtime/realtime.gateway';
 import { PushService } from '../../src/push/push.service';
 import { pendingDecisionNotice } from '../../src/domain/notifications';
@@ -113,7 +113,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     await t.prisma.dailyLog.deleteMany({ where: { projectId: pid } });
     await t.prisma.gateOverride.deleteMany({ where: { projectId: pid } });
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "DecisionApprovalRevision" CASCADE');
-    await t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: pid } } });
+    await wipeDecisionEvents(t.prisma, { decision: { projectId: pid } });
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: pid } } });
     await t.prisma.activity.deleteMany({ where: { projectId: pid } });

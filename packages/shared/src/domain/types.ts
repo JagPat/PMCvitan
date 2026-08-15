@@ -100,14 +100,16 @@ export type ScreenKey =
 
 export type Lang = 'en' | 'hi' | 'gu';
 
-export type DecisionStatus = 'pending' | 'approved' | 'change';
+/** `withdrawn` = a published, never-approved decision the PMC took back (Phase 6 task 4a)
+ *  — TERMINAL, pmc-only visible, and every reader keyed by this type must answer for it. */
+export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn';
 /** `awaiting-signoff` = a completion CLAIM parked until the PMC approves the
  *  linked closing inspection (Phase 1 Task 5) — counted as NOT done everywhere. */
 export type ActivityStatus = 'not-started' | 'in-progress' | 'awaiting-signoff' | 'done' | 'blocked';
 export type Gate = 'ok' | 'wait' | 'fail' | 'na';
 export type ItemState = 'pass' | 'fail' | 'na' | null;
 export type InspectionResult = 'PASS' | 'FAIL';
-export type ModalType = 'approve' | 'change' | 'qr' | null;
+export type ModalType = 'approve' | 'change' | 'withdraw' | 'qr' | null;
 export type AccessStep = 'who' | 'trade' | 'phone' | 'otp' | 'login' | 'password-email' | 'password-code' | 'password-create' | 'emailentry' | 'emailcode' | 'badge' | 'jobcard' | 'tradehome';
 export type AccessWho = 'team' | 'trade' | 'worker' | null;
 
@@ -156,6 +158,12 @@ export interface Decision {
   onBehalfOf?: string;
   /** the OPEN change request while status='change' — why the lock is being revisited (Phase 1 Task 2) */
   changeRequest?: { reason: string; costImpact: number; timeImpactDays: number; requestedById?: string };
+  /** withdrawal evidence while status='withdrawn' (Phase 6 task 4a) — pmc audience only:
+   *  the server never serializes a withdrawn decision to any other role. */
+  withdrawnAt?: string;
+  /** the withdrawer's display identity, frozen at withdraw time (the `approver` precedent) */
+  withdrawnBy?: string;
+  withdrawReason?: string;
 }
 
 export interface Activity {
@@ -547,4 +555,6 @@ export interface ModalState {
   changeText?: string;
   changeCost?: string;
   changeTime?: string;
+  /** the withdrawal reason being typed (Phase 6 task 4a) — required before confirm */
+  withdrawReason?: string;
 }

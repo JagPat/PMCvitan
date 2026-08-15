@@ -2,7 +2,7 @@ import { useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { dailyLogReadMode } from '@/data/apiGateway';
-import { selectTotalWorkers } from '@/store/selectors';
+import { selectTotalWorkers, selectVisibleDecisions } from '@/store/selectors';
 import { EmptyState, Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
@@ -340,7 +340,9 @@ const stepBtn: React.CSSProperties = {
 function AddMaterialModal({ onClose }: { onClose: () => void }) {
   const addSiteMaterial = useStore((s) => s.addSiteMaterial);
   // a delivery matches a published decision — drafts aren't linkable
-  const decisions = useStore(useShallow((s) => s.decisions.filter((d) => !d.draft)));
+  // …and a WITHDRAWN decision is terminal: a delivery can no longer match it, so the picker
+  // excludes it for EVERY role on top of the shared audience rule (4a round 6, Codex)
+  const decisions = useStore(useShallow((s) => selectVisibleDecisions(s).filter((d) => d.status !== 'withdrawn')));
   const [name, setName] = useState('');
   const [qty, setQty] = useState('');
   const [zone, setZone] = useState('');

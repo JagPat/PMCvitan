@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { ProjectionRebuildOperations, REBUILDABLE_PROJECTIONS } from '../../src/platform/projections/rebuild-operations';
@@ -92,9 +92,11 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
   });
   afterEach(async () => {
     await t.prisma.$executeRawUnsafe(TRUNCATE);
+    // approval DecisionEvents are undeletable evidence (round 12) — the sanctioned
+    // destructive-reset helper wipes them with the named seal disabled
+    await wipeDecisionEvents(t.prisma, { decision: { projectId: { startsWith: 'it-upg-' } } });
     for (const [model, where] of [
       ['decisionOption', { decision: { projectId: { startsWith: 'it-upg-' } } }],
-      ['decisionEvent', { decision: { projectId: { startsWith: 'it-upg-' } } }],
       ['decision', { projectId: { startsWith: 'it-upg-' } }],
       ['drawingRecipient', { projectId: { startsWith: 'it-upg-' } }],
       ['drawingRevision', { projectId: { startsWith: 'it-upg-' } }],

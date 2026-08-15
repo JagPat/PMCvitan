@@ -19,3 +19,22 @@ export function pendingDecisionNotice(title: string): string {
 export function isPendingDecisionNotice(text: string): boolean {
   return text.startsWith(PENDING_DECISION_PREFIX);
 }
+
+/**
+ * A "withdrawn decision" notice explains, to the authority that manages decisions, that a
+ * published question was taken back and why. §A.3 (Phase 6 task 4a) makes a withdrawn
+ * decision PMC-ONLY — it was pmc/client-visible while pending, and withdrawal must not widen
+ * an audience — so this notice (title + reason) is stripped from every non-pmc feed,
+ * including the client's, by the same mechanism that strips pending notices.
+ */
+const WITHDRAWN_DECISION_PREFIX = 'Decision withdrawn';
+
+/** The notification text appended when a PMC withdraws a published, never-approved decision. */
+export function withdrawnDecisionNotice(title: string, reason: string): string {
+  return `${WITHDRAWN_DECISION_PREFIX}: ${title} — ${reason}`;
+}
+
+/** True when a notification announces a withdrawal (pmc-only information). */
+export function isWithdrawnDecisionNotice(text: string): boolean {
+  return text.startsWith(WITHDRAWN_DECISION_PREFIX);
+}

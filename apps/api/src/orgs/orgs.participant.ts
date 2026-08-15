@@ -138,6 +138,35 @@ export class OrgsParticipant {
   }
 
   /**
+   * Phase 6 task 4a, round 3 (Codex P2) — does `userId` hold an ACTIVE membership on `projectId`,
+   * the row read under `FOR UPDATE` in the caller's transaction?
+   *
+   * ATTRIBUTION, not authority — deliberately NO org owner/admin arm. The caller is about to
+   * write this user as the FK-bound author of a permanent project fact (e.g.
+   * `Decision.withdrawnById` → `Membership(projectId, userId)`), and the org-super-admin path
+   * has no `Membership` row to bind: a caller that wants STANDING asks `hasProjectRoleStanding`
+   * (org arm included); a caller that must ATTRIBUTE asks this, and refuses with its own answer
+   * when the row is absent or inactive — before the FK turns the refusal into a rollback.
+   *
+   * The lock is the point (the `activities.complete` precedent): a concurrent member removal
+   * serializes on the membership row, so the attribution the caller writes is the one that was
+   * true when its transaction committed. First spelled as a raw `Membership` read inside the
+   * decisions service — an undeclared decisions→orgs edge; the owner now answers, and the
+   * cross-module-graph ratchet keeps raw `Membership` SQL from reappearing outside this module.
+   */
+  async lockActiveMembership(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ status: string }>>(
+      `SELECT "status" FROM "Membership" WHERE "projectId" = $1 AND "userId" = $2 FOR UPDATE`,
+      projectId, userId,
+    );
+    return rows[0]?.status === 'active';
+  }
+
+  /**
    * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
    * role is one of `roles`, or (when `roles` admits `pmc` AND the user holds NO active membership
    * on this project) owner/admin of the project's org? Same rule, same PRECEDENCE as

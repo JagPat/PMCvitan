@@ -36,12 +36,14 @@ export interface RawSqlWriteWaiver {
 }
 
 /**
- * The single runtime raw-SQL write: the outbox relay leases due deliveries with one atomic
+ * The runtime raw-SQL writes: the outbox relay leases due deliveries with one atomic
  * `UPDATE "OutboxDelivery" SET status='leased' … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED)
  * RETURNING id`. `SKIP LOCKED` + `RETURNING` in one statement is not expressible through the
  * Prisma delegate API. `OutboxDelivery` is a platform-owned shared table and the relay is the
  * platform module, so this is an own-module write — the waiver records that the raw statement
- * was reviewed, not that it crosses a boundary.
+ * was reviewed, not that it crosses a boundary. The 4a cancellation tombstone (below) is the
+ * same shape: platform code writing the platform's own table with a statement the delegate
+ * API cannot express.
  */
 export const RAW_SQL_WRITE_WAIVERS: ReadonlyArray<RawSqlWriteWaiver> = [
   {
@@ -57,6 +59,20 @@ export const RAW_SQL_WRITE_WAIVERS: ReadonlyArray<RawSqlWriteWaiver> = [
     owner: 'platform',
     reason:
       'Legacy/shadow external retry+recovery lease claim: the same atomic UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING id, filtered to due retries / expired leases / stranded fresh rows so the relay backstops the immediate dispatcher (at-least-once) without racing its happy path. SKIP LOCKED + RETURNING is not expressible via the delegate API. Own-module write (platform owns OutboxDelivery).',
+  },
+  {
+    file: 'platform/outbox/cancellation.ts',
+    symbol: 'cancelQueuedPushBySubject',
+    owner: 'platform',
+    reason:
+      'Phase 6 task 4a round 3 — the recovery-gap tombstone: INSERT INTO "OutboxDelivery" … SELECT FROM "DomainEvent" WHERE NOT EXISTS (delivery) ON CONFLICT DO NOTHING materializes a missing push delivery as already-cancelled in ONE set-based statement. Insert-from-select with a conflict skip is not expressible via the delegate API without a read-then-create whose lost race would throw inside the cancelling domain transaction. Own-module write (platform owns OutboxDelivery and DomainEvent).',
+  },
+  {
+    file: 'platform/outbox/cancellation.ts',
+    symbol: 'cancelPass',
+    owner: 'platform',
+    reason:
+      'Phase 6 task 4a round 4 (waived round 14): the subject-stamp restore — UPDATE "OutboxDelivery" d SET "subject" = e."entityId" FROM "DomainEvent" e copies the identity an old-instance writer omitted from the row\'s OWN event in one set-based statement; an UPDATE … FROM join is not expressible via the delegate API. Own-module write (platform owns both tables). Round 14 made ALIASED updates visible to isWriteSql — this statement was reviewed in round 4 and is waived under its named enclosing symbol so the one-waiver-one-site ambiguity rule stays intact.',
   },
 ];
 

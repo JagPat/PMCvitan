@@ -72,7 +72,6 @@ async function main(): Promise<void> {
   await prisma.securityAuditEvent.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.notification.deleteMany();
-  await prisma.decisionEvent.deleteMany();
   await prisma.changeRequest.deleteMany();
   await prisma.media.deleteMany();
   await prisma.inspectionItem.deleteMany();
@@ -83,8 +82,45 @@ async function main(): Promise<void> {
   await prisma.drawingAck.deleteMany();
   await prisma.drawingRevision.deleteMany();
   await prisma.drawing.deleteMany();
-  await prisma.decisionOption.deleteMany();
   await prisma.activity.deleteMany();
+  // Phase 6 task 4a — the decision wipe runs BEFORE the membership wipe (round 5, Codex):
+  // `Decision.withdrawnById` FKs `Membership(projectId, userId)` ON DELETE NO ACTION, so a
+  // database holding a withdrawn decision refuses membership deletion until the decision rows
+  // are gone. Every OTHER Decision child (change requests, media, notifications, activities)
+  // is already cleared above; the OPTION and EVENT wipes join the guarded transaction below
+  // (rounds 11–12, Codex) because a withdrawn decision's options are frozen
+  // (`DecisionOption_t4a_frozen`) and approval events are undeletable evidence
+  // (`DecisionEvent_no_withdrawn_approval`) — the sanctioned reset disables those named seals
+  // for exactly this wipe, atomically with the delete seal. The delete seal (`Decision_t4a_d_no_delete`) refuses
+  // withdrawn-row deletes — in a LIVE database the register entry is permanent — and this seed
+  // is the sanctioned destructive reset (the same contract that lets the TRUNCATE above bypass
+  // the DomainEvent append-only trigger), so the named seal is disabled for exactly this wipe.
+  // Guarded: a pre-4a database has no such trigger. ONE transaction (round 6, Codex): PG DDL is
+  // transactional, so a wipe that throws rolls the DISABLE back with it — no failure path can
+  // leave the seal off; a bare disable/delete/enable sequence could.
+  await prisma.$transaction([
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
+    ),
+    prisma.decisionEvent.deleteMany(),
+    prisma.decisionOption.deleteMany(),
+    prisma.decision.deleteMany(),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionOption_t4a_frozen') THEN EXECUTE 'ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4a_d_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'; END IF; END $$;`,
+    ),
+  ]);
   // every Membership child (recipients, assignees, completion claims) is gone now
   await prisma.membership.deleteMany();
   await prisma.orgMembership.deleteMany();
@@ -110,7 +146,7 @@ async function main(): Promise<void> {
   await prisma.externalParty.deleteMany();
   await prisma.user.deleteMany();
   await prisma.phase.deleteMany();
-  await prisma.decision.deleteMany();
+  // (the guarded decision wipe moved ABOVE membership.deleteMany — round 5, Codex)
   await prisma.projectNode.deleteMany();
   await prisma.project.deleteMany();
   await prisma.projectTemplate.deleteMany();
