@@ -67,7 +67,7 @@ The REMAINING gated successors, as data:
 
 | gated successor | opening event | resume action |
 |---|---|---|
-| UX **Wave 0** foundation (owner-scheduled 2026-08-13; the handoff docs are PARKED verbatim on branch `claude/ux-programme-docs` at `fe2a0f6` — no PR until its turn) | task 4 COMPLETES (all of 4a–4d merged and cleared) | land `docs/ux/` + unit F-1a per the parked `WAVE_0_FOUNDATION.md`, re-reproducing every finding against the then-current head first |
+| UX **Wave 0** foundation (owner re-sequenced 2026-08-15: independent activities run in PARALLEL — `docs/ux/` LANDED and **unit F-1a is IMPLEMENTED, PR #342**, superseding the parked-until-task-4 plan; do NOT re-plan or re-implement F-1a) | F-1b: the owner's §6.7 field-primitive decision; F-1c: F-1a + F-1b both cleared | implement F-1b per `docs/ux/WAVE_0_FOUNDATION.md` (as amended in PR #342) once §6.7 is answered, then F-1c |
 | `room` → `space` rename plan | an explicit owner go (still not given — the owner re-sequenced it BEHIND task 4 on 2026-08-13) | write the rename plan from `docs/reviews/pr-330-convergence.md`'s catalogue |
 | unit 6.1b (PR #329, CLOSED-HELD — closed so the hold is machine state: an open autonomous PR would misdirect the continuation to "shepherd pr:329"; the branch and review lineage are preserved, the hold record is on the PR) | task 4, Wave 0 and the rename clearing (owner sequencing) | reopen #329 (or re-cut from `claude/phase6-task1b` rebased onto current `main`) |
 | UX Completion Programme **waves 1–5** (owner-mandated standalone-V1 gate; same parked docs) | the phase-6 collaborator units clearing | open Wave 1 per the parked `UX_COMPLETION_PROGRAMME.md`, §6 open questions settled with the owner first |

@@ -44,7 +44,7 @@ A foundation stage plus five waves — six in all. Ordered by **dependency**, no
 
 ### Wave 0 — Foundation · units `F-1a` → `F-1b` → `F-1c`
 Three review units, **run in order**: `F-1c` validates the work of the other two and must follow both. Full spec: `WAVE_0_FOUNDATION.md`.
-- **F-1a — primitives + dialog focus.** Focus tokens; `:focus-visible` on shared primitives; focus trap in `Modal.tsx` and the 5 dialogs.
+- **F-1a — primitives + dialog focus.** Focus tokens; `:focus-visible` on shared primitives; focus trap in `Modal.tsx` and the 4 dialogs (`ApproveModal`, `ChangeModal`, `QrModal`, `PhotoViewer`); `ProjectSwitcher` is a non-modal disclosure per the Wave-0 amendment (2026-08-15).
 - **F-1b — mobile field and touch corrections.** 8 field constants to 16px; critical type off 9px; mismatch control to 44×44.
 - **F-1c — per-surface validation.** The 23-surface sweep plus Playwright, automated a11y, and manual keyboard/screen-reader passes.
 

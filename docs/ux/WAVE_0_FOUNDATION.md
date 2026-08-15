@@ -78,7 +78,7 @@ Re-measure if any palette value changes. Do not assume a token passes because it
 
 **Preserve confirmation and attribution wording exactly.** This unit changes focus only — no copy changes.
 
-**Done when:** focus coverage on every interactive primitive; no bare `outline:none` without replacement; both tokens contrast-verified in test; all 5 dialogs trap and restore focus and dismiss on `Esc`; confirmation wording unchanged.
+**Done when:** focus coverage on every interactive primitive; no bare `outline:none` without replacement; both tokens contrast-verified in test; the FOUR dialogs (`ApproveModal`, `ChangeModal`, `QrModal`, `PhotoViewer`) trap and restore focus and dismiss on `Esc`, and `ProjectSwitcher` meets its non-modal disclosure checks (see the amendment above); confirmation wording unchanged.
 
 ## Unit F-1b — mobile field and touch corrections
 

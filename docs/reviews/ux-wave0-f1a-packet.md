@@ -197,3 +197,20 @@ EXIT 0.
    true dialogs keep the trap contract unchanged.
 
 Probes 18/18; full web 782/782; `pnpm check` EXIT 0.
+
+## Round 5 — two Codex findings on head `b0ce976`, folded as one batch
+
+1. **(P1)** the durable handoff now records F-1a as LANDED: the README's
+   "do not open a PR yet / task 4 first" is superseded by a dated
+   amendment (the owner's parallel directive), and `docs/STATUS.md`'s
+   Wave-0 gated-successor row records F-1a implemented (PR #342) with the
+   resume action repointed at F-1b (§6.7-gated) → F-1c — the post-task-4
+   runner can never re-schedule the already-shipped unit. (The STATUS edit
+   is the NARRATIVE gated table only; the machine block is untouched and
+   the automation pins pass.)
+2. **(P2)** both remaining five-dialog completion criteria (the Wave-0
+   "Done when" and the master brief's F-1a line) now name the FOUR true
+   dialogs plus the ProjectSwitcher non-modal disclosure, so F-1c's
+   acceptance matches the corrected semantics.
+
+Probes 18/18; full web 782/782; `pnpm check` EXIT 0.

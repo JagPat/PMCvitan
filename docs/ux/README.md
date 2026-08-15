@@ -11,9 +11,15 @@ Design authority for this programme. **v2** — reproduced against `main @ a3543
 
 ## Status — read before doing anything
 
-**This is a docs-only UX completion plan. Do not open a PR from it yet.**
+> **Amendment (2026-08-15):** the owner directed that independent
+> activities run in PARALLEL, superseding the original "after Task 4"
+> sequencing for Wave 0. These docs LANDED (this folder) and **unit F-1a is
+> IMPLEMENTED AND SHIPPED in the same PR (#342)** — do NOT re-plan or
+> re-implement F-1a. The next Wave-0 unit is **F-1b**, which remains
+> blocked on the owner's §6.7 field-primitive decision; **F-1c** follows
+> both. Waves 1–5 keep their original gating below.
 
-- **Task 4 and the remaining Phase 6 collaborator work land first.** Leave the active Task 4 plan/review/correction work completely undisturbed. Do not mix anything from this folder into it.
+- **The remaining Phase 6 collaborator work still gates waves 1–5.** Leave the active Task 4 plan/review/correction work completely undisturbed. Do not mix anything from this folder into it.
 - **Wave 4 is blocked** on worker authentication and device binding (§6.2), and on the worker/mistri experience shape (§6.3). **Wave 5 acceptance is blocked** on weekly-report export (§6.1) and architect rejection authority (§6.5). **Wave 3 is not implementation-ready** until the `CommercialScreen` split is decided, and **F-1b** until the field-primitive question is settled (§6.7). Settle each before its stage opens.
 - **Re-audit before planning.** These findings were reproduced at `a35439439a30`. Phase 6 will change the interface inventory. Re-run every reproduction step against the post-Phase-6 head and re-derive the surface map from the final screen list.
 

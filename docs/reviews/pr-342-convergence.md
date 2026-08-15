@@ -11,6 +11,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 
 | `a2d9fa1` | round-3 fold | 2 (2 P2) | corrected on this head: Escape handled at the switcher ROOT (Shift+Tab can land focus back on the trigger with the popup open — a panel-only handler was deaf there); the landed `WAVE_0_FOUNDATION.md` gains a dated amendment recording the chosen NON-MODAL disclosure semantics for `ProjectSwitcher` with matching F-1c acceptance checks (the doc still classified it as a trapped dialog, which would have forced F-1c to undo the correction) |
 
+| `b0ce976` | round-4 fold | 2 (1 P1, 1 P2) | corrected on this head: the DURABLE HANDOFF records F-1a as LANDED — the README amendment supersedes "do not open a PR yet" (owner parallel directive), and the STATUS gated-successor row now says F-1a is implemented (PR #342) with the resume action repointed at F-1b (§6.7-gated) → F-1c, so the post-task-4 runner can never re-schedule the shipped unit; and BOTH five-dialog completion criteria (WAVE_0 "Done when" + the master brief F-1a line) become FOUR dialogs + the ProjectSwitcher disclosure |
+
 ## Root analysis — one generative class
 
 All ten findings across both rounds are instances of ONE rule: **a focus
@@ -34,7 +36,7 @@ the symptom; the probes pin every moved mechanism (15 arms).
 
 ## Disposition
 
-Sixteen findings across four rounds — every one verified real, none
+Eighteen findings across five rounds — every one verified real, none
 disputed, none refuted. Probes 18/18 at this head; full web suite 782/782;
 `pnpm check` EXIT 0. The round-3 doc finding is the one NON-focus item:
 the human-only completion gate, resolved by naming its OWNER rather than
