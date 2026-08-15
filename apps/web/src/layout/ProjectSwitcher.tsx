@@ -66,7 +66,7 @@ export function ProjectSwitcher() {
         ref={triggerRef}
         onClick={() => canSwitch && setOpen((v) => !v)}
         data-testid="project-switcher"
-        aria-expanded={open}
+        aria-expanded={canSwitch ? open : undefined}
         style={{ ...pill, cursor: canSwitch ? 'pointer' : 'default' }}
       >
         <span style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
@@ -77,6 +77,7 @@ export function ProjectSwitcher() {
         <div
           ref={panelRef}
           style={panel}
+          role="group"
           aria-label="Switch project"
           onKeyDown={(e) => {
             if (e.key === 'Escape') closeToTrigger();

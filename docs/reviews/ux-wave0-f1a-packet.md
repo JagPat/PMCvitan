@@ -163,3 +163,23 @@ Probes 15/15 (3 new arms: stranded-body Tab recapture, internal-action
 focus parking, the no-menu-claim assertion); full web 779/779; `pnpm check`
 EXIT 0. Convergence audit added per protocol:
 `docs/reviews/pr-342-convergence.md`.
+
+## Round 3 — four Codex findings on head `b40e50f`, folded as one batch
+
+1. **(P2)** the opener-gone fallback walks the WHOLE ancestor chain until
+   focus is successfully placed — the nearest survivor can be an emptied
+   container (the last pending card approved away), and stopping there
+   stranded focus on body.
+2. **(P2)** the popup carries `role="group"` — an `aria-label` on a bare
+   div names nothing, so "Switch project" was never announced.
+3. **(P2)** `aria-expanded` renders only when `canSwitch` — a single-
+   membership user no longer hears a disclosure that never opens.
+4. **(P1)** the parked programme doc's observed-stakeholder gate gains a
+   dated OWNERSHIP amendment: it is an owner-executed acceptance act, not
+   a loop obligation — the loop delivers "ready for observed sessions" and
+   never blocks awaiting them. The owner's requirement stands verbatim;
+   only the actor is named (removing an owner mandate is not the loop's to
+   do).
+
+Probes 17/17 (2 new arms + 2 extended); full web 781/781; `pnpm check`
+EXIT 0.

@@ -164,6 +164,32 @@ describe('F-1a Modal focus trap', () => {
     expect(document.activeElement).toBe(second);
   });
 
+  it('the opener-gone fallback walks PAST an emptied ancestor until something focusable exists', () => {
+    // wrapper > card > opener; the page's next focusable lives OUTSIDE the
+    // wrapper. Removing the whole card leaves wrapper connected but EMPTY —
+    // stopping at the nearest survivor would strand focus on body.
+    const wrapper = document.createElement('div');
+    const card = document.createElement('div');
+    const opener = document.createElement('button');
+    opener.textContent = 'approve last';
+    card.appendChild(opener);
+    wrapper.appendChild(card);
+    const elsewhere = document.createElement('button');
+    elsewhere.textContent = 'nav';
+    document.body.append(wrapper, elsewhere);
+    opener.focus();
+    const { unmount } = render(
+      <Modal onClose={() => {}}>
+        <button>Confirm</button>
+      </Modal>,
+    );
+    card.remove();
+    unmount();
+    expect(document.activeElement).toBe(elsewhere);
+    wrapper.remove();
+    elsewhere.remove();
+  });
+
   it('a Tab from focus STRANDED ON BODY (the modal removed its focused control) is recaptured into the dialog', () => {
     openerButton();
     const { rerender } = render(
@@ -260,15 +286,40 @@ describe('F-1a ProjectSwitcher dropdown focus', () => {
     fireEvent.click(trigger);
     expect(screen.getAllByRole('button', { name: /Beta/ }).length).toBeGreaterThan(0);
     // No modal claim anywhere in the switcher subtree, and no menu overclaim
-    // on the trigger — the honest semantics are a disclosure (aria-expanded).
+    // on the trigger — the honest semantics are a disclosure (aria-expanded)
+    // opening a NAMEABLE group (aria-label on a bare div names nothing).
     expect(container.querySelector('[role="dialog"], [aria-modal]')).toBeNull();
     expect(trigger).not.toHaveAttribute('aria-haspopup');
     expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const group = container.querySelector('[role="group"]');
+    expect(group).not.toBeNull();
+    expect(group).toHaveAttribute('aria-label', 'Switch project');
     // Clicking elsewhere closes the popup and leaves focus where the user put it.
     fireEvent.mouseDown(outside);
     expect(screen.queryByRole('button', { name: /Beta/ })).toBeNull();
     expect(document.activeElement).not.toBe(trigger);
     outside.remove();
+  });
+
+  it('a switcher that CANNOT open claims no disclosure state', async () => {
+    vi.stubEnv('VITE_API_URL', 'http://api.test');
+    vi.resetModules();
+    const { useStore, getInitialState } = await import('@/store/store');
+    const scope = await import('@/store/projectScope');
+    const { ProjectSwitcher } = await import('@/layout/ProjectSwitcher');
+    useStore.setState(getInitialState());
+    useStore.setState({
+      ...scope.emptyProjectData(),
+      activeProjectId: 'p1',
+      projectLoadState: 'ready',
+      role: 'engineer',
+      short: 'Alpha',
+      memberships: [{ projectId: 'p1', short: 'Alpha', role: 'engineer', orgId: 'o1' }],
+      myOrgs: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    render(<ProjectSwitcher />);
+    expect(screen.getByTestId('project-switcher')).not.toHaveAttribute('aria-expanded');
   });
 
   it('an INTERNAL action parks focus on the trigger before its row unmounts — focus never falls to body', async () => {

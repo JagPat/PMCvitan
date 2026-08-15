@@ -67,8 +67,19 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true):
         opener.focus();
         return;
       }
-      const host = openerChain.find((node) => node.isConnected);
-      host?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+      // Walk the WHOLE captured chain, not just the nearest survivor: the
+      // nearest connected ancestor may be an emptied container (the last
+      // pending card approved away), and stopping there strands focus on
+      // body. Each successive ancestor widens the search until something
+      // focusable exists.
+      for (const node of openerChain) {
+        if (!node.isConnected) continue;
+        const target = node.querySelector<HTMLElement>(FOCUSABLE);
+        if (target) {
+          target.focus();
+          return;
+        }
+      }
     };
   }, [ref, active]);
 }

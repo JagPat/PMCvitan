@@ -115,6 +115,15 @@ Per unit: reproduce-first **RED** evidence · focused component/integration test
 
 ### Wave 5 — observed sessions with real people
 
+> **Amendment (2026-08-15, autonomous loop — ownership clarification, not a
+> scope change):** this gate is an OWNER-EXECUTED acceptance act, not an
+> autonomous-loop obligation. The loop's deliverable ends at "every wave
+> implemented, verified, and READY for observed sessions" — it never blocks
+> awaiting them (AGENTS.md's non-blocking rule), and the standalone-V1
+> COMPLETION declaration is made by the owner after their sessions. The
+> requirement itself stands exactly as the owner wrote it below; only the
+> actor is named.
+
 **Claude, Codex and CI cannot certify this. It requires observed sessions with actual stakeholder representatives** — PMC, architect, client, contractor, mistri and worker participants — recorded with completion time, assistance required, mistakes, abandoned actions and unresolved confusion.
 
 | Persona | Device | Task | Pass if |
