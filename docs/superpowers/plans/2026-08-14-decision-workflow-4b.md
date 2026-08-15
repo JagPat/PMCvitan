@@ -188,7 +188,14 @@ layers: the command asks the same participant question over every project
 the org covers, and an orgs-owned seal on the org-membership table
 re-judges it under the §B.1 protocol per affected project — refused if any
 project's open `pmc`-held decision would lose its last effective PMC;
-probed as P39's org-write arm. The escape: in 4b,
+probed as P39's org-write arm. And the guarded write SET is closed (round
+12): beside role change and removal/delete, `OrgMembership.orgId` is
+FROZEN, exactly like the project membership's `userId`/`projectId` — an
+org-move is a REMOVAL from the old org plus an ADDITION to the new one,
+each judged under every affected project's readiness key, never a single
+UPDATE — so the one-statement hostile move of the sole effective PMC's
+org-membership to org B (role untouched, no named guard arm re-judging
+org A) is unrepresentable; the hostile move probed in P39. The escape: in 4b,
 withdraw-and-reissue (4a ships it); from 4d, forward. Never a silent
 orphaning — both designations, both layers, probed (P39).
 
@@ -240,7 +247,15 @@ kind⟺status CHECK below. While `publishedAt IS NULL`,
 pair (either alone still refused by the CHECK); from publication the
 terminal refusal is unconditional — the same publication boundary every
 other 4b freeze binds at. The legal draft kind-change and the hostile
-published flip are both probed (P17/P18); the 4a no-delete seal (`Decision_t4a_d_no_delete`) extends its refusal
+published flip are both probed (P17/P18) — **and the door is sealed in
+the ENTRY direction too** (round 12): guarding only exits leaves one
+hostile statement able to turn a published `approved` decision into a
+"record" (kind `none`, status `recorded`, the seven approval columns
+nulled) that still carries its immutable approval revision and approved
+event children — an unapprovable permanent entry BORN FROM an approval.
+The trigger refuses every PUBLISHED transition INTO `recorded` as well;
+the only legal entries are birth as a record and the coherent UNPUBLISHED
+draft conversion above, probed as P18's hostile-entry arm; the 4a no-delete seal (`Decision_t4a_d_no_delete`) extends its refusal
 to `recorded` rows; and — because a permanent register entry whose CONTENT can
 be rewritten is not permanent — the PUBLISHED record's question and option
 evidence freeze exactly like the withdrawn seal network's: title, room/space linkage, `publishedAt`, `authorId` (round 8 — a permanent
@@ -296,6 +311,14 @@ each of these routes to THE DECIDER — and "each" means ALL of them (round 2):
   action item, the readiness wording: a reopened decision is the SAME approval
   obligation with the same audience, so decider-follows covers `pending` AND
   `change`, probed through approve → requestChange → re-approve (P22);
+- **the client-side visibility mirrors** (round 12) — AUTH-02's server
+  narrowing has STORE-side mirrors the enumeration missed:
+  `selectLogDecisions` and `selectVisibleDecisions` hide every pending row
+  solely on `s.role === 'engineer'`, so a named engineer-decider could
+  receive the row from the widened server predicate and still not SEE it
+  in the Decision Log, Site Map, or Schedule while the Inbox exposes it.
+  Both selectors adopt the same viewer/decider predicate the server uses,
+  and P22's audience arms include these three surfaces;
 - **`countPending` gains the VIEWER — and so does its CALLER** (the caller
   round 11) — it counts the decisions THAT VIEWER decides (pmc seeing
   all); but `OrgsService.portfolio` today invokes it only when the
