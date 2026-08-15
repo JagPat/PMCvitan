@@ -14,12 +14,12 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
-work_item: none
-reviewed_merge: 44ceef9
-open_pr: 340
+work_item: 4b-impl
+reviewed_merge: caff53f
+open_pr: 344
 next_task: none
 blocking_directive: none
-updated: 2026-08-14
+updated: 2026-08-15
 ```
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
@@ -54,20 +54,32 @@ MERGED — PR #337 at `main` `44ceef9`**, sixteen reviewed heads across fifteen
 finding rounds with five refutations-with-evidence; plan §A implemented
 verbatim, probes P1–P14 staged RED per the nested-locations §D discipline,
 packet `docs/reviews/phase-6-t4a-withdraw-packet.md`, audit
-`docs/reviews/pr-337-convergence.md`) → the 4b–4d plan unit (**IN REVIEW — PR
-#340**, branch `claude/phase6-task4bcd-plan` from `44ceef9`, PURELY docs-only:
-`docs/superpowers/plans/2026-08-14-decision-workflow-4b-4d.md` carrying the
-binding `ac164c5` design + the six round-5 obligations answered + probes
-P15–P42 elaborated; STATUS bookkeeping deliberately travels in THIS separate
-PR so the plan diff keeps the docs-only deferral path) → 4b → 4c → 4d, one
-unit per PR, the folded-STATUS convention on each WORK PR (plan reviews split
-their STATUS out — the PR #335 two-step, made up front).
+`docs/reviews/pr-337-convergence.md`) → the 4b plan unit (**MERGED — PR #340 at
+`main` `caff53f`**, 2026-08-15, with a fresh exact-head Codex +1 on head
+`6f9b422` after NINETEEN finding rounds and 101 findings, every one verified
+real and folded, none disputed; the unit NARROWED at the review-lifecycle
+limit per its own round-5 pre-commitment, so the merged document is
+`docs/superpowers/plans/2026-08-14-decision-workflow-4b.md` — unit 4b plus the
+§B seal architecture every later unit cites — while the 4c/4d designs remain
+readable at head `6a53aae` as the pre-declared starting material of their own
+plan units, each round-6 obligation carried as a NAMED probe in §D; audit
+`docs/reviews/pr-340-convergence.md`) → **4b IMPLEMENTATION (IN PROGRESS — PR
+#344**, branch `claude/phase6-task4b-impl` from `caff53f`; the staged-RED shape
+is landed — the decider columns + the `Membership(projectId,id)` candidate key
++ the `recorded` status and `DeciderKind` enum + the widened create contract
+with its kind-dependent option floor + `decisions.updateDraft`, with the §C
+probes committed BEFORE the behavior at 12-of-15 RED and the three
+green-at-shape arms documented in place; the migration's §A audit and seal
+network, the service behavior, the audience and the create modal's decider
+picker land in the same branch before the review head) → 4c plan → 4c → 4d
+plan → 4d, one unit per PR, the folded-STATUS convention on each WORK PR (plan
+reviews split their STATUS out — the PR #335 two-step, made up front).
 
 The REMAINING gated successors, as data:
 
 | gated successor | opening event | resume action |
 |---|---|---|
-| UX **Wave 0** foundation (owner re-sequenced 2026-08-15: independent activities run in PARALLEL — `docs/ux/` LANDED and **unit F-1a is IMPLEMENTED, PR #342**, superseding the parked-until-task-4 plan; do NOT re-plan or re-implement F-1a) | F-1b: PR #342 merging (its §6.7 field-primitive question is SETTLED by the recorded autonomous default of 2026-08-15 — the shared field primitive; owner override asynchronous); F-1c: F-1a + F-1b both cleared | implement F-1b per `docs/ux/WAVE_0_FOUNDATION.md` (as amended in PR #342) with the shared `Field` primitive, then F-1c |
+| UX **Wave 0** foundation (owner re-sequenced 2026-08-15: independent activities run in PARALLEL — `docs/ux/` LANDED and **unit F-1a is DELIVERED AND CLEARED, PR #342 at `main` `8175c3e`**, nine finding rounds / 23 findings, closing with the ink-surface INVENTORY probe that makes the next unmarked ink surface a test failure rather than a review finding; do NOT re-plan or re-implement F-1a) | F-1b: **OPEN NOW** — F-1a merged and its §6.7 field-primitive question is SETTLED by the recorded autonomous default of 2026-08-15 (the shared `Field` primitive; owner override asynchronous); F-1c: F-1a + F-1b both cleared | implement F-1b per `docs/ux/WAVE_0_FOUNDATION.md` (as amended in PR #342) — re-run its RED reproduction step at the opening head FIRST (Wave 0 does not wait for Phase 6; the sequencing amendment scopes that gate to Waves 1–5), then F-1c. Queued behind the 4b implementation; runs as the parallel track whenever 4b is parked on review. |
 | `room` → `space` rename plan | an explicit owner go (still not given — the owner re-sequenced it BEHIND task 4 on 2026-08-13) | write the rename plan from `docs/reviews/pr-330-convergence.md`'s catalogue |
 | unit 6.1b (PR #329, CLOSED-HELD — closed so the hold is machine state: an open autonomous PR would misdirect the continuation to "shepherd pr:329"; the branch and review lineage are preserved, the hold record is on the PR) | task 4, Wave 0 and the rename clearing (owner sequencing) | reopen #329 (or re-cut from `claude/phase6-task1b` rebased onto current `main`) |
 | UX Completion Programme **waves 1–5** (owner-mandated standalone-V1 gate; same parked docs) | the phase-6 collaborator units clearing | open Wave 1 per the parked `UX_COMPLETION_PROGRAMME.md`, §6 open questions settled with the owner first |
