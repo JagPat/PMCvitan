@@ -21,7 +21,8 @@ with no two-step.
 | `536b6da` | the stop record | 6 (4 P1, 2 P2) — one ON THE STOP ITSELF | the stop SUPERSEDED per AGENTS.md's non-blocking rule; rounds 8+9 folded on `af8d6be`; the owner escalation remains the asynchronous channel |
 | `af8d6be` | rounds 8+9 folded | 7 (6 P1, 1 P2) — three on the round-8/9 fixes, one a packet bookkeeping error | corrected on `56d09c0`, MINIMALLY: full approval-column + child-evidence seals on recorded rows; targeted events never fan to unlinked devices; publish validates role-held deciders + the record identity tuple; the departed-approved-holder 409 names the TRUE state; this ledger reconciled |
 | `56d09c0` | round-10 batch | 4 (2 P1, 2 P2) | corrected on `d93859d`, MINIMALLY: `Decision.id` joins the publication-entry + terminal freezes; the holder-orphan guard reaches the org-membership writes (`removeOrgMember`/`updateOrgMemberRole` demoting the last effective PMC refused, both layers); the portfolio caller passes the viewer into `countPending` for every decider-capable role; `recorded` terminality binds at PUBLICATION, admitting the one coherent unpublished kind+status draft edit the round-8 path requires |
-| `d93859d` | round-11 batch | 3 (2 P1, 1 P2) | corrected on this head, MINIMALLY: `OrgMembership.orgId` joins the identity freeze (an org-move is removal + addition under every affected project's readiness key, never one UPDATE); entry INTO `recorded` sealed for published rows (an approved decision cannot be laundered into a record while its approval evidence survives in the children); the AUTH-02 client-side selector mirrors (`selectLogDecisions`/`selectVisibleDecisions`) follow the decider |
+| `d93859d` | round-11 batch | 3 (2 P1, 1 P2) | corrected on `1c9f2c7`, MINIMALLY: `OrgMembership.orgId` joins the identity freeze (an org-move is removal + addition under every affected project's readiness key, never one UPDATE); entry INTO `recorded` sealed for published rows (an approved decision cannot be laundered into a record while its approval evidence survives in the children); the AUTH-02 client-side selector mirrors (`selectLogDecisions`/`selectVisibleDecisions`) follow the decider |
+| `1c9f2c7` | round-12 batch | 7 (4 P1, 3 P2) | corrected on this head: the identity-freeze CLASS stated once over the whole standing-derivation chain (`Membership.userId/projectId` + `OrgMembership.userId/orgId` + `Project.orgId` — re-homing any link is removal+addition, closing the per-column enumeration); ascending-order multi-project lock acquisition; sign-out UNLINKS the push subscription; `photoSwatch` joins the terminal freeze; the decider tuple joins the create idempotency preimage; the converted draft re-judges the two-option floor at publish |
 
 ## Round 1 — two repeated loop lessons, five underspecified mechanisms
 
@@ -306,13 +307,17 @@ given there overrides the loop's course. Nothing in this resumption merges
 anything: the exact-head gate still fails closed on any current-head
 finding.
 
-## Rounds 10–12 — instances of settled classes, folded minimally
+## Rounds 10–13 — instances of settled classes, folded minimally
 
 Round 10 (seven findings on `af8d6be`, folded on `56d09c0`), round 11
 (four findings on `56d09c0`, folded on `d93859d`), and round 12 (three
 findings on `d93859d` — the lowest count of the review — folded on the
-current head: the org-identity freeze arm, the recorded ENTRY seal, the
-client-side selector mirrors) all land on the
+`d93859d`: the org-identity freeze arm, the recorded ENTRY seal, the
+client-side selector mirrors), and round 13 (seven findings on `1c9f2c7`,
+folded on the current head — four more identity-chain instances answered
+by stating the freeze CLASS once, plus session-unlink, the swatch freeze,
+the idempotency preimage, lock ordering, and the converted-draft option
+floor) all land on the
 rounds-8/9 corrections' own text, and every finding is an enumerable-class
 instance of a rule the plan already states: a freeze list missing a column
 (the approval-written `material`/`cost`/`date`; then `Decision.id` itself),
@@ -326,21 +331,21 @@ one internal contradiction between two of the plan's own corrections
 (unconditional `recorded` terminality vs the round-8 draft-edit path —
 resolved at the publication boundary every other 4b freeze binds at, with
 the one coherent unpublished kind+status transition admitted explicitly).
-All fourteen verified real, none disputed, none refuted. The correction
+All twenty-one verified real, none disputed, none refuted. The correction
 pattern stays minimal-edit; the lifecycle observation stands recorded —
-twelve finding-bearing heads against an advisory limit of five — and the
+thirteen finding-bearing heads against an advisory limit of five — and the
 owner escalation thread on this PR remains the standing asynchronous
 channel that can override the loop's course at any time.
 
 ## Deferral ledger
 
-Nothing is disputed: all seventy-three findings across twelve rounds were
+Nothing is disputed: all eighty findings across thirteen rounds were
 verified real; thirty-eight were corrected in place (rounds 1–5 and 7),
 three were folded into the narrowed 4b plan, five are carried as NAMED
 PROBES (§D of the 4b plan: P25c, P25d, P38c/P40c, P31b/P42b, P31c/P34b,
 P33b — numbering reserved to the pre-declared 4c/4d plan units whose own
-exact-head reviews adjudicate them), and the rounds 8–12 findings were FOLDED by the resumed corrections
-(heads `af8d6be`, `56d09c0`, `d93859d`, and the current one) — every disposition lives
+exact-head reviews adjudicate them), and the rounds 8–13 findings were FOLDED by the resumed corrections
+(heads `af8d6be`, `56d09c0`, `d93859d`, `1c9f2c7`, and the current one) — every disposition lives
 in the head table above, none held, none dismissed. No refutations were posted on this PR. Every head past the
 third finding head carries `Review-Deferred-To-Probes: phase-6-task-4`
 beside `Review-Convergence: complete`; the probes are the executable

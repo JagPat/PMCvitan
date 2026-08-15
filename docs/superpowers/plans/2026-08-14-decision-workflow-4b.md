@@ -82,7 +82,14 @@ candidate list loaded through the orgs participant the module already
 routes membership reads through), or record-only (`none`, the §A.2 zero-
 option form) — so a PMC mints every decider kind through the shipped
 product, never through direct API calls; probed as P16's UI arm beside the
-service-layer fixtures, and P19 already walks the record form.
+service-layer fixtures, and P19 already walks the record form. **And the
+create idempotency preimage extends over the decider TUPLE** (round 13):
+today's request hash covers title/location/options/publish, so reusing a
+key after changing the intended holder would REPLAY the first decision
+instead of conflicting — silently preserving the wrong authority. The
+hash gains `deciderKind` + `deciderMembershipId`, and P16 gains the
+differing-decider replay arm: same key + changed decider = the
+payload-mismatch conflict, never a replay.
 `approveSchema` stays
 `{ optionIndex }` — the approver is server-resolved, but the AUTHORITY check
 becomes: the actor IS the decider (by role or named membership), or the PMC
@@ -192,10 +199,27 @@ probed as P39's org-write arm. And the guarded write SET is closed (round
 12): beside role change and removal/delete, `OrgMembership.orgId` is
 FROZEN, exactly like the project membership's `userId`/`projectId` — an
 org-move is a REMOVAL from the old org plus an ADDITION to the new one,
-each judged under every affected project's readiness key, never a single
+each judged under every affected project's readiness key — acquired in
+STABLE ASCENDING project-id order (round 13: two concurrent org-role
+changes locking P1/P2 in opposite orders would deadlock on the BLOCKING
+service path; the same ascending-order discipline the Phase-4 crew
+expansion proved deadlock-free, exercised by a two-project barrier probe
+in both orderings, P39) — never a single
 UPDATE — so the one-statement hostile move of the sole effective PMC's
 org-membership to org B (role untouched, no named guard arm re-judging
-org A) is unrepresentable; the hostile move probed in P39. The escape: in 4b,
+org A) is unrepresentable; the hostile move probed in P39. **And the rule
+is the CLASS, stated once** (round 13, closing the per-column enumeration
+rounds 8/12/13 walked link by link): every IDENTITY column of every row in
+the STANDING-DERIVATION CHAIN — `Membership.userId`/`projectId`,
+`OrgMembership.userId`/`orgId`, and `Project.orgId` (the link that selects
+WHICH org's owner/admin rows provide effective-PMC standing at all) — is
+FROZEN. Re-homing ANY link is a REMOVAL plus an ADDITION judged under
+every affected project's readiness key, never an UPDATE; a future column
+that joins the chain joins the freeze by construction. The two round-13
+instances (the org-membership re-keyed to a user whose explicit
+client membership denies PMC standing; the project moved to an org whose
+admins never covered it) are P39's hostile arms beside the round-12
+org-move. The escape: in 4b,
 withdraw-and-reissue (4a ships it); from 4d, forward. Never a silent
 orphaning — both designations, both layers, probed (P39).
 
@@ -244,7 +268,13 @@ because re-pointing an unpublished `none` draft to any other kind MUST
 carry `recorded → pending` in the SAME update to satisfy the bidirectional
 kind⟺status CHECK below. While `publishedAt IS NULL`,
 `decisions.updateDraft` changes kind and status together as one coherent
-pair (either alone still refused by the CHECK); from publication the
+pair (either alone still refused by the CHECK) — and the conversion
+RE-ARMS the option floor (round 13): a `none` draft legally holds zero
+options, so a draft converted to an ordinary kind may reach the publish
+door under the record form's shape; the PUBLISH transition re-judges the
+canonical child count SERVER-side for every non-record kind (the create
+schema's two-option floor, not merely the Drafts button state), refusing
+the zero-option converted draft — probed in P17/P20; from publication the
 terminal refusal is unconditional — the same publication boundary every
 other 4b freeze binds at. The legal draft kind-change and the hostile
 published flip are both probed (P17/P18) — **and the door is sealed in
@@ -263,7 +293,10 @@ record must keep its attribution), `projectId` (round 9 — a permanent record
 must stay in the register it was filed in), `id` itself (round 11 — the
 identity under which the issue was FILED: the publication-entry freeze
 above already forbids the re-key, and the terminal freeze restates it so a
-recorded row is doubly sealed), and the record's
+recorded row is doubly sealed), `photoSwatch` (round 13 —
+`serializeDecision` reads the head column directly, so the register's
+rendered visual evidence must freeze with the content it illustrates),
+and the record's
 `DecisionOption` rows (where any exist) are immutable once
 `status='recorded'` AND published, with the DRAFT-edit path retained until
 publish (an unpublished record is still the author's to fix). **And publication re-validates the record's identity tuple** (round 10):
@@ -373,7 +406,14 @@ contradicting P21's exclusion; correctness wins over delivery — an unlinked
 decider's device misses pushes until its owner next opens the app, and the
 bell notice still carries the demand). Non-targeted events are unaffected.
 P21 includes a pre-migration subscription on BOTH sides: the unlinked
-non-target receives nothing; the re-linked target receives. The probe pair proves BOTH
+non-target receives nothing; the re-linked target receives. **And the
+linkage ENDS with the session** (round 13): sign-out (and session
+invalidation) UNLINKS the subscription on that browser — a shared site
+tablet must not keep rendering decider A's content after A walks away;
+the unlinked device receives NO targeted content until the next
+authenticated open re-attributes it (the same suppression rule as a
+never-linked device). Probed: a targeted push enqueued after sign-out is
+not delivered to that endpoint (P21). The probe pair proves BOTH
 directions: the target receives; a same-role non-target does NOT (P21). The static catalog names the CEILING audience and
 the dispatch site narrows to the actual decider; `buildDispatchIntent`'s
 mismatch refusal treats the catalog as the ceiling.
