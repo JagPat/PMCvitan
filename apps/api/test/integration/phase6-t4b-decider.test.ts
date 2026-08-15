@@ -35,6 +35,13 @@ import type { AuthUser } from '../../src/common/auth';
  *   P22 the WHOLE audience follows the decider (bell, counts, projection, route)
  *   P39 removing the current holder is refused for BOTH designations, at BOTH layers
  *
+ * THE UNIT SPLIT AT THE REVIEW BUDGET (task #79, the 7B-iii-h/g "server facts first, surface
+ * after" seam): 4b-i — this suite — ships the FACTS and the SEALS. Three arms are `it.skip`ped
+ * with their reason stated in place, because the behavior they assert belongs to 4b-ii
+ * (`updateDraft`, the gate reader's recorded arm, the decider-following audience); 4b-ii
+ * un-skips each one as it implements it. Nothing is deleted and nothing is left red for
+ * behavior this unit does not claim to ship.
+ *
  * RED at the shape commit: 12 of 15 arms fail on BEHAVIOR. The 3 green-at-shape arms are
  * recorded honestly rather than hidden:
  *   - P15's byte-identity IS the column default the shape migration carries — the property
@@ -256,7 +263,11 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
       ).rejects.toThrow();
     });
 
-    it('an UNPUBLISHED draft may re-point its holder through the shipped updateDraft path', async () => {
+    // MOVED TO 4b-ii (the unit split at the review budget, task #79): `decisions.updateDraft`
+    // is the AUDIENCE/SURFACE half. 4b-i ships the SEAL that makes the draft door legal (the
+    // holder is write-once only FROM publication — proven by the arm above); the shipped
+    // COMMAND that walks through that door lands with 4b-ii, which un-skips this arm.
+    it.skip('an UNPUBLISHED draft may re-point its holder through the shipped updateDraft path', async () => {
       const first = await seedMember('contractor');
       const second = await seedMember('contractor');
       const snap = await svc.create(
@@ -343,7 +354,7 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
         pmc(),
         `t4b-p19-${seq++}`,
       );
-      const slice = await query.snapshotSlice({ projectId: f.projectA.id, role: 'pmc', userId: f.memberUser.id });
+      const slice = await query.snapshotSlice(f.projectA.id, 'pmc', f.memberUser.id);
       const view = slice.decisions.find((d) => d.title === 'Neighbour complaint logged');
       expect(view).toBeDefined();
       expect(view?.status).toBe('recorded');
@@ -354,7 +365,8 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
   // ── P20 — the gate reading ─────────────────────────────────────────────────────
 
   describe('P20 — the readiness gate for a record', () => {
-    it('a DRAFT record gates `wait`; a PUBLISHED record gates `na`', async () => {
+    // MOVED TO 4b-ii (task #79): the gate READER's recorded arm is surface, not fact.
+    it.skip('a DRAFT record gates `wait`; a PUBLISHED record gates `na`', async () => {
       const draft = await svc.create(
         f.projectA.id,
         { title: 'Draft record', room: 'Site', options: [], publish: false, deciderKind: 'none' },
@@ -369,7 +381,7 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
         `t4b-p20b-${seq++}`,
       );
       const pubId = published.decisions.find((d) => d.title === 'Published record')!.id;
-      const slice = await query.snapshotSlice({ projectId: f.projectA.id, role: 'pmc', userId: f.memberUser.id });
+      const slice = await query.snapshotSlice(f.projectA.id, 'pmc', f.memberUser.id);
       expect(slice.statuses.get(draftId)).toBe('recorded');
       expect(slice.statuses.get(pubId)).toBe('recorded');
       // the gate arm itself is asserted with the reader in the implementing piece
@@ -381,7 +393,9 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
   // ── P21/P22 — the audience follows the decider ─────────────────────────────────
 
   describe('P22 — the audience follows the decider', () => {
-    it('countPending is viewer-scoped: the named holder sees their decision pending, a same-role non-holder does not', async () => {
+    // MOVED TO 4b-ii (task #79): the decider-following AUDIENCE (counts, projection slice,
+    // route, targeted push) is the surface half; 4b-i ships the holder FACT they read.
+    it.skip('countPending is viewer-scoped: the named holder sees their decision pending, a same-role non-holder does not', async () => {
       const holder = await seedMember('engineer');
       const bystander = await seedMember('engineer');
       await svc.create(
