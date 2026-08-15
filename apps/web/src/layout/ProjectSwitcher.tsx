@@ -15,14 +15,22 @@ export function ProjectSwitcher() {
   const setScreen = useStore((s) => s.setScreen);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
-  // Wave 0 / F-1a: the switcher is a NON-MODAL popup, not a dialog — no focus
-  // trap, no aria-modal claim. Focus moves to the first option on open,
-  // Escape closes and returns focus to the trigger, and any OUTSIDE
-  // interaction (click or focus movement) light-dismisses without stealing
-  // focus back — the user chose to go elsewhere.
+  // Wave 0 / F-1a: the switcher is a NON-MODAL disclosure popup, not a dialog
+  // and not a menu — no focus trap, no aria-modal, no aria-haspopup claim
+  // (its rows are plain Tab-driven buttons; aria-expanded on the trigger is
+  // the honest disclosure semantics). Focus moves to the first option on
+  // open, Escape closes and returns focus to the trigger, any OUTSIDE
+  // interaction light-dismisses without stealing focus back — and every
+  // INTERNAL action parks focus on the trigger BEFORE its row unmounts, so
+  // focus never falls to body (and a modal it opens captures the trigger,
+  // not body, as its opener).
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeToTrigger = () => {
+    triggerRef.current?.focus();
+    setOpen(false);
+  };
   useEffect(() => {
     if (!open) return;
     panelRef.current?.querySelector<HTMLElement>('button')?.focus();
@@ -58,7 +66,6 @@ export function ProjectSwitcher() {
         ref={triggerRef}
         onClick={() => canSwitch && setOpen((v) => !v)}
         data-testid="project-switcher"
-        aria-haspopup="menu"
         aria-expanded={open}
         style={{ ...pill, cursor: canSwitch ? 'pointer' : 'default' }}
       >
@@ -72,16 +79,13 @@ export function ProjectSwitcher() {
           style={panel}
           aria-label="Switch project"
           onKeyDown={(e) => {
-            if (e.key === 'Escape') {
-              setOpen(false);
-              triggerRef.current?.focus();
-            }
+            if (e.key === 'Escape') closeToTrigger();
           }}
         >
           {memberships.map((m) => {
             const on = m.projectId === activeProjectId;
             return (
-              <button key={m.projectId} onClick={() => { setOpen(false); switchProject(m.projectId); }} style={row(on)}>
+              <button key={m.projectId} onClick={() => { closeToTrigger(); switchProject(m.projectId); }} style={row(on)}>
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.short}</span>
                 <span style={roleTag}>{m.role}</span>
                 {on && <Check size={13} color="#8fce9f" />}
@@ -89,11 +93,11 @@ export function ProjectSwitcher() {
             );
           })}
           {adminOrg && (
-            <button onClick={() => { setOpen(false); setCreating(true); }} style={{ ...row(false), color: 'var(--accent)' }}>
+            <button onClick={() => { closeToTrigger(); setCreating(true); }} style={{ ...row(false), color: 'var(--accent)' }}>
               <Plus size={14} /> <span>New project</span>
             </button>
           )}
-          <button onClick={() => { setOpen(false); setScreen('team'); }} style={row(false)}>
+          <button onClick={() => { closeToTrigger(); setScreen('team'); }} style={row(false)}>
             Manage team →
           </button>
         </div>

@@ -142,3 +142,24 @@ ring by ANCESTRY and trapped a popup that is not a dialog.
 Probes 13/13 (9 original + 4 new); full web suite 777/777; `pnpm check`
 EXIT 0 (API 793/793 untouched). The `useFocusTrap` boundary-wrap behavior
 for true modals (`Modal`, `PhotoViewer`) is unchanged.
+
+## Round 2 — four Codex findings on head `3e57c8d`, folded as one batch
+
+1. **(P1)** the forced-colors outline gains `!important` — the field styles
+   carry INLINE `outline:none`, which outranks any non-important author
+   rule; without it, High Contrast still had no indicator.
+2. **(P2)** every internal switcher action routes through `closeToTrigger()`
+   — focus parks on the trigger BEFORE the clicked row unmounts, so focus
+   never falls to body and the New-project modal captures the trigger (not
+   body) as its opener.
+3. **(P2)** the trap's Tab listener moves to DOCUMENT level — when dialog
+   content removes the focused control, focus lands on body and a
+   container-scoped listener can never recapture the next Tab.
+4. **(P2)** `aria-haspopup="menu"` dropped — the switcher's rows are plain
+   Tab-driven buttons, so the honest semantics are a disclosure
+   (`aria-expanded` on the trigger), not a menu the popup never implements.
+
+Probes 15/15 (3 new arms: stranded-body Tab recapture, internal-action
+focus parking, the no-menu-claim assertion); full web 779/779; `pnpm check`
+EXIT 0. Convergence audit added per protocol:
+`docs/reviews/pr-342-convergence.md`.

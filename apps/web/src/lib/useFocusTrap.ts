@@ -30,6 +30,12 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true):
 
     (focusables()[0] ?? container).focus();
 
+    // DOCUMENT-level, not container-level: when the dialog's own dynamic
+    // content removes the focused element (an option row deleted while the
+    // modal stays open), focus falls to body and the next Tab never bubbles
+    // through the container — only a document listener can recapture it.
+    // With stacked overlays the LAST-mounted trap's listener runs last and
+    // its focus() wins, which matches the topmost surface.
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
       const list = focusables();
@@ -48,15 +54,15 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true):
         e.preventDefault();
         first.focus();
       } else if (!(current instanceof HTMLElement) || !container.contains(current)) {
-        // Focus escaped (e.g. a programmatic move) — bring it back to the top.
+        // Focus escaped or was stranded on body — bring it back to the top.
         e.preventDefault();
         first.focus();
       }
     };
 
-    container.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keydown', onKeyDown);
     return () => {
-      container.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keydown', onKeyDown);
       if (opener?.isConnected) {
         opener.focus();
         return;

@@ -57,10 +57,12 @@ a {
 }
 /* Forced-colors mode (Windows High Contrast) suppresses author box-shadows,
    which would leave outline:none as the ONLY rule — no indicator at all.
-   Restore a system-color outline there. */
+   Restore a system-color outline there. !important is REQUIRED: the field
+   styles carry INLINE outline:none declarations, and only an important
+   author rule outranks an inline style in the cascade. */
 @media (forced-colors: active) {
   :focus-visible {
-    outline: 2px solid Highlight;
+    outline: 2px solid Highlight !important;
     outline-offset: 1px;
     box-shadow: none;
   }

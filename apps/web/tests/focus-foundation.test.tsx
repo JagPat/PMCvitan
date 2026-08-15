@@ -86,8 +86,8 @@ describe('F-1a global focus visibility', () => {
     expect(globalCss).toMatch(/:focus-visible\s*{[^}]*box-shadow:\s*var\(--active-focus-ring\)/);
   });
 
-  it('forced-colors mode restores a system-color outline — box-shadows are suppressed there and outline:none alone would erase every indicator', () => {
-    expect(globalCss).toMatch(/@media\s*\(forced-colors:\s*active\)[\s\S]*?:focus-visible\s*{[^}]*outline:\s*2px solid Highlight/);
+  it('forced-colors mode restores a system-color outline WITH !important — inline outline:none declarations outrank any non-important author rule', () => {
+    expect(globalCss).toMatch(/@media\s*\(forced-colors:\s*active\)[\s\S]*?:focus-visible\s*{[^}]*outline:\s*2px solid Highlight\s*!important/);
   });
 
   it('the left rail (ink background) opts in to the dark ring', () => {
@@ -162,6 +162,26 @@ describe('F-1a Modal focus trap', () => {
     expect(document.activeElement).toBe(first);
     fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toBe(second);
+  });
+
+  it('a Tab from focus STRANDED ON BODY (the modal removed its focused control) is recaptured into the dialog', () => {
+    openerButton();
+    const { rerender } = render(
+      <Modal onClose={() => {}}>
+        <button>Keep</button>
+        <button>Removable</button>
+      </Modal>,
+    );
+    screen.getByRole('button', { name: 'Removable' }).focus();
+    // The dialog's own content change removes the focused control.
+    rerender(
+      <Modal onClose={() => {}}>
+        <button>Keep</button>
+      </Modal>,
+    );
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.keyDown(document.body, { key: 'Tab' });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep' }));
   });
 
   it('Escape still dismisses', () => {
@@ -239,12 +259,28 @@ describe('F-1a ProjectSwitcher dropdown focus', () => {
     trigger.focus();
     fireEvent.click(trigger);
     expect(screen.getAllByRole('button', { name: /Beta/ }).length).toBeGreaterThan(0);
-    // No modal claim anywhere in the switcher subtree.
+    // No modal claim anywhere in the switcher subtree, and no menu overclaim
+    // on the trigger — the honest semantics are a disclosure (aria-expanded).
     expect(container.querySelector('[role="dialog"], [aria-modal]')).toBeNull();
+    expect(trigger).not.toHaveAttribute('aria-haspopup');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
     // Clicking elsewhere closes the popup and leaves focus where the user put it.
     fireEvent.mouseDown(outside);
     expect(screen.queryByRole('button', { name: /Beta/ })).toBeNull();
     expect(document.activeElement).not.toBe(trigger);
     outside.remove();
+  });
+
+  it('an INTERNAL action parks focus on the trigger before its row unmounts — focus never falls to body', async () => {
+    const ProjectSwitcher = await loadSwitcher();
+    render(<ProjectSwitcher />);
+    const trigger = screen.getByTestId('project-switcher');
+    trigger.focus();
+    fireEvent.click(trigger);
+    const manage = screen.getByRole('button', { name: /Manage team/ });
+    manage.focus();
+    fireEvent.click(manage);
+    expect(screen.queryByRole('button', { name: /Manage team/ })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 });
