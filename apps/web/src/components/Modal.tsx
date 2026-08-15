@@ -46,6 +46,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
+        data-surface="light"
         onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--panel)',

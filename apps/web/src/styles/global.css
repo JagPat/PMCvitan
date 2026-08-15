@@ -35,14 +35,35 @@ a {
 
 /* Focus visibility (Wave 0 / F-1a). Keyboard focus shows a ring on every
    interactive element; a call site may keep outline:none for pointer visuals
-   ONLY because this replacement exists. Ink surfaces opt in to the dark ring
-   with data-surface="ink" on a container. */
+   ONLY because this replacement exists. The ring FOLLOWS THE SURFACE through
+   the inherited --active-focus-ring custom property — the NEAREST ancestor
+   that sets it wins, so a light modal nested inside the ink rail resolves to
+   the light ring (a plain descendant selector cannot express that). Ink
+   containers set it via data-surface="ink" or directly in their module CSS
+   (responsive surfaces set it inside the same media block as their
+   background). */
+:root {
+  --active-focus-ring: var(--focus-ring);
+}
+[data-surface='ink'] {
+  --active-focus-ring: var(--focus-ring-dark);
+}
+[data-surface='light'] {
+  --active-focus-ring: var(--focus-ring);
+}
 :focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
+  box-shadow: var(--active-focus-ring);
 }
-[data-surface='ink'] :focus-visible {
-  box-shadow: var(--focus-ring-dark);
+/* Forced-colors mode (Windows High Contrast) suppresses author box-shadows,
+   which would leave outline:none as the ONLY rule — no indicator at all.
+   Restore a system-color outline there. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+    box-shadow: none;
+  }
 }
 
 /* custom scrollbars (opt-in) */

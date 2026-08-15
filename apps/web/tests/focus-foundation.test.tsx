@@ -79,13 +79,26 @@ describe('F-1a focus tokens', () => {
 // ── the global replacement rule: outline may be removed ONLY because this exists ─
 
 describe('F-1a global focus visibility', () => {
-  it('global.css applies the light ring on :focus-visible and the dark ring under a data-surface="ink" scope', () => {
-    expect(globalCss).toMatch(/:focus-visible\s*{[^}]*box-shadow:\s*var\(--focus-ring\)/);
-    expect(globalCss).toMatch(/\[data-surface=['"]ink['"]\]\s+:focus-visible\s*{[^}]*box-shadow:\s*var\(--focus-ring-dark\)/);
+  it('the ring FOLLOWS THE SURFACE through the inherited --active-focus-ring property (nearest ancestor wins, so a light modal inside the ink rail resolves light)', () => {
+    expect(globalCss).toMatch(/:root\s*{[^}]*--active-focus-ring:\s*var\(--focus-ring\)/);
+    expect(globalCss).toMatch(/\[data-surface=['"]ink['"]\]\s*{[^}]*--active-focus-ring:\s*var\(--focus-ring-dark\)/);
+    expect(globalCss).toMatch(/\[data-surface=['"]light['"]\]\s*{[^}]*--active-focus-ring:\s*var\(--focus-ring\)/);
+    expect(globalCss).toMatch(/:focus-visible\s*{[^}]*box-shadow:\s*var\(--active-focus-ring\)/);
+  });
+
+  it('forced-colors mode restores a system-color outline — box-shadows are suppressed there and outline:none alone would erase every indicator', () => {
+    expect(globalCss).toMatch(/@media\s*\(forced-colors:\s*active\)[\s\S]*?:focus-visible\s*{[^}]*outline:\s*2px solid Highlight/);
   });
 
   it('the left rail (ink background) opts in to the dark ring', () => {
     expect(leftRailSrc).toMatch(/data-surface="ink"/);
+  });
+
+  it('responsive/module ink surfaces set the ring in their own CSS: the mobile top bar and the notification panel', () => {
+    const topBarCss = read('../src/layout/TopBar.module.css');
+    const notifCss = read('../src/layout/NotificationPanel.module.css');
+    expect(topBarCss).toMatch(/--active-focus-ring:\s*var\(--focus-ring-dark\)/);
+    expect(notifCss).toMatch(/--active-focus-ring:\s*var\(--focus-ring-dark\)/);
   });
 });
 
@@ -100,17 +113,38 @@ describe('F-1a Modal focus trap', () => {
     return outside;
   }
 
-  it('focus moves into the dialog on open and returns to the opener on close', () => {
+  it('focus moves into the dialog on open and returns to the opener on close — and the dialog is a LIGHT surface even inside an ink container', () => {
     const outside = openerButton();
-    const { unmount } = render(
+    const { container, unmount } = render(
       <Modal onClose={() => {}}>
         <button>First</button>
         <button>Second</button>
       </Modal>,
     );
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'First' }));
+    expect(container.querySelector('[role="dialog"][data-surface="light"]')).not.toBeNull();
     unmount();
     expect(document.activeElement).toBe(outside);
+  });
+
+  it('when the opener is GONE at close, focus falls to the first focusable in the nearest surviving ancestor — not to body', () => {
+    const host = document.createElement('div');
+    const opener = document.createElement('button');
+    opener.textContent = 'approve';
+    const sibling = document.createElement('button');
+    sibling.textContent = 'next decision';
+    host.append(opener, sibling);
+    document.body.appendChild(host);
+    opener.focus();
+    const { unmount } = render(
+      <Modal onClose={() => {}}>
+        <button>Confirm</button>
+      </Modal>,
+    );
+    opener.remove();
+    unmount();
+    expect(document.activeElement).toBe(sibling);
+    host.remove();
   });
 
   it('Tab wraps from the last control to the first, and Shift+Tab wraps back', () => {
@@ -193,5 +227,24 @@ describe('F-1a ProjectSwitcher dropdown focus', () => {
     fireEvent.keyDown(firstRow, { key: 'Escape' });
     expect(screen.queryByRole('button', { name: /Beta/ })).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('the popup is NON-MODAL: it claims no dialog role, and an outside interaction light-dismisses it without stealing focus back', async () => {
+    const ProjectSwitcher = await loadSwitcher();
+    const outside = document.createElement('button');
+    outside.textContent = 'rail nav';
+    document.body.appendChild(outside);
+    const { container } = render(<ProjectSwitcher />);
+    const trigger = screen.getByTestId('project-switcher');
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(screen.getAllByRole('button', { name: /Beta/ }).length).toBeGreaterThan(0);
+    // No modal claim anywhere in the switcher subtree.
+    expect(container.querySelector('[role="dialog"], [aria-modal]')).toBeNull();
+    // Clicking elsewhere closes the popup and leaves focus where the user put it.
+    fireEvent.mouseDown(outside);
+    expect(screen.queryByRole('button', { name: /Beta/ })).toBeNull();
+    expect(document.activeElement).not.toBe(trigger);
+    outside.remove();
   });
 });

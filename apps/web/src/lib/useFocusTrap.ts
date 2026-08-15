@@ -8,13 +8,24 @@ const FOCUSABLE =
  *  close. Esc stays the dialog's own binding — every dialog already closes on
  *  Escape. Wrap-only interception: mid-list Tab keeps native order; only the
  *  boundary keydown is prevented and redirected, so the trap never fights the
- *  browser's own focus sequencing. */
+ *  browser's own focus sequencing. When the OPENER itself is gone at close
+ *  (the dialog's action removed it — approve dismisses the pending card), the
+ *  fallback is the first focusable inside the nearest still-connected
+ *  ancestor of where the opener lived, so keyboard flow resumes beside the
+ *  vanished control instead of restarting at the shell. */
 export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true): void {
   useEffect(() => {
     if (!active) return;
     const container = ref.current;
     if (!container) return;
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // The opener's ancestor chain, captured NOW — if the opener is removed
+    // while the dialog is open, the closest surviving ancestor anchors the
+    // focus fallback.
+    const openerChain: HTMLElement[] = [];
+    for (let node = opener?.parentElement ?? null; node; node = node.parentElement) {
+      openerChain.push(node);
+    }
     const focusables = () => Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE));
 
     (focusables()[0] ?? container).focus();
@@ -46,7 +57,12 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, active = true):
     container.addEventListener('keydown', onKeyDown);
     return () => {
       container.removeEventListener('keydown', onKeyDown);
-      if (opener?.isConnected) opener.focus();
+      if (opener?.isConnected) {
+        opener.focus();
+        return;
+      }
+      const host = openerChain.find((node) => node.isConnected);
+      host?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
     };
   }, [ref, active]);
 }

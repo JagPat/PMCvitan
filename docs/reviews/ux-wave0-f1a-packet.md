@@ -105,3 +105,40 @@ red was a behavior failure, never a missing symbol.
 - The `docs/ux/visual/` artifacts (parked, non-authoritative).
 - The worker/mistri experience questions (§6 of the master brief; Wave 4/5
   lead time — flagged to the owner, not decided here).
+
+## Round 1 — six Codex findings on head `b9dca1d`, folded as one batch
+
+All six verified real; none disputed. The class: the first head applied the
+ring by ANCESTRY and trapped a popup that is not a dialog.
+
+1. **(P1) forced-colors mode** — box-shadows are suppressed under Windows
+   High Contrast, so the global `outline: none` erased the only indicator.
+   `@media (forced-colors: active)` now restores a system-color outline
+   (`2px solid Highlight`), asserted in test.
+2. **(P2) the ink scope bled into nested light surfaces** — the descendant
+   selector gave `CreateProjectModal` (light, inside the ink rail) the dark
+   ring at ~1.09:1. The ring now follows the SURFACE through the inherited
+   `--active-focus-ring` custom property: the nearest ancestor that sets it
+   wins; `Modal` marks its dialog `data-surface="light"`, so every nested
+   light modal resolves correctly.
+3. **(P2) unmarked ink containers** — the mobile-only top bar and the
+   notification panel set `--active-focus-ring: var(--focus-ring-dark)`
+   directly in their module CSS, inside the same rules as their ink
+   backgrounds (the property mechanism exists precisely so responsive/module
+   surfaces can do this).
+4. **(P2) the opener-gone fallback** — when a dialog's own action removes
+   its opener (approve dismisses the pending card), close now focuses the
+   first focusable in the nearest SURVIVING ancestor of where the opener
+   lived, never body; probed with a removed-opener render.
+5. **(P2/P2 pair) the switcher was a trapped non-dialog** — trapping focus
+   while claiming `role="dialog"` without `aria-modal`, with an escape hatch
+   a container-scoped listener could never see. Resolved by making it an
+   honest NON-MODAL popup: no trap, no dialog role, `aria-haspopup`/
+   `aria-expanded` on the trigger, focus into the panel on open, Escape
+   closes and restores the trigger, and any outside interaction (mousedown
+   or focus departure) light-dismisses WITHOUT stealing focus back. Probed:
+   the no-modal-claim assertion + the outside-dismiss arm.
+
+Probes 13/13 (9 original + 4 new); full web suite 777/777; `pnpm check`
+EXIT 0 (API 793/793 untouched). The `useFocusTrap` boundary-wrap behavior
+for true modals (`Modal`, `PhotoViewer`) is unchanged.

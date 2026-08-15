@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Modal } from '@/components';
-import { useFocusTrap } from '@/lib/useFocusTrap';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
 import type { ModuleSelection, NewProjectInput } from '@/data/apiGateway';
 
@@ -16,11 +15,23 @@ export function ProjectSwitcher() {
   const setScreen = useStore((s) => s.setScreen);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
-  // Wave 0 / F-1a: the dropdown follows the dialog focus discipline — focus
-  // moves into the panel on open, Tab cycles inside, Escape closes, and the
-  // trap's cleanup returns focus to the trigger.
+  // Wave 0 / F-1a: the switcher is a NON-MODAL popup, not a dialog — no focus
+  // trap, no aria-modal claim. Focus moves to the first option on open,
+  // Escape closes and returns focus to the trigger, and any OUTSIDE
+  // interaction (click or focus movement) light-dismisses without stealing
+  // focus back — the user chose to go elsewhere.
+  const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(panelRef, open);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    panelRef.current?.querySelector<HTMLElement>('button')?.focus();
+    const onOutside = (e: MouseEvent) => {
+      if (e.target instanceof Node && !rootRef.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onOutside);
+    return () => document.removeEventListener('mousedown', onOutside);
+  }, [open]);
 
   const liveShort = useStore((s) => s.short);
   const active = memberships.find((m) => m.projectId === activeProjectId);
@@ -32,11 +43,23 @@ export function ProjectSwitcher() {
   const canSwitch = memberships.length > 1 || Boolean(adminOrg);
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div
+      ref={rootRef}
+      style={{ position: 'relative' }}
+      onBlurCapture={(e) => {
+        // Focus leaving the whole switcher (trigger + panel) light-dismisses.
+        if (open && e.relatedTarget instanceof Node && !rootRef.current?.contains(e.relatedTarget)) {
+          setOpen(false);
+        }
+      }}
+    >
       <div style={label0}>PROJECT</div>
       <button
+        ref={triggerRef}
         onClick={() => canSwitch && setOpen((v) => !v)}
         data-testid="project-switcher"
+        aria-haspopup="menu"
+        aria-expanded={open}
         style={{ ...pill, cursor: canSwitch ? 'pointer' : 'default' }}
       >
         <span style={{ fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
@@ -47,11 +70,12 @@ export function ProjectSwitcher() {
         <div
           ref={panelRef}
           style={panel}
-          role="dialog"
           aria-label="Switch project"
-          tabIndex={-1}
           onKeyDown={(e) => {
-            if (e.key === 'Escape') setOpen(false);
+            if (e.key === 'Escape') {
+              setOpen(false);
+              triggerRef.current?.focus();
+            }
           }}
         >
           {memberships.map((m) => {
