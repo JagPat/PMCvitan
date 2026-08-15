@@ -141,6 +141,21 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     roleUsers.clear();
   }
 
+  /**
+   * Phase 6 task 4b: publishing a client-held decision into a project with NO active client is
+   * refused (`Decision_t4b_publication_seal` — it would birth the holderless state the removal
+   * guard exists to prevent). The migration/repair probes below build their own throwaway project,
+   * so each one gets the standard cast — one active client — torn down with the project.
+   */
+  const seedAdHocClient = async (projectId: string): Promise<string> => {
+    const id = `t4a-adhoc-client-${projectId}`;
+    await t.prisma.user.create({
+      data: { id, projectId, role: 'client', name: 'Ad-hoc Client', email: `${id}@test.local` },
+    });
+    await t.prisma.membership.create({ data: { projectId, userId: id, role: 'client', status: 'active' } });
+    return id;
+  };
+
   /** Seed one canonical published-pending decision with two options. */
   const seed = async (over: { status?: 'pending' | 'approved' | 'change'; draft?: boolean; title?: string } = {}): Promise<string> => {
     const id = `DL-t4a-${seq++}`;
@@ -805,9 +820,13 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.notification.deleteMany({ where: { projectId: f.projectA.id } });
       await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
       await expect(t.prisma.decisionOption.deleteMany({ where: { decisionId: id } })).rejects.toThrow(/frozen question/);
+      // unit 4b adds a SECOND, stricter option seal on the same table (`_t4b_published_frozen`:
+      // frozen from publication onward, whatever the status), so the sanctioned bypass names both
       await t.prisma.$transaction([
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
         t.prisma.decisionOption.deleteMany({ where: { decisionId: id } }),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
       ]); // R14-F2: atomic — a failed wipe rolls the disable back
       await expect(t.prisma.$executeRaw`DELETE FROM "Decision" WHERE "id" = ${id}`).rejects.toThrow(/permanent register entry/);
@@ -888,7 +907,9 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } });
         await t.prisma.$transaction([
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.decisionOption.deleteMany({ where: { decisionId: id } }),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
         ]); // R14-F2: atomic — a failed wipe rolls the disable back
         await expect(
@@ -1356,6 +1377,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         data: { id: projW, orgId: f.orgA.id, name: projW, short: 'W', descriptor: '', stage: 'x', siteCode: 'W', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       });
       await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      await seedAdHocClient(projW);
       const id = 'DL-t4a-r12w';
       await t.prisma.decision.create({
         data: { id, projectId: projW, title: 'Wedge probe', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
@@ -1403,9 +1425,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         expect((await query.projectionSlice(projW, 'pmc', f.memberUser.id)).decisions.find((d) => d.id === id)?.status).toBe('withdrawn');
         // the WEDGE pin: the next delivery is CONTIGUOUS and APPLIES (at c2d3a1a it waited forever)
         const id2 = 'DL-t4a-r12w-2';
+        // 4b: the option floor is judged at BOTH publication doors, so the post-repair row is
+        // born as a draft, given its two options, and only then published (the `seed` order)
         await t.prisma.decision.create({
-          data: { id: id2, projectId: projW, title: 'Post-repair decision', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+          data: { id: id2, projectId: projW, title: 'Post-repair decision', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
         });
+        await t.prisma.decisionOption.create({ data: { decisionId: id2, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+        await t.prisma.decisionOption.create({ data: { decisionId: id2, label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 1000, swatch: 'sw2', recommended: false, order: 1 } });
+        await t.prisma.decision.update({ where: { id: id2 }, data: { publishedAt: new Date() } });
         await t.prisma.$transaction(async (tx) => {
           await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published', dispatch: {} });
         });
@@ -1423,15 +1450,18 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await t.prisma.$transaction([
           t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
           t.prisma.decisionEvent.deleteMany({ where: { decisionId: { in: [id, 'DL-t4a-r12w-2'] } } }),
           t.prisma.decisionOption.deleteMany({ where: { decisionId: { in: [id, 'DL-t4a-r12w-2'] } } }),
           t.prisma.decision.deleteMany({ where: { projectId: projW } }),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
         ]); // R14-F2: atomic — a failed wipe rolls the disables back
         await t.prisma.membership.deleteMany({ where: { projectId: projW } });
+        await t.prisma.user.deleteMany({ where: { projectId: projW } });
         await t.prisma.project.deleteMany({ where: { id: projW } });
       }
     });
@@ -1440,25 +1470,46 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // are judged at write time, so one transaction could edit the options and then withdraw.
     // The touch note catches UPDATE, INSERT and DELETE alike; ordinary transactions never
     // withdraw, so nothing else trips it.
+    // Unit 4b SUBSUMES this attack: `DecisionOption_t4b_published_frozen` refuses ANY option
+    // write from publication onward, so the rewriting statement no longer even lands — a
+    // strictly stronger seal firing strictly earlier. Both facts are pinned below: the 4b
+    // refusal first, then 4a's own guard with the 4b seal bypassed BY NAME (the sanctioned
+    // ownership bypass this suite already uses for `DecisionOption_t4a_frozen`), so the
+    // withdrawal-entry touch note stays under test rather than being masked.
     it('R12-F2: options modified in the WITHDRAWING transaction refuse the withdrawal — UPDATE, INSERT and DELETE alike; separate transactions are unaffected', async () => {
       const id = await seed({ title: 'Same-tx option attack' });
+      const withdrawal = (): ReturnType<typeof t.prisma.$executeRaw> =>
+        t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='swapped question' WHERE "id"=${id}`;
       for (const [label, statement] of [
-        ['update', t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped in-flight' WHERE "decisionId"=${id} AND "optionKey"='a'`],
-        ['insert', t.prisma.$executeRaw`INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order") VALUES ('r12-opt',${id},'C','c','Marble',5,'sw3',false,2)`],
-        ['delete', t.prisma.$executeRaw`DELETE FROM "DecisionOption" WHERE "decisionId"=${id} AND "optionKey"='b'`],
+        ['update', () => t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped in-flight' WHERE "decisionId"=${id} AND "optionKey"='a'`],
+        ['insert', () => t.prisma.$executeRaw`INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order") VALUES ('r12-opt',${id},'C','c','Marble',5,'sw3',false,2)`],
+        ['delete', () => t.prisma.$executeRaw`DELETE FROM "DecisionOption" WHERE "decisionId"=${id} AND "optionKey"='b'`],
       ] as const) {
+        // 4b: the rewrite is refused outright — the withdrawal never gets its swapped question
+        await expect(t.prisma.$transaction([statement(), withdrawal()]), `verb=${label} (4b)`).rejects.toThrow(
+          /options of a published decision are frozen/,
+        );
+        expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status, `verb=${label} (4b)`).toBe('pending');
+        // 4a: with 4b's seal off by name, the touch note is the refusing seal — unchanged
         await expect(
           t.prisma.$transaction([
-            statement,
-            t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='swapped question' WHERE "id"=${id}`,
+            t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
+            statement(),
+            withdrawal(),
+            t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           ]),
-          `verb=${label}`,
+          `verb=${label} (4a)`,
         ).rejects.toThrow(/withdrawing transaction/);
-        expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status, `verb=${label}`).toBe('pending');
+        expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status, `verb=${label} (4a)`).toBe('pending');
       }
-      // both statements SEPARATELY are legal: the pending-question edit is client-visible
-      // ordinary tampering (not a withdrawal problem), and a clean later withdrawal succeeds
-      expect(await t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Edited separately' WHERE "decisionId"=${id} AND "optionKey"='a'`).toBe(1);
+      // precision, still: 4a's guard is NOT a blanket option freeze — with 4b's seal off, the
+      // edit in its OWN transaction is legal, and a clean later withdrawal succeeds
+      const separate = await t.prisma.$transaction([
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
+        t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Edited separately' WHERE "decisionId"=${id} AND "optionKey"='a'`,
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
+      ]); // R14-F2: atomic — a failed edit rolls the disable back
+      expect(separate[1]).toBe(1);
       await svc.withdraw(f.projectA.id, id, { reason: 'clean withdrawal after' }, pmc());
       expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('withdrawn');
     });
@@ -1556,8 +1607,12 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // and a field of a null record reads as NULL, so the COALESCE lands on the populated
     // side. Verified by EXECUTION on PostgreSQL 16: both verbs run through the trigger AND
     // record their note (the note table makes the firing itself assertable).
+    // (The claim is about plpgsql row-image semantics, which are independent of publication —
+    // so the probe now writes options where writing them is ORDINARY: an unpublished draft.
+    // Unit 4b froze a PUBLISHED decision's options, and bypassing that seal to keep the old
+    // seeding would have tested the trigger through a hole rather than through the front door.)
     it('R13-F1 (refuted): plain option INSERT and DELETE run through the touch trigger — OLD/NEW are null records, and both verbs record their note', async () => {
-      const id = await seed({ title: 'Null-record row images' });
+      const id = await seed({ draft: true, title: 'Null-record row images' });
       expect(
         await t.prisma.$executeRaw`INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","recommended","order") VALUES ('r13-f1-opt',${id},'C','c','Marble',5,'sw3',false,2)`,
       ).toBe(1);
@@ -1573,26 +1628,37 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     // now lives in a REAL table whose guard refuses same-transaction erasure — the only way
     // around it is ALTER TABLE ... DISABLE TRIGGER, the same ownership privilege every
     // sanctioned bypass in this seal network already requires.
+    // (Unit 4b's published-option freeze would refuse every option write here before the note
+    // mechanism ever runs, so each arm disables THAT seal by name — the touch note, not 4b,
+    // is what these three arms are pinning.)
     it('R13-F2: the touch note cannot be erased by its own transaction — the temp-drop bypass is gone and the direct erase refuses', async () => {
       const id = await seed({ title: 'Note erase attack' });
       // the a58e949 bypass, verbatim: DROP the (now nonexistent) temp note between edit and withdraw
       await expect(
         t.prisma.$transaction([
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped then hidden' WHERE "decisionId"=${id} AND "optionKey"='a'`,
           t.prisma.$executeRawUnsafe('DROP TABLE IF EXISTS pg_temp."_t4a_options_touched"'),
           t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='hidden swap' WHERE "id"=${id}`,
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
         ]),
       ).rejects.toThrow(/withdrawing transaction/);
       // erasing the REAL note directly is itself refused inside the writing transaction
       await expect(
         t.prisma.$transaction([
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped again' WHERE "decisionId"=${id} AND "optionKey"='a'`,
           t.prisma.$executeRaw`DELETE FROM "DecisionOptionTouch" WHERE "decisionId"=${id}`,
           t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='erased note' WHERE "id"=${id}`,
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
         ]),
       ).rejects.toThrow(/cannot be erased/);
       // and re-writing a note (re-pointing it at another decision) is refused too
-      await t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Committed edit' WHERE "decisionId"=${id} AND "optionKey"='a'`;
+      await t.prisma.$transaction([
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
+        t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Committed edit' WHERE "decisionId"=${id} AND "optionKey"='a'`,
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
+      ]); // R14-F2: atomic — a failed edit rolls the disable back
       await expect(
         t.prisma.$executeRaw`UPDATE "DecisionOptionTouch" SET "txid"=0 WHERE "decisionId"=${id}`,
       ).rejects.toThrow(/cannot be updated/);
@@ -1637,6 +1703,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         data: { id: projW, orgId: f.orgA.id, name: projW, short: 'W', descriptor: '', stage: 'x', siteCode: 'W', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       });
       await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      await seedAdHocClient(projW);
       const idW = 'DL-t4a-r13w';
       const idK = 'DL-t4a-r13k';
       for (const [id, title] of [[idW, 'Never applied'], [idK, 'Healthy sibling']] as const) {
@@ -1693,9 +1760,14 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         }
         // and the consumer continues: the next delivery APPLIES against the copied checkpoint
         const id2 = 'DL-t4a-r13w-2';
+        // 4b: the option floor is judged at BOTH publication doors, so the post-repair row is
+        // born as a draft, given its two options, and only then published (the `seed` order)
         await t.prisma.decision.create({
-          data: { id: id2, projectId: projW, title: 'Post-repair decision', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: new Date() },
+          data: { id: id2, projectId: projW, title: 'Post-repair decision', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
         });
+        await t.prisma.decisionOption.create({ data: { decisionId: id2, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 } });
+        await t.prisma.decisionOption.create({ data: { decisionId: id2, label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 1000, swatch: 'sw2', recommended: false, order: 1 } });
+        await t.prisma.decision.update({ where: { id: id2 }, data: { publishedAt: new Date() } });
         await t.prisma.$transaction(async (tx) => {
           await emitEvent(tx, { projectId: projW, actor: human, eventType: 'decision.published', entityType: 'Decision', entityId: id2, payload: {}, effectKey: 'decision.published', dispatch: {} });
         });
@@ -1710,15 +1782,18 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await t.prisma.$transaction([
           t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
           t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: projW } } }),
           t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: projW } } }),
           t.prisma.decision.deleteMany({ where: { projectId: projW } }),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
         ]); // R14-F2: atomic — a failed wipe rolls the disables back
         await t.prisma.membership.deleteMany({ where: { projectId: projW } });
+        await t.prisma.user.deleteMany({ where: { projectId: projW } });
         await t.prisma.project.deleteMany({ where: { id: projW } });
       }
     });
@@ -1827,6 +1902,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         data: { id: projW, orgId: f.orgA.id, name: projW, short: 'W', descriptor: '', stage: 'x', siteCode: 'W', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
       });
       await t.prisma.membership.create({ data: { projectId: projW, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      await seedAdHocClient(projW);
       const idMissing = 'DL-t4a-r15m';
       const idStale = 'DL-t4a-r15s';
       for (const [id, title] of [[idMissing, 'Missing-row arm'], [idStale, 'Stale-row arm']] as const) {
@@ -1876,15 +1952,18 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         await t.prisma.$transaction([
           t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
           t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId: projW } } }),
           t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: projW } } }),
           t.prisma.decision.deleteMany({ where: { projectId: projW } }),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
           t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
         ]); // R14-F2: atomic — a failed wipe rolls the disables back
         await t.prisma.membership.deleteMany({ where: { projectId: projW } });
+        await t.prisma.user.deleteMany({ where: { projectId: projW } });
         await t.prisma.project.deleteMany({ where: { id: projW } });
       }
     });
@@ -1916,9 +1995,12 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       const id = await seed({ title: 'Truncate the note' });
       await expect(
         t.prisma.$transaction([
+          // 4b's published-option freeze is off by name: this arm pins the TRUNCATE guard
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
           t.prisma.$executeRaw`UPDATE "DecisionOption" SET "material"='Swapped under truncate' WHERE "decisionId"=${id} AND "optionKey"='a'`,
           t.prisma.$executeRawUnsafe('TRUNCATE "DecisionOptionTouch"'),
           t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='X', "withdrawReason"='hidden by truncate' WHERE "id"=${id}`,
+          t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
         ]),
       ).rejects.toThrow(/cannot be truncated/);
       expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).status).toBe('pending');
@@ -1940,6 +2022,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       data: { id: proj13, orgId: f.orgA.id, name: proj13, short: 'O', descriptor: '', stage: 'x', siteCode: 'O', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0 },
     });
     await t.prisma.membership.create({ data: { projectId: proj13, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+      await seedAdHocClient(proj13);
     const id = 'DL-t4a-p13';
     await t.prisma.decision.create({
       data: { id, projectId: proj13, title: 'Projected', room: 'Kitchen', status: 'pending', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null },
@@ -1986,15 +2069,18 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.$transaction([
         t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
         t.prisma.decisionEvent.deleteMany({ where: { decisionId: id } }),
         t.prisma.decisionOption.deleteMany({ where: { decisionId: id } }),
         t.prisma.decision.deleteMany({ where: { id } }),
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
         t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
       ]); // R14-F2: atomic — a failed wipe rolls the disables back
       await t.prisma.membership.deleteMany({ where: { projectId: proj13 } });
+        await t.prisma.user.deleteMany({ where: { projectId: proj13 } });
       await t.prisma.project.deleteMany({ where: { id: proj13 } });
     }
   });
