@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
+import { applyMigrationThroughHead, createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { MembersService } from '../../src/orgs/members.service';
 import type { AuthUser } from '../../src/common/auth';
@@ -170,7 +170,17 @@ describe('Phase 6 unit 4b-i round 1 — the twelve Codex findings (live PG)', ()
       t.prisma.decisionOption.create({ data: { decisionId: id, label: 'B', optionKey: 'b', material: 'Oak', delta: 1, swatch: 'sw2', order: 1 } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
     ]);
-    execFileSync('psql', [dbUrl, '-q', '-1', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+    // …and the database is then put BACK AT HEAD. Round 2 found this the way order-dependent
+    // defects are always found: two probes in a LATER suite failed, and only when this one had run
+    // first. Re-running an earlier migration replays its `CREATE OR REPLACE`, silently undoing
+    // every later migration that redefines the same function — for the rest of the process, on a
+    // database eleven suites share. See `applyMigrationThroughHead`.
+    applyMigrationThroughHead(dbUrl, '20270816000000_phase6_t4b_correction');
+    // ASSERTED, not assumed: the round-2 transition guard must be live again
+    const restored = await t.prisma.$queryRawUnsafe<Array<{ src: string }>>(
+      `SELECT prosrc AS src FROM pg_proc WHERE proname = 'decision_t4b_recorded_seal'`,
+    );
+    expect(restored[0]!.src).toContain('never onto a row that is already approved');
   });
 
   // ── F6 ─────────────────────────────────────────────────────────────────────────────────────

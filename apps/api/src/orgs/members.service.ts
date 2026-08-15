@@ -1,4 +1,5 @@
 import { ConflictException, BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { PrismaService } from '../prisma.service';
@@ -71,6 +72,37 @@ export class MembersService {
     return role === 'consultant' ? (discipline ?? null) : null;
   }
 
+  /**
+   * How much standing in `role` this project would have LEFT after a write that ends this
+   * membership's active standing in it.
+   *
+   * Phase 6 task 4b, round 2 (Codex P2). `Membership_t4b_holder_seal` refuses a role-standing
+   * orphan only when the write removes the role's LAST effective holder — it subtracts the
+   * departing membership from `orgs_effective_role_standing` and passes the departing role to the
+   * decisions predicate only when the remainder reaches zero. The service check in front of it
+   * passed `existing.role` unconditionally, so it asserted something it had never counted: with
+   * two active clients on the project, changing or removing EITHER was refused with a 409 the
+   * database would have allowed. A guard that exists to turn the seal's refusal into an actionable
+   * message must refuse exactly what the seal refuses; being stricter is its own defect, and a
+   * worse one, because the seal is the authority and nobody can appeal to it.
+   *
+   * So the count is not re-derived here. It calls the same orgs-owned primitive the seal's
+   * arithmetic calls — including its org-standing arm, which counts a membership-less owner/admin
+   * as a `pmc` — for the same reason `holdsOpenDecisions` calls the seal's own predicate: two
+   * spellings of one rule drift, and the drift shows up as a 500.
+   */
+  private async standingAfterDeparture(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    role: string,
+  ): Promise<number> {
+    const rows = await tx.$queryRawUnsafe<Array<{ standing: number }>>(
+      `SELECT orgs_effective_role_standing($1, $2)::int AS standing`,
+      projectId, role,
+    );
+    return Number(rows[0]?.standing ?? 0) - 1;
+  }
+
   async add(projectId: string, requester: AuthUser, input: AddMemberInput): Promise<MemberDto> {
     await this.assertCanManage(projectId, requester);
     const email = input.email?.toLowerCase();
@@ -108,11 +140,22 @@ export class MembersService {
     if (!existing) throw new NotFoundException('Member not found on this project');
     const actor = await resolveActor(this.prisma, requester);
     const membership = await this.prisma.$transaction(async (tx) => {
+      // Round 2 (Codex P1-adjacent) — the seal re-judges standing in its own statement, so without
+      // the readiness lock a membership write committing between this check and the trigger is
+      // visible to the trigger and not to it: the guard says "allowed", the seal refuses, and the
+      // caller gets back the 500 round 1 removed. `remove` and `add` already take it; the trigger's
+      // try-acquire is re-entrant, so holding it here is what makes the two answers one answer.
+      await lockProjectReadiness(tx, projectId);
       // Round 1 (Codex P2) — a role change removes standing from the DEPARTING role. It does NOT
       // displace a named-membership holder: the membership stays active, so it stays the holder
-      // (the seal's own F11 correction). Only the role arm is asked here.
-      if (input.role !== existing.role) {
-        const held = await this.decisions.holdsOpenDecisions(tx, projectId, null, existing.role);
+      // (the seal's own F11 correction). Only the role arm is asked here — and only when this
+      // membership is the role's LAST effective standing (round 2), which is the condition the seal
+      // itself applies. An inactive membership carries no standing to remove, and the seal's arm
+      // does not fire for one either.
+      if (input.role !== existing.role && existing.status === 'active') {
+        const surviving = await this.standingAfterDeparture(tx, projectId, existing.role);
+        const held = surviving <= 0
+          && await this.decisions.holdsOpenDecisions(tx, projectId, null, existing.role);
         if (held) {
           throw new ConflictException(
             `Changing this role would leave a published open decision with no ${existing.role} to decide it — cover the role first`,
@@ -147,9 +190,18 @@ export class MembersService {
       // `Membership_t4b_holder_seal` refuses this at PostgreSQL and stays the authority, but its
       // exception reaches the caller as a 500; a member who still holds an open decision is an
       // ordinary, actionable conflict and deserves to be told so.
-      const held = await this.decisions.holdsOpenDecisions(
-        tx, projectId, existing.id, existing.role,
-      );
+      //
+      // Round 2 (Codex P2): the DEPARTING ROLE is passed only when this removal takes the role's
+      // LAST effective standing, which is the arithmetic the seal performs. A project with two
+      // active clients loses neither of them to this guard. The membership id is unconditional in
+      // this path — a removal DOES end the membership's active standing, so a named holder IS
+      // displaced (the seal's `v_named_removed`) — and an already-inactive membership is not asked
+      // about at all, because the seal's arm does not fire for one.
+      const held = existing.status === 'active'
+        && await this.decisions.holdsOpenDecisions(
+          tx, projectId, existing.id,
+          (await this.standingAfterDeparture(tx, projectId, existing.role)) <= 0 ? existing.role : null,
+        );
       if (held) {
         throw new ConflictException(
           'This member holds a published open decision — withdraw and reissue it, or cover the role, before removing them',

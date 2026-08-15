@@ -42,6 +42,14 @@ function make(orgRole: string | null = null) {
     },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
+    // Phase 6 task 4b round 2 (Codex P2): the departing-role guard asks the orgs-owned standing
+    // primitive `orgs_effective_role_standing`, so the in-memory client answers it the way the SQL
+    // function does for the MEMBERSHIP arm. Its org owner/admin arm is deliberately not modelled —
+    // no case in this suite gives one user both an org role and a project membership, and the live
+    // arithmetic is proven against real PostgreSQL in `phase6-t4b-correction2.test.ts`.
+    $queryRawUnsafe: vi.fn(async (_sql: string, projectId: string, role: string) => [
+      { standing: memberships.filter((m) => m.projectId === projectId && m.role === role && m.status === 'active').length },
+    ]),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) =>
       typeof arg === 'function' ? arg(prisma) : Promise.all(arg)),
   };

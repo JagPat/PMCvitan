@@ -1,4 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { readdirSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { PrismaService } from '../../src/prisma.service';
 
 export interface TwoProjectFixture {
@@ -210,5 +214,32 @@ export async function wipeDecisionEvents(
     await prisma.decisionEvent.deleteMany({ where });
   } finally {
     await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
+  }
+}
+
+/**
+ * Re-run migration `migrationDir` as an operator would, then replay every migration that sorts
+ * AFTER it — leaving the shared test database AT HEAD.
+ *
+ * Phase 6 task 4b, round 2. A retry-safety probe re-runs an earlier migration on purpose, which
+ * replays its `CREATE OR REPLACE` and silently UNDOES every later migration that redefines the
+ * same function. It surfaced as two probes in a different suite failing, and only when the
+ * re-running suite happened to go first: eleven suites share one database, so a reverted seal
+ * outlives the probe that reverted it and the suites downstream still report green.
+ *
+ * Prisma's directory names ARE the ordering, so "everything after N" needs no list to maintain and
+ * a future round gets this for free. A migration that is not re-runnable fails here LOUDLY, which
+ * is the outcome to want.
+ */
+export function applyMigrationThroughHead(dbUrl: string, migrationDir: string): void {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '../../prisma/migrations');
+  const run = (dir: string): void => {
+    // `-1` (single transaction): these migrations open with `LOCK TABLE`, which psql's default
+    // autocommit mode refuses.
+    execFileSync('psql', [dbUrl, '-q', '-1', '-v', 'ON_ERROR_STOP=1', '-f', join(root, dir, 'migration.sql')], { stdio: 'pipe' });
+  };
+  run(migrationDir);
+  for (const dir of readdirSync(root).filter((d) => statSync(join(root, d)).isDirectory() && d > migrationDir).sort()) {
+    run(dir);
   }
 }

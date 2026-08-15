@@ -3491,6 +3491,49 @@ assert_rejects "4a seal 3 reverse (round 15): TRUNCATE of DecisionEvent while ap
 assert_rejects "4a seal 3 (round 15): one transaction editing an option, TRUNCATING its own touch notes and withdrawing — the truncate refuses first" \
   "BEGIN; ALTER TABLE \"DecisionOption\" DISABLE TRIGGER \"DecisionOption_t4b_published_frozen\"; UPDATE \"DecisionOption\" SET \"material\"='Hidden by truncate' WHERE \"id\"='UP4A-O1'; TRUNCATE \"DecisionOptionTouch\"; UPDATE \"Decision\" SET \"status\"='withdrawn', \"withdrawnAt\"=now(), \"withdrawnById\"='USER-1', \"withdrawnByName\"='X', \"withdrawReason\"='hidden by truncate' WHERE \"id\"='UP4A-D2'; COMMIT" "cannot be truncated"
 
+# ── Phase 6 task 4b, ROUND 2 (Codex): the two seals whose fix is a DATABASE fix ─────────────
+#
+# Both are proven HERE and not only in the probe suite, because both are claims about what an
+# UPGRADED legacy database refuses. R2-1 is specifically about rows that already exist: every
+# decision approved before 20270815000000 sits at `approved` with a NULL holder tuple, which is
+# exactly the shape a forger needs.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-2 fixture did not apply"; FAIL=1; }
+-- a LEGACY approved decision: two options, published, then flipped to `approved` with no tuple
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
+VALUES ('UP4B2-D1','p1','Legacy approved, tupleless','Hall','pending','stone','USER-1',NULL)
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B2-D1O1','UP4B2-D1','A','a','Teak',0,'sw1'),
+       ('UP4B2-D1O2','UP4B2-D1','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B2-D1' AND "publishedAt" IS NULL;
+UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4B2-D1' AND "status"::text='pending';
+-- an UNPUBLISHED draft authored by the CLIENT — allowed to exist, not allowed to become a record
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
+VALUES ('UP4B2-D2','p1','Client-authored draft','Hall','pending','stone','USER-C',NULL)
+ON CONFLICT DO NOTHING;
+-- …and the same draft authored by the PMC, for the precision arm
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
+VALUES ('UP4B2-D3','p1','PMC-authored draft','Hall','pending','stone','USER-1',NULL)
+ON CONFLICT DO NOTHING;
+SQL
+assert "4b round 2 fixture: the legacy approved row carries NO holder tuple — the pre-migration shape the forgery needs" \
+  "SELECT \"status\" || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B2-D1';" \
+  "approved/<null>"
+assert_rejects "4b seal (round 2, R2-1): planting the approval holder tuple on a row that is ALREADY approved — the tuple is written BY the approval, not onto its aftermath" \
+  "UPDATE \"Decision\" SET \"approvedDeciderKind\"='pmc', \"approvedDeciderLabel\"='Forged Holder' WHERE \"id\"='UP4B2-D1'" "never onto a row that is already approved"
+assert_rejects "4b seal (round 2, R2-2): converting a draft to a permanent RECORD attributed to an author with no decision authority — the conversion door asks what the insert door asks" \
+  "UPDATE \"Decision\" SET \"status\"='recorded', \"deciderKind\"='none' WHERE \"id\"='UP4B2-D2'" "decision authority"
+assert_rejects "4b seal (round 2, R2-3): raising a change request against a recorded issue — the parent status is read under FOR UPDATE, so a conversion and an insert cannot both pass" \
+  "BEGIN; UPDATE \"Decision\" SET \"status\"='recorded', \"deciderKind\"='none' WHERE \"id\"='UP4B2-D3'; INSERT INTO \"ChangeRequest\"(\"id\",\"decisionId\",\"reason\",\"costImpact\",\"timeImpactDays\",\"status\") VALUES('UP4B2-CR','UP4B2-D3','Unclosable',0,0,'open'); COMMIT" "cannot carry a change request"
+# PRECISION, not mere strictness: the authorized conversion still passes, so the seals refuse the
+# attribution and the claim — never the lifecycle the plan supports.
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='recorded', \"deciderKind\"='none' WHERE \"id\"='UP4B2-D3'" >/dev/null \
+  || { echo "FAILED  4b round 2 precision: a pmc-authored draft must still convert to a record"; FAIL=1; }
+assert "4b round 2 precision: the pmc-authored draft DID convert — the conversion door refuses the author, not the door" \
+  "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4B2-D3';" \
+  "recorded"
+
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN

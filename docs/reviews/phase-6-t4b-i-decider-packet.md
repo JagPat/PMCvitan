@@ -141,3 +141,35 @@ its RED was observed only after that rewrite, not in the first reproduction pass
 | F10 | announcements said "Client approved" for every decider | the announcement names the actual holder, so it cannot contradict the `onBehalfOf` the same act persists |
 | F11 | an ACTIVE role change was refused for a named holder that keeps its standing | the membership id is passed only when the write ends that membership's active standing |
 | F12 | a blocked member removal surfaced as a 500 | a new `DecisionsParticipant.holdsOpenDecisions` — calling the SAME SQL predicate the seal calls, so the two cannot drift — asked before the write |
+
+## Round 2 — the four Codex findings on `067209bc`
+
+Three P1 and one P2, answered in ONE batched head. All five probes in
+`phase6-t4b-correction2.test.ts` are RED at `067209bc` — with `20270817000000` **and** the service
+half reverted, so each failure is behaviour and never a missing symbol — and green after.
+
+Three of the four are follow-ons to round 1, and each landed exactly where a round-1 fix had stopped
+at its surface.
+
+| # | Finding | Fix | RED at `067209bc` |
+| --- | --- | --- | --- |
+| R2-1 (P1) | the act tuple's first write checked the DESTINATION status (`NEW.status = 'approved'`), not the TRANSITION — so every row approved BEFORE `20270815000000` carries a NULL tuple on an `approved` row, and any direct writer could fill all three columns with anything, which round 1's write-once rules then made permanent | the first write requires `OLD.status <> 'approved' AND NEW.status = 'approved'` — a tuple that records an act may only be written BY that act | the forged UPDATE was ACCEPTED (returned 1) |
+| R2-2 (P1) | the narrowed author predicate ran only on an INSERT that was already `recorded`; the draft → record CONVERSION door — the round-13 lifecycle the plan supports — never asked at all, so a draft authored by a client could become a permanent record attributed to someone the application would refuse | the ENTRY-into-`recorded` branch calls `t4b_require_readiness_key` + `orgs_user_decision_authority`, the same two questions the INSERT door asks | the unauthorized conversion was ACCEPTED (returned 1) |
+| R2-3 (P1) | `change_request_t4b_seal` read the parent's status with a bare `SELECT`; a conversion and a change-request insert each passed and both committed (the FK takes only KEY SHARE, which a status-only UPDATE does not conflict with), leaving a record holding the unclosable claim the seal exists to forbid | the seal reads the parent `FOR UPDATE`, so the two serialize and exactly one is rejected | BOTH orderings: no backend ever blocked — the barrier timed out, which is the finding itself |
+| R2-4 (P2) | `MembersService` passed `existing.role` as the departing role unconditionally, asserting the write removed the role's LAST standing without ever counting the other active holders — so with two active clients, changing or removing EITHER was refused with a 409 the seal would never have raised | the surviving standing is computed from `orgs_effective_role_standing` — the same primitive the seal's own arithmetic calls — and the departing role is passed only when it reaches zero; `updateRole` also takes the readiness lock, so the guard and the seal read one snapshot rather than two | removing the second of two clients threw the 409 |
+
+The round-1 exception wording is preserved verbatim ahead of R2-1's new clause. F4 pins that
+sentence, and a narrowed guard is not a reason to move an existing probe's goalposts.
+
+### One defect this round found in the test suite itself
+
+F5 re-runs `20270816000000` on purpose (its diagnostic-first ABORT and clean re-apply are the
+probe). Re-running an earlier migration replays its `CREATE OR REPLACE`, which silently UNDOES every
+later migration that redefines the same function — for the rest of the process, on a database every
+integration suite shares. It surfaced as two round-2 probes failing, and only when F5's suite
+happened to run first.
+
+`applyMigrationThroughHead` is the fix and the rule that generalizes: after re-running migration N,
+replay every migration that sorts AFTER N. Prisma's directory names are the ordering, so round 3 gets
+this for free, and the restoration is ASSERTED from `pg_proc` rather than assumed. A future
+migration that is not re-runnable fails there loudly, which is the outcome to want.
