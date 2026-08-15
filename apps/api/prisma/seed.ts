@@ -264,15 +264,20 @@ async function main(): Promise<void> {
   // an author-private DRAFT — the seeded DL-015, authored by the PMC).
   for (const d of SEED_DECISIONS) {
     const { options, draft, ...rest } = d;
+    // Phase 6 task 4b: the two-option floor is judged at BOTH publication doors, and a nested
+    // create writes the PARENT before its children — so a published row would arrive at the
+    // INSERT door with zero options. Every row is born unpublished with its options and only
+    // then published, which is the same order the product's own create path now uses.
     await prisma.decision.create({
       data: {
         ...rest,
         projectId: PROJECT_ID,
-        publishedAt: draft ? null : publishedAt,
+        publishedAt: null,
         authorId: draft ? pmcId : null,
         options: { create: options },
       },
     });
+    if (!draft) await prisma.decision.update({ where: { id: d.id }, data: { publishedAt } });
   }
 
   // The reopened decision (DL-003, status 'change') carries its OPEN change request —
