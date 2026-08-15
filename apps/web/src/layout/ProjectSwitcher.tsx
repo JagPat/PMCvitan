@@ -1,7 +1,8 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '@/store/store';
 import { Modal } from '@/components';
+import { useFocusTrap } from '@/lib/useFocusTrap';
 import { ChevronRight, Plus, Check } from '@/lib/icons';
 import type { ModuleSelection, NewProjectInput } from '@/data/apiGateway';
 
@@ -15,6 +16,11 @@ export function ProjectSwitcher() {
   const setScreen = useStore((s) => s.setScreen);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  // Wave 0 / F-1a: the dropdown follows the dialog focus discipline — focus
+  // moves into the panel on open, Tab cycles inside, Escape closes, and the
+  // trap's cleanup returns focus to the trigger.
+  const panelRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(panelRef, open);
 
   const liveShort = useStore((s) => s.short);
   const active = memberships.find((m) => m.projectId === activeProjectId);
@@ -38,7 +44,16 @@ export function ProjectSwitcher() {
       </button>
 
       {open && (
-        <div style={panel}>
+        <div
+          ref={panelRef}
+          style={panel}
+          role="dialog"
+          aria-label="Switch project"
+          tabIndex={-1}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setOpen(false);
+          }}
+        >
           {memberships.map((m) => {
             const on = m.projectId === activeProjectId;
             return (

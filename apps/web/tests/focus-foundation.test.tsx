@@ -1,10 +1,16 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, screen } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Modal } from '@/components/Modal';
 import { PhotoViewer } from '@/components/PhotoViewer';
+
+// Read as FILES, not vite `?raw`/`?inline` imports — vitest stubs .css modules
+// to empty strings regardless of the query, which would turn these seals into
+// vacuous green.
+const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+const tokensCss = read('../src/styles/tokens.css');
+const globalCss = read('../src/styles/global.css');
+const leftRailSrc = read('../src/layout/LeftRail.tsx');
 
 /**
  * UX Wave 0, unit F-1a — focus foundation (docs/ux/WAVE_0_FOUNDATION.md).
@@ -18,11 +24,6 @@ import { PhotoViewer } from '@/components/PhotoViewer';
  * Tab-wrap while open, restored to the opener on close — at the shared
  * primitive (`Modal`, `useFocusTrap`) and the two custom overlays.
  */
-
-const here = dirname(fileURLToPath(import.meta.url));
-const tokensCss = readFileSync(resolve(here, '../src/styles/tokens.css'), 'utf8');
-const globalCss = readFileSync(resolve(here, '../src/styles/global.css'), 'utf8');
-const leftRailSrc = readFileSync(resolve(here, '../src/layout/LeftRail.tsx'), 'utf8');
 
 function token(name: string): string {
   const m = tokensCss.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`));

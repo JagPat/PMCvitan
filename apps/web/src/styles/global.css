@@ -33,6 +33,18 @@ a {
   text-decoration: none;
 }
 
+/* Focus visibility (Wave 0 / F-1a). Keyboard focus shows a ring on every
+   interactive element; a call site may keep outline:none for pointer visuals
+   ONLY because this replacement exists. Ink surfaces opt in to the dark ring
+   with data-surface="ink" on a container. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+[data-surface='ink'] :focus-visible {
+  box-shadow: var(--focus-ring-dark);
+}
+
 /* custom scrollbars (opt-in) */
 .vscroll::-webkit-scrollbar {
   width: 9px;
