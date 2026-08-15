@@ -37,7 +37,19 @@ authority. Where 4b touches these, it extends — never rewrites.
 ### 1. The model
 
 `Decision` gains `deciderKind` (default `'client'`; every existing row
-backfills `'client'` — behavior byte-identical until a caller says otherwise)
+backfills `'client'` — behavior byte-identical until a caller says
+otherwise. **The backfill is DIAGNOSTIC-FIRST** (round 14): the
+holder-removal guard does not exist before 4b, so a production register can
+ALREADY hold a published open decision whose last active client left; a
+silent `'client'` backfill would start the new system with the exact
+zero-holder state every newly published decision is refused for. The
+migration therefore audits every PUBLISHED OPEN decision for CURRENT
+effective-holder existence — the same effective-role-standing the guard
+consumes — and ABORTS with a bounded per-project sample when an orphaned
+row exists, the operator repair documented in `docs/RUNBOOK.md`
+(withdraw-and-reissue, or restore a covering membership) — never inventing
+a holder. The legacy orphan shape joins the migration probe: P15 gains the
+abort arm, and a clean register backfills untouched)
 and `deciderMembershipId` (nullable, same-project composite FK, required iff
 `kind='member'`, sealed by CHECK). **The 4b contract admits
 `'client' | 'pmc' | 'member' | 'none'` — `'architect'` joins the enum IN UNIT
@@ -299,11 +311,18 @@ rendered visual evidence must freeze with the content it illustrates),
 and the record's
 `DecisionOption` rows (where any exist) are immutable once
 `status='recorded'` AND published, with the DRAFT-edit path retained until
-publish (an unpublished record is still the author's to fix). **And publication re-validates the record's identity tuple** (round 10):
-`authorId`/`projectId` are draft-editable, so the publish transition re-runs
-the user-decision-authority primitive over the FINAL tuple atomically — a
-draft re-attributed or re-homed by direct SQL cannot launder itself into a
-frozen published record (P18). **And a
+publish (an unpublished record is still the author's to fix). **And the identity tuple is frozen FROM BIRTH** (round 14, superseding the
+round-10 publish-time revalidation as insufficient): re-checking the FINAL
+tuple's authority still accepts a FORGED-BUT-AUTHORIZED identity — hostile
+SQL re-attributes a draft to user B in project B where B legitimately holds
+decision authority, and the re-check passes while the register gains a
+permanent record B never filed. `authorId` and `projectId` are therefore
+INSERT-frozen for EVERY decision, draft included — no product path ever
+re-attributes or re-homes one (the draft-edit door covers content and the
+holder, never identity), so the freeze forecloses the launder without
+costing any legal act. The publish-time authority re-check REMAINS as
+defense in depth over the now-immutable tuple (P17/P18 hostile arms:
+the draft re-attribution refused at UPDATE, not caught at publish). **And a
 record can never carry approval evidence** (round 9): a coherence CHECK
 requires EVERY approval-derived column — `approvedOption`, `approvedById`,
 `approver`, `onBehalfOf`, AND the approval-written `material`/`cost`/`date`
@@ -413,7 +432,18 @@ tablet must not keep rendering decider A's content after A walks away;
 the unlinked device receives NO targeted content until the next
 authenticated open re-attributes it (the same suppression rule as a
 never-linked device). Probed: a targeted push enqueued after sign-out is
-not delivered to that endpoint (P21). The probe pair proves BOTH
+not delivered to that endpoint (P21). **And CREDENTIAL invalidation severs
+the link WITHOUT a browser act** (round 14): a password reset increments
+`User.credentialVersion` and kills the old sessions server-side — the
+browser's sign-out handler never runs, so the sign-out unlink alone would
+leave the endpoint receiving decider content on a device whose session was
+just revoked. The subscription linkage therefore RECORDS the
+`credentialVersion` at attribution, and the claim-time predicate re-checks
+it beside standing: a link whose recorded version no longer matches the
+user's current one is treated as UNLINKED (no targeted delivery) until the
+next authenticated open re-attributes it. P21 gains the password-reset
+arm: reset → an already-enqueued targeted push is not delivered to the
+stale-versioned endpoint. The probe pair proves BOTH
 directions: the target receives; a same-role non-target does NOT (P21). The static catalog names the CEILING audience and
 the dispatch site narrows to the actual decider; `buildDispatchIntent`'s
 mismatch refusal treats the catalog as the ceiling.
