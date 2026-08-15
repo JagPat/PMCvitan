@@ -188,8 +188,11 @@ $$;
  * Consumed by the recorded-insert seal to validate `authorId`: a terminal `recorded` row is BORN
  * permanent with no later act to catch a forged author.
  */
+-- VOLATILE, not STABLE: this primitive takes the `Project` row lock (`FOR SHARE`), and
+-- PostgreSQL allows row locking only in a volatile function. The lock is the point — the
+-- operability judgement must not race an archive committing concurrently.
 CREATE OR REPLACE FUNCTION orgs_user_decision_authority(p_project_id TEXT, p_user_id TEXT)
-RETURNS BOOLEAN LANGUAGE plpgsql STABLE AS $$
+RETURNS BOOLEAN LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
   v_org_id      TEXT;
   v_archived    TIMESTAMP(3);

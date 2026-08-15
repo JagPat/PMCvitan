@@ -15,6 +15,18 @@ export function pendingDecisionNotice(title: string): string {
   return `${PENDING_DECISION_PREFIX}: ${title}`;
 }
 
+/**
+ * Phase 6 task 4b (plan §A.2, round 2) — a RECORD is filed, not awaited. Its notice reads at the
+ * ORDINARY audience and deliberately does NOT match `isPendingDecisionNotice`: a record demands
+ * no approval from anyone, so announcing it as pending would be a false demand and would leak
+ * into the pmc/client-only pending surfaces.
+ */
+const RECORDED_ISSUE_PREFIX = 'Issue recorded';
+
+export function recordedIssueNotice(title: string): string {
+  return `${RECORDED_ISSUE_PREFIX}: ${title}`;
+}
+
 /** True when a notification announces a pending decision (pmc/client-only information). */
 export function isPendingDecisionNotice(text: string): boolean {
   return text.startsWith(PENDING_DECISION_PREFIX);

@@ -8,7 +8,7 @@ import type { AuthUser } from '../common/auth';
 import { resolveActor, ROLE_LABEL } from '../common/actor';
 import { lockProjectReadiness } from '../common/readiness-lock';
 import { nextSeqId } from '../domain/ids';
-import { pendingDecisionNotice, withdrawnDecisionNotice } from '../domain/notifications';
+import { pendingDecisionNotice, recordedIssueNotice, withdrawnDecisionNotice } from '../domain/notifications';
 import { cancelQueuedPushBySubject } from '../platform/outbox/cancellation';
 import type { ApproveInput, ChangeInput, CreateDecisionInput, UpdateDecisionDraftInput, WithdrawDecisionInput } from '../contracts';
 import type { SnapshotDto } from '../snapshot/types';
@@ -48,6 +48,11 @@ export class DecisionsService {
       room: input.room ?? null,
       options: input.options.map((o) => ({ label: o.label ?? null, material: o.material, delta: o.delta, swatch: o.swatch, photoUrl: o.photoUrl ?? null, recommended: o.recommended })),
       publish: !!input.publish,
+      // Phase 6 task 4b (round 13) — the decider joins the preimage: reusing a key after
+      // changing the intended HOLDER must be the payload-mismatch conflict, never a replay
+      // that silently preserves the wrong authority.
+      deciderKind: input.deciderKind ?? 'client',
+      deciderMembershipId: input.deciderMembershipId ?? null,
     });
     if (await peekReplay(this.prisma, scope, actor.actorId, 'decisions.create', idempotencyKey, requestHash)) {
       return this.snapshot.build(projectId, user.role, user.sub);
@@ -59,7 +64,11 @@ export class DecisionsService {
     // Durable fix (internal PK + per-project code) is tracked in docs/ROADMAP.md.
     const existing = await this.prisma.decision.findMany({ select: { id: true } });
     const id = nextSeqId('DL-', existing.map((d) => d.id));
+    // A RECORD (deciderKind 'none') carries EXACTLY ZERO options, so the option-sourced lead
+    // presentation does not exist for it (plan §A.2): the swatch falls back to a neutral token
+    // rather than throwing on `input.options[0]`.
     const lead = input.options.find((o) => o.recommended) ?? input.options[0];
+    const photoSwatch = lead?.swatch ?? 'recorded';
 
     // Location: when a tree node is given, validate it belongs to this project and derive
     // the display `room` from the node's name (the full breadcrumb is built client-side
@@ -77,7 +86,11 @@ export class DecisionsService {
     // Draft by default: `publishedAt` stays null (author-private, weightless) until the PMC
     // publishes. `publish: true` is the one-step "issue now" — created already live.
     const publishedAt = input.publish ? new Date() : null;
-    const notice = pendingDecisionNotice(input.title);
+    const deciderKind = input.deciderKind ?? 'client';
+    // The side effects BRANCH on the kind (plan §A.2, round 2): today's path unconditionally
+    // appends "Decision awaiting approval" and pushes at the pending audience — a false
+    // approval demand for a record nobody can approve.
+    const notice = deciderKind === 'none' ? recordedIssueNotice(input.title) : pendingDecisionNotice(input.title);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -94,7 +107,14 @@ export class DecisionsService {
         // because that is the seal keeping a published decision approvable. Atomic to every
         // reader: the command's observable result is unchanged.
         await tx.decision.create({
-          data: { id, projectId, title: input.title, room, nodeId, status: 'pending', ageDays: 0, photoSwatch: lead.swatch, authorId: user.sub, publishedAt: null },
+          data: {
+            id, projectId, title: input.title, room, nodeId,
+            // a record is BORN terminal: `none` ⟺ `recorded`, sealed both directions by CHECK
+            status: deciderKind === 'none' ? 'recorded' : 'pending',
+            ageDays: 0, photoSwatch, authorId: user.sub, publishedAt: null,
+            deciderKind,
+            deciderMembershipId: deciderKind === 'member' ? (input.deciderMembershipId ?? null) : null,
+          },
         });
         await tx.decisionOption.createMany({
           data: input.options.map((o, i) => ({
