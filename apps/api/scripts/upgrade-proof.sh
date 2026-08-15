@@ -3502,10 +3502,21 @@ VALUES ('UP4A-DEL1','UP4A-EV1','p1','webpush.notify','unordered',900001,'dispatc
 -- AMBIGUOUS and must survive (the command's multiplicity guard, mirrored). The stamped notice
 -- on D1 retires by identity. And a servable decisions.inbox generation that still claims the
 -- withdrawn row is pending must be RETIRED so reads fall back to canonical truth.
+-- Phase 6 task 4b: a PUBLISHED ordinary decision must be approvable, so it carries at least
+-- two options and they exist BEFORE publication (the publication seal counts children at both
+-- doors). This fixture previously modelled a published decision with ZERO options — a state
+-- nobody could ever approve, which the seal now correctly refuses.
 INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
-VALUES ('UP4A-D3','p1','Withdrawable','Hall','pending','stone',now()),
-       ('UP4A-D4','p1','Uniquely withdrawn','Hall','pending','stone',now())
+VALUES ('UP4A-D3','p1','Withdrawable','Hall','pending','stone',NULL),
+       ('UP4A-D4','p1','Uniquely withdrawn','Hall','pending','stone',NULL)
 ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4A-D3O1','UP4A-D3','A','a','Teak',0,'sw1'),
+       ('UP4A-D3O2','UP4A-D3','B','b','Oak',100,'sw2'),
+       ('UP4A-D4O1','UP4A-D4','A','a','Teak',0,'sw1'),
+       ('UP4A-D4O2','UP4A-D4','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id" IN ('UP4A-D3','UP4A-D4') AND "publishedAt" IS NULL;
 UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"='USER-1', "withdrawnByName"='Legacy PMC', "withdrawReason"='pre-existing withdrawal' WHERE "id"='UP4A-D4' AND "status"::text='pending';
 INSERT INTO "Notification"("id","projectId","text","color","time","decisionId")
 VALUES ('UP4A-N1','p1','Decision awaiting approval: Withdrawable','#C08A2D','2d ago','UP4A-D1'),
