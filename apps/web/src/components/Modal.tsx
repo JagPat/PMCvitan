@@ -1,6 +1,9 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
+import { useFocusTrap } from '@/lib/useFocusTrap';
 
-/** Centered modal with backdrop, Escape-to-close and click-outside-to-close. */
+/** Centered modal with backdrop, Escape-to-close, click-outside-to-close and
+ *  the shared focus trap (Wave 0 / F-1a): focus moves in on open, Tab cycles
+ *  inside, and focus returns to the opener on close. */
 export function Modal({
   onClose,
   children,
@@ -12,6 +15,8 @@ export function Modal({
   maxWidth?: number;
   labelledBy?: string;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -36,9 +41,12 @@ export function Modal({
       }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy}
+        data-surface="light"
         onClick={(e) => e.stopPropagation()}
         style={{
           background: 'var(--panel)',

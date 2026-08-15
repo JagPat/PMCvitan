@@ -7,6 +7,8 @@
   position: fixed;
   z-index: 41;
   background: var(--ink);
+  /* ink surface — the focus ring follows the surface */
+  --active-focus-ring: var(--focus-ring-dark);
   color: var(--sidebar-text);
   border-radius: 14px;
   padding: 14px;

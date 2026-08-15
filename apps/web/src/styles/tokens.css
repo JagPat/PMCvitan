@@ -53,4 +53,12 @@
   --rail-w: 250px;
   --tabbar-h: 62px;
   --content-max: 1120px;
+
+  /* focus (Wave 0 / F-1a) — contrast-verified in focus-foundation.test.tsx;
+     re-measure if any palette value changes. The accent ring fails 3:1 on ink
+     (2.95:1), which is why ink surfaces carry their own ring. */
+  /* light surfaces (canvas, panel, paper) */
+  --focus-ring: 0 0 0 2px var(--paper), 0 0 0 4px var(--accent);
+  /* ink surfaces (left rail, dark cards, worker job-card header) */
+  --focus-ring-dark: 0 0 0 2px var(--ink), 0 0 0 4px var(--sidebar-text);
 }

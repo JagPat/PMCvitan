@@ -160,7 +160,7 @@ export function DailyLogScreen() {
 
         {/* check-in */}
         {dailyLog.checkedIn ? (
-          <div style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', borderRadius: 15, padding: 15, display: 'flex', alignItems: 'center', gap: 13 }}>
+          <div data-surface="ink" style={{ background: 'var(--ink)', color: 'var(--sidebar-text)', borderRadius: 15, padding: 15, display: 'flex', alignItems: 'center', gap: 13 }}>
             <div style={{ width: 46, height: 46, borderRadius: 12, background: 'linear-gradient(135deg,#6b5a48,#3a2f26)', flex: 'none', position: 'relative' }}>
               <span style={{ position: 'absolute', right: -3, bottom: -3, width: 18, height: 18, borderRadius: '50%', background: 'var(--green-solid)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Check size={10} color="#fff" strokeWidth={3} />

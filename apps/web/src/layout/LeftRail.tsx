@@ -28,7 +28,7 @@ export function LeftRail() {
   const projMeta = [descriptor, stage].filter(Boolean).join(' · ') || '—';
 
   return (
-    <aside className={styles.rail}>
+    <aside className={styles.rail} data-surface="ink">
       <div className={styles.header}>
         <div className={styles.logoTile}>
           <img src={logo} alt="Vitan" />

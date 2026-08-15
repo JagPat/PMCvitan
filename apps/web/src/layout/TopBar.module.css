@@ -1,6 +1,8 @@
 .bar {
   flex: none;
   background: var(--ink);
+  /* ink surface (mobile-only bar) — the focus ring follows the surface */
+  --active-focus-ring: var(--focus-ring-dark);
   color: var(--sidebar-text);
   display: flex;
   align-items: center;
