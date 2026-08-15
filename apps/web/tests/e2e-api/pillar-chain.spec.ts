@@ -395,6 +395,11 @@ test('NEGATIVES: review copies never govern; same-room inspections are invisible
   expect(revB.ok() || revB.status() === 409, `CH-100 rev B → ${revB.status()}`).toBeTruthy();
   let snap = await snapshot(request, pmcToken);
   const dwg = snap.drawings.find((d: { number: string }) => d.number === 'CH-100');
+  // The tolerance must not mask a rejected-without-created regression: whichever
+  // outcome the POST took, rev B EXISTS as a review copy in the register.
+  const revBRow = dwg.revisions.find((r: { rev: string }) => r.rev === 'B');
+  expect(revBRow, 'CH-100 rev B exists after ok-or-409').toBeTruthy();
+  expect(revBRow.status).toBe('for_review');
   expect(dwg.current.rev).toBe('A');
   expect(dwg.current.status).toBe('for_construction');
   expect(readinessOf(snap).drawing.v).toBe('ok');
@@ -415,6 +420,11 @@ test('NEGATIVES: review copies never govern; same-room inspections are invisible
   });
   expect(ch101.ok() || ch101.status() === 409, `CH-101 rev A → ${ch101.status()}`).toBeTruthy();
   snap = await snapshot(request, pmcToken);
+  // Same existence proof for the second tolerated POST: the review-only drawing
+  // and its rev A are IN the register, not merely implied by the derived gate.
+  const ch101Dwg = snap.drawings.find((d: { number: string }) => d.number === 'CH-101');
+  expect(ch101Dwg, 'CH-101 exists after ok-or-409').toBeTruthy();
+  expect(ch101Dwg.revisions.some((r: { rev: string; status: string }) => r.rev === 'A' && r.status === 'for_review')).toBeTruthy();
   expect(readinessOf(snap).drawing.v).toBe('fail');
 
   // an override is the PMC's authority alone
