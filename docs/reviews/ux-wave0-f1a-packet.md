@@ -202,6 +202,29 @@ EXIT 0.
 
 Probes 18/18; full web 782/782; `pnpm check` EXIT 0.
 
+## Round 9 — one Codex finding on head `c0bcd9b`, folded
+
+1. **(P2)** two more interactive ink containers inherited the light
+   token: the Daily-Log checked-in card (its Check out button) and the
+   TeamAccess job-card header (its Sign out button) — both
+   `background: 'var(--ink)'` with no `data-surface` ancestor, so their
+   controls drew the accent ring this unit's own probe measures at
+   2.95:1 on ink. Enumerating the class surfaced a THIRD the finding
+   did not name: the Dashboard live-from-site strip (its View Schedule
+   button). All three now carry `data-surface="ink"`, and the probe is
+   an INVENTORY: every ink-background site in `apps/web/src` (14 inline
+   + 3 module-CSS) is pinned and classified — an interactive ink
+   CONTAINER must resolve the dark ring (element mark or module-CSS
+   property), while an ink-FILLED control or decoration on a light
+   surface keeps the light ring (the ring draws against the
+   SURROUNDING surface, not the control's own fill) — so a NEW ink
+   site fails the probe until classified (reproduced RED on the
+   unmarked sources).
+
+Probes 22/22; full web 786/786; `pnpm check` EXIT 0. This head also
+carries the shepherded `origin/main` merge (PR #340 — the cleared 4b
+plan; docs-only, no F-1a surface).
+
 ## Round 8 — one Codex finding on head `7780684`, folded
 
 1. **(P1)** the round-7 handoff said F-1b opens on merge, but THREE

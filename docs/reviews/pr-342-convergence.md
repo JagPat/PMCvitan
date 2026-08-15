@@ -19,6 +19,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 
 | `7780684` | round-7 fold | 1 (1 P1) | corrected on this head: the stale post-Phase-6 Wave-0 gate removed — the round-7 handoff opened F-1b on merge while the README's rule 2, its re-audit bullet, and the Wave-0 shared RED step still ordered waiting for Task 4/Phase 6 (a continuation obeying the stricter text would postpone F-1b); the fixed sequencing and the post-Phase-6 re-audit now govern WAVES 1–5 only, Wave 0 is the named owner-directed parallel exception, and each Wave-0 unit re-runs its reproduction step against the CURRENT head at the moment it opens |
 
+| `c0bcd9b` | round-8 fold | 1 (1 P2) | corrected on this head (which also carries the shepherded PR-#340 main-merge): the ink-surface set becomes an INVENTORY — the Daily-Log checked-in card and the TeamAccess job-card header (both interactive, both unmarked) gain `data-surface="ink"`, enumeration surfaced a third unnamed instance (the Dashboard live strip) which is marked too, and the probe now pins EVERY ink-background site in src (14 inline + 3 module-CSS), classified container-vs-fill-vs-decoration, failing on any new unclassified site |
+
 ## Root analysis — one generative class
 
 All ten findings across both rounds are instances of ONE rule: **a focus
@@ -42,8 +44,11 @@ the symptom; the probes pin every moved mechanism (15 arms).
 
 ## Disposition
 
-Twenty-two findings across eight rounds — every one verified real, none
-disputed, none refuted. Probes 20/20 at this head; full web suite 784/784;
+Twenty-three findings across nine rounds — every one verified real, none
+disputed, none refuted. The round-9 ink finding closed its CLASS: the
+per-site corrections of rounds 1 and 9 are superseded by the pinned
+inventory, which makes the next unmarked ink surface a test failure
+instead of a review finding. Probes 20/20 at this head; full web suite 784/784;
 `pnpm check` EXIT 0. The round-7 and round-8 findings are the PROCESS items — first the
 owner-only gate on loop-assigned work (resolved by recording the
 autonomous default the owner can override asynchronously), then the

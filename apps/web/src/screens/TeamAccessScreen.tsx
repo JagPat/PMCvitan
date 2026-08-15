@@ -552,7 +552,7 @@ export function TeamAccessScreen() {
     const approvedBy = approvedDecisions[0]?.approver ?? 'Mr. Shah';
     return (
       <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%', background: 'var(--panel)' }}>
-        <div style={{ padding: '16px 20px 12px', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--ink)', color: 'var(--sidebar-text)' }}>
+        <div data-surface="ink" style={{ padding: '16px 20px 12px', display: 'flex', alignItems: 'center', gap: 12, background: 'var(--ink)', color: 'var(--sidebar-text)' }}>
           <div style={{ width: 44, height: 44, borderRadius: '50%', background: worker?.color ?? '#B4462E', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 19, flex: 'none' }}>{worker ? worker.name[0] : 'W'}</div>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 13, color: 'rgba(237,231,218,.6)' }}>{t.hi},</div>

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, screen } from '@testing-library/react';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { Modal } from '@/components/Modal';
 import { PhotoViewer } from '@/components/PhotoViewer';
 
@@ -408,5 +408,81 @@ describe('F-1a ProjectSwitcher dropdown focus', () => {
     fireEvent.click(manage);
     expect(screen.queryByRole('button', { name: /Manage team/ })).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+});
+
+// ── the ink-surface INVENTORY (round 9) ────────────────────────────────────────
+
+describe('F-1a ink-surface inventory', () => {
+  // Every ink-background site in the app, pinned and classified. An
+  // INTERACTIVE ink container (it holds focusable controls) must resolve the
+  // dark ring — `data-surface="ink"` on the element itself, or its module CSS
+  // setting `--active-focus-ring` beside the ink background. An ink-FILLED
+  // control or a decoration sitting on a light surface keeps the light ring:
+  // the ring draws against the SURROUNDING surface, not the control's own
+  // fill. A NEW ink site fails this probe until it is classified here.
+  const TSX_INK = /background:\s*'var\(--ink\)'/g;
+  const CSS_INK = /background(?:-color)?:\s*var\(--ink\)/;
+
+  // src-relative path → { total ink sites, of which marked containers }
+  const TSX_INVENTORY: Record<string, { total: number; marked: number }> = {
+    'components/Toast.tsx': { total: 1, marked: 0 }, // non-interactive toast
+    'layout/ProjectSwitcher.tsx': { total: 1, marked: 0 }, // Create button fill
+    'screens/ClientHealthScreen.tsx': { total: 1, marked: 0 }, // card-button fill
+    'screens/DailyLogScreen.tsx': { total: 2, marked: 1 }, // checked-in card (Check out) IS a surface; photo button is a fill
+    'screens/TeamScreen.tsx': { total: 2, marked: 0 }, // avatar circles
+    'screens/DrawingsScreen.tsx': { total: 1, marked: 0 }, // dlBtn control fill
+    'screens/DashboardScreen.tsx': { total: 1, marked: 1 }, // live-from-site strip (View Schedule) IS a surface
+    'screens/TeamAccessScreen.tsx': { total: 4, marked: 1 }, // job-card header (Sign out) IS a surface; icon box, badge row, avatar are decorations
+    'screens/ClientDecisionsScreen.tsx': { total: 1, marked: 0 }, // label chip
+  };
+
+  // css file → how that ink surface resolves the dark ring
+  const CSS_INVENTORY: Record<string, 'sets-active-focus-ring' | 'element-data-surface'> = {
+    'layout/TopBar.module.css': 'sets-active-focus-ring',
+    'layout/NotificationPanel.module.css': 'sets-active-focus-ring',
+    'layout/LeftRail.module.css': 'element-data-surface',
+  };
+
+  // vitest runs with cwd = apps/web; a wrong cwd fails LOUDLY (ENOENT), and
+  // the completeness assertion below would catch an empty listing anyway.
+  const files = (readdirSync('src', { recursive: true }) as string[])
+    .map((f) => String(f).replace(/\\/g, '/'))
+    .sort();
+
+  it('the inventory is COMPLETE — every ink-background site in src is pinned here', () => {
+    const foundTsx: Record<string, number> = {};
+    for (const f of files.filter((f) => f.endsWith('.tsx'))) {
+      const n = (read(`../src/${f}`).match(TSX_INK) ?? []).length;
+      if (n > 0) foundTsx[f] = n;
+    }
+    expect(foundTsx).toEqual(
+      Object.fromEntries(Object.entries(TSX_INVENTORY).map(([f, v]) => [f, v.total])),
+    );
+    const foundCss = files.filter((f) => f.endsWith('.css') && CSS_INK.test(read(`../src/${f}`)));
+    expect(foundCss.sort()).toEqual(Object.keys(CSS_INVENTORY).sort());
+  });
+
+  it('every INTERACTIVE ink container resolves the dark ring; fills and decorations do not claim it', () => {
+    for (const [f, { marked }] of Object.entries(TSX_INVENTORY)) {
+      const src = read(`../src/${f}`);
+      let markedFound = 0;
+      for (const m of src.matchAll(TSX_INK)) {
+        // The style prop sits inside the opening tag; the element's own
+        // attributes run from the nearest preceding '<' to the match.
+        const tag = src.slice(src.lastIndexOf('<', m.index), m.index);
+        if (tag.includes('data-surface="ink"')) markedFound += 1;
+      }
+      expect({ file: f, marked: markedFound }).toEqual({ file: f, marked });
+    }
+    for (const [f, mode] of Object.entries(CSS_INVENTORY)) {
+      if (mode === 'sets-active-focus-ring') {
+        expect(read(`../src/${f}`)).toMatch(/--active-focus-ring:\s*var\(--focus-ring-dark\)/);
+      } else {
+        // The component the stylesheet belongs to carries the mark itself.
+        const component = f.replace('.module.css', '.tsx');
+        expect(read(`../src/${component}`)).toContain('data-surface="ink"');
+      }
+    }
   });
 });
