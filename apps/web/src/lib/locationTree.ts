@@ -170,7 +170,7 @@ export function groupDecisions(decisions: Decision[], nodes: ProjectNode[], mode
   }
 
   const groups: DecisionGroup[] = [...map.entries()].map(([key, rows]) => {
-    const counts = { total: rows.length, pending: 0, approved: 0, change: 0, withdrawn: 0 };
+    const counts = { total: rows.length, pending: 0, approved: 0, change: 0, withdrawn: 0, recorded: 0 };
     for (const r of rows) counts[r.decision.status] += 1;
     // rows sorted by their finer location, then id
     rows.sort((a, b) => a.subLabel.localeCompare(b.subLabel) || a.decision.id.localeCompare(b.decision.id));

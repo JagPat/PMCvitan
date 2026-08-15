@@ -12,7 +12,7 @@
  * The query RESPONSE is the shared {@link Decision} view (re-exported here as `DecisionView`), so the
  * snapshot's decision slice and any future module-owned decision query share one response shape.
  */
-import type { Decision, DecisionStatus } from '../domain/types';
+import type { Decision, DecisionStatus, DeciderKind } from '../domain/types';
 
 /** The decisions module's state-changing commands (must equal the manifest `commands`). */
 export const DECISION_COMMANDS = [
@@ -23,6 +23,9 @@ export const DECISION_COMMANDS = [
   'decisions.withdrawChange',
   // Phase 6 task 4a — take back a published, never-approved decision (pmc authority, terminal).
   'decisions.withdraw',
+  // Phase 6 task 4b — edit an UNPUBLISHED draft (title/room/options/decider); the recovery
+  // path for a draft naming a since-removed member, legal only while publishedAt IS NULL.
+  'decisions.updateDraft',
 ] as const;
 export type DecisionCommand = (typeof DECISION_COMMANDS)[number];
 
@@ -60,13 +63,35 @@ export interface DecisionOptionInput {
   readonly recommended: boolean;
 }
 
-/** `decisions.create` — issue a decision (as a draft, or published in one step). */
+/** Phase 6 task 4b — the decider kinds a 4b deployment accepts ('architect' joins in 4d). */
+export const DECIDER_KINDS = ['client', 'pmc', 'member', 'none'] as const;
+
+/** `decisions.create` — issue a decision (as a draft, or published in one step).
+ *  4b: the decider joins the contract (default 'client' — byte-identical for existing
+ *  callers) AND the create idempotency preimage (a reused key with a changed decider is
+ *  the payload-mismatch conflict, never a replay). `deciderMembershipId` is required iff
+ *  `deciderKind='member'`; `deciderKind='none'` requires EXACTLY ZERO options (a record
+ *  FILES an issue — options are the approvable alternatives of a CHOICE); every other
+ *  kind keeps the two-option floor. */
 export interface CreateDecisionInput {
   readonly title: string;
   readonly nodeId?: string;
   readonly room: string;
   readonly options: readonly DecisionOptionInput[];
   readonly publish: boolean;
+  readonly deciderKind?: DeciderKind;
+  readonly deciderMembershipId?: string;
+}
+
+/** `decisions.updateDraft` — edit an unpublished draft (Phase 6 task 4b, round 8): the
+ *  holder and the other draft fields, refused once published (write-once from publication). */
+export interface UpdateDecisionDraftInput {
+  readonly title?: string;
+  readonly nodeId?: string;
+  readonly room?: string;
+  readonly options?: readonly DecisionOptionInput[];
+  readonly deciderKind?: DeciderKind;
+  readonly deciderMembershipId?: string | null;
 }
 
 /** `decisions.approve` — the client chooses an option (locks the decision). */

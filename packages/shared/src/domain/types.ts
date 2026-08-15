@@ -102,7 +102,12 @@ export type Lang = 'en' | 'hi' | 'gu';
 
 /** `withdrawn` = a published, never-approved decision the PMC took back (Phase 6 task 4a)
  *  — TERMINAL, pmc-only visible, and every reader keyed by this type must answer for it. */
-export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn';
+// 'recorded' — Phase 6 task 4b: the record-only issue (deciderKind 'none'), filed and
+// team-visible, approvable by nobody; terminal like 'withdrawn'.
+export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded';
+
+/** Phase 6 task 4b — WHO must decide, per decision. 'architect' joins IN UNIT 4d with the role. */
+export type DeciderKind = 'client' | 'pmc' | 'member' | 'none';
 /** `awaiting-signoff` = a completion CLAIM parked until the PMC approves the
  *  linked closing inspection (Phase 1 Task 5) — counted as NOT done everywhere. */
 export type ActivityStatus = 'not-started' | 'in-progress' | 'awaiting-signoff' | 'done' | 'blocked';

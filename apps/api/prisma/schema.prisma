@@ -19,12 +19,26 @@ enum DecisionStatus {
   pending
   approved
   change
+  // Phase 6 task 4b — the record-only issue: filed, team-visible, approvable by nobody.
+  // TERMINAL like `withdrawn`, in BOTH verbs and its published evidence; paired 1:1 with
+  // deciderKind='none' by the kind⟺status CHECK family (either alone is refused).
+  recorded
   // Phase 6 task 4a — a published, never-approved decision the PMC takes back. TERMINAL
   // (a BEFORE UPDATE trigger refuses any transition out) and entered ONLY from a published
   // `pending` row (the entry trigger; register emptiness alone is not proof of never-approved
   // on legacy data). Riding the enum — not an orthogonal flag — is deliberate: every reader
   // keyed by DecisionStatus fails to compile until it answers for the new value.
   withdrawn
+}
+
+// Phase 6 task 4b — WHO must decide, per decision. 'architect' joins IN UNIT 4d WITH the
+// role itself (a 4b-only deployment accepting an architect-decider would create decisions
+// no one can authenticate to see or approve).
+enum DeciderKind {
+  client
+  pmc
+  member
+  none
 }
 
 enum ActivityStatus {
@@ -852,8 +866,13 @@ model Membership {
   completionClaims Activity[] @relation("CompletionClaims")
   // decisions this member withdrew (Phase 6 task 4a) — attribution is FK-backed, never free-text
   decisionWithdrawals Decision[] @relation("DecisionWithdrawals")
+  // decisions naming this membership as their decider (Phase 6 task 4b)
+  decisionsHeld Decision[] @relation("DecisionDeciders")
 
   @@unique([projectId, userId])
+  // Phase 6 task 4b — the candidate key the decider FK targets: (projectId, id) makes a
+  // cross-project membership reference unrepresentable at the database.
+  @@unique([projectId, id])
   @@index([userId])
   responsibleFor ActivityRequirement[]
 }
@@ -1983,7 +2002,20 @@ model Decision {
   material       String?
   approver       String? // human-readable approver line (the caller's REAL name since Phase 1 Task 2)
   approvedById   String? // the approving user's id — real attribution (Phase 1 Task 2)
-  onBehalfOf     String? // 'client' when a PMC approves on the client's behalf — never disguised
+  onBehalfOf     String? // generalized by 4b: the decider's designation when the PMC acts on their behalf
+  // Phase 6 task 4b — the per-decision decider. Holder columns are CURRENT STATE, editable
+  // while the row is an unpublished draft and WRITE-ONCE FROM PUBLICATION (trigger); the
+  // named membership is validated ACTIVE through the orgs-owned primitive at publish and at
+  // every holder write. `deciderMembershipId` is required iff kind='member' (CHECK).
+  deciderKind         DeciderKind @default(client)
+  deciderMembershipId String?
+  deciderMembership   Membership? @relation("DecisionDeciders", fields: [projectId, deciderMembershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  // The approval act freezes the holder TUPLE as it stood AT THE ACT (round 3): the holder
+  // columns above keep moving with 4d forwards; the act keeps its own history. Written by
+  // approve alongside approver/approvedById and frozen with them.
+  approvedDeciderKind         DeciderKind?
+  approvedDeciderMembershipId String?
+  approvedDeciderLabel        String? // the display identity exactly as the register rendered it
   date           String? // display date, e.g. "12 Jun 2026"
   cost           Int? // rupees
   createdAt      DateTime         @default(now())

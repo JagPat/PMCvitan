@@ -36,6 +36,9 @@ export const decisionChip = {
   // a retired decision (Phase 6 task 4a) — muted ink, deliberately without an alarm colour:
   // nothing is awaited, the register keeps the record
   withdrawn: { bg: '#EAE5DA', color: '#6B665C', border: 'rgba(35,33,28,0.15)' },
+  // Phase 6 task 4b — the record-only issue: filed, permanent, no approval expected. A
+  // settled archival tone, distinct from withdrawn's grey (this entry LIVES in the register).
+  recorded: { bg: '#E3E8EE', color: '#3D5876', border: 'rgba(61,88,118,0.25)' },
 } as const;
 
 export const decisionChipLabel = {
@@ -43,6 +46,7 @@ export const decisionChipLabel = {
   approved: 'APPROVED & LOCKED',
   change: 'CHANGE REQUESTED',
   withdrawn: 'WITHDRAWN',
+  recorded: 'RECORDED',
 } as const;
 
 export const decisionRail = {
@@ -50,6 +54,7 @@ export const decisionRail = {
   approved: '#3F7A54',
   change: '#31567F',
   withdrawn: '#6B665C',
+  recorded: '#3D5876',
 } as const;
 
 /** Readiness-gate colours. `na` renders as a hollow inset ring (transparent fill). */

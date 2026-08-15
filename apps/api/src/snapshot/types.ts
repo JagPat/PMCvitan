@@ -48,7 +48,7 @@ export interface DecisionDto {
   room: string;
   /** the location-tree node this decision attaches to (null/absent = ungrouped, legacy `room`) */
   nodeId?: string;
-  status: 'pending' | 'approved' | 'change' | 'withdrawn';
+  status: 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded';
   ageDays?: number;
   photoSwatch: string;
   options: OptionDto[];

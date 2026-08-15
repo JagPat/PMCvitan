@@ -34,7 +34,7 @@ export type {
 } from '@vitan/shared';
 
 export type GateState = 'ok' | 'wait' | 'fail' | 'na';
-export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn';
+export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded';
 
 /** The Decision gate is derived live from the linked decision's status (legacy four-gate helper). */
 export function deriveDecisionGate(decisionStatus: DecisionStatus | null): GateState {
