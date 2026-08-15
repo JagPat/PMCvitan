@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, seedProjectClient } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, seedProjectClient, wipeDecisions } from './fixtures';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { ProjectionRebuildOperations, REBUILDABLE_PROJECTIONS } from '../../src/platform/projections/rebuild-operations';
@@ -95,9 +95,10 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
     // approval DecisionEvents are undeletable evidence (round 12) — the sanctioned
     // destructive-reset helper wipes them with the named seal disabled
     await wipeDecisionEvents(t.prisma, { decision: { projectId: { startsWith: 'it-upg-' } } });
+    // Phase 6 task 4b: a published decision's options are frozen — the wipe goes through the
+    // sanctioned named-seal helper before the project rows that carry them
+    await wipeDecisions(t.prisma, { projectId: { startsWith: 'it-upg-' } });
     for (const [model, where] of [
-      ['decisionOption', { decision: { projectId: { startsWith: 'it-upg-' } } }],
-      ['decision', { projectId: { startsWith: 'it-upg-' } }],
       ['drawingRecipient', { projectId: { startsWith: 'it-upg-' } }],
       ['drawingRevision', { projectId: { startsWith: 'it-upg-' } }],
       ['drawing', { projectId: { startsWith: 'it-upg-' } }],
@@ -137,7 +138,9 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
         room: 'Living',
         photoSwatch: 'sw-probe',
         status: 'pending',
-        publishedAt: new Date('2026-07-01T00:00:00.000Z'),
+        // Phase 6 task 4b: a NESTED option create writes the parent first, so publication moves
+        // below the children — the two-option floor is judged at BOTH doors
+        publishedAt: null,
         authorId: f.memberUser.id,
         options: {
           create: [
@@ -147,6 +150,7 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
         },
       },
     });
+    await t.prisma.decision.update({ where: { id }, data: { publishedAt: new Date('2026-07-01T00:00:00.000Z') } });
   };
 
   /** A FOREIGN (non-decision) event — establishes the committed stream head without ever firing

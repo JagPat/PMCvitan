@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, seedProjectClient } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, seedProjectClient, wipeDecisions } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { LabourService } from '../../src/labour/labour.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
@@ -56,12 +56,13 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
     // approval DecisionEvents are undeletable evidence (round 12) — the sanctioned
     // destructive-reset helper wipes them with the named seal disabled
     await wipeDecisionEvents(t.prisma, { decision: { projectId: { startsWith: 'it-p4-' } } });
+    // Phase 6 task 4b: a published decision's options are frozen — the wipe goes through the
+    // sanctioned named-seal helper before the project rows that carry them
+    await wipeDecisions(t.prisma, { projectId: { startsWith: 'it-p4-' } });
     for (const [model, where] of [
       ['auditLog', { projectId: { startsWith: 'it-p4-' } }],
       ['activity', { projectId: { startsWith: 'it-p4-' } }],
       ['membership', { projectId: { startsWith: 'it-p4-' } }],
-      ['decisionOption', { decision: { projectId: { startsWith: 'it-p4-' } } }],
-      ['decision', { projectId: { startsWith: 'it-p4-' } }],
       ['project', { id: { startsWith: 'it-p4-' } }],
     ] as const) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -88,12 +89,18 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
   const makeApprovedDecision = async (projectId: string, id: string): Promise<void> => {
     await t.prisma.decision.create({
       data: {
+        // Phase 6 task 4b: a published ordinary decision needs TWO options, and a NESTED create
+        // writes the parent first — so the row is born unpublished and published below
         id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
-        publishedAt: new Date(), authorId: f.memberUser.id, approvedOption: 'Option A',
-        options: { create: [{ label: 'Option A', optionKey: 'opt-a', material: 'Skilled', delta: 0, swatch: 'sw-a', order: 1 }] },
+        publishedAt: null, authorId: f.memberUser.id, approvedOption: 'Option A',
+        options: { create: [
+          { label: 'Option A', optionKey: 'opt-a', material: 'Skilled', delta: 0, swatch: 'sw-a', order: 1 },
+          { label: 'Option B', optionKey: 'opt-b', material: 'Semi-skilled', delta: 100, swatch: 'sw-b', order: 2 },
+        ] },
         events: { create: [{ type: 'approved', actor: 'member' }] },
       },
     });
+    await t.prisma.decision.update({ where: { id }, data: { publishedAt: new Date() } });
     await t.prisma.decisionApprovalRevision.create({
       data: { id: `dar-${id}-v1`, projectId, decisionId: id, version: 1, optionKey: 'opt-a', approvedAt: new Date(), approvedById: f.memberUser.id },
     });
