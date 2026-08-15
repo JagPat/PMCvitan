@@ -75,7 +75,9 @@ each secret/config key before shipping.
 | psql SSL dropped | naive `?` truncation | Python URL parse, strip `schema` only | Cloud SQL / SSL URLs |
 | empty-host URI broken | `urlunsplit` drops `//` netloc | emit `postgresql:///dbname?...` form | Cloud SQL socket URLs |
 | dev auth on external DB | `ensure_api_env` always wrote dev JWT/ALLOW_DEV_AUTH | dev defaults only on default local URL; external requires `JWT_SECRET` | staging token forgery |
+| stale local JWT on external | presence-only check accepted leftover generated `.env` | strip generated JWT/`ALLOW_DEV_AUTH`; require operator secret | local→external restart |
 | psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
+| Prisma pool args in psql | only `schema=` stripped | drop Prisma-only query keys (`connection_limit`, `pool_timeout`, …) | mixed Prisma+libpq URL |
 | partial seed skip | early `ambli` row before seed finishes | sentinel `test-drawing-a` (late seed row) | interrupted seed restart |
 | `.env` corruption | `sed` `&` metacharacter | Python `set_env_var` | multi-param `DATABASE_URL` |
 | secret in logs | full URL in `echo` | `database_url_log_label` | failed external connect |
@@ -92,8 +94,8 @@ each secret/config key before shipping.
 
 ## Status
 
-Thirteen distinct findings across three finding-bearing heads (8 + 4 + 1 post-convergence), plus
-round 5 on head `d296fea` (auth safeguards, Prisma schema/search_path, seed-completion sentinel).
-All findings are corrected in the scripts; the compiled-API choice remains a documented trade-off.
+Round 6 on head `8fd1e1c` (stale generated JWT after a local→external switch; Prisma
+`connection_limit`/`pool_timeout` left in `psql` URLs) is corrected on this head. The compiled-API
+choice remains a documented trade-off.
 
 Review-Convergence: complete

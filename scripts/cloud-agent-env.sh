@@ -2,23 +2,31 @@
 # Shared helpers for cloud-agent-install.sh and cloud-agent-start.sh.
 
 DEFAULT_DATABASE_URL='postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public'
+DEV_JWT_SECRET='dev-secret-change-in-prod'
 SEED_PROJECT_ID='ambli'
 # Created near the end of apps/api/prisma/seed.ts — absent if seed was interrupted early.
 SEED_COMPLETION_MARK='test-drawing-a'
+# Prisma connector args that libpq/psql reject (keep sslmode, host, etc.).
+PRISMA_ONLY_QUERY_KEYS='schema connection_limit pool_timeout pgbouncer statement_cache_size socket_timeout sslidentity sslpassword sslaccept max_idle_connection_lifetime'
 
 resolve_database_url() {
   export DATABASE_URL="${DATABASE_URL:-$DEFAULT_DATABASE_URL}"
 }
 
-# psql/libpq: drop Prisma-only schema=; keep sslmode and other libpq params.
+# psql/libpq: drop Prisma-only query args; keep sslmode and other libpq params.
 psql_database_url() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" $PRISMA_ONLY_QUERY_KEYS <<'PY'
 import sys
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 raw = sys.argv[1]
+drop = {key.lower() for key in sys.argv[2:]}
 parts = urlsplit(raw)
-query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "schema"]
+query = [
+    (k, v)
+    for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    if k.lower() not in drop
+]
 query_string = urlencode(query)
 
 if parts.netloc:
@@ -85,12 +93,52 @@ pathlib.Path(path).write_text(text, encoding="utf-8")
 PY
 }
 
-env_var_present() {
-  local key="$1" file="$2"
-  if [ -n "${!key}" ]; then
+unset_env_var() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  python3 - "$file" "$key" <<'PY'
+import pathlib
+import re
+import sys
+
+path, key = sys.argv[1], sys.argv[2]
+text = pathlib.Path(path).read_text(encoding="utf-8")
+pattern = re.compile(rf"^{re.escape(key)}=.*\n?", re.MULTILINE)
+pathlib.Path(path).write_text(pattern.sub("", text), encoding="utf-8")
+PY
+}
+
+read_env_var() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  python3 - "$file" "$key" <<'PY'
+import pathlib
+import re
+import sys
+
+path, key = sys.argv[1], sys.argv[2]
+text = pathlib.Path(path).read_text(encoding="utf-8")
+match = re.search(rf"^{re.escape(key)}=(.*)$", text, re.MULTILINE)
+if not match:
+    raise SystemExit(0)
+value = match.group(1).strip()
+if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+    value = value[1:-1]
+print(value)
+PY
+}
+
+jwt_is_generated() {
+  [ "${1:-}" = "$DEV_JWT_SECRET" ]
+}
+
+external_jwt_supplied() {
+  if [ -n "${JWT_SECRET:-}" ] && ! jwt_is_generated "$JWT_SECRET"; then
     return 0
   fi
-  [ -f "$file" ] && grep -q "^${key}=" "$file"
+  local file_jwt
+  file_jwt="$(read_env_var apps/api/.env JWT_SECRET || true)"
+  [ -n "$file_jwt" ] && ! jwt_is_generated "$file_jwt"
 }
 
 ensure_api_env_database() {
@@ -102,13 +150,25 @@ ensure_api_env_database() {
 ensure_api_env() {
   ensure_api_env_database
   if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ]; then
-    set_env_var apps/api/.env JWT_SECRET "dev-secret-change-in-prod"
+    set_env_var apps/api/.env JWT_SECRET "$DEV_JWT_SECRET"
     set_env_var apps/api/.env ALLOW_DEV_AUTH "true"
     set_env_var apps/api/.env CORS_ORIGINS ""
     return 0
   fi
-  if ! env_var_present JWT_SECRET apps/api/.env; then
-    echo "[cloud-agent-env] External DATABASE_URL requires JWT_SECRET (environment or apps/api/.env)" >&2
+  # Local→external: generated JWT / ALLOW_DEV_AUTH must not count as operator secrets.
+  if jwt_is_generated "${JWT_SECRET:-}"; then
+    unset JWT_SECRET
+  fi
+  local file_jwt
+  file_jwt="$(read_env_var apps/api/.env JWT_SECRET || true)"
+  if jwt_is_generated "$file_jwt"; then
+    unset_env_var apps/api/.env JWT_SECRET
+  fi
+  if [ -z "${ALLOW_DEV_AUTH+x}" ]; then
+    unset_env_var apps/api/.env ALLOW_DEV_AUTH
+  fi
+  if ! external_jwt_supplied; then
+    echo "[cloud-agent-env] External DATABASE_URL requires JWT_SECRET (environment or apps/api/.env); generated local-dev secrets are not accepted" >&2
     exit 1
   fi
 }
