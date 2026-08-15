@@ -81,6 +81,21 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
     // OutboxDelivery (Task 6) FK-references DomainEvent, so truncate them together; ProcessedEvent
     // and ProjectionCursor carry no FK but are cleared for a clean per-suite slate.
     await prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor" CASCADE');
+    // Phase 6 task 4b — the DECISION wipe runs BEFORE the membership wipe below, the same
+    // ordering lesson `prisma/seed.ts` learned at 4a round 5 and which 4b extends: a membership
+    // that HOLDS a published open decision cannot be removed (`Membership_t4b_holder_seal`), so a
+    // project still carrying decisions would refuse its own teardown.
+    //
+    // It is CONDITIONAL, and that is load-bearing rather than an optimisation. `wipeDecisions`
+    // disables named triggers, and `ALTER TABLE` takes an ACCESS EXCLUSIVE lock on all three
+    // decision tables — in a suite that still holds a concurrent session reading them (the §I
+    // certification races keep a second client open), an unconditional exclusive lock in every
+    // teardown DEADLOCKS against it. Most suites own no decisions by this point, so the common
+    // path never takes the lock at all.
+    if (await prisma.decision.count({ where: { projectId: { in: [projectA.id, projectB.id] } } })) {
+      await wipeDecisions(prisma, { projectId: { in: [projectA.id, projectB.id] } });
+      await prisma.decisionApprovalRevision.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } });
+    }
     // reverse foreign-key order, one transaction — a failed test never strands rows
     await prisma.$transaction([
       // command-idempotency receipts (Phase 2 Task 5) reference the project/org tenant; clear
@@ -91,24 +106,6 @@ export async function createTwoProjectFixture(prisma: PrismaService): Promise<Tw
       prisma.passwordCredentialChallenge.deleteMany({ where: { userId: { in: [memberUser.id, ownerUser.id, otherUser.id, strangerUser.id, clientUser.id, otherClientUser.id] } } }),
       prisma.auditLog.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.notification.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
-      // Phase 6 task 4b — the DECISION wipe runs BEFORE the membership wipe, the same ordering
-      // lesson `prisma/seed.ts` learned at 4a round 5 and which 4b extends: a membership that
-      // HOLDS a published open decision cannot be removed (`Membership_t4b_holder_seal`), so a
-      // project still carrying decisions refuses its own teardown. The named seals are disabled
-      // for exactly this wipe — the sanctioned destructive-reset contract.
-      prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen"'),
-      prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
-      prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
-      prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
-      prisma.decisionEvent.deleteMany({ where: { decision: { projectId: { in: [projectA.id, projectB.id] } } } }),
-      prisma.decisionOption.deleteMany({ where: { decision: { projectId: { in: [projectA.id, projectB.id] } } } }),
-      prisma.changeRequest.deleteMany({ where: { decision: { projectId: { in: [projectA.id, projectB.id] } } } }),
-      prisma.decisionApprovalRevision.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
-      prisma.decision.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
-      prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
-      prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
-      prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen"'),
-      prisma.$executeRawUnsafe('ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen"'),
       prisma.membership.deleteMany({ where: { projectId: { in: [projectA.id, projectB.id] } } }),
       prisma.orgMembership.deleteMany({ where: { orgId: { in: [orgA.id, orgB.id] } } }),
       // Phase 6 unit 6.1a — the canonical party is ORG-scoped and records WHO created it, with a

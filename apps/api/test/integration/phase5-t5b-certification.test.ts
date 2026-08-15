@@ -1772,13 +1772,23 @@ describe('Phase 5 Task 5B — §E certification (live PG)', () => {
       const granting = grantOverride(projectId, billId, approver, f.memberUser.id)
         .then(() => 'granted' as const, () => 'refused' as const);
 
-      // it must WAIT on the membership row rather than read it unlocked — condition-based, so the
-      // probe fails if the lock is removed instead of passing on a lucky interleaving
+      // it must WAIT rather than read standing unlocked — condition-based, so the probe fails if
+      // the lock is removed instead of passing on a lucky interleaving.
+      //
+      // Phase 6 task 4b moved WHERE it waits. `Membership_t4b_holder_seal` fires on the role
+      // change and takes the project readiness advisory key under the §B.1 try-acquire protocol,
+      // holding it for the rest of the downgrading transaction. So the grant — which opens with
+      // `lockProjectReadiness` — now blocks on the ADVISORY key BEFORE it ever reaches its own
+      // `Membership ... FOR UPDATE`. That is a strictly EARLIER serialization point for the same
+      // guarantee (the grant cannot begin reading standing until the downgrade commits), and the
+      // outcome assertions below are unchanged. The detector therefore accepts either wait, and
+      // still fails if the grant waits on neither.
       const blocked = await (async () => {
         for (let i = 0; i < 60; i++) {
           const rows = await t.prisma.$queryRaw<Array<{ n: bigint }>>(Prisma.sql`
             SELECT COUNT(*) AS n FROM pg_stat_activity
-             WHERE wait_event_type = 'Lock' AND state = 'active' AND query ILIKE '%Membership%FOR UPDATE%'`);
+             WHERE wait_event_type = 'Lock' AND state = 'active'
+               AND (query ILIKE '%Membership%FOR UPDATE%' OR query ILIKE '%pg_advisory_xact_lock%')`);
           if (Number(rows[0]!.n) > 0) return true;
           if ((await Promise.race([granting, Promise.resolve('pending' as const)])) !== 'pending') return false;
           await new Promise((r) => setTimeout(r, 100));
