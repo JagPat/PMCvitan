@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, seedProjectClient, wipeDecisions } from './fixtures';
 import { ActivitiesService } from '../../src/activities/activities.service';
 import { ActivitiesQueryService } from '../../src/activities/activities.query';
 import { RequirementsService } from '../../src/activities/requirements.service';
@@ -93,7 +93,15 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
       ['dailyLog', { projectId: pids }],
       ['media', { projectId: pids }],
       ['activity', { projectId: pids }],
-      ['decision', { projectId: pids }],
+    ] as const) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (t.prisma as any)[model].deleteMany({ where });
+    }
+    // Phase 6 task 4b: decisions carry OPTIONS now (the two-option publication floor) and a
+    // published decision's options are frozen, so the wipe goes through the sanctioned named-seal
+    // helper — AFTER the activities that reference them, BEFORE the memberships that hold them
+    await wipeDecisions(t.prisma, { projectId: pids });
+    for (const [model, where] of [
       ['membership', { projectId: pids }],
       ['user', { id: { startsWith: 'it-p4t5-u-' } }],
       ['project', { id: pids }],
@@ -111,6 +119,9 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+    // Phase 6 task 4b: a decision's default decider is the client, and publishing into a
+    // project with no active one is refused — an ad-hoc project needs the same cast a real one has
+    await seedProjectClient(t.prisma, id, f.clientUser.id);
     const engId = `it-p4t5-u-eng-${seq}`;
     await t.prisma.user.create({ data: { id: engId, projectId: id, role: 'engineer', name: 'Eng One', email: `${engId}@t.local` } });
     await t.prisma.membership.create({ data: { projectId: id, userId: engId, role: 'engineer', status: 'active' } });
@@ -365,7 +376,15 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
     await capabilities.enable(p.id, MATERIALS_CAPABILITY, f.memberUser.id);
     await enableLabour(p.id);
     const decisionId = `DL-p4t5-${seq++}`;
-    await t.prisma.decision.create({ data: { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: new Date() } });
+    // Phase 6 task 4b: the two-option floor is judged at BOTH publication doors, so a row that
+    // is published at INSERT arrives with zero options — it is born unpublished instead.
+    await t.prisma.decision.create({ data: { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: null } });
+    await t.prisma.decisionOption.createMany({ data: [
+      { decisionId: decisionId, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
+      { decisionId: decisionId, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 },
+    ] });
+    await t.prisma.decision.update({ where: { id: decisionId }, data: { publishedAt: new Date() } });
+
     const act = await freshActivity(p.id, { decisionId });
     await labourRequirement(p.id, act, [{ civilDate: today, personShiftQty: 1 }]);
 

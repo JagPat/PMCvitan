@@ -154,7 +154,10 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
 
     it('publish: decision.publish(actorId) + issued event + 1 notification(title) + push[client] + signal', async () => {
       const d = await t.prisma.decision.create({ data: { id: sk('p2c-dec-pub'), projectId: pid, title: 'Sanitary', room: 'Bath', photoSwatch: 'marble', status: 'pending', publishedAt: null, authorId: uid } });
+      // Phase 6 task 4b: an ordinary decision needs TWO options to publish — one leaves it
+      // approvable by nobody, which is the state the floor exists to refuse
       await t.prisma.decisionOption.create({ data: { decisionId: d.id, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 } });
+      await t.prisma.decisionOption.create({ data: { decisionId: d.id, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 } });
       const before = await notifCount();
       const res = await post(`/projects/${pid}/decisions/${d.id}/publish`);
       expect(res.status).toBeLessThan(300);

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, seedProjectClient } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { LabourService } from '../../src/labour/labour.service';
 import { CapabilitiesService, MATERIALS_CAPABILITY, LABOUR_CAPABILITY } from '../../src/platform/capabilities.service';
@@ -75,6 +75,9 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+    // Phase 6 task 4b: a decision's default decider is the client, and publishing into a
+    // project with no active one is refused — an ad-hoc project needs the same cast a real one has
+    await seedProjectClient(t.prisma, id, f.clientUser.id);
     return id;
   };
   const freshActivity = async (projectId: string): Promise<string> => {

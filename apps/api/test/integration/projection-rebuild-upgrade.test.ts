@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, seedProjectClient } from './fixtures';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
 import { ProjectionRebuildOperations, REBUILDABLE_PROJECTIONS } from '../../src/platform/projections/rebuild-operations';
@@ -120,6 +120,9 @@ describe('P1 correction — legacy partial decisions.inbox generation upgrade pa
       data: { id, orgId: f.orgA.id, name: id, short: 'P', descriptor: '', stage: 'x', siteCode: 'P', projStart: 'a', projEnd: 'b', elapsedPct: 0, todayDay: 0, milestonePct: 0, timeZone: 'Asia/Kolkata', scheduleStartDate: new Date('2026-06-01T00:00:00.000Z') },
     });
     await t.prisma.membership.create({ data: { projectId: id, userId: f.memberUser.id, role: 'pmc', status: 'active' } });
+    // Phase 6 task 4b: a decision's default decider is the client, and publishing into a
+    // project with no active one is refused — an ad-hoc project needs the same cast a real one has
+    await seedProjectClient(t.prisma, id, f.clientUser.id);
     return id;
   };
 

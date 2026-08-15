@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
 
 /**
  * Codex gate finding 4: node/phase/material relations were single-column FKs, so
@@ -22,7 +22,8 @@ describe('tenant constraints for node/phase/material references (integration)', 
     await t.prisma.siteMaterial.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.media.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.activity.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
-    await t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
+    // Phase 6 task 4b: decisions carry OPTIONS now, and a published decision's options are frozen
+    await wipeDecisions(t.prisma, { projectId: { in: [f.projectA.id, f.projectB.id] } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.phase.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.projectNode.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
@@ -33,8 +34,21 @@ describe('tenant constraints for node/phase/material references (integration)', 
   it('PostgreSQL rejects cross-project node, phase, parent and material-decision links (raw SQL)', async () => {
     const nodeA = await t.prisma.projectNode.create({ data: { id: 'it-tc-node-a', projectId: f.projectA.id, name: 'Zone A', kind: 'zone', publishedAt: new Date() } });
     const nodeB = await t.prisma.projectNode.create({ data: { id: 'it-tc-node-b', projectId: f.projectB.id, name: 'Zone B', kind: 'zone', publishedAt: new Date() } });
-    const decA = await t.prisma.decision.create({ data: { id: 'IT-TC-DL-1', projectId: f.projectA.id, title: 'A decision', room: 'Living', status: 'pending', photoSwatch: 'tile', publishedAt: new Date() } });
-    const decB = await t.prisma.decision.create({ data: { id: 'IT-TC-DL-2', projectId: f.projectB.id, title: 'B decision', room: 'Living', status: 'pending', photoSwatch: 'tile', publishedAt: new Date() } });
+    // Phase 6 task 4b: the two-option floor is judged at BOTH publication doors, so a row that
+    // is published at INSERT arrives with zero options — it is born unpublished instead.
+    const decA = await t.prisma.decision.create({ data: { id: 'IT-TC-DL-1', projectId: f.projectA.id, title: 'A decision', room: 'Living', status: 'pending', photoSwatch: 'tile', publishedAt: null } });
+    const decB = await t.prisma.decision.create({ data: { id: 'IT-TC-DL-2', projectId: f.projectB.id, title: 'B decision', room: 'Living', status: 'pending', photoSwatch: 'tile', publishedAt: null } });
+    await t.prisma.decisionOption.createMany({ data: [
+      { decisionId: decA.id, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
+      { decisionId: decA.id, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 },
+    ] });
+    await t.prisma.decision.update({ where: { id: decA.id }, data: { publishedAt: new Date() } });
+    await t.prisma.decisionOption.createMany({ data: [
+      { decisionId: decB.id, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
+      { decisionId: decB.id, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 },
+    ] });
+    await t.prisma.decision.update({ where: { id: decB.id }, data: { publishedAt: new Date() } });
+
     const phaseB = await t.prisma.phase.create({ data: { id: 'it-tc-phase-b', projectId: f.projectB.id, name: 'B phase' } });
     const actA = await t.prisma.activity.create({ data: { id: 'IT-TC-ACT-1', projectId: f.projectA.id, name: 'A activity', zone: 'GF', plannedStart: 0, plannedEnd: 1, order: 1, gateMaterial: 'na', gateTeam: 'na', gateInspection: 'na' } });
     const logA = await t.prisma.dailyLog.create({ data: { id: 'it-tc-log-a', projectId: f.projectA.id, date: '01 Jul 2026' } });
