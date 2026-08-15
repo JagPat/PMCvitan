@@ -17,6 +17,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 
 | `3b4bf1e` | round-6 fold | 1 (1 P1) | corrected on this head: the F-1b opening gate is no longer owner-only — §6.7 records an AUTONOMOUS default (the shared field primitive, the foundation doc's own preferred option) because F-1b is loop-assigned work and the non-blocking rule forbids gating loop work on a human standing by; every handoff surface stating the gate (WAVE_0, README, STATUS, §6.7) carries the dated amendment, and the owner may override asynchronously |
 
+| `7780684` | round-7 fold | 1 (1 P1) | corrected on this head: the stale post-Phase-6 Wave-0 gate removed — the round-7 handoff opened F-1b on merge while the README's rule 2, its re-audit bullet, and the Wave-0 shared RED step still ordered waiting for Task 4/Phase 6 (a continuation obeying the stricter text would postpone F-1b); the fixed sequencing and the post-Phase-6 re-audit now govern WAVES 1–5 only, Wave 0 is the named owner-directed parallel exception, and each Wave-0 unit re-runs its reproduction step against the CURRENT head at the moment it opens |
+
 ## Root analysis — one generative class
 
 All ten findings across both rounds are instances of ONE rule: **a focus
@@ -40,12 +42,15 @@ the symptom; the probes pin every moved mechanism (15 arms).
 
 ## Disposition
 
-Twenty-one findings across seven rounds — every one verified real, none
+Twenty-two findings across eight rounds — every one verified real, none
 disputed, none refuted. Probes 20/20 at this head; full web suite 784/784;
-`pnpm check` EXIT 0. The round-7 finding is the one PROCESS item: an
-owner-only gate on loop-assigned work, resolved by recording the
-autonomous default the owner can override asynchronously — the same
-supersession discipline the primary track already established. The round-6 fallback finding is another instance of
+`pnpm check` EXIT 0. The round-7 and round-8 findings are the PROCESS items — first the
+owner-only gate on loop-assigned work (resolved by recording the
+autonomous default the owner can override asynchronously), then the
+sibling instructions that still carried the superseded sequencing
+(resolved by scoping them to Waves 1–5) — the same supersession
+discipline the primary track already established, applied until no
+contradictory instruction survives. The round-6 fallback finding is another instance of
 the one generative class: restoration was keyed to CONTAINER-FIRST-MATCH
 when the true owner of "where next" is the opener's POSITION — the anchors
 move the mechanism to that owner. The round-3 and round-5/6 doc findings

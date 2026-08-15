@@ -14,7 +14,7 @@ Every later unit must pass automated accessibility checks plus manual keyboard a
 
 ## Reproduce first (all three units share this RED step)
 
-Run against current `HEAD` — **after Phase 6 closes**, since the surface inventory will have changed. If a claim no longer reproduces, note it and drop that part.
+Run against current `HEAD` **at the moment the unit opens** (amended 2026-08-15: Wave 0 runs under the owner's parallel directive and does not wait for Phase 6 — F-1a re-ran this step at its own opening head, and F-1b re-runs it at ITS head when it opens; expect line numbers to have drifted). If a claim no longer reproduces, note it and drop that part.
 
 1. **Zero focus rules.** Search `apps/web/src` for `:focus-visible`. Expected: **0 matches**.
 2. **Outline actively removed.** Search for `outline:\s*['"]?none`. Expected ~12 sites including `DailyLogScreen:401`, `DecisionLogScreen:517`, `InspectionReviewScreen:265`, `ScheduleScreen:519`, `TeamScreen:601`, `ProjectSwitcher:238`, `DrawingsScreen:494`, `TeamAccessScreen:684`, `LocationPicker:22`, `modals/ChangeModal:12`, `EngineerChecklistScreen:150`, `TopBar.module.css:68`.

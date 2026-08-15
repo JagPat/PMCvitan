@@ -202,6 +202,24 @@ EXIT 0.
 
 Probes 18/18; full web 782/782; `pnpm check` EXIT 0.
 
+## Round 8 — one Codex finding on head `7780684`, folded
+
+1. **(P1)** the round-7 handoff said F-1b opens on merge, but THREE
+   sibling instructions still ordered the runner to wait for Task 4 and
+   Phase 6: the README's non-negotiable rule 2 ("Task 4 → Phase 6
+   collaborator units → this programme"), its re-audit bullet ("against
+   the post-Phase-6 head"), and the Wave-0 shared RED step ("after
+   Phase 6 closes"). A continuation obeying the STRICTER instruction
+   would postpone F-1b indefinitely. The correction scopes the old
+   sequencing to WAVES 1–5 (rule 2 names Wave 0 as the owner-directed
+   parallel exception; the post-Phase-6 re-audit governs Waves 1–5
+   only) and makes Wave-0 reproduction timing unambiguous: each unit
+   re-runs the RED step against the CURRENT head at the moment it
+   opens — F-1a did; F-1b does the same on opening.
+
+Docs-only round; probes 20/20 and `pnpm check` EXIT 0 re-run at this
+head.
+
 ## Round 7 — one Codex finding on head `3b4bf1e`, folded
 
 1. **(P1)** the F-1b opening gate was OWNER-ONLY: the handoff let the
