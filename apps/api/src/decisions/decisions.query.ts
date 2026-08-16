@@ -157,18 +157,26 @@ export class DecisionsQueryService {
    *  serializes with `decisions.withdraw` (whose CAS updates this row): a withdrawal committing
    *  between a stale pre-check and the link is seen by the re-check, and a link holding the
    *  share lock delays the withdrawal until the (legitimately pre-terminal) link commits. */
-  async linkableInProject(projectId: string, decisionId: string, tx?: Prisma.TransactionClient): Promise<'linkable' | 'withdrawn' | 'missing'> {
+  async linkableInProject(projectId: string, decisionId: string, tx?: Prisma.TransactionClient): Promise<'linkable' | 'withdrawn' | 'recorded' | 'missing'> {
+    // Phase 6 task 4b, round 5 (Codex P1 R5-1) — `recorded` joins `withdrawn` as UNLINKABLE, and
+    // for a sharper reason. A dependency link exists so an activity can WAIT for an answer; a
+    // record is terminal and approvable by nobody, so linking one parks the activity at `wait`
+    // ("Awaiting the client's approval") with no act in the world that could ever clear it. The
+    // picker and this predicate excluded only `withdrawn`, so 4b's new status was linkable the day
+    // it shipped. A gate that can never open is worse than no gate.
+    const unlinkable = (status: string): 'withdrawn' | 'recorded' | null =>
+      status === 'withdrawn' ? 'withdrawn' : status === 'recorded' ? 'recorded' : null;
     if (tx) {
       const rows = await tx.$queryRaw<Array<{ status: string }>>`
         SELECT "status"::text AS status FROM "Decision"
          WHERE "id" = ${decisionId} AND "projectId" = ${projectId}
          FOR SHARE`;
       if (rows.length === 0) return 'missing';
-      return rows[0]!.status === 'withdrawn' ? 'withdrawn' : 'linkable';
+      return unlinkable(rows[0]!.status) ?? 'linkable';
     }
     const row = await this.prisma.decision.findFirst({ where: { id: decisionId, projectId }, select: { status: true } });
     if (!row) return 'missing';
-    return (row.status as string) === 'withdrawn' ? 'withdrawn' : 'linkable';
+    return unlinkable(row.status as string) ?? 'linkable';
   }
 
   /**

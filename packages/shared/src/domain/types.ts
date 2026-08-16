@@ -106,6 +106,23 @@ export type Lang = 'en' | 'hi' | 'gu';
 // team-visible, approvable by nobody; terminal like 'withdrawn'.
 export type DecisionStatus = 'pending' | 'approved' | 'change' | 'withdrawn' | 'recorded';
 
+/**
+ * Statuses a decision can be in that make it UNLINKABLE as a dependency — one shared set, so the
+ * pickers and the server's `linkableInProject` cannot disagree about it (Phase 6 task 4b, round 5,
+ * Codex P1).
+ *
+ * A dependency link exists so work can WAIT for an answer. Both members are terminal and carry no
+ * answer that is ever coming: a `withdrawn` decision was taken back, and a `recorded` issue is
+ * approvable by nobody. Linking either parks the activity at `wait` with no act in the world that
+ * could clear it — `recorded` would even read "Awaiting the client's approval", which is false.
+ * The pickers previously excluded only `withdrawn`, so 4b's new status was linkable the day it
+ * shipped.
+ *
+ * This is about LINKABILITY only. A record stays fully visible in the register to everyone who can
+ * see the project — it is a filed issue, not a hidden one.
+ */
+export const UNLINKABLE_DECISION_STATUSES: ReadonlySet<DecisionStatus> = new Set<DecisionStatus>(['withdrawn', 'recorded']);
+
 /** Phase 6 task 4b — WHO must decide, per decision. 'architect' joins IN UNIT 4d with the role. */
 export type DeciderKind = 'client' | 'pmc' | 'member' | 'none';
 /** `awaiting-signoff` = a completion CLAIM parked until the PMC approves the

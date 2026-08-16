@@ -180,10 +180,16 @@ export class DailyLogService {
    *  does not exist and the refusal must not reveal it — the pmc gets the honest terminal
    *  reason (the activities wording), everyone else the same 'Unknown decision' a nonexistent
    *  id produces. A 'linkable' verdict passes. */
-  private refuseUnlinkableDecision(linkable: 'linkable' | 'withdrawn' | 'missing', user: AuthUser): void {
+  private refuseUnlinkableDecision(linkable: 'linkable' | 'withdrawn' | 'recorded' | 'missing', user: AuthUser): void {
     if (linkable === 'linkable') return;
     if (linkable === 'withdrawn' && user.role === 'pmc') {
       throw new BadRequestException('This decision was withdrawn — link a live decision or re-issue it');
+    }
+    // Phase 6 task 4b, round 5 (Codex P1) — a record is visible to everyone who can see the
+    // register, so unlike a withdrawn decision its refusal discloses nothing and is served to
+    // every role: a delivery cannot be attributed to an issue that approved nothing.
+    if (linkable === 'recorded') {
+      throw new BadRequestException('A recorded issue approved nothing — link the decision this material was approved under');
     }
     throw new BadRequestException('Unknown decision for this project');
   }

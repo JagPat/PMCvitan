@@ -90,17 +90,29 @@ export class MembersService {
    * arithmetic calls — including its org-standing arm, which counts a membership-less owner/admin
    * as a `pmc` — for the same reason `holdsOpenDecisions` calls the seal's own predicate: two
    * spellings of one rule drift, and the drift shows up as a 500.
+   *
+   * Round 5 (Codex P2) completes that thought. Rounds 2–3 asked the primitive for CURRENT standing
+   * and then subtracted one, which is arithmetic ABOUT the primitive rather than a question put to
+   * it — and the subtraction is wrong for the shape the primitive is subtle about. An active
+   * membership SUPPRESSES its holder's org-derived pmc standing, so removing the sole project pmc
+   * who is also an org owner/admin leaves standing at 1: that same person becomes a membership-less
+   * effective pmc the moment their membership ends. `count - 1` said 0, and a removal that stranded
+   * nobody was refused. The hypothetical is now stated inside the primitive
+   * (`orgs_effective_role_standing_after`), which the seal also calls, so the two cannot disagree.
    */
   private async standingAfterDeparture(
     tx: Prisma.TransactionClient,
     projectId: string,
     role: string,
+    membershipId: string,
+    afterRole: string | null,
+    afterActive: boolean,
   ): Promise<number> {
     const rows = await tx.$queryRawUnsafe<Array<{ standing: number }>>(
-      `SELECT orgs_effective_role_standing($1, $2)::int AS standing`,
-      projectId, role,
+      `SELECT orgs_effective_role_standing_after($1, $2, $3, $4, $5)::int AS standing`,
+      projectId, role, membershipId, afterRole, afterActive,
     );
-    return Number(rows[0]?.standing ?? 0) - 1;
+    return Number(rows[0]?.standing ?? 0);
   }
 
   /**
@@ -186,7 +198,9 @@ export class MembersService {
       // itself applies. An inactive membership carries no standing to remove, and the seal's arm
       // does not fire for one either.
       if (input.role !== locked.role && locked.status === 'active') {
-        const surviving = await this.standingAfterDeparture(tx, projectId, locked.role);
+        // the write leaves this membership ACTIVE in its NEW role — which is why it keeps
+        // suppressing its holder's org-derived pmc standing (round 5)
+        const surviving = await this.standingAfterDeparture(tx, projectId, locked.role, locked.id, input.role, true);
         const held = surviving <= 0
           && await this.decisions.holdsOpenDecisions(tx, projectId, null, locked.role);
         if (held) {
@@ -236,10 +250,15 @@ export class MembersService {
       // role the seal will see as `OLD.role` — the pre-read above stays advisory.
       const locked = await this.lockMembership(tx, projectId, userId);
       if (!locked) throw new NotFoundException('Member not found on this project');
+      // Round 5 (Codex P2): the write leaves this membership INACTIVE, which also lifts the
+      // precedence suppression — a departing pmc who is an org owner/admin re-supplies pmc
+      // standing through the org the moment their membership ends, and `count - 1` missed that.
       const held = locked.status === 'active'
         && await this.decisions.holdsOpenDecisions(
           tx, projectId, locked.id,
-          (await this.standingAfterDeparture(tx, projectId, locked.role)) <= 0 ? locked.role : null,
+          (await this.standingAfterDeparture(tx, projectId, locked.role, locked.id, null, false)) <= 0
+            ? locked.role
+            : null,
         );
       if (held) {
         throw new ConflictException(

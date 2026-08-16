@@ -33,6 +33,31 @@ export class DecisionsService {
     private readonly orgsParticipant: OrgsParticipant,
   ) {}
 
+  /**
+   * The display identity the register renders for a decision's designated holder.
+   *
+   * Phase 6 task 4b, round 5 (Codex P1). The approval act freezes this string forever, and
+   * `decision_t4b_recorded_seal` now binds it to the designated holder at PostgreSQL. A TypeScript
+   * copy of the rule beside a SQL copy of the rule is two rules: the copies would agree until one
+   * of them was edited, and the disagreement would surface as a raw trigger exception on a
+   * perfectly ordinary approval. So there is one — `decisions_t4b_holder_label`, decisions-owned,
+   * composing the two role renderings with the orgs-owned `orgs_membership_display_name` — and this
+   * asks it, inside the caller's locked transaction, so the value written and the value the seal
+   * recomputes are the same read.
+   */
+  private async holderLabel(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    kind: string,
+    membershipId: string | null,
+  ): Promise<string | null> {
+    const rows = await tx.$queryRawUnsafe<Array<{ label: string | null }>>(
+      `SELECT decisions_t4b_holder_label($1, $2, $3) AS label`,
+      projectId, kind, membershipId,
+    );
+    return rows[0]?.label ?? null;
+  }
+
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
    *  client's Decisions Waiting screen. Labels/keys derive from order when omitted.
    *
@@ -321,20 +346,6 @@ export class DecisionsService {
       throw new ForbiddenException('Only the decider of this decision may approve it');
     }
     const onBehalfOf = actorIsHolder ? null : holderKind;
-    // The act freezes the holder TUPLE as it stood AT THE ACT: a designation alone stops being
-    // attributable once the holder later changes (4d forwarding), so the act keeps kind, the
-    // named membership, and the display identity the register rendered.
-    const holderLabel = holderKind === 'member'
-      ? holder?.name ?? null
-      : ROLE_LABEL[holderKind] ?? holderKind;
-    // ...and the ANNOUNCEMENT says so too (gate finding 7, corrected round 1 Codex P2): who
-    // exercised the authority, and WHOSE authority it was. The old text said "Client approved"
-    // for every decider and "on behalf of the client" for every delegation, so a PMC-held or
-    // member-held approval contradicted the `onBehalfOf` the same act persisted.
-    const holderName = holderLabel ?? (ROLE_LABEL[holderKind] ?? holderKind);
-    const announce = onBehalfOf
-      ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of ${holderName} — ${o.material}`
-      : `${holderName} approved ${d.title} — ${o.material}`;
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -345,6 +356,25 @@ export class DecisionsService {
       run: async (tx) => {
         // a lock-state transition moves the decision gate (gate finding 1)
         await lockProjectReadiness(tx, projectId);
+        // The act freezes the holder TUPLE as it stood AT THE ACT: a designation alone stops being
+        // attributable once the holder later changes (4d forwarding), so the act keeps kind, the
+        // named membership, and the display identity the register rendered.
+        //
+        // Round 5 (Codex P1) — the LABEL is now bound at PostgreSQL to the designated holder, and
+        // it is derived HERE from the SAME function the seal asks (`decisions_t4b_holder_label`),
+        // inside the locked transaction. Not two implementations kept in agreement: one, so a
+        // service that computed the label differently — or computed it correctly before the lock
+        // and wrote it after a concurrent rename — cannot exist. What the seal recomputes is what
+        // this wrote, by construction.
+        const holderLabel = await this.holderLabel(tx, projectId, holderKind, d.deciderMembershipId);
+        // ...and the ANNOUNCEMENT says so too (gate finding 7, corrected round 1 Codex P2): who
+        // exercised the authority, and WHOSE authority it was. The old text said "Client approved"
+        // for every decider and "on behalf of the client" for every delegation, so a PMC-held or
+        // member-held approval contradicted the `onBehalfOf` the same act persisted.
+        const holderName = holderLabel ?? (ROLE_LABEL[holderKind] ?? holderKind);
+        const announce = onBehalfOf
+          ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of ${holderName} — ${o.material}`
+          : `${holderName} approved ${d.title} — ${o.material}`;
         // CAS: commit only if the decision is STILL in the state we read — a concurrent
         // transition makes count 0 and this caller loses with a deterministic 409
         const { count } = await tx.decision.updateMany({
@@ -463,11 +493,25 @@ export class DecisionsService {
           // with a raw PostgreSQL exception that Prisma surfaces as a 500. The valid stale-holder
           // case deserves the actionable conflict, and the DB seal stays as the backstop for a
           // direct transaction that never comes through here.
+          //
+          // Round 5 (Codex P2) — the seal validates BOTH holder shapes and this validated one. A
+          // client- or pmc-held decision names no membership, so it took the other arm of the seal
+          // (`orgs_effective_role_standing = 0`), and the last client leaving is exactly as ordinary
+          // as the last named holder leaving: closed decisions do not block removal either way. Half
+          // a guard in front of a whole seal is not a guard — it is a 500 waiting for the other
+          // shape. Both arms are asked here, each through the OWNER of the fact it turns on.
           if ((d.deciderKind as string) === 'member') {
             const holder = await this.orgsParticipant.describeMembership(tx, projectId, d.deciderMembershipId ?? '');
             if (!holder || !holder.active) {
               throw new ConflictException(
                 `The decider of ${decisionId} has left the project — the approved outcome stands; a changed need is a NEW decision`,
+              );
+            }
+          } else if ((d.deciderKind as string) === 'client' || (d.deciderKind as string) === 'pmc') {
+            const held = await this.orgsParticipant.roleHasEffectiveStanding(tx, projectId, d.deciderKind as string);
+            if (!held) {
+              throw new ConflictException(
+                `This project has no active ${d.deciderKind} to decide ${decisionId} — the approved outcome stands; a changed need is a NEW decision`,
               );
             }
           }

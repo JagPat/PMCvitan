@@ -530,6 +530,11 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
       // honest shape for it: the guard then has nothing to judge and the command proceeds exactly
       // as it always did. The live refusal is proven in `phase6-t4b-correction4.test.ts`.
       project: { findMany: vi.fn(async () => []) },
+      // round 5 (Codex P2) — the guard and its write are now ONE transaction holding each
+      // affected project's readiness key; the in-memory client runs the callback against itself.
+      $executeRaw: vi.fn(async () => 1),
+      $queryRawUnsafe: vi.fn(async () => []),
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, state };
   }

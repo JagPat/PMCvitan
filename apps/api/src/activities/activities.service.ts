@@ -196,6 +196,9 @@ export class ActivitiesService {
       const linkable = await this.decisions.linkableInProject(projectId, decisionId);
       if (linkable === 'missing') throw new BadRequestException('Unknown decision for this project');
       if (linkable === 'withdrawn') throw new BadRequestException('This decision was withdrawn — link a live decision or re-issue it');
+      // Phase 6 task 4b, round 5 (Codex P1) — a record is terminal and approvable by nobody, so a
+      // linked one parks the activity at `wait` forever.
+      if (linkable === 'recorded') throw new BadRequestException('A recorded issue has no approval to wait for — link a decision the work actually depends on');
     }
     // Location spine: resolveProjectNode throws for an unknown/cross-project node.
     await resolveProjectNode(this.prisma, projectId, nodeId);
@@ -212,6 +215,7 @@ export class ActivitiesService {
     const linkable = await this.decisions.linkableInProject(projectId, decisionId, tx);
     if (linkable === 'missing') throw new BadRequestException('Unknown decision for this project');
     if (linkable === 'withdrawn') throw new BadRequestException('This decision was withdrawn — link a live decision or re-issue it');
+    if (linkable === 'recorded') throw new BadRequestException('A recorded issue has no approval to wait for — link a decision the work actually depends on');
   }
 
   /** PMC plans a new activity (name, zone, planned window, gates, phase/decision links).

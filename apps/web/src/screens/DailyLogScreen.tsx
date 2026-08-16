@@ -7,7 +7,7 @@ import { EmptyState, Eyebrow, Swatch, PhotoViewer, Modal, Button } from '@/compo
 import { LocationPicker } from '@/components/LocationPicker';
 import { pathOf } from '@/lib/locationTree';
 import { Crosshair, Camera, Plus, Minus, QrCode, TriangleAlert, Check, MapPin, WifiOff, RefreshCw } from '@/lib/icons';
-import { can, SW, labourLabels, type SwatchKey } from '@vitan/shared';
+import { can, SW, labourLabels, UNLINKABLE_DECISION_STATUSES, type SwatchKey } from '@vitan/shared';
 import styles from './responsive.module.css';
 
 export function DailyLogScreen() {
@@ -342,7 +342,7 @@ function AddMaterialModal({ onClose }: { onClose: () => void }) {
   // a delivery matches a published decision — drafts aren't linkable
   // …and a WITHDRAWN decision is terminal: a delivery can no longer match it, so the picker
   // excludes it for EVERY role on top of the shared audience rule (4a round 6, Codex)
-  const decisions = useStore(useShallow((s) => selectVisibleDecisions(s).filter((d) => d.status !== 'withdrawn')));
+  const decisions = useStore(useShallow((s) => selectVisibleDecisions(s).filter((d) => !UNLINKABLE_DECISION_STATUSES.has(d.status))));
   const [name, setName] = useState('');
   const [qty, setQty] = useState('');
   const [zone, setZone] = useState('');

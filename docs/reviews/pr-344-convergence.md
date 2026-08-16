@@ -8,6 +8,7 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `067209bc` | round-1 fold | 4 (3 P1, 1 P2) | corrected on `2ef9d68` via `20270817000000`: the act tuple's first write keyed to the TRANSITION rather than the destination status; the conversion door asking the author question the insert door asks; the ChangeRequest seal reading its parent `FOR UPDATE`; and the member guards computing surviving standing from `orgs_effective_role_standing` instead of asserting it, with `updateRole` taking the readiness lock so guard and seal read one snapshot |
 | `2ef9d68` | round-2 fold + this audit's first edition | 7 (4 P1, 3 P2) | corrected on this head via `20270818000000`: the act tuple validated against the decision's own `deciderKind`/`deciderMembershipId`; the approve route ceiling widened to every role that may be NAMED, with the holder narrowing left in the service; the decision id frozen FROM BIRTH; the reopen seal restated over every transition INTO an open status; the departing role read from the LOCKED membership row; the org arm narrowed to the standing the written row actually supplies; and the publish side-effect bundle derived from the row the CAS locked |
 | `87461e6` | round-3 fold + this audit's second edition | 5 (2 P1, 3 P2) | corrected on this head via `20270819000000` plus its service half: the approval REGISTER sealed against a record (the reverse of a count the conversion already made); the holder binding applied at BIRTH as well as at the transition; and the three remaining SPOKESMAN doors given their service-side question — publish holds the readiness key the seal try-acquires, publish and one-step issue refuse a departed holder with an actionable conflict, and the two org-membership commands ask the decisions participant before the write |
+| `cc00c94` | round-4 fold + this audit's third edition | 6 (3 P1, 3 P2) | corrected on this head via `20270820000000` plus its service half, under the owner's **"gate the surface, keep the facts"** decision: `recorded` made unlinkable at every write path and both pickers; the `pmc`/`member` decider designation refused at the contract until 4b-ii ships its audience; the frozen approval LABEL required complete, non-blank and BOUND to the designated holder, with the service deriving it from the seal's own function; the org-membership guard and its write folded into one transaction holding each affected project's readiness key; `requestChange` validating ROLE-held deciders as well as named ones; and post-write standing ASKED of the primitive instead of computed as `standing - 1` |
 
 ## Root analysis — one generative class, three faces
 
@@ -118,6 +119,58 @@ audit had enumerated instances again while claiming to enumerate rules. The corr
 the one this edition makes, is a rule about coverage: **every path that can trip a seal owes the
 caller the seal's answer in the caller's language, and the set of those paths is enumerable from
 the seals themselves.**
+
+## Round 5 — the class is exhausted; what remains is scope
+
+Six findings on `cc00c94`, and for the first time the distribution splits in two.
+
+**Four are the same two faces, one layer further along, and each is now the LAST instance its
+rule can generate.**
+
+- **Face B (re-statement)** — R5-3: rounds 2/3/4 bound the act tuple's KIND and its MEMBERSHIP to
+  the designated holder and never asked about the third column, so a null, blank or fabricated
+  LABEL could be frozen forever by the same write-once arms that protect the true ones. R5-6: the
+  seal computed post-write standing as `orgs_effective_role_standing(...) - 1`, which is arithmetic
+  ABOUT the primitive rather than a question put to it — and it is wrong for exactly the shape the
+  primitive is subtle about, because an active membership SUPPRESSES its holder's org-derived pmc
+  standing.
+- **Face B, inverted (the SPOKESMAN)** — R5-5: round 1's F9 gave `requestChange` a spokesman for
+  the MEMBER arm of a seal that has two arms, so the ROLE arm still 500s. R5-4: round 4's R4-4 gave
+  the org commands a spokesman and left it outside any transaction, so the answer could go stale
+  before the write and the §B.1 try-acquire could refuse the write outright.
+
+The cure in all four is the same move, and it is the move this audit has been converging on since
+its first edition: **do not add a fifth guard beside the rule; move the rule to the thing that
+determines it, and make every asker call that.** So `decisions_t4b_holder_label` is the ONE
+statement of what a holder renders as — and `DecisionsService.approve` does not keep a TypeScript
+copy of it, it calls the function the seal calls, inside the transaction that writes the row. There
+is no second implementation to drift. `orgs_effective_role_standing_after` is the ONE statement of
+standing, hypothetical or live; the live question is the same call with nothing hypothesised, so
+`orgs_effective_role_standing` is now defined in terms of it and there is one body to keep correct
+rather than two that must agree.
+
+**Two are not the class at all, and that is the more important half.** R5-1 and R5-2 both say the
+same thing about the 4b-i/4b-ii split itself: a facts half that ships the `recorded` status and the
+`pmc`/`member` decider kinds WITHOUT the audience that routes them does not leave the product
+incomplete, it leaves it WRONG. A `recorded` issue could be linked to an activity, where
+`deriveDecisionReading` parks it at `wait / Awaiting the client's approval` — for a decision nobody
+can ever approve. A `pmc`- or `member`-held decision could be published, notifying the client about
+a decision the client does not hold and hiding it from the person who does.
+
+That is not a defect in a seal; it is a defect in where the unit was cut. The owner's instruction
+was **gate the surface, keep the facts** — so every fact, seal and lifecycle behaviour the previous
+four rounds cleared stays exactly as reviewed, and the two surfaces that would misroute are CLOSED
+at the contract and the write path until 4b-ii opens them honestly. A refusal that names its reason
+is a smaller lie than a push sent to the wrong party.
+
+**The review-lifecycle limit is also reached at this head** — five finding-bearing heads, 34
+findings. The limit is a signal about UNIT SIZE, and this round supplies the evidence for what the
+next cut should be: the four convergence findings are all in the seal network (which is finished),
+and the two scope findings are all in the surface (which is 4b-ii). The unit was cut along the
+wrong seam — facts and their surface are one user-visible behaviour, and splitting them produced a
+head that had to gate its own facts to stay honest. 4b-ii should carry the audience, the visibility
+and the two gates' removal together, and it should be reviewed as one workflow rather than as two
+halves of one.
 
 ## What changed structurally, rather than per symptom
 
@@ -254,3 +307,29 @@ Gates at this head: `pnpm check` EXIT 0; full integration on a pristine migrated
 `upgrade-proof.sh` with round 4's two new hostile statements rejected and its precision arm
 ACCEPTED; `test:e2e:api` 31 passed / 6 skipped. Every round-4 probe was RED at `87461e6` with
 `20270819000000` and the service half reverted.
+
+### What round 5 closes
+
+- **The frozen attribution is TRUE, not merely frozen** (R5-3). Freezing a label nobody checked
+  meant the register could permanently render a name belonging to nobody. The label is now
+  complete, non-blank and bound at both doors — and derived by the service from the seal's own
+  function, so the two cannot disagree by construction rather than by discipline.
+- **Post-write standing is asked, never computed** (R5-6). `orgs_effective_role_standing_after` is
+  the single body; the live question is its no-hypothesis case. The precedence rule — an active
+  membership suppresses org-derived pmc standing — is stated once and is therefore correct in both.
+- **Both arms of the reopen seal have a spokesman** (R5-5), and the org spokesman now holds the
+  keys its seal try-acquires across the guard AND the write it guards (R5-4). The spokesman rule's
+  enumeration is complete: every seal arm, not every seal.
+- **The unit is honest about what it does not ship** (R5-1, R5-2). The facts are all here and all
+  reviewed; the two surfaces that cannot be routed correctly without 4b-ii are refused with a
+  message that names the reason and the unit that opens them.
+
+Gates at this head: `pnpm check` EXIT 0 (web 787/787, API 793/793); the full integration suite on a
+pristine migrated database; `upgrade-proof.sh` with round 5's four new hostile statements rejected
+and its three precision arms ACCEPTED; `test:e2e:api` unchanged. Every round-5 probe was RED at
+`cc00c94` with `20270820000000` AND the service half of its finding reverted, on a scratch database
+migrated only to `20270819000000` — six of six, each for its own reason. The RED pass also caught a
+fragility in the round-5 suite itself: its decision ids and fixture emails were unique per PROBE but
+not per RUN, so an interrupted run poisoned the next one with primary-key collisions that looked
+like product failures. Both are now run-scoped. That is round 2's replay lesson and round 3's
+fixture-restoration lesson in their third spelling: **a probe's failure must be its own.**

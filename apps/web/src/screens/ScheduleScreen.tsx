@@ -5,7 +5,7 @@ import { gatesFor, activityReady, selectSchToday, pctOf, phaseRollup, activities
 import { Eyebrow, GateDot, ActivityChip, Button, Modal } from '@/components';
 import { LocationPicker } from '@/components/LocationPicker';
 import { PencilRuler, Pencil, Plus, ShieldCheck, X } from '@/lib/icons';
-import { dayLabel, gateColor, can, diffCivilDays, formatCivilDate, type Activity, type Phase, type Gate } from '@vitan/shared';
+import { dayLabel, gateColor, can, diffCivilDays, formatCivilDate, UNLINKABLE_DECISION_STATUSES, type Activity, type Phase, type Gate } from '@vitan/shared';
 import type { AppState } from '@/store/store';
 import { activitiesReadMode, type NewActivityInput } from '@/data/apiGateway';
 import styles from './responsive.module.css';
@@ -408,7 +408,7 @@ function PlanActivityModal({ activity, onClose }: { activity: Activity | null; o
   // only a published decision can be linked to an activity — never an unpublished draft
   // …and a WITHDRAWN decision is terminal: no new work links to it (re-issue instead), so the
   // picker excludes it for EVERY role on top of the shared audience rule (4a round 6, Codex)
-  const decisions = useStore(useShallow((s) => selectVisibleDecisions(s).filter((d) => d.status !== 'withdrawn')));
+  const decisions = useStore(useShallow((s) => selectVisibleDecisions(s).filter((d) => !UNLINKABLE_DECISION_STATUSES.has(d.status))));
   const [name, setName] = useState(activity?.name ?? '');
   const [zone, setZone] = useState(activity?.zone ?? '');
   const [ps, setPs] = useState(String(activity?.ps ?? 0));

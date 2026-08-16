@@ -3558,7 +3558,9 @@ VALUES ('UP4B3-D1O1','UP4B3-D1','A','a','Teak',0,'sw1'),
 ON CONFLICT DO NOTHING;
 UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B3-D1' AND "publishedAt" IS NULL;
 UPDATE "Decision"
-   SET "status"='approved', "approvedDeciderKind"='member', "approvedDeciderMembershipId"='UP4B3-M', "approvedDeciderLabel"='Legacy Client'
+   -- round 5: the label must RENDER the designated holder — 'USER-MH' is named 'Named holder',
+   -- and the previous fixture text ('Legacy Client') is exactly the false attribution R5-3 seals
+   SET "status"='approved', "approvedDeciderKind"='member', "approvedDeciderMembershipId"='UP4B3-M', "approvedDeciderLabel"='Named holder'
  WHERE "id"='UP4B3-D1' AND "status"::text='pending';
 UPDATE "Membership" SET "status"='removed' WHERE "id"='UP4B3-M';
 -- an ordinary published draft for the re-key attempt, and a client-held published decision for
@@ -3639,6 +3641,79 @@ $PSQL -q -c "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"
 assert "4b round 4 precision (R4-2): the COHERENT approved row was born — the seal binds the tuple, it does not ban the shape" \
   "SELECT \"approvedDeciderKind\"::text FROM \"Decision\" WHERE \"id\"='UP4B4-OK';" \
   "client"
+
+# ── Phase 6 task 4b, ROUND 5 (Codex): the two seals whose fix is a DATABASE fix ─────────────
+#
+# R5-3 binds the frozen approval LABEL to the holder it claims to render — rounds 2/3/4 bound the
+# tuple's kind and membership and left the third column unasked, so a null, blank or fabricated
+# name could be frozen forever. R5-6 replaces the seal's `standing - 1` arithmetic with the
+# primitive's own hypothetical, because an active membership SUPPRESSES its holder's org-derived
+# pmc standing and the subtraction therefore refused removals that stranded nobody.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-5 fixture did not apply"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt","deciderKind")
+VALUES ('UP4B5-D1','p1','Label bound','Hall','pending','stone','USER-1',NULL,'client')
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B5-D1O1','UP4B5-D1','A','a','Teak',0,'sw1'),
+       ('UP4B5-D1O2','UP4B5-D1','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+-- published by UPDATE, after its options exist: the publication seal counts them at BOTH doors
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B5-D1' AND "publishedAt" IS NULL;
+SQL
+assert_rejects "4b seal (round 5, R5-3): approving with the right KIND and no label — a null label can never be filled afterwards, so the hole would be permanent" \
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client' WHERE \"id\"='UP4B5-D1'" "WHOLE holder tuple or none of it"
+assert_rejects "4b seal (round 5, R5-3): approving with a BLANK label — whitespace renders as nothing, which is the same hole spelled differently" \
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client', \"approvedDeciderLabel\"='   ' WHERE \"id\"='UP4B5-D1'" "WHOLE holder tuple or none of it"
+assert_rejects "4b seal (round 5, R5-3): approving with a FABRICATED label — the right moment and the right kind are not the right party" \
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client', \"approvedDeciderLabel\"='Someone Else' WHERE \"id\"='UP4B5-D1'" "must render the designated holder"
+assert_rejects "4b seal (round 5, R5-3): a decision BORN approved with a fabricated label — the same rule at the INSERT door, because both doors reach the same permanent state" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedDeciderKind\",\"approvedDeciderLabel\") VALUES('UP4B5-BORN','p1','Born mislabelled','Hall','approved','stone','USER-1','client','Someone Else')" "must render the designated holder"
+# PRECISION — the seal is exact, not merely strict: the CORRECT label is accepted…
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client', \"approvedDeciderLabel\"='Client' WHERE \"id\"='UP4B5-D1'" >/dev/null \
+  || { echo "FAILED  4b round 5 (R5-3): the correctly-labelled approval must be accepted"; FAIL=1; }
+assert "4b round 5 precision (R5-3): the correctly-labelled approval committed — the seal binds the label, it does not ban labelling" \
+  "SELECT \"approvedDeciderLabel\" FROM \"Decision\" WHERE \"id\"='UP4B5-D1';" \
+  "Client"
+# …and a TUPLELESS approval transition is still permitted (R2-1's shape, preserved)
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round 5 (R5-3): a tupleless approval transition must still be permitted"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt","deciderKind")
+VALUES ('UP4B5-D2','p1','Tupleless','Hall','pending','stone','USER-1',NULL,'client')
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B5-D2O1','UP4B5-D2','A','a','Teak',0,'sw1'),
+       ('UP4B5-D2O2','UP4B5-D2','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B5-D2' AND "publishedAt" IS NULL;
+UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4B5-D2';
+SQL
+assert "4b round 5 precision (R5-3): the tupleless approval committed — the legacy shape survives the new binding" \
+  "SELECT COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B5-D2';" \
+  "<null>"
+
+# R5-6 — the hypothetical standing primitive, exercised over the precedence shape that broke the
+# subtraction. `orgs_effective_role_standing_after` is asked with the row's POST-WRITE state; the
+# live question is the same call with nothing hypothesised, so there is one body, not two.
+assert "4b round 5 (R5-6): the live standing question still routes through the hypothetical primitive — one body, and the existing callers are unchanged" \
+  "SELECT (orgs_effective_role_standing('p1','pmc') = orgs_effective_role_standing_after('p1','pmc','',NULL,FALSE))::text;" \
+  "true"
+
+# …and the PRECEDENCE shape the subtraction got wrong, exercised directly. `USER-1` holds p1's
+# active pmc membership `UP4A-M1`; make them an org owner too, and their org-derived pmc standing
+# is SUPPRESSED by that very membership. Removing it therefore lifts the suppression, so standing
+# is unchanged — where `standing - 1` claimed the project had lost its last pmc.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-5 R5-6 fixture did not apply"; FAIL=1; }
+INSERT INTO "OrgMembership"("id","orgId","userId","role")
+SELECT 'UP4B5-OM', p."orgId", 'USER-1', 'owner' FROM "Project" p WHERE p."id"='p1'
+ON CONFLICT DO NOTHING;
+SQL
+assert "4b round 5 (R5-6): removing the sole project pmc who is ALSO an org owner leaves standing UNCHANGED — the same person becomes a membership-less effective pmc" \
+  "SELECT (orgs_effective_role_standing_after('p1','pmc','UP4A-M1',NULL,FALSE) = orgs_effective_role_standing('p1','pmc'))::text;" \
+  "true"
+assert "4b round 5 (R5-6) contrast: for a role with NO org arm the same call IS one fewer — the primitive is hypothetical, not inert" \
+  "SELECT (orgs_effective_role_standing_after('p1','client','UP4A-MC',NULL,FALSE) = orgs_effective_role_standing('p1','client') - 1)::text;" \
+  "true"
+$PSQL -q -c "DELETE FROM \"OrgMembership\" WHERE \"id\"='UP4B5-OM'" >/dev/null \
+  || { echo "FAILED  4b round 5 (R5-6): the R5-6 fixture org row must be removable"; FAIL=1; }
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by

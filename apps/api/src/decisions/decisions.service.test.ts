@@ -2,6 +2,7 @@ import { describe, it, expect, vi, type Mock } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { DecisionsService } from './decisions.service';
+import type { OrgsParticipant } from '../orgs/orgs.participant';
 import type { PrismaService } from '../prisma.service';
 import type { SnapshotService } from '../snapshot/snapshot.service';
 import type { ExternalEffectDispatcher } from '../platform/outbox/external-effect-dispatcher';
@@ -251,6 +252,15 @@ function makeLifecycle(status: string) {
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
     // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
     $executeRaw: vi.fn(async () => 1),
+    // round 5 — the two orgs-owned SQL primitives the service asks inside its transaction:
+    // `decisions_t4b_holder_label` (the frozen approval label, one statement shared with the
+    // seal) and `orgs_effective_role_standing` (role-held reopen validation). The in-memory
+    // client answers them the way the real SQL would for this fixture's roster.
+    $queryRawUnsafe: vi.fn(async (sql: string) => {
+      if (/decisions_t4b_holder_label/.test(sql)) return [{ label: 'Client' }];
+      if (/orgs_effective_role_standing/.test(sql)) return [{ standing: 1 }];
+      return [];
+    }),
     // interactive form emulates the REAL transaction's rollback: on a thrown error the
     // decision row and the change requests are restored to their pre-tx state (events/
     // audits written before the throw are also discarded, matching PostgreSQL).
@@ -275,8 +285,16 @@ function makeLifecycle(status: string) {
     }),
   } as unknown as PrismaService;
   const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-  const svc = new DecisionsService(prisma, snapshot, dispatcher);
-  return { svc, prisma, row, changeRequests, events, audits, notices, dispatcher };
+  // round 5 — `requestChange` re-validates a ROLE-held decider through the orgs participant
+  // before it moves the head (the seal's own arm, asked in front of it). This roster has an
+  // active client, so the participant answers yes; the refusal is proven live in
+  // `phase6-t4b-correction5.test.ts`.
+  const orgsParticipant = {
+    describeMembership: vi.fn(async () => ({ userId: 'u-client', active: true, name: 'Client' })),
+    roleHasEffectiveStanding: vi.fn(async () => true),
+  } as unknown as OrgsParticipant;
+  const svc = new DecisionsService(prisma, snapshot, dispatcher, orgsParticipant);
+  return { svc, prisma, row, changeRequests, events, audits, notices, dispatcher, orgsParticipant };
 }
 
 describe('DecisionsService — change control & mandatory re-approval (Phase 1 Task 2)', () => {

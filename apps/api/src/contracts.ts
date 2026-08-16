@@ -506,6 +506,27 @@ export const createDecisionSchema = z
     if (v.deciderKind !== 'none' && v.options.length < 2) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: 'A decision needs at least two options' });
     }
+    // ── Phase 6 task 4b, round 5 (Codex P1 R5-2): the SURFACE GATE ──────────────────────────
+    //
+    // 4b-i ships the decider FACT MODEL and its seals; 4b-ii ships the AUDIENCE. Round 5 showed
+    // what that split had actually produced: a `pmc`- or `member`-held decision still pushed
+    // "awaiting your approval" to the CLIENT, and `decisionVisibleToViewer` hid the pending row
+    // from the very holder the decision names — so the approval route round 3 opened at the route
+    // ceiling was unusable through normal reads, and the wrong party got the demand.
+    //
+    // Facts-first is right; shipping facts the read path cannot honour is not. So the API accepts
+    // only the two kinds whose audience is already correct — `client` (the default, unchanged) and
+    // `none` (a record announces to nobody, F3) — and REFUSES `pmc` and `member` until 4b-ii routes
+    // the audience. The DATABASE model, every seal and every probe still cover all four kinds: the
+    // gate is at the contract, so 4b-ii lifts it by deleting this block, not by re-earning the
+    // facts. Owner-approved scope decision, taken when the review-lifecycle limit was reached.
+    if (v.deciderKind === 'pmc' || v.deciderKind === 'member') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['deciderKind'],
+        message: 'Naming a PMC or a specific member as the decider arrives with the decider audience (unit 4b-ii) — issue it to the client, or file it as a recorded issue',
+      });
+    }
   });
 export type CreateDecisionInput = z.infer<typeof createDecisionSchema>;
 

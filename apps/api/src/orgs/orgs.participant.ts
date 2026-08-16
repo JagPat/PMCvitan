@@ -202,6 +202,37 @@ export class OrgsParticipant {
   }
 
   /**
+   * Phase 6 task 4b, round 5 (Codex P2) — does this ROLE have any effective holder on this project?
+   *
+   * A question about a ROLE, not about a person: `hasProjectRoleStanding` asks whether a NAMED user
+   * satisfies a policy, and no composition of it answers "is there anybody at all who could decide
+   * as the client here". `DecisionsService.requestChange` needs exactly that, because a client- or
+   * pmc-held decision names no membership to re-validate — the reopen seal asks the ROLE, and the
+   * service in front of it must ask the same question or the seal's refusal reaches the caller as a
+   * raw PostgreSQL 500 instead of the actionable conflict.
+   *
+   * So the count is NOT re-derived here: this calls `orgs_effective_role_standing`, the orgs-owned
+   * primitive the seal's own arm calls — including the precedence rule that an ACTIVE membership
+   * suppresses org-derived pmc standing. Two spellings of one rule drift, and the drift shows up as
+   * the 500 this exists to prevent (the same discipline as `DecisionsParticipant.holdsOpenDecisions`
+   * calling the seal's own predicate).
+   *
+   * Evaluated against the CALLER'S transaction, so the answer is the one the seal will see when the
+   * caller's write reaches it — provided the caller holds the readiness key the seal demands.
+   */
+  async roleHasEffectiveStanding(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    role: string,
+  ): Promise<boolean> {
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ standing: number }>>(
+      `SELECT orgs_effective_role_standing($1, $2)::int AS standing`,
+      projectId, role,
+    );
+    return Number(rows[0]?.standing ?? 0) > 0;
+  }
+
+  /**
    * Does `userId` have ROLE-QUALIFIED standing on `projectId` — an ACTIVE project membership whose
    * role is one of `roles`, or (when `roles` admits `pmc` AND the user holds NO active membership
    * on this project) owner/admin of the project's org? Same rule, same PRECEDENCE as

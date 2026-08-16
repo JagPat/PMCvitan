@@ -219,3 +219,33 @@ closed that face.
 | R4-3 (P2) | neither publish door took `lockProjectReadiness`, so the seal's §B.1 try-acquire — which REFUSES rather than waits — turned a valid publication into a raw PostgreSQL error whenever a membership command held the key | both doors hold the key. Advisory locks are re-entrant, so the seal's try-acquire succeeds; the probe holds the key from a second session and asserts publish WAITS rather than being refused |
 | R4-4 (P2) | `OrgsService.updateOrgMemberRole`/`removeOrgMember` had no precheck, so demoting or removing a project's sole effective pmc 500s | both ask `DecisionsParticipant.holdsOpenDecisions` first, with the standing arithmetic mirroring the seal's exactly (R3-6): an org row supplies pmc standing only where the user holds no active membership, and only a write removing that supply can strand anything |
 | R4-5 (P2) | publishing a member-held draft whose named member has left — explicitly allowed, because a draft never blocked their removal — surfaced a raw database failure instead of telling the caller to re-point the draft | the holder is validated through `OrgsParticipant` inside the publication transaction, on `publish` and on the one-step issue alike |
+
+## Round 5 — the six Codex findings on `cc00c94`
+
+Three P1 and three P2, answered in ONE batched head. All six probes in
+`phase6-t4b-correction5.test.ts` are RED at `cc00c94` — with `20270820000000` **and** the service
+half of each finding reverted, on a scratch database migrated only to `20270819000000` — and green
+after, each failing for its own reason. `20270815000000` … `20270819000000` are all byte-for-byte
+unchanged.
+
+This head is also where the **review-lifecycle limit** (five finding-bearing heads, 34 findings)
+is reached, and the round says what the limit is for. Two of the three P1s are not seal defects at
+all: they are consequences of where 4b was cut. Shipping the `recorded` status and the
+`pmc`/`member` decider kinds WITHOUT the audience that routes them leaves the product actively
+wrong — a record linkable as work that is "awaiting the client's approval" nobody can give, and a
+push telling the client to approve a decision they do not hold. The owner's decision was
+**gate the surface, keep the facts**: every fact and seal the previous four rounds cleared stays
+exactly as reviewed, and the two surfaces that cannot be routed correctly until 4b-ii are CLOSED
+with a message naming the reason.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R5-1 (P1) | `recorded` was exposed as a terminal status but treated as linkable: `linkableInProject` returned `linkable`, both activity write paths and the daily-log path accepted it, and the Schedule picker excluded only `withdrawn`. `deriveDecisionReading` then parks the activity at `wait / Awaiting the client's approval` — for a decision approvable by nobody, forever | `linkableInProject` returns `'recorded'` as its own verdict; the two activity write paths (pre-tx and the in-tx authority) and the daily-log path refuse it with "A recorded issue has no approval to wait for"; the shared `UNLINKABLE_DECISION_STATUSES` set drives BOTH pickers, so the client rule and the server rule are one list |
+| R5-2 (P1) | every non-record publication still used the legacy CLIENT audience, so a `pmc`- or `member`-held decision notified the client and hid the pending row from its actual holder — the member approval route R3-2 opened was unreachable through normal reads | the SURFACE is gated, not the facts: `createDecisionSchema` refuses `deciderKind: 'pmc' \| 'member'` with a message naming unit 4b-ii, while `client` and `none` are untouched and the default stays `client` (so every existing caller is byte-identical). The column, enum, seals and the widened approval route all remain — 4b-ii removes the gate together with the audience that makes them honest |
+| R5-3 (P1) | rounds 2/3/4 bound the act tuple's KIND and MEMBERSHIP and never asked about the LABEL, so an approval transition carrying the right kind and a null, whitespace-only or fabricated label passed — and the write-once arms froze it forever | the label is required complete and non-blank, and BOUND to the designated holder, at both doors. The rule has ONE statement — `decisions_t4b_holder_label` — and `DecisionsService.approve` calls it inside its own locked transaction rather than keeping a TypeScript copy, so the value written and the value the seal recomputes are the same read |
+| R5-4 (P2) | round 4's org spokesman ran OUTSIDE any transaction: a competing demotion could commit between the answer and the write (the DB then correctly refuses, and its raw exception escapes as the 500 the spokesman existed to replace), and the seal's own §B.1 try-acquire could refuse the write outright | the guard and its write are ONE transaction holding each affected project's readiness key, taken in the ASCENDING project id order the trigger's own loop uses. The probe holds the key from a second session and asserts the org write WAITS — and that the row is still unchanged while it waits |
+| R5-5 (P2) | `requestChange`'s round-1 spokesman covered the `member` arm of a seal with TWO arms. A client- or pmc-held decision's last role holder may legally leave while it is closed; the later reopen then took the ROLE arm and 500s | the ROLE arm has its spokesman too — `OrgsParticipant.roleHasEffectiveStanding`, which calls `orgs_effective_role_standing`, the primitive the seal's arm calls. The probe asserts the exception TYPE, because the message alone does not distinguish a translated conflict from the raw one |
+| R5-6 (P2) | post-write standing was `orgs_effective_role_standing(...) - 1`. That subtraction models a write that only REMOVES standing — but an ACTIVE membership SUPPRESSES its holder's org-derived pmc standing, so removing the sole project pmc who is also an org owner/admin leaves standing at 1. Both the service guard and the seal refused a removal that stranded nobody | the hypothetical is stated INSIDE the primitive: `orgs_effective_role_standing_after(project, role, membership, afterRole, afterActive)` computes standing over the membership set as the write will leave it, precedence arm included. `orgs_effective_role_standing` is redefined as its no-hypothesis case, so there is one body rather than two that must agree — and both the service and the seal ask it |
+
+Convergence audit (third edition): `docs/reviews/pr-344-convergence.md`.
+

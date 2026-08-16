@@ -6,6 +6,7 @@ import { addCivilDays, fromIsoCivilDate } from '../common/civil-date';
 import { nextSeqId } from '../domain/ids';
 import { ddMmmYyyy } from '../domain/dates';
 import { lockUserCredential } from '../common/credential-lock';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import { resolveActor, type Actor } from '../common/actor';
 import { emitEvent } from '../platform/events';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
@@ -267,8 +268,19 @@ export class OrgsService {
    * to a project only when the user holds NO active `Membership` there, and only a write that
    * REMOVES that supply can strand anything. `orgs_effective_role_standing` is orgs-owned, so it
    * is computed here; the holder question belongs to decisions, so it is asked of them.
+   *
+   * Round 5 (Codex P2) — the check and the write it guards are now ONE transaction holding each
+   * affected project's readiness key. Round 4 asked the question outside any transaction, which
+   * left two ways for the 500 it exists to replace to come back: a competing demotion committing
+   * between the answer and the write (the database then correctly refuses, and its raw exception
+   * escapes), and the seal's own §B.1 try-acquire-or-refuse, which REFUSES rather than waits when
+   * some other transaction owns the key. Holding the keys here makes the trigger's acquire
+   * re-entrant and makes the answer still true when the write lands. They are taken in ASCENDING
+   * project id — the order the trigger's own loop takes them in, so two overlapping org writes
+   * queue instead of deadlocking.
    */
   private async assertOrgWriteKeepsDecisionHolders(
+    tx: Prisma.TransactionClient,
     orgId: string,
     userId: string,
     currentRole: string,
@@ -277,9 +289,10 @@ export class OrgsService {
     if (currentRole !== 'owner' && currentRole !== 'admin') return;
     const stillSupplies = nextRole === 'owner' || nextRole === 'admin';
     if (stillSupplies) return;
-    const projects = await this.prisma.project.findMany({ where: { orgId }, select: { id: true }, orderBy: { id: 'asc' } });
+    const projects = await tx.project.findMany({ where: { orgId }, select: { id: true }, orderBy: { id: 'asc' } });
     for (const p of projects) {
-      const rows = await this.prisma.$queryRawUnsafe<Array<{ standing: number; membered: boolean }>>(
+      await lockProjectReadiness(tx, p.id);
+      const rows = await tx.$queryRawUnsafe<Array<{ standing: number; membered: boolean }>>(
         `SELECT orgs_effective_role_standing($1, 'pmc')::int AS standing,
                 EXISTS (SELECT 1 FROM "Membership" m
                          WHERE m."projectId" = $1 AND m."userId" = $2 AND m."status" = 'active') AS membered`,
@@ -288,7 +301,7 @@ export class OrgsService {
       const row = rows[0];
       if (!row || row.membered) continue; // an active project membership decides; the org row supplies nothing
       if (Number(row.standing) > 1) continue; // another effective pmc survives this write
-      if (await this.decisionHolders.holdsOpenDecisions(this.prisma, p.id, null, 'pmc')) {
+      if (await this.decisionHolders.holdsOpenDecisions(tx, p.id, null, 'pmc')) {
         throw new ConflictException(
           `This change would leave a published open decision on ${p.id} with no PMC to decide it — cover the project first`,
         );
@@ -303,8 +316,11 @@ export class OrgsService {
     if (existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
       throw new BadRequestException('The org must keep at least one owner');
     }
-    await this.assertOrgWriteKeepsDecisionHolders(orgId, userId, existing.role, input.role);
-    const membership = await this.prisma.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } });
+    // round 5 — guard and write in ONE transaction, holding the affected projects' readiness keys
+    const membership = await this.prisma.$transaction(async (tx) => {
+      await this.assertOrgWriteKeepsDecisionHolders(tx, orgId, userId, existing.role, input.role);
+      return tx.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } });
+    });
     return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, orgRole: membership.role, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
   }
 
@@ -382,8 +398,11 @@ export class OrgsService {
     if (existing.role === 'owner' && (await this.ownerCount(orgId)) <= 1) {
       throw new BadRequestException('The org must keep at least one owner');
     }
-    await this.assertOrgWriteKeepsDecisionHolders(orgId, userId, existing.role, null);
-    await this.prisma.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } });
+    // round 5 — guard and write in ONE transaction, holding the affected projects' readiness keys
+    await this.prisma.$transaction(async (tx) => {
+      await this.assertOrgWriteKeepsDecisionHolders(tx, orgId, userId, existing.role, null);
+      await tx.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } });
+    });
     return { ok: true };
   }
 
