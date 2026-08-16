@@ -249,3 +249,38 @@ with a message naming the reason.
 
 Convergence audit (third edition): `docs/reviews/pr-344-convergence.md`.
 
+## Round 6 — the seven Codex findings on `ccaf2dd` (eight comments; one P2 duplicated)
+
+Four P1 and three P2, answered in ONE batched head. Every probe in
+`phase6-t4b-correction6.test.ts` (6) and `decision-recorded-register.test.tsx` (3) is RED at
+`ccaf2dd` — with `20270821000000` **and** the service half of its finding reverted, on a scratch
+database migrated only to `20270820000000` — and green after, each failing for its own reason.
+`20270815000000` … `20270820000000` are all byte-for-byte unchanged.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R6-1 (P1) | the completeness and binding checks were keyed to *a tuple column becoming non-null*, so a direct `pending → approved` update writing nothing skipped all of them — and R2-1 forbids filling the tuple afterwards, leaving the decision permanently approved by nobody. Round 5's own probe accepted that shape | the rule is restated over the ACT: every transition into `approved` carries a complete, non-blank attribution. The BINDING still applies only when the act WRITES the tuple, because a re-approval carries the frozen one forward (R2-1 requires `NEW = OLD`) and re-binding it to the holder's CURRENT name would refuse an ordinary re-approval after a rename — history renders as it stood. A column filled outside an approval stays refused |
+| R6-2 (P1) | `DecisionRowCard` had no branch for `recorded`: `neverLocked` covered only `pending`/`withdrawn`, so a published record fell through to the approved shape — `undefined — undefined` as its outcome, a zero approved cost, an `APPROVED` photo stamp and "awaiting client" for a decision approvable by nobody. The status filter, the group label and the rollup omitted the value | the card gets its record branch (a `RECORD` stamp, "Recorded issue — no options, no approval", an em-dash cost, a "no approval required" attribution), and the three enumerating surfaces gain the value: the filter chip, `STATUS_LABEL`, the status-lens rank, the `counts` type and the rollup chip. **This one cannot be gated away** — `deciderKind: 'none'` was deliberately kept, so records are creatable and served to the whole team |
+| R6-3 (P1) | PostgreSQL's one-argument `btrim` strips SPACES only, and `addMemberSchema` admits a tab- or newline-only user name; that name becomes a member-held decision's expected label, satisfying both the non-blank check and the equality check and freezing an attribution that renders as nothing | `decisions_t4b_blank` is the ONE statement of blankness, over the full ASCII whitespace set (the `ExternalParty_name_not_blank` discipline), asked by both seal arms and the diagnostic |
+| R6-4 (P1) | round 5's `pmc`/`member` gate lived only in `createDecisionSchema`, and `publish()` takes no body — so a draft saved before the gate, or written directly, published straight through it, after which the unchanged client audience demanded an approval from the wrong party | the gate moves to where a decision acquires weight: `assertPublishableHolder` refuses both kinds on BOTH publish doors. The HOLDER question is asked first, so "the member you named has left" — round 4's proven behaviour — is not swallowed by a generic refusal |
+| R6-5 (P2) | round 4 gave the publication seal a spokesman for its MEMBER arm only; a default client-held draft published after the last client left reached the seal with zero standing and surfaced a raw PostgreSQL exception, on both the saved-draft door and the one-step issue | the ROLE arm joins it through `roleHasEffectiveStanding`, which calls the same `orgs_effective_role_standing` the seal's arm calls, inside the readiness-locked transaction |
+| R6-6 (P2) | `assertOrgWriteKeepsDecisionHolders` took its departing role from a pre-transaction read: A reads `member`, B promotes that target to admin and removes the previous sole admin, A then skips every readiness lock and holder check on a role that is no longer true, and its delete reaches the seal as the removal of the sole PMC | the departing role is read `FOR UPDATE` inside the transaction. The probe interposes the race deterministically (the R3-7 pattern) — the pre-read is made to answer `member` while the row says `owner`, and the probe asserts it actually served the stale value |
+| R6-7 (P2) | the holder seal's ACTIVATION arm had no spokesman: adding a membership-less org owner/admin to the team in any non-pmc role displaces the pmc standing they supplied through the org, and the seal correctly refuses while a pmc-held decision is open — as a 500 | `MembersService.add` asks the seal's own condition in the seal's own order (non-pmc activation → does the org make them an effective pmc → are they the last one) and refuses with a message naming the remedy the seal implies |
+
+### The spokesman enumeration, now run to exhaustion
+
+Round 4 wrote the coverage rule and checked the paths it had noticed. This is the list:
+
+| Seal arm | Service spokesman |
+| --- | --- |
+| publication — named member gone | `assertPublishableHolder` (both publish doors) |
+| publication — role emptied | `assertPublishableHolder` → `roleHasEffectiveStanding` |
+| reopen — named member gone | `requestChange` → `describeMembership` |
+| reopen — role emptied | `requestChange` → `roleHasEffectiveStanding` |
+| membership removal / re-role | `MembersService.remove` / `updateRole` → `holdsOpenDecisions` |
+| membership ACTIVATION (displacement) | `MembersService.add` → `holdsOpenDecisions` |
+| org membership removal / demotion | `OrgsService.assertOrgWriteKeepsDecisionHolders` |
+| readiness-key try-acquire (every arm) | every command holds `lockProjectReadiness` first |
+
+Convergence audit (fourth edition): `docs/reviews/pr-344-convergence.md`.
+

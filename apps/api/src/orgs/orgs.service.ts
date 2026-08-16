@@ -286,7 +286,18 @@ export class OrgsService {
     currentRole: string,
     nextRole: string | null,
   ): Promise<void> {
-    if (currentRole !== 'owner' && currentRole !== 'admin') return;
+    // Round 6 (Codex P2) — the DEPARTING role comes from the row LOCKED inside this transaction,
+    // never from the caller's pre-read. Removal A can read its target as a plain `member` while
+    // transaction B promotes that same target to admin and removes the previous sole admin; A then
+    // skips every readiness lock and holder check on a `currentRole` that is no longer true, and
+    // its delete reaches the seal as the removal of the project's sole pmc — leaking the raw
+    // trigger error this guard exists to replace. `FOR UPDATE` makes B wait for A or A see B.
+    const locked = await tx.$queryRawUnsafe<Array<{ role: string }>>(
+      `SELECT "role" FROM "OrgMembership" WHERE "orgId" = $1 AND "userId" = $2 FOR UPDATE`,
+      orgId, userId,
+    );
+    const departing = locked[0]?.role ?? currentRole;
+    if (departing !== 'owner' && departing !== 'admin') return;
     const stillSupplies = nextRole === 'owner' || nextRole === 'admin';
     if (stillSupplies) return;
     const projects = await tx.project.findMany({ where: { orgId }, select: { id: true }, orderBy: { id: 'asc' } });

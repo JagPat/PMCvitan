@@ -86,7 +86,14 @@ function make() {
       return await arg(tx);
     }),
   } as unknown as PrismaService;
-  return { prisma, decisions, notifications, events, txNotificationCreate };
+  // round 6 — publication asks the ORGS owner whether the designated holder still stands (both
+  // the named-member arm and the role arm). This fixture's project has its client, so the
+  // participant answers yes; the refusals are proven live in `phase6-t4b-correction6.test.ts`.
+  const orgsParticipant = {
+    describeMembership: vi.fn(async () => ({ userId: 'u-client', active: true, name: 'Client' })),
+    roleHasEffectiveStanding: vi.fn(async () => true),
+  } as unknown as OrgsParticipant;
+  return { prisma, decisions, notifications, events, txNotificationCreate, orgsParticipant };
 }
 
 const snapshot = { build: vi.fn(async () => ({ ok: true })) } as unknown as SnapshotService;
@@ -103,9 +110,9 @@ const baseInput = (publish: boolean): CreateDecisionInput => ({
 
 describe('DecisionsService — draft → publish lifecycle', () => {
   it('creates a private DRAFT by default: no publishedAt, no client notice, no realtime push', async () => {
-    const { prisma, decisions, notifications, events } = make();
+    const { prisma, decisions, notifications, events, orgsParticipant } = make();
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new DecisionsService(prisma, snapshot, dispatcher);
+    const svc = new DecisionsService(prisma, snapshot, dispatcher, orgsParticipant);
 
     await svc.create('proj-1', baseInput(false), user);
 
@@ -120,9 +127,9 @@ describe('DecisionsService — draft → publish lifecycle', () => {
   });
 
   it('create with publish:true issues in one step — publishedAt set, client notified', async () => {
-    const { prisma, decisions, notifications } = make();
+    const { prisma, decisions, notifications, orgsParticipant } = make();
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new DecisionsService(prisma, snapshot, dispatcher);
+    const svc = new DecisionsService(prisma, snapshot, dispatcher, orgsParticipant);
 
     await svc.create('proj-1', baseInput(true), user);
 
@@ -133,9 +140,9 @@ describe('DecisionsService — draft → publish lifecycle', () => {
   });
 
   it('create with publish:true writes exactly one canonical notification inside the command transaction; drafts write none', async () => {
-    const { prisma, notifications, txNotificationCreate } = make();
+    const { prisma, notifications, txNotificationCreate, orgsParticipant } = make();
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new DecisionsService(prisma, snapshot, dispatcher);
+    const svc = new DecisionsService(prisma, snapshot, dispatcher, orgsParticipant);
 
     await svc.create('proj-1', baseInput(true), user);
 
@@ -152,16 +159,16 @@ describe('DecisionsService — draft → publish lifecycle', () => {
     }]);
 
     const draft = make();
-    const draftSvc = new DecisionsService(draft.prisma, snapshot, dispatcher);
+    const draftSvc = new DecisionsService(draft.prisma, snapshot, dispatcher, draft.orgsParticipant);
     await draftSvc.create('proj-1', baseInput(false), user);
     expect(draft.prisma.notification.create).not.toHaveBeenCalled();
     expect(draft.txNotificationCreate).not.toHaveBeenCalled();
   });
 
   it('publish() flips a draft live and fires the client notice; re-publishing conflicts', async () => {
-    const { prisma, decisions, notifications } = make();
+    const { prisma, decisions, notifications, orgsParticipant } = make();
     const dispatcher = { dispatchCommitted: vi.fn() } as unknown as ExternalEffectDispatcher;
-    const svc = new DecisionsService(prisma, snapshot, dispatcher);
+    const svc = new DecisionsService(prisma, snapshot, dispatcher, orgsParticipant);
 
     await svc.create('proj-1', baseInput(false), user);
     const id = decisions[0].id;

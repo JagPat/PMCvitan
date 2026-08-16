@@ -3500,14 +3500,16 @@ assert_rejects "4a seal 3 (round 15): one transaction editing an option, TRUNCAT
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-2 fixture did not apply"; FAIL=1; }
 -- a LEGACY approved decision: two options, published, then flipped to `approved` with no tuple
 INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
-VALUES ('UP4B2-D1','p1','Legacy approved, tupleless','Hall','pending','stone','USER-1',NULL)
+-- round 6: a tupleless approval TRANSITION is now refused (an approval that names nobody can
+-- never be repaired), so the legacy shape is born the way legacy rows actually exist — already
+-- approved, with no tuple, which R4-2's documented narrowing keeps permitted at the INSERT door.
+VALUES ('UP4B2-D1','p1','Legacy approved, tupleless','Hall','approved','stone','USER-1',NULL)
 ON CONFLICT DO NOTHING;
 INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
 VALUES ('UP4B2-D1O1','UP4B2-D1','A','a','Teak',0,'sw1'),
        ('UP4B2-D1O2','UP4B2-D1','B','b','Oak',100,'sw2')
 ON CONFLICT DO NOTHING;
 UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B2-D1' AND "publishedAt" IS NULL;
-UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4B2-D1' AND "status"::text='pending';
 -- an UNPUBLISHED draft authored by the CLIENT — allowed to exist, not allowed to become a record
 INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
 VALUES ('UP4B2-D2','p1','Client-authored draft','Hall','pending','stone','USER-C',NULL)
@@ -3661,9 +3663,9 @@ ON CONFLICT DO NOTHING;
 UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B5-D1' AND "publishedAt" IS NULL;
 SQL
 assert_rejects "4b seal (round 5, R5-3): approving with the right KIND and no label — a null label can never be filled afterwards, so the hole would be permanent" \
-  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client' WHERE \"id\"='UP4B5-D1'" "WHOLE holder tuple or none of it"
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client' WHERE \"id\"='UP4B5-D1'" "records WHO approved it"
 assert_rejects "4b seal (round 5, R5-3): approving with a BLANK label — whitespace renders as nothing, which is the same hole spelled differently" \
-  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client', \"approvedDeciderLabel\"='   ' WHERE \"id\"='UP4B5-D1'" "WHOLE holder tuple or none of it"
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client', \"approvedDeciderLabel\"='   ' WHERE \"id\"='UP4B5-D1'" "records WHO approved it"
 assert_rejects "4b seal (round 5, R5-3): approving with a FABRICATED label — the right moment and the right kind are not the right party" \
   "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client', \"approvedDeciderLabel\"='Someone Else' WHERE \"id\"='UP4B5-D1'" "must render the designated holder"
 assert_rejects "4b seal (round 5, R5-3): a decision BORN approved with a fabricated label — the same rule at the INSERT door, because both doors reach the same permanent state" \
@@ -3674,8 +3676,11 @@ $PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKin
 assert "4b round 5 precision (R5-3): the correctly-labelled approval committed — the seal binds the label, it does not ban labelling" \
   "SELECT \"approvedDeciderLabel\" FROM \"Decision\" WHERE \"id\"='UP4B5-D1';" \
   "Client"
-# …and a TUPLELESS approval transition is still permitted (R2-1's shape, preserved)
-$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round 5 (R5-3): a tupleless approval transition must still be permitted"; FAIL=1; }
+# …and the TUPLELESS approval transition round 5 called precision is OVERTURNED by round 6's
+# R6-1, in place and saying so: R2-1 forbids filling the tuple afterwards, so an approval that
+# writes none is permanently unattributed. The legacy shape survives at the INSERT door (R4-2's
+# narrowing, proven above) — it is transitions, not history, that the act rule reaches.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round 6 (R6-1): the tupleless fixture did not apply"; FAIL=1; }
 INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt","deciderKind")
 VALUES ('UP4B5-D2','p1','Tupleless','Hall','pending','stone','USER-1',NULL,'client')
 ON CONFLICT DO NOTHING;
@@ -3684,11 +3689,12 @@ VALUES ('UP4B5-D2O1','UP4B5-D2','A','a','Teak',0,'sw1'),
        ('UP4B5-D2O2','UP4B5-D2','B','b','Oak',100,'sw2')
 ON CONFLICT DO NOTHING;
 UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B5-D2' AND "publishedAt" IS NULL;
-UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4B5-D2';
 SQL
-assert "4b round 5 precision (R5-3): the tupleless approval committed — the legacy shape survives the new binding" \
-  "SELECT COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B5-D2';" \
-  "<null>"
+assert_rejects "4b seal (round 6, R6-1) OVERTURNS round 5: the tupleless approval transition round 5 permitted is a permanent hole, and is now refused" \
+  "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B5-D2'" "records WHO approved it"
+assert "4b round 6 (R6-1): the refused approval did not land — the decision is still pending" \
+  "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4B5-D2';" \
+  "pending"
 
 # R5-6 — the hypothetical standing primitive, exercised over the precedence shape that broke the
 # subtraction. `orgs_effective_role_standing_after` is asked with the row's POST-WRITE state; the
@@ -3714,6 +3720,63 @@ assert "4b round 5 (R5-6) contrast: for a role with NO org arm the same call IS 
   "true"
 $PSQL -q -c "DELETE FROM \"OrgMembership\" WHERE \"id\"='UP4B5-OM'" >/dev/null \
   || { echo "FAILED  4b round 5 (R5-6): the R5-6 fixture org row must be removable"; FAIL=1; }
+
+# ── Phase 6 task 4b, ROUND 6 (Codex): the two seals whose fix is a DATABASE fix ─────────────
+#
+# R6-1 restates the attribution rule over the ACT rather than over the columns an act happens to
+# touch: rounds 2–5 asked "is a tuple column being filled?", so an approval that filled NOTHING
+# skipped every check — and R2-1 then forbids ever filling it, leaving the decision permanently
+# approved by nobody. R6-3 replaces `btrim(x)` (spaces only) with the repository's full
+# ASCII-whitespace discipline, because a user name of tabs is admitted by `addMemberSchema` and
+# would otherwise satisfy both the non-blank check and the equality check.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-6 fixture did not apply"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt","deciderKind")
+VALUES ('UP4B6-D1','p1','Unattributed approval','Hall','pending','stone','USER-1',NULL,'client')
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B6-D1O1','UP4B6-D1','A','a','Teak',0,'sw1'),
+       ('UP4B6-D1O2','UP4B6-D1','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B6-D1' AND "publishedAt" IS NULL;
+-- a member holder whose display identity is TABS: the shape `btrim` alone lets through
+INSERT INTO "User"("id","projectId","role","name","email")
+VALUES ('USER-WS','p1','contractor', E'\t\n', 'ws@upgrade.test') ON CONFLICT DO NOTHING;
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES ('UP4B6-M','p1','USER-WS','contractor','active') ON CONFLICT DO NOTHING;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt","deciderKind","deciderMembershipId")
+VALUES ('UP4B6-D2','p1','Whitespace holder','Hall','pending','stone','USER-1',NULL,'member','UP4B6-M')
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B6-D2O1','UP4B6-D2','A','a','Teak',0,'sw1'),
+       ('UP4B6-D2O2','UP4B6-D2','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B6-D2' AND "publishedAt" IS NULL;
+SQL
+assert_rejects "4b seal (round 6, R6-1): approving while writing NO attribution at all — the act is the rule, and R2-1 forbids filling the hole afterwards" \
+  "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B6-D1'" "records WHO approved it"
+assert_rejects "4b seal (round 6, R6-3): approving with a label of TABS — btrim alone strips spaces, and a name of tabs renders as nothing just the same" \
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='member', \"approvedDeciderMembershipId\"='UP4B6-M', \"approvedDeciderLabel\"=E'\t\n' WHERE \"id\"='UP4B6-D2'" "records WHO approved it"
+assert "4b round 6 (R6-1/R6-3): neither refused approval landed — both decisions are still pending" \
+  "SELECT string_agg(\"status\"::text, ',' ORDER BY \"id\") FROM \"Decision\" WHERE \"id\" IN ('UP4B6-D1','UP4B6-D2');" \
+  "pending,pending"
+# PRECISION — the seal is exact, not merely strict: a complete, bound, non-blank attribution commits
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='client', \"approvedDeciderLabel\"='Client' WHERE \"id\"='UP4B6-D1'" >/dev/null \
+  || { echo "FAILED  4b round 6 (R6-1): a properly attributed approval must be accepted"; FAIL=1; }
+assert "4b round 6 precision (R6-1): the attributed approval committed — the act carries its evidence, it is not banned from happening" \
+  "SELECT \"approvedDeciderLabel\" FROM \"Decision\" WHERE \"id\"='UP4B6-D1';" \
+  "Client"
+# …and a RE-APPROVAL carries the FROZEN tuple forward without being re-bound to a current name
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round 6 (R6-1): a re-approval carrying the frozen tuple must be accepted"; FAIL=1; }
+UPDATE "Decision" SET "status"='change' WHERE "id"='UP4B6-D1';
+UPDATE "Decision" SET "status"='approved' WHERE "id"='UP4B6-D1';
+SQL
+assert "4b round 6 precision (R6-1): the RE-approval committed with its frozen attribution — history renders as it stood, which is why the binding applies only to the act that WRITES it" \
+  "SELECT \"status\"::text || '/' || \"approvedDeciderLabel\" FROM \"Decision\" WHERE \"id\"='UP4B6-D1';" \
+  "approved/Client"
+# the one statement of "blank", exercised directly across the whole ASCII set
+assert "4b round 6 (R6-3): every ASCII whitespace character counts as blank — space, tab, LF, VT, FF, CR" \
+  "SELECT (decisions_t4b_blank(E' \t\n\x0B\f\r') AND NOT decisions_t4b_blank('Client'))::text;" \
+  "true"
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by

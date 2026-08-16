@@ -267,9 +267,12 @@ describe('Phase 6 unit 4b-i round 4 — the five Codex findings (live PG)', () =
       } as never, pmc()),
     ).rejects.toThrow(/not an active member/);
 
-    // PRECISION — with the holder active again the same publish succeeds
+    // PRECISION — with the holder active again the departed-member refusal STOPS. Round 6 then
+    // refuses the same publish for a different, stated reason (the `pmc`/`member` surface arrives
+    // with 4b-ii), and the two messages are deliberately distinct: this probe is about the holder
+    // spokesman, and it still proves the spokesman answered rather than the seal.
     await t.prisma.membership.update({ where: { id: holder.id }, data: { status: 'active' } });
-    await svc.publish(f.projectA.id, id, pmc());
-    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).publishedAt).not.toBeNull();
+    await expect(svc.publish(f.projectA.id, id, pmc())).rejects.toThrow(/decider audience \(unit 4b-ii\)/);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id } })).publishedAt).toBeNull();
   });
 });

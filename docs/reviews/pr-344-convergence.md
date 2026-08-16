@@ -9,6 +9,7 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `2ef9d68` | round-2 fold + this audit's first edition | 7 (4 P1, 3 P2) | corrected on this head via `20270818000000`: the act tuple validated against the decision's own `deciderKind`/`deciderMembershipId`; the approve route ceiling widened to every role that may be NAMED, with the holder narrowing left in the service; the decision id frozen FROM BIRTH; the reopen seal restated over every transition INTO an open status; the departing role read from the LOCKED membership row; the org arm narrowed to the standing the written row actually supplies; and the publish side-effect bundle derived from the row the CAS locked |
 | `87461e6` | round-3 fold + this audit's second edition | 5 (2 P1, 3 P2) | corrected on this head via `20270819000000` plus its service half: the approval REGISTER sealed against a record (the reverse of a count the conversion already made); the holder binding applied at BIRTH as well as at the transition; and the three remaining SPOKESMAN doors given their service-side question — publish holds the readiness key the seal try-acquires, publish and one-step issue refuse a departed holder with an actionable conflict, and the two org-membership commands ask the decisions participant before the write |
 | `cc00c94` | round-4 fold + this audit's third edition | 6 (3 P1, 3 P2) | corrected on this head via `20270820000000` plus its service half, under the owner's **"gate the surface, keep the facts"** decision: `recorded` made unlinkable at every write path and both pickers; the `pmc`/`member` decider designation refused at the contract until 4b-ii ships its audience; the frozen approval LABEL required complete, non-blank and BOUND to the designated holder, with the service deriving it from the seal's own function; the org-membership guard and its write folded into one transaction holding each affected project's readiness key; `requestChange` validating ROLE-held deciders as well as named ones; and post-write standing ASKED of the primitive instead of computed as `standing - 1` |
+| `ccaf2dd` | round-5 fold + this audit's third edition | 7 (4 P1, 3 P2; 8 comments) | corrected on this head via `20270821000000` plus its service and WEB halves: the attribution rule restated over the APPROVAL ACT rather than over the columns an act touches; `decisions_t4b_blank` giving "blank" one statement over the whole ASCII whitespace set; the `pmc`/`member` surface gate extended to BOTH publish doors; the ROLE arm of the publication holder check given its spokesman on both doors; the org guard's departing role read `FOR UPDATE` inside its transaction; the membership-ACTIVATION arm of the holder seal given its spokesman; and the register taught to render a `recorded` row as a record rather than as an approval |
 
 ## Root analysis — one generative class, three faces
 
@@ -172,6 +173,46 @@ head that had to gate its own facts to stay honest. 4b-ii should carry the audie
 and the two gates' removal together, and it should be reviewed as one workflow rather than as two
 halves of one.
 
+## Round 6 — the class is closed; the seam is not
+
+Seven findings on `ccaf2dd`, and they split the same way round 5 did — which is itself the finding.
+
+**Four are the class, and all four are its LAST possible instances.**
+
+- **Face C (wrong discriminator)** — R6-1: rounds 2–5 each added a clause keyed to *"if a tuple
+  column is being filled"*, and the invariant does not belong to the columns. It belongs to the
+  ACT. An approval that filled nothing skipped every clause, and R2-1 then forbids repairing it —
+  so the decision is permanently approved by nobody. The rule is now one sentence over the
+  transition, and the two clauses that survive separately (the binding applies only when the act
+  WRITES the tuple; a column filled outside an approval is still refused) are stated as the
+  exceptions they are, with their reasons.
+- **Face B (re-statement)** — R6-3: round 5 gave the LABEL RULE one statement and then wrote its
+  emptiness test inline, three times, using `btrim` — which strips spaces and not tabs. The same
+  defect one level down, in the same head that fixed it one level up. `decisions_t4b_blank` is now
+  the one statement.
+- **Face B inverted (the SPOKESMAN)** — R6-5 and R6-7: round 4 gave the publication seal a
+  spokesman for its MEMBER arm and round 5 gave `requestChange` both arms, but the publication
+  ROLE arm and the membership-ACTIVATION arm still had none. The enumeration this audit wrote down
+  at round 4 — *the set of paths that can trip a seal is enumerable from the seals themselves* — was
+  correct and was never actually run to exhaustion. It has been now: every arm of every seal in
+  this unit has a spokesman, listed in the packet.
+- **Face C again** — R6-6: the org guard's departing role came from a pre-transaction read, which
+  is round 3's R3-5 in a second file. The cure is the same: read it `FOR UPDATE` inside the
+  transaction that acts on it.
+
+**Three are the seam, and this is the second consecutive round to say so.** R6-4 is round 5's gate
+finishing its own job: a contract gate that guards `create` and not `publish` is not a gate, and
+`publish()` takes no body, so the contract could not see that door at all. R6-2 is sharper, because
+it cannot be gated away: `deciderKind: 'none'` was deliberately KEPT, so records are creatable,
+permanent and served to the whole team — and the register had no branch for them, rendering every
+one as an approval that never happened, priced at zero, stamped APPROVED, "awaiting client". The
+status filter, the group label and the rollup omitted the value entirely.
+
+That is the seam stating its own cost. Gating a surface is a coherent answer for a designation
+whose audience has not shipped. It is NOT an answer for a status the unit deliberately keeps and
+serves — there, the only honest options are to render it truthfully or not to ship it, and this
+head renders it. **Finishing what was kept is not scope creep; it is the other half of keeping it.**
+
 ## What changed structurally, rather than per symptom
 
 - **Face B is closed by construction.** Both service guards now call the SQL the
@@ -333,3 +374,35 @@ fragility in the round-5 suite itself: its decision ids and fixture emails were 
 not per RUN, so an interrupted run poisoned the next one with primary-key collisions that looked
 like product failures. Both are now run-scoped. That is round 2's replay lesson and round 3's
 fixture-restoration lesson in their third spelling: **a probe's failure must be its own.**
+
+### What round 6 closes
+
+- **The attribution rule turns on the act** (R6-1). Every transition into `approved` carries a
+  complete, non-blank attribution; the binding applies to the act that WRITES the tuple, so a
+  re-approval carries frozen history forward instead of being re-bound to a name that has since
+  changed. Both exceptions are stated with their reasons rather than left as emergent behaviour.
+- **"Blank" has one statement** (R6-3), over the whole ASCII whitespace set, asked by both seal
+  arms and the diagnostic. Round 5 fixed the rule and re-stated its test; this closes the level
+  below.
+- **The spokesman enumeration is actually exhausted** (R6-5, R6-7). Round 4 wrote the rule and
+  checked the paths it had noticed. Every arm of every seal in this unit is now listed in the
+  packet with the service question that fronts it, so the next reader can check the list rather
+  than re-derive it.
+- **The gate covers every door it claims to** (R6-4), and **the register tells the truth about
+  what the unit ships** (R6-2).
+
+Gates at this head: `pnpm check` EXIT 0 (web 790/790, API 793/793); the full integration suite on a
+pristine migrated database; `upgrade-proof.sh` with round 6's two new hostile statements rejected
+and its four precision arms ACCEPTED; `test:e2e:api` unchanged. Every round-6 probe was RED at
+`ccaf2dd` with `20270821000000` AND the service half of its finding reverted — six of six on the
+API side, three of three on the web side, each for its own reason. R6-6's race is interposed
+deterministically (the R3-7 pattern): the guard's pre-read is made to answer `member` while the row
+says `owner`, and the probe asserts it actually served the stale value before asserting the outcome.
+
+**Two of round 5's own assertions are OVERTURNED here, in place, saying so.** Round 5's R5-3 probe
+asserted that a tupleless approval transition was permitted and called that precision; R6-1 is right
+that it was a hole, and the arm now asserts the refusal with the reason recorded beside it. Round
+4's R4-5 precision arm asserted that publishing a member-held draft succeeds once its holder is
+active; R6-4 refuses it for a different and stated reason, and the arm now proves the holder
+spokesman answered rather than the seal. A probe that is overturned by a later finding is evidence
+the review is working, and it is worth more in the file than out of it.

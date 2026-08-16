@@ -56,12 +56,12 @@ describe('Phase 6 unit 4b-i round 2 — the four Codex findings (live PG)', () =
   });
 
   /** A published ordinary (client-held) decision with its two options. */
-  const seedOrdinary = async (): Promise<string> => {
+  const seedOrdinary = async (over: Record<string, unknown> = {}): Promise<string> => {
     const id = `DL-t4bc2-ord-${seq++}`;
     await t.prisma.decision.create({
       data: {
         id, projectId: f.projectA.id, title: `Ordinary ${id}`, room: 'Kitchen', status: 'pending',
-        ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null,
+        ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null, ...over,
       },
     });
     await t.prisma.decisionOption.createMany({ data: [
@@ -86,12 +86,16 @@ describe('Phase 6 unit 4b-i round 2 — the four Codex findings (live PG)', () =
 
   // ── R2-1 ───────────────────────────────────────────────────────────────────────────────────
   it('R2-1: the approval holder tuple is written BY the approval — a row that is ALREADY approved cannot be given one', async () => {
-    const id = await seedOrdinary();
     // The shape every row approved BEFORE `20270815000000` is in: status `approved`, tuple NULL.
     // Round 1's write-once rules protect a tuple ONCE WRITTEN; the question this finding asks is
     // who may write the FIRST one, and `NEW.status = 'approved'` answered "anyone updating an
     // approved row" rather than "the approval".
-    await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='approved' WHERE "id" = ${id}`;
+    //
+    // Round 6 (R6-1) changed how this state is REACHED, not what it is: a tupleless approval
+    // TRANSITION is now refused, because R2-1 forbids repairing it afterwards. The legacy row is
+    // therefore born already approved — which is how legacy rows actually exist, and which R4-2's
+    // documented narrowing keeps permitted at the INSERT door.
+    const id = await seedOrdinary({ status: 'approved' });
     const legacy = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
     expect(legacy.status).toBe('approved');
     expect(legacy.approvedDeciderKind).toBeNull();

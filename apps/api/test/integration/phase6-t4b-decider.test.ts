@@ -143,6 +143,31 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
     return { userId, membershipId: m.id };
   };
 
+  /**
+   * Create a MEMBER- or PMC-held decision and bring it live.
+   *
+   * Round 6 (Codex P1) gates the publish COMMAND for these two holder kinds until 4b-ii ships the
+   * audience that routes them — so the decision is created as a DRAFT through the real service
+   * (which records the decider, the fact under test) and published directly, under the readiness
+   * key the publication seal try-acquires. That is exactly the state a draft saved before the gate
+   * is in, and it leaves everything downstream — approve, the act tuple, the removal guard —
+   * exercised through the real command path.
+   */
+  const seedHeldLive = async (title: string, over: Record<string, unknown>): Promise<string> => {
+    const snap = await svc.create(
+      f.projectA.id,
+      { title, room: 'Bath', options: twoOptions, publish: false, ...over } as never,
+      pmc(),
+      `t4b-held-${seq++}`,
+    );
+    const id = snap.decisions.find((d) => d.title === title)!.id;
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, `readiness:${f.projectA.id}`);
+      await tx.$executeRawUnsafe(`UPDATE "Decision" SET "publishedAt" = now() WHERE "id" = $1`, id);
+    });
+    return id;
+  };
+
   const twoOptions = [
     { label: 'Granite', material: 'Granite', delta: 0, swatch: 'sw1', recommended: true },
     { label: 'Quartz', material: 'Quartz', delta: 20000, swatch: 'sw2', recommended: false },
@@ -172,13 +197,15 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
   describe('P16 — member-decider authority', () => {
     it('the NAMED member is recorded as the holder when create names them', async () => {
       const holder = await seedMember('contractor');
+      // round 6: the DESIGNATION is what this probe is about, and it is recorded at create —
+      // publication is the gated surface (4b-ii), not the fact.
       await svc.create(
         f.projectA.id,
         {
           title: 'Tile layout',
           room: 'Bath',
           options: twoOptions,
-          publish: true,
+          publish: false,
           deciderKind: 'member',
           deciderMembershipId: holder.membershipId,
         },
@@ -192,20 +219,9 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
 
     it('the PMC on-behalf approval FREEZES the exact holder tuple on the act', async () => {
       const holder = await seedMember('contractor');
-      const snap = await svc.create(
-        f.projectA.id,
-        {
-          title: 'Skirting profile',
-          room: 'Hall',
-          options: twoOptions,
-          publish: true,
-          deciderKind: 'member',
-          deciderMembershipId: holder.membershipId,
-        },
-        pmc(),
-        `t4b-p16b-${seq++}`,
-      );
-      const id = snap.decisions.find((d) => d.title === 'Skirting profile')!.id;
+      const id = await seedHeldLive('Skirting profile', {
+        deciderKind: 'member', deciderMembershipId: holder.membershipId,
+      });
       await svc.approve(f.projectA.id, id, { optionIndex: 0 }, pmc(), `t4b-p16b-ap-${seq++}`);
       const row = await t.prisma.decision.findUnique({ where: { id } });
       // the act keeps its OWN history: kind + membership + the rendered display identity
@@ -244,20 +260,9 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
     it('the holder columns are WRITE-ONCE from publication — a post-publish UPDATE is refused', async () => {
       const holder = await seedMember('contractor');
       const other = await seedMember('contractor');
-      const snap = await svc.create(
-        f.projectA.id,
-        {
-          title: 'Handle type',
-          room: 'Kitchen',
-          options: twoOptions,
-          publish: true,
-          deciderKind: 'member',
-          deciderMembershipId: holder.membershipId,
-        },
-        pmc(),
-        `t4b-p17-${seq++}`,
-      );
-      const id = snap.decisions.find((d) => d.title === 'Handle type')!.id;
+      const id = await seedHeldLive('Handle type', {
+        deciderKind: 'member', deciderMembershipId: holder.membershipId,
+      });
       await expect(
         t.prisma.$executeRawUnsafe(`UPDATE "Decision" SET "deciderMembershipId" = $1 WHERE id = $2`, other.membershipId, id),
       ).rejects.toThrow();
@@ -423,19 +428,7 @@ describe('Phase 6 unit 4b — the decider and the record-only issue (live PG)', 
   describe('P39 — removing the current holder is refused', () => {
     it("a membership named by a PUBLISHED open decision cannot be soft-removed at the DATABASE", async () => {
       const holder = await seedMember('contractor');
-      await svc.create(
-        f.projectA.id,
-        {
-          title: 'Door finish',
-          room: 'Hall',
-          options: twoOptions,
-          publish: true,
-          deciderKind: 'member',
-          deciderMembershipId: holder.membershipId,
-        },
-        pmc(),
-        `t4b-p39-${seq++}`,
-      );
+      await seedHeldLive('Door finish', { deciderKind: 'member', deciderMembershipId: holder.membershipId });
       await expect(
         t.prisma.$executeRawUnsafe(`UPDATE "Membership" SET status = 'removed' WHERE id = $1`, holder.membershipId),
       ).rejects.toThrow();

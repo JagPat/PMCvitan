@@ -181,7 +181,10 @@ describe('Phase 6 unit 4b-i round 5 — the six Codex findings (live PG)', () =>
     const a = await seedDraft();
     await expect(
       t.prisma.decision.update({ where: { id: a }, data: { status: 'approved', approvedDeciderKind: 'client' } }),
-    ).rejects.toThrow(/WHOLE holder tuple or none of it/);
+      // round 6 restated this rule over the ACT rather than over the columns written, so the
+      // refusal now names the act. The behaviour under test is unchanged: an approval that does
+      // not say who approved it cannot be repaired afterwards.
+    ).rejects.toThrow(/records WHO approved it/);
 
     // (b) a BLANK label is a hole that renders as nothing
     const b = await seedDraft();
@@ -190,7 +193,7 @@ describe('Phase 6 unit 4b-i round 5 — the six Codex findings (live PG)', () =>
         where: { id: b },
         data: { status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: '   ' },
       }),
-    ).rejects.toThrow(/WHOLE holder tuple or none of it/);
+    ).rejects.toThrow(/records WHO approved it/);
 
     // (c) a FABRICATED label with the right kind — the finding's exact shape
     const c = await seedDraft();
@@ -233,11 +236,16 @@ describe('Phase 6 unit 4b-i round 5 — the six Codex findings (live PG)', () =>
     });
     expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: e } })).approvedDeciderLabel).toBe(person.name);
 
-    // (f) PRECISION — a TUPLELESS approval transition is still permitted (R2-1's shape, and the
-    // legacy row every pre-`20270815` approval is in)
+    // (f) ROUND 6 (Codex P1) OVERTURNS THIS ARM, and it is left in place saying so. Round 5
+    // asserted that a TUPLELESS approval transition is permitted, calling it precision. It is a
+    // hole: R2-1 forbids filling the tuple afterwards, so an approval that writes none is
+    // permanently unattributed. The rule now turns on the ACT — every transition into `approved`
+    // carries its attribution — and this same statement is refused.
     const g = await seedDraft();
-    await t.prisma.decision.update({ where: { id: g }, data: { status: 'approved' } });
-    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: g } })).approvedDeciderKind).toBeNull();
+    await expect(
+      t.prisma.decision.update({ where: { id: g }, data: { status: 'approved' } }),
+    ).rejects.toThrow(/records WHO approved it/);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: g } })).status).toBe('pending');
 
     // (g) PRECISION, and the point of the whole fix — the REAL approval path writes a label the
     // seal accepts, because the service asks the same function the seal asks. If the two ever

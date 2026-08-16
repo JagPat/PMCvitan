@@ -58,6 +58,57 @@ export class DecisionsService {
     return rows[0]?.label ?? null;
   }
 
+  /**
+   * Can this decision be PUBLISHED as it stands — is its designated holder still there?
+   *
+   * Phase 6 task 4b, round 6 (Codex P1 + P2). Publication is where a decision stops being
+   * weightless: `decision_t4b_publication_seal` validates the holder at that exact moment, for
+   * BOTH holder shapes. Round 4 gave the member arm a spokesman on both publish doors and left
+   * the ROLE arm to the seal — so a default client-held draft published after the last client
+   * left produced a raw PostgreSQL exception and a 500. The last client MAY leave: a draft never
+   * blocked their removal, which is precisely what makes this the end of an ordinary sequence.
+   *
+   * Both arms ask the OWNER of the fact — `describeMembership` for a named holder,
+   * `roleHasEffectiveStanding` (which calls the same `orgs_effective_role_standing` the seal's
+   * own arm calls) for a role-held one — inside the caller's readiness-locked transaction, so
+   * the answer is the one the seal will see.
+   *
+   * The `pmc`/`member` SURFACE GATE lives here too (round 6, Codex P1). Round 5 gated the
+   * designation in `createDecisionSchema`, and `publish()` takes no body — so a draft saved
+   * before the gate, or imported directly, could still be published, after which the unchanged
+   * client audience sends the wrong party an approval demand and hides the row from its actual
+   * holder. A contract gate that only guards one of two doors is not a gate. It is refused where
+   * the decision acquires weight, which is the honest place for it: 4b-i keeps the FACTS, and
+   * 4b-ii opens this together with the audience that makes it true.
+   */
+  private async assertPublishableHolder(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    head: { deciderKind: unknown; deciderMembershipId: string | null },
+    memberGoneMessage: string,
+  ): Promise<void> {
+    const kind = head.deciderKind as string;
+    // The HOLDER question first, then the surface question. Both refuse, and both refusals are
+    // true — but "the member you named has left" is the more specific and more actionable of the
+    // two, and it is the behaviour round 4 proved. A gate that swallowed it would be trading a
+    // precise conflict for a generic one.
+    if (kind === 'member') {
+      const holder = await this.orgsParticipant.describeMembership(tx, projectId, head.deciderMembershipId ?? '');
+      if (!holder || !holder.active) throw new ConflictException(memberGoneMessage);
+    } else if (kind === 'client' || kind === 'pmc') {
+      if (!(await this.orgsParticipant.roleHasEffectiveStanding(tx, projectId, kind))) {
+        throw new ConflictException(
+          `This project has no active ${kind} to decide it — cover the role before publishing, or file it as a recorded issue`,
+        );
+      }
+    }
+    if (kind === 'pmc' || kind === 'member') {
+      throw new ConflictException(
+        'Publishing a decision held by the PMC or a named member arrives with the decider audience (unit 4b-ii) — issue it to the client, or file it as a recorded issue',
+      );
+    }
+  }
+
   /** PMC issues a new decision (title/room + 2–4 options) → shows as pending on the
    *  client's Decisions Waiting screen. Labels/keys derive from order when omitted.
    *
@@ -165,13 +216,17 @@ export class DecisionsService {
         // one-step issue, after the named holder is confirmed ACTIVE (round 4, Codex P2). Naming
         // an existing-but-inactive membership is an ordinary caller mistake and deserves the
         // actionable conflict rather than the seal's raw error.
-        if (publishedAt && deciderKind === 'member') {
-          const holder = await this.orgsParticipant.describeMembership(tx, projectId, input.deciderMembershipId ?? '');
-          if (!holder || !holder.active) {
-            throw new ConflictException(
-              'The member this decision names is not an active member of this project — name a current decider, or save it as a draft',
-            );
-          }
+        //
+        // Round 6 (Codex P1 + P2) — BOTH holder shapes, and the surface gate, through the one
+        // helper the saved-draft door uses. The role arm was missing here too: a one-step issue
+        // on a project whose last client has left reached the seal and 500'd.
+        if (publishedAt) {
+          await this.assertPublishableHolder(
+            tx,
+            projectId,
+            { deciderKind, deciderMembershipId: input.deciderMembershipId ?? null },
+            'The member this decision names is not an active member of this project — name a current decider, or save it as a draft',
+          );
         }
         if (publishedAt) await tx.decision.update({ where: { id }, data: { publishedAt } });
         await tx.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } });
@@ -241,15 +296,17 @@ export class DecisionsService {
         // weightless and its holder is editable), which makes this the expected end of an
         // ordinary sequence, not an exotic one. The seal stays the authority; this is its
         // spokesman, exactly like `requestChange` (F9) and `holdsOpenDecisions` (F12).
+        //
+        // Round 6 (Codex P1 + P2) — the ROLE arm joins it, and so does the `pmc`/`member` surface
+        // gate. `publish()` takes no body, so round 5's contract gate could not see this door at
+        // all: a draft saved before that gate, or written directly, published straight through it.
         const draft = await tx.decision.findUniqueOrThrow({ where: { id: decisionId } });
-        if ((draft.deciderKind as string) === 'member') {
-          const holder = await this.orgsParticipant.describeMembership(tx, projectId, draft.deciderMembershipId ?? '');
-          if (!holder || !holder.active) {
-            throw new ConflictException(
-              'The member this decision names has left the project — re-point the draft to a current decider before publishing it',
-            );
-          }
-        }
+        await this.assertPublishableHolder(
+          tx,
+          projectId,
+          draft,
+          'The member this decision names has left the project — re-point the draft to a current decider before publishing it',
+        );
         // Phase 6 task 4a — publish joins the CAS lifecycle it was the one exception to: the
         // pre-read above is advisory, and THIS guard (`publishedAt: null`) is the transition,
         // so two concurrent publishes admit exactly one (the loser gets the same 409 the

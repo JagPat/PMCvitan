@@ -23,6 +23,10 @@ const STATUS_FILTERS: { key: Decision['status']; label: string }[] = [
   // Phase 6 task 4a — the register keeps withdrawn rows (pmc-only; the server filters them
   // out of every other role's snapshot, so this chip simply never matches for them)
   { key: 'withdrawn', label: 'Withdrawn' },
+  // Phase 6 task 4b, round 6 (Codex P1) — a record is served to the WHOLE team, so leaving it
+  // out of the filter hid a status the register displays. Everything a reader can see, they can
+  // filter by.
+  { key: 'recorded', label: 'Recorded' },
 ];
 
 export function DecisionLogScreen() {
@@ -154,6 +158,7 @@ export function DecisionLogScreen() {
                     {g.counts.pending > 0 && <RollupChip n={g.counts.pending} color="var(--amber-solid)" label="pending" />}
                     {g.counts.change > 0 && <RollupChip n={g.counts.change} color="var(--red-solid)" label="change" />}
                     {g.counts.approved > 0 && <RollupChip n={g.counts.approved} color="var(--green-solid)" label="approved" />}
+                    {g.counts.recorded > 0 && <RollupChip n={g.counts.recorded} color="var(--rail-recorded, #3D5876)" label="recorded" />}
                     {g.counts.withdrawn > 0 && <RollupChip n={g.counts.withdrawn} color="var(--muted)" label="withdrawn" />}
                   </span>
                 </button>
@@ -192,18 +197,36 @@ function RollupChip({ n, color, label }: { n: number; color: string; label: stri
 /** One decision card — the register row, with its finer location shown as a caption. */
 function DecisionRowCard({ d, subLabel, onChange, onWithdraw, onWithdrawDecision }: { d: Decision; subLabel: string; onChange: () => void; onWithdraw?: () => void; onWithdrawDecision?: () => void }) {
   const locked = d.status === 'approved';
+  // Phase 6 task 4b, round 6 (Codex P1) — a RECORD is its own shape, and it is the shape this
+  // card had no branch for. It carries ZERO options and no approval at all, so every derivation
+  // below that assumes one of those two states produced a falsehood: `neverLocked` was false, so
+  // it read `undefined — undefined` off an approval that never happened, priced it at zero,
+  // stamped the photo APPROVED and told the reader it was awaiting the client. Nothing about
+  // that is a display bug — it is the register giving a false account of a permanent entry.
+  const isRecord = d.status === 'recorded';
   // Phase 6 task 4a — a withdrawn decision was never approved: it renders its options (never a
   // fabricated approval line), and its attribution names the withdrawer, not an approver.
   const neverLocked = d.status === 'pending' || d.status === 'withdrawn';
-  const attribution =
-    d.status === 'withdrawn'
+  const attribution = isRecord
+    ? `Recorded${d.date ? ` · ${d.date}` : ''} · no approval required`
+    : d.status === 'withdrawn'
       ? `Withdrawn by ${d.withdrawnBy ?? 'the PMC'}${d.withdrawnAt ? ` · ${new Date(d.withdrawnAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` : ''}`
       : d.approver
         ? `Approved by ${d.approver}${d.onBehalfOf ? ` (on behalf of the ${d.onBehalfOf})` : ''} · ${d.date}`
         : `Ageing ${d.ageDays} days · awaiting client`;
-  const approvedLine = neverLocked ? `${d.options.length} options presented` : `${d.approvedOption} — ${d.material}`;
-  const costStr = neverLocked ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta))) : signed(d.cost ?? 0);
-  const photoLabel = neverLocked ? 'OPTIONS' : 'APPROVED';
+  // a record has no outcome to name and no cost to carry — an em dash is the honest reading,
+  // and `Math.max()` over an empty option list would otherwise render `-∞`
+  const approvedLine = isRecord
+    ? 'Recorded issue — no options, no approval'
+    : neverLocked
+      ? `${d.options.length} options presented`
+      : `${d.approvedOption} — ${d.material}`;
+  const costStr = isRecord
+    ? '—'
+    : neverLocked
+      ? 'up to ' + signed(Math.max(...d.options.map((o) => o.delta)))
+      : signed(d.cost ?? 0);
+  const photoLabel = isRecord ? 'RECORD' : neverLocked ? 'OPTIONS' : 'APPROVED';
 
   return (
     <div

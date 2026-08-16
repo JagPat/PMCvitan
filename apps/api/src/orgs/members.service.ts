@@ -164,6 +164,36 @@ export class MembersService {
     // a readiness write (gate finding 1), serialized against start()
     const membership = await this.prisma.$transaction(async (tx) => {
       await lockProjectReadiness(tx, projectId);
+      // Phase 6 task 4b, round 6 (Codex P2) — the seal's ACTIVATION arm has a spokesman too.
+      // Activating a membership-less org owner/admin in ANY non-pmc role displaces the pmc
+      // standing they were supplying through the org (an active membership DECIDES), and
+      // `Membership_t4b_holder_seal` correctly refuses it when that standing was the last one
+      // covering an open pmc-held decision. Without this, adding someone to the team surfaced a
+      // raw PostgreSQL exception as a 500 rather than saying which decision to cover first.
+      //
+      // The condition is the seal's own, asked in its own order: only a non-pmc activation, only
+      // for a user the org actually makes an effective pmc, and only when they are the last one.
+      if (input.role !== 'pmc') {
+        const displaced = await tx.$queryRawUnsafe<Array<{ supplies: boolean }>>(
+          `SELECT EXISTS (
+             SELECT 1 FROM "OrgMembership" om
+             JOIN "Project" p ON p."orgId" = om."orgId"
+             WHERE p."id" = $1 AND om."userId" = $2 AND om."role" IN ('owner', 'admin')
+           ) AS supplies`,
+          projectId, user.id,
+        );
+        if (displaced[0]?.supplies) {
+          const rows = await tx.$queryRawUnsafe<Array<{ standing: number }>>(
+            `SELECT orgs_effective_role_standing($1, 'pmc')::int AS standing`, projectId,
+          );
+          if (Number(rows[0]?.standing ?? 0) <= 1
+              && await this.decisions.holdsOpenDecisions(tx, projectId, null, 'pmc')) {
+            throw new ConflictException(
+              `Adding ${user.name} as ${input.role} would remove the last PMC from a published open decision — cover the role first, or add them as PMC`,
+            );
+          }
+        }
+      }
       const m = await tx.membership.upsert({
         where: { projectId_userId: { projectId, userId: user.id } },
         update: { role: input.role, discipline, status: 'active' },
