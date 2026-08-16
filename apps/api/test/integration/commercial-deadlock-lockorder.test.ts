@@ -38,8 +38,9 @@ import type { CreateRequirementInput } from '../../src/contracts';
  * probe 1 and be wrong, so the preserved conflicts are asserted, not assumed.
  * PROBE 4 is the TERMINAL invariant (Codex #345 F2): serialization is a means, and a probe that
  * stops at "one session waited" would stay green under an implementation that took the right lock
- * and then miscounted. Two competing claims that TOGETHER exceed the ordered authority must end
- * with at most one committed and the billed total inside the bound.
+ * and then miscounted. Two competing claims that TOGETHER exceed the ordered authority both
+ * COMMIT — §E DISPUTES an over-claim rather than refusing it — and what must hold is that the
+ * over-claim cannot come to rest LIVE and the live fold never exceeds the authority.
  *
  * EVERY probe runs on BOTH lock branches (Codex #345 F3). The migration rewrote the clause on
  * `PurchaseOrderLine` AND on `LabourPurchaseOrderLine`; a suite that only ever passed `p_material`
@@ -339,7 +340,7 @@ describe('commercial deadlock — the §G bound check takes one lock order (live
     });
   }
 
-  it('PROBE 4 (terminal invariant): two claims that TOGETHER exceed the ordered authority cannot both commit', async () => {
+  it('PROBE 4 (terminal invariant): an over-claim is DISPUTED, not refused — and the LIVE fold never exceeds the ordered authority', async () => {
     const projectId = await freshProject();
     const { poLineId, vendorId } = await issuedMaterialLine(projectId, '100');
 
