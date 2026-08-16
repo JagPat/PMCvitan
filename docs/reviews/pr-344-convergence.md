@@ -531,3 +531,65 @@ Gates at this head: `pnpm check` EXIT 0 (web 790/790, API 793/793); the full int
 pristine migrated database; `upgrade-proof.sh` with round 8's two forgeries rejected and the genuine
 legacy restoration ACCEPTED; `test:e2e:api` unchanged. All three probes RED at `90ec557` with
 `20270823000000` AND the service half reverted, each for its own reason.
+
+---
+
+## Ninth edition — the merge-forward head `7b4fe63`, and what it settles
+
+**This head carries no correction.** It is round 8 (`8c3f26b`, unchanged) plus a merge of
+`origin/main` and one `docs/STATUS.md` alignment. It is recorded here because the convergence
+protocol asks every head past the cap to say what it is, and because what it settles is worth
+more than its diff.
+
+### `api-e2e` passed, and that is the finding
+
+For the first time in this PR's life, **every check is green — `api-e2e` included** (10/10 at
+`7b4fe63`). Round 8 had been sitting behind a red gate since it was pushed, and the red was never
+its doing:
+
+- The failure was a PostgreSQL deadlock between `phase5_t4_billed_bound_check`'s COMMIT-time
+  `PurchaseOrderLine` lock and `OrgsParticipant`'s `Membership … FOR UPDATE`, raised out of
+  `CommercialPaymentService.approve` — a path that touches no decision.
+- It was proven pre-existing by **PR #342**, a CSS focus-ring change that hit the byte-identical
+  deadlock and also failed two attempts before passing on a third.
+- It is fixed in `main` by **PR #345** (`a4946b5`): `FOR NO KEY UPDATE` in place of `FOR UPDATE`,
+  removing the one false conflict edge (`FOR KEY SHARE`, taken inline by an FK-referencing insert)
+  while preserving every conflict the bound check actually needs.
+
+So the eight-round finding history of this PR is now closed against a green gate, and the
+attribution is settled: **none of it was CI's verdict on round 8.**
+
+### The rule this PR and #345 jointly produced
+
+PR #345 ran six findings across two rounds, **every one about the evidence and none about the
+fix**, and its round 2 answered two of them by DELETING a probe after verifying the coverage lived
+in its owning suite. That is the same shape this audit has been describing here from a different
+angle:
+
+> After repeated finding-bearing rounds, **reduce surface rather than patch again.**
+
+On #345 the surface was a test suite growing faster than it was becoming true. On #344 it is the
+seal network, rewritten seven times in eight heads with roughly a one-in-three chance each time of
+needing another. The two PRs failed the same way in different materials.
+
+### The standing recommendation, unchanged and now better evidenced
+
+**4b-ii should carry the audience and visibility OVER this seal network as it stands, rather than
+extending it.** Any further narrowing of the attribution rules belongs in its own unit with its own
+review budget. Rounds 7 and 8 found **zero** seam defects — the 4b-i/4b-ii cut is holding; what has
+not held is my own re-cutting inside it.
+
+Per the owner's decision, round 8 stands and faces review as it is. **No voluntary refinement.**
+
+### What this head does NOT claim
+
+No finding is deferred. Round 8's three findings are answered in code at `8c3f26b`, unchanged by the
+merge. This head adds no probe, no seal and no behaviour — the merge brought in only #345's
+migration, its probe suite and its convergence audit, and the sole 4b-i-side edit is
+`docs/STATUS.md` moving `task_state` from `in_progress` to `in_review`, which was simply untrue
+before.
+
+Gates at this head, run on the MERGED branch so the two units are proven to compose: `pnpm check`
+EXIT 0 (web 790/790, API 793/793); integration **102 files / 1245 passed + 3 skipped** on a pristine
+database with all 89 migrations applied in sequence; `upgrade-proof.sh` PASSED; `test:e2e:api` 31;
+`:outbox` 31.
