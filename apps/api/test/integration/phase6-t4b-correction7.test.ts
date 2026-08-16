@@ -96,6 +96,13 @@ describe('Phase 6 unit 4b-i round 7 — the three Codex findings (live PG)', () 
       { decisionId: legacy, label: 'B', optionKey: 'b', material: 'Oak', delta: 100, swatch: 'sw2', recommended: false, order: 1 },
     ] });
     await t.prisma.decision.update({ where: { id: legacy }, data: { publishedAt: new Date() } });
+    // …and the approval EVENT every `approve()` has written since Phase 1. Round 8's R8-1 uses
+    // exactly that to tell a real approval from approval-shaped columns, so a fixture that omits it
+    // is not modelling a legacy approval — it is modelling the forgery R8-1 refuses. Corrected here
+    // rather than exempted: the row this probe is about really was approved.
+    await t.prisma.decisionEvent.create({
+      data: { decisionId: legacy, type: 'approved', actor: 'Client', actorId: f.clientUser.id },
+    });
     expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: legacy } })).approvedDeciderKind).toBeNull();
 
     // reopen it, then withdraw the request — the ordinary product sequence

@@ -78,8 +78,10 @@ function make() {
     project: { findUniqueOrThrow: vi.fn(async () => ({ orgId: 'org-test' })) },
     projectEventStream: { update: vi.fn(async () => ({ nextPosition: 1n })) },
     domainEvent: { create: vi.fn(async () => ({ eventId: 'evt-test' })) },
-    // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory
+    // the per-project readiness advisory lock (gate finding 1) is a no-op in-memory, and so is
+    // round 8's `SELECT ... FOR UPDATE` on the decision row (there is one row and one caller here)
     $executeRaw: vi.fn(async () => 1),
+    $queryRawUnsafe: vi.fn(async () => []),
     $transaction: vi.fn(async (arg: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>)) => {
       if (typeof arg !== 'function') return Promise.all(arg);
       const tx = { ...prisma, notification: { create: txNotificationCreate } } as unknown as PrismaService;

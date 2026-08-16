@@ -3785,9 +3785,13 @@ assert "4b round 6 (R6-3): every ASCII whitespace character counts as blank — 
 # wrote for an ACT, so a change request on any pre-`20270815000000` row could be raised and never
 # withdrawn. The legacy fixture row `UP4B2-D1` is exactly that shape and is reused here.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-7 fixture did not apply"; FAIL=1; }
--- give the legacy tupleless approved row its approval evidence and reopen it, as the product does
+-- give the legacy tupleless approved row its approval evidence and reopen it, as the product does.
+-- The `DecisionEvent` is part of that evidence, not decoration: `approve()` has written one since
+-- Phase 1, and round 8's R8-1 uses exactly that to tell a real approval from planted columns.
 UPDATE "Decision" SET "approvedById" = 'USER-C', "approvedOption" = 'A', "material" = 'Teak'
  WHERE "id" = 'UP4B2-D1' AND "approvedById" IS NULL;
+INSERT INTO "DecisionEvent"("id","decisionId","type","actor","actorId","at")
+VALUES ('UP4B2-EV','UP4B2-D1','approved','Legacy Client','USER-C', now()) ON CONFLICT DO NOTHING;
 UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'UP4B2-D1' AND "status"::text = 'approved';
 SQL
 assert "4b round 7 fixture (R7-1): the legacy tupleless approval is reopened and awaiting its withdrawal" \
@@ -3828,6 +3832,45 @@ assert "4b round 7 (R7-3): the re-role committed — the member was suppressing 
   "contractor"
 $PSQL -q -c "DELETE FROM \"Membership\" WHERE \"id\"='UP4B7-M'" >/dev/null
 $PSQL -q -c "DELETE FROM \"OrgMembership\" WHERE \"id\"='UP4B7-OM'" >/dev/null
+
+# ── Phase 6 task 4b, ROUND 8 (Codex): the restoration exemption, narrowed ────────────────────
+#
+# R8-1 — round 7 opened an exemption for `withdrawChange` and wrote it as "arriving at approved
+# without changing the evidence". That admits `pending → approved`, so a direct writer could
+# publish a pending row with the approval columns already planted, flip only the status, and reach
+# a permanently unattributed approval THROUGH the exemption. A restoration is narrower: it comes
+# from `change`, it changes no evidence, and an approval ACTUALLY HAPPENED (every `approve()` has
+# written an `approved`/`reapproved` DecisionEvent since Phase 1).
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-8 fixture did not apply"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt","approvedOption","material","approver","approvedById","date")
+VALUES ('UP4B8-D1','p1','Planted evidence','Hall','pending','stone','USER-1',NULL,'A','Teak','Nobody','USER-C','01 Jan 2026')
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B8-D1O1','UP4B8-D1','A','a','Teak',0,'sw1'),
+       ('UP4B8-D1O2','UP4B8-D1','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B8-D1' AND "publishedAt" IS NULL;
+SQL
+assert_rejects "4b seal (round 8, R8-1): a published PENDING row with the approval columns PLANTED, flipped straight to approved — round 7's exemption admitted it, and R2-1 would then have made the unattributed approval permanent" \
+  "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B8-D1'" "records WHO approved it"
+# …and routing the same forgery through `change` does not help: no approval ever happened here
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='change' WHERE \"id\"='UP4B8-D1'" >/dev/null
+assert_rejects "4b seal (round 8, R8-1): the same forgery routed through the change status — a restoration restores something, and this row carries no approval event" \
+  "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B8-D1'" "records WHO approved it"
+assert "4b round 8 (R8-1): neither forged arrival landed — the row is still open" \
+  "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4B8-D1';" \
+  "change"
+# PRECISION — the GENUINE legacy withdrawal round 7 exists to permit still restores. `UP4B2-D1` is
+# the legacy tupleless approved row, and round 7's block left it approved; give it the approval
+# EVENT every real approval carries, reopen it, and withdraw.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-8 precision fixture did not apply"; FAIL=1; }
+UPDATE "Decision" SET "status"='change' WHERE "id"='UP4B2-D1' AND "status"::text='approved';
+SQL
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B2-D1'" >/dev/null \
+  || { echo "FAILED  4b round 8 (R8-1): a withdrawal of a REAL legacy approval must still restore it"; FAIL=1; }
+assert "4b round 8 precision (R8-1): the genuine legacy restoration committed — the exemption is narrowed, not withdrawn" \
+  "SELECT \"status\"::text || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B2-D1';" \
+  "approved/<null>"
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by

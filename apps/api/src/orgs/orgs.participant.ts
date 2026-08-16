@@ -202,6 +202,43 @@ export class OrgsParticipant {
   }
 
   /**
+   * Phase 6 task 4b, round 8 (Codex P2) — HOLD a named membership's display identity for the rest
+   * of the caller's transaction.
+   *
+   * `DecisionsService.approve` freezes that identity into the approval act, and the seal RECOMPUTES
+   * it to check the binding. Those are two statements, and under READ COMMITTED a rename committing
+   * between them gives the service the old name and the trigger the new one — so a perfectly valid
+   * approval is refused by the seal and the caller gets a raw database failure. Reading it once is
+   * not enough; it has to be reading it once and holding it.
+   *
+   * `FOR SHARE` on the `User` row is the lock: a concurrent rename blocks until this transaction
+   * commits, so what the service wrote and what the trigger recomputes are the same value by
+   * construction. SHARE rather than UPDATE because the caller only needs the name to stay put —
+   * two concurrent approvals of different decisions naming the same person must not serialize
+   * against each other.
+   *
+   * The lock lives HERE because `User` is orgs-owned: how identity is locked is a statement about
+   * identity, and it belongs with the module that owns it (the same rule `describeMembership` and
+   * `lockActiveMembership` follow).
+   */
+  async lockMembershipIdentity(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    membershipId: string,
+  ): Promise<string | null> {
+    if (!membershipId) return null;
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ name: string | null }>>(
+      `SELECT u."name"
+         FROM "Membership" m
+         JOIN "User" u ON u."id" = m."userId"
+        WHERE m."projectId" = $1 AND m."id" = $2
+          FOR SHARE OF u`,
+      projectId, membershipId,
+    );
+    return rows[0]?.name ?? null;
+  }
+
+  /**
    * Phase 6 task 4b, round 5 (Codex P2) — does this ROLE have any effective holder on this project?
    *
    * A question about a ROLE, not about a person: `hasProjectRoleStanding` asks whether a NAMED user

@@ -302,3 +302,32 @@ twice (R2-4, R3-6): a guard stricter than the rule it fronts.
 
 Convergence audit (fifth edition): `docs/reviews/pr-344-convergence.md`.
 
+## Round 8 — the three Codex findings on `90ec557`
+
+Two P1 and one P2, answered in ONE batched head. All three probes in
+`phase6-t4b-correction8.test.ts` are RED at `90ec557` — with `20270823000000` **and** the service
+half of the finding reverted, on a scratch database migrated only to `20270822000000` — and green
+after. `20270815000000` … `20270822000000` are byte-for-byte unchanged.
+
+**Classification: no seam findings. Two are this PR's own corrections biting back; the third is a
+latent read that three corrections built on top of.** All three are one shape — *a value read
+outside the lock that makes reading it a decision.*
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R8-1 (P1) | round 7's restoration exemption keys on `OLD.status <> 'approved'`, which admits `pending → approved`: a direct writer can publish a pending row with `approvedById`/`approvedOption` planted and the tuple null, flip only the status, satisfy every equality, and record a permanently unattributed approval **through the exemption** | a restoration is narrowed on three axes: it comes from `change` (the only status a withdrawal restores from), it changes no approval evidence, and **an approval actually happened** — `approve()` has written an `approved`/`reapproved` `DecisionEvent` since Phase 1, so every genuine approval carries that proof and a planted column does not |
+| R8-2 (P1) | `publish` applied the holder check, the role arm and the `pmc`/`member` surface gate to an UNLOCKED pre-read, so a concurrent draft edit could change the holder before the CAS — publishing a kind the gate exists to refuse, and then emitting the legacy client push for it | the decision row is `FOR UPDATE`-locked before its holder is read and the lock is held through the update. Round 3's R3-7 stated this rule and applied it to `isRecord`; rounds 4/6/7 then built three authority decisions on the read it left behind |
+| R8-3 (P2) | the first approval's label is derived, written, and RECOMPUTED by the seal in three statements; under READ COMMITTED a rename committing between them gives the service the old name and the trigger the new one, killing a valid approval with a raw database error | the holder's identity is HELD — `FOR SHARE` on the `User` row, through `OrgsParticipant.lockMembershipIdentity`, because how identity is locked is a statement about identity — so all three statements see one value |
+
+### The probe defect that mattered more than the findings
+
+R8-3 would not reproduce at first: the interposed rename never ran, because **a Prisma raw promise
+is lazy** — assigning `raceDb.$executeRawUnsafe(...)` and walking away starts nothing. The Phase-4
+T1 correction-4 packet already records this exact trap, and this round walked into it again. It was
+caught only because the probe asserts that *its own interposition actually happened*
+(`expect(spyFired)`, `expect(renameLanded)`) rather than trusting that setting up a race creates
+one. **A probe that cannot prove it ran its own experiment is not evidence.**
+
+Convergence audit (sixth edition), including the round-by-round seam / self-inflicted / original
+count and what it recommends for 4b-ii: `docs/reviews/pr-344-convergence.md`.
+

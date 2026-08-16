@@ -11,6 +11,7 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `cc00c94` | round-4 fold + this audit's third edition | 6 (3 P1, 3 P2) | corrected on this head via `20270820000000` plus its service half, under the owner's **"gate the surface, keep the facts"** decision: `recorded` made unlinkable at every write path and both pickers; the `pmc`/`member` decider designation refused at the contract until 4b-ii ships its audience; the frozen approval LABEL required complete, non-blank and BOUND to the designated holder, with the service deriving it from the seal's own function; the org-membership guard and its write folded into one transaction holding each affected project's readiness key; `requestChange` validating ROLE-held deciders as well as named ones; and post-write standing ASKED of the primitive instead of computed as `standing - 1` |
 | `ccaf2dd` | round-5 fold + this audit's third edition | 7 (4 P1, 3 P2; 8 comments) | corrected on this head via `20270821000000` plus its service and WEB halves: the attribution rule restated over the APPROVAL ACT rather than over the columns an act touches; `decisions_t4b_blank` giving "blank" one statement over the whole ASCII whitespace set; the `pmc`/`member` surface gate extended to BOTH publish doors; the ROLE arm of the publication holder check given its spokesman on both doors; the org guard's departing role read `FOR UPDATE` inside its transaction; the membership-ACTIVATION arm of the holder seal given its spokesman; and the register taught to render a `recorded` row as a record rather than as an approval |
 | `39bfb39` | round-6 fold + this audit's fourth edition | 3 (1 P1, 2 P2) | corrected on this head via `20270822000000` plus its service half — **all three are round 6's OWN over-reach**: the approval-act rule exempted from a RESTORATION (`withdrawChange` returns an approval that already happened); the frozen tuple preserved by the service on a re-approval rather than re-derived; and the activation guard — in BOTH the service and the seal — asking whether the membership was already active rather than trusting `TG_OP`, which Prisma's `upsert` makes a lie |
+| `90ec557` | round-7 fold + this audit's fifth edition | 3 (2 P1, 1 P2) | corrected on this head via `20270823000000` plus its service half: the restoration exemption NARROWED to a real withdrawal (from `change`, evidence unchanged, and an approval that actually happened); the decision row LOCKED before `publish` judges its holder and held through the update; and the holder's identity HELD (`FOR SHARE`, through its owner) across the first approval's derive → write → recompute |
 
 ## Root analysis — one generative class, three faces
 
@@ -250,6 +251,60 @@ The one structural lesson worth extracting: **R7-2 was invisible to round 6's pr
 probe chose the holder shape whose label is constant.** A probe that exercises the stable case
 proves the stable case. The round-7 probe renames the person.
 
+## Round 8 — the cadence, named
+
+Three findings on `90ec557`. **None is a seam finding. Two are this PR's own corrections biting
+back, and the third is a latent defect three corrections built on top of.**
+
+- **R8-1** is round 7's over-reach. Round 7 fixed round 6's over-reach by WIDENING a rule, and the
+  widening was itself too wide: "arriving at `approved` without changing the evidence" admits
+  `pending → approved`, so a direct writer could publish a row with the approval columns planted,
+  flip the status, and reach a permanently unattributed approval **through the exemption meant to
+  protect legitimate history**. Narrow → break a real path → widen → open a forged one. That is
+  the whole class in two rounds.
+- **R8-3** is round 5's. Deriving the label, writing it, and recomputing it in the seal are three
+  statements; nothing held the identity across them, so a rename committing in the middle killed a
+  valid approval with a raw database error.
+- **R8-2** is older and latent. Round 3's R3-7 established the rule — *a transaction must act on
+  the row it LOCKED, never on an advisory pre-read* — and applied it to `isRecord`, leaving the
+  HOLDER read on the unlocked path. Rounds 4, 6 and 7 then built three authority decisions on that
+  read: the departed-member refusal, the role arm, and the surface gate.
+
+**All three are one shape: a value read outside the lock that makes reading it a decision.** That
+is Face C, and R8-2 shows what the audit's earlier editions were actually doing when they declared
+a face closed — they closed the INSTANCE the reviewer had pointed at and left the read that would
+later carry three more decisions.
+
+### The count, since it is the thing worth acting on
+
+| round | findings | seam | self-inflicted | original |
+| --- | --- | --- | --- | --- |
+| 6 | 7 | 2 | 2 | 3 |
+| 7 | 3 | 0 | 3 | 0 |
+| 8 | 3 | 0 | 2 | 1 |
+
+Rounds 7 and 8 found **no seam defects at all** — the surface gating the owner directed is holding.
+What they found instead is that **the correction cadence is now the dominant source of findings.**
+Five of the last six are defects introduced by, or built upon, earlier corrections in this same PR.
+
+That is not an argument for stopping: each one was real, each has a clean fix, and the exact-head
+gate is doing precisely what it exists to do. It IS an argument for how the remaining work should
+be shaped — the seal network has been rewritten seven times in eight heads, and every rewrite has a
+one-in-three chance of needing another. The honest recommendation, recorded here rather than acted
+on unilaterally: **4b-ii should not extend this seal network.** It should carry the audience and
+visibility over the network as it stands, and any further narrowing of the attribution rules should
+be its own unit with its own review budget.
+
+### A probe defect worth more than the findings
+
+R8-3 would not reproduce at first: the interposed rename never ran, because a Prisma raw promise is
+**lazy** — assigning `raceDb.$executeRawUnsafe(...)` and walking away starts nothing. The
+Phase-4 T1 correction-4 packet already records this exact trap, and this round walked into it
+again. It was caught only because the probe asserts that **its own interposition actually
+happened** (`expect(spyFired)`, `expect(renameLanded)`) rather than trusting that setting up a race
+creates one. Every future race probe in this unit does the same. A probe that cannot prove it ran
+its own experiment is not evidence.
+
 ## What changed structurally, rather than per symptom
 
 - **Face B is closed by construction.** Both service guards now call the SQL the
@@ -460,3 +515,19 @@ Gates at this head: `pnpm check` EXIT 0 (web 790/790, API 793/793); the full int
 pristine migrated database; `upgrade-proof.sh` with round 7's restoration and re-role statements
 ACCEPTED and its precision refusal rejected; `test:e2e:api` unchanged. All three probes were RED at
 `39bfb39` with `20270822000000` AND the service half reverted, each for its own reason.
+
+### What round 8 closes
+
+- **The restoration exemption fits the thing it exempts** (R8-1): from `change`, evidence
+  unchanged, and an approval that actually happened. A planted `approvedById` on a never-approved
+  row has no `DecisionEvent`, so the door the exemption opened is shut without shutting the
+  legitimate legacy withdrawal round 7 added it for.
+- **`publish` acts on the row it locked** (R8-2). Three authority decisions that were reading an
+  advisory pre-read now read the row the CAS holds.
+- **The frozen identity is held while it is being frozen** (R8-3), `FOR SHARE` through its owner,
+  so the service's write and the seal's recompute cannot see different names.
+
+Gates at this head: `pnpm check` EXIT 0 (web 790/790, API 793/793); the full integration suite on a
+pristine migrated database; `upgrade-proof.sh` with round 8's two forgeries rejected and the genuine
+legacy restoration ACCEPTED; `test:e2e:api` unchanged. All three probes RED at `90ec557` with
+`20270823000000` AND the service half reverted, each for its own reason.

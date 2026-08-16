@@ -45,6 +45,27 @@ export class DecisionsService {
    * asks it, inside the caller's locked transaction, so the value written and the value the seal
    * recomputes are the same read.
    */
+  /**
+   * HOLD the decision row for the rest of this transaction.
+   *
+   * Phase 6 task 4b, round 8 (Codex P1). Round 3's R3-7 established that a decision's SIDE EFFECTS
+   * must be derived from the row the write locked, never from an advisory pre-read — and fixed
+   * `isRecord` that way while leaving the HOLDER read on the unlocked path. Rounds 4 and 6 then
+   * grew an authority decision on that same unlocked read: the departed-member refusal, the role
+   * arm, and the `pmc`/`member` surface gate all judge a holder that a concurrent draft edit can
+   * change before the CAS lands.
+   *
+   * A pre-read is fine for "does this exist"; it is not fine for anything the transaction then
+   * ACTS on. `FOR UPDATE` here makes the holder the transaction reads the holder it writes against
+   * — which is what every one of those guards already assumed.
+   */
+  private async lockDecision(tx: Prisma.TransactionClient, projectId: string, decisionId: string): Promise<void> {
+    await tx.$queryRawUnsafe(
+      `SELECT 1 FROM "Decision" WHERE "id" = $1 AND "projectId" = $2 FOR UPDATE`,
+      decisionId, projectId,
+    );
+  }
+
   private async holderLabel(
     tx: Prisma.TransactionClient,
     projectId: string,
@@ -300,6 +321,13 @@ export class DecisionsService {
         // Round 6 (Codex P1 + P2) — the ROLE arm joins it, and so does the `pmc`/`member` surface
         // gate. `publish()` takes no body, so round 5's contract gate could not see this door at
         // all: a draft saved before that gate, or written directly, published straight through it.
+        //
+        // Round 8 (Codex P1) — the row is LOCKED before its holder is read, and the lock is held
+        // through the publication update. Without it the gate judged a draft a concurrent edit
+        // could still change: a client-held draft could pass `assertPublishableHolder`, become
+        // pmc- or member-held before the CAS, publish anyway, and then take the legacy client push
+        // for a holder the gate exists to refuse.
+        await this.lockDecision(tx, projectId, decisionId);
         const draft = await tx.decision.findUniqueOrThrow({ where: { id: decisionId } });
         await this.assertPublishableHolder(
           tx,
@@ -430,8 +458,17 @@ export class DecisionsService {
         // write-once arm a different value and the arm correctly refused — rolling back a
         // perfectly valid re-approval. Whose approval it was does not change because their name
         // did; that is the whole reason the label is frozen rather than joined.
+        await this.lockDecision(tx, projectId, decisionId);
         const head = await tx.decision.findUniqueOrThrow({ where: { id: decisionId } });
         const alreadyAttributed = head.approvedDeciderKind !== null;
+        // Round 8 (Codex P2) — deriving the label and writing it are two statements, and the seal
+        // RECOMPUTES it in a third. Under READ COMMITTED a rename committing between them hands the
+        // service the old name and the trigger the new one, and a valid approval dies on a raw
+        // database error. The holder's identity is therefore HELD (`FOR SHARE`, through its owner)
+        // for the rest of this transaction before it is read — so all three see one value.
+        if (!alreadyAttributed && holderKind === 'member') {
+          await this.orgsParticipant.lockMembershipIdentity(tx, projectId, d.deciderMembershipId ?? '');
+        }
         const holderLabel = alreadyAttributed
           ? head.approvedDeciderLabel
           : await this.holderLabel(tx, projectId, holderKind, d.deciderMembershipId);
