@@ -13,6 +13,7 @@ import { ActivityParticipant } from '../activities/activity.participant';
 import { InspectionParticipant } from '../inspections/inspection.participant';
 import { ActivitiesQueryService } from '../activities/activities.query';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import { DecisionsParticipant } from '../decisions/decisions.participant';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import type { AuthUser } from '../common/auth';
 import { modulePayloadSchema, moduleSelectionSchema, type AddOrgMemberInput, type CorrectInvitationEmailInput, type CreateModuleInput, type CreateOrgInput, type CreateProjectInput, type CreateTemplateInput, type ModulePayload, type UpdateOrgMemberInput, type UpdateProjectInput } from '../contracts';
@@ -152,6 +153,12 @@ export class OrgsService {
     private readonly inspectionInit: InspectionParticipant,
     // Task 8 — the portfolio's pending-decision tile count comes from the decisions query.
     private readonly decisions: DecisionsQueryService,
+    // Phase 6 task 4b, round 4 (Codex P2) — org membership is one of the two ways project pmc
+    // standing can vanish, and `OrgMembership_t4b_holder_seal` refuses the write that strands a
+    // published open pmc-held decision. The seal is the authority; without a spokesman its
+    // exception reaches an org owner as a 500 for what is an ordinary, actionable conflict. Same
+    // channel and same predicate as `MembersService` uses, so the two cannot answer differently.
+    private readonly decisionHolders: DecisionsParticipant,
     // Task 10 (Module 3) — the source-copy checklist reads, the init id scan, and the portfolio's
     // open-inspection count all route through the inspections query (inspection is read-encapsulated).
     private readonly inspections: InspectionsQueryService,
@@ -246,6 +253,49 @@ export class OrgsService {
    * Change an org member's role (owner/admin/member). Owner only. Refuses to strip
    * the last owner — the org must always have someone who can manage the roster.
    */
+  /**
+   * Would this org write strand a published open pmc-held decision on any of the org's projects?
+   *
+   * Phase 6 task 4b, round 4 (Codex P2). `OrgMembership_t4b_holder_seal` already refuses it at
+   * PostgreSQL and remains the authority — but an org owner demoting or removing the person who
+   * happens to be a project's sole effective pmc got a raw database error and a 500 for something
+   * that is an ordinary, actionable conflict. This is the same shape as F12 (`members.remove`) and
+   * F9 (`requestChange`), and it is answered the same way: the SERVICE asks first, through the
+   * decisions-owned participant, and the seal stays the backstop.
+   *
+   * The arithmetic mirrors the seal's exactly (R3-6): an org row supplies effective pmc standing
+   * to a project only when the user holds NO active `Membership` there, and only a write that
+   * REMOVES that supply can strand anything. `orgs_effective_role_standing` is orgs-owned, so it
+   * is computed here; the holder question belongs to decisions, so it is asked of them.
+   */
+  private async assertOrgWriteKeepsDecisionHolders(
+    orgId: string,
+    userId: string,
+    currentRole: string,
+    nextRole: string | null,
+  ): Promise<void> {
+    if (currentRole !== 'owner' && currentRole !== 'admin') return;
+    const stillSupplies = nextRole === 'owner' || nextRole === 'admin';
+    if (stillSupplies) return;
+    const projects = await this.prisma.project.findMany({ where: { orgId }, select: { id: true }, orderBy: { id: 'asc' } });
+    for (const p of projects) {
+      const rows = await this.prisma.$queryRawUnsafe<Array<{ standing: number; membered: boolean }>>(
+        `SELECT orgs_effective_role_standing($1, 'pmc')::int AS standing,
+                EXISTS (SELECT 1 FROM "Membership" m
+                         WHERE m."projectId" = $1 AND m."userId" = $2 AND m."status" = 'active') AS membered`,
+        p.id, userId,
+      );
+      const row = rows[0];
+      if (!row || row.membered) continue; // an active project membership decides; the org row supplies nothing
+      if (Number(row.standing) > 1) continue; // another effective pmc survives this write
+      if (await this.decisionHolders.holdsOpenDecisions(this.prisma, p.id, null, 'pmc')) {
+        throw new ConflictException(
+          `This change would leave a published open decision on ${p.id} with no PMC to decide it — cover the project first`,
+        );
+      }
+    }
+  }
+
   async updateOrgMemberRole(orgId: string, callerId: string, userId: string, input: UpdateOrgMemberInput): Promise<OrgMemberDto> {
     if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can change roles');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, include: { user: true } });
@@ -253,6 +303,7 @@ export class OrgsService {
     if (existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
       throw new BadRequestException('The org must keep at least one owner');
     }
+    await this.assertOrgWriteKeepsDecisionHolders(orgId, userId, existing.role, input.role);
     const membership = await this.prisma.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } });
     return { userId, name: existing.user.name, email: existing.user.email, phone: existing.user.phone, orgRole: membership.role, credentialState: existing.user.passwordHash ? 'active' : 'not_set' };
   }
@@ -331,6 +382,7 @@ export class OrgsService {
     if (existing.role === 'owner' && (await this.ownerCount(orgId)) <= 1) {
       throw new BadRequestException('The org must keep at least one owner');
     }
+    await this.assertOrgWriteKeepsDecisionHolders(orgId, userId, existing.role, null);
     await this.prisma.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } });
     return { ok: true };
   }

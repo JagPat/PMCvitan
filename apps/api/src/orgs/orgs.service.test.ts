@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { OrgsService } from './orgs.service';
 import { DecisionsQueryService } from '../decisions/decisions.query';
+import type { DecisionsParticipant } from '../decisions/decisions.participant';
 import { InspectionsQueryService } from '../inspections/inspections.query';
 import { ActivitiesQueryService } from '../activities/activities.query';
 import { NodeInitParticipant } from '../nodes/node-init.participant';
@@ -30,6 +31,11 @@ const initParticipants = (prisma: unknown) => [
   new ActivityParticipant(undefined as never, { assertWorkEvidenceRevisable: async () => {} } as never),
   new InspectionParticipant(),
   new DecisionsQueryService(prisma as unknown as PrismaService),
+  // Phase 6 task 4b, round 4 (Codex P2) — the org-membership commands ask the decisions owner
+  // before the write, so the seal's refusal reaches an org owner as a 409 instead of a 500.
+  // Nothing in this suite models a published open pmc-held decision, so the participant answers
+  // "no holder is stranded"; the live refusal is proven in `phase6-t4b-correction4.test.ts`.
+  { holdsOpenDecisions: async () => false } as unknown as DecisionsParticipant,
   new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
   new ActivitiesQueryService(prisma as unknown as PrismaService, undefined as never, undefined as never, undefined as never),
 ] as const;
@@ -166,6 +172,7 @@ function makeAtomicProjectInit(throwFromInspection = false) {
     activityInit as unknown as ActivityParticipant,
     inspectionInit as unknown as InspectionParticipant,
     new DecisionsQueryService(prisma as unknown as PrismaService),
+    { holdsOpenDecisions: async () => false } as unknown as DecisionsParticipant,
     new InspectionsQueryService(prisma as unknown as PrismaService, signedStub),
     new ActivitiesQueryService(prisma as unknown as PrismaService, undefined as never, undefined as never, undefined as never),
   );
@@ -518,6 +525,11 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
           return {};
         }),
       },
+      // Phase 6 task 4b, round 4 (Codex P2) — the decision-holder precheck enumerates the org's
+      // PROJECTS before asking anything. This roster suite models an org with none, which is the
+      // honest shape for it: the guard then has nothing to judge and the command proceeds exactly
+      // as it always did. The live refusal is proven in `phase6-t4b-correction4.test.ts`.
+      project: { findMany: vi.fn(async () => []) },
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, state };
   }

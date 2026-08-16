@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture } from './fixtures';
+import { applyMigrationThroughHead, createTwoProjectFixture, wipeDecisionEvents, type TwoProjectFixture } from './fixtures';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { DecisionsQueryService } from '../../src/decisions/decisions.query';
 import { ActivitiesService } from '../../src/activities/activities.service';
@@ -1400,7 +1400,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // that emits NO event — exactly the partial/manual-apply state the migration accepts
         await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply' WHERE "id"=${id}`;
         // the migration file is rerunnable BY DESIGN — run it as the operator would
-        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        applyMigrationThroughHead(dbUrl, '20270810000000_phase6_t4a_withdraw');
         const retired = await t.prisma.projectionGeneration.findUniqueOrThrow({ where: { id: before.id } });
         expect(retired.status).toBe('retired');
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
@@ -1730,7 +1730,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // generation's row for it removed entirely (the partial apply that never reached idW)
         await t.prisma.$executeRaw`UPDATE "Decision" SET "status"='withdrawn', "withdrawnAt"=now(), "withdrawnById"=${f.memberUser.id}, "withdrawnByName"='Manual PMC', "withdrawReason"='partial apply, no row' WHERE "id"=${idW}`;
         await t.prisma.decisionProjection.deleteMany({ where: { generationId: before.id, decisionId: idW } });
-        execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+        applyMigrationThroughHead(dbUrl, '20270810000000_phase6_t4a_withdraw');
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         expect(replacement.id).not.toBe(before.id);
         expect(replacement.appliedPosition).toBe(before.appliedPosition);
@@ -1840,7 +1840,7 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
       await t.prisma.notification.create({
         data: { projectId: f.projectA.id, decisionId: id, text: 'Decision awaiting approval: Rerun survivor', color: '#C08A2D', time: '2d ago' },
       });
-      execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe' });
+      applyMigrationThroughHead(dbUrl, '20270810000000_phase6_t4a_withdraw');
       const after = await t.prisma.notification.findMany({ where: { decisionId: id } });
       expect(after.map((n) => n.text.split(':')[0])).toEqual(['Decision withdrawn']);
     });
@@ -1928,7 +1928,10 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         // the two stale shapes: idMissing has NO row (seed arm); idStale keeps its pending row (correction arm)
         await t.prisma.decisionProjection.deleteMany({ where: { generationId: gen.id, decisionId: idMissing } });
         // the operator's psql session is NOT UTC — the repair must not care
+        // this arm's POINT is the session timezone, so the re-run stays explicit — and is then
+        // followed by the replay-to-head that every re-run of an earlier migration owes
         execFileSync('psql', [dbUrl, '-q', '-v', 'ON_ERROR_STOP=1', '-f', migrationPath], { stdio: 'pipe', env: { ...process.env, PGTZ: 'Asia/Kolkata' } });
+        applyMigrationThroughHead(dbUrl, '20270810000000_phase6_t4a_withdraw');
         const replacement = await t.prisma.projectionGeneration.findFirstOrThrow({ where: { consumer: 'decisions.inbox', projectId: projW, status: 'active' } });
         const stored = await storedDecisionRows(t.prisma, replacement.id);
         const canonical = await computeDecisionRows(t.prisma, projW);

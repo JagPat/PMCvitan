@@ -100,6 +100,12 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
+        // Round 4 (Codex P2) — the publication seal's §B.1 try-acquire REFUSES when the readiness
+        // key is contended, so a one-step issue racing a membership write would fail with a raw
+        // PostgreSQL error rather than serialize. The protocol's service half is to HOLD the key;
+        // advisory locks are re-entrant, so the seal's try-acquire then succeeds. Taken for every
+        // create, published or not — a draft's insert reaches the same seal on the record door.
+        await lockProjectReadiness(tx, projectId);
         // Phase 6 task 4b (plan §A.2, round 18) — the head is born UNPUBLISHED even for a
         // one-step issue, and the guarded publication UPDATE runs LAST in this same transaction.
         // The publication seal counts a decision's options at BOTH doors (the NULL → NOT NULL
@@ -130,7 +136,18 @@ export class DecisionsService {
             order: i,
           })),
         });
-        // the guarded publication, AFTER the options exist (round 18)
+        // the guarded publication, AFTER the options exist (round 18) — and, for a member-held
+        // one-step issue, after the named holder is confirmed ACTIVE (round 4, Codex P2). Naming
+        // an existing-but-inactive membership is an ordinary caller mistake and deserves the
+        // actionable conflict rather than the seal's raw error.
+        if (publishedAt && deciderKind === 'member') {
+          const holder = await this.orgsParticipant.describeMembership(tx, projectId, input.deciderMembershipId ?? '');
+          if (!holder || !holder.active) {
+            throw new ConflictException(
+              'The member this decision names is not an active member of this project — name a current decider, or save it as a draft',
+            );
+          }
+        }
         if (publishedAt) await tx.decision.update({ where: { id }, data: { publishedAt } });
         await tx.decisionEvent.create({ data: { decisionId: id, type: input.publish ? 'issued' : 'drafted', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: input.title } } });
         if (input.publish) {
@@ -185,6 +202,29 @@ export class DecisionsService {
       idempotencyKey,
       requestHash,
       run: async (tx) => {
+        // Round 4 (Codex P2) — the publication seal reads project standing through the §B.1
+        // TRY-ACQUIRE protocol, which REFUSES rather than waits when the readiness key is held.
+        // That is correct for a direct writer and wrong for a command that never took the key:
+        // a membership write holding it would turn a perfectly valid publication into a raw
+        // PostgreSQL error and a 500. The protocol's service half is to HOLD the key, and
+        // advisory locks are re-entrant, so taking it here is what makes the seal's try-acquire
+        // succeed instead of fire.
+        await lockProjectReadiness(tx, projectId);
+        // Round 4 (Codex P2) — and the holder is validated HERE, before the transition, so a
+        // draft whose named member has since left produces an actionable conflict rather than the
+        // seal's raw error. A draft deliberately does NOT block that member's removal (it is
+        // weightless and its holder is editable), which makes this the expected end of an
+        // ordinary sequence, not an exotic one. The seal stays the authority; this is its
+        // spokesman, exactly like `requestChange` (F9) and `holdsOpenDecisions` (F12).
+        const draft = await tx.decision.findUniqueOrThrow({ where: { id: decisionId } });
+        if ((draft.deciderKind as string) === 'member') {
+          const holder = await this.orgsParticipant.describeMembership(tx, projectId, draft.deciderMembershipId ?? '');
+          if (!holder || !holder.active) {
+            throw new ConflictException(
+              'The member this decision names has left the project — re-point the draft to a current decider before publishing it',
+            );
+          }
+        }
         // Phase 6 task 4a — publish joins the CAS lifecycle it was the one exception to: the
         // pre-read above is advisory, and THIS guard (`publishedAt: null`) is the transition,
         // so two concurrent publishes admit exactly one (the loser gets the same 409 the

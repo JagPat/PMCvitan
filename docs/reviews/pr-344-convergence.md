@@ -7,10 +7,11 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `ed72636` | the 4b-i unit (staged RED shape → GREEN), split at the review budget into facts+seals with the surface deferred to 4b-ii | 12 (8 P1, 4 P2) | corrected on `067209bc` via `20270816000000`: the recorded seal's DELETE arm; approval EVENTS counted at conversion and sealed after it; a `decision.recorded` effect key so a record pushes nothing on either publish path; the act tuple actually frozen; a diagnostic-first audit in front of the option freeze; `FOR SHARE` on the head row under the option guard; the DB author predicate narrowed to `ROLE_POLICY['decision.create']`; `OrgsParticipant.describeMembership`; `requestChange` returning an actionable 409; the announcement naming the real holder; the membership id passed only when active standing ends; `DecisionsParticipant.holdsOpenDecisions` |
 | `067209bc` | round-1 fold | 4 (3 P1, 1 P2) | corrected on `2ef9d68` via `20270817000000`: the act tuple's first write keyed to the TRANSITION rather than the destination status; the conversion door asking the author question the insert door asks; the ChangeRequest seal reading its parent `FOR UPDATE`; and the member guards computing surviving standing from `orgs_effective_role_standing` instead of asserting it, with `updateRole` taking the readiness lock so guard and seal read one snapshot |
 | `2ef9d68` | round-2 fold + this audit's first edition | 7 (4 P1, 3 P2) | corrected on this head via `20270818000000`: the act tuple validated against the decision's own `deciderKind`/`deciderMembershipId`; the approve route ceiling widened to every role that may be NAMED, with the holder narrowing left in the service; the decision id frozen FROM BIRTH; the reopen seal restated over every transition INTO an open status; the departing role read from the LOCKED membership row; the org arm narrowed to the standing the written row actually supplies; and the publish side-effect bundle derived from the row the CAS locked |
+| `87461e6` | round-3 fold + this audit's second edition | 5 (2 P1, 3 P2) | corrected on this head via `20270819000000` plus its service half: the approval REGISTER sealed against a record (the reverse of a count the conversion already made); the holder binding applied at BIRTH as well as at the transition; and the three remaining SPOKESMAN doors given their service-side question — publish holds the readiness key the seal try-acquires, publish and one-step issue refuse a departed holder with an actionable conflict, and the two org-membership commands ask the decisions participant before the write |
 
 ## Root analysis — one generative class, three faces
 
-All sixteen findings are instances of ONE rule: **an invariant has exactly one
+All twenty-eight findings across four rounds are instances of ONE rule: **an invariant has exactly one
 statement, it lives at the thing that determines it, and it is asked at every
 way in.** Each finding is a violation of one of those three clauses, and the
 three are not separate mistakes — they are what goes wrong when a rule is
@@ -95,6 +96,28 @@ their second dimension unexamined — the timing without the party, the arithmet
 without the snapshot it reads. A convergence audit that maps findings to a class
 and then patches them one at a time has described the class rather than closed
 it. What this head does differently is stated below.
+
+## Round 4 — the class narrows to its two survivors
+
+Five more findings on `87461e6`, and the distribution is itself the finding: **three of the five
+are one face**, and it is the face this review has now raised four separate times.
+
+- **Face A** — R4-1: the conversion counted `DecisionApprovalRevision` on the way IN and nothing
+  sealed it on the way OUT. F2 fixed exactly this for `DecisionEvent` in round 1. Same shape, other
+  register, three rounds later. R4-2: R3-1 bound the act tuple on the UPDATE that approves, and a
+  row can also be BORN approved — the door the INSERT branch returned before reaching.
+- **Face B, inverted (the SPOKESMAN)** — R4-3, R4-4, R4-5. A seal is correct and the service in
+  front of it never asks, so an ordinary conflict reaches the caller as a 500. F9 named it for
+  `requestChange`; F12 named it for `members.remove`; R4-3/4/5 name it for `publish`, for the
+  one-step issue, and for both org-membership commands.
+
+**What that says about the previous two editions of this audit.** Face B was declared "closed by
+construction" at `2ef9d68` on the grounds that both service guards call the seal's own SQL. That
+was true of the guards that EXISTED and said nothing about the doors that had no guard at all — the
+audit had enumerated instances again while claiming to enumerate rules. The correct statement, and
+the one this edition makes, is a rule about coverage: **every path that can trip a seal owes the
+caller the seal's answer in the caller's language, and the set of those paths is enumerable from
+the seals themselves.**
 
 ## What changed structurally, rather than per symptom
 
@@ -185,7 +208,7 @@ rather than the sentence.
 
 ## Disposition
 
-Twenty-three findings across three rounds — every one verified real, none
+Twenty-eight findings across four rounds — every one verified real, none
 disputed, none refuted. **Two** of them are claims this PR's own body and
 invariant matrix asserted while nothing enforced them: F4's frozen holder tuple,
 and R3-2's route ceiling that supposedly "admits every role that can hold a
@@ -210,8 +233,24 @@ R3-6's reason. The restoration moved to `afterEach`, where a failure cannot skip
 it. That is the same lesson as round 2's migration replay, in the same file, one
 round later.
 
-Gates at this head: `pnpm check` EXIT 0 (web 787/787, API 793/793); full
-integration 96 files / 1216 passed / 3 skipped / 0 failed / 0 deadlocks on a
-pristine migrated database; `upgrade-proof.sh` 604 assertions EXIT 0 (the three
-new hostile statements rejected over the migrated legacy DB, and R3-6's
-precision arm ACCEPTED); `test:e2e:api` 31 passed / 6 skipped.
+### What round 4 closes
+
+- **The evidence registers are sealed in BOTH directions and BOTH tables** (R4-1). The conversion's
+  forward count and the register's reverse refusal share the parent row lock the 4a seal already
+  took, so neither ordering can commit a record holding approval evidence.
+- **The act tuple is bound at every door a row can enter approved through** (R4-2) — the
+  transition (R3-1) and birth. Completeness is required at birth and the reason is written into the
+  migration: a row born approved with no tuple names nobody, R2-1 forbids repairing it, and the
+  register could then never say who approved it. Rows that ALREADY existed are reached by UPDATE,
+  never INSERT, so the legacy shape is untouched.
+- **Every publication path holds the key its seal try-acquires** (R4-3). The §B.1 protocol's
+  service half was documented and unimplemented on both publish doors; advisory locks are
+  re-entrant, so holding it is what makes the seal's try-acquire succeed rather than fire.
+- **Every seal that can refuse a product path now has a spokesman** (R4-3/4/5), asking the same
+  predicate the seal asks. The enumeration is the point: `publish`, the one-step issue,
+  `updateOrgMemberRole` and `removeOrgMember` were the paths with no service-side question left.
+
+Gates at this head: `pnpm check` EXIT 0; full integration on a pristine migrated database;
+`upgrade-proof.sh` with round 4's two new hostile statements rejected and its precision arm
+ACCEPTED; `test:e2e:api` 31 passed / 6 skipped. Every round-4 probe was RED at `87461e6` with
+`20270819000000` and the service half reverted.

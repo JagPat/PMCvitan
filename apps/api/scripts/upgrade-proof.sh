@@ -3599,6 +3599,47 @@ assert "4b round 3 precision (R3-6): the plain org membership WAS removed — th
   "SELECT COUNT(*)::text FROM \"OrgMembership\" WHERE \"id\"='UP4B3-OM';" \
   "0"
 
+# ── Phase 6 task 4b, ROUND 4 (Codex): the two seals whose fix is a DATABASE fix ─────────────
+#
+# R4-1 is the REVERSE of a count the conversion already made — a record must carry no approval
+# evidence in the REGISTER either, not only in the event log. R4-2 moves the holder binding from
+# the approval transition to BIRTH, where a row can also arrive already approved.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-4 fixture did not apply"; FAIL=1; }
+-- an UNPUBLISHED record draft that still carries its options (the zero-option floor is a
+-- publication rule), so a revision's (decisionId, optionKey) FK can resolve
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
+VALUES ('UP4B4-D1','p1','Convertible with options','Hall','pending','stone','USER-1',NULL)
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B4-D1O1','UP4B4-D1','A','a','Teak',0,'sw1'),
+       ('UP4B4-D1O2','UP4B4-D1','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "status"='recorded', "deciderKind"='none' WHERE "id"='UP4B4-D1' AND "status"::text='pending';
+SQL
+assert "4b round 4 fixture: the draft converted to a record while its approval register was empty" \
+  "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4B4-D1';" \
+  "recorded"
+assert_rejects "4b seal (round 4, R4-1): recording an approval REVISION against a recorded issue — the conversion's forward count gains its reverse, so neither ordering leaves a record holding approval evidence" \
+  "INSERT INTO \"DecisionApprovalRevision\"(\"id\",\"projectId\",\"decisionId\",\"optionKey\",\"version\",\"approvedAt\",\"approvedById\") VALUES('UP4B4-REV','p1','UP4B4-D1','a',1,now(),'USER-1')" "no approver"
+assert_rejects "4b seal (round 4, R4-2): a decision BORN approved whose tuple names a different holder — the binding applies at birth, not only at the transition" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedDeciderKind\",\"approvedDeciderLabel\") VALUES('UP4B4-BORN','p1','Born forged','Hall','approved','stone','USER-1','pmc','Forged Holder')" "must record the decider"
+assert_rejects "4b seal (round 4, R4-2): a decision BORN approved with HALF a tuple — half an attribution is an attribution" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedDeciderKind\") VALUES('UP4B4-HALF','p1','Born half-named','Hall','approved','stone','USER-1','client')" "WHOLE approval holder tuple or none of it"
+# PRECISION, and a deliberate narrowing of the finding's literal wording (argued in 20270819's
+# header): an ABSENT tuple is the legacy shape every pre-20270815 approval is in, those rows
+# persist in production, and the UPDATE door already admits the same transition.
+$PSQL -q -c "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\") VALUES('UP4B4-BARE','p1','Born nameless','Hall','approved','stone','USER-1')" >/dev/null \
+  || { echo "FAILED  4b round 4 (R4-2): a legacy-shaped approved row with NO tuple must still be insertable"; FAIL=1; }
+assert "4b round 4 precision (R4-2): the tupleless approved row was born — the seal binds an attribution that EXISTS, it does not require one" \
+  "SELECT COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B4-BARE';" \
+  "<null>"
+# PRECISION for R4-2: a COHERENT approved row is still born without complaint
+$PSQL -q -c "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedDeciderKind\",\"approvedDeciderLabel\") VALUES('UP4B4-OK','p1','Born coherent','Hall','approved','stone','USER-1','client','Client')" >/dev/null \
+  || { echo "FAILED  4b round 4 (R4-2): a coherent approved row must still be insertable"; FAIL=1; }
+assert "4b round 4 precision (R4-2): the COHERENT approved row was born — the seal binds the tuple, it does not ban the shape" \
+  "SELECT \"approvedDeciderKind\"::text FROM \"Decision\" WHERE \"id\"='UP4B4-OK';" \
+  "client"
+
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN

@@ -198,3 +198,24 @@ half reverted, on a scratch database migrated only to `20270817000000` — and g
 
 Convergence audit (owed at the second finding-bearing head, extended at the third):
 `docs/reviews/pr-344-convergence.md`.
+
+## Round 4 — the five Codex findings on `87461e6`
+
+Two P1 and three P2, answered in ONE batched head. All five probes in
+`phase6-t4b-correction4.test.ts` are RED at `87461e6` — with `20270819000000` **and** the service
+half reverted — and green after. `20270815000000` … `20270818000000` are all byte-for-byte
+unchanged.
+
+**Three of the five are one shape**, and it is the shape this review has now raised four separate
+times: a seal is correct, the service in front of it never asks, and an ordinary conflict reaches
+the caller as a 500. F9 named it for `requestChange`, F12 for `members.remove`; R4-3/4/5 name the
+remaining doors. The convergence audit records what that says about its own earlier claim to have
+closed that face.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R4-1 (P1) | the conversion counts `DecisionApprovalRevision` on the way IN and nothing sealed it on the way OUT — the register's own trigger refuses a `withdrawn` parent only, and round 1's reverse trigger covers `DecisionEvent` only. A draft converted while the count was zero could be given a revision afterwards, and append-only then made the contradiction permanent | the register's insertion seal refuses a `recorded` parent too, keeping the parent-row `FOR UPDATE` the 4a seal already took — so a conversion and an insertion serialize in either order. The `withdrawn` message is preserved verbatim; 4a's probes pin it |
+| R4-2 (P1) | the INSERT branch RETURNS before the holder binding R3-1 added, so a row could be BORN approved with a tuple naming a different holder — or no tuple at all, which R2-1 then forbids repairing | a row born `approved` carries a COMPLETE tuple recording its own decider. Rows that already existed are reached by UPDATE, never INSERT, so the legacy shape is untouched — and a coherent approved insert is still accepted, proven in the probe and over the migrated legacy DB |
+| R4-3 (P2) | neither publish door took `lockProjectReadiness`, so the seal's §B.1 try-acquire — which REFUSES rather than waits — turned a valid publication into a raw PostgreSQL error whenever a membership command held the key | both doors hold the key. Advisory locks are re-entrant, so the seal's try-acquire succeeds; the probe holds the key from a second session and asserts publish WAITS rather than being refused |
+| R4-4 (P2) | `OrgsService.updateOrgMemberRole`/`removeOrgMember` had no precheck, so demoting or removing a project's sole effective pmc 500s | both ask `DecisionsParticipant.holdsOpenDecisions` first, with the standing arithmetic mirroring the seal's exactly (R3-6): an org row supplies pmc standing only where the user holds no active membership, and only a write removing that supply can strand anything |
+| R4-5 (P2) | publishing a member-held draft whose named member has left — explicitly allowed, because a draft never blocked their removal — surfaced a raw database failure instead of telling the caller to re-point the draft | the holder is validated through `OrgsParticipant` inside the publication transaction, on `publish` and on the one-step issue alike |
