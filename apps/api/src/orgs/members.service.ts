@@ -173,7 +173,20 @@ export class MembersService {
       //
       // The condition is the seal's own, asked in its own order: only a non-pmc activation, only
       // for a user the org actually makes an effective pmc, and only when they are the last one.
-      if (input.role !== 'pmc') {
+      //
+      // Round 7 (Codex P2) — "activation" means what the seal means by it: the row goes from
+      // ABSENT-or-inactive to active. Round 6 asked only about the ROLE, so re-roling an ALREADY
+      // ACTIVE member (say, an org admin who is an active client becoming a contractor) was
+      // refused with a 409 the database would never have raised — that user supplied no pmc
+      // standing before the write and supplies none after, because their active membership was
+      // already suppressing it. Being stricter than the seal is the defect this review has named
+      // twice already (R2-4, R3-6); the guard must refuse exactly what the seal refuses.
+      const existingMembership = await tx.$queryRawUnsafe<Array<{ status: string }>>(
+        `SELECT "status" FROM "Membership" WHERE "projectId" = $1 AND "userId" = $2 FOR UPDATE`,
+        projectId, user.id,
+      );
+      const activates = existingMembership[0]?.status !== 'active';
+      if (activates && input.role !== 'pmc') {
         const displaced = await tx.$queryRawUnsafe<Array<{ supplies: boolean }>>(
           `SELECT EXISTS (
              SELECT 1 FROM "OrgMembership" om

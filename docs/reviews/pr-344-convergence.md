@@ -10,6 +10,7 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `87461e6` | round-3 fold + this audit's second edition | 5 (2 P1, 3 P2) | corrected on this head via `20270819000000` plus its service half: the approval REGISTER sealed against a record (the reverse of a count the conversion already made); the holder binding applied at BIRTH as well as at the transition; and the three remaining SPOKESMAN doors given their service-side question — publish holds the readiness key the seal try-acquires, publish and one-step issue refuse a departed holder with an actionable conflict, and the two org-membership commands ask the decisions participant before the write |
 | `cc00c94` | round-4 fold + this audit's third edition | 6 (3 P1, 3 P2) | corrected on this head via `20270820000000` plus its service half, under the owner's **"gate the surface, keep the facts"** decision: `recorded` made unlinkable at every write path and both pickers; the `pmc`/`member` decider designation refused at the contract until 4b-ii ships its audience; the frozen approval LABEL required complete, non-blank and BOUND to the designated holder, with the service deriving it from the seal's own function; the org-membership guard and its write folded into one transaction holding each affected project's readiness key; `requestChange` validating ROLE-held deciders as well as named ones; and post-write standing ASKED of the primitive instead of computed as `standing - 1` |
 | `ccaf2dd` | round-5 fold + this audit's third edition | 7 (4 P1, 3 P2; 8 comments) | corrected on this head via `20270821000000` plus its service and WEB halves: the attribution rule restated over the APPROVAL ACT rather than over the columns an act touches; `decisions_t4b_blank` giving "blank" one statement over the whole ASCII whitespace set; the `pmc`/`member` surface gate extended to BOTH publish doors; the ROLE arm of the publication holder check given its spokesman on both doors; the org guard's departing role read `FOR UPDATE` inside its transaction; the membership-ACTIVATION arm of the holder seal given its spokesman; and the register taught to render a `recorded` row as a record rather than as an approval |
+| `39bfb39` | round-6 fold + this audit's fourth edition | 3 (1 P1, 2 P2) | corrected on this head via `20270822000000` plus its service half — **all three are round 6's OWN over-reach**: the approval-act rule exempted from a RESTORATION (`withdrawChange` returns an approval that already happened); the frozen tuple preserved by the service on a re-approval rather than re-derived; and the activation guard — in BOTH the service and the seal — asking whether the membership was already active rather than trusting `TG_OP`, which Prisma's `upsert` makes a lie |
 
 ## Root analysis — one generative class, three faces
 
@@ -213,6 +214,42 @@ whose audience has not shipped. It is NOT an answer for a status the unit delibe
 serves — there, the only honest options are to render it truthfully or not to ship it, and this
 head renders it. **Finishing what was kept is not scope creep; it is the other half of keeping it.**
 
+## Round 7 — the corrections have the same failure modes as the code
+
+Three findings on `39bfb39`, and every one is a defect **round 6 introduced while fixing four
+others**. All three are a single class, and it is a class this audit had already named twice:
+
+> **a guard STRICTER than the rule it fronts** (R2-4, R3-6).
+
+- **R7-1** — round 6 restated the attribution rule over "the ACT" and then keyed it to *a
+  transition into `approved`*, which is not the same thing. `withdrawChange` reaches that
+  transition to RESTORE an approval that already happened. Every decision approved before
+  `20270815000000` carries a null tuple by design, so on those rows round 6 made a change request
+  impossible to withdraw — a raw PostgreSQL error on an ordinary product path, produced by the very
+  correction meant to remove those.
+- **R7-2** — round 6's migration says in prose that a re-approval carries the frozen tuple forward
+  *because* re-binding it to a changed name would refuse a valid act. The service then re-derived
+  the label every time. The claim and the code disagreed inside one head; round 6's own probe could
+  not see it because it used a client-held decision, whose label is the constant `Client`.
+- **R7-3** — round 6 asked whether the ADDED ROLE was non-pmc where the seal asks whether an
+  ACTIVATION occurs. Investigating it found the seal has the same defect from a different cause:
+  Prisma's `upsert` compiles to `INSERT … ON CONFLICT DO UPDATE`, and PostgreSQL fires the BEFORE
+  **INSERT** trigger with `TG_OP = 'INSERT'` even when the conflict path is taken. **Fixing only the
+  service — which is what the finding asks for — would have converted a false 409 into a raw 500.**
+  Both now ask the question `TG_OP` was standing in for.
+
+**What this round says about the previous three editions of this audit.** Each one claimed to close
+a face "by construction" and then produced fresh instances of the *neighbouring* face in the same
+head. The honest generalisation is not another face: it is that **a correction is a change, and
+changes fail the same ways the code they fix does.** The audit's value is not that it prevents the
+class — it demonstrably does not — but that it makes each instance cheap to name and hard to
+mistake for something new. Three findings on a head that fixed seven is the class working as
+designed, not the class being defeated.
+
+The one structural lesson worth extracting: **R7-2 was invisible to round 6's probe because the
+probe chose the holder shape whose label is constant.** A probe that exercises the stable case
+proves the stable case. The round-7 probe renames the person.
+
 ## What changed structurally, rather than per symptom
 
 - **Face B is closed by construction.** Both service guards now call the SQL the
@@ -406,3 +443,20 @@ that it was a hole, and the arm now asserts the refusal with the reason recorded
 active; R6-4 refuses it for a different and stated reason, and the arm now proves the holder
 spokesman answered rather than the seal. A probe that is overturned by a later finding is evidence
 the review is working, and it is worth more in the file than out of it.
+
+### What round 7 closes
+
+- **A restoration is not an act** (R7-1). `withdrawChange` returns a decision to the approval it
+  already had; the attribution rule now recognises that from the row itself — prior approval
+  evidence present, and this statement changing none of it — rather than from the transition, so a
+  legacy change request can be withdrawn again.
+- **The frozen tuple is written once and preserved thereafter** (R7-2), by the service as well as
+  by the seal, and the announcement reads the same value the register renders — so a re-approval
+  after a rename neither fails nor contradicts itself.
+- **An activation is a state change, not a `TG_OP`** (R7-3), in the service AND in the seal. The
+  finding named one of the two; fixing only that one would have made the symptom worse.
+
+Gates at this head: `pnpm check` EXIT 0 (web 790/790, API 793/793); the full integration suite on a
+pristine migrated database; `upgrade-proof.sh` with round 7's restoration and re-role statements
+ACCEPTED and its precision refusal rejected; `test:e2e:api` unchanged. All three probes were RED at
+`39bfb39` with `20270822000000` AND the service half reverted, each for its own reason.

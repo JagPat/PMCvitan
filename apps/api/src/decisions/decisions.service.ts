@@ -423,11 +423,24 @@ export class DecisionsService {
         // service that computed the label differently — or computed it correctly before the lock
         // and wrote it after a concurrent rename — cannot exist. What the seal recomputes is what
         // this wrote, by construction.
-        const holderLabel = await this.holderLabel(tx, projectId, holderKind, d.deciderMembershipId);
+        //
+        // Round 7 (Codex P2) — the act tuple is written by the FIRST approval and preserved by
+        // every later one. Round 6's own migration says so; the service wrote the freshly derived
+        // label unconditionally, so a re-approval after the holder's name changed offered the
+        // write-once arm a different value and the arm correctly refused — rolling back a
+        // perfectly valid re-approval. Whose approval it was does not change because their name
+        // did; that is the whole reason the label is frozen rather than joined.
+        const head = await tx.decision.findUniqueOrThrow({ where: { id: decisionId } });
+        const alreadyAttributed = head.approvedDeciderKind !== null;
+        const holderLabel = alreadyAttributed
+          ? head.approvedDeciderLabel
+          : await this.holderLabel(tx, projectId, holderKind, d.deciderMembershipId);
         // ...and the ANNOUNCEMENT says so too (gate finding 7, corrected round 1 Codex P2): who
         // exercised the authority, and WHOSE authority it was. The old text said "Client approved"
         // for every decider and "on behalf of the client" for every delegation, so a PMC-held or
-        // member-held approval contradicted the `onBehalfOf` the same act persisted.
+        // member-held approval contradicted the `onBehalfOf` the same act persisted. It reads the
+        // SAME value the register will render — frozen where one exists — so the two cannot
+        // disagree about a re-approval either (round 7).
         const holderName = holderLabel ?? (ROLE_LABEL[holderKind] ?? holderKind);
         const announce = onBehalfOf
           ? `${actor.actorName} (${ROLE_LABEL[actor.actorRole] ?? actor.actorRole}) approved ${d.title} on behalf of ${holderName} — ${o.material}`
@@ -444,10 +457,16 @@ export class DecisionsService {
             approver: actor.actorName,
             approvedById: actor.actorId,
             onBehalfOf,
-            // the act's own history (round 3) — never rewritten by a later holder change
-            approvedDeciderKind: holderKind,
-            approvedDeciderMembershipId: holderKind === 'member' ? d.deciderMembershipId : null,
-            approvedDeciderLabel: holderLabel,
+            // the act's own history (round 3) — never rewritten by a later holder change, and
+            // therefore written ONCE (round 7): a re-approval leaves these three columns exactly
+            // as the first approval left them rather than re-deriving and re-offering them.
+            ...(alreadyAttributed
+              ? {}
+              : {
+                  approvedDeciderKind: holderKind,
+                  approvedDeciderMembershipId: holderKind === 'member' ? d.deciderMembershipId : null,
+                  approvedDeciderLabel: holderLabel,
+                }),
             date: today,
             photoSwatch: o.swatch,
           },

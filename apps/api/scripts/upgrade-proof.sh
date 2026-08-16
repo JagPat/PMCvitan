@@ -3778,6 +3778,57 @@ assert "4b round 6 (R6-3): every ASCII whitespace character counts as blank — 
   "SELECT (decisions_t4b_blank(E' \t\n\x0B\f\r') AND NOT decisions_t4b_blank('Client'))::text;" \
   "true"
 
+# ── Phase 6 task 4b, ROUND 7 (Codex): round 6's own over-reach, in both media ────────────────
+#
+# R7-1 — `withdrawChange` returns a decision to the approval it ALREADY HAD by moving
+# `change → approved` and touching nothing else. Round 6 met that restoration with the demand it
+# wrote for an ACT, so a change request on any pre-`20270815000000` row could be raised and never
+# withdrawn. The legacy fixture row `UP4B2-D1` is exactly that shape and is reused here.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-7 fixture did not apply"; FAIL=1; }
+-- give the legacy tupleless approved row its approval evidence and reopen it, as the product does
+UPDATE "Decision" SET "approvedById" = 'USER-C', "approvedOption" = 'A', "material" = 'Teak'
+ WHERE "id" = 'UP4B2-D1' AND "approvedById" IS NULL;
+UPDATE "Decision" SET "status" = 'change' WHERE "id" = 'UP4B2-D1' AND "status"::text = 'approved';
+SQL
+assert "4b round 7 fixture (R7-1): the legacy tupleless approval is reopened and awaiting its withdrawal" \
+  "SELECT \"status\"::text || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B2-D1';" \
+  "change/<null>"
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B2-D1'" >/dev/null \
+  || { echo "FAILED  4b round 7 (R7-1): withdrawing a change request on a legacy row must RESTORE it"; FAIL=1; }
+assert "4b round 7 (R7-1): the restoration committed — a withdrawal returns an approval that already happened, and inventing a tuple for it would be the forgery the seal exists to prevent" \
+  "SELECT \"status\"::text || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B2-D1';" \
+  "approved/<null>"
+# PRECISION — the exemption is for a RESTORATION, not for the transition. A statement that ALTERS
+# the approval on its way to `approved` is an act and answers for itself.
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='change' WHERE \"id\"='UP4B2-D1'" >/dev/null
+assert_rejects "4b seal (round 7, R7-1) precision: arriving at approved while CHANGING the approved option is an act, not a restoration — and an act records who performed it" \
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedOption\"='B', \"material\"='Oak' WHERE \"id\"='UP4B2-D1'" "records WHO approved it"
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B2-D1'" >/dev/null
+
+# R7-3 — `TG_OP` is the wrong discriminator for an ACTIVATION. Prisma's `upsert` compiles to
+# `INSERT ... ON CONFLICT DO UPDATE`, and PostgreSQL fires the BEFORE INSERT trigger with
+# TG_OP = 'INSERT' even when the conflict path is taken — so re-roling an ALREADY ACTIVE member
+# reached the activation arm. The arm now asks what it was standing in for.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-7 R7-3 fixture did not apply"; FAIL=1; }
+INSERT INTO "User"("id","projectId","role","name","email")
+VALUES ('USER-OWNACT','p1','client','Owner on the team','ownact@upgrade.test') ON CONFLICT DO NOTHING;
+INSERT INTO "OrgMembership"("id","orgId","userId","role")
+SELECT 'UP4B7-OM', p."orgId", 'USER-OWNACT', 'owner' FROM "Project" p WHERE p."id"='p1'
+ON CONFLICT DO NOTHING;
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES ('UP4B7-M','p1','USER-OWNACT','client','active') ON CONFLICT DO NOTHING;
+SQL
+assert "4b round 7 (R7-3): an ALREADY ACTIVE membership is not an activation — the upsert shape PostgreSQL reports as TG_OP='INSERT' is judged by the state it actually changes" \
+  "SELECT (NOT EXISTS (SELECT 1 FROM \"Membership\" m WHERE m.\"id\"='UP4B7-M' AND m.status <> 'active'))::text;" \
+  "true"
+$PSQL -q -c "UPDATE \"Membership\" SET \"role\"='contractor' WHERE \"id\"='UP4B7-M'" >/dev/null \
+  || { echo "FAILED  4b round 7 (R7-3): re-roling an already-active org owner displaces no pmc standing and must be allowed"; FAIL=1; }
+assert "4b round 7 (R7-3): the re-role committed — the member was suppressing their own org-derived standing before the write and still is" \
+  "SELECT \"role\" FROM \"Membership\" WHERE \"id\"='UP4B7-M';" \
+  "contractor"
+$PSQL -q -c "DELETE FROM \"Membership\" WHERE \"id\"='UP4B7-M'" >/dev/null
+$PSQL -q -c "DELETE FROM \"OrgMembership\" WHERE \"id\"='UP4B7-OM'" >/dev/null
+
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN

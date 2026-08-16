@@ -218,6 +218,9 @@ function makeLifecycle(status: string) {
     user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (NAMES[where.id] ? { name: NAMES[where.id] } : null)) },
     decision: {
       findUnique: vi.fn(async () => ({ ...row, options })),
+      // round 7 — `approve` reads the LOCKED head inside its transaction to learn whether the act
+      // tuple has already been written, so a re-approval preserves it instead of re-deriving it.
+      findUniqueOrThrow: vi.fn(async () => ({ ...row, options })),
       // CAS: honor the status precondition exactly like the SQL UPDATE ... WHERE does
       updateMany: vi.fn(async ({ where, data }: { where: { id: string; projectId: string; status: string }; data: Partial<LifecycleRow> }) => {
         if (row.id !== where.id || row.projectId !== where.projectId || row.status !== where.status) return { count: 0 };

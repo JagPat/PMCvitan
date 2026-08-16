@@ -284,3 +284,21 @@ Round 4 wrote the coverage rule and checked the paths it had noticed. This is th
 
 Convergence audit (fourth edition): `docs/reviews/pr-344-convergence.md`.
 
+## Round 7 — the three Codex findings on `39bfb39`
+
+One P1 and two P2, answered in ONE batched head. All three probes in
+`phase6-t4b-correction7.test.ts` are RED at `39bfb39` — with `20270822000000` **and** the service
+half of the finding reverted, on a scratch database migrated only to `20270821000000` — and green
+after. `20270815000000` … `20270821000000` are byte-for-byte unchanged.
+
+**All three are round 6's own over-reach**, and all three are one class the audit had already named
+twice (R2-4, R3-6): a guard stricter than the rule it fronts.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R7-1 (P1) | round 6 keyed the approval-act rule to *a transition into `approved`*, but `withdrawChange` reaches that transition to RESTORE an approval that already happened. Every pre-`20270815000000` row carries a null tuple by design, so a change request on one could be raised and never withdrawn — a raw PostgreSQL error on an ordinary path | a RESTORATION is identified from the row: it already carries approval evidence (`approvedById`) and this statement changes none of it — not the approver, not the option, not the tuple. Nothing is recorded, so there is no act to attribute. Everything else answers for itself, proven by the precision arm (arriving at `approved` while changing the option IS an act and is refused) |
+| R7-2 (P2) | round 6's migration says a re-approval carries the frozen tuple forward *because* re-binding it to a changed name would refuse a valid act — and the service re-derived the label every time, so a re-approval after a rename offered the write-once arm a different value and it correctly refused | the tuple is written by the FIRST approval only; a later one preserves it, and the announcement reads the same frozen value the register renders. Round 6's probe used a client-held decision (label `Client`, constant) and could not see this; the round-7 probe renames the person |
+| R7-3 (P2) | round 6's activation guard asked about the ROLE where the seal asks about an ACTIVATION, so re-roling an already-active org owner/admin was a false 409 | **both** the guard and the seal now ask whether the membership was already active. The seal had to move too: Prisma's `upsert` compiles to `INSERT … ON CONFLICT DO UPDATE`, and PostgreSQL fires the BEFORE INSERT trigger with `TG_OP = 'INSERT'` even when the conflict path is taken — so fixing only the service, which is what the finding asks, would have turned the false 409 into a raw 500 |
+
+Convergence audit (fifth edition): `docs/reviews/pr-344-convergence.md`.
+
