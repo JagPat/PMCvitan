@@ -181,11 +181,30 @@ export class MembersService {
       // standing before the write and supplies none after, because their active membership was
       // already suppressing it. Being stricter than the seal is the defect this review has named
       // twice already (R2-4, R3-6); the guard must refuse exactly what the seal refuses.
-      const existingMembership = await tx.$queryRawUnsafe<Array<{ status: string }>>(
-        `SELECT "status" FROM "Membership" WHERE "projectId" = $1 AND "userId" = $2 FOR UPDATE`,
+      //
+      // Round 9 (Codex P2) — `activates` answers the ACTIVATION arm, and round 7 was right to
+      // narrow it. But `add` is an UPSERT: when the row is already active it can still CHANGE the
+      // role, and that is a DEPARTURE from the old one. `updateRole` refuses exactly that with an
+      // actionable 409; this path had no check at all, so the same write reached
+      // `Membership_t4b_holder_seal` and came back as a raw 500. Two doors onto one write must
+      // give one answer — the id and role are read under the SAME lock, so the guard and the seal
+      // see one snapshot.
+      const existingMembership = await tx.$queryRawUnsafe<Array<{ id: string; role: string; status: string }>>(
+        `SELECT "id", "role", "status" FROM "Membership" WHERE "projectId" = $1 AND "userId" = $2 FOR UPDATE`,
         projectId, user.id,
       );
-      const activates = existingMembership[0]?.status !== 'active';
+      const existing = existingMembership[0];
+      const activates = existing?.status !== 'active';
+      if (!activates && existing && input.role !== existing.role) {
+        // the upsert leaves this membership ACTIVE in its NEW role, so it keeps suppressing its
+        // holder's org-derived pmc standing — the same `after` arguments `updateRole` passes.
+        const surviving = await this.standingAfterDeparture(tx, projectId, existing.role, existing.id, input.role, true);
+        if (surviving <= 0 && await this.decisions.holdsOpenDecisions(tx, projectId, null, existing.role)) {
+          throw new ConflictException(
+            `Changing this role would leave a published open decision with no ${existing.role} to decide it — cover the role first`,
+          );
+        }
+      }
       if (activates && input.role !== 'pmc') {
         const displaced = await tx.$queryRawUnsafe<Array<{ supplies: boolean }>>(
           `SELECT EXISTS (

@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma.service';
 import { SmsService } from './sms.service';
 import { EmailService } from './email.service';
 import { GoogleAuthService } from './google.service';
+import { lockProjectReadiness } from '../common/readiness-lock';
 import type { Role } from '../common/auth';
 import type {
   SessionInput,
@@ -146,19 +147,34 @@ export class AuthService {
       if (!input.allowProvision) {
         throw new UnauthorizedException('No account for this sign-in. Ask your PMC to add you.');
       }
-      const created = await this.prisma.user.create({
-        data: {
-          projectId: input.projectId,
-          role: 'engineer',
-          name: input.name || 'Site Engineer',
-          email: input.email,
-          phone: input.phone,
-        },
-      });
-      // Write the explicit access grant too — access now derives ONLY from an
-      // active membership (or org-admin reach), never from the User row's fields.
-      await this.prisma.membership.create({
-        data: { projectId: input.projectId, userId: created.id, role: 'engineer', status: 'active' },
+      // Round 9 (Codex P1) — ONE transaction, holding the readiness key.
+      //
+      // These were two top-level calls, and round 7 made that dangerous: every active membership
+      // insert now passes through the seal's non-blocking readiness guard, which REFUSES rather
+      // than waits when another command owns the key. The `User` row had already committed by
+      // then, so a signup that lost that race left an identity with no membership — and the retry
+      // FOUND that identity, skipped provisioning entirely, and `signInAccess` rejected it for
+      // having no active membership. A permanently poisoned account, on the signup path.
+      //
+      // Holding `lockProjectReadiness` makes contention WAIT instead of fail, and putting both
+      // writes in one transaction means a failure leaves nothing behind to poison the retry.
+      const created = await this.prisma.$transaction(async (tx) => {
+        await lockProjectReadiness(tx, input.projectId);
+        const row = await tx.user.create({
+          data: {
+            projectId: input.projectId,
+            role: 'engineer',
+            name: input.name || 'Site Engineer',
+            email: input.email,
+            phone: input.phone,
+          },
+        });
+        // Write the explicit access grant too — access now derives ONLY from an
+        // active membership (or org-admin reach), never from the User row's fields.
+        await tx.membership.create({
+          data: { projectId: input.projectId, userId: row.id, role: 'engineer', status: 'active' },
+        });
+        return row;
       });
       return { token: this.issueNamedUser(created, 'engineer', created.projectId), role: 'engineer', projectId: created.projectId, name: created.name };
     }

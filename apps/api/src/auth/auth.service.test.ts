@@ -47,10 +47,19 @@ function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []
     return p ? !p.archivedAt : true; // projects not modelled here are treated as active
   };
   let workerSeq = 0;
-  return {
+  const self: Record<string, unknown> = {};
+  Object.assign(self, {
     users,
     memberships,
     workerCreated: [] as unknown[],
+    // Round 9 — self-signup now provisions the `User` and its `Membership` in ONE transaction
+    // holding the readiness key, so the double must offer `$transaction`. It hands the callback
+    // this same double: the fake has no isolation to model, and the point under test is that both
+    // writes happen together, not how PostgreSQL sequences them.
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(self),
+    $queryRawUnsafe: async () => [],
+    $executeRaw: async () => 0,
+    $executeRawUnsafe: async () => 0,
     user: {
       findUnique: async ({ where }: { where: { id?: string; email?: string; phone?: string } }) =>
         users.find((u) => (where.id && u.id === where.id) || (where.email && u.email === where.email) || (where.phone && u.phone === where.phone)) ?? null,
@@ -102,7 +111,8 @@ function fakePrisma(seed: FakeUser[] = [], membershipSeed: FakeMembership[] = []
           (p) => (where.orgId?.in ? p.orgId !== null && where.orgId.in.includes(p.orgId) : true) && (where.archivedAt === null ? !p.archivedAt : true),
         ) ?? null,
     },
-  };
+  });
+  return self as never;
 }
 
 function make(prisma: ReturnType<typeof fakePrisma>) {

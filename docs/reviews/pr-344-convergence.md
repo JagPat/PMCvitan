@@ -593,3 +593,82 @@ Gates at this head, run on the MERGED branch so the two units are proven to comp
 EXIT 0 (web 790/790, API 793/793); integration **102 files / 1245 passed + 3 skipped** on a pristine
 database with all 89 migrations applied in sequence; `upgrade-proof.sh` PASSED; `test:e2e:api` 31;
 `:outbox` 31.
+
+---
+
+## Tenth edition — round 9, and the count that should decide 4b-ii
+
+Three findings on `92868d7` (2×P1, 1×P2). **3 of 3 SELF-INFLICTED. 0 SEAM.**
+
+| # | P | Which correction in THIS PR caused it |
+| --- | --- | --- |
+| R9-1 | P1 | **round 8's own fix** — it asked for an `approved` `DecisionEvent` as proof an approval happened, and nothing stopped that event being INSERTED while the parent sat in `change`. Right idea, forgeable proof. |
+| R9-2 | P1 | **round 7's guard** — putting every active membership insert behind a NON-BLOCKING readiness check broke a path that never took the key. |
+| R9-3 | P2 | **the round-6/8 `activates` narrowing** — correct for activation, but it left the role-CHANGE half of the same upsert with no check at all. |
+
+### The count, which is now the actionable part
+
+| round | findings | seam | self-inflicted |
+| --- | --- | --- | --- |
+| 7 | 3 | 0 | 3 |
+| 8 | 3 | 0 | 2 (+1 latent) |
+| 9 | 3 | 0 | 3 |
+
+**Three consecutive rounds, nine findings, zero seam defects.** The 4b-i/4b-ii cut is not the
+problem and has not been the problem since round 6. Every finding since is a defect *a correction
+introduced*, which is the definition of a change set that has stopped converging on its own terms.
+
+### R9-2 deserves separate emphasis: this PR broke production
+
+Round 7's guard is correct in isolation and was correct for the path it was written for. Applied to
+`AuthService.signInOrProvision` — two top-level calls, no readiness key — it produced this:
+
+1. self-signup creates the `User`; it commits.
+2. the membership insert meets the non-blocking guard under contention and REFUSES.
+3. the retry FINDS that identity, so it skips provisioning entirely.
+4. `signInAccess` rejects the account for having no active membership. **Permanently.**
+
+A guard added to protect decision holders locked people out of the product. That is the cost of
+extending a seal network across paths that were never part of its design, stated plainly because
+the recommendation below is otherwise easy to read as mere tidiness.
+
+### What round 9 does
+
+- **R9-1** — the restoration exemption now requires an approval event that **PREDATES the open
+  `ChangeRequest`**. A genuine restoration's approval happened before the change was requested;
+  a planted event, written while the row sits in `change`, necessarily comes after. Ordering is the
+  part of the evidence a forger cannot manufacture through the ordinary write paths.
+
+  **The first attempt at R9-1 was itself an over-reach, and that is this round's most useful
+  finding.** It forbade recording an approval event unless the parent was already `approved` —
+  and the battery refuted it before it reached the gate: `phase6-t4a-withdraw` (4 tests),
+  `phase3-requirements` R2-1, `phase6-t4b-correction` F2, and `upgrade-proof.sh` all failed.
+  The reason is exact: **a non-approved decision carrying an approval event is the very shape 4a's
+  seals exist to refuse**, so making it unrepresentable stopped 4a from constructing the scenarios
+  it defends against, and broke the legacy upgrade path. Narrowing a rule until it breaks a real
+  path is precisely what round 7 did and round 8 had to undo — committed again, one round later,
+  inside the head that names the pattern. It is recorded rather than quietly replaced because a
+  convergence audit that shows only the corrected view is the thing this audit exists to argue
+  against.
+
+  Constraining the PROOF rather than the EVENT leaves every legacy shape representable, keeps 4a's
+  fixtures and defences intact, and still denies the forgery its exemption.
+
+- **R9-2** — user and membership provision in ONE transaction holding `lockProjectReadiness`.
+  Contention WAITS instead of failing, and a failure leaves nothing behind to poison the retry.
+- **R9-3** — `members.add` runs the SAME departure guard `updateRole` runs when an already-active
+  member's role changes, reading id and role under the same `FOR UPDATE`. Two doors onto one write
+  now give one answer.
+
+All three RED at `92868d7`: the planted event was ACCEPTED, signup FAILED instead of waiting, and
+the stranding role change went through. `20270815000000` … `20270825000000` are byte-for-byte
+unchanged; `20270826000000` is one `CREATE OR REPLACE`, writes no row, and makes nothing illegal
+that was legal before.
+
+### The recommendation, now stated as a decision the count has already made
+
+**4b-ii must carry the audience and visibility OVER this seal network as it stands. It must not
+extend it.** Any further narrowing of the attribution rules is its own unit with its own review
+budget. Nine findings across three rounds, none of them at the seam and all of them from re-cutting
+inside it, is not a case for a tenth round of the same — and R9-2 shows the blast radius is no
+longer confined to this unit.
