@@ -9,7 +9,6 @@ import { VendorsService } from '../../src/procurement/vendors.service';
 import { LabourService } from '../../src/labour/labour.service';
 import { LabourProcurementService } from '../../src/labour/labour-procurement.service';
 import { CommercialActivationService } from '../../src/commercial/commercial-activation.service';
-import { CommercialBillService } from '../../src/commercial/commercial-bill.service';
 import { CapabilitiesService, LABOUR_CAPABILITY, MATERIALS_CAPABILITY } from '../../src/platform/capabilities.service';
 import type { AuthUser } from '../../src/common/auth';
 import type { CreateRequirementInput } from '../../src/contracts';
@@ -36,11 +35,18 @@ import type { CreateRequirementInput } from '../../src/contracts';
  * the function's own words, that "two sessions that each counted a fold nobody was holding would
  * both pass and both commit". A fix that removed the false conflict AND the real ones would pass
  * probe 1 and be wrong, so the preserved conflicts are asserted, not assumed.
- * PROBE 4 is the TERMINAL invariant (Codex #345 F2): serialization is a means, and a probe that
- * stops at "one session waited" would stay green under an implementation that took the right lock
- * and then miscounted. Two competing claims that TOGETHER exceed the ordered authority both
- * COMMIT — §E DISPUTES an over-claim rather than refusing it — and what must hold is that the
- * over-claim cannot come to rest LIVE and the live fold never exceeds the authority.
+ * There is deliberately NO terminal bound-1 probe here, and that is a decision rather than an
+ * omission. Round 1 added one (Codex #345 F2) and round 2 showed it was testing the wrong thing
+ * twice over: with no acceptance seeded, ACCEPTED is 0 and each claim is disputed by the
+ * over-ACCEPTED branch, never by the ordered bound it claimed to exercise; and the concurrent
+ * interleaving it purported to drive CANNOT OCCUR, because `CommercialBillService.transition()`
+ * takes `lockProjectReadiness` as its first act and serializes two same-project submissions long
+ * before either reaches the check. Bound 1 is not what this change touches — the LOCK MODE is —
+ * and bound 1 already has rigorous, DATABASE-level coverage in its owning suite:
+ * `phase5-t4-vendor-bill.test.ts` PROBE 5h (it bites on ordered quantity, in units not rupees)
+ * and its bound-1 seal probe (forcing past every service guard aborts at COMMIT naming bound 1,
+ * with the paired disposition proving a legitimate withdrawal still commits). Restating that here
+ * would add a second, weaker statement of a rule that already has a canonical one.
  *
  * EVERY probe runs on BOTH lock branches (Codex #345 F3). The migration rewrote the clause on
  * `PurchaseOrderLine` AND on `LabourPurchaseOrderLine`; a suite that only ever passed `p_material`
@@ -63,7 +69,6 @@ describe('commercial deadlock — the §G bound check takes one lock order (live
   let labour: LabourService;
   let labourCommercial: LabourProcurementService;
   let activation: CommercialActivationService;
-  let bills: CommercialBillService;
   let capabilities: CapabilitiesService;
   let raceDb: PrismaClient;
   let seq = 0;
@@ -84,7 +89,6 @@ describe('commercial deadlock — the §G bound check takes one lock order (live
     labour = t.app.get(LabourService);
     labourCommercial = t.app.get(LabourProcurementService);
     activation = t.app.get(CommercialActivationService);
-    bills = t.app.get(CommercialBillService);
     capabilities = t.app.get(CapabilitiesService);
     // A SEPARATE client: two sessions is the whole point, and Prisma's interactive transactions
     // are per-connection. Sharing `t.prisma` would silently serialize the probe into one session.
@@ -211,6 +215,16 @@ describe('commercial deadlock — the §G bound check takes one lock order (live
     return { ready, release, done };
   };
 
+  /** Wait until a dispatched racing check has SETTLED (either way), or the window closes. */
+  const settlesWithin = async (race: { state: () => string }, ms: number): Promise<boolean> => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (race.state() !== 'pending') return true;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return false;
+  };
+
   /** Wait until `raceDb`'s tagged session is actually WAITING on a lock. */
   const blocksWithin = async (marker: string, ms = 4000): Promise<boolean> => {
     const deadline = Date.now() + ms;
@@ -278,16 +292,24 @@ describe('commercial deadlock — the §G bound check takes one lock order (live
 
         const [m, l] = branch.args(poLineId);
         const race = boundCheckOnRace(projectId, m, l, marker);
-        const blocked = await blocksWithin(marker, 3000);
+
+        // POSITIVE proof, required while the holder STILL HOLDS (round 2, Codex R2-1). Asserting
+        // "no lock wait was observed" is not proof of anything: if the racing session had not yet
+        // reached PostgreSQL when the polling window closed, nothing was observed either — and
+        // releasing the holder first lets even the original `FOR UPDATE` query succeed, so both
+        // assertions pass against the very bug this probe exists to catch. Demanding COMPLETION
+        // under the held lock cannot pass that way: at `8175c3e` the check blocks on the KEY SHARE
+        // holder and never settles inside the window.
+        const settled = await settlesWithin(race, 8000);
+        expect(settled, 'the bound check must COMPLETE while a FOR KEY SHARE holder still holds it')
+          .toBe(true);
+        expect(race.state()).toBe('ok');
+        // …and it got there without ever waiting on a lock — the same fact from the other side.
+        expect(await blocksWithin(marker, 250)).toBe(false);
 
         holder.release();
         await holder.done;
         await race.promise;
-
-        // RED at `8175c3e` (FOR UPDATE): session B waits on the KEY SHARE holder.
-        // GREEN with FOR NO KEY UPDATE: it never waits, and completes while the holder still holds.
-        expect(blocked).toBe(false);
-        expect(race.state()).toBe('ok');
       });
 
       it('PROBE 2 (invariant kept): two concurrent bound checks STILL serialize', async () => {
@@ -340,54 +362,4 @@ describe('commercial deadlock — the §G bound check takes one lock order (live
     });
   }
 
-  it('PROBE 4 (terminal invariant): an over-claim is DISPUTED, not refused — and the LIVE fold never exceeds the ordered authority', async () => {
-    const projectId = await freshProject();
-    const { poLineId, vendorId } = await issuedMaterialLine(projectId, '100');
-
-    // Each claim is legal ALONE (100 of 100 ordered); together they are 200 against an authority of
-    // 100. Serialization is only a means — what §G actually promises is this terminal state.
-    const mk = async () => {
-      const rec = await bills.record(projectId, {
-        vendorId, vendorBillNumber: `V-${seq++}`, documentDate: '2026-08-20',
-        lines: [{ poLineId, quantity: '100', rate: '1' }],
-      }, pmc(projectId));
-      return rec.id;
-    };
-    const billA = await mk();
-    const billB = await mk();
-
-    const results = await Promise.allSettled([
-      bills.submit(projectId, { billId: billA }, pmc(projectId)),
-      bills.submit(projectId, { billId: billB }, pmc(projectId)),
-    ]);
-    // Both COMMANDS succeed, and that is correct — it is the first thing this probe got wrong.
-    // §E does not refuse an over-claim at submission; the withdrawal guard DISPUTES it, and §0
-    // keeps an unresolved `disputed` bill out of every billed fold. The deferred check is shaped
-    // for exactly that (its own header: it "passes when the guard did its job"). So the terminal
-    // invariant is NOT "one command fails" — it is that the LIVE fold never exceeds the authority.
-    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
-    const statuses = (await t.prisma.vendorBill.findMany({
-      where: { projectId, id: { in: [billA, billB] } }, select: { status: true },
-    })).map((b) => b.status).sort();
-    // …and the bound DID something: an unevidenced 100-on-100 claim cannot come to rest live.
-    expect(statuses.filter((s) => s === 'disputed').length,
-      'an over-claim must be disputed, not silently carried').toBeGreaterThanOrEqual(1);
-
-    // …and the ledger agrees: the LIVE billed total never exceeds the ordered authority.
-    const rows = await t.prisma.$queryRawUnsafe<Array<{ billed: string | null; ordered: string }>>(
-      `SELECT (SELECT COALESCE(SUM(bl."quantity"), 0)
-                 FROM "VendorBillLine" bl
-                 JOIN "VendorBillVersion" bv ON bv."id" = bl."versionId" AND bv."supersededAt" IS NULL
-                 JOIN "VendorBill" b ON b."id" = bv."billId"
-                WHERE bl."poLineId" = $2
-                  -- §0's LIVE set, copied VERBATIM from phase5_t4_billed_bound_check rather than
-                  -- restated: a probe that paraphrases the rule it checks is testing its own prose.
-                  AND b."status" NOT IN ('draft', 'rejected', 'disputed', 'resolved'))::text AS billed,
-              (l."qty" + l."approvedOverage")::text AS ordered
-         FROM "PurchaseOrderLine" l WHERE l."projectId" = $1 AND l."id" = $2`,
-      projectId, poLineId,
-    );
-    const { billed, ordered } = rows[0]!;
-    expect(Number(billed ?? 0)).toBeLessThanOrEqual(Number(ordered));
-  });
 });
