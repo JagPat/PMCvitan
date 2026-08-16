@@ -519,6 +519,54 @@ SQL
   echo "pre-Phase-6 directory rows planted (UP6-CO1 on p1, UP6-CO2 on p3), both PARTY-LESS"
 }
 
+# ── Phase 6 task 4b round 10 STOP — the legacy-approval STAMP needs pre-migration rows ────────
+# `20270827000000` replaces four rounds of forgeable predicates with a set enumerated ONCE, at
+# upgrade time: every approval standing when it runs is stamped, and the table then refuses every
+# write. That makes WHEN a row was approved the whole substance of the rule, so a fixture planted
+# after the ledger — as `UP4B2-D1` was until this round — can no longer prove anything about it.
+# Its restoration used to be permitted by a predicate over rows anyone can write; it is now
+# permitted because it genuinely predates the migration, which is only true if it is planted here.
+#
+# `UP4B2-D1` keeps its id and shape, so the round-2/7/8 assertions downstream are unchanged and
+# their `ON CONFLICT DO NOTHING` plants become no-ops. `UP4BR10-CASCADE` is a throwaway stamped
+# row, used once to prove the evidence leaves ONLY with its subject.
+plant_pre_t4b_r10_legacy() {
+  echo ""
+  echo "=== planting PRE-4b-round-10 legacy approvals (the stamp's backfill subjects) ==="
+  $PSQL -q <<'SQL' || { echo "pre-4b-round-10 legacy planting failed"; exit 1; }
+BEGIN;
+-- Publishing a client-held decision into a project with no ACTIVE CLIENT is refused
+-- (`Decision_t4b_publication_seal`), and the legacy fixture modelled a project without one. The 4a
+-- section plants exactly these two rows for exactly this reason; planting them here first makes
+-- that plant a no-op and leaves the end state identical — `20270827000000` is the last migration,
+-- so nothing between here and the assertions can observe the difference.
+INSERT INTO "User"("id","projectId","role","name","email","passwordHash")
+VALUES ('USER-C','p1','client','Legacy Client','legacyclient@vitan.in','legacy-bcrypt-hash-c') ON CONFLICT DO NOTHING;
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES ('UP4A-MC','p1','USER-C','client','active') ON CONFLICT DO NOTHING;
+-- a LEGACY approved decision: two options, published, already `approved` with NO holder tuple.
+-- Round 6 refuses a tupleless approval TRANSITION, so the legacy shape is born the way legacy rows
+-- actually exist — already approved — which R4-2's documented narrowing permits at the INSERT door.
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
+VALUES ('UP4B2-D1','p1','Legacy approved, tupleless','Hall','approved','stone','USER-1',NULL),
+       ('UP4BR10-CASCADE','p1','Legacy approved, disposable','Hall','approved','stone','USER-1',NULL)
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B2-D1O1','UP4B2-D1','A','a','Teak',0,'sw1'),
+       ('UP4B2-D1O2','UP4B2-D1','B','b','Oak',100,'sw2'),
+       ('UP4BR10-CO1','UP4BR10-CASCADE','A','a','Teak',0,'sw1'),
+       ('UP4BR10-CO2','UP4BR10-CASCADE','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "publishedAt"=now()
+ WHERE "id" IN ('UP4B2-D1','UP4BR10-CASCADE') AND "publishedAt" IS NULL;
+COMMIT;
+SQL
+  local stamped
+  stamped=$($PSQL -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='DecisionLegacyApproval';")
+  [ "$stamped" = "0" ] || { echo "pre-4b-round-10 planting ran AFTER the stamp migration — the exemption proof would be vacuous"; exit 1; }
+  echo "pre-round-10 legacy approvals planted (UP4B2-D1, UP4BR10-CASCADE), both TUPLELESS and UNSTAMPED"
+}
+
 # ---- 3f. the remaining ledger to HEAD ----------------------------------------------------
 # Migrations stamped after the round-2 stop (Task 2 procurement onward) also land in
 # phase3_r2_dirs; the explicit round-2/3 stops above covered exactly two of them. Apply every
@@ -539,6 +587,8 @@ for d in "${phase3_r2_dirs[@]}"; do
     20270801000000_*) plant_pre_phase6_firms ;;
     # ── Phase 6 task 4a STOP — the F2 partial-apply state must ABORT, then repair + real apply ─
     20270810000000_*) plant_and_prove_t4a_partial_apply "$d" ;;
+    # ── Phase 6 task 4b round 10 STOP — the legacy-approval STAMP needs pre-migration rows ────
+    20270827000000_*) plant_pre_t4b_r10_legacy ;;
   esac
   apply_one "$d"
 done
@@ -3498,18 +3548,12 @@ assert_rejects "4a seal 3 (round 15): one transaction editing an option, TRUNCAT
 # decision approved before 20270815000000 sits at `approved` with a NULL holder tuple, which is
 # exactly the shape a forger needs.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-2 fixture did not apply"; FAIL=1; }
--- a LEGACY approved decision: two options, published, then flipped to `approved` with no tuple
-INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
--- round 6: a tupleless approval TRANSITION is now refused (an approval that names nobody can
--- never be repaired), so the legacy shape is born the way legacy rows actually exist — already
--- approved, with no tuple, which R4-2's documented narrowing keeps permitted at the INSERT door.
-VALUES ('UP4B2-D1','p1','Legacy approved, tupleless','Hall','approved','stone','USER-1',NULL)
-ON CONFLICT DO NOTHING;
-INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
-VALUES ('UP4B2-D1O1','UP4B2-D1','A','a','Teak',0,'sw1'),
-       ('UP4B2-D1O2','UP4B2-D1','B','b','Oak',100,'sw2')
-ON CONFLICT DO NOTHING;
-UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B2-D1' AND "publishedAt" IS NULL;
+-- `UP4B2-D1` — the LEGACY approved, tupleless, published row — is planted by
+-- `plant_pre_t4b_r10_legacy` at the `20270827000000` stop, NOT here. Round 10 made WHEN a row was
+-- approved the substance of the restoration rule, so a fixture planted after the ledger can no
+-- longer stand in for a legacy one. It cannot be re-planted here even defensively: re-inserting
+-- its options fires `DecisionOption_t4b_published_frozen` BEFORE PostgreSQL evaluates
+-- ON CONFLICT, so the whole fixture aborts. The round-2 assertions below are unchanged.
 -- an UNPUBLISHED draft authored by the CLIENT — allowed to exist, not allowed to become a record
 INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
 VALUES ('UP4B2-D2','p1','Client-authored draft','Hall','pending','stone','USER-C',NULL)
@@ -3783,11 +3827,14 @@ assert "4b round 6 (R6-3): every ASCII whitespace character counts as blank — 
 # R7-1 — `withdrawChange` returns a decision to the approval it ALREADY HAD by moving
 # `change → approved` and touching nothing else. Round 6 met that restoration with the demand it
 # wrote for an ACT, so a change request on any pre-`20270815000000` row could be raised and never
-# withdrawn. The legacy fixture row `UP4B2-D1` is exactly that shape and is reused here.
+# withdrawn. `UP4B2-D1` is exactly that shape and is reused here — and as of round 10 it is planted
+# BEFORE `20270827000000` runs, so what permits its restoration is the migration's own stamp rather
+# than any predicate over rows a caller can write.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-7 fixture did not apply"; FAIL=1; }
 -- give the legacy tupleless approved row its approval evidence and reopen it, as the product does.
--- The `DecisionEvent` is part of that evidence, not decoration: `approve()` has written one since
--- Phase 1, and round 8's R8-1 uses exactly that to tell a real approval from planted columns.
+-- Round 8 read the `DecisionEvent` as proof that an approval happened; round 10 removed that
+-- reading (the event is plantable) and the row is kept here unchanged, so the same fixture now
+-- restores for a reason a forger cannot reproduce.
 UPDATE "Decision" SET "approvedById" = 'USER-C', "approvedOption" = 'A', "material" = 'Teak'
  WHERE "id" = 'UP4B2-D1' AND "approvedById" IS NULL;
 INSERT INTO "DecisionEvent"("id","decisionId","type","actor","actorId","at")
@@ -3861,8 +3908,9 @@ assert "4b round 8 (R8-1): neither forged arrival landed — the row is still op
   "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4B8-D1';" \
   "change"
 # PRECISION — the GENUINE legacy withdrawal round 7 exists to permit still restores. `UP4B2-D1` is
-# the legacy tupleless approved row, and round 7's block left it approved; give it the approval
-# EVENT every real approval carries, reopen it, and withdraw.
+# the pre-migration tupleless approved row, and round 7's block left it approved; reopen it and
+# withdraw. Round 8 credited the approval EVENT for this; round 10 credits the migration stamp,
+# and the assertion is unchanged because the BEHAVIOUR it pins is what mattered all along.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-8 precision fixture did not apply"; FAIL=1; }
 UPDATE "Decision" SET "status"='change' WHERE "id"='UP4B2-D1' AND "status"::text='approved';
 SQL
@@ -3871,6 +3919,92 @@ $PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B2-D
 assert "4b round 8 precision (R8-1): the genuine legacy restoration committed — the exemption is narrowed, not withdrawn" \
   "SELECT \"status\"::text || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B2-D1';" \
   "approved/<null>"
+
+# ── Phase 6 task 4b, ROUND 10 (Codex): the exemption becomes an enumerated set ────────────────
+#
+# R10-1 — rounds 6-9 each re-cut one rule and each lost, because every attempt asked a question
+# about rows a direct writer can write. Round 9's ordering predicate lost BOTH ways: close the
+# `ChangeRequest` so the COALESCE bound reads `infinity`, or rewrite the caller-supplied
+# `DecisionEvent."at"`. `20270827000000` stops answering the question and enumerates the answer
+# instead: every approval standing when it ran is stamped, and the table then refuses every write.
+#
+# This section is where the PRECISION half lives, and it can live nowhere else. A genuine legacy
+# row is one approved BEFORE the migration — unreachable from a suite whose database is migrated
+# from empty, and unfakeable afterwards by design. `UP4B2-D1` and `UP4BR10-CASCADE` are planted at
+# the `20270827000000` stop for exactly that reason.
+# The set is pinned by NAME rather than by a "nothing is unstamped" count, because the count would
+# be measured HERE and the claim is about THEN: `UP4B4-BARE` is an approved tupleless row minted by
+# a later fixture, and it is correctly absent. Pinning the membership catches the stamp both
+# over-reaching and under-reaching, and it names every legacy approval the fixture actually holds.
+assert "4b round 10 (R10-1): the exemption set is exactly the approvals standing at upgrade time — the legacy fixture's four, plus the two planted at the stop" \
+  "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\";" \
+  "DL-2,DL-3,DL-4,DL-6,UP4B2-D1,UP4BR10-CASCADE"
+assert "4b round 10 (R10-1): a tupleless approval minted AFTER the migration (UP4B4-BARE, R4-2's legacy INSERT door) is NOT in the set — the door closed behind the migration, so round 10 strictly tightens that narrowing rather than widening it" \
+  "SELECT (EXISTS (SELECT 1 FROM \"Decision\" WHERE \"id\"='UP4B4-BARE' AND \"status\"::text='approved' AND \"approvedDeciderKind\" IS NULL))::text || '/' || (EXISTS (SELECT 1 FROM \"DecisionLegacyApproval\" WHERE \"decisionId\"='UP4B4-BARE'))::text;" \
+  "true/false"
+assert "4b round 10 (R10-1): the migration INVENTED no attribution — a stamped row still shows no holder tuple, which is the truth about a pre-Phase-6 approval" \
+  "SELECT (SELECT COUNT(*) FROM \"DecisionLegacyApproval\" l JOIN \"Decision\" d ON d.\"id\"=l.\"decisionId\" WHERE d.\"approvedDeciderKind\" IS NOT NULL)::text;" \
+  "0"
+assert_rejects "4b seal (round 10, R10-1): MINTING the evidence after the migration ran — the one property the whole redesign rests on" \
+  "INSERT INTO \"DecisionLegacyApproval\"(\"decisionId\") VALUES ('UP4B8-D1')" "one-time migration evidence"
+assert_rejects "4b seal (round 10, R10-1): DELETING the evidence out from under a standing decision — evidence leaves only with its subject" \
+  "DELETE FROM \"DecisionLegacyApproval\" WHERE \"decisionId\"='UP4B2-D1'" "cannot be deleted while decision"
+# …and the one lawful departure: the FK cascade, when the subject itself ceases to exist. The
+# option trigger is disabled by name because it guards a DIFFERENT rule (published options are
+# frozen); the seal under test is untouched.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-10 cascade fixture did not apply"; FAIL=1; }
+BEGIN;
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4b_published_frozen";
+DELETE FROM "DecisionOption" WHERE "decisionId"='UP4BR10-CASCADE';
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4b_published_frozen";
+DELETE FROM "Decision" WHERE "id"='UP4BR10-CASCADE';
+COMMIT;
+SQL
+assert "4b round 10 (R10-1): the cascade IS permitted — deleting the subject takes its evidence with it, so 'one-time migration evidence' needs no footnote" \
+  "SELECT (SELECT COUNT(*) FROM \"Decision\" WHERE \"id\"='UP4BR10-CASCADE')::text || '/' || (SELECT COUNT(*) FROM \"DecisionLegacyApproval\" WHERE \"decisionId\"='UP4BR10-CASCADE')::text;" \
+  "0/0"
+# the two forgeries round 9 admitted, executed against a POST-migration row (`UP4B8-D1`, which
+# round 8 already drove to `change` with its approval columns planted and is NOT in the stamp set)
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-10 forgery fixture did not apply"; FAIL=1; }
+INSERT INTO "ChangeRequest"("id","decisionId","reason","costImpact","timeImpactDays","status")
+VALUES ('UP4BR10-CR','UP4B8-D1','closed first, so no open request bounds the ordering',0,0,'closed') ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionEvent"("id","decisionId","type","actor","actorId","at")
+VALUES ('UP4BR10-EV','UP4B8-D1','approved','Nobody','USER-C','2020-01-01T00:00:00Z') ON CONFLICT DO NOTHING;
+SQL
+assert_rejects "4b seal (round 10, R10-1): forgery path 1 — no OPEN request, so round 9's COALESCE bound read 'infinity' and any planted event qualified" \
+  "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B8-D1'" "records WHO approved it"
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-10 forgery-2 fixture did not apply"; FAIL=1; }
+UPDATE "ChangeRequest" SET "status"='open' WHERE "id"='UP4BR10-CR';
+SQL
+assert_rejects "4b seal (round 10, R10-1): forgery path 2 — an OPEN request, defeated by BACKDATING the caller-supplied DecisionEvent.at past it" \
+  "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4B8-D1'" "records WHO approved it"
+assert "4b round 10 (R10-1): neither forgery landed — a row that was not approved when the migration ran is not in the set, and no amount of writable evidence puts it there" \
+  "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4B8-D1';" \
+  "change"
+
+# R10-2 — `linkableInProject` refuses to LINK a `recorded` decision because its gate can never
+# open. Walking the same two legal steps in the other order reached the identical dead gate.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-10 R10-2 fixture did not apply"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
+VALUES ('UP4BR10-DA','p1','Draft an activity waits on','Hall','pending','stone','USER-1',NULL),
+       ('UP4BR10-DM','p1','Draft a delivery is matched to','Hall','pending','stone','USER-1',NULL),
+       ('UP4BR10-DF','p1','Draft nothing waits on','Hall','pending','stone','USER-1',NULL)
+ON CONFLICT DO NOTHING;
+INSERT INTO "Activity" ("id","projectId","name","zone","plannedStart","plannedEnd","status","decisionId")
+VALUES ('UP4BR10-ACT','p1','Waiting activity','Hall',0,5,'not_started','UP4BR10-DA') ON CONFLICT DO NOTHING;
+INSERT INTO "DailyLog" ("id","projectId","date","submitted") VALUES ('UP4BR10-LOG','p1','01 Aug 2026',false) ON CONFLICT DO NOTHING;
+INSERT INTO "SiteMaterial" ("id","projectId","dailyLogId","name","qty","zone","decisionId","swatch","matched","order")
+VALUES ('UP4BR10-SM','p1','UP4BR10-LOG','Teak ply','20 sheets','Hall','UP4BR10-DM','sw1',true,1) ON CONFLICT DO NOTHING;
+SQL
+assert_rejects "4b seal (round 10, R10-2): converting a draft an ACTIVITY already depends on — the gate would wait forever on an issue nobody can approve" \
+  "UPDATE \"Decision\" SET \"status\"='recorded', \"deciderKind\"='none' WHERE \"id\"='UP4BR10-DA'" "an activity already depends on"
+assert_rejects "4b seal (round 10, R10-2): converting a draft a DELIVERY is already matched to — the link rule refuses a record, so the conversion must not create one behind it" \
+  "UPDATE \"Decision\" SET \"status\"='recorded', \"deciderKind\"='none' WHERE \"id\"='UP4BR10-DM'" "a delivery is already matched to"
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='recorded', \"deciderKind\"='none' WHERE \"id\"='UP4BR10-DF'" >/dev/null \
+  || { echo "FAILED  4b round 10 (R10-2): an UNLINKED draft must still convert — the rule refuses stranded gates, not the lifecycle"; FAIL=1; }
+assert "4b round 10 (R10-2) precision: the unlinked draft converted, and the two linked ones did not — the guard is about dependents, not about conversion" \
+  "SELECT string_agg(\"id\" || '=' || \"status\"::text, ',' ORDER BY \"id\") FROM \"Decision\" WHERE \"id\" IN ('UP4BR10-DA','UP4BR10-DF','UP4BR10-DM');" \
+  "UP4BR10-DA=pending,UP4BR10-DF=recorded,UP4BR10-DM=pending"
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by

@@ -331,3 +331,66 @@ one. **A probe that cannot prove it ran its own experiment is not evidence.**
 Convergence audit (sixth edition), including the round-by-round seam / self-inflicted / original
 count and what it recommends for 4b-ii: `docs/reviews/pr-344-convergence.md`.
 
+
+## Round 9 — the three Codex findings on `92868d7`
+
+Answered on `a283568` via `20270826000000` plus its service half. **Classification: no seam
+findings; all three are this PR's own corrections biting back.**
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R9-1 (P1) | round 8's proof that "an approval actually happened" is a `DecisionEvent`, and nothing stopped that event being INSERTED while the parent sat in `change` — so the forger writes one and borrows the exemption | the event was required to PREDATE the earliest open `ChangeRequest`: a genuine restoration's approval happened before the change was requested, a planted one necessarily after |
+| R9-2 (P1) | round 7's non-blocking readiness guard was applied to `AuthService.signInOrProvision`, which holds no readiness key — under contention the membership insert REFUSED after the `User` had committed, and the retry then found the identity, skipped provisioning, and left the account permanently unable to sign in | user and membership provision in ONE transaction holding `lockProjectReadiness`: contention WAITS, and a failure leaves nothing behind to poison the retry |
+| R9-3 (P2) | the round-6/8 `activates` narrowing left the role-CHANGE half of the same upsert with no departure check at all | `members.add` runs the SAME guard `updateRole` runs, reading id and role under one `FOR UPDATE` |
+
+**R9-1's first attempt was itself an over-reach and the battery refuted it before the gate**: it
+forbade recording an approval event unless the parent was already `approved`, which is precisely the
+shape 4a's seals exist to refuse — `phase6-t4a-withdraw` (4 tests), `phase3-requirements` R2-1,
+`phase6-t4b-correction` F2 and `upgrade-proof.sh` all failed. Recorded rather than quietly replaced.
+
+## Round 10 — the two Codex findings on `a283568`
+
+Answered on this head via `20270827000000`. **Classification: no seam findings; both are this PR's
+own corrections biting back — R10-1 for the fourth consecutive round.**
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R10-1 (P1) | round 9's ordering predicate is forgeable BOTH ways: close the `ChangeRequest` and the missing open request makes the `COALESCE` bound read `infinity`, so any later event qualifies; or simply rewrite the caller-supplied `DecisionEvent."at"` | **the clause is replaced, not narrowed a fifth time.** `DecisionLegacyApproval` stamps every approval standing when the migration runs and then refuses every subsequent INSERT/UPDATE, so the exemption is membership of a set fixed before any caller could act on it. Round 7's other two conditions — from `change`, evidence unchanged — are KEPT: they are facts about the statement in front of the trigger, not questions about rows someone else wrote |
+| R10-2 (P1) | `linkableInProject` refuses to LINK a `recorded` decision, but nothing asked the reverse — link an ordinary draft, then convert it, and the same permanently-unopenable gate exists | the conversion asks the OWNING modules through `activities_decision_has_dependents` and `daily_log_decision_has_dependents` (the `orgs_user_decision_authority` channel; no peer-table read). Both orderings serialize on the decision row lock the link path already takes, and each loses for the right reason |
+
+### What the round removed rather than added
+
+Four predicates over caller-writable rows (rounds 6→9) collapse into one question about an
+enumerated set. Nothing is fabricated: the migration writes no attribution, because a pre-Phase-6
+approval has none — the safety property is that the set of unattributed rows is finite, frozen and
+enumerable. An earlier draft of this migration DID backfill the tuple where it looked derivable;
+it was withdrawn for writing the wrong label for `client` holders **and** for asserting a fact the
+historical record never captured.
+
+### Where the precision evidence lives, and why it moved
+
+A genuine legacy row is one approved BEFORE the migration — unreachable from a suite whose database
+is migrated from empty, and unfakeable afterwards by design. Three fixtures that had been
+*simulating* one were therefore re-homed to `scripts/upgrade-proof.sh`, which plants legacy shapes
+and THEN migrates:
+
+- `UP4B2-D1` moved from a post-ledger plant to a **pre-`20270827000000`** plant, so the round-7 and
+  round-8 restoration assertions now hold for a reason a forger cannot reproduce;
+- `phase6-t4b-correction7.test.ts` R7-1 keeps its claim on an ORDINARY approval (the path the
+  product walks) — the tuple is carried forward verbatim, not re-derived;
+- `phase6-t4b-correction8.test.ts` R8-1's precision arm is replaced. Its old shape **disabled
+  `Decision_t4b_recorded_seal`** to strip a tuple and manufacture a "legacy" row — switching off the
+  seal to demonstrate the seal. It now proves the stronger fact this round makes true: a tupleless
+  arrival on a row minted after the migration is refused whatever evidence accompanies it.
+
+### Verification at this head
+
+| Gate | Result |
+| --- | --- |
+| `phase6-t4b-correction10.test.ts` | **9 passed**, 8 of 9 RED at `a283568` (the ninth — a link racing a committed conversion — is the direction that already worked, kept as the counterpart proving the fix did not break it) |
+| Full integration suite, pristine DB | **104 files, 1260 passed / 3 skipped / 0 failed** |
+| `pnpm check` (repo root) | **EXIT 0** — web 790/790, API 793/793 |
+| `upgrade-proof.sh` | **647 assertions, EXIT 0** over the migrated legacy DB |
+| `test:e2e:api:allmodules` / `:allmodules:outbox` | 37 / 37 |
+
+`20270815000000` … `20270826000000` are byte-for-byte unchanged.

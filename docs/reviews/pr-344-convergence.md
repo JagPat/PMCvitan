@@ -12,6 +12,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `ccaf2dd` | round-5 fold + this audit's third edition | 7 (4 P1, 3 P2; 8 comments) | corrected on this head via `20270821000000` plus its service and WEB halves: the attribution rule restated over the APPROVAL ACT rather than over the columns an act touches; `decisions_t4b_blank` giving "blank" one statement over the whole ASCII whitespace set; the `pmc`/`member` surface gate extended to BOTH publish doors; the ROLE arm of the publication holder check given its spokesman on both doors; the org guard's departing role read `FOR UPDATE` inside its transaction; the membership-ACTIVATION arm of the holder seal given its spokesman; and the register taught to render a `recorded` row as a record rather than as an approval |
 | `39bfb39` | round-6 fold + this audit's fourth edition | 3 (1 P1, 2 P2) | corrected on this head via `20270822000000` plus its service half — **all three are round 6's OWN over-reach**: the approval-act rule exempted from a RESTORATION (`withdrawChange` returns an approval that already happened); the frozen tuple preserved by the service on a re-approval rather than re-derived; and the activation guard — in BOTH the service and the seal — asking whether the membership was already active rather than trusting `TG_OP`, which Prisma's `upsert` makes a lie |
 | `90ec557` | round-7 fold + this audit's fifth edition | 3 (2 P1, 1 P2) | corrected on this head via `20270823000000` plus its service half: the restoration exemption NARROWED to a real withdrawal (from `change`, evidence unchanged, and an approval that actually happened); the decision row LOCKED before `publish` judges its holder and held through the update; and the holder's identity HELD (`FOR SHARE`, through its owner) across the first approval's derive → write → recompute |
+| `92868d7` | round-8 fold + this audit's ninth/tenth editions | 3 (2 P1, 1 P2) | corrected on `a283568` via `20270826000000` plus its service half: the restoration proof required to PREDATE the open change request; user+membership provisioning folded into one transaction holding the readiness key; and `members.add` running the same departure guard `updateRole` runs |
+| `a283568` | round-9 fold | 2 (2 P1) | corrected on this head via `20270827000000`: the restoration exemption's forgeable clause REPLACED by a set enumerated once at upgrade time (`DecisionLegacyApproval`, sealed against every later write), keeping round 7's two statement-shape conditions; and the draft → record conversion made to ask the OWNING modules whether anything already depends on the draft — the reverse of a link rule that was only enforced forwards |
 
 ## Root analysis — one generative class, three faces
 
@@ -672,3 +674,129 @@ extend it.** Any further narrowing of the attribution rules is its own unit with
 budget. Nine findings across three rounds, none of them at the seam and all of them from re-cutting
 inside it, is not a case for a tenth round of the same — and R9-2 shows the blast radius is no
 longer confined to this unit.
+
+---
+
+## Eleventh edition — round 10, where a five-round lineage ends
+
+Two findings on `a283568` (2×P1). **2 of 2 SELF-INFLICTED. 0 SEAM.**
+
+| # | P | Which correction in THIS PR caused it |
+| --- | --- | --- |
+| R10-1 | P1 | **round 9's own fix**, which was **round 8's own fix**, which was **round 7's**, which was **round 6's**. One rule, re-cut four times, forgeable every time. |
+| R10-2 | P1 | **round 4's fix** — `recorded` was made unlinkable at every write path and both pickers. The rule was enforced in one direction only: link first, convert second, same dead gate. |
+
+### R10-1: the lineage, stated in full, because the lineage IS the finding
+
+| round | what it demanded | how it lost |
+| --- | --- | --- |
+| 6 | attribution on every approval TRANSITION | broke `withdrawChange` on every pre-`20270815000000` row |
+| 7 | exempt "arrives at approved without changing the evidence" | admitted `pending → approved` — a forgery door |
+| 8 | …and an `approved` `DecisionEvent` must exist | the event is plantable |
+| 9 | …and it must predate the open `ChangeRequest` | close the request (bound reads `infinity`), or backdate the caller-supplied `at` |
+
+Four attempts, four losses, and the losses are not four separate oversights. **Every one of them
+asked a question about rows a caller can write, and a caller wins that argument every time.** A
+fifth predicate would have lost for the fifth version of the same reason.
+
+So round 10 does not write a fifth predicate. It removes the thing four predicates were trying to
+approximate. `20270827000000` stamps `DecisionLegacyApproval` for every approval standing when it
+runs, then makes the table refuse every INSERT and UPDATE. The exemption is no longer a claim to be
+proven per row; it is **membership of a set that was fixed before any caller could act on it and
+cannot be added to since**. A one-time migration write is the one piece of evidence a later caller
+cannot manufacture, which is precisely what was missing.
+
+**Two things were deliberately NOT changed, and both matter.**
+
+*Round 7's other two conditions are kept.* Only the "an approval actually happened" clause was ever
+the problem. That a restoration comes FROM `change`, and that it alters no approval evidence, are
+facts about the statement in front of the trigger — not questions about rows someone else wrote — so
+no caller can lie to them. **The first draft of this round dropped them along with the forgeable
+clause, and the upgrade proof caught it**: round 7's precision arm (arriving at `approved` while
+changing the approved option is a new ACT and must name its actor) went from rejected to accepted.
+Removing a rule's forgeable half is correct; removing its sound half in the same motion is the
+over-reach this audit has now recorded in rounds 7, 9 and 10. It is written down rather than quietly
+fixed, for the same reason as the others.
+
+*No attribution was invented.* The first draft also BACKFILLED the holder tuple wherever it looked
+derivable, stamping only the remainder. That was wrong twice. Mechanically it wrote a person's name
+into `approvedDeciderLabel` for `client`-held rows, where `decisions_t4b_holder_label` renders the
+constant `'Client'` — so the "recovered" attribution would not have matched what a real approval
+writes. Substantively it was rounds 6-9 in a new costume: `deciderKind` on a pre-Phase-6 row was
+itself DEFAULTED by `20270815000000`, so materialising it as "who held this approval" asserts a fact
+the historical record never captured. **A pre-Phase-6 approval has no attribution. Saying so is the
+truth; deriving one is fabrication, however plausible the derivation looks.** The register therefore
+still shows no holder tuple for a legacy row — and the safety property is not that those rows are
+attributed, but that the set of unattributed ones is finite, frozen and enumerable.
+
+One consequence worth naming because it runs the right way: R4-2's documented narrowing still lets a
+decision be BORN `approved` with no tuple at the INSERT door. Round 10 does not widen that — it
+**tightens** it. Such a row is not in the stamp set, so unlike before it can never afterwards be
+restored through the exemption. `upgrade-proof.sh` pins exactly this with `UP4B4-BARE`.
+
+### R10-2: a rule enforced in one direction
+
+`decisions.linkableInProject` refuses to LINK a `recorded` decision, because a record is approvable
+by nobody and the dependent's gate would wait forever. Both consumers — `activities.service` and
+`daily-log.service` — call it, at a pre-check and again in-transaction under `FOR SHARE`.
+
+Nothing asked the reverse. Link an ordinary draft (legal), then convert that draft to a record
+(legal), and the identical dead gate exists — reached by walking the two legal steps in the other
+order. The conversion now asks the OWNING modules, through `activities_decision_has_dependents` and
+`daily_log_decision_has_dependents`, and reads no peer table itself — the channel
+`orgs_user_decision_authority` already uses.
+
+The two directions serialize on a lock that already existed: the link path's in-tx authority takes
+`FOR SHARE` on the decision row and the conversion UPDATEs that same row. Both orderings are proven
+under a `pg_stat_activity` barrier, and each loses **for the right reason** — the late conversion is
+refused by the new guard; the late link reads the committed `recorded` and is refused by the rule
+that was already there. No new machinery, and no new lock order to reason about.
+
+### Where the precision half of R10-1 is proven, and why not in the probe suite
+
+A genuine legacy row is one that was already approved BEFORE the migration ran. That state is
+**unreachable from an integration suite** whose database is migrated from empty — the stamp set is
+empty there — and unfakeable afterwards, because minting a member of it is the one thing the seal
+exists to prevent. Faking it would mean disabling the seal: proving the exemption works by removing
+the property that makes it safe.
+
+So the split is deliberate and stated in both files. `phase6-t4b-correction10.test.ts` proves what is
+provable there — both round-9 forgeries refused, the evidence unmintable, the verb enumeration
+pinned, and all of R10-2. `scripts/upgrade-proof.sh` owns the rest, because it plants legacy shapes
+and THEN migrates: `UP4B2-D1` moved from a post-ledger fixture to a **pre-`20270827000000`** plant
+(round 10 made *when* a row was approved the substance of the rule, so a fixture planted after the
+ledger can no longer stand in for a legacy one), and the new assertions pin the stamp set by name,
+prove the genuine legacy withdrawal still commits, refuse a direct DELETE of the evidence, and show
+the FK cascade still carries it away with its subject.
+
+### The count
+
+| round | findings | seam | self-inflicted |
+| --- | --- | --- | --- |
+| 7 | 3 | 0 | 3 |
+| 8 | 3 | 0 | 2 (+1 latent) |
+| 9 | 3 | 0 | 3 |
+| 10 | 2 | 0 | 2 |
+
+**Four consecutive rounds, eleven findings, zero seam defects.** The 4b-i/4b-ii cut has not been the
+problem since round 6. The tenth edition's recommendation therefore stands unchanged and is now
+overdue: **4b-ii carries the audience and visibility OVER this seal network as it stands, and does
+not extend it.** Any further narrowing of the attribution rules is its own unit with its own budget.
+
+### The rule this round contributes
+
+> When the same rule has been re-cut and lost more than twice, the next move is not a better
+> predicate. **Find the clause that keeps losing, and ask what would make the question unnecessary.**
+
+Rounds 6-9 kept improving the *answer* to "did an approval really happen?". Round 10 noticed that
+the question only exists because pre-migration rows are indistinguishable from forged ones at read
+time — and that a migration, which runs exactly once and before any caller, is the one writer whose
+output settles it. Sibling formulation of PR #345's rule (*reduce surface rather than patch again*),
+arrived at from the opposite direction: there the answer was to delete a probe, here to delete a
+predicate and enumerate its subject instead.
+
+### Nothing is deferred
+
+Both findings are answered in code on this head. `20270815000000` … `20270826000000` are
+byte-for-byte unchanged. `20270827000000` writes rows only where a legacy approval already stood, and
+makes nothing illegal that was legal before except the two states the findings name.

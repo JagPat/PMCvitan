@@ -78,32 +78,24 @@ describe('Phase 6 unit 4b-i round 7 — the three Codex findings (live PG)', () 
 
   // ── R7-1 (P1) ──────────────────────────────────────────────────────────────────────────────
   it('R7-1: withdrawing a change request RESTORES an approval — it does not perform one', async () => {
-    // The LEGACY shape, reached the way legacy rows actually are: born approved with no tuple.
-    // Every decision approved before `20270815000000` is in it, and the tuple can never be filled
-    // (R2-1) — so round 6's completeness demand on `change → approved` made a change request on
-    // such a row impossible to withdraw. A user could reopen it and then never close it.
-    const legacy = `DL-t4bc7-${run}-legacy-${seq++}`;
-    await t.prisma.decision.create({
-      data: {
-        id: legacy, projectId: f.projectA.id, title: 'Legacy approved', room: 'Kitchen',
-        status: 'approved', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id,
-        publishedAt: null, approvedOption: 'A', material: 'Teak', approver: 'Client',
-        approvedById: f.clientUser.id, date: '01 Jan 2026',
-      },
-    });
-    await t.prisma.decisionOption.createMany({ data: [
-      { decisionId: legacy, label: 'A', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'sw1', recommended: true, order: 0 },
-      { decisionId: legacy, label: 'B', optionKey: 'b', material: 'Oak', delta: 100, swatch: 'sw2', recommended: false, order: 1 },
-    ] });
-    await t.prisma.decision.update({ where: { id: legacy }, data: { publishedAt: new Date() } });
-    // …and the approval EVENT every `approve()` has written since Phase 1. Round 8's R8-1 uses
-    // exactly that to tell a real approval from approval-shaped columns, so a fixture that omits it
-    // is not modelling a legacy approval — it is modelling the forgery R8-1 refuses. Corrected here
-    // rather than exempted: the row this probe is about really was approved.
-    await t.prisma.decisionEvent.create({
-      data: { decisionId: legacy, type: 'approved', actor: 'Client', actorId: f.clientUser.id },
-    });
-    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: legacy } })).approvedDeciderKind).toBeNull();
+    // ROUND 10 re-homed this probe's fixture, and the reason is the finding.
+    //
+    // R7-1 is about a rule that must not treat a RESTORATION as an ACT. Rounds 7-9 tried to
+    // recognise a restoration from evidence a direct writer can manufacture, and lost every time;
+    // `20270827000000` replaced that clause with membership of a set stamped ONCE, at upgrade time.
+    // So a "legacy" row FABRICATED here — born approved with no tuple, minutes after the migration
+    // ran — is no longer a legacy row in any sense the seal can honour, and simulating one would
+    // mean proving the exemption works by defeating the property that makes it safe.
+    //
+    // The legacy arm therefore moved to `scripts/upgrade-proof.sh`, which plants `UP4B2-D1` BEFORE
+    // `20270827000000` and then migrates — the only place a genuine pre-migration approval exists.
+    // What is still constructible here, and is the arm the PRODUCT actually walks, is the same
+    // claim on an ordinary approval: a withdrawal returns the approval that already happened,
+    // carrying its frozen tuple forward VERBATIM rather than performing a new act.
+    const legacy = await seedPublished();
+    await svc.approve(f.projectA.id, legacy, { optionIndex: 0 } as never, { sub: f.clientUser.id, role: 'client', projectId: f.projectA.id } as AuthUser);
+    const approved = await t.prisma.decision.findUniqueOrThrow({ where: { id: legacy } });
+    expect(approved.approvedDeciderKind).toBe('client');
 
     // reopen it, then withdraw the request — the ordinary product sequence
     await svc.requestChange(f.projectA.id, legacy, { reason: 'Second thoughts', costImpact: 0, timeImpactDays: 0 } as never, pmc());
@@ -111,7 +103,10 @@ describe('Phase 6 unit 4b-i round 7 — the three Codex findings (live PG)', () 
     await svc.withdrawChange(f.projectA.id, legacy, pmc());
     const restored = await t.prisma.decision.findUniqueOrThrow({ where: { id: legacy } });
     expect(restored.status).toBe('approved');
-    expect(restored.approvedDeciderKind, 'a restoration invents nothing — the legacy row stays as it was').toBeNull();
+    // a restoration invents nothing AND rewrites nothing: the act's own tuple, unchanged
+    expect(restored.approvedDeciderKind).toBe(approved.approvedDeciderKind);
+    expect(restored.approvedDeciderMembershipId).toBe(approved.approvedDeciderMembershipId);
+    expect(restored.approvedDeciderLabel).toBe(approved.approvedDeciderLabel);
     expect(
       await t.prisma.changeRequest.count({ where: { decisionId: legacy, status: 'open' } }),
       'the request must actually close',
@@ -119,14 +114,15 @@ describe('Phase 6 unit 4b-i round 7 — the three Codex findings (live PG)', () 
 
     // PRECISION — the exemption is for a RESTORATION, not for `change → approved`. A direct writer
     // that ALTERS the approval while arriving there is performing an act and answers for it.
-    await svc.requestChange(f.projectA.id, legacy, { reason: 'Again', costImpact: 0, timeImpactDays: 0 } as never, pmc());
-    await expect(
-      t.prisma.decision.update({
-        where: { id: legacy },
-        data: { status: 'approved', approvedOption: 'B', material: 'Oak' },
-      }),
-    ).rejects.toThrow(/records WHO approved it/);
-    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: legacy } })).status).toBe('change');
+    //
+    // That arm moved with the fixture, and for the same reason: the demand it trips is the
+    // ATTRIBUTION demand, which only has anything to say about a row with no holder tuple. The row
+    // above has one — it was approved through the service — so the arm needs a tupleless approval,
+    // and after round 10 the only honest one is a pre-migration row. It is asserted verbatim in
+    // `scripts/upgrade-proof.sh` against `UP4B2-D1`, where `v_restores` is false because the
+    // evidence changed and the tupleless demand then refuses. The complementary half — that a
+    // tupleless ARRIVAL is refused on any row the migration did not stamp — is
+    // `phase6-t4b-correction10.test.ts` R10-1a/R10-1b.
   });
 
   // ── R7-2 (P2) ──────────────────────────────────────────────────────────────────────────────

@@ -107,26 +107,34 @@ describe('Phase 6 unit 4b-i round 8 — the three Codex findings (live PG)', () 
       t.prisma.decision.update({ where: { id: forged }, data: { status: 'approved' } }),
     ).rejects.toThrow(/records WHO approved it/);
 
-    // PRECISION — a GENUINE legacy withdrawal still restores. This row was really approved, so it
-    // carries the approval event every `approve()` has written since Phase 1.
+    // PRECISION — a GENUINE legacy withdrawal still restores.
+    //
+    // ROUND 10 moved this arm, and its old shape is the clearest illustration of why. It built its
+    // "legacy" row by DISABLING `Decision_t4b_recorded_seal` and stripping the tuple from a
+    // properly attributed approval — that is, by switching off the seal in order to demonstrate
+    // that the seal behaves correctly. It passed because rounds 7-9 recognised a legacy row from
+    // evidence any writer can produce, which is exactly the property R10-1 found forgeable.
+    //
+    // After `20270827000000` a legacy row is one the migration STAMPED, and nothing minted here
+    // can be in that set. The arm therefore lives in `scripts/upgrade-proof.sh`, which plants
+    // `UP4B2-D1` before the migration and then upgrades — a genuine pre-migration approval,
+    // restored with no trigger disabled anywhere.
+    //
+    // What is provable here is the stronger half this round makes true: the same tupleless arrival
+    // on a row minted AFTER the migration is refused no matter what evidence accompanies it.
     const real = await seedPublished();
-    await svc.approve(f.projectA.id, real, { optionIndex: 0 } as never, { sub: f.clientUser.id, role: 'client', projectId: f.projectA.id } as AuthUser);
-    // strip the tuple the way a pre-`20270815000000` row lacks it, leaving the act's own evidence
     await t.prisma.$executeRawUnsafe(
-      `ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_recorded_seal"`,
+      `UPDATE "Decision" SET "status"='change', "approvedById"=$2, "approvedOption"='A',
+              "approver"='Client', "material"='Teak', "date"='01 Jan 2026' WHERE "id" = $1`,
+      real, f.clientUser.id,
     );
-    await t.prisma.$executeRawUnsafe(
-      `UPDATE "Decision" SET "approvedDeciderKind"=NULL, "approvedDeciderMembershipId"=NULL, "approvedDeciderLabel"=NULL WHERE "id" = $1`,
-      real,
-    );
-    await t.prisma.$executeRawUnsafe(
-      `ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_recorded_seal"`,
-    );
-    await svc.requestChange(f.projectA.id, real, { reason: 'Second thoughts', costImpact: 0, timeImpactDays: 0 } as never, pmc());
-    await svc.withdrawChange(f.projectA.id, real, pmc());
-    const restored = await t.prisma.decision.findUniqueOrThrow({ where: { id: real } });
-    expect(restored.status, 'a withdrawal of a REAL approval still restores it').toBe('approved');
-    expect(restored.approvedDeciderKind).toBeNull();
+    await t.prisma.decisionEvent.create({
+      data: { decisionId: real, type: 'approved', actor: 'Client', actorId: f.clientUser.id },
+    });
+    await expect(
+      t.prisma.decision.update({ where: { id: real }, data: { status: 'approved' } }),
+    ).rejects.toThrow(/records WHO approved it/);
+    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: real } })).status).toBe('change');
   });
 
   // ── R8-2 (P1) ──────────────────────────────────────────────────────────────────────────────
