@@ -13,7 +13,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `39bfb39` | round-6 fold + this audit's fourth edition | 3 (1 P1, 2 P2) | corrected on this head via `20270822000000` plus its service half — **all three are round 6's OWN over-reach**: the approval-act rule exempted from a RESTORATION (`withdrawChange` returns an approval that already happened); the frozen tuple preserved by the service on a re-approval rather than re-derived; and the activation guard — in BOTH the service and the seal — asking whether the membership was already active rather than trusting `TG_OP`, which Prisma's `upsert` makes a lie |
 | `90ec557` | round-7 fold + this audit's fifth edition | 3 (2 P1, 1 P2) | corrected on this head via `20270823000000` plus its service half: the restoration exemption NARROWED to a real withdrawal (from `change`, evidence unchanged, and an approval that actually happened); the decision row LOCKED before `publish` judges its holder and held through the update; and the holder's identity HELD (`FOR SHARE`, through its owner) across the first approval's derive → write → recompute |
 | `92868d7` | round-8 fold + this audit's ninth/tenth editions | 3 (2 P1, 1 P2) | corrected on `a283568` via `20270826000000` plus its service half: the restoration proof required to PREDATE the open change request; user+membership provisioning folded into one transaction holding the readiness key; and `members.add` running the same departure guard `updateRole` runs |
-| `a283568` | round-9 fold | 2 (2 P1) | corrected on this head via `20270827000000`: the restoration exemption's forgeable clause REPLACED by a set enumerated once at upgrade time (`DecisionLegacyApproval`, sealed against every later write), keeping round 7's two statement-shape conditions; and the draft → record conversion made to ask the OWNING modules whether anything already depends on the draft — the reverse of a link rule that was only enforced forwards |
+| `a283568` | round-9 fold | 2 (2 P1) | corrected on `f113f94` via `20270827000000`: the restoration exemption's forgeable clause REPLACED by a set enumerated once at upgrade time (`DecisionLegacyApproval`, sealed against every later write), keeping round 7's two statement-shape conditions; and the draft → record conversion made to ask the OWNING modules whether anything already depends on the draft — the reverse of a link rule that was only enforced forwards |
+| `f113f94` | round-10 fold + this audit's eleventh edition | 5 (2 P1, 3 P2) | corrected on this head, all inside the unmerged `20270827000000`: the stamp widened to legacy approvals already sitting in `change` (an ordinary pre-existing change request was otherwise unwithdrawable forever); the register declared in `schema.prisma` so drift cannot DROP it; R4-2's born-approved-tupleless INSERT door CLOSED, its justification having been dissolved by round 10 itself; the stamp made genuinely ONE-SHOT (guarded on the seal's own existence, not per row, so a later re-run cannot enlarge the set); and a statement-level `BEFORE TRUNCATE` seal for the verb a row trigger never sees |
 
 ## Root analysis — one generative class, three faces
 
@@ -800,3 +801,118 @@ predicate and enumerate its subject instead.
 Both findings are answered in code on this head. `20270815000000` … `20270826000000` are
 byte-for-byte unchanged. `20270827000000` writes rows only where a legacy approval already stood, and
 makes nothing illegal that was legal before except the two states the findings name.
+
+---
+
+## Twelfth edition — round 11, and the finding that came from round 10 being right
+
+Five findings on `f113f94` (2×P1, 3×P2). **5 of 5 SELF-INFLICTED. 0 SEAM.**
+
+Round 10 replaced a forgeable predicate with an enumerated set. Four of these five are about that
+set's EDGES — who is in it, how it survives, and what its existence now implies about a door that
+only ever made sense while "legacy" was a shape rather than a list.
+
+| # | P | Which correction in THIS PR caused it |
+| --- | --- | --- |
+| R11-1 | P1 | **round 10's own stamp predicate** — it read `approved` only, and a legacy approval can be sitting in `change` on the day of the deploy |
+| R11-2 | P2 | **round 10's new table** — declared in hand-written SQL only, so schema drift could DROP the register |
+| R11-3 | P1 | **round 4's R4-2 narrowing**, invalidated by round 10 — the born-approved-tupleless door outlived its own justification |
+| R11-4 | P2 | **round 10's stamp INSERT** — a BEFORE INSERT seal fires before `ON CONFLICT` resolves, so the required retry aborted |
+| R11-5 | P2 | **round 10's seal** — a row-level trigger never fires for `TRUNCATE` |
+
+### R11-1 is the one that would have hurt a real customer
+
+Not a forgery, not a hypothetical: someone raises an ordinary change request on Tuesday, the upgrade
+runs on Wednesday, and on Thursday that change request **cannot be withdrawn — ever.** The stamp
+predicate read `approved`, the row was in `change`, so it fell outside the exemption set, and
+`withdrawChange`'s evidence-preserving `change → approved` hit the unconditional demand.
+
+`requestChange` is the only way the product reaches `change`, so such a row is exactly as much a
+legacy approval as an `approved` one. Both statuses are now stamped, and they are the only two that
+can matter — `v_restores` requires `OLD.status = 'change'`, so a tupleless `pending` row could never
+use the exemption and is deliberately left out.
+
+This is also the second time this PR has shipped a rule that was right about the case in front of it
+and silent about the case beside it. R9-2 locked real users out of the product; R11-1 would have
+frozen a real change request. Both were found by a reviewer rather than by the change's own author,
+and both came from a correction written for the state it was staring at.
+
+### R11-3: round 10 made an accepted narrowing indefensible, and did not notice
+
+R4-2 permitted a decision to be BORN `approved` with no tuple, and the round-4 argument was sound at
+the time: an absent tuple was the shape every pre-`20270815000000` approval is in; those rows persist
+in production; and the UPDATE door admitted the same transition — so requiring the tuple at birth
+would have made being BORN approved **stricter than BECOMING approved**. Measured rather than
+assumed, closing it then failed 18 tests across 10 suites.
+
+Round 10 removed both halves of that argument and left the door open anyway. "Legacy" stopped being
+a shape any row can wear and became the finite set the migration stamped — every member of which
+already exists — and `change → approved` without a tuple started requiring membership of that set.
+The doors were no longer symmetric; the lax one was simply lax. **The eleventh edition recorded R4-2
+as a "documented narrowing, out of scope". That was wrong, and Codex was right to reopen it: a
+narrowing survives only as long as its justification does, and this PR had just dissolved it.**
+
+Closing it cost the sweep round 4 measured: 20 tests across 13 suites, every one a fixture minting an
+approved decision the product itself cannot produce (`decisions.create` only ever inserts `pending`
+or `recorded`; every real approval is the UPDATE `approve()` performs). No production path changed.
+
+### R11-4 is where a "small" fix turned out to be the wrong shape twice
+
+The first attempt was `NOT EXISTS (… WHERE l."decisionId" = d."id")` — skip rows already stamped.
+It makes the migration re-runnable and it is **wrong**, because `change` is now in the predicate: a
+second run days later would stamp every row that entered `change` SINCE the upgrade, handing the
+exemption to precisely the rows the seals exist to refuse.
+
+That is not a worry, it is an observation — with the per-row guard, `upgrade-proof.sh`'s re-run tried
+to stamp the round-10 forgery target, which a probe had put into `change` after the upgrade, and the
+seal refused the insert. **The gate that caught it was the one built to prove a different property.**
+
+So the question the guard asks changed from *"is this row already stamped?"* to *"has this migration
+already run?"*, and the answer is the seal's own existence: absent on the first run, present ever
+after. The set is fixed at upgrade time — which is what round 10 claimed all along, and what the
+per-row guard would have quietly made false.
+
+### Where the evidence lives
+
+| finding | proven in | why there |
+| --- | --- | --- |
+| R11-1 | `upgrade-proof.sh` | needs a legacy approval ALREADY in `change` before the migration — `UP4BR11-CHANGE` is planted, published, approved and reopened at the `20270827000000` stop |
+| R11-2 | `schema-migration-drift.test.ts` | the drift check IS the finding's subject |
+| R11-3 | `phase6-t4b-correction11.test.ts` + `upgrade-proof.sh` | a post-migration door, so it is testable anywhere; asserted at both, with R4-2's own probe inverted in place rather than deleted |
+| R11-4 | `upgrade-proof.sh` | re-runs the real migration file over an already-upgraded database |
+| R11-5 | `phase6-t4b-correction11.test.ts` | `TRUNCATE` needs no legacy state |
+
+`information_schema.triggers` is SQL-standard and reports INSERT/UPDATE/DELETE only, so the verb pin
+reads `pg_trigger.tgtype` instead — a neat echo of R11-5 itself: the catalogue that omits the verb is
+the one that would have let the omission pass unnoticed.
+
+### The count
+
+| round | findings | seam | self-inflicted |
+| --- | --- | --- | --- |
+| 7 | 3 | 0 | 3 |
+| 8 | 3 | 0 | 2 (+1 latent) |
+| 9 | 3 | 0 | 3 |
+| 10 | 2 | 0 | 2 |
+| 11 | 5 | 0 | 5 |
+
+**Five consecutive rounds, sixteen findings, zero seam defects.** The recommendation is unchanged
+and now overdue twice over: **4b-ii carries the audience and visibility OVER this seal network as it
+stands, and does not extend it.**
+
+### The rule this round contributes
+
+> A narrowing survives only as long as its justification does. **When a correction dissolves the
+> argument for an accepted exception, that exception is part of the correction — not out of scope.**
+
+Round 10 was right, and being right is what created R11-3: the moment "legacy" became a list, every
+rule that had been reasoning about "legacy" as a *shape* was owed a re-read. This audit had the
+material to find that itself — the eleventh edition names R4-2's door in as many words and argues
+that round 10 "tightens rather than widens" it — and stopped one step short, at *this does not make
+things worse*, instead of asking *does this still make sense at all*.
+
+### Nothing is deferred
+
+All five findings are answered in code on this head. `20270815000000` … `20270826000000` remain
+byte-for-byte unchanged; every round-11 change is inside the unmerged `20270827000000`, its Prisma
+declaration, the probes, and the fixtures the closed door touched.

@@ -61,7 +61,13 @@ describe('Phase 6 unit 4b-i round 2 — the four Codex findings (live PG)', () =
     await t.prisma.decision.create({
       data: {
         id, projectId: f.projectA.id, title: `Ordinary ${id}`, room: 'Kitchen', status: 'pending',
-        ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null, ...over,
+        ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null,
+        // Phase 6 task 4b round 11: born `approved` now records its holder at the INSERT door as
+        // well as at the transition. `over` still wins, so a probe can override either field.
+        ...((over as { status?: string }).status === 'approved'
+          ? { approvedDeciderKind: 'client' as const, approvedDeciderLabel: 'Client' }
+          : {}),
+        ...over,
       },
     });
     await t.prisma.decisionOption.createMany({ data: [
@@ -92,23 +98,34 @@ describe('Phase 6 unit 4b-i round 2 — the four Codex findings (live PG)', () =
     // approved row" rather than "the approval".
     //
     // Round 6 (R6-1) changed how this state is REACHED, not what it is: a tupleless approval
-    // TRANSITION is now refused, because R2-1 forbids repairing it afterwards. The legacy row is
-    // therefore born already approved — which is how legacy rows actually exist, and which R4-2's
-    // documented narrowing keeps permitted at the INSERT door.
+    // TRANSITION is refused, because R2-1 forbids repairing it afterwards.
+    //
+    // ROUND 11 (R11-3) closed the last door into it: a row can no longer be BORN `approved` with
+    // no tuple either, because round 10 made "legacy" a finite set that already exists rather than
+    // a shape any new row can wear. So the TUPLELESS subject of this probe is not constructible
+    // here any more, and staging a fake one would be the move round 10 removed from three other
+    // suites. The tupleless arm lives in `scripts/upgrade-proof.sh` against `UP4B2-D1`, a genuine
+    // pre-`20270827000000` row.
+    //
+    // What R2-1 asserts is unchanged and is asserted here in full: the tuple is written BY the
+    // approval and by nothing else. On a row that already carries one, the same forgery is refused
+    // by the write-once arm — the other half of the same rule, and the half that governs every row
+    // created from now on.
     const id = await seedOrdinary({ status: 'approved' });
     const legacy = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
     expect(legacy.status).toBe('approved');
-    expect(legacy.approvedDeciderKind).toBeNull();
+    expect(legacy.approvedDeciderKind).toBe('client');
 
-    // at 067209bc this UPDATE was ACCEPTED, and round 1's freeze then made the forgery permanent
+    // at 067209bc the tuple could be REPLACED on an already-approved row; round 1's freeze then
+    // made the forgery permanent
     await expect(
       t.prisma.$executeRaw`UPDATE "Decision"
          SET "approvedDeciderKind"='pmc', "approvedDeciderLabel"='Forged Holder'
        WHERE "id" = ${id}`,
-    ).rejects.toThrow(/never onto a row that is already approved/);
+    ).rejects.toThrow(/never reattributed/);
     const after = await t.prisma.decision.findUniqueOrThrow({ where: { id } });
-    expect(after.approvedDeciderKind).toBeNull();
-    expect(after.approvedDeciderLabel).toBeNull();
+    expect(after.approvedDeciderKind).toBe('client');
+    expect(after.approvedDeciderLabel).toBe('Client');
 
     // PRECISION — the transition itself still writes the tuple, so the seal is exact and not
     // merely strict: the real approval act is the one write that may.

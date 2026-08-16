@@ -125,7 +125,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
       data: {
         // Phase 6 task 4b: a NESTED option create writes the parent first, so a row published at
         // INSERT reaches the two-option floor with zero children — it publishes below instead
-        id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
+        id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client',
         publishedAt: null, authorId: f.memberUser.id, approvedOption: 'Option A',
         options: { create: [
           { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },
@@ -488,7 +488,7 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
     // migration's ambiguous-skip state. At d0897a6 the label FALLBACK stored the raw label.
     await t.prisma.decision.create({
       data: {
-        id: 'IT-P3-AMB', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'approved',
+        id: 'IT-P3-AMB', projectId, title: 'x', room: 'x', photoSwatch: 'sw', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client',
         publishedAt: null, authorId: f.memberUser.id, approvedOption: 'A label nobody has',
         options: { create: [
           { label: 'Option A', optionKey: 'opt-a', material: 'Teak', delta: 0, swatch: 'sw-a', order: 1 },

@@ -288,6 +288,15 @@ async function main(): Promise<void> {
         projectId: PROJECT_ID,
         publishedAt: null,
         authorId: draft ? pmcId : null,
+        // Phase 6 task 4b round 11: an approval records WHO approved it, at the INSERT door as
+        // well as at the transition — "legacy" is now the finite set `20270827000000` stamped,
+        // and a row seeded today is not on it. The seeded approvals are all client-held (the
+        // default decider), so the tuple is the canonical one `decisions_t4b_holder_label`
+        // renders for `client`; `approver` stays the demo's human name, which is display text
+        // and not the holder.
+        ...(rest.status === 'approved'
+          ? { approvedDeciderKind: 'client' as const, approvedDeciderLabel: 'Client' }
+          : {}),
         options: { create: options },
       },
     });

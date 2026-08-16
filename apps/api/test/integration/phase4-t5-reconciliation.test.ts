@@ -378,7 +378,7 @@ describe('Phase 4 Task 5 — §E labour reconciliation + §I productivity (live 
     const decisionId = `DL-p4t5-${seq++}`;
     // Phase 6 task 4b: the two-option floor is judged at BOTH publication doors, so a row that
     // is published at INSERT arrives with zero options — it is born unpublished instead.
-    await t.prisma.decision.create({ data: { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: null } });
+    await t.prisma.decision.create({ data: { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client', photoSwatch: 'marble', publishedAt: null } });
     await t.prisma.decisionOption.createMany({ data: [
       { decisionId: decisionId, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
       { decisionId: decisionId, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 },

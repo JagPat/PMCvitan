@@ -2049,6 +2049,7 @@ model Decision {
   media          Media[]
   drawings       Drawing[]
   optionTouches  DecisionOptionTouch[] // phase6-4a round 13 — per-tx option touch notes
+  legacyApproval DecisionLegacyApproval? // phase6-4b round 10 — the one-time pre-Phase-6 stamp
 
   // composite identity so referencing models can carry (projectId, decisionId)
   // foreign keys — the DB itself rejects a cross-project link (Phase 0 Task 5)
@@ -2092,6 +2093,24 @@ model DecisionOptionTouch {
   decision   Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@id([decisionId, txid])
+}
+
+// Phase 6 task 4b (round 10) — the ONE-TIME record of which approvals predate attribution.
+// `20270827000000` stamps every tupleless approval standing when it runs (`approved`, and
+// `change` for one already carrying an open change request), and then seals this table against
+// INSERT, UPDATE and TRUNCATE, and against DELETE while its subject still exists. That is the
+// whole point: four earlier rounds tried to recognise a legacy approval from evidence a caller
+// can write, and lost every time. A migration is the one writer nothing can impersonate, so
+// membership here is the exemption — and the set can never grow.
+//
+// It is declared here, and not only in the migration, because the Prisma schema is the desired
+// state `prisma migrate dev` diffs against: a table that exists only in hand-written SQL is drift,
+// and a future generated migration would be entitled to DROP it — taking with it the only proof
+// that a genuine legacy withdrawal is legitimate (round 11, R11-2).
+model DecisionLegacyApproval {
+  decisionId String   @id
+  stampedAt  DateTime @default(now()) @db.Timestamptz(6)
+  decision   Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade)
 }
 
 // The IMMUTABLE approval register of a decision (Phase 3 Task 1 correction round 2, finding 1).

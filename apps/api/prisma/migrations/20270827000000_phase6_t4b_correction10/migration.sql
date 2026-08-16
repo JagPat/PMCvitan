@@ -68,10 +68,50 @@ CREATE TABLE IF NOT EXISTS "DecisionLegacyApproval" (
 -- Every approval standing at upgrade time with no holder tuple: marked as what it is, never given
 -- an invented one. On a fresh database this stamps nothing, and the exemption below is unreachable
 -- by construction.
+--
+-- ROUND 11 (R11-1): `change` is in the set, and leaving it out was a real upgrade bug. A
+-- pre-Phase-6 approval can be sitting in `change` on the day of the deploy — someone raised an
+-- ordinary change request against it last week — and `requestChange` is the ONLY way the product
+-- reaches that status, so such a row is exactly as much a legacy approval as an `approved` one.
+-- Stamping only `approved` left it out of the set, and its perfectly ordinary `withdrawChange()`
+-- would then fail forever: the restoration it performs is an evidence-preserving
+-- `change → approved`, which is precisely what the exemption exists to permit.
+--
+-- These are the only two statuses that matter: `v_restores` requires `OLD.status = 'change'`, so a
+-- tupleless `pending` row could never use the exemption anyway and is deliberately not stamped.
+-- The migration reads the database's state at upgrade time as history — the same premise the
+-- `approved` arm already rests on, now stated once for both.
+--
+-- ROUND 11 (R11-4): the stamp is ONE-SHOT, and the guard is the seal's own existence.
+--
+-- Two things had to be true at once, and only this shape gives both.
+--
+-- RE-RUNNABLE: `ON CONFLICT DO NOTHING` cannot do it, because PostgreSQL fires a BEFORE INSERT
+-- trigger BEFORE it resolves the conflict — the seal would raise on a row the conflict clause was
+-- about to discard, aborting a migration this repository requires to be retryable.
+--
+-- STILL A SET FIXED AT UPGRADE TIME, which is the stronger requirement, and the one a per-row
+-- "skip what is already stamped" guard silently breaks. Because `change` is in the predicate, a
+-- second run days later would stamp every row that entered `change` SINCE the upgrade — handing
+-- the exemption to precisely the rows the seals exist to refuse. That is measured, not imagined:
+-- with the per-row guard, `upgrade-proof.sh`'s re-run tried to stamp the round-10 forgery target,
+-- which sits in `change` because a probe put it there after the upgrade.
+--
+-- So the question asked is not "is this row already stamped?" but "has this migration already
+-- run?", and the seal below is the answer: it exists only after a completed first run, and
+-- creating it is the last thing this section does. First run — absent, so the stamp proceeds.
+-- Every run after — present, so the predicate is empty and the migration is a true no-op.
+-- Re-opening the stamp means dropping that trigger, which needs table ownership: the same
+-- privilege as every other sanctioned bypass in this schema, and no less visible.
 INSERT INTO "DecisionLegacyApproval" ("decisionId")
 SELECT d."id" FROM "Decision" d
- WHERE d."status"::text = 'approved' AND d."approvedDeciderKind" IS NULL
-ON CONFLICT DO NOTHING;
+ WHERE d."status"::text IN ('approved', 'change')
+   AND d."approvedDeciderKind" IS NULL
+   AND NOT EXISTS (
+         SELECT 1 FROM pg_trigger tg
+           JOIN pg_class c ON c.oid = tg.tgrelid
+          WHERE c.relname = 'DecisionLegacyApproval'
+            AND tg.tgname = 'DecisionLegacyApproval_sealed');
 
 -- …and close the door behind the migration. This is the property the whole redesign rests on: the
 -- exemption set is enumerated once and can never be added to.
@@ -98,6 +138,36 @@ DROP TRIGGER IF EXISTS "DecisionLegacyApproval_sealed" ON "DecisionLegacyApprova
 CREATE TRIGGER "DecisionLegacyApproval_sealed"
   BEFORE INSERT OR UPDATE OR DELETE ON "DecisionLegacyApproval"
   FOR EACH ROW EXECUTE FUNCTION decision_t4b_legacy_evidence_sealed();
+
+-- ROUND 11 (R11-5): …and TRUNCATE, which fires NO row trigger. Elsewhere in this schema a truncate
+-- is a sanctioned test/seed reset and is deliberately left uncovered; here it is not, because this
+-- table is the ONLY proof that a legacy withdrawal is legitimate. Erasing it leaves every affected
+-- decision standing while the evidence that lets it be withdrawn is gone — the exemption would fail
+-- closed on real history, silently, with nothing to point at. A statement-level seal is the only
+-- shape that can refuse this verb.
+-- CONDITIONAL, exactly like `DecisionEvent_t4a_no_truncate` beside it, and for the same reason. A
+-- blanket refusal is not the rule anyone wants: it would break the sanctioned destructive resets
+-- this schema deliberately performs by TRUNCATE, and it was measured doing so — `event-catalog`'s
+-- `TRUNCATE "Decision" … CASCADE` reaches this table through the cascade.
+--
+-- What must never happen is erasing evidence that is HOLDING SOMETHING UP. So the question is
+-- whether there is any evidence at stake at all: an empty register has nothing to protect and a
+-- reset may proceed, while a register with rows in it cannot be emptied by a verb the row seal
+-- never sees. A legitimate full reset of a database that HAS stamped rows takes the same named
+-- `ALTER TABLE … DISABLE TRIGGER` bypass `wipeDecisions` already uses for the other seals — a
+-- privilege, and a visible one.
+CREATE OR REPLACE FUNCTION decision_t4b_legacy_evidence_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM "DecisionLegacyApproval") THEN
+    RAISE EXCEPTION 'phase6-4b: "DecisionLegacyApproval" is one-time migration evidence — it cannot be truncated while it holds rows; the decisions it exempts would outlive their own proof.';
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionLegacyApproval_no_truncate" ON "DecisionLegacyApproval";
+CREATE TRIGGER "DecisionLegacyApproval_no_truncate"
+  BEFORE TRUNCATE ON "DecisionLegacyApproval"
+  FOR EACH STATEMENT EXECUTE FUNCTION decision_t4b_legacy_evidence_no_truncate();
 
 -- ── R10-2: the reverse of the link rule, asked of the modules that own the dependents ────────
 -- Named for their owners and defined here for the same reason `orgs_user_decision_authority` is:
@@ -149,12 +219,24 @@ BEGIN
       OR NEW."approvedDeciderLabel" IS NOT NULL) THEN
       RAISE EXCEPTION 'phase6-4b: the approval holder tuple belongs to an APPROVAL (%) — it cannot be planted on a row that carries none.', NEW.id;
     END IF;
-    -- R4-2: born approved ⇒ a tuple that is PRESENT is complete, and records this decision's own
-    -- decider. An absent tuple is the legacy shape and stays permitted (see 20270819's header).
-    IF NEW.status::text = 'approved'
-       AND (NEW."approvedDeciderKind" IS NOT NULL
-         OR NEW."approvedDeciderMembershipId" IS NOT NULL
-         OR NEW."approvedDeciderLabel" IS NOT NULL) THEN
+    -- R4-2 as round 11 (R11-3) closes it. R4-2 let a row be BORN `approved` with no tuple at all,
+    -- because that was the shape legacy rows arrive in and nothing else could account for them.
+    -- Round 10 removed that justification: legacy is now the FINITE SET this migration stamped,
+    -- and every one of those rows already exists — none of them is ever inserted again. A row
+    -- inserted from here on is by definition not legacy, so an absent tuple is no longer the
+    -- legacy shape; it is simply an approval that names nobody, and R2-1 forbids repairing it
+    -- afterwards, so it would be permanently unattributed.
+    --
+    -- The door mattered: a direct writer could insert an unpublished row already at `approved`
+    -- with the tuple null, add its options, publish it, and the register would carry an
+    -- unattributable approval created after the upgrade. No product path is affected —
+    -- `decisions.create` only ever inserts `pending` or `recorded`, and every real approval is the
+    -- UPDATE that `approve()` performs, which writes the tuple.
+    IF NEW.status::text = 'approved' THEN
+      IF NEW."approvedDeciderKind" IS NULL AND NEW."approvedDeciderMembershipId" IS NULL
+         AND NEW."approvedDeciderLabel" IS NULL THEN
+        RAISE EXCEPTION 'phase6-4b: a decision born approved (%) records WHO approved it — after 20270827000000 the legacy approvals are an enumerated set that already exists, so a NEW approval with no holder tuple is not history, it is an approval nobody can be held to.', NEW.id;
+      END IF;
       -- R5-3 + R6-3: complete, and non-blank across the WHOLE ASCII whitespace set.
       IF NEW."approvedDeciderKind" IS NULL OR decisions_t4b_blank(NEW."approvedDeciderLabel") THEN
         RAISE EXCEPTION 'phase6-4b: a decision born approved (%) carries the WHOLE approval holder tuple or none of it — half an attribution is an attribution.', NEW.id;

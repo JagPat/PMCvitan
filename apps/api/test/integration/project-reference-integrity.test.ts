@@ -27,7 +27,7 @@ describe('project reference integrity (database constraints)', () => {
     // Phase 6 task 4b: born unpublished, optioned, then published — the two-option floor is
     // judged at BOTH publication doors
     decisionA = await t.prisma.decision.create({
-      data: { id: uid('dl'), projectId: f.projectA.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: null },
+      data: { id: uid('dl'), projectId: f.projectA.id, title: 'Flooring', room: 'Living', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client', photoSwatch: 'marble', publishedAt: null },
     });
     await t.prisma.decisionOption.createMany({ data: [
       { decisionId: decisionA.id, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },

@@ -160,6 +160,12 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
         photoSwatch: 'sw1',
         authorId: f.memberUser.id,
         publishedAt: null, // set after the options exist (see below)
+        // Phase 6 task 4b round 11: an approved row records WHO approved it at the INSERT door
+        // too. These are ordinary client-held decisions, so the tuple is the canonical `client`
+        // one `decisions_t4b_holder_label` renders.
+        ...(over.status === 'approved'
+          ? { approvedDeciderKind: 'client' as const, approvedDeciderLabel: 'Client' }
+          : {}),
       },
     });
     await t.prisma.decisionOption.createMany({

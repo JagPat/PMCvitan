@@ -91,7 +91,7 @@ describe('Phase 4 Task 1 — labour capability + type-routed demand + workforce 
       data: {
         // Phase 6 task 4b: a published ordinary decision needs TWO options, and a NESTED create
         // writes the parent first — so the row is born unpublished and published below
-        id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved',
+        id, projectId, title: id, room: 'Living', photoSwatch: 'sw', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client',
         publishedAt: null, authorId: f.memberUser.id, approvedOption: 'Option A',
         options: { create: [
           { label: 'Option A', optionKey: 'opt-a', material: 'Skilled', delta: 0, swatch: 'sw-a', order: 1 },

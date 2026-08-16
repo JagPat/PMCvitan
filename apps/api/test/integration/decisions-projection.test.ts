@@ -82,7 +82,14 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     // 4b: an ordinary decision needs at least TWO options to publish, and the floor is judged at
     // BOTH publication doors — so the row is born unpublished, gets its options, then publishes
     await t.prisma.decision.create({
-      data: { id, projectId, title: `Title ${id}`, room: 'GF · Living', status, ageDays: 2, photoSwatch: 'marble', publishedAt: null, authorId },
+      data: {
+        id, projectId, title: `Title ${id}`, room: 'GF · Living', status, ageDays: 2,
+        photoSwatch: 'marble', publishedAt: null, authorId,
+        // Phase 6 task 4b round 11: an approved row records WHO approved it, at the INSERT door as
+        // well as the transition. These fixtures are ordinary client-held decisions, so the
+        // canonical holder tuple is the one `decisions_t4b_holder_label` renders for `client`.
+        ...(status === 'approved' ? { approvedDeciderKind: 'client' as const, approvedDeciderLabel: 'Client' } : {}),
+      },
     });
     await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt A', optionKey: 'a', material: 'Teak', delta: 1000, swatch: 'teak', recommended: true, order: 0 } });
     await t.prisma.decisionOption.create({ data: { decisionId: id, label: 'Opt B', optionKey: 'b', material: 'Oak', delta: 2000, swatch: 'oak', recommended: false, order: 1 } });

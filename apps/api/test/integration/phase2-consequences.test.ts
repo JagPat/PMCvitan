@@ -541,7 +541,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
 
     it('flagMismatch: material.mismatch(attributed — Task 3) + 1 notif + CROSS-MODULE activity gate/block + push[pmc,contractor]', async () => {
       // Phase 6 task 4b: born unpublished, optioned, then published — the floor binds at BOTH doors
-      const dec = await t.prisma.decision.create({ data: { id: sk('p2c-dec-mm'), projectId: pid, title: 'Tile', room: 'GF', photoSwatch: 'marble', status: 'approved', publishedAt: null, authorId: uid } });
+      const dec = await t.prisma.decision.create({ data: { id: sk('p2c-dec-mm'), projectId: pid, title: 'Tile', room: 'GF', photoSwatch: 'marble', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client', publishedAt: null, authorId: uid } });
       await t.prisma.decisionOption.createMany({ data: [
         { decisionId: dec.id, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },
         { decisionId: dec.id, label: 'B', optionKey: 'b', material: 'B', delta: 0, swatch: 'teak', order: 1 },

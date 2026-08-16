@@ -198,7 +198,7 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     // The Phase-3 Task-1 round-2 correction adds `decisionApprovalRevision` — the immutable approval register.
     // Phase 6 task 4a round 13 adds `decisionOptionTouch` — the per-transaction option touch
     // note behind the withdrawal entry seal (written only by DB trigger, read by no module).
-    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionTouch', 'decisionLegacyApproval', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
     // it declares the queries other modules reach it through, and depends on nothing
     expect(decisions?.queries.length).toBeGreaterThan(0);
     // and every module that reads decisions now declares the dependency

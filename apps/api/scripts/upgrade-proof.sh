@@ -547,24 +547,37 @@ VALUES ('UP4A-MC','p1','USER-C','client','active') ON CONFLICT DO NOTHING;
 -- a LEGACY approved decision: two options, published, already `approved` with NO holder tuple.
 -- Round 6 refuses a tupleless approval TRANSITION, so the legacy shape is born the way legacy rows
 -- actually exist — already approved — which R4-2's documented narrowing permits at the INSERT door.
+-- `UP4BR11-CHANGE` is round 11's subject (R11-1): a pre-Phase-6 approval that already carries an
+-- OPEN change request on the day of the deploy. Round 10 stamped only `approved`, so this row fell
+-- outside the exemption set and its perfectly ordinary `withdrawChange()` — an evidence-preserving
+-- `change → approved` — would have been refused forever. It is planted here, in `approved`, and
+-- reopened below BEFORE the migration runs, because that is the only way it is genuinely legacy.
 INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
 VALUES ('UP4B2-D1','p1','Legacy approved, tupleless','Hall','approved','stone','USER-1',NULL),
-       ('UP4BR10-CASCADE','p1','Legacy approved, disposable','Hall','approved','stone','USER-1',NULL)
+       ('UP4BR10-CASCADE','p1','Legacy approved, disposable','Hall','approved','stone','USER-1',NULL),
+       ('UP4BR11-CHANGE','p1','Legacy approved, already reopened','Hall','approved','stone','USER-1',NULL)
 ON CONFLICT DO NOTHING;
 INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
 VALUES ('UP4B2-D1O1','UP4B2-D1','A','a','Teak',0,'sw1'),
        ('UP4B2-D1O2','UP4B2-D1','B','b','Oak',100,'sw2'),
        ('UP4BR10-CO1','UP4BR10-CASCADE','A','a','Teak',0,'sw1'),
-       ('UP4BR10-CO2','UP4BR10-CASCADE','B','b','Oak',100,'sw2')
+       ('UP4BR10-CO2','UP4BR10-CASCADE','B','b','Oak',100,'sw2'),
+       ('UP4BR11-CO1','UP4BR11-CHANGE','A','a','Teak',0,'sw1'),
+       ('UP4BR11-CO2','UP4BR11-CHANGE','B','b','Oak',100,'sw2')
 ON CONFLICT DO NOTHING;
 UPDATE "Decision" SET "publishedAt"=now()
- WHERE "id" IN ('UP4B2-D1','UP4BR10-CASCADE') AND "publishedAt" IS NULL;
+ WHERE "id" IN ('UP4B2-D1','UP4BR10-CASCADE','UP4BR11-CHANGE') AND "publishedAt" IS NULL;
+-- …and the ordinary change request someone raised against it last week, before the upgrade.
+INSERT INTO "ChangeRequest" ("id","decisionId","reason","costImpact","timeImpactDays","status")
+VALUES ('UP4BR11-CR','UP4BR11-CHANGE','Second thoughts, raised before the upgrade',0,0,'open')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "status"='change' WHERE "id"='UP4BR11-CHANGE';
 COMMIT;
 SQL
   local stamped
   stamped=$($PSQL -tAc "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='DecisionLegacyApproval';")
   [ "$stamped" = "0" ] || { echo "pre-4b-round-10 planting ran AFTER the stamp migration — the exemption proof would be vacuous"; exit 1; }
-  echo "pre-round-10 legacy approvals planted (UP4B2-D1, UP4BR10-CASCADE), both TUPLELESS and UNSTAMPED"
+  echo "pre-round-10 legacy approvals planted (UP4B2-D1, UP4BR10-CASCADE, UP4BR11-CHANGE), all TUPLELESS and UNSTAMPED"
 }
 
 # ---- 3f. the remaining ledger to HEAD ----------------------------------------------------
@@ -3673,14 +3686,18 @@ assert_rejects "4b seal (round 4, R4-2): a decision BORN approved whose tuple na
   "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedDeciderKind\",\"approvedDeciderLabel\") VALUES('UP4B4-BORN','p1','Born forged','Hall','approved','stone','USER-1','pmc','Forged Holder')" "must record the decider"
 assert_rejects "4b seal (round 4, R4-2): a decision BORN approved with HALF a tuple — half an attribution is an attribution" \
   "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedDeciderKind\") VALUES('UP4B4-HALF','p1','Born half-named','Hall','approved','stone','USER-1','client')" "WHOLE approval holder tuple or none of it"
-# PRECISION, and a deliberate narrowing of the finding's literal wording (argued in 20270819's
-# header): an ABSENT tuple is the legacy shape every pre-20270815 approval is in, those rows
-# persist in production, and the UPDATE door already admits the same transition.
-$PSQL -q -c "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\") VALUES('UP4B4-BARE','p1','Born nameless','Hall','approved','stone','USER-1')" >/dev/null \
-  || { echo "FAILED  4b round 4 (R4-2): a legacy-shaped approved row with NO tuple must still be insertable"; FAIL=1; }
-assert "4b round 4 precision (R4-2): the tupleless approved row was born — the seal binds an attribution that EXISTS, it does not require one" \
-  "SELECT COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4B4-BARE';" \
-  "<null>"
+# Round 4 permitted an ABSENT tuple here, and the argument was sound at the time: it was the shape
+# every pre-20270815 approval is in, those rows persist in production, and the UPDATE door admitted
+# the same transition — so requiring it would have made being BORN approved stricter than BECOMING
+# approved. ROUND 11 (R11-3) removed both halves of that argument. "Legacy" is now the finite set
+# 20270827000000 stamped, every member of which already exists, and the UPDATE door demands the
+# tuple too unless the row is in that set. The doors agree again, at the stricter setting.
+assert_rejects "4b seal (round 11, R11-3): a decision BORN approved with NO tuple at all — round 4 permitted this, and round 10 removed the reason it could" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\") VALUES('UP4B4-BARE','p1','Born nameless','Hall','approved','stone','USER-1')" \
+  "records WHO approved it"
+assert "4b round 11 (R11-3): the tupleless approved row was NOT born — an approval minted after the upgrade cannot be unattributable" \
+  "SELECT COUNT(*)::text FROM \"Decision\" WHERE \"id\"='UP4B4-BARE';" \
+  "0"
 # PRECISION for R4-2: a COHERENT approved row is still born without complaint
 $PSQL -q -c "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedDeciderKind\",\"approvedDeciderLabel\") VALUES('UP4B4-OK','p1','Born coherent','Hall','approved','stone','USER-1','client','Client')" >/dev/null \
   || { echo "FAILED  4b round 4 (R4-2): a coherent approved row must still be insertable"; FAIL=1; }
@@ -3932,16 +3949,21 @@ assert "4b round 8 precision (R8-1): the genuine legacy restoration committed �
 # row is one approved BEFORE the migration — unreachable from a suite whose database is migrated
 # from empty, and unfakeable afterwards by design. `UP4B2-D1` and `UP4BR10-CASCADE` are planted at
 # the `20270827000000` stop for exactly that reason.
-# The set is pinned by NAME rather than by a "nothing is unstamped" count, because the count would
-# be measured HERE and the claim is about THEN: `UP4B4-BARE` is an approved tupleless row minted by
-# a later fixture, and it is correctly absent. Pinning the membership catches the stamp both
-# over-reaching and under-reaching, and it names every legacy approval the fixture actually holds.
-assert "4b round 10 (R10-1): the exemption set is exactly the approvals standing at upgrade time — the legacy fixture's four, plus the two planted at the stop" \
+# The set is pinned by NAME. Pinning membership catches the stamp both over-reaching and
+# under-reaching, and it names every legacy approval the fixture actually holds: DL-1 (`change`,
+# reopened before Phase 1 ever ran) and DL-2/DL-3/DL-4/DL-6 from the legacy ledger, plus the three
+# planted at the 20270827000000 stop. A count would not distinguish the right five from any five.
+assert "4b round 10/11 (R10-1, R11-1): the exemption set is exactly the tupleless approvals standing at upgrade time — \`change\` rows included, which is what R11-1 added" \
   "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\";" \
-  "DL-2,DL-3,DL-4,DL-6,UP4B2-D1,UP4BR10-CASCADE"
-assert "4b round 10 (R10-1): a tupleless approval minted AFTER the migration (UP4B4-BARE, R4-2's legacy INSERT door) is NOT in the set — the door closed behind the migration, so round 10 strictly tightens that narrowing rather than widening it" \
-  "SELECT (EXISTS (SELECT 1 FROM \"Decision\" WHERE \"id\"='UP4B4-BARE' AND \"status\"::text='approved' AND \"approvedDeciderKind\" IS NULL))::text || '/' || (EXISTS (SELECT 1 FROM \"DecisionLegacyApproval\" WHERE \"decisionId\"='UP4B4-BARE'))::text;" \
-  "true/false"
+  "DL-1,DL-2,DL-3,DL-4,DL-6,UP4B2-D1,UP4BR10-CASCADE,UP4BR11-CHANGE"
+# …and NOTHING minted after the migration is in it. Round 10 argued this while R4-2's INSERT door
+# was still open, so the strongest statement available was "the new row is unstamped". R11-3 closed
+# that door, so the statement is now stronger still: the row cannot be created at all, which is
+# asserted where the door is (the R4-2 block above). What remains to pin here is the set's own
+# closure — the door shut behind the migration and stayed shut.
+assert "4b round 10 (R10-1): every stamped row is one this fixture planted BEFORE the migration — no row minted afterwards joined the set" \
+  "SELECT (COUNT(*) FILTER (WHERE \"decisionId\" LIKE 'UP4BR11-BORN%' OR \"decisionId\" = 'UP4B8-D1' OR \"decisionId\" LIKE 'UP4BR10-D%'))::text FROM \"DecisionLegacyApproval\";" \
+  "0"
 assert "4b round 10 (R10-1): the migration INVENTED no attribution — a stamped row still shows no holder tuple, which is the truth about a pre-Phase-6 approval" \
   "SELECT (SELECT COUNT(*) FROM \"DecisionLegacyApproval\" l JOIN \"Decision\" d ON d.\"id\"=l.\"decisionId\" WHERE d.\"approvedDeciderKind\" IS NOT NULL)::text;" \
   "0"
@@ -4005,6 +4027,63 @@ $PSQL -q -c "UPDATE \"Decision\" SET \"status\"='recorded', \"deciderKind\"='non
 assert "4b round 10 (R10-2) precision: the unlinked draft converted, and the two linked ones did not — the guard is about dependents, not about conversion" \
   "SELECT string_agg(\"id\" || '=' || \"status\"::text, ',' ORDER BY \"id\") FROM \"Decision\" WHERE \"id\" IN ('UP4BR10-DA','UP4BR10-DF','UP4BR10-DM');" \
   "UP4BR10-DA=pending,UP4BR10-DF=recorded,UP4BR10-DM=pending"
+
+# ── Phase 6 task 4b, ROUND 11 (Codex): the edges of the enumerated set ───────────────────────
+#
+# R11-1 — a pre-Phase-6 approval can be sitting in `change` on the day of the deploy, because
+# someone raised an ordinary change request against it last week. Round 10 stamped only `approved`,
+# so that row fell OUTSIDE the exemption set, and its perfectly ordinary `withdrawChange()` — an
+# evidence-preserving `change → approved` — would have been refused forever. This is the arm that
+# only this script can prove: `UP4BR11-CHANGE` was planted, published, approved AND reopened before
+# `20270827000000` ran.
+assert "4b round 11 (R11-1): a legacy approval ALREADY REOPENED at upgrade time is in the exemption set — \`change\` is not a lesser kind of legacy" \
+  "SELECT (EXISTS (SELECT 1 FROM \"DecisionLegacyApproval\" WHERE \"decisionId\"='UP4BR11-CHANGE'))::text || '/' || (SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4BR11-CHANGE') || '/' || (SELECT \"status\" FROM \"ChangeRequest\" WHERE \"id\"='UP4BR11-CR');" \
+  "true/change/open"
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4BR11-CHANGE'" >/dev/null \
+  || { echo "FAILED  4b round 11 (R11-1): withdrawing the pre-existing change request on a legacy approval must RESTORE it — at f113f94 this was refused forever"; FAIL=1; }
+assert "4b round 11 (R11-1): the withdrawal committed, and invented no attribution doing it" \
+  "SELECT \"status\"::text || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>') FROM \"Decision\" WHERE \"id\"='UP4BR11-CHANGE';" \
+  "approved/<null>"
+# PRECISION — `change` widens WHO is in the set, not WHAT the set permits. A row in the set still
+# cannot arrive at `approved` while ALTERING its approval: that is an act, and an act names its actor.
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='change' WHERE \"id\"='UP4BR11-CHANGE'" >/dev/null
+assert_rejects "4b round 11 (R11-1) precision: a stamped 'change' row arriving at approved while CHANGING the approved option is still an ACT, not a restoration" \
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedOption\"='B', \"material\"='Oak' WHERE \"id\"='UP4BR11-CHANGE'" "records WHO approved it"
+$PSQL -q -c "UPDATE \"Decision\" SET \"status\"='approved' WHERE \"id\"='UP4BR11-CHANGE'" >/dev/null
+
+# R11-3 — R4-2's born-approved-tupleless INSERT door outlived its justification. Legacy is now the
+# finite set stamped above, every member of which ALREADY EXISTS, so a row inserted from here on is
+# by definition not legacy — an absent tuple is simply an approval nobody can be held to, and R2-1
+# forbids repairing it afterwards.
+assert_rejects "4b seal (round 11, R11-3): a decision BORN approved with NO holder tuple — the legacy shape is an enumerated list now, and this row is not on it" \
+  "INSERT INTO \"Decision\" (\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedOption\",\"approvedById\",\"approver\",\"material\",\"date\") VALUES ('UP4BR11-BORN','p1','Born unattributed','Hall','approved','stone','USER-1','A','USER-C','Nobody','Teak','01 Jan 2026')" \
+  "records WHO approved it"
+$PSQL -q -c "INSERT INTO \"Decision\" (\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"authorId\",\"approvedOption\",\"approvedById\",\"approver\",\"material\",\"date\",\"approvedDeciderKind\",\"approvedDeciderLabel\") VALUES ('UP4BR11-BORNOK','p1','Born attributed','Hall','approved','stone','USER-1','A','USER-C','Client','Teak','01 Jan 2026','client','Client')" >/dev/null \
+  || { echo "FAILED  4b round 11 (R11-3): a born-approved row that CARRIES its attribution must still insert — the rule refuses the missing holder, not the shape"; FAIL=1; }
+assert "4b round 11 (R11-3) precision: the attributed born-approved row inserted — the door closed on unattributed approvals only" \
+  "SELECT \"approvedDeciderKind\"::text || '/' || \"approvedDeciderLabel\" FROM \"Decision\" WHERE \"id\"='UP4BR11-BORNOK';" \
+  "client/Client"
+
+# R11-5 — a row-level seal never fires for TRUNCATE, and this table is the ONLY proof a legacy
+# withdrawal is legitimate: erasing it leaves every affected decision standing while its evidence
+# is gone, failing closed on real history with nothing to point at.
+assert_rejects "4b seal (round 11, R11-5): TRUNCATEing the evidence table — the verb the row seal cannot see" \
+  "TRUNCATE TABLE \"DecisionLegacyApproval\"" "cannot be truncated"
+assert "4b round 11 (R11-5): the evidence survived every attempt above — the set is intact, minus only the row whose SUBJECT was deleted" \
+  "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\";" \
+  "DL-1,DL-2,DL-3,DL-4,DL-6,UP4B2-D1,UP4BR11-CHANGE"
+
+# R11-4 — the stamp INSERT must be RE-RUNNABLE. PostgreSQL fires a BEFORE INSERT trigger BEFORE it
+# resolves ON CONFLICT, so the seal would raise on a row the conflict clause was about to discard,
+# aborting the retry this repository requires of every migration. Proven by RE-RUNNING the real
+# migration file over the already-upgraded database — the state where every stamped row still
+# matches the SELECT that stamped it.
+STAMP_SET=$($PSQL -tAc "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\";")
+$PSQL -q -f "$MIG_DIR/20270827000000_phase6_t4b_correction10/migration.sql" >/dev/null \
+  || { echo "FAILED  4b round 11 (R11-4): re-running 20270827000000 over an upgraded database must be a no-op, not an abort"; FAIL=1; }
+assert "4b round 11 (R11-4): the re-run changed nothing — same set, no duplicate, no abort" \
+  "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\";" \
+  "$STAMP_SET"
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by

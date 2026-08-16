@@ -394,3 +394,57 @@ and THEN migrates:
 | `test:e2e:api:allmodules` / `:allmodules:outbox` | 37 / 37 |
 
 `20270815000000` … `20270826000000` are byte-for-byte unchanged.
+
+## Round 11 — the five Codex findings on `f113f94`
+
+Answered on this head, entirely inside the unmerged `20270827000000` plus its Prisma declaration,
+its probes, and the fixtures the closed door touched. **Classification: no seam findings; all five
+are this PR's own corrections biting back — four of them on round 10's new machinery.**
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R11-1 (P1) | the stamp read `approved` only, but a pre-Phase-6 approval can be sitting in `change` on the day of the deploy — that row fell outside the exemption set, and its perfectly ordinary `withdrawChange()` was then refused **forever** | `status IN ('approved','change')`. `requestChange` is the only way the product reaches `change`, so such a row is exactly as much a legacy approval as an `approved` one; `pending` stays out because `v_restores` requires `OLD.status = 'change'` and could never use the exemption |
+| R11-2 (P2) | the register existed only in hand-written SQL, so a future generated migration could treat it as drift and DROP it — taking the only proof a legacy withdrawal is legitimate | declared in `schema.prisma`, verified by `schema-migration-drift.test.ts` |
+| R11-3 (P1) | R4-2 let a decision be BORN `approved` with no tuple. Round 10 dissolved both halves of the argument for that door and left it open | closed. `decisions.create` only ever inserts `pending` or `recorded` and every real approval is the UPDATE `approve()` performs, so no product path changed — but the fixture sweep it implies is real: **20 tests across 13 suites**, each minting an approved decision the product itself cannot produce |
+| R11-4 (P2) | a BEFORE INSERT seal fires before `ON CONFLICT` resolves, so the stamp aborted on the re-run this repository requires | the stamp is ONE-SHOT, guarded on the seal trigger's own existence. A per-row "skip what is stamped" guard is re-runnable and **wrong**: with `change` in the predicate it would stamp rows that entered `change` after the upgrade |
+| R11-5 (P2) | a row-level seal never fires for `TRUNCATE` | a statement-level `BEFORE TRUNCATE` seal — CONDITIONAL, like `DecisionEvent_t4a_no_truncate` beside it |
+
+### Two first drafts this round, both caught by the gates rather than by review
+
+**R11-4's per-row guard.** `NOT EXISTS (… WHERE l."decisionId" = d."id")` makes the migration
+re-runnable and quietly breaks the property round 10 exists to provide. `upgrade-proof.sh`'s re-run
+tried to stamp the round-10 forgery target — a row a probe had put into `change` after the upgrade —
+and the seal refused the insert. **The gate that caught it was built to prove a different property.**
+
+**R11-5's blanket refusal.** Refusing every truncate broke `event-catalog`'s sanctioned
+`TRUNCATE "Decision" … CASCADE`, which erases the evidence together with the very decisions it
+exempts — the one lawful way for it to go. The rule is now the conditional one the neighbouring seal
+already uses: an empty register has nothing at stake; a populated one cannot be emptied by a verb the
+row seal never sees.
+
+### Where each finding is proven
+
+| finding | proven in | why there |
+| --- | --- | --- |
+| R11-1 | `upgrade-proof.sh` | needs a legacy approval ALREADY in `change` before the migration — `UP4BR11-CHANGE` is planted, published, approved and reopened at the `20270827000000` stop |
+| R11-2 | `schema-migration-drift.test.ts` | the drift check IS the finding's subject |
+| R11-3 | `phase6-t4b-correction11.test.ts` + `upgrade-proof.sh` | a post-migration door, testable anywhere; R4-2's own probe is INVERTED in place, with the reason it changed left in the file |
+| R11-4 | `upgrade-proof.sh` | re-runs the real migration file over an already-upgraded database |
+| R11-5 | both | the refusal needs stamped rows (upgrade-proof); the precision — an empty register still truncates — belongs where sanctioned resets run |
+
+`information_schema.triggers` is SQL-standard and reports INSERT/UPDATE/DELETE only, so the verb pin
+reads `pg_trigger.tgtype` — an echo of R11-5 itself: the catalogue that omits the verb is the one
+that would have let the omission pass unnoticed.
+
+### Verification at this head
+
+| Gate | Result |
+| --- | --- |
+| `phase6-t4b-correction11.test.ts` | **7 passed** |
+| Full integration suite, pristine DB | **105 files, 1263 passed / 3 skipped / 0 failed** |
+| `pnpm check` (repo root) | **EXIT 0** — web 790/790, API 793/793 |
+| `upgrade-proof.sh` | **656 assertions, EXIT 0** over the migrated legacy DB |
+| `schema-migration-drift.test.ts` | 4 passed |
+| `test:e2e:api:allmodules` / `:allmodules:outbox` | 37 / 37 |
+
+`20270815000000` … `20270826000000` are byte-for-byte unchanged.

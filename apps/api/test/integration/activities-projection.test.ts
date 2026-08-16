@@ -244,7 +244,7 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
     const decisionId = `DL-acpj-${Date.now() % 1e6}-${projSeq++}`;
     await t.prisma.decision.create({
       // Phase 6 task 4b: born unpublished, optioned, then published — the floor binds at BOTH doors
-      data: { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', photoSwatch: 'marble', publishedAt: null },
+      data: { id: decisionId, projectId: p.id, title: 'Flooring', room: 'Living', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client', photoSwatch: 'marble', publishedAt: null },
     });
     await t.prisma.decisionOption.createMany({ data: [
       { decisionId, label: 'A', optionKey: 'a', material: 'A', delta: 0, swatch: 'marble', order: 0 },

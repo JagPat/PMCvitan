@@ -57,7 +57,7 @@ const controllerFiles = ALL_FILES.filter((f) => isSrc(f, '.controller.ts')).sort
 // Prisma model → the domain (boundary unit) that OWNS its table. A write to a
 // model whose owner ≠ the writing service's domain is a cross-module edge.
 const MODEL_OWNER: Record<string, string> = {
-  decision: 'decisions', decisionOption: 'decisions', decisionOptionTouch: 'decisions', decisionEvent: 'decisions', changeRequest: 'decisions',
+  decision: 'decisions', decisionOption: 'decisions', decisionOptionTouch: 'decisions', decisionLegacyApproval: 'decisions', decisionEvent: 'decisions', changeRequest: 'decisions',
   // Task-1 correction round 2 — the immutable approval register, written only by decisions.approve
   decisionApprovalRevision: 'decisions',
   activity: 'activities', gateOverride: 'activities',

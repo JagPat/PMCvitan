@@ -180,7 +180,7 @@ describe('Phase 3 Task 5 — reservations, issues, site flows, mismatch resoluti
   /** One decision + two mismatch observations on the latest log + N linked activities. */
   const mismatchScene = async (projectId: string) => {
     const decisionId = `IT-P3T5-DL-${Date.now() % 1e6}-${seq++}`;
-    await t.prisma.decision.create({ data: { id: decisionId, projectId, title: 'Bath tiles', room: 'Bath', photoSwatch: 'tile', status: 'approved' } });
+    await t.prisma.decision.create({ data: { id: decisionId, projectId, title: 'Bath tiles', room: 'Bath', photoSwatch: 'tile', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client' } });
     const coldActivity = await freshActivity(projectId, { decisionId });
     const startedActivity = await freshActivity(projectId, { decisionId, actualStartDate: new Date('2026-06-10T00:00:00.000Z') });
     const log = await t.prisma.dailyLog.create({ data: { projectId, date: '01 Jun 2026', logDate: new Date('2026-06-01'), submitted: false, checkedIn: true, progress: 10 } });

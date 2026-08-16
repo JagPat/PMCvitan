@@ -197,7 +197,7 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     // Phase 6 task 4b: a published ordinary decision needs TWO options — the floor is judged at
     // BOTH publication doors, so each row is born unpublished, optioned, and only then published
     await t.prisma.decision.create({ data: { id: PENDING_ID, projectId: pid, title: 'Flooring', room: 'Living', photoSwatch: 'marble', status: 'pending', publishedAt: null, authorId: uid } });
-    await t.prisma.decision.create({ data: { id: APPROVED_ID, projectId: pid, title: 'Veneer', room: 'Study', photoSwatch: 'teak', status: 'approved', publishedAt: null, authorId: uid, approvedOption: 'Teak', material: 'Teak', approver: 'Client', date: '2026-06-01', cost: 0 } });
+    await t.prisma.decision.create({ data: { id: APPROVED_ID, projectId: pid, title: 'Veneer', room: 'Study', photoSwatch: 'teak', status: 'approved', approvedDeciderKind: 'client', approvedDeciderLabel: 'Client', publishedAt: null, authorId: uid, approvedOption: 'Teak', material: 'Teak', approver: 'Client', date: '2026-06-01', cost: 0 } });
     await t.prisma.decisionOption.create({ data: { decisionId: APPROVED_ID, label: 'Teak', optionKey: 'a', material: 'Teak', delta: 0, swatch: 'teak', order: 0, photoUrl: 'x' } });
     await t.prisma.decisionOption.create({ data: { decisionId: APPROVED_ID, label: 'Oak', optionKey: 'b', material: 'Oak', delta: 0, swatch: 'oak', order: 1 } });
     await t.prisma.decisionOption.createMany({ data: [

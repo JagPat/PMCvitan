@@ -137,20 +137,29 @@ describe('Phase 6 unit 4b-i round 4 — the five Codex findings (live PG)', () =
       }),
     ).rejects.toThrow(/WHOLE approval holder tuple or none of it/);
 
-    // (b′) …and NO tuple at all is PERMITTED, which is narrower than the finding's wording asks
-    // and is argued in `20270819000000`'s header: an absent tuple is not a forgery, it is the
-    // shape every decision approved before `20270815000000` is in, those rows persist in
-    // production, and the UPDATE door already admits the same transition. Requiring existence
-    // here would make being BORN approved stricter than BECOMING approved — and, measured rather
-    // than assumed, it failed 18 tests across 10 suites, every one a legacy-shaped fixture.
-    const bareId = `DL-t4bc4-bare-${seq++}`;
-    await t.prisma.decision.create({
-      data: {
-        id: bareId, projectId: f.projectA.id, title: 'Born nameless', room: 'K',
-        status: 'approved', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null,
-      },
-    });
-    expect((await t.prisma.decision.findUniqueOrThrow({ where: { id: bareId } })).approvedDeciderKind).toBeNull();
+    // (b′) NO tuple at all — REFUSED as of round 11 (R11-3), and this arm is the record of why the
+    // answer changed rather than a quiet rewrite.
+    //
+    // Round 4 permitted it, and the argument was sound AT THE TIME: an absent tuple was the shape
+    // every pre-`20270815000000` approval is in, those rows persist in production, and the UPDATE
+    // door admitted the same transition — so requiring the tuple here would have made being BORN
+    // approved stricter than BECOMING approved. Measured rather than assumed, it failed 18 tests
+    // across 10 suites, every one a legacy-shaped fixture.
+    //
+    // Round 10 removed BOTH halves of that argument. "Legacy" is no longer a shape any row can
+    // wear; it is the finite set `20270827000000` stamped, and every member of it already exists.
+    // And the UPDATE door is no longer laxer: `change → approved` without a tuple now requires
+    // membership of that set too. So the doors agree again — at the stricter setting — and a row
+    // inserted from here on with no tuple is not history, it is an approval nobody can be held to,
+    // which R2-1 then makes permanent.
+    await expect(
+      t.prisma.decision.create({
+        data: {
+          id: `DL-t4bc4-bare-${seq++}`, projectId: f.projectA.id, title: 'Born nameless', room: 'K',
+          status: 'approved', ageDays: 0, photoSwatch: 'sw1', authorId: f.memberUser.id, publishedAt: null,
+        },
+      }),
+    ).rejects.toThrow(/records WHO approved it/);
 
     // (c) a member-held row born approved in a DIFFERENT membership's name
     await expect(

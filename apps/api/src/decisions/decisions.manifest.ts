@@ -10,11 +10,11 @@ export const decisionsManifest: ModuleManifest = {
   // Phase 6 task 4a round 13 — `decisionOptionTouch` is the per-transaction option touch note
   // behind the withdrawal entry seal: written ONLY by the `DecisionOption_t4a_touch` DB trigger
   // (no application writer), owned and read-encapsulated here like every decision fact.
-  ownsModels: ['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
+  ownsModels: ['decision', 'decisionOption', 'decisionOptionTouch', 'decisionLegacyApproval', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
   // Task 8 — the FIRST fully-extracted backend module: its models are read-encapsulated, so no
   // other module reads decision persistence directly (the boundary check enforces it); every
   // cross-module read goes through the queries below (DecisionsQueryService).
-  readEncapsulated: ['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
+  readEncapsulated: ['decision', 'decisionOption', 'decisionOptionTouch', 'decisionLegacyApproval', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
   dependsOn: [],
   // Phase 6 task 4a round 3 — the withdraw ATTRIBUTION question (does the actor hold an ACTIVE
   // membership here — the `withdrawnById` FK's target?) is answered by its owner through
