@@ -13,13 +13,13 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
-task_state: in_progress
+task_state: in_review
 work_item: 4b-impl
 reviewed_merge: caff53f
 open_pr: 344
 next_task: none
 blocking_directive: none
-updated: 2026-08-15
+updated: 2026-08-16
 ```
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
