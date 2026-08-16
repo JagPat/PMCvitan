@@ -42,6 +42,14 @@ function make() {
     decision: {
       findMany: vi.fn(async () => decisions.map((d) => ({ id: d.id }))),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => decisions.find((d) => d.id === where.id) ?? null),
+      // Phase 6 task 4b, round 3 (Codex P2) — publish derives its side-effect bundle from the row
+      // it just LOCKED, so the stand-in must serve that in-transaction re-read too. Returning the
+      // live in-memory row is exactly right: it reflects any write the command has already made.
+      findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const d = decisions.find((x) => x.id === where.id);
+        if (!d) throw new Error(`decision ${where.id} not found`);
+        return d;
+      }),
       create: vi.fn((args: { data: DecisionRow }) => { decisions.push({ ...args.data }); return Promise.resolve(args.data); }),
       update: vi.fn((args: { where: { id: string }; data: Partial<DecisionRow> }) => {
         const d = decisions.find((x) => x.id === args.where.id)!;

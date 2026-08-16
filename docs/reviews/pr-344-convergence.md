@@ -5,7 +5,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | head | role | findings | outcome |
 |---|---|---|---|
 | `ed72636` | the 4b-i unit (staged RED shape → GREEN), split at the review budget into facts+seals with the surface deferred to 4b-ii | 12 (8 P1, 4 P2) | corrected on `067209bc` via `20270816000000`: the recorded seal's DELETE arm; approval EVENTS counted at conversion and sealed after it; a `decision.recorded` effect key so a record pushes nothing on either publish path; the act tuple actually frozen; a diagnostic-first audit in front of the option freeze; `FOR SHARE` on the head row under the option guard; the DB author predicate narrowed to `ROLE_POLICY['decision.create']`; `OrgsParticipant.describeMembership`; `requestChange` returning an actionable 409; the announcement naming the real holder; the membership id passed only when active standing ends; `DecisionsParticipant.holdsOpenDecisions` |
-| `067209bc` | round-1 fold | 4 (3 P1, 1 P2) | corrected on this head via `20270817000000`: the act tuple's first write keyed to the TRANSITION rather than the destination status; the conversion door asking the author question the insert door asks; the ChangeRequest seal reading its parent `FOR UPDATE`; and the member guards computing surviving standing from `orgs_effective_role_standing` instead of asserting it, with `updateRole` taking the readiness lock so guard and seal read one snapshot |
+| `067209bc` | round-1 fold | 4 (3 P1, 1 P2) | corrected on `2ef9d68` via `20270817000000`: the act tuple's first write keyed to the TRANSITION rather than the destination status; the conversion door asking the author question the insert door asks; the ChangeRequest seal reading its parent `FOR UPDATE`; and the member guards computing surviving standing from `orgs_effective_role_standing` instead of asserting it, with `updateRole` taking the readiness lock so guard and seal read one snapshot |
+| `2ef9d68` | round-2 fold + this audit's first edition | 7 (4 P1, 3 P2) | corrected on this head via `20270818000000`: the act tuple validated against the decision's own `deciderKind`/`deciderMembershipId`; the approve route ceiling widened to every role that may be NAMED, with the holder narrowing left in the service; the decision id frozen FROM BIRTH; the reopen seal restated over every transition INTO an open status; the departing role read from the LOCKED membership row; the org arm narrowed to the standing the written row actually supplies; and the publish side-effect bundle derived from the row the CAS locked |
 
 ## Root analysis — one generative class, three faces
 
@@ -64,6 +65,37 @@ asked at every door, but discriminated on something that is not the truth.
   decision — publication status under the option guard, parent status under the
   ChangeRequest seal. A snapshot is not a decision.
 
+## Round 3 — the same three faces, and what that tells us
+
+Seven more findings arrived on `2ef9d68`. Every one of them is an instance of the
+same class, which is the strongest evidence the class is real — and also the
+sharpest criticism of the first edition of this audit, which named the class and
+then fixed only the instances the reviewer had already pointed at.
+
+- **Face A** — R3-3: the identity freeze covered PUBLICATION and not BIRTH, so a
+  draft could be re-keyed and published in one statement while `DomainEvent`
+  and the command receipt kept the old name. R3-4: the reopen seal covered the
+  one named pair `approved → change`, so `approved → pending` reached the same
+  open state through a door nobody had enumerated. R3-6 is the inverse — an arm
+  that fires on MORE doors than it governs, judging every org deletion whatever
+  standing the deleted row supplied.
+- **Face B** — R3-2: the route ceiling `['client','pmc']` was a second, narrower
+  statement of an authority rule the service states properly, and it won, because
+  `RolesGuard` runs first. The service comment *and this PR's invariant matrix*
+  asserted the ceiling already admitted every role that can hold a decision. It
+  did not.
+- **Face C** — R3-1: round 2 keyed the tuple's first write to the right MOMENT
+  and left it free to name the wrong PARTY. R3-5: the departing role was still
+  read from a pre-read taken outside the transaction. R3-7: the publish
+  side-effect bundle was still derived from an unlocked pre-read.
+
+**The honest reading.** Round 2 corrected each finding at the depth the finding
+was reported and no deeper. R3-1 and R3-5 are literally the round-2 fixes with
+their second dimension unexamined — the timing without the party, the arithmetic
+without the snapshot it reads. A convergence audit that maps findings to a class
+and then patches them one at a time has described the class rather than closed
+it. What this head does differently is stated below.
+
 ## What changed structurally, rather than per symptom
 
 - **Face B is closed by construction.** Both service guards now call the SQL the
@@ -82,12 +114,48 @@ asked at every door, but discriminated on something that is not the truth.
   `upgrade-proof.sh`), R2-3 by a real two-session overlap in both orderings with
   the blocked backend confirmed through `pg_stat_activity` *and* the statement
   asserted unsettled at the barrier.
-- **A test-harness instance of Face A, found by this round.** F5's probe re-runs
+- **A test-harness instance of Face A, found by round 2.** F5's probe re-runs
   `20270816000000` on purpose, which replays its `CREATE OR REPLACE` and
   silently undoes every later migration redefining the same function — on a
   database every integration suite shares. `applyMigrationThroughHead` replays
   everything sorting after N and asserts the restoration from `pg_proc`, so the
-  rule is stated once and round 3 inherits it.
+  rule is stated once and round 3 inherited it.
+
+### What round 3 closes that round 2 did not
+
+Each of the three faces is now closed at the level of the RULE rather than the
+reported instance:
+
+- **Every act-recording column is checked for PARTY as well as timing** (R3-1).
+  The tuple must equal the decision's own `deciderKind`, and a member-held
+  approval must name that decision's own `deciderMembershipId`. The label is
+  deliberately left unvalidated and the reason is written into the migration: it
+  is the display identity as the register rendered it, and a person's name may
+  legitimately change afterwards. What must not vary is WHO.
+- **Every authority derivation in `MembersService` now reads under the lock**
+  (R3-5). `lockMembership` returns role, status *and* discipline from a
+  `FOR UPDATE` read inside the transaction, so the guard's inputs are the same
+  row the seal will see as `OLD` — and the discipline-changed event, which had
+  the same unlocked-input shape and had not been reported, moved with them.
+- **Every side-effect selection in the publish path is derived post-CAS**
+  (R3-7), from the row the compare-and-set locked.
+- **Freezes are stated over the LIFETIME the fact has** (R3-3): identity binds at
+  birth alongside `authorId` and `projectId`, which is what the surrounding
+  comment already claimed and the code did not do.
+- **Transition guards are stated over the STATE they protect, not over one named
+  pair** (R3-4): any transition INTO an open status on a published row
+  revalidates the holder.
+- **Arms are stated over the standing they govern** (R3-6): the org seal asks the
+  question `orgs_effective_role_standing` asks — did this row supply effective
+  pmc standing here, and does it stop? — so a plain member and an owner↔admin
+  move are no longer its business, and it no longer contends for every project's
+  readiness key to reach that conclusion.
+- **The route ceiling is no longer a second authority rule** (R3-2). It admits
+  every role that may be NAMED; the holder narrowing lives in the service, where
+  the holder is knowable. Two web tests pinned the old ceiling and both were
+  updated rather than deleted: `discipline.test.ts` keeps its assertion and moves
+  it to what it actually meant — a consultant cannot approve a decision that is
+  not theirs — with the reason recorded in the test.
 
 ## Carried forward, with its measurement
 
@@ -117,20 +185,33 @@ rather than the sentence.
 
 ## Disposition
 
-Sixteen findings across two rounds — every one verified real, none disputed,
-none refuted, and one of them (F4) a claim this PR's own body and invariant
-matrix had asserted while nothing enforced it. That is the failure the matrix
-exists to prevent and it is recorded rather than quietly fixed.
+Twenty-three findings across three rounds — every one verified real, none
+disputed, none refuted. **Two** of them are claims this PR's own body and
+invariant matrix asserted while nothing enforced them: F4's frozen holder tuple,
+and R3-2's route ceiling that supposedly "admits every role that can hold a
+decision". That is twice the exact failure the matrix exists to prevent, in one
+PR, and it is recorded here rather than quietly fixed. The lesson is narrower
+than "check your claims": both sentences described a DESIGN that was correct and
+a MECHANISM that did not exist yet, and in both cases the mechanism was one file
+away from the sentence.
 
-No finding is answered by an isolated patch in this head: Face B is removed as a
-category, Face A gains a structural pin plus a harness rule that generalizes to
-future rounds, and Face C's two mechanisms are each pinned by a probe that was
-RED at `067209bc` with both the migration and the service half reverted. The
-unit's scope is unchanged — the decider FACT model and its seals; the audience
-and the surface remain 4b-ii, with three probe arms `it.skip`ped in place naming
-what they will implement.
+The unit's scope is unchanged — the decider FACT model and its seals; the
+audience and the surface remain 4b-ii, with three probe arms `it.skip`ped in
+place naming what they will implement. No product behaviour outside the decision
+lifecycle and the membership guards is touched; R3-2 is the one deliberate
+widening, and it widens a route ceiling to match an authority rule that already
+existed in the service.
 
-Gates at this head: `pnpm check` EXIT 0 (web 786/786, API 793/793); full
-integration 95 files / 1208 passed / 3 skipped / 0 failed / 0 deadlocks on a
-pristine migrated database; `upgrade-proof.sh` 599 assertions EXIT 0;
-`test:e2e:api` 31 passed / 6 skipped; demo seed re-runnable.
+Every round-3 probe was RED at `2ef9d68` with `20270818000000` AND the service
+half reverted, on a scratch database migrated only to `20270817000000`. The RED
+pass also caught a fragility in the round-3 suite itself — R3-6 mutated shared
+fixture state and restored it only on success, so its failure made R3-7 fail for
+R3-6's reason. The restoration moved to `afterEach`, where a failure cannot skip
+it. That is the same lesson as round 2's migration replay, in the same file, one
+round later.
+
+Gates at this head: `pnpm check` EXIT 0 (web 787/787, API 793/793); full
+integration 96 files / 1216 passed / 3 skipped / 0 failed / 0 deadlocks on a
+pristine migrated database; `upgrade-proof.sh` 604 assertions EXIT 0 (the three
+new hostile statements rejected over the migrated legacy DB, and R3-6's
+precision arm ACCEPTED); `test:e2e:api` 31 passed / 6 skipped.

@@ -20,7 +20,15 @@ export const ROLE_POLICY = {
   'decision.create': ['pmc'],
   // publish a private draft decision → issue it to the client (the architect's authority)
   'decision.publish': ['pmc'],
-  'decision.approve': ['client', 'pmc'],
+  // Phase 6 task 4b, round 3 (Codex P1) — the CEILING admits every role that can be NAMED as a
+  // decider; the SERVICE narrows to the actual holder of THIS decision (`actorIsHolder`, or the
+  // pmc acting on their behalf). Before this it read `['client','pmc']`, so a contractor,
+  // engineer or consultant explicitly named by a member-held decision was refused by `RolesGuard`
+  // BEFORE the holder check could run — the primary member-decider flow could not work through
+  // the API at all, while this PR's own invariant matrix claimed the ceiling already admitted
+  // them. A route allowlist is not an authority rule; the authority rule is one decision's holder,
+  // and only the service can know it.
+  'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant'],
   // consultants raise change requests to flag a conflict in their discipline (read-mostly otherwise)
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // withdraw an open change request — endpoint allowlist; the SERVICE narrows it to the

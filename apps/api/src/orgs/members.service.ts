@@ -103,6 +103,35 @@ export class MembersService {
     return Number(rows[0]?.standing ?? 0) - 1;
   }
 
+  /**
+   * The membership this write is about, READ AND LOCKED inside the caller's transaction.
+   *
+   * Phase 6 task 4b, round 3 (Codex P2). Round 2 fixed WHAT the guard computed and left WHEN it
+   * read its inputs: `role` and `status` still came from a pre-read taken before the transaction
+   * and before the readiness lock. With two clients and an open client-held decision, request A
+   * reads the target as `client`, request B changes that same target to `pmc` and commits, and A
+   * then counts the CURRENT client standing while subtracting a target that is no longer a client
+   * — a false 409 for a write the database would have allowed. The stale half of a comparison is
+   * as wrong as a stale whole.
+   *
+   * `FOR UPDATE` makes this the same read the seal's `OLD` row is: the row is held for the rest of
+   * the transaction, so a competing role change either lands before this read or waits for it. The
+   * pre-read outside remains, and remains ADVISORY — it answers "does this member exist" and "is
+   * this self-removal" cheaply; nothing derived from it decides authority.
+   */
+  private async lockMembership(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    userId: string,
+  ): Promise<{ id: string; role: string; status: string; discipline: string | null } | null> {
+    const rows = await tx.$queryRawUnsafe<Array<{ id: string; role: string; status: string; discipline: string | null }>>(
+      `SELECT "id", "role", "status", "discipline" FROM "Membership"
+        WHERE "projectId" = $1 AND "userId" = $2 FOR UPDATE`,
+      projectId, userId,
+    );
+    return rows[0] ?? null;
+  }
+
   async add(projectId: string, requester: AuthUser, input: AddMemberInput): Promise<MemberDto> {
     await this.assertCanManage(projectId, requester);
     const email = input.email?.toLowerCase();
@@ -146,19 +175,23 @@ export class MembersService {
       // caller gets back the 500 round 1 removed. `remove` and `add` already take it; the trigger's
       // try-acquire is re-entrant, so holding it here is what makes the two answers one answer.
       await lockProjectReadiness(tx, projectId);
+      // Round 3 (Codex P2) — the DEPARTING role and status come from the LOCKED row, not the
+      // pre-read: a concurrent role change would otherwise make the subtraction stale.
+      const locked = await this.lockMembership(tx, projectId, userId);
+      if (!locked) throw new NotFoundException('Member not found on this project');
       // Round 1 (Codex P2) — a role change removes standing from the DEPARTING role. It does NOT
       // displace a named-membership holder: the membership stays active, so it stays the holder
       // (the seal's own F11 correction). Only the role arm is asked here — and only when this
       // membership is the role's LAST effective standing (round 2), which is the condition the seal
       // itself applies. An inactive membership carries no standing to remove, and the seal's arm
       // does not fire for one either.
-      if (input.role !== existing.role && existing.status === 'active') {
-        const surviving = await this.standingAfterDeparture(tx, projectId, existing.role);
+      if (input.role !== locked.role && locked.status === 'active') {
+        const surviving = await this.standingAfterDeparture(tx, projectId, locked.role);
         const held = surviving <= 0
-          && await this.decisions.holdsOpenDecisions(tx, projectId, null, existing.role);
+          && await this.decisions.holdsOpenDecisions(tx, projectId, null, locked.role);
         if (held) {
           throw new ConflictException(
-            `Changing this role would leave a published open decision with no ${existing.role} to decide it — cover the role first`,
+            `Changing this role would leave a published open decision with no ${locked.role} to decide it — cover the role first`,
           );
         }
       }
@@ -167,8 +200,9 @@ export class MembersService {
         data: { role: input.role, discipline: this.disciplineFor(input.role, input.discipline) },
       });
       await emitEvent(tx, { projectId, actor, eventType: 'membership.role_changed', entityType: 'Membership', entityId: userId, payload: { role: m.role }, effectKey: 'membership.role_changed', dispatch: {} });
-      // a consultant's discipline moving is its own fact
-      if ((existing.discipline ?? null) !== (m.discipline ?? null)) {
+      // a consultant's discipline moving is its own fact — compared against the LOCKED prior
+      // value, so a concurrent edit cannot make this emit (or suppress) the wrong fact
+      if ((locked.discipline ?? null) !== (m.discipline ?? null)) {
         await emitEvent(tx, { projectId, actor, eventType: 'membership.discipline_changed', entityType: 'Membership', entityId: userId, payload: m.discipline ? { discipline: m.discipline } : undefined, effectKey: 'membership.discipline_changed', dispatch: {} });
       }
       return m;
@@ -197,10 +231,15 @@ export class MembersService {
       // this path — a removal DOES end the membership's active standing, so a named holder IS
       // displaced (the seal's `v_named_removed`) — and an already-inactive membership is not asked
       // about at all, because the seal's arm does not fire for one.
-      const held = existing.status === 'active'
+      //
+      // Round 3 (Codex P2): the row is LOCKED and re-read here, so the role this subtracts is the
+      // role the seal will see as `OLD.role` — the pre-read above stays advisory.
+      const locked = await this.lockMembership(tx, projectId, userId);
+      if (!locked) throw new NotFoundException('Member not found on this project');
+      const held = locked.status === 'active'
         && await this.decisions.holdsOpenDecisions(
-          tx, projectId, existing.id,
-          (await this.standingAfterDeparture(tx, projectId, existing.role)) <= 0 ? existing.role : null,
+          tx, projectId, locked.id,
+          (await this.standingAfterDeparture(tx, projectId, locked.role)) <= 0 ? locked.role : null,
         );
       if (held) {
         throw new ConflictException(

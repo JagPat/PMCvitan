@@ -11,7 +11,12 @@ const ALL_ROLES: TokenRole[] = ['pmc', 'client', 'engineer', 'contractor', 'work
 const EXPECTED: Record<PolicyAction, TokenRole[]> = {
   'decision.create': ['pmc'],
   'decision.publish': ['pmc'],
-  'decision.approve': ['client', 'pmc'],
+  // Phase 6 task 4b, round 3 (Codex P1) — a decision now carries a per-decision DECIDER, which may
+  // be a NAMED member of any project role. This list is the route CEILING, not the authority: the
+  // service narrows to the actual holder of the specific decision (or the pmc acting on their
+  // behalf). Before 4b it read `['client','pmc']`, which refused a named contractor/engineer/
+  // consultant at `RolesGuard` before the holder check could run.
+  'decision.approve': ['client', 'pmc', 'contractor', 'engineer', 'consultant'],
   'decision.change': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   'decision.withdrawChange': ['pmc', 'client', 'contractor', 'engineer', 'consultant'],
   // Phase 6 task 4a — withdrawing a published decision retires a question the practice asked;

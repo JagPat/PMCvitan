@@ -178,3 +178,23 @@ Convergence audit (owed at the second finding-bearing head):
 `docs/reviews/pr-344-convergence.md` — the one generative class behind all sixteen findings, the
 structural closures this head makes, and the boundary-analyzer gap carried forward with its
 measurement.
+
+## Round 3 — the seven Codex findings on `2ef9d68`
+
+Four P1 and three P2, answered in ONE batched head. All seven probes in
+`phase6-t4b-correction3.test.ts` are RED at `2ef9d68` — with `20270818000000` **and** the service
+half reverted, on a scratch database migrated only to `20270817000000` — and green after.
+`20270815000000`, `20270816000000` and `20270817000000` are all left byte-for-byte unchanged.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R3-1 (P1) | round 2 keyed the act tuple's first write to the right MOMENT and left it free to name the wrong PARTY: a client-held decision flipped to `approved` could carry `approvedDeciderKind='pmc'` and any label, and write-once then made it permanent | the tuple must equal the decision's own `deciderKind`, and a member-held approval must name its own `deciderMembershipId`. The LABEL is deliberately not machine-validated — it is the display identity as the register rendered it, and a name may legitimately change; what must not vary is WHO |
+| R3-2 (P1) | `ROLE_POLICY['decision.approve']` was `['client','pmc']`, so a NAMED contractor/engineer/consultant was refused by `RolesGuard` before the service's holder check could run — the primary member-decider flow could not work through the API, while this PR's invariant matrix claimed the ceiling already admitted them | the ceiling admits every role that may be named; the holder narrowing stays in the service. Two web tests pinned the old ceiling and were updated rather than deleted — `discipline.test.ts` keeps its assertion and moves it to what it meant |
+| R3-3 (P1) | the identity freeze read `OLD."publishedAt" IS NOT NULL`, so a DRAFT could be re-keyed AND published in one statement; FK cascades carry options and events, but `DomainEvent.entityId` and the command receipt's `resultRef` keep the old id | the id is frozen FROM BIRTH, beside `authorId` and `projectId` — which is what the surrounding comment already claimed |
+| R3-4 (P1) | the reopen seal covered `approved → change` only; a member holder may legally be soft-removed while the decision is CLOSED, so `approved → pending` re-opened a published decision whose named holder was already inactive | the guard is stated over the STATE it protects: any transition INTO an open status on a published row revalidates the holder |
+| R3-5 (P2) | `role`/`status` still came from a pre-read taken before the transaction and the readiness lock, so a concurrent role change made the subtraction stale and produced a false 409 | `lockMembership` reads role, status and discipline `FOR UPDATE` inside the transaction — the same row the seal sees as `OLD`. The discipline-changed event had the same unlocked-input shape and moved with them |
+| R3-6 (P2) | the org arm judged EVERY `OrgMembership` deletion whatever the row's role, and every owner↔admin change; on a project with one explicit pmc and an open pmc-held decision, deleting an unrelated plain `member` was refused | the arm asks what `orgs_effective_role_standing` asks — did this row supply effective pmc standing here, and does it stop? It also no longer contends for every project's readiness key to reach that conclusion |
+| R3-7 (P2) | `isRecord` was derived from an unlocked pre-read, so a conversion committing before the CAS emitted the wrong side-effect bundle in either direction | the bundle is derived from the row the CAS locked. The probe makes the interleaving DETERMINISTIC by interposing the command's pre-read from the test and committing the conversion from a second connection — the service is untouched |
+
+Convergence audit (owed at the second finding-bearing head, extended at the third):
+`docs/reviews/pr-344-convergence.md`.

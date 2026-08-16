@@ -3534,6 +3534,71 @@ assert "4b round 2 precision: the pmc-authored draft DID convert — the convers
   "SELECT \"status\"::text FROM \"Decision\" WHERE \"id\"='UP4B2-D3';" \
   "recorded"
 
+# ── Phase 6 task 4b, ROUND 3 (Codex): three seals whose fix is a DATABASE fix ───────────────
+#
+# R3-1 and R3-3 are one-statement forgeries against ordinary rows, so they are proven here over
+# the migrated legacy database as well as in the probe suite. R3-4 needs a member-held approval
+# whose holder has since left — the state a closed decision may legitimately reach — so its
+# fixture is built here too. R3-6's arm is proven by an ACCEPTANCE: the write it must NOT judge.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-3 fixture did not apply"; FAIL=1; }
+-- a member-held decision, published, approved with a COHERENT act tuple, whose named holder is
+-- then soft-removed (legal while the decision is closed — the removal guard cannot see it)
+-- its own user, because `Membership` is unique per (project, user) and p1's client already has
+-- one: reusing that pair would silently skip this insert and leave the composite FK unsatisfiable
+INSERT INTO "User"("id","projectId","role","name","email")
+VALUES ('USER-MH','p1','contractor','Named holder','holder@upgrade.test') ON CONFLICT DO NOTHING;
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES ('UP4B3-M','p1','USER-MH','contractor','active') ON CONFLICT DO NOTHING;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","deciderKind","deciderMembershipId","publishedAt")
+VALUES ('UP4B3-D1','p1','Member held, holder gone','Hall','pending','stone','USER-1','member','UP4B3-M',NULL)
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B3-D1O1','UP4B3-D1','A','a','Teak',0,'sw1'),
+       ('UP4B3-D1O2','UP4B3-D1','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B3-D1' AND "publishedAt" IS NULL;
+UPDATE "Decision"
+   SET "status"='approved', "approvedDeciderKind"='member', "approvedDeciderMembershipId"='UP4B3-M', "approvedDeciderLabel"='Legacy Client'
+ WHERE "id"='UP4B3-D1' AND "status"::text='pending';
+UPDATE "Membership" SET "status"='removed' WHERE "id"='UP4B3-M';
+-- an ordinary published draft for the re-key attempt, and a client-held published decision for
+-- the tuple-party attempt
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","authorId","publishedAt")
+VALUES ('UP4B3-D2','p1','Re-keyable draft','Hall','pending','stone','USER-1',NULL),
+       ('UP4B3-D3','p1','Client held, unapproved','Hall','pending','stone','USER-1',NULL)
+ON CONFLICT DO NOTHING;
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4B3-D2O1','UP4B3-D2','A','a','Teak',0,'sw1'),
+       ('UP4B3-D2O2','UP4B3-D2','B','b','Oak',100,'sw2'),
+       ('UP4B3-D3O1','UP4B3-D3','A','a','Teak',0,'sw1'),
+       ('UP4B3-D3O2','UP4B3-D3','B','b','Oak',100,'sw2')
+ON CONFLICT DO NOTHING;
+-- ...D3 is published so the tuple attempt runs against a live client-held decision
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4B3-D3' AND "publishedAt" IS NULL;
+-- an unrelated PLAIN org member: supplies no effective pmc standing to any project
+INSERT INTO "User"("id","projectId","role","name","email")
+VALUES ('USER-ORGPLAIN','p1','engineer','Plain org member','plain@upgrade.test') ON CONFLICT DO NOTHING;
+INSERT INTO "OrgMembership"("id","orgId","userId","role")
+SELECT 'UP4B3-OM', p."orgId", 'USER-ORGPLAIN', 'member' FROM "Project" p WHERE p."id"='p1'
+ON CONFLICT DO NOTHING;
+SQL
+assert "4b round 3 fixture: the member-held decision is approved with a coherent act tuple, and its named holder has since left" \
+  "SELECT \"status\"::text || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>') || '/' || (SELECT \"status\" FROM \"Membership\" WHERE \"id\"='UP4B3-M') FROM \"Decision\" WHERE \"id\"='UP4B3-D1';" \
+  "approved/member/removed"
+assert_rejects "4b seal (round 3, R3-1): approving a CLIENT-held decision in the name of the pmc — the act tuple records the decider, and the right moment is not the right party" \
+  "UPDATE \"Decision\" SET \"status\"='approved', \"approvedDeciderKind\"='pmc', \"approvedDeciderLabel\"='Forged Holder' WHERE \"id\"='UP4B3-D3'" "must record the decider"
+assert_rejects "4b seal (round 3, R3-3): re-keying a DRAFT and publishing it in one statement — events and command receipts name a decision by an id that does not cascade" \
+  "UPDATE \"Decision\" SET \"id\"='UP4B3-RENAMED', \"publishedAt\"=now() WHERE \"id\"='UP4B3-D2'" "keeps the identity it was filed under"
+assert_rejects "4b seal (round 3, R3-4): reopening an approved decision to PENDING when its named holder has left — every door back into an open status revalidates the holder, not just approved → change" \
+  "UPDATE \"Decision\" SET \"status\"='pending' WHERE \"id\"='UP4B3-D1'" "has left the project"
+# PRECISION for R3-6: the org arm must NOT judge a write that supplies no standing. Accepted, not
+# rejected — a seal that refuses what it does not govern is wrong, not strict.
+$PSQL -q -c "DELETE FROM \"OrgMembership\" WHERE \"id\"='UP4B3-OM'" >/dev/null \
+  || { echo "FAILED  4b round 3 (R3-6): deleting a plain org member must not be judged by the pmc-standing arm"; FAIL=1; }
+assert "4b round 3 precision (R3-6): the plain org membership WAS removed — the arm judges only the standing the written row supplies" \
+  "SELECT COUNT(*)::text FROM \"OrgMembership\" WHERE \"id\"='UP4B3-OM';" \
+  "0"
+
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by
 # planting the legacy shape and RE-RUNNING the migration file, which is rerunnable BY DESIGN

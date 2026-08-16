@@ -21,9 +21,19 @@ describe('drawingDisciplineFor — consultant discipline → drawing register bu
 });
 
 describe('consultant permissions', () => {
-  it('can raise a change request but cannot approve decisions or issue drawings', () => {
+  it('can raise a change request and cannot issue drawings', () => {
     expect(can('decision.change', 'consultant')).toBe(true);
-    expect(can('decision.approve', 'consultant')).toBe(false);
     expect(can('drawing.issue', 'consultant')).toBe(false);
+  });
+
+  // Phase 6 task 4b, round 3 (Codex P1). This assertion used to read
+  // `can('decision.approve','consultant') === false`, and that WAS the whole rule while every
+  // decision awaited the client. It is no longer: a decision now names its own decider, which may
+  // be any active member, so refusing the consultant at the ROUTE refuses the feature. What is
+  // still true — and is what the original test meant — is that a consultant cannot approve a
+  // decision that is not theirs; that narrowing moved to the service, where the holder is known.
+  // The assertion moves with it rather than being deleted or quietly flipped.
+  it('reaches the approve route (a consultant may be a NAMED decider) — the holder narrowing is the service’s', () => {
+    expect(can('decision.approve', 'consultant')).toBe(true);
   });
 });

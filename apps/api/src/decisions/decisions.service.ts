@@ -177,10 +177,6 @@ export class DecisionsService {
     const d = await this.prisma.decision.findUnique({ where: { id: decisionId } });
     if (!d || d.projectId !== projectId) throw new NotFoundException(`Decision ${decisionId} not found`);
     if (d.publishedAt) throw new ConflictException('Decision is already published');
-    // Round 1 (Codex P1): publishing a SAVED record draft used the pending notice and the client
-    // push unconditionally — the same false approval demand the create path branches away from.
-    const isRecord = (d.deciderKind as string) === 'none';
-    const notice = isRecord ? recordedIssueNotice(d.title) : pendingDecisionNotice(d.title);
 
     const outcome = await executeCommand(this.prisma, {
       scope,
@@ -198,16 +194,29 @@ export class DecisionsService {
           data: { publishedAt: new Date() },
         });
         if (count === 0) throw new ConflictException('Decision is already published');
-        await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: d.title } } });
+        // Round 3 (Codex P2) — the SIDE-EFFECT BUNDLE is derived from the row this transaction
+        // just LOCKED, never from the advisory pre-read. `isRecord` decides whether the client is
+        // told a decision awaits their approval, and a draft is editable and convertible right up
+        // to publication: between the pre-read and this CAS, a concurrent edit can turn an
+        // ordinary draft into a record (the pending notice and push would then demand an approval
+        // nobody can give) or a record back into a decision (the required demand would be
+        // suppressed). The `updateMany` above holds the row, so what it returns is what published.
+        //
+        // Round 1 (Codex P1) is what the branch itself is for: publishing a SAVED record draft
+        // used the pending notice and the client push unconditionally.
+        const head = await tx.decision.findUniqueOrThrow({ where: { id: decisionId } });
+        const isRecord = (head.deciderKind as string) === 'none';
+        const notice = isRecord ? recordedIssueNotice(head.title) : pendingDecisionNotice(head.title);
+        await tx.decisionEvent.create({ data: { decisionId, type: 'issued', actor: actor.actorName, actorId: actor.actorId, actorName: actor.actorName, actorRole: actor.actorRole, payload: { title: head.title } } });
         await tx.notification.create({ data: { projectId, text: notice, color: '#C08A2D', time: 'just now', decisionId } });
         await recordAudit(tx, { projectId, actor, action: 'decision.publish', entity: 'Decision', entityId: decisionId });
         const ev = await emitEvent(tx, {
-          projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: d.title },
+          projectId, actor, eventType: 'decision.published', entityType: 'Decision', entityId: decisionId, payload: { title: head.title },
           effectKey: isRecord ? 'decision.recorded' : 'decision.published',
           // client-facing push body (the Notification row keeps `notice`), preserved from the
           // pre-PR-C in-request push so the pinned behaviour is unchanged — except for a record,
           // which announces to nobody.
-          dispatch: isRecord ? {} : { push: { body: `New decision awaiting your approval: ${d.title}` } },
+          dispatch: isRecord ? {} : { push: { body: `New decision awaiting your approval: ${head.title}` } },
         });
         return { resultRef: decisionId, events: [ev] };
       },
