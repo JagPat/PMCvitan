@@ -180,6 +180,35 @@ export class OrgsService {
     return this.prisma.orgMembership.count({ where: { orgId, role: 'owner' } });
   }
 
+  /**
+   * The last-owner rule, asked where it is enforced — round 15 (Codex P2).
+   *
+   * `ownerCount` is a plain read. Taken outside the transaction that performs the demotion it
+   * answers a question about a database that no longer exists by the time the write lands: two
+   * owners demoting EACH OTHER touch different rows, conflict on nothing, both observe two owners,
+   * and both commit. The org is then left with nobody who can add or remove anyone — an
+   * unrecoverable state reached by two individually legal actions.
+   *
+   * Locking the org's owner rows makes the count true at the moment it is used. `FOR UPDATE` in
+   * stable `userId` order means two overlapping demotions queue rather than deadlock, and the
+   * loser re-reads a count that now includes its rival's commit. It is taken FIRST, before
+   * `assertOrgWriteKeepsDecisionHolders` reaches for the target row and the projects' readiness
+   * keys, so every org roster writer acquires the same locks in the same order.
+   */
+  private async assertOrgKeepsAnOwner(
+    tx: Prisma.TransactionClient,
+    orgId: string,
+    departingRole: string | undefined,
+    nextRole: string,
+  ): Promise<void> {
+    if (departingRole !== 'owner' || nextRole === 'owner') return;
+    const owners = await tx.$queryRawUnsafe<Array<{ userId: string }>>(
+      `SELECT "userId" FROM "OrgMembership" WHERE "orgId" = $1 AND "role" = 'owner' ORDER BY "userId" FOR UPDATE`,
+      orgId,
+    );
+    if (owners.length <= 1) throw new BadRequestException('The org must keep at least one owner');
+  }
+
   /** Create a new org; the creator becomes its owner. */
   async createOrg(userId: string, input: CreateOrgInput): Promise<{ id: string; name: string; slug: string }> {
     const slug = `${slugify(input.name)}-${randomUUID().slice(0, 4)}`;
@@ -259,10 +288,10 @@ export class OrgsService {
     // but which is the identical sentence at the identical door, and splitting them would leave the
     // pair disagreeing again by the next round.
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId: user.id } } });
-    if (existing && existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
-      throw new BadRequestException('The org must keep at least one owner');
-    }
     const membership = await this.prisma.$transaction(async (tx) => {
+      // round 15 — the last-owner count is taken UNDER the org's owner-row locks, inside the
+      // transaction that demotes. Read outside it, two owners demoting each other both passed.
+      await this.assertOrgKeepsAnOwner(tx, orgId, existing?.role, input.role);
       // A pure CREATE short-circuits inside the guard: with no row to lock, the departing role is
       // the one being written, and a role that still supplies pmc standing (or never did) returns
       // before any project is examined.
@@ -350,11 +379,12 @@ export class OrgsService {
     if ((await this.orgRole(orgId, callerId)) !== 'owner') throw new ForbiddenException('Only an org owner can change roles');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } }, include: { user: true } });
     if (!existing) throw new NotFoundException('Not a member of this org');
-    if (existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
-      throw new BadRequestException('The org must keep at least one owner');
-    }
     // round 5 — guard and write in ONE transaction, holding the affected projects' readiness keys
     const membership = await this.prisma.$transaction(async (tx) => {
+      // round 15 — and the last-owner rule is asked HERE too, under the same owner-row locks. The
+      // finding named `addOrgMember`; this door had the identical read-outside-the-write defect,
+      // and fixing one of a pair has been this PR's most repeated mistake.
+      await this.assertOrgKeepsAnOwner(tx, orgId, existing.role, input.role);
       await this.assertOrgWriteKeepsDecisionHolders(tx, orgId, userId, existing.role, input.role);
       return tx.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } });
     });

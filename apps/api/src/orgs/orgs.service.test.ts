@@ -476,7 +476,12 @@ describe('OrgsService.addOrgMember', () => {
       // callback itself — the same shape `makeTx` uses above.
       $transaction: vi.fn(async (run: (client: unknown) => Promise<unknown>) => run(prisma)),
       project: { findMany: vi.fn(async () => projects) },
-      $queryRawUnsafe: vi.fn(async () => []),
+      // round 15 — same owner-row read, served from this suite's own roster
+      $queryRawUnsafe: vi.fn(async (sql: string) =>
+        /FROM "OrgMembership"[\s\S]*FOR UPDATE/.test(sql) && /'owner'/.test(sql)
+          ? orgMemberships.filter((m: { role: string }) => m.role === 'owner').map((m: { userId: string }) => ({ userId: m.userId }))
+          : [],
+      ),
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, created, orgMemberships };
   }
@@ -552,7 +557,14 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
       // round 5 (Codex P2) — the guard and its write are now ONE transaction holding each
       // affected project's readiness key; the in-memory client runs the callback against itself.
       $executeRaw: vi.fn(async () => 1),
-      $queryRawUnsafe: vi.fn(async () => []),
+      // round 15 (Codex P2) — the last-owner count is now taken INSIDE the transaction, under
+      // `FOR UPDATE` on the org's owner rows. The double must serve that read from the same
+      // in-memory roster the rest of this suite mutates, or every demotion looks like the last one.
+      $queryRawUnsafe: vi.fn(async (sql: string) =>
+        /FROM "OrgMembership"[\s\S]*FOR UPDATE/.test(sql) && /'owner'/.test(sql)
+          ? state.filter((m) => m.role === 'owner').map((m) => ({ userId: m.userId }))
+          : [],
+      ),
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, state };

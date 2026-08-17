@@ -44,7 +44,11 @@ describe('Phase 2 Task 4 — event catalog dual-write (live PG)', () => {
     if (t) {
       await t.prisma.$transaction([
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_t4a_no_truncate"'),
+        // Phase 6 4b (round 15): and the PARENT's own statement-level guard, which refuses while a
+        // published record or a withdrawn decision stands. Same sanctioned-bypass contract.
+        t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_no_truncate"'),
         t.prisma.$executeRawUnsafe('TRUNCATE "Decision","Activity","Phase","Inspection","Drawing","DailyLog","SiteMaterial","Media","DomainEvent" CASCADE'),
+        t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_no_truncate"'),
         t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_t4a_no_truncate"'),
       ]);
     }

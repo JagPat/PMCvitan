@@ -649,3 +649,86 @@ migration file itself, where the next person to widen this seal will read it.
 | R14-3 hostile inserts on the migrated legacy DB | `upgrade-proof.sh` round-14 block (insert, re-point, delivery, precision) |
 | R14-2 declined, with the measurement | this section; `pr-344-convergence.md` fifteenth edition; the migration's closing note |
 | the seal is untouched | `20270815000000` … `20270828000000` byte-for-byte unchanged; `20270829000000` does not mention `decision_t4b_recorded_seal` |
+
+---
+
+## Round 15 — the four Codex findings on `ac99e6b`
+
+Four P2. **Two land in code; two are refuted with evidence.** R14-2's decline from the previous
+round was not re-raised.
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| F1 | the last-owner count is read outside the transaction that enforces it | fixed, at BOTH roster doors |
+| F4 | `TRUNCATE "Decision" CASCADE` erases published records — a row-level guard never sees TRUNCATE | fixed at the database |
+| F2 | `20270815000000`'s `LOCK TABLE` is released at the next statement boundary | **refuted** — proven by execution |
+| F3 | the org-standing trigger refuses without asking whether the row supplies standing | **refuted** — fixed in round 3 |
+
+### F1 — one rule, two doors, and the count on the wrong side of `BEGIN`
+
+`ownerCount()` is a plain read. Taken before the transaction that demotes, it describes a database
+that no longer exists when the write lands: two owners demoting each other touch different rows,
+conflict on nothing, and both commit. The org is then unrecoverable by its own roster surface.
+
+`assertOrgKeepsAnOwner` takes the count under `FOR UPDATE` on the org's owner rows, in stable
+`userId` order, inside the transaction and before `assertOrgWriteKeepsDecisionHolders` — so every
+org roster writer takes the same locks in the same order, and the loser re-reads a count including
+its rival's commit. Applied to `updateOrgMemberRole` as well as the named `addOrgMember`.
+
+**Evidence:** both doors RED at `ac99e6b` — `expected 0 to be greater than or equal to 1`, twice,
+under a deterministic barrier that parks both callers inside their transactions on a held readiness
+key before either commits. GREEN after. A precision probe keeps the ordinary refusal and the
+ordinary success intact.
+
+### F4 — permanence against every verb
+
+The row-level `DELETE` arm calls a published record permanent; `TRUNCATE` fires no row trigger. The
+two child guards that would stop the cascade are CONDITIONAL, so a database whose records were never
+approved has no evidence to protect and the cascade proceeds. The probe builds exactly that state —
+clearing approval evidence through the sanctioned named-trigger bypass, never by weakening a seal —
+and erases the register in one statement at `ac99e6b`.
+
+`Decision_t4b_no_truncate` is conditional like its siblings, covers withdrawn decisions as well as
+records, and `event-catalog`'s sanctioned reset disables it by name alongside
+`DecisionEvent_t4a_no_truncate` — the same contract that already existed.
+
+### F2 — refuted by execution, and the false comment that caused it
+
+The finding's evidence was our own comment in `20270225000000`: "Prisma runs the file statement by
+statement, so every statement boundary is a commit." **That is false.** A migration file is sent as
+one multi-statement string and PostgreSQL runs it in an implicit transaction.
+
+`apps/api/scripts/prisma-migration-atomicity-proof.sh` proves it rather than asserting it: a
+migration whose first statement creates a table and whose second divides by zero leaves the table
+absent. The script fails loudly, and names F2 as CORRECT, if that ever stops being true.
+
+The comment is corrected in place — the claim only; not one line of that migration's SQL changes,
+and its DO-block design still stands on a true and narrower reason (`upgrade-proof.sh` re-applies
+files with a bare `psql -f`, which does autocommit per statement).
+
+### F3 — refuted; the cited body was superseded in round 3
+
+The finding quotes `org_membership_t4b_holder_seal` as it stands in `20270815000000`.
+`20270818000000` — round 3 of this same PR — replaced that body with one that computes `v_membered`
+and skips a project where the demoted user's active project membership already decides.
+
+```
+$ psql -tAc "SELECT pg_get_functiondef(oid) FROM pg_proc WHERE proname='org_membership_t4b_holder_seal'"
+  …
+  ) INTO v_membered;
+  v_was := NOT v_membered;
+  v_now := (TG_OP = 'UPDATE') AND NEW.role IN ('owner','admin') AND NOT v_membered;
+  IF v_was AND NOT v_now THEN
+```
+
+Two probes pin it: demoting a membered org admin under an open pmc-held decision SUCCEEDS, and the
+narrowing has not become a hole — the row that does supply the last standing is still refused. Both
+pass at `ac99e6b` unchanged, which is the point.
+
+### What this round says about the unit
+
+Two of four findings came from the repository's own history misleading a careful reader: nine
+superseded definitions of one trigger live in the tree, plus a comment that stated the opposite of
+the truth. Neither is the reviewer's error. **A fifteen-head correction lineage owes its readers a
+current-state map, and this one does not have one** — which is now the strongest argument yet that
+4b-ii should carry the audience and visibility over this seal network rather than extend it.

@@ -1238,3 +1238,104 @@ new `20270829000000` does not touch `decision_t4b_recorded_seal` at all.
 
 The standing recommendation is unchanged: **4b-ii carries the audience and visibility OVER this seal
 network as it stands, and does not extend it.**
+
+---
+
+## Sixteenth edition — round 15, where half the findings were about the tree, not the code
+
+Four findings on `ac99e6b` (4×P2). **1 SELF-INFLICTED. 1 ORIGINAL. 2 REFUTED. 0 SEAM.**
+
+| # | P | Class | Disposition |
+| --- | --- | --- | --- |
+| F1 | P2 | **SELF-INFLICTED** — round 12 put `addOrgMember`'s guard and write in one transaction and left the last-owner COUNT outside it | fixed at both doors |
+| F4 | P2 | **ORIGINAL** — every guard in this area was written for row-level verbs | fixed at the database |
+| F2 | P2 | **REFUTED** — the claimed statement-boundary commit does not happen; the finding's cited evidence was a false comment of ours | comment corrected, proof committed |
+| F3 | P2 | **REFUTED** — the cited function body was superseded by round 3, in this same PR | probe + live-database evidence |
+
+### F1: the count was outside the transaction that used it
+
+Round 12 (R12-2) moved `addOrgMember`'s holder guard and its write into one transaction. It did not
+move the **last-owner count**, which stayed a plain `ownerCount()` read taken before the transaction
+opened. Two owners demoting each other touch different rows and conflict on nothing: both read two
+owners, both pass, both commit, and the org is left with nobody who can add or remove anyone. The
+reproduction parks both callers inside their transactions on a held readiness key, and produces
+**zero owners**, deterministically.
+
+The fix takes the count under `FOR UPDATE` on the org's owner rows, in stable `userId` order, inside
+the transaction and before the existing guard — so all org roster writers acquire the same locks in
+the same order, and the loser re-reads a count that includes its rival's commit.
+
+`updateOrgMemberRole` had the identical defect and is fixed with it. The finding named only
+`addOrgMember`. Fixing one of a pair is this PR's single most repeated mistake — R9-3, R11-3, R12-2
+are all the same sentence — and the twin's probe is RED at `ac99e6b` too.
+
+### F4: every guard here was written for row-level verbs
+
+`decision_t4b_recorded_seal` calls a published record a permanent register entry and refuses to
+DELETE one. `TRUNCATE` fires no row trigger. The child evidence tables carry statement-level guards
+already, but both are CONDITIONAL — so on a database whose records were never approved there is no
+evidence to protect, the cascade proceeds, and the parent table had nothing to say. The probe builds
+exactly that state and erases the register in one statement.
+
+The new guard is conditional for the same reason its siblings are, and covers withdrawn decisions as
+well as published records: `Decision_t4a_d_no_delete` makes the identical promise about the identical
+table, and protecting one from truncation and not the other would be arbitrary.
+
+### F2 and F3: two findings answered by reading the tree, and what that says
+
+Neither is a defect in the code. Both are defects in what the repository ASSERTS about itself.
+
+**F2** argued that `20270815000000`'s opening `LOCK TABLE` is released at the next statement
+boundary, leaving a window between its audit and its seals. Its evidence was a comment of ours, in
+`20270225000000`, stating that "Prisma runs the file statement by statement, so every statement
+boundary is a commit". That comment is **wrong**. A migration file is sent as one multi-statement
+string, which PostgreSQL executes in an implicit transaction. `scripts/prisma-migration-atomicity-proof.sh`
+settles it by execution: a migration whose second statement divides by zero leaves no trace of its
+first. The comment is corrected in place — only the claim, not one line of its SQL — and the design
+it justified survives on a narrower and true reason: `upgrade-proof.sh` re-applies files with a bare
+`psql -f`, which really does autocommit per statement.
+
+**F3** argued that `org_membership_t4b_holder_seal` refuses a demotion without asking whether the
+demoted row supplies any standing. It quoted the body in `20270815000000`. Round 3 of this PR
+replaced that body — `20270818000000` computes exactly the `v_membered` gate the finding asks for.
+`pg_get_functiondef` on the live database shows the gate installed, and the probe demoting a membered
+org admin under an open pmc-held decision passes at `ac99e6b` unchanged.
+
+**The pattern worth naming: this PR is fifteen heads deep, and its own history is now long enough to
+mislead a reader.** Nine superseded definitions of one trigger function live in the tree, and a
+reviewer landing on the wrong one is not making a mistake — it is reading what we wrote. Both
+refutations this round come from that, and neither is the reviewer's fault. A correction lineage this
+long owes its readers signposts, and it does not currently have them.
+
+### The count
+
+| round | findings | seam | self-inflicted | original | refuted |
+| --- | --- | --- | --- | --- | --- |
+| 10 | 2 | 0 | 2 | 0 | 0 |
+| 11 | 5 | 0 | 5 | 0 | 0 |
+| 12 | 3 | 0 | 3 | 0 | 0 |
+| 13 | 2 | 0 | 2 | 0 | 0 |
+| 14 | 3 | 0 | 1 | 2 | 1 |
+| 15 | 4 | 0 | 1 | 1 | 2 |
+
+**Nine consecutive rounds, twenty-eight findings, zero seam defects.**
+
+### The rule this round contributes
+
+> A stale comment is not a comment; it is a claim the next reader will act on. **When prose in the
+> tree is what produced a finding, fixing the prose IS the fix** — and where the claim is about
+> behaviour, replace it with something that executes.
+
+And, from F1 for the fourth time: **when a rule guards a write, check every door into that write, in
+the same change.**
+
+### What is deferred
+
+Nothing. F1 and F4 are answered in code; F2 and F3 are answered with a corrected comment, a
+committed executable proof, and live-database evidence. `20270815000000` … `20270829000000` are
+byte-for-byte unchanged, and no seal function is redefined by this round's migration.
+
+**The standing recommendation is now stronger than a recommendation.** Two of four findings this
+round were the tree's history misleading a careful reader. 4b-ii must carry the audience and
+visibility OVER this seal network as it stands — and the 4b-i lineage needs a single current-state
+map before anyone reads it again.
