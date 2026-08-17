@@ -691,9 +691,15 @@ const projectRole = z.enum(['pmc', 'client', 'engineer', 'contractor', 'consulta
 // A consultant's discipline is a free-ish label (a new consultant type needs no code);
 // trimmed, capped, optional. Only meaningful for role === 'consultant'.
 const disciplineField = z.string().trim().min(1).max(40).optional();
+// Phase 6 unit 4b-i round 14 (Codex P2) — `.min(1)` counts CHARACTERS, and a tab is a character.
+// A whitespace-only name is not a name, and it does not stop at cosmetics: `decisions_t4b_holder_label`
+// renders a member holder as this string, so a decision designated to them becomes unapprovable —
+// the seal refuses to freeze a blank attribution, correctly, and there is no way to un-designate.
+// `.trim()` strips the whole whitespace class before `.min(1)` sees it, so the blank is a 400 here
+// and an ordinary name with incidental padding is stored clean.
 export const addMemberSchema = z
   .object({
-    name: z.string().min(1),
+    name: z.string().trim().min(1),
     role: projectRole,
     email: z.string().email().optional(),
     phone: z.string().min(6).optional(),
@@ -709,9 +715,11 @@ export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
 // tier — distinct from project membership. An org owner can operate every
 // project in the org as PMC; see OrgsService.addOrgMember.
 const orgRole = z.enum(['owner', 'admin', 'member']);
+// …and the org-tier roster is the same door: `addOrgMember` mints the `User` whose `name` a
+// project membership later renders (round 14).
 export const addOrgMemberSchema = z
   .object({
-    name: z.string().min(1),
+    name: z.string().trim().min(1),
     email: z.string().email().optional(),
     phone: z.string().min(6).optional(),
     role: orgRole,

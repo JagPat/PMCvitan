@@ -553,3 +553,99 @@ they never reached, followed by a clean resumed apply.
 
 `20270827000000` changes this round; `20270815000000` … `20270826000000` and `20270828000000` are
 byte-for-byte unchanged.
+
+---
+
+## Round 14 — the three Codex findings on `a09f0b2`
+
+Two P1, one P2. **Two are answered in code; one is answered by argument.** This is the first round on
+this PR whose findings are not consequences of its own earlier corrections.
+
+| # | P | Finding | Disposition |
+| --- | --- | --- | --- |
+| R14-1 | P2 | `addMemberSchema` admits a whitespace-only name, so a member-held decision becomes unapprovable and the seal's refusal surfaces as a 500 | fixed at the contract AND at the service |
+| R14-3 | P1 | a raw `Activity`/`SiteMaterial` insert races the conversion seal — `FOR KEY SHARE` does not conflict with the conversion's non-key UPDATE | fixed at the database |
+| R14-2 | P1 | a rolled-back deploy leaves a pre-4b release in front of the seal, approving nothing | **declined as specified**; documented |
+
+### R14-1 — two doors, and only one of them was reachable by a contract
+
+`z.string().min(1)` counts characters. A tab is a character, so `"\t"` was a legal member name, and
+`decisions_t4b_holder_label` renders a member holder as exactly that string. Round 6's
+`decisions_t4b_blank` then refused — correctly — to freeze a blank attribution, and the decision was
+unapprovable by anyone, with a `PrismaClientUnknownRequestError` as the only explanation.
+
+- **Contract:** `addMemberSchema.name` and `addOrgMemberSchema.name` become `.trim().min(1)`. A
+  whitespace-only name is a 400; an ordinary name with incidental padding is accepted and stored
+  clean.
+- **Service:** the contract cannot reach a name that is ALREADY blank. `holderLabel` now returns
+  `{ label, blank }` — both computed in one statement by `decisions_t4b_holder_label` and
+  `decisions_t4b_blank`, the seal's own functions, so the two cannot answer differently — and
+  `approve()` refuses with a `ConflictException` naming the remedy.
+
+A probe pins the precision arm too: a padded ordinary name still parses, because a spokesman
+stricter than its seal is the failure round 5 recorded.
+
+### R14-3 — enforced against whom?
+
+Round 10's race probes are sound and unchanged; they prove the conversion serializes against
+`linkableInProject`'s in-tx form, which takes `FOR SHARE`. The serialization belonged to the
+**caller**. PostgreSQL's row-lock matrix does the rest: a bare `INSERT` takes the FK's
+`FOR KEY SHARE`, which conflicts only with `FOR UPDATE` — not with the conversion's
+`FOR NO KEY UPDATE`. At `a09f0b2` the racing insert did not block at all, and both sessions
+committed.
+
+`decisions_t4b_assert_linkable(projectId, decisionId, dependent)` is decisions-owned — the decision
+register states what a linkable decision is; the tables holding the dependents ask it from their own
+triggers, the same ownership shape as `orgs_user_decision_authority` — takes the SAME `FOR SHARE`,
+and refuses `recorded`. Four triggers: INSERT and re-POINT on each of `Activity` and `SiteMaterial`,
+the UPDATE arms gated by `WHEN (… IS DISTINCT FROM OLD."decisionId")` so an unrelated update that
+merely names the column pays nothing.
+
+The migration is diagnostic-first: a dependent that ALREADY points at a record is the exact state
+this race could produce, so the deploy names it and stops rather than installing the guard and
+stepping over it. `upgrade-proof.sh` plants that row BEFORE the migration, proves the abort names it
+by id, repairs it the way RUNBOOK §P6-4b.2 says to, and then applies cleanly.
+
+### R14-2 — implemented, measured, reverted
+
+The facts are right: `migrate.sh` runs inside the API container's start command, so the schema is
+durable before the process that goes with it is known healthy, and a failed deploy that rolls back
+leaves a pre-4b release approving nothing.
+
+The remedy was built. The seal derived a wholly absent tuple from the row's own designation — the
+same three values `approve()` computes. Then it was measured:
+
+| suite | result under derivation |
+| --- | --- |
+| `phase6-t4b-correction6.test.ts` R6-1 | FAILED — the tupleless transition it exists to refuse now succeeded |
+| `upgrade-proof.sh` round 6 (2 assertions) | FAILED |
+| `upgrade-proof.sh` round 8 (3 assertions) | FAILED |
+| `upgrade-proof.sh` round 10 (3 assertions) | FAILED |
+| `upgrade-proof.sh` round 6/8/10 landing checks (2) | FAILED |
+
+Narrowing derivation to first approvals recovered rounds 10 and 11 and left 6 and 8 broken — because
+they are about precisely the transition the compatibility path needs. Derivation does not add a path
+to the rule; it replaces the rule.
+
+The exposure is also not specific to 4b. **Nine** migrations in this ledger make an existing column
+`NOT NULL` and **sixty-eight** install raising triggers; a pre-deploy release dies on
+`PurchaseOrderLine."purchaseUom"` exactly as it dies here. Forward-only IS the migration policy, and
+cutover step 1 (drain before `migrate.sh`) is how it is honoured.
+
+What 4b genuinely owed, and now pays, is the operator's side. RUNBOOK **§P6-4b.1** states the
+constraint in the same terms §P6-4a states it for 4a: deploy where you can watch it; roll FORWARD if
+it fails; here is the exact error; never hand-write the tuple, because a hand-written one is
+indistinguishable from the forgery the seal exists to refuse. The reasoning is also recorded in the
+migration file itself, where the next person to widen this seal will read it.
+
+### Evidence
+
+| Claim | Where |
+| --- | --- |
+| all three findings RED at `a09f0b2` | `phase6-t4b-correction14.test.ts` — 9 failed / 2 passed before the fix |
+| R14-1 both doors | `contracts.ts` (`addMemberSchema`, `addOrgMemberSchema`); `decisions.service.ts` `holderLabel` + `approve()` |
+| R14-3 guard + both race orderings | `20270829000000_phase6_t4b_correction14/migration.sql`; the two `pg_stat_activity`-barrier probes |
+| R14-3 diagnostic abort → repair → apply | `upgrade-proof.sh` `plant_and_prove_t4b_r14_dependent` |
+| R14-3 hostile inserts on the migrated legacy DB | `upgrade-proof.sh` round-14 block (insert, re-point, delivery, precision) |
+| R14-2 declined, with the measurement | this section; `pr-344-convergence.md` fifteenth edition; the migration's closing note |
+| the seal is untouched | `20270815000000` … `20270828000000` byte-for-byte unchanged; `20270829000000` does not mention `decision_t4b_recorded_seal` |

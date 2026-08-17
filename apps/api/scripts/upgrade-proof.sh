@@ -580,6 +580,43 @@ SQL
   echo "pre-round-10 legacy approvals planted (UP4B2-D1, UP4BR10-CASCADE, UP4BR11-CHANGE), all TUPLELESS and UNSTAMPED"
 }
 
+# ── Phase 6 4b round 14 (R14-3): the dependent-on-a-record state must ABORT, then repair + apply ──
+# The race this migration closes is the one way an `Activity` could come to name a `recorded`
+# decision, so a database carrying one is exactly the state the guard exists to prevent — and the
+# deploy must not install the guard and step over it. Planted BEFORE 20270829000000, where nothing
+# yet refuses the link, which is precisely how it would have arisen in production.
+plant_and_prove_t4b_r14_dependent() {
+  local d="$1" out
+  echo ""
+  echo "=== Phase 6 4b (R14-3): planting an ACTIVITY that already depends on a recorded issue ==="
+  $PSQL -q <<'SQL' || { echo "4b R14-3 plant failed"; exit 1; }
+-- born `recorded` (the only legal door) — `deciderKind='none'` is paired to it by CHECK
+INSERT INTO "Decision" ("id","projectId","title","room","status","deciderKind","photoSwatch","authorId")
+VALUES ('UP4BR14-REC','p1','Legacy record with a dependent','Hall','recorded','none','stone','USER-1');
+INSERT INTO "Activity" ("id","projectId","name","zone","plannedStart","plannedEnd","status","decisionId")
+VALUES ('UP4BR14-ACT','p1','Waiting on nobody','Kitchen',0,5,'not_started','UP4BR14-REC');
+SQL
+  echo "=== Phase 6 4b (R14-3): the migration must ABORT on the stranded dependency ==="
+  if out=$(psql -X -v ON_ERROR_STOP=1 --single-transaction -d "$DB" -f "$d/migration.sql" 2>&1); then
+    echo "FAILED  4b R14-3: the migration ACCEPTED an activity depending on a recorded issue — the diagnostic is gone"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'already depend on a recorded issue'; then
+    echo "FAILED  4b R14-3: the migration aborted, but not by the named diagnostic — got: $(printf '%s' "$out" | tail -3)"
+    exit 1
+  fi
+  if ! printf '%s' "$out" | grep -q 'activity UP4BR14-ACT -> UP4BR14-REC'; then
+    echo "FAILED  4b R14-3: the abort must NAME the row an operator has to decide about"
+    exit 1
+  fi
+  echo "ok      4b R14-3: abort names the stranded dependency (UP4BR14-ACT -> UP4BR14-REC)"
+  # operator repair #1 from RUNBOOK §P6-4b.2 — the dependency is wrong, so unlink it. The record
+  # itself is left standing: it is a real issue someone filed, and nothing here may delete it.
+  $PSQL -q -c "UPDATE \"Activity\" SET \"decisionId\"=NULL WHERE \"id\"='UP4BR14-ACT';" \
+    || { echo "4b R14-3 repair failed"; exit 1; }
+  echo "ok      4b R14-3: repaired by UNLINKING the dependent — the record survives, the work survives"
+}
+
 # ---- 3f. the remaining ledger to HEAD ----------------------------------------------------
 # Migrations stamped after the round-2 stop (Task 2 procurement onward) also land in
 # phase3_r2_dirs; the explicit round-2/3 stops above covered exactly two of them. Apply every
@@ -602,6 +639,8 @@ for d in "${phase3_r2_dirs[@]}"; do
     20270810000000_*) plant_and_prove_t4a_partial_apply "$d" ;;
     # ── Phase 6 task 4b round 10 STOP — the legacy-approval STAMP needs pre-migration rows ────
     20270827000000_*) plant_pre_t4b_r10_legacy ;;
+    # ── Phase 6 4b round 14 STOP — the stranded-dependency diagnostic must ABORT, then repair ──
+    20270829000000_*) plant_and_prove_t4b_r14_dependent "$d" ;;
   esac
   apply_one "$d"
 done
@@ -4121,6 +4160,44 @@ $PSQL -q -f "$MIG_DIR/20270827000000_phase6_t4b_correction10/migration.sql" >/de
 assert "4b round 11 (R11-4): the re-run changed nothing — same set, no duplicate, no abort" \
   "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\";" \
   "$STAMP_SET"
+
+# ── 4b ROUND 14 ───────────────────────────────────────────────────────────────────────────────
+# R14-2 is NOT proven here, because it is answered in prose rather than code — the reasoning is in
+# `20270829000000_phase6_t4b_correction14/migration.sql` and RUNBOOK §P6-4b.1. The shape it is
+# about (a tupleless approval TRANSITION) is already pinned by the round-6, round-8 and round-10
+# blocks above, all of which REFUSE it; the derivation that was tried and reverted would have
+# turned every one of those ten assertions from a refusal into an acceptance, and they are the
+# evidence for that claim rather than an aside to it.
+echo ""
+echo "=== 4b round 14: the link guard ==="
+# a published, ordinary decision for the precision arm below to link against
+$PSQL -q <<'SQL' >/dev/null || { echo "FAILED  4b round 14: could not stage the linkable decision"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","deciderKind","photoSwatch","authorId")
+VALUES ('UP4BR14-OPEN','p1','An ordinary open decision','Hall','pending','client','stone','USER-1');
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4BR14-OP1','UP4BR14-OPEN','A','a','Teak',0,'sw1'),
+       ('UP4BR14-OP2','UP4BR14-OPEN','B','b','Oak',100,'sw2');
+UPDATE "Decision" SET "publishedAt"=now() WHERE "id"='UP4BR14-OPEN';
+SQL
+
+# R14-3 — the link rule, at the child's own write. `linkableInProject` refused a record from the
+# day round 5 shipped, and a writer that never calls it was refused by nothing.
+assert_rejects "4b seal (round 14, R14-3): a RAW activity insert naming a recorded issue — the gate would wait forever" \
+  "INSERT INTO \"Activity\" (\"id\",\"projectId\",\"name\",\"zone\",\"plannedStart\",\"plannedEnd\",\"status\",\"decisionId\") VALUES ('UP4BR14-HOSTILE','p1','Waiting on nobody','Kitchen',0,5,'not_started','UP4BR14-REC')" \
+  "cannot depend on a recorded issue"
+assert_rejects "4b seal (round 14, R14-3): RE-POINTING an existing activity onto a recorded issue — the same rule, the other verb" \
+  "UPDATE \"Activity\" SET \"decisionId\"='UP4BR14-REC' WHERE \"id\"='UP4BR14-ACT'" \
+  "cannot depend on a recorded issue"
+$PSQL -q -c "INSERT INTO \"DailyLog\" (\"id\",\"projectId\",\"date\") VALUES ('UP4BR14-LOG','p1','01 Jan 2026') ON CONFLICT DO NOTHING" >/dev/null
+assert_rejects "4b seal (round 14, R14-3): a RAW delivery match naming a recorded issue" \
+  "INSERT INTO \"SiteMaterial\" (\"id\",\"projectId\",\"dailyLogId\",\"name\",\"qty\",\"zone\",\"swatch\",\"matched\",\"decisionId\") VALUES ('UP4BR14-SM','p1','UP4BR14-LOG','Teak','1','Kitchen','sw1',true,'UP4BR14-REC')" \
+  "cannot depend on a recorded issue"
+# …and the guard costs a legitimate writer nothing: it is the same question the service already asks.
+$PSQL -q -c "INSERT INTO \"Activity\" (\"id\",\"projectId\",\"name\",\"zone\",\"plannedStart\",\"plannedEnd\",\"status\",\"decisionId\") VALUES ('UP4BR14-FINE','p1','Waiting on a real decision','Kitchen',0,5,'not_started','UP4BR14-OPEN')" >/dev/null \
+  || { echo "FAILED  4b round 14 (R14-3): an activity naming an ORDINARY decision must still link"; FAIL=1; }
+assert "4b round 14 (R14-3) precision: the ordinary link committed, and the stranded one never existed" \
+  "SELECT (SELECT COUNT(*) FROM \"Activity\" WHERE \"id\"='UP4BR14-FINE')::text || '/' || (SELECT COUNT(*) FROM \"Activity\" WHERE \"id\"='UP4BR14-HOSTILE')::text || '/' || (SELECT COALESCE(\"decisionId\",'<null>') FROM \"Activity\" WHERE \"id\"='UP4BR14-ACT');" \
+  "1/0/<null>"
 
 # the subject reaches BACKWARD: a pre-4a durable decision.published push (subjectless, relay
 # down) must be backfilled from its own event's entityId when the migration runs — proven by

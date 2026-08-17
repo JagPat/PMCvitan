@@ -66,17 +66,29 @@ export class DecisionsService {
     );
   }
 
+  /**
+   * The holder's display identity, and — round 14 (Codex P2) — whether that identity is BLANK,
+   * asked in the same statement by the same function the seal recomputes.
+   *
+   * A member whose `User.name` is whitespace renders a blank label, and `decisions_t4b_blank`
+   * refuses to freeze it: an attribution nobody can read attributes nothing. That refusal is
+   * right, and it arrived as a raw Prisma error, so an ordinary and entirely fixable situation —
+   * someone's name was entered badly — looked like a server fault and left the decision
+   * unapprovable with no stated reason. The contract now rejects such a name at the door; this
+   * covers every name that is ALREADY stored, which no contract change can reach.
+   */
   private async holderLabel(
     tx: Prisma.TransactionClient,
     projectId: string,
     kind: string,
     membershipId: string | null,
-  ): Promise<string | null> {
-    const rows = await tx.$queryRawUnsafe<Array<{ label: string | null }>>(
-      `SELECT decisions_t4b_holder_label($1, $2, $3) AS label`,
+  ): Promise<{ label: string | null; blank: boolean }> {
+    const rows = await tx.$queryRawUnsafe<Array<{ label: string | null; blank: boolean }>>(
+      `SELECT decisions_t4b_holder_label($1, $2, $3) AS label,
+              decisions_t4b_blank(decisions_t4b_holder_label($1, $2, $3)) AS blank`,
       projectId, kind, membershipId,
     );
-    return rows[0]?.label ?? null;
+    return { label: rows[0]?.label ?? null, blank: rows[0]?.blank !== false };
   }
 
   /**
@@ -488,9 +500,23 @@ export class DecisionsService {
         if (!alreadyAttributed && holderKind === 'member') {
           await this.orgsParticipant.lockMembershipIdentity(tx, projectId, d.deciderMembershipId ?? '');
         }
-        const holderLabel = alreadyAttributed
-          ? head.approvedDeciderLabel
-          : await this.holderLabel(tx, projectId, holderKind, d.deciderMembershipId);
+        let holderLabel: string | null;
+        if (alreadyAttributed) {
+          holderLabel = head.approvedDeciderLabel;
+        } else {
+          // Round 14 (Codex P2) — the SPOKESMAN rule, at the sixth door. The seal refuses a blank
+          // attribution; the service asks the same question first, so the answer is a reason the
+          // caller can act on rather than a 500 on a decision that then cannot be approved at all.
+          const derived = await this.holderLabel(tx, projectId, holderKind, d.deciderMembershipId);
+          if (derived.blank) {
+            throw new ConflictException(
+              holderKind === 'member'
+                ? 'This decision is held by a member whose name is blank, so the approval cannot record who approved it — correct the member\'s name on the team, then approve'
+                : `This decision's holder (${holderKind}) has no display identity, so the approval cannot record who approved it`,
+            );
+          }
+          holderLabel = derived.label;
+        }
         // ...and the ANNOUNCEMENT says so too (gate finding 7, corrected round 1 Codex P2): who
         // exercised the authority, and WHOSE authority it was. The old text said "Client approved"
         // for every decider and "on behalf of the client" for every delegation, so a PMC-held or

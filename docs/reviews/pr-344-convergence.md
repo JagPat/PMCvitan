@@ -17,6 +17,7 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `f113f94` | round-10 fold + this audit's eleventh edition | 5 (2 P1, 3 P2) | corrected on `7988f26`, all inside the unmerged `20270827000000`: the stamp widened to legacy approvals already sitting in `change` (an ordinary pre-existing change request was otherwise unwithdrawable forever); the register declared in `schema.prisma` so drift cannot DROP it; R4-2's born-approved-tupleless INSERT door CLOSED, its justification having been dissolved by round 10 itself; the stamp made genuinely ONE-SHOT (guarded on the seal's own existence, not per row, so a later re-run cannot enlarge the set); and a statement-level `BEFORE TRUNCATE` seal for the verb a row trigger never sees |
 | `7988f26` | round-11 fold + this audit's twelfth edition | 3 (3 P2) | corrected on `99cbada` via `20270828000000` plus a schema and a service edit: the evidence FK's UPDATE action DECLARED `NoAction` to match the database (a Prisma relation defaults to `Cascade`, and `migrate diff` was emitting `ON UPDATE CASCADE` for it); `addOrgMember`'s upsert routed through the SAME transactional holder guard — and the same last-owner rule — that `updateOrgMemberRole` runs; and publication revalidating a RECORD's author, the third of three doors that the migration's own header already claimed all asked |
 | `99cbada` | round-12 fold + this audit's thirteenth edition | 2 (2 P2) | corrected on this head: the RECORD arm added to `assertPublishableHolder` through a new orgs-owned `userHasDecisionAuthority` participant method calling the SAME primitive the trigger calls (round 12 added the seal and left it without a spokesman, so an ordinary stale-draft publish 500'd); and the stamp + both its seals folded into ONE `DO` block, because round 11's one-shot GUARD is not atomicity — an interrupted non-transactional apply committed rows with no seal, and the retry then died on the primary key |
+| `a09f0b2` | round-13 fold + this audit's fourteenth edition | 3 (2 P1, 1 P2) | corrected on this head, and the first round with findings this PR's own corrections did not create: the whitespace-only member name shut at BOTH doors (`addMemberSchema`/`addOrgMemberSchema` gain `.trim()`; `approve()` asks `decisions_t4b_blank` — the seal's own function — and refuses with an actionable 409 instead of letting the trigger 500); the link rule stated at the CHILD's write via the new decisions-owned `decisions_t4b_assert_linkable`, which takes the same `FOR SHARE` the service writer opted into, because a raw insert's FK `FOR KEY SHARE` does not conflict with the conversion's non-key UPDATE and both sessions were committing; and the deploy-rollback finding **DECLINED as specified** — deriving the absent holder tuple was implemented, failed ten assertions across rounds 6/8/10, and was reverted, with the constraint documented in RUNBOOK §P6-4b.1 instead |
 
 ## Root analysis — one generative class, three faces
 
@@ -1101,3 +1102,139 @@ raised, and every one of them was visible from inside the change.
 Both findings are answered in code on this head. `20270827000000` changes this round (the stamp and
 its seals become one `DO` block); `20270815000000` … `20270826000000` and `20270828000000` are
 byte-for-byte unchanged.
+
+---
+
+## Fifteenth edition — round 14, and the first finding this PR should NOT fully act on
+
+Three findings on `a09f0b2` (2×P1, 1×P2). **1 SELF-INFLICTED. 1 ORIGINAL. 1 ORIGINAL-AND-DECLINED.
+0 SEAM.** The streak of purely self-inflicted rounds ends here, and it ends in both directions: two
+of the three are defects this PR's own corrections never created, and one of those two is answered
+by argument rather than by code.
+
+| # | P | Class | Disposition |
+| --- | --- | --- | --- |
+| R14-1 | P2 | **SELF-INFLICTED** — round 6 installed the blank-label refusal; nobody gave it a spokesman, and nobody looked at where blank names come from | fixed at both doors |
+| R14-3 | P1 | **ORIGINAL** — round 10 sealed the conversion against dependents that already exist and serialized the SERVICE writers; a raw writer took no conflicting lock at all | fixed at the database |
+| R14-2 | P1 | **ORIGINAL, and DECLINED as specified** — real exposure, wrong remedy | seal unchanged; deploy constraint documented |
+
+### R14-1: the spokesman rule, at the sixth door — and the door behind it
+
+Round 6 made a blank approval label unforgeable. Correct: an attribution nobody can read attributes
+nobody. What it did not do is ask where a blank label comes from, and the answer was two doors back
+— `addMemberSchema` validated `name` with `z.string().min(1)`, which counts CHARACTERS, and a tab is
+a character. So a member could be added with a name of whitespace, be designated the decider on a
+decision, and that decision became **unapprovable by anyone**, with the refusal surfacing as a raw
+Prisma error.
+
+Both doors are now shut, and it matters that it is both. `.trim().min(1)` stops the next blank name;
+it cannot reach a name that is already stored, in a legacy row or minted by another module. So
+`approve()` asks `decisions_t4b_blank` — the same function the seal asks, in the same statement that
+derives the label — and refuses with a `ConflictException` that names the remedy: correct the
+member's name, then approve.
+
+This is the sixth application of the standing rule, and the fifth time the missing spokesman was the
+finding. That is no longer a coincidence; it is a checklist item. **Every seal arm owes a service
+question, and the arm is not finished without it.**
+
+### R14-3: round 10 serialized the writers it could see
+
+Round 10 closed the conversion direction: a draft that something already depends on cannot become a
+record. Its race probes proved both orderings — and proved them against `linkableInProject`'s in-tx
+form, which takes `FOR SHARE` on the decision row. The serialization was real, and it belonged to
+the *caller*, not to the write.
+
+A `INSERT INTO "Activity" (…, "decisionId")` that never calls the service takes only the FK's
+`FOR KEY SHARE`, and PostgreSQL's row-lock matrix says that does **not** conflict with the
+conversion's `FOR NO KEY UPDATE`. Both sessions therefore commit, and the result is exactly the
+state round 10 exists to prevent: an activity waiting on an issue nobody can approve. The
+reproduction shows it plainly — at `a09f0b2` the racing insert never blocked at all.
+
+The rule is now stated where the write happens: `decisions_t4b_assert_linkable` is decisions-owned
+(the peer asks; neither module reads the other's rows, the same shape as
+`orgs_user_decision_authority`), takes the SAME `FOR SHARE` the service writer opted into, and
+refuses `recorded`. Both orderings are proven under the `pg_stat_activity` barrier, and the migration
+ABORTS on any dependent that already points at a record rather than installing the guard and
+stepping over the rows it exists to prevent.
+
+**What this round names:** round 10 asked "is this rule enforced in both directions?" and answered
+yes. The question it did not ask is **"enforced against whom?"** A rule enforced by the caller is a
+convention. A rule enforced at the write is an invariant.
+
+### R14-2: the exposure is real, the remedy is not
+
+The finding is sound in its facts. `scripts/migrate.sh` runs inside the API container's start
+command, so this schema becomes durable before the process that goes with it is known to be healthy;
+a deploy that commits its migrations and then fails leaves a pre-4b release — which writes none of
+the `approvedDecider*` columns — in front of `decision_t4b_recorded_seal`, approving nothing.
+
+The suggested remedy was implemented, not theorised about. The seal derived a wholly absent holder
+tuple from the designation the row already carries — `deciderKind`, `deciderMembershipId` and
+`decisions_t4b_holder_label`, which are precisely the three values `approve()` computes, so nothing
+was invented. It reads well. **It also failed ten assertions**, across rounds 6, 8 and 10, every one
+of which the upgrade proof named: R6-1's tupleless transition, R8-1's both forged arrivals, R10-1's
+both forgery paths. Narrowing it to first approvals only recovered rounds 10 and 11 and left round 6
+and round 8 broken, because those are about exactly the transition the compatibility path needs.
+
+That is the whole answer. Derivation does not ADD a compatibility path to the rule; it REPLACES the
+rule. The seal's premise since round 5 is that an approval transition **carries** its attribution,
+and those ten assertions are what that premise looks like when written down. Retiring five heads of
+reviewed forgery resistance to buy a rollback property is not a correction.
+
+And the property is not one this codebase has anywhere. Nine migrations in the ledger make an
+existing column `NOT NULL`; sixty-eight install raising triggers. A pre-deploy release dies on
+`PurchaseOrderLine."purchaseUom"` exactly as it dies here. The forward-only ledger IS the migration
+policy, and RUNBOOK cutover step 1 — drain the old instances BEFORE `migrate.sh` — is how the policy
+is honoured. Making this one seal rollback-safe would make it the weakest seal in the codebase and
+would still leave the deploy unsafe.
+
+What the finding legitimately exposes is that **4b never told the operator any of this**. §P6-4a says
+it for 4a, in as many words. So §P6-4b.1 now says it for 4b: deploy where you can watch it, roll
+FORWARD if it fails, here is the exact error you will see, and never hand-write the tuple — a
+hand-written one is indistinguishable from the forgery the seal exists to refuse.
+
+**This is recorded as a decline, in the open, with the evidence.** The alternative — quietly widening
+the seal and letting ten assertions be rewritten to expect acceptance — would have passed review
+more easily and left the unit worse.
+
+### The count
+
+| round | findings | seam | self-inflicted | original |
+| --- | --- | --- | --- | --- |
+| 7 | 3 | 0 | 3 | 0 |
+| 8 | 3 | 0 | 2 (+1 latent) | 0 |
+| 9 | 3 | 0 | 3 | 0 |
+| 10 | 2 | 0 | 2 | 0 |
+| 11 | 5 | 0 | 5 | 0 |
+| 12 | 3 | 0 | 3 | 0 |
+| 13 | 2 | 0 | 2 | 0 |
+| 14 | 3 | 0 | 1 | 2 |
+
+**Eight consecutive rounds, twenty-four findings, zero seam defects.**
+
+The shift in round 14 is worth noticing rather than celebrating. Six rounds of self-inflicted
+findings meant the review was tracing this PR's own corrections; two original findings mean it has
+started reaching the parts of the unit the corrections never touched — the child tables, and the
+deploy. That is a sign the seal network itself is settling, and it strengthens rather than weakens
+the standing recommendation.
+
+### The rule this round contributes
+
+> A rule enforced by the caller is a convention. Ask **enforced against whom**, not just
+> **enforced in both directions**.
+
+And its companion, from R14-2:
+
+> When a suggested remedy costs more invariant than the defect costs safety, implement it, measure
+> it, revert it, and say so. **A review finding names a problem; it does not oblige you to accept
+> the first solution offered for it.**
+
+### What is deferred, and what is declined
+
+Nothing is deferred. R14-1 and R14-3 are answered in code on this head. R14-2 is **declined as
+specified** and answered in documentation, with the reasoning stated in the migration file itself,
+in RUNBOOK §P6-4b.1, and above. `20270815000000` … `20270828000000` are byte-for-byte unchanged; the
+new `20270829000000` does not touch `decision_t4b_recorded_seal` at all.
+
+The standing recommendation is unchanged: **4b-ii carries the audience and visibility OVER this seal
+network as it stands, and does not extend it.**

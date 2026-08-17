@@ -1082,3 +1082,73 @@ cutover step 1 above). Keep it that way for the 4a rollout specifically: do NOT 
 post-4a application processes side by side. If a multi-instance rolling strategy is ever
 introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
 ships 4a — after that, every sender carries the pre-send re-check.
+
+## §P6-4b. Phase 6 unit 4b-i — the decider seals (round 14: deploy direction + the link guard)
+
+Two operator-facing consequences of `20270829000000_phase6_t4b_correction14`.
+
+### §P6-4b.1 Do NOT roll back across the 4b deploy — roll forward
+
+`scripts/migrate.sh` runs inside the API container's start command, so migrations commit BEFORE
+`node dist/main.js` is known to be healthy. If the process then fails and the platform reverts to
+the previous image, that image is serving against the new schema — and a pre-4b release writes none
+of the `approvedDecider*` columns, so `decision_t4b_recorded_seal` refuses every approval it
+attempts, with a raw database error and no stated cause.
+
+**This is not specific to 4b.** Nine migrations in this ledger make an existing column `NOT NULL`
+and sixty-eight install raising triggers; a pre-deploy release dies on `PurchaseOrderLine`'s
+`purchaseUom` exactly as it dies here. The forward-only ledger IS this repository's migration
+policy, and cutover step 1 above (drain the old instances BEFORE `migrate.sh`) is how the policy is
+honoured. 4b was not made an exception to it: the alternative considered — deriving the missing
+holder tuple from the row's own designation — was implemented, measured against the suite, and
+reverted, because it turned ten reviewed forgery-resistance assertions (rounds 6, 8 and 10) from
+refusals into acceptances. A seal is not worth less than a rollback.
+
+**Operator rule, the 4b analogue of §P6-4a:**
+
+- Deploy 4b when you can watch it. Confirm `/health` and one real approval before walking away.
+- If the deploy fails after migrations commit, **roll FORWARD** — fix the build or the environment
+  and redeploy the 4b image. Do not revert to the pre-4b image and leave it serving.
+- Symptom that you are in this state: approvals fail with `phase6-4b: an approval of … records WHO
+  approved it`. Nothing is corrupted and nothing is lost; approvals are simply refused until the 4b
+  code is back in front of the 4b schema.
+- Never hand-write the holder tuple to work around it. The current release writes it correctly, and
+  a hand-written one is indistinguishable from the forgery the seal exists to refuse.
+
+### §P6-4b.2 The migration ABORTS on a dependent that already points at a recorded issue
+
+`Activity` and `SiteMaterial` now refuse, at PostgreSQL, to name a decision whose status is
+`recorded` — a record is approvable by nobody, so such a link is a gate that can never open. The
+migration is diagnostic-first: if any such row already exists it names the counts, prints up to ten
+samples and stops, without editing anything.
+
+```
+ERROR:  phase6-4b R14-3: 1 activities and 0 deliveries already depend on a recorded issue …
+        Sample: activity ACT-xyz -> DL-123
+```
+
+Find them:
+
+```sql
+SELECT a."id" AS dependent, 'activity' AS kind, a."decisionId"
+  FROM "Activity" a JOIN "Decision" d ON d."projectId" = a."projectId" AND d."id" = a."decisionId"
+ WHERE d."status"::text = 'recorded'
+UNION ALL
+SELECT m."id", 'delivery', m."decisionId"
+  FROM "SiteMaterial" m JOIN "Decision" d ON d."projectId" = m."projectId" AND d."id" = m."decisionId"
+ WHERE d."status"::text = 'recorded';
+```
+
+Exactly two repairs are legal, and which one is correct is a question about the site, not about the
+data — ask the project's PMC before choosing:
+
+1. **The dependency is wrong** — the work does not actually wait on that issue. Unlink it:
+   `UPDATE "Activity" SET "decisionId" = NULL WHERE "id" = '<id>';` (same for `"SiteMaterial"`).
+2. **The record is wrong** — it should be a decision someone can answer. Only possible while it is
+   UNPUBLISHED (a published record is permanent, and the seal enforces that): take it back out with
+   its decider re-pointed in the same statement, e.g.
+   `UPDATE "Decision" SET "status"='pending', "deciderKind"='client' WHERE "id"='<id>' AND "publishedAt" IS NULL;`
+
+Never delete the dependent to clear the diagnostic — that discards site work to satisfy a check.
+After the repair, re-run `prisma migrate deploy`; if the migration was already recorded failed,
+classify and `migrate resolve --rolled-back` first (the same three-state handling as §T45.1).
