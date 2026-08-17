@@ -1,6 +1,5 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { loadStatusDocument } from './autonomous-status-state.mjs';
 
 import {
   codexThreadIdsToResolve,
@@ -9,10 +8,10 @@ import {
 } from './autonomous-review-state.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
-  assessConvergence,
-  findingHeadSeverity,
   assessReviewScope,
-  deferralPhases,
+  codexFindingHeads,
+  PRE_REVIEW_ENFORCE_AFTER_PR,
+  REVIEW_RESET_AFTER_FINDING_HEADS,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
 import {
@@ -1006,45 +1005,25 @@ export async function enforceReviewConvergence(
     client.reviewComments(pullRequest.number),
     client.reviews(pullRequest.number),
   ]);
-  const preliminary = assessConvergence({
-    comments,
-    reviews,
-    headMessage: '',
-    changedFiles: [],
-  });
-  if (!preliminary.required) return preliminary;
-
-  const commit = await client.commit(expectedHead);
-  // The head commit answers "does THIS head carry the audit?". Whether the review unit
-  // is provable at all is a question about the PR's CUMULATIVE diff — a code PR's
-  // convergence head is very often the packet alone. An unreadable list is left
-  // undefined, which assessConvergence resolves toward the ordinary code protocol.
-  let pullRequestFiles;
-  try {
-    pullRequestFiles = await client.pullRequestFiles(pullRequest.number);
-  } catch {
-    pullRequestFiles = undefined;
+  const findingHeads = codexFindingHeads(comments, reviews);
+  const findingHeadCount = findingHeads.length;
+  if (findingHeadCount < REVIEW_RESET_AFTER_FINDING_HEADS) {
+    return {
+      state: 'reviewing',
+      required: false,
+      allowed: true,
+      findingHeadCount,
+      findingHeads,
+    };
   }
-  // Which phases a deferral may name. `docs/STATUS.md` is a machine-readable state file and
-  // this workflow runs from the trusted default branch's own checkout, so this is a plain
-  // structured-field read — not the PR-head content fetching this PR withdrew. Unreadable
-  // leaves it undefined, which assessConvergence treats as "no constraint".
-  let activePhases;
-  try {
-    const status = await loadStatusDocument();
-    activePhases = deferralPhases(status?.now);
-  } catch {
-    activePhases = undefined;
-  }
-  const result = assessConvergence({
-    comments,
-    reviews,
-    headMessage: commit.commit?.message,
-    changedFiles: commit.files ?? [],
-    pullRequestFiles,
-    activePhases,
-  });
-  if (result.allowed) return result;
+  const result = {
+    state: 'replacement_required',
+    required: true,
+    allowed: false,
+    findingHeadCount,
+    findingHeads,
+    threshold: REVIEW_RESET_AFTER_FINDING_HEADS,
+  };
 
   const live = await setDraftForCurrentHead(
     client,
@@ -1053,7 +1032,7 @@ export async function enforceReviewConvergence(
     true,
   );
   if (!live) return { ...result, superseded: true };
-  const detail = `${result.findingHeadCount} finding heads require convergence evidence; missing ${result.missing.join(' and ')}`;
+  const detail = `${findingHeadCount} finding-bearing heads reached the review-round limit; this unit requires a replacement PR`;
   await client.setStatus(
     expectedHead,
     'failure',
@@ -1063,18 +1042,29 @@ export async function enforceReviewConvergence(
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({
-      state: 'convergence_required',
+      state: 'replacement_required',
       head: expectedHead,
       detail,
       attempt: 0,
-      next: `Claude must batch every open finding into one architectural audit, add docs/reviews/pr-${pullRequest.number}-convergence.md, and push a head whose commit includes Review-Convergence: complete.`,
+      next: `Claude must close this PR without another correction head, open a smaller replacement from current main, carry only the unresolved scope, and record \`Replaces: #${pullRequest.number}\` in its body. Every finding remains blocking; no safety check is waived.`,
     }),
   );
   return result;
 }
 
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
-  const result = assessReviewScope(pullRequest);
+  let changedFiles;
+  if (pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR) {
+    try {
+      changedFiles = await client.pullRequestFiles(pullRequest.number);
+    } catch {
+      changedFiles = undefined;
+    }
+  }
+  const result = assessReviewScope(pullRequest, {
+    changedFiles,
+    requireChangedFiles: true,
+  });
   if (result.allowed) return result;
 
   const live = await setDraftForCurrentHead(
@@ -1130,7 +1120,7 @@ export async function revalidateFinalReviewPolicy(
     return { ...convergence, state: 'superseded' };
   }
   if (!convergence.allowed) {
-    return { ...convergence, state: 'convergence_required' };
+    return { ...convergence, state: 'replacement_required' };
   }
 
   const finding = await guardAgainstCurrentHeadFinding(
@@ -1551,7 +1541,7 @@ export async function run() {
   if (convergence.superseded) return;
   if (!convergence.allowed) {
     throw new Error(
-      `${convergence.findingHeadCount} finding heads require a consolidated convergence audit`,
+      `${convergence.findingHeadCount} finding heads require a replacement PR`,
     );
   }
 

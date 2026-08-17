@@ -89,48 +89,27 @@ so directly rather than framing it as a suggestion.
   must carry the PR template's `justified-large` marker and complete all six
   invariant-matrix rows. Missing large-unit evidence is a blocking scope finding,
   not a reason to spend a full product CI run.
-- **A plan is not an implementation, and a docs-only review is bounded.** After 3
-  finding-bearing heads on a PR whose CUMULATIVE diff contains only documentation
-  (by extension and location — anything that runs keeps the ordinary code protocol;
-  see `docs/AUTONOMOUS_LOOP.md`), the author must
-  stop answering findings with more prose: each still-open question is converted
-  into a named probe in the plan, and the head carries
-  `Review-Deferred-To-Probes: <task>` naming the task whose review stop settles
-  them. Nothing is dismissed — `codex-current-head` still fails closed on every
-  current-head finding — and the deferral ledger in the convergence packet records
-  each question with the probe that will adjudicate it. The GATE checks only that the
-  trailer names a real task — shape plus a phase `docs/STATUS.md` shows still has work
-  ahead of it (and it fails closed when that cannot be established: STATUS unparsable, or the
-  PR itself editing STATUS so the default-branch copy is not its phase truth), though not the
-  task index; the ledger itself is the author's obligation and the
-  REVIEWER's to judge — deliberately not machine-checked, because telling a question
-  from a probe list needs meaning. Flag a deferral whose ledger is absent, whose
-  questions are not the open ones, or whose probes are not actually in the plan.
-  See `docs/AUTONOMOUS_LOOP.md`.
-  On such a head, a finding whose remedy is "the plan should also specify X" is
-  answered by that ledger when X already has a named probe. Report it if the
-  DECISION is wrong; a missing level of mechanism detail belongs to the task that
-  implements it, where a RED probe can prove the point instead of arguing it.
-- After two distinct heads receive Codex findings, ordinary patching stops. The
-  next head must be one batched architectural convergence correction with a
-  changed `docs/reviews/*convergence*.md` packet and the commit trailer
-  `Review-Convergence: complete`. Never evade this by splitting one fix into
-  multiple commits or by resetting review history.
-- To verify that trailer, resolve the PR HEAD first: in a synthetic-merge
-  checkout the head is `HEAD^2` (`git show -s --format='%(trailers)' HEAD^2`),
-  or fetch `refs/pull/<number>/head`. The merge commit's own auto-generated
-  message ("Merge <head> into <base>") never carries trailers, and a SHA that
-  is not the PR head — including any snapshot of the regenerating merge ref —
-  is not evidence of a missing trailer.
+- Before review, complete the PR template's five checks: concurrency and
+  serialization; compatibility while the previous release is still serving;
+  triggers and alternate writers; authorization and tenancy; and reproduce-first
+  CI. Checked boxes are an assertion to verify, never a substitute for evidence.
+- Keep migration changes in a separate review unit from service or UI work when
+  there is a viable seam. An inseparable unit must use the template marker and
+  state the concrete compatibility boundary that makes splitting less safe.
+- After two distinct heads receive Codex findings, that PR's review round is
+  exhausted. Do not push a third correction head. Close it and open a newly
+  scoped replacement from current `main`, limited to the unresolved unit and
+  carrying `Replaces: #<closed-pr>` in its body. Historical convergence packets
+  or trailers do not reset the count. The replacement receives a fresh full
+  review and all safety checks; nothing is dismissed or waived.
 
 ## Out of a review's scope
 
-- **Do not review the convergence trailer, and do not review CI state.** Both
-  are enforced by the trusted gate before promotion, fail-closed, on the exact
-  head: the trailer by `enforceReviewConvergence`, the required checks by
-  `codex-current-head`. A finding about either adds no safety, because a head
-  you are asked to review has already passed them by construction. Review the
-  DIFF: the code, the schema, the invariants, the interleavings.
+- **Do not review the controller's round-reset state, and do not review CI
+  state.** Both are enforced by the trusted gate before promotion, fail-closed,
+  on the exact head. A finding about either adds no safety, because a head you
+  are asked to review has already passed them by construction. Review the DIFF:
+  the code, the schema, the invariants, and the interleavings.
 - Do not assert anything that depends on inspecting a git object, a commit
   message, or a check-run API you cannot actually read. If a claim would require
   running `git show`, `git log`, or `git interpret-trailers` against a SHA, it is
@@ -158,7 +137,8 @@ so directly rather than framing it as a suggestion.
 - On correction heads, review the correction delta, every prior finding, and the
   adjacent invariants the correction can affect. Do not reopen a cleared area
   merely to restate it, but do report any newly exposed correctness or integrity
-  defect. The goal is convergence, not fewer findings at the expense of quality.
+  defect. After a second finding-bearing head the current PR is closed; review
+  its replacement as a fresh, comprehensive unit.
 - Rank findings by severity. Lead with anything that is a correctness,
   data-integrity, or ordering bug.
 - For each finding, give the concrete failure: the inputs or interleaving that
@@ -185,10 +165,11 @@ so directly rather than framing it as a suggestion.
   draft. Claude Code web Auto-fix, which must remain subscribed until merge or
   close, reads every current-head finding before editing, reproduces the complete
   set, fixes forward as one coherent batch, and pushes a new head.
-- On the second finding-bearing head, Claude stops isolated remediation and
-  performs the required convergence audit. The packet maps every finding to its
-  architectural cause, remedy, reproduce-first proof, regression surface, and
-  remaining risk before another Codex review is requested.
+- On the second finding-bearing head, Claude makes no further correction on that
+  PR. It closes the exhausted PR and opens a smaller replacement from current
+  `main`, preserving the unresolved findings and reproduce-first proofs and
+  declaring `Replaces: #<closed-pr>`. The replacement starts a new comprehensive
+  review round; it does not inherit a clean signal or bypass any check.
 - A fresh current-head clean signal makes `codex-current-head` succeed and queues
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and

@@ -24,9 +24,14 @@ on:
 jobs:
   review-scope:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Review-unit scope and invariant preflight
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/review-scope.mjs
 
   # Cheap by construction: one checkout + one script (a single check-runs API

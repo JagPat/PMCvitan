@@ -690,7 +690,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
   );
   assert.equal(autoMergeDraft, null);
   assert.equal(pullRequest.draft, true);
-  assert.match(statusWrites.at(-1).description, /convergence evidence/u);
+  assert.match(statusWrites.at(-1).description, /replacement PR/u);
 });
 
 test('a review failure remains latched after a later success write', () => {
@@ -1319,51 +1319,21 @@ test('workflow gives one exact-head run sole ownership of review and merge', asy
   assert.doesNotMatch(workflow, /pull_request_target:/);
 });
 
-test('the trusted owner enforces convergence after CI and before Codex promotion', async () => {
+test('the trusted owner enforces the review-round reset after CI and before Codex promotion', async () => {
   const gate = await readFile(
     new URL('./autonomous-review-gate.mjs', import.meta.url),
     'utf8',
   );
   const checks = gate.indexOf('await waitForRequiredChecks');
-  const convergence = gate.indexOf('await enforceReviewConvergence', checks);
-  const review = gate.indexOf('await reviewAttempt', convergence);
+  const reset = gate.indexOf('await enforceReviewConvergence', checks);
+  const review = gate.indexOf('await reviewAttempt', reset);
 
   assert.ok(checks >= 0);
-  assert.ok(convergence > checks);
-  assert.ok(review > convergence);
-  assert.match(gate, /client\.commit\(expectedHead\)/u);
-  // The packet obligation is per-HEAD: `changedFiles` must stay the head commit's own
-  // files, so a packet added on an earlier head never satisfies the current one. (The
-  // behaviour is exercised directly in the stale-packet case below; this pins the wiring
-  // so a future edit cannot quietly widen it to the cumulative diff.) The cumulative
-  // read exists for a different question — whether the review unit is provable at all —
-  // and must never be the source of `changedFiles`.
-  assert.match(gate, /changedFiles: commit\.files/u);
-  assert.doesNotMatch(gate, /changedFiles: pullRequestFiles/u);
-  assert.match(gate, /pullRequestFiles = await client\.pullRequestFiles\(pullRequest\.number\)/u);
-  // The deferral LEDGER is deliberately not gate-verified — see the note in
-  // review-efficiency.mjs. Four rounds of prose parsing were withdrawn because telling a
-  // question from a probe list, or a probe declaration from a numbered task heading, needs
-  // MEANING, and because a deferral buys an author nothing a clean review would not (the
-  // current-head finding guard runs after this and fails closed regardless). Pin the absence
-  // so it is not quietly reintroduced.
-  assert.doesNotMatch(gate, /packetText/u);
-  assert.doesNotMatch(gate, /planText/u);
-  assert.doesNotMatch(gate, /fileText/u);
-  // The one thing the gate DOES read beyond the API: docs/STATUS.md, from its own trusted
-  // checkout, to bound which phases a deferral may name. A structured-field read of a
-  // machine-readable state file is the class of check that belongs in a gate.
-  assert.match(gate, /loadStatusDocument\(\)/u);
-  assert.match(gate, /deferralPhases\(status\?\.now\)/u);
-  assert.match(gate, /activePhases,/u);
-  // The phase check needs the FILE LIST too, so it can notice when the PR itself edits
-  // STATUS and main's copy is therefore not the PR's phase truth (#253 round 10). The
-  // gate still reads only the trusted default branch — no PR content is fetched.
-  assert.match(gate, /pullRequestFiles,\n\s+activePhases,/u);
-  assert.doesNotMatch(gate, /refs\/pull\/\S+\/head/u);
-  assert.match(gate, /state: 'convergence_required'/u);
-  assert.match(gate, /Review-Convergence: complete/u);
-  assert.match(gate, /assessReviewScope\(pullRequest\)/u);
+  assert.ok(reset > checks);
+  assert.ok(review > reset);
+  assert.match(gate, /state: 'replacement_required'/u);
+  assert.match(gate, /Replaces: #\$\{pullRequest\.number\}/u);
+  assert.match(gate, /assessReviewScope\(pullRequest,/u);
   assert.match(gate, /state: 'scope_required'/u);
   assert.match(
     gate,
@@ -1404,7 +1374,50 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
   assert.match(sticky[0][1], /scope_required/u);
 });
 
-test('final admission revalidates live scope and late convergence evidence', async () => {
+test('trusted scope enforcement reads the cumulative file list and rejects a migration-service mixture', async () => {
+  const head = 'f'.repeat(40);
+  const checklist = [
+    '<!-- review-size: standard -->',
+    '<!-- migration-scope: separated -->',
+    '- [x] `concurrency-serialization` — checked',
+    '- [x] `old-release-migration-compatibility` — checked',
+    '- [x] `trigger-alternate-writers` — checked',
+    '- [x] `authorization-tenancy` — checked',
+    '- [x] `ci-reproduce-first` — checked',
+    '- Migration/service seam: n/a',
+  ].join('\n');
+  const pullRequest = {
+    number: 346,
+    additions: 100,
+    deletions: 0,
+    changed_files: 2,
+    body: checklist,
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
+    head: { sha: head },
+  };
+  const statuses = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async pullRequestFiles() {
+      return [
+        { filename: 'apps/api/prisma/migrations/20260817000000_example/migration.sql' },
+        { filename: 'apps/api/src/example/example.service.ts' },
+      ];
+    },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus(...args) { statuses.push(args); },
+    async updateStickyComment() {},
+  };
+
+  const result = await reviewGate.enforceReviewScope(client, pullRequest, head);
+  assert.equal(result.allowed, false);
+  assert.match(result.detail, /separate review units/u);
+  assert.equal(statuses[0][1], 'failure');
+});
+
+test('final admission revalidates live scope and the late review-round reset', async () => {
   const head = 'e'.repeat(40);
   const pullRequest = {
     number: 247,
@@ -1446,23 +1459,19 @@ test('final admission revalidates live scope and late convergence evidence', asy
   ]);
   statuses.length = 0;
   sticky.length = 0;
-  const lateConvergence = await reviewGate.revalidateFinalReviewPolicy(
+  const lateReset = await reviewGate.revalidateFinalReviewPolicy(
     client,
     pullRequest.number,
     head,
   );
-  assert.equal(lateConvergence.allowed, false);
-  assert.equal(lateConvergence.state, 'convergence_required');
+  assert.equal(lateReset.allowed, false);
+  assert.equal(lateReset.state, 'replacement_required');
 
   let commentCalls = 0;
-  client.commit = async () => ({
-    commit: { message: 'fix: final admission\n\nReview-Convergence: complete' },
-    files: [{ filename: 'docs/reviews/pr-247-convergence.md', status: 'modified' }],
-  });
-  client.reviewComments = async () => ([
-    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
-    { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: commentCalls++ === 0 ? 'b'.repeat(40) : head },
-  ]);
+  client.reviewComments = async () => ([{
+    user: { login: 'chatgpt-codex-connector[bot]' },
+    commit_id: commentCalls++ < 2 ? 'a'.repeat(40) : head,
+  }]);
   const lateFinding = await reviewGate.revalidateFinalReviewPolicy(
     client, pullRequest.number, head,
   );
@@ -1514,7 +1523,7 @@ test('Codex review records and inline comments are fully paginated', async () =>
   }
 });
 
-test('convergence enforcement fails closed until the batched packet and trailer exist', async () => {
+test('the second finding-bearing head requires replacement even when convergence evidence exists', async () => {
   const head = 'c'.repeat(40);
   const pullRequest = {
     number: 247,
@@ -1529,16 +1538,17 @@ test('convergence enforcement fails closed until the batched packet and trailer 
   ];
   const statuses = [];
   const sticky = [];
+  let commitCalls = 0;
   const client = {
     async reviewComments() { return comments; },
     async reviews() { return []; },
     async commit() {
+      commitCalls += 1;
       return {
-        commit: { message: 'fix: isolated patch' },
-        files: [{ filename: 'apps/web/src/store/store.ts' }],
+        commit: { message: 'fix: legacy audit\n\nReview-Convergence: complete' },
+        files: [{ filename: 'docs/reviews/pr-247-convergence.md' }],
       };
     },
-    async pullRequestFiles() { return [{ filename: 'apps/web/src/store/store.ts' }]; },
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
@@ -1551,54 +1561,13 @@ test('convergence enforcement fails closed until the batched packet and trailer 
     head,
   );
   assert.equal(blocked.allowed, false);
-  assert.deepEqual(blocked.missing, ['trailer', 'packet']);
+  assert.equal(blocked.state, 'replacement_required');
   assert.equal(statuses[0][1], 'failure');
-  assert.match(statuses[0][2], /convergence evidence/u);
-  assert.match(sticky[0][1], /convergence_required/u);
-
-  client.commit = async () => ({
-    commit: { message: 'fix: trailer only\n\nReview-Convergence: complete' },
-    files: [{ filename: 'apps/web/src/store/store.ts' }],
-  });
-  client.pullRequestFiles = async () => ([
-    { filename: 'docs/reviews/pr-247-convergence.md' },
-  ]);
-  statuses.length = 0;
-  sticky.length = 0;
-  const stalePacket = await reviewGate.enforceReviewConvergence(
-    client,
-    pullRequest,
-    head,
-  );
-  assert.equal(stalePacket.allowed, false);
-  assert.deepEqual(stalePacket.missing, ['packet']);
-
-  client.commit = async () => ({
-    commit: { message: 'fix: batched audit\n\nReview-Convergence: complete' },
-    files: [{ filename: 'docs/reviews/pr-247-convergence.md' }],
-  });
-  statuses.length = 0;
-  sticky.length = 0;
-  const allowed = await reviewGate.enforceReviewConvergence(
-    client,
-    pullRequest,
-    head,
-  );
-  assert.equal(allowed.allowed, true);
-  assert.deepEqual(statuses, []);
-  assert.deepEqual(sticky, []);
-
-  // An unreadable cumulative diff must not stall a head. The docs-only cap is the only
-  // thing it feeds, and with no evidence that the review unit is unprovable the gate
-  // holds the ordinary code protocol: this head carries trailer + packet, so it passes.
-  delete client.pullRequestFiles;
-  const unreadable = await reviewGate.enforceReviewConvergence(
-    client,
-    pullRequest,
-    head,
-  );
-  assert.equal(unreadable.allowed, true);
-  assert.equal(unreadable.deferralRequired, false);
+  assert.match(statuses[0][2], /replacement PR/u);
+  assert.match(sticky[0][1], /replacement_required/u);
+  assert.match(sticky[0][1], /Replaces: #247/u);
+  assert.match(sticky[0][1], /close this PR/iu);
+  assert.equal(commitCalls, 0, 'replacement is decided from finding-head history alone');
 });
 
 test('one polled Codex invocation owns terminal success and merge completion', async () => {

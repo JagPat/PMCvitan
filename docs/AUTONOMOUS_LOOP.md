@@ -28,11 +28,11 @@ This repository is designed to progress without the owner's laptop or technical 
 2. Claude starts from latest `origin/main`, records the base SHA, opens a draft PR, enables web Auto-fix, and remains subscribed.
 3. GitHub first runs the two dependency-free gates `review-scope` and `battery-plan`, then requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. An unjustified broad review unit stops before the expensive jobs. A first product-CI failure receives one GitHub-native failed-job retry; deterministic `review-scope` failures do not. A second product failure remains draft and blocked for a real correction. When all seven pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
 4. Marking the PR ready triggers Codex. The same exact-head workflow run polls that one invocation to its terminal result and accepts only evidence from `chatgpt-codex-connector[bot]` for the current SHA and review cycle. Review and review-comment webhooks never start or mutate the merge workflow.
-5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the finding, fixes forward, and pushes a new head; that push invalidates every prior clearance.
+5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the complete first-round finding set and may push one coherent correction; that push invalidates every prior clearance. If the correction head also receives findings, the trusted owner stops that PR and requires a newly scoped replacement from current `main`.
 6. A fresh current-head clean Codex signal succeeds `codex-current-head`. GitHub then squash-merges that exact reviewed SHA immediately when the PR is clean. If GitHub still reports a waiting state, the controller queues squash auto-merge with the same expected head OID; a clean-state race retries the exact-SHA merge once. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
 7. The merge controller explicitly dispatches the trusted handoff workflow because GitHub suppresses ordinary workflow events produced by `GITHUB_TOKEN`. The dispatch is retried three times, and an hourly GitHub-side watchdog drains the durable cursor if the immediate dispatch is interrupted. The handoff waits for a queued merge when necessary, always drains merged work and conflict state before rescheduling an open wait target, and posts one marked `@claude` continuation. Coolify deploys `main`; the runner updates `docs/STATUS.md` and begins the next work item only after merge.
 
-## Review Units And Convergence
+## Review Units And Round Reset
 
 - A standard PR is one user workflow or one architectural concern, at most 20
   files and 1,500 changed lines. PR #247 and later are enforced; earlier PRs are
@@ -42,6 +42,14 @@ This repository is designed to progress without the owner's laptop or technical 
 - A justified large PR uses the PR template's marker and completes all six risk
   rows: authorization/tenancy, civil time/lifecycle, concurrency/idempotency,
   data integrity/conservation, offline/reconciliation, and UI/server parity.
+- For PR #346 and later, the pre-review checklist covers concurrency and
+  serialization, old-release migration compatibility, triggers and alternate
+  writers, authorization and tenancy, and reproduce-first CI. The gate reads the
+  cumulative file list and fails closed if that evidence cannot be inspected.
+- Migration changes use a separate review unit from service or UI work whenever
+  there is a viable seam. The rare inseparable unit carries
+  `<!-- migration-scope: inseparable -->` and explains the concrete compatibility
+  boundary; a checked box or marker never replaces the underlying proof.
 - The PR-side scope check is fast feedback. The trusted default-branch owner
   re-evaluates the PR metadata and every evidence cell before review promotion,
   so editing the PR's policy script cannot bypass the merge boundary.
@@ -58,12 +66,14 @@ This repository is designed to progress without the owner's laptop or technical 
 - Claude self-audits those rows before the first review. Codex performs one
   comprehensive first pass and batches all findings. Correction reviews cover
   the delta, prior findings, and affected adjacent invariants.
-- After two distinct Codex finding heads, the next head must carry
-  `Review-Convergence: complete` and include a changed
-  `docs/reviews/*convergence*.md` packet. The trusted gate checks both before
-  promoting the head. Missing evidence leaves the PR draft and fail-closed.
-- Convergence does not waive a defect. CI and Codex still run in full, and any
-  remaining correctness finding still blocks the exact head.
+- After two distinct Codex finding-bearing heads, the current PR is exhausted:
+  no third correction head is accepted. Close it and open a smaller replacement
+  from current `main`, limited to the unresolved review unit and carrying
+  `Replaces: #<closed-pr>` in the body. Historical convergence packets and
+  trailers cannot reset this count.
+- The replacement receives a fresh comprehensive review and the full applicable
+  CI battery. Resetting the PR bounds accumulated patch risk; it does not waive,
+  dismiss, or downgrade any finding.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 
@@ -181,66 +191,22 @@ PR before the laptop is unavailable. If that subscription-backed session stops,
 the GitHub gate deliberately leaves the PR unmerged rather than silently falling
 back to an unreviewed path.
 
-## Bounded plan review (`Review-Deferred-To-Probes`)
+## Review-round reset
 
-The convergence protocol terminates on code because every finding is answered by a
-RED→GREEN probe. A plan has no executable surface, so a finding on it can only be
-answered with more prose — and a plan can always be specified further. PR #252 ran
-four finding-bearing heads (8, 8, 7, 7; every finding correct, no declining rate)
-before this was written down.
+The round limit applies uniformly to code, migrations, UI work, and documentation.
+After the first finding-bearing head, the author may make one batched correction
+that reproduces and addresses the complete set. If that correction head also has a
+finding, the trusted owner publishes `replacement_required`, returns the PR to
+draft, and does not invoke Codex again for another head on that PR.
 
-So: after **3 finding-bearing heads on a docs-only diff**, the next head must
-convert each still-open question into a named probe in the plan and carry
-`Review-Deferred-To-Probes: <task>`, naming the task whose review stop will settle
-them. `assessConvergence` enforces it.
+The author closes the exhausted PR and starts from current `main`. The replacement
+body declares `Replaces: #<closed-pr>`, carries forward every unresolved finding
+and its reproduction, and narrows the diff to one reviewable unit. Work already
+merged to `main` is not replayed. Unrelated service, UI, refactor, or migration work
+moves to separate PRs; migration and service/UI code remain together only when the
+template records why no safe compatibility seam exists.
 
-**What the gate verifies, and what it deliberately does not.** The gate checks ONE thing about
-the deferral: the trailer value names a TASK — `phase-<n>-task-<m>` or `phase-<n>-planning`, this
-repository's own vocabulary. An allowlist, not a list of rejected placeholders, so a value like
-`later` names no task and is refused. The PHASE is also checked against `docs/STATUS.md` — the
-phase `next_task` names, plus the current phase WHILE IT STILL HAS OPEN WORK — so
-`phase-999-task-999` is refused, and so is a deferral to a phase whose last task has merged: a
-deferral hands work to a review stop that is still ahead, and one that is closed or in a later
-phase settles nothing. That is a structured-field read of a machine-readable state file, which is
-the class of check a gate can make. The task INDEX inside a valid phase is not checked; it lives
-in the plan's markdown task table, and reading that is the prose parsing described below.
-
-**The phase check fails closed when it cannot be made.** Two ways it cannot: STATUS did not parse,
-or the PR ITSELF edits `docs/STATUS.md`, in which case the default-branch copy the gate reads is
-not that PR's phase truth (a head closing phase 5 while deferring into `phase-5-task-1` would
-otherwise pass on the pre-merge state). Both block with their own reason, because an unprovable
-phase is not a proven one. The second is detected from the PR's FILE LIST, which the gate already
-fetches — it does NOT read the head's STATUS content, since a write-capable workflow checks out
-only the trusted default branch.
-
-The **deferral ledger** — each still-open question with the probe that adjudicates it, and each
-probe named in the plan — is an author obligation stated in `AGENTS.md` and judged by the
-REVIEWER. It is not machine-checked, and PR #253 tried four times before concluding it should not
-be. Telling a question from a bare probe list, or a probe declaration from an ordinary numbered
-heading like `5. **Task 5 — frontend surfaces**`, requires reading for meaning; that is the
-reviewer's side of the line this project drew after PR #250, where a mechanism that scored
-substance would have suppressed a correct finding on its first real case. Two further facts
-settled it: nothing about the check is load-bearing, because `codex-current-head` fails closed on
-every current-head finding whether a deferral is claimed or not — so a forged ledger buys an
-author nothing — and each added clause produced a new false pass or a new false block.
-
-**"Docs-only" is a narrow, deliberately strict test.** It is judged on the PR's
-CUMULATIVE diff, not on the current head's commit — a code PR's convergence head is
-usually the packet alone, and reading that one commit would classify a provable review
-as a plan review. Within that diff every file must be documentation by BOTH extension
-(an allowlist: `.md`, `.mdx`, `.txt`, `.rst`, and image/PDF assets) and location
-(`docs/`, `.github/`, or the repository root). A directory name alone decides nothing:
-`docs/probes/x.test.mjs`, `docs/schema.prisma` and `docs/ci/deploy.yml` run, so a diff
-carrying them is provable and stays under the ordinary code protocol. Deletions count
-too — removing a script changes what runs. An empty diff or an unrecognised extension
-fails toward the code path. A cumulative list the gate could not READ is different: past
-the cap it blocks on the unreadability itself, because resolving it either way would guess
-(toward code drops a real deferral obligation; toward docs demands a meaningless trailer).
-The next event re-runs the read; below the cap nothing is owed, so nothing changes.
-
-This is not a dismissal mechanism. A finding-dismissal engine was built in PR #250
-and withdrawn because it would have suppressed a correct finding on its first real
-case. Every finding is kept, `codex-current-head` still fails closed on every
-current-head finding, and the only thing that moves is WHERE the remaining
-questions get verified — from prose, where they cannot be, to probes, where they
-can.
+This is a review-unit reset, not a finding reset. The replacement runs the full
+applicable CI battery, receives a fresh comprehensive Codex review, and still fails
+closed on any current-head finding. A convergence packet, commit trailer, extra
+commit, or body edit on the exhausted PR cannot create another review round.
