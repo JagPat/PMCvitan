@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
 
 /**
  * Codex gate finding 4: node/phase/material relations were single-column FKs, so
@@ -22,7 +22,7 @@ describe('tenant constraints for node/phase/material references (integration)', 
     await t.prisma.siteMaterial.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.media.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.activity.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
-    await t.prisma.decision.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
+    await wipeDecisions(t.prisma, { projectId: { in: [f.projectA.id, f.projectB.id] } });
     await t.prisma.dailyLog.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.phase.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });
     await t.prisma.projectNode.deleteMany({ where: { projectId: { in: [f.projectA.id, f.projectB.id] } } });

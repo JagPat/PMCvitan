@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
 
 const uid = (label: string) => `it-${label}-${randomUUID().slice(0, 8)}`;
 
@@ -32,7 +32,7 @@ describe('project reference integrity (database constraints)', () => {
   afterAll(async () => {
     await t.prisma.media.deleteMany({ where: { id: { in: created.media } } });
     await t.prisma.drawing.deleteMany({ where: { id: { in: created.drawings } } });
-    await t.prisma.decision.deleteMany({ where: { id: decisionA?.id } });
+    await wipeDecisions(t.prisma, { id: decisionA?.id });
     await t.prisma.activity.deleteMany({ where: { id: activityA?.id } });
     await f?.cleanup();
     await t?.close();
