@@ -1082,3 +1082,74 @@ cutover step 1 above). Keep it that way for the 4a rollout specifically: do NOT 
 post-4a application processes side by side. If a multi-instance rolling strategy is ever
 introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
 ships 4a — after that, every sender carries the pre-send re-check.
+
+## §P6-4B-DB. Phase 6 task 4b — approval attribution lands in TWO steps, and the second is owed
+
+Migration `20270901000000_phase6_t4b_approval_attribution` is the **expansion** half of an
+expand/enforce pair. It is deliberately incomplete, and the missing half is a required follow-up
+rather than an optional improvement.
+
+### What is already true after this migration
+
+* `Decision` carries `deciderKind` / `deciderMembershipId` (who is entitled to decide) and
+  `approvedDeciderKind` / `approvedDeciderMembershipId` / `approvedDeciderLabel` (who approved,
+  frozen at the act).
+* Both membership references are composite `(projectId, membershipId)` foreign keys, so a
+  cross-project decider is not representable.
+* An attribution is complete-or-absent (CHECKs), and **write-once** once present — including
+  against being cleared.
+* An attributed approval, and a decision stamped in `DecisionLegacyApproval`, cannot be **deleted**;
+  the register cannot be **truncated** while either exists.
+* `DecisionLegacyApproval` records which approvals PREDATE attribution. It was written exactly once,
+  by the migration, and is sealed against INSERT, UPDATE and TRUNCATE from that moment. Membership
+  cannot grow, so the exemption cannot be minted for an approval whose tuple was stripped.
+
+### What is NOT true yet, and why
+
+**Nothing requires an approval to carry attribution.** The release serving traffic when this
+migration is applied approves decisions without writing the tuple (`decisions.service.ts`, in both
+`approve` and `withdrawChange`). A rule refusing an unattributed `approved` would turn every
+approval made by that still-running release into a 500 during the rollout window.
+
+So after this migration there are three kinds of approval in the register, and they are
+distinguishable — which is the point:
+
+| | attribution tuple | legacy stamp | meaning |
+| --- | --- | --- | --- |
+| pre-migration approval | absent | **present** | genuinely predates attribution |
+| post-migration, old writer | absent | absent | **the gap this step leaves open** |
+| post-migration, new writer | present | absent | fully attributed |
+
+The middle row is the debt. It is visible by query and it does not shrink on its own.
+
+### The enforcement step (required, in this order)
+
+1. **Deploy the writer.** Ship the `decisions.approve` change that writes the attribution tuple in
+   the same transaction as the status change. Nothing else changes; the columns already exist and
+   already refuse a malformed tuple, so this cannot introduce a bad attribution.
+2. **Drain old instances.** Same drain-first discipline as §P6-4a and cutover step 1: no pre-writer
+   process may still be serving. Until this completes, step 3 would 500 live traffic.
+3. **Count the debt** — the middle row above:
+   ```sql
+   SELECT COUNT(*) FROM "Decision" d
+    WHERE d."approvedDeciderKind" IS NULL
+      AND (d."status"::text IN ('approved','change') OR d."approvedById" IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM "DecisionLegacyApproval" l WHERE l."decisionId" = d."id");
+   ```
+   Expect a small number bounded by the rollout window. **Do not stamp these** — they are not
+   pre-attribution approvals, and `DecisionLegacyApproval` refuses the INSERT precisely so that this
+   cannot be done quietly. Resolve each one from its own `DecisionEvent` / `DecisionApprovalRevision`
+   history, as an attributed correction with its own operator record, or accept and document them.
+4. **Only then install the rule.** A new migration adds the constraint that a decision may not be
+   `approved` without a complete attribution tuple, exempting rows in `DecisionLegacyApproval`. It
+   must be diagnostic-first: abort with a sample if step 3's count is non-zero, rather than
+   half-applying.
+
+### If a rollback is needed
+
+Roll **forward**, not back. The expansion migration adds columns, constraints and one table, and
+writes the stamp set once. A pre-4b application release runs correctly against a 4b database (it
+never mentions these columns), so reverting the *application* is safe and needs no schema change.
+Reverting the *schema* would drop `DecisionLegacyApproval` — the only record of which approvals
+predate attribution, and unrecoverable once gone, because the migration that built it will not
+rebuild it on a database whose approvals now include post-migration ones.

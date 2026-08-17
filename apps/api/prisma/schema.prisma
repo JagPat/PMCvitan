@@ -27,6 +27,18 @@ enum DecisionStatus {
   withdrawn
 }
 
+// Phase 6 task 4b (database unit) — WHO is entitled to decide. Declared here because the
+// approval attribution tuple below is typed by it; the WORKFLOW that sets it per decision
+// (and the 'architect' value, which arrives with the role itself) is a later unit. Until a
+// writer exists, every row keeps the `client` default this enum's first value describes,
+// which is exactly the behaviour of every release now in production.
+enum DeciderKind {
+  client
+  pmc
+  member
+  none
+}
+
 enum ActivityStatus {
   not_started
   in_progress
@@ -852,8 +864,17 @@ model Membership {
   completionClaims Activity[] @relation("CompletionClaims")
   // decisions this member withdrew (Phase 6 task 4a) — attribution is FK-backed, never free-text
   decisionWithdrawals Decision[] @relation("DecisionWithdrawals")
+  // decisions naming this membership as their decider (Phase 6 task 4b)
+  decisionsHeld Decision[] @relation("DecisionDeciders")
+  // decisions whose FROZEN approval act names this membership (Phase 6 task 4b)
+  decisionsApproved Decision[] @relation("DecisionApprovedDeciders")
 
   @@unique([projectId, userId])
+  // Phase 6 task 4b — the candidate key the decider FK targets. `id` is already the primary
+  // key, so this index adds no constraint that existing rows could violate; it exists so
+  // (projectId, id) is a legal FK target and a cross-project decider reference becomes
+  // unrepresentable at the database rather than merely unwritten by the service.
+  @@unique([projectId, id])
   @@index([userId])
   responsibleFor ActivityRequirement[]
 }
@@ -1984,6 +2005,28 @@ model Decision {
   approver       String? // human-readable approver line (the caller's REAL name since Phase 1 Task 2)
   approvedById   String? // the approving user's id — real attribution (Phase 1 Task 2)
   onBehalfOf     String? // 'client' when a PMC approves on the client's behalf — never disguised
+  // Phase 6 task 4b (database unit) — the per-decision DECIDER, i.e. current state: who is
+  // entitled to decide this question right now. No writer ships in this unit; the columns, the
+  // cross-project-proof FK and the pairing CHECK are installed first so that when the workflow
+  // arrives the shape it must satisfy already exists and is already enforced by the database.
+  // `deciderMembershipId` is required iff kind='member', and forbidden otherwise (CHECK).
+  deciderKind         DeciderKind @default(client)
+  deciderMembershipId String?
+  deciderMembership   Membership? @relation("DecisionDeciders", fields: [projectId, deciderMembershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  // The APPROVAL ACT's own attribution: who held this decision AT THE MOMENT it was approved.
+  // It is a SEPARATE fact from the holder columns above, not a denormalization of them — a
+  // decision that is later forwarded moves its holder, and the act must keep its own history.
+  // Write-once from the moment they are first set (trigger), so a later edit cannot restate
+  // who approved. Nullable because every approval that predates this unit has no answer, and
+  // inventing one would be the forgery the whole design exists to prevent; `DecisionLegacyApproval`
+  // below records that those approvals are genuinely pre-attribution rather than merely unfilled.
+  approvedDeciderKind         DeciderKind?
+  approvedDeciderMembershipId String?
+  approvedDeciderLabel        String? // the display identity exactly as the register rendered it
+  // Declared, not merely created in SQL: an FK the schema does not know about is drift, and a
+  // future generated migration would be entitled to drop it. `NoAction` on both sides because
+  // this membership is HISTORY — removing a member must never silently rewrite who approved.
+  approvedDeciderMembership   Membership? @relation("DecisionApprovedDeciders", fields: [projectId, approvedDeciderMembershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
   date           String? // display date, e.g. "12 Jun 2026"
   cost           Int? // rupees
   createdAt      DateTime         @default(now())
@@ -2017,6 +2060,7 @@ model Decision {
   media          Media[]
   drawings       Drawing[]
   optionTouches  DecisionOptionTouch[] // phase6-4a round 13 — per-tx option touch notes
+  legacyApproval DecisionLegacyApproval? // phase6-4b — the one-time pre-attribution stamp
 
   // composite identity so referencing models can carry (projectId, decisionId)
   // foreign keys — the DB itself rejects a cross-project link (Phase 0 Task 5)
@@ -2060,6 +2104,31 @@ model DecisionOptionTouch {
   decision   Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@id([decisionId, txid])
+}
+
+// Phase 6 task 4b — the ONE-TIME record of which approvals PREDATE attribution.
+//
+// The consolidated migration stamps every approval standing when it runs, and then seals this
+// table against INSERT, UPDATE and TRUNCATE, and against DELETE while its subject still exists.
+// That is the whole point. "This approval has no decider tuple" and "someone stripped this
+// approval's decider tuple" leave identical rows behind, so the difference cannot be recovered
+// from the `Decision` row itself — and any rule that infers it from evidence a caller can write
+// is a rule a caller can defeat. A migration is the one writer nothing can impersonate, so
+// membership HERE is the exemption, and the set can never grow afterwards.
+//
+// It is declared in this schema, and not only in hand-written SQL, because the schema is the
+// desired state `prisma migrate dev` diffs against: a table that exists only in a migration is
+// drift, and a future generated migration would be entitled to DROP it.
+model DecisionLegacyApproval {
+  decisionId String   @id
+  stampedAt  DateTime @default(now()) @db.Timestamptz(6)
+  // `onUpdate: NoAction` is DECLARED rather than left to the default. The migration writes
+  // `REFERENCES "Decision"("id") ON DELETE CASCADE`, and PostgreSQL's unstated update action is
+  // NO ACTION — but a Prisma relation defaults to `onUpdate: Cascade`. Leaving it unsaid would
+  // make this model describe a database the migration does not install, and a later generated
+  // migration could "resolve" the disagreement by making a `Decision.id` re-key cascade into the
+  // evidence. The disagreement is invisible until something closes it the wrong way.
+  decision   Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 // The IMMUTABLE approval register of a decision (Phase 3 Task 1 correction round 2, finding 1).

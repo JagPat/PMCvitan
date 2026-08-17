@@ -519,6 +519,49 @@ SQL
   echo "pre-Phase-6 directory rows planted (UP6-CO1 on p1, UP6-CO2 on p3), both PARTY-LESS"
 }
 
+plant_pre_attribution_approvals() {
+  echo ""
+  echo "=== planting PRE-ATTRIBUTION approvals (the 4b backfill subjects) ==="
+  # NON-VACUITY FIRST. A genuine pre-attribution approval is one that existed before the columns
+  # did, which is unreachable from a suite whose database is migrated from empty and unfakeable
+  # afterwards by design (the stamp table seals against INSERT the moment the migration finishes).
+  # So this has to run here, and it has to prove it ran here.
+  local attributed
+  attributed=$($PSQL -tAc "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='Decision' AND column_name='approvedDeciderKind';")
+  [ "$attributed" = "0" ] || { echo "4b planting ran AFTER the attribution migration — the backfill proof would be vacuous"; exit 1; }
+
+  # One row per TRACE the backfill recognises, each carrying ONLY that trace, so an assertion can
+  # tell which arm of the predicate did the work. `-NEVER` is the control: a published decision
+  # nobody ever approved, which must NOT be exempted.
+  $PSQL -q <<'SQL' || { echo "pre-attribution approval planting failed"; exit 1; }
+BEGIN;
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch","publishedAt")
+VALUES ('UP4BDB-EVONLY','p1','Trace: an approval event only','Hall','pending','grey',NOW()),
+       ('UP4BDB-REVONLY','p1','Trace: an approval revision only','Hall','pending','grey',NOW()),
+       ('UP4BDB-BYID','p1','Trace: approvedById only','Hall','pending','grey',NOW()),
+       ('UP4BDB-CHANGE','p1','Trace: reopened, so approved once','Hall','change','grey',NOW()),
+       ('UP4BDB-NEVER','p1','Control: never approved by anybody','Hall','pending','grey',NOW());
+INSERT INTO "DecisionOption" ("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UP4BDB-RO1','UP4BDB-REVONLY','Option A','a','Teak',0,'sw1'),
+       ('UP4BDB-NO1','UP4BDB-NEVER','Option A','a','Teak',0,'sw1');
+INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId","at")
+VALUES ('UP4BDB-EV1','UP4BDB-EVONLY','approved','Legacy PMC','USER-1','2026-06-01');
+INSERT INTO "DecisionApprovalRevision" ("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+VALUES ('UP4BDB-DAR1','p1','UP4BDB-REVONLY',1,'a','2026-06-01','USER-1');
+UPDATE "Decision" SET "approvedById"='USER-1' WHERE "id"='UP4BDB-BYID';
+-- the control gets a DRAFTED event, to prove the event arm reads the TYPE and not mere presence
+INSERT INTO "DecisionEvent" ("id","decisionId","type","actor","actorId","at")
+VALUES ('UP4BDB-EV2','UP4BDB-NEVER','drafted','Legacy PMC','USER-1','2026-06-01');
+-- a REAL membership in a DIFFERENT project (p3). Containment has to be proven against a row that
+-- genuinely exists somewhere else — a made-up id would only prove that PostgreSQL rejects dangling
+-- references, which is not the claim.
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES ('UP4BDB-MEM-P3','p3','USER-1','pmc','active') ON CONFLICT DO NOTHING;
+COMMIT;
+SQL
+  echo "pre-attribution approvals planted (EVONLY, REVONLY, BYID, CHANGE + the NEVER control), all on the PRE-4b schema"
+}
+
 # ---- 3f. the remaining ledger to HEAD ----------------------------------------------------
 # Migrations stamped after the round-2 stop (Task 2 procurement onward) also land in
 # phase3_r2_dirs; the explicit round-2/3 stops above covered exactly two of them. Apply every
@@ -539,6 +582,8 @@ for d in "${phase3_r2_dirs[@]}"; do
     20270801000000_*) plant_pre_phase6_firms ;;
     # ── Phase 6 task 4a STOP — the F2 partial-apply state must ABORT, then repair + real apply ─
     20270810000000_*) plant_and_prove_t4a_partial_apply "$d" ;;
+    # ── Phase 6 task 4b STOP — the pre-attribution BACKFILL needs approvals to recognise ───────
+    20270901000000_*) plant_pre_attribution_approvals ;;
   esac
   apply_one "$d"
 done
@@ -3541,6 +3586,146 @@ assert "4a round 8 (R8-F3) + round 14 (R14-F1): the migration retires the pre-wi
 assert "4a round 8 (R8-F2): the servable decisions.inbox generation claiming the pre-withdrawn row is pending is RETIRED — reads fall back to canonical truth until the next delivery/rebuild" \
   "SELECT \"status\" FROM \"ProjectionGeneration\" WHERE \"id\"='UP4A-GEN1';" \
   "retired"
+
+# ---- Phase 6 task 4b — approval attribution and its evidence -------------------------------
+echo ""
+echo "=== 4b: approval attribution over a legacy database ==="
+
+# The BACKFILL, read one trace at a time. Each planted row carries exactly one reason to be
+# recognised, so a failure here names which arm of the predicate stopped working rather than just
+# reporting that the count moved.
+assert "4b: the four pre-attribution traces are each recognised — an approval EVENT, an approval REVISION, a bare approvedById, and a REOPENED (change) decision that must have been approved once" \
+  "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" LIKE 'UP4BDB-%';" \
+  "UP4BDB-BYID,UP4BDB-CHANGE,UP4BDB-EVONLY,UP4BDB-REVONLY"
+# …and the control is NOT exempted. Over-reaching here would hand a permanent excuse to a decision
+# nobody ever approved, which is the one thing worse than under-reaching: a stripped approval could
+# then hide behind it. Its `drafted` event also proves the event arm reads the TYPE.
+assert "4b: a published decision nobody ever approved is NOT stamped, and a non-approval event does not make it look approved" \
+  "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\"='UP4BDB-NEVER';" \
+  "0"
+# the pre-existing legacy ledger is recognised on the same terms
+assert "4b: the legacy fixture's own approvals are stamped too — DL-1 (change), DL-2 (approved), DL-3/DL-4 (events), DL-6 (revision)" \
+  "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" LIKE 'DL-%';" \
+  "DL-1,DL-2,DL-3,DL-4,DL-6"
+# NO OVER-REACH, asserted on the PERSISTED database. This direction is true forever: a stamp
+# exempts a decision, so a stamp on a decision that was never approved is a permanent excuse, and
+# a stripped approval could then hide behind it.
+assert "4b: no stamp over-reaches — every exempted decision really was approved" \
+  "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" l JOIN \"Decision\" d ON d.\"id\"=l.\"decisionId\" WHERE NOT (d.\"status\"::text IN ('approved','change') OR d.\"approvedById\" IS NOT NULL OR EXISTS (SELECT 1 FROM \"DecisionApprovalRevision\" r WHERE r.\"decisionId\"=d.\"id\") OR EXISTS (SELECT 1 FROM \"DecisionEvent\" e WHERE e.\"decisionId\"=d.\"id\" AND e.\"type\" IN ('approved','reapproved')));" \
+  "0"
+# The OTHER direction — "no pre-attribution approval was missed" — is true only AT MIGRATION TIME,
+# and it is the migration itself that asserts it, aborting the deploy if it fails. It cannot be
+# re-checked here, and asserting it here would be wrong rather than merely redundant: this script
+# goes on to create and approve decisions AFTER the migration, exactly as the still-deployed old
+# writer does. Those approvals are legitimately unstamped — they are not pre-attribution, they are
+# the EXPANSION-PHASE GAP, and the enforcement phase is what closes it.
+#
+# So the honest assertion is that the gap is real, bounded and visible. `UP4A-D2` is created
+# post-migration and approved by 4a's own fixture; it carries no attribution and no stamp, and
+# nothing in this unit claims otherwise.
+assert "4b: the expansion-phase gap is REAL and visible — an approval made after the migration by a writer that does not attribute carries neither a tuple nor a stamp (RUNBOOK §P6-4B-DB closes this)" \
+  "SELECT (\"approvedDeciderKind\" IS NULL)::text || '/' || (NOT EXISTS (SELECT 1 FROM \"DecisionLegacyApproval\" l WHERE l.\"decisionId\"='UP4A-D2'))::text FROM \"Decision\" WHERE \"id\"='UP4A-D2';" \
+  "true/true"
+# THE property the whole design rests on: the migration recorded which approvals have no answer.
+# It did not invent one. A backfill that guessed a decider would be a forgery with a deploy log.
+assert "4b: the migration INVENTED no attribution — every stamped approval still shows no decider tuple, which is the truth about a pre-attribution approval" \
+  "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" l JOIN \"Decision\" d ON d.\"id\"=l.\"decisionId\" WHERE d.\"approvedDeciderKind\" IS NOT NULL OR d.\"approvedDeciderLabel\" IS NOT NULL OR d.\"approvedDeciderMembershipId\" IS NOT NULL;" \
+  "0"
+# and the expansion phase left every existing row legal without rewriting one
+assert "4b: existing rows keep the 'client' default and no approved tuple — the expansion touched no data" \
+  "SELECT (COUNT(*) FILTER (WHERE \"deciderKind\"::text <> 'client'))::text || '/' || (COUNT(*) FILTER (WHERE \"approvedDeciderKind\" IS NOT NULL))::text FROM \"Decision\";" \
+  "0/0"
+
+# ---- the seals, executed against the migrated legacy database -------------------------------
+# `assert_rejects` fails the run if a hostile statement is ACCEPTED *or* refused by the wrong rule,
+# which is what makes these assertions about THIS unit rather than about PostgreSQL in general.
+assert_rejects "4b seal: MINTING a stamp after the migration — strip an approval's tuple, then certify it as legacy. The set closed behind the migration." \
+  "INSERT INTO \"DecisionLegacyApproval\"(\"decisionId\") VALUES ('UP4BDB-NEVER')" "one-time migration evidence"
+assert_rejects "4b seal: EDITING a stamp" \
+  "UPDATE \"DecisionLegacyApproval\" SET \"stampedAt\"=now() WHERE \"decisionId\"='DL-2'" "never updated"
+assert_rejects "4b seal: lifting the evidence out from under a decision that still stands" \
+  "DELETE FROM \"DecisionLegacyApproval\" WHERE \"decisionId\"='DL-2'" "cannot be deleted while decision"
+assert_rejects "4b seal: TRUNCATING the whole exemption set in one statement — a row trigger never fires for TRUNCATE" \
+  "TRUNCATE \"DecisionLegacyApproval\"" "only evidence that those approvals predate attribution"
+# carried from PR #344 (round 19, P1) — and this is the half that mattered: the stamp CASCADES from
+# its subject, so before this trigger existed the only proof a pre-attribution approval happened
+# could be erased by deleting the thing it was proof about.
+assert_rejects "4b seal (PR #344 F1): DELETING a stamped decision, which would take its only evidence with it through the cascade" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='DL-2'" "stamped as a pre-attribution approval"
+assert_rejects "4b seal: a HALF-WRITTEN attribution — a kind that names a member, with no member named" \
+  "UPDATE \"Decision\" SET \"approvedDeciderKind\"='member', \"approvedDeciderLabel\"='Someone' WHERE \"id\"='UP4BDB-NEVER'" "approved_decider_pair_check"
+assert_rejects "4b seal: an attribution with nobody to display — in a register that is worse than none, because it looks like one" \
+  "UPDATE \"Decision\" SET \"approvedDeciderKind\"='client' WHERE \"id\"='UP4BDB-NEVER'" "approved_decider_pair_check"
+assert_rejects "4b seal: a label with no kind to type it" \
+  "UPDATE \"Decision\" SET \"approvedDeciderLabel\"='Client' WHERE \"id\"='UP4BDB-NEVER'" "approved_decider_orphan_check"
+assert_rejects "4b seal: attributing an approval to a membership in ANOTHER project — unrepresentable, not merely unwritten" \
+  "UPDATE \"Decision\" SET \"deciderKind\"='member', \"deciderMembershipId\"='UP4BDB-MEM-P3' WHERE \"id\"='UP4BDB-NEVER'" "deciderMembershipId_fkey|foreign key|violates"
+assert_rejects "4b seal: FREEZING the act to another project's member — the same containment applies to history" \
+  "UPDATE \"Decision\" SET \"approvedDeciderKind\"='member', \"approvedDeciderLabel\"='Outsider', \"approvedDeciderMembershipId\"='UP4BDB-MEM-P3' WHERE \"id\"='UP4BDB-NEVER'" "approvedDeciderMembershipId_fkey|foreign key|violates"
+
+# PRECISION — the seals above are strict, not merely obstructive. A COMPLETE attribution commits,
+# and then cannot be restated or deleted. Without this the whole section would pass on a database
+# where the columns simply refused everything.
+$PSQL -q >/dev/null 2>&1 <<'SQL' || { echo "FAILED  4b precision: a COMPLETE attribution was refused — the seals are stricter than the rule they enforce"; FAIL=1; }
+UPDATE "Decision" SET "approvedDeciderKind"='client', "approvedDeciderLabel"='Client'
+ WHERE "id"='UP4BDB-NEVER';
+SQL
+assert "4b precision: a complete, legal attribution IS accepted" \
+  "SELECT \"approvedDeciderKind\"::text || '/' || \"approvedDeciderLabel\" FROM \"Decision\" WHERE \"id\"='UP4BDB-NEVER';" \
+  "client/Client"
+assert_rejects "4b seal: RESTATING the act once recorded" \
+  "UPDATE \"Decision\" SET \"approvedDeciderLabel\"='Someone Else' WHERE \"id\"='UP4BDB-NEVER'" "frozen at the act"
+assert_rejects "4b seal: CLEARING the act — 'nobody approved this after all' is exactly the rewrite a register must refuse" \
+  "UPDATE \"Decision\" SET \"approvedDeciderKind\"=NULL, \"approvedDeciderLabel\"=NULL WHERE \"id\"='UP4BDB-NEVER'" "frozen at the act"
+assert_rejects "4b seal (PR #344 F1): DELETING an attributed approval" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4BDB-NEVER'" "permanent register entry and is never deleted"
+# carried from PR #344 (round 19, P2) — same omission, one verb along, because a ROW trigger never
+# fires for TRUNCATE and TRUNCATE is separately grantable.
+assert_rejects "4b seal (PR #344 F2): TRUNCATING the register with attributed approvals in it" \
+  "TRUNCATE \"Decision\" CASCADE" "permanent against every verb"
+
+# CONDITIONALITY. The guard must defend rows that exist and nothing else, or every disposable
+# database becomes unusable and every teardown becomes a workaround. Proven by taking the permanent
+# rows away inside a transaction that is then ROLLED BACK — in PostgreSQL both TRUNCATE and
+# `ALTER TABLE … DISABLE TRIGGER` are transactional, so the fixture is restored by the rollback.
+# What is asserted is that our guard STOPS OWNING the refusal: 4a's own evidence guards still stand
+# on this database and refuse the same statement for their own reasons, which is correct and is not
+# this unit's claim to make.
+cond_before=$($PSQL -tAc 'SELECT (SELECT COUNT(*) FROM "DecisionLegacyApproval")::text || $$/$$ || (SELECT COUNT(*) FROM "Decision" WHERE "approvedDeciderKind" IS NOT NULL)::text;')
+cond_err=$(psql -X -v ON_ERROR_STOP=0 -d "$DB" 2>&1 <<'SQL'
+BEGIN;
+ALTER TABLE "DecisionLegacyApproval" DISABLE TRIGGER "DecisionLegacyApproval_sealed";
+DELETE FROM "DecisionLegacyApproval";
+UPDATE "Decision" SET "approvedDeciderKind"=NULL, "approvedDeciderLabel"=NULL
+ WHERE "approvedDeciderKind" IS NOT NULL;
+TRUNCATE "Decision" CASCADE;
+ROLLBACK;
+SQL
+)
+if printf '%s' "$cond_err" | grep -q "permanent against every verb"; then
+  printf 'FAILED  %s\n        (it refused with nothing permanent left to defend: %s)\n' \
+    "4b: the permanence guard is CONDITIONAL — with no attribution and no stamp left, it stops refusing" \
+    "$(printf '%s' "$cond_err" | tr '\n' ' ' | cut -c1-160)"; FAIL=1
+else
+  printf 'ok      %s\n' "4b: the permanence guard is CONDITIONAL — with no attribution and no stamp left, it stops refusing (the rollback restored the fixture)"
+fi
+assert "4b: that conditionality probe changed nothing — the rollback restored every stamp and the attributed row" \
+  "SELECT (SELECT COUNT(*) FROM \"DecisionLegacyApproval\")::text || '/' || (SELECT COUNT(*) FROM \"Decision\" WHERE \"approvedDeciderKind\" IS NOT NULL)::text;" \
+  "$cond_before"
+
+# RE-RUNNABILITY. Prisma never re-applies a recorded migration, but an operator running the file by
+# hand must get a no-op rather than a second stamping pass — and a second pass would be worse than
+# an error: it would stamp approvals made SINCE the first application by the still-deployed old
+# writer, forgiving permanently and silently exactly the rows the enforcement phase must fix.
+stamps_before=$($PSQL -tAc 'SELECT COUNT(*) FROM "DecisionLegacyApproval";')
+$PSQL -q -f "$MIG_DIR/20270901000000_phase6_t4b_approval_attribution/migration.sql" >/dev/null 2>&1 \
+  || { echo "FAILED  4b: the migration is not re-runnable by hand"; FAIL=1; }
+stamps_after=$($PSQL -tAc 'SELECT COUNT(*) FROM "DecisionLegacyApproval";')
+if [ "$stamps_before" = "$stamps_after" ]; then
+  printf 'ok      %s\n' "4b: a re-run is a NO-OP — the exemption set closed at the first application ($stamps_after stamps, unchanged)"
+else
+  printf 'FAILED  %s\n        (%s -> %s stamps)\n' "4b: a re-run re-stamped — the set did not close" "$stamps_before" "$stamps_after"; FAIL=1
+fi
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

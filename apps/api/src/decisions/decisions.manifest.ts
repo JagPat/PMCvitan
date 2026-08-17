@@ -10,11 +10,16 @@ export const decisionsManifest: ModuleManifest = {
   // Phase 6 task 4a round 13 — `decisionOptionTouch` is the per-transaction option touch note
   // behind the withdrawal entry seal: written ONLY by the `DecisionOption_t4a_touch` DB trigger
   // (no application writer), owned and read-encapsulated here like every decision fact.
-  ownsModels: ['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
+  // Phase 6 task 4b — `decisionLegacyApproval` records which approvals predate attribution. Like
+  // `decisionOptionTouch` it has NO application writer (a migration wrote it once, and the table is
+  // sealed against INSERT afterwards), and like every decision fact it is owned AND read-
+  // encapsulated here: owned-but-not-read-encapsulated would let another module read it directly
+  // with no boundary finding, which is the gap this pair of lists exists to close.
+  ownsModels: ['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionLegacyApproval', 'changeRequest', 'decisionProjection'],
   // Task 8 — the FIRST fully-extracted backend module: its models are read-encapsulated, so no
   // other module reads decision persistence directly (the boundary check enforces it); every
   // cross-module read goes through the queries below (DecisionsQueryService).
-  readEncapsulated: ['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection'],
+  readEncapsulated: ['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'decisionLegacyApproval', 'changeRequest', 'decisionProjection'],
   dependsOn: [],
   // Phase 6 task 4a round 3 — the withdraw ATTRIBUTION question (does the actor hold an ACTIVE
   // membership here — the `withdrawnById` FK's target?) is answered by its owner through
