@@ -211,12 +211,25 @@ export class OrgsService {
    * The lock is now taken for any write that does not RESULT in an owner, including a plain
    * addition. That is a little more contention on the org's owner rows and it buys the only
    * ordering that is safe: decide under the lock, or do not decide.
+   *
+   * Round 18 (Codex P2) — THE DOORS, ENUMERATED, so the next reader can check rather than trust.
+   * Four places write `OrgMembership`, and three of them can take owner standing away:
+   *
+   *   1. `createOrg`            — creates the founding owner. Adds standing; never removes it.
+   *   2. `addOrgMember`         — upsert; its UPDATE arm is a demotion.          GUARDED (round 15)
+   *   3. `updateOrgMemberRole`  — a demotion.                                    GUARDED (round 15)
+   *   4. `removeOrgMember`      — a DELETE, which removes an owner outright.     GUARDED (round 18)
+   *
+   * Door 4 was missed twice: round 15 fixed the pair in front of it and round 17 revisited that
+   * pair without asking how many doors there were. A removal is not a role change, so it never
+   * looked like the same rule — and it is exactly the same rule. `nextRole` is `null` for it,
+   * which is not `'owner'`, so the guard runs in full.
    */
   private async assertOrgKeepsAnOwner(
     tx: Prisma.TransactionClient,
     orgId: string,
     userId: string,
-    nextRole: string,
+    nextRole: string | null,
   ): Promise<void> {
     if (nextRole === 'owner') return; // the write leaves an owner behind by construction
     // The lock is over the org's WHOLE roster, not over `role = 'owner'`. A predicate lock is the
@@ -488,11 +501,11 @@ export class OrgsService {
     if (userId === callerId) throw new BadRequestException('You cannot remove yourself from the org');
     const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId } } });
     if (!existing) throw new NotFoundException('Not a member of this org');
-    if (existing.role === 'owner' && (await this.ownerCount(orgId)) <= 1) {
-      throw new BadRequestException('The org must keep at least one owner');
-    }
     // round 5 — guard and write in ONE transaction, holding the affected projects' readiness keys
     await this.prisma.$transaction(async (tx) => {
+      // round 18 — the THIRD door. A removal takes owner standing away exactly as a demotion does,
+      // and its `ownerCount` was the same unlocked pre-read the other two doors had already shed.
+      await this.assertOrgKeepsAnOwner(tx, orgId, userId, null);
       await this.assertOrgWriteKeepsDecisionHolders(tx, orgId, userId, existing.role, null);
       await tx.orgMembership.delete({ where: { orgId_userId: { orgId, userId } } });
     });

@@ -1483,3 +1483,61 @@ single P2 on this head.
 
 Nothing from this round. The authoritative-definition map remains the named next unit of work — it
 is the fix for the class that produced three findings in rounds 15–16, and it has not moved.
+
+---
+
+## Nineteenth edition — round 18, the third door of a rule I had already "finished" twice
+
+One finding on `cce9987` (P2). **1 SELF-INFLICTED. 0 SEAM.**
+
+`removeOrgMember` never called the last-owner guard. Two owners removing each other both read two
+owners outside their transactions, both delete, and the org ends with nobody who can manage it —
+the same terminal state round 15 closed for demotions, reached through a verb nobody had looked at.
+
+### Why this one deserves a harder look than its severity suggests
+
+This is the **third door** of a rule this PR has now "finished" twice.
+
+- Round 15 guarded `addOrgMember` and `updateOrgMemberRole`, and wrote in *this document* that
+  "fixing one of a pair is this PR's single most repeated mistake."
+- Round 17 revisited that same pair — correcting how the guard decides — without asking how many
+  doors there were.
+- Round 18 is Codex pointing at the third.
+
+A removal is not a role change, so it never presented itself as the same rule. That is precisely the
+failure mode named in the sixteenth edition, occurring in the rounds that named it. **Naming a class
+is not closing it.** The name went into prose; the prose does not enumerate anything; nothing in the
+code obliged the next reader to check.
+
+So the enumeration is now IN the guard, as a list a reader can verify against `grep`:
+
+```
+1. createOrg           — adds standing, never removes it
+2. addOrgMember        — upsert; its UPDATE arm is a demotion.   GUARDED (round 15)
+3. updateOrgMemberRole — a demotion.                             GUARDED (round 15)
+4. removeOrgMember     — a DELETE, removes an owner outright.    GUARDED (round 18)
+```
+
+Four writers to `OrgMembership`; three can take owner standing away; all three are accounted for.
+
+### The count
+
+| round | findings | seam | self-inflicted | original | refuted |
+| --- | --- | --- | --- | --- | --- |
+| 14 | 3 | 0 | 1 | 2 | 1 |
+| 15 | 4 | 0 | 1 | 1 | 2 |
+| 16 | 3 | 0 | 2 | 0 | 1 |
+| 17 | 1 | 0 | 1 | 0 | 0 |
+| 18 | 1 | 0 | 1 | 0 | 0 |
+
+**Twelve consecutive rounds, thirty-three findings, zero seam defects.** Two single-P2 rounds in a
+row, both on the same rule, both closing a door rather than reopening a design.
+
+### The rule this round contributes
+
+> A class is closed when the code enumerates its members, not when a document names the class.
+> **Write the list where the next change will trip over it.**
+
+### What is deferred
+
+Nothing from this round. The authoritative-definition map remains the named next unit of work.

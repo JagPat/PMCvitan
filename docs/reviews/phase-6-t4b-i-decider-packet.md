@@ -824,3 +824,27 @@ the target and demotes the incumbent underneath a caller that has already taken 
 releases: RED without the fix (the demotion commits), RED with the *first* fix (empty owner set),
 GREEN with the roster lock. Suite 8/8. `pnpm check` EXIT 0 (web 790/790, API 793/793) with both orgs
 unit doubles updated to serve the whole-roster read.
+
+---
+
+## Round 18 — the single Codex finding on `cce9987`
+
+One P2, self-inflicted, and the third door of the last-owner rule.
+
+**Finding.** `removeOrgMember` entered its transaction without the last-owner guard; its owner count
+was still an unlocked pre-transaction read. Two owners removing each other both observe two owners,
+lock and delete different rows, and both commit.
+
+**Fix.** `assertOrgKeepsAnOwner` is called before the delete, with `nextRole = null` (a removal has
+no next role, and `null` is not `'owner'`, so the guard runs in full). `nextRole` widens to
+`string | null`.
+
+**And the enumeration, in the code.** The guard's docblock now lists all four `OrgMembership`
+writers and marks which round guarded each. Round 15 guarded two doors and called partial fixes this
+PR's most repeated mistake; round 17 revisited the same two. The list exists so the next reader
+checks rather than trusts.
+
+**Evidence.** `phase6-t4b-correction15.test.ts` R18 parks both removals inside their transactions on
+a held readiness key, then releases: RED without the fix (`expected 0 to be greater than or equal to
+1`), GREEN with it. A precision probe keeps a non-last-owner removal and an admin removal working.
+Suite 10/10; `pnpm check` EXIT 0 (web 790/790, API 793/793).

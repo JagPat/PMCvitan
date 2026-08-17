@@ -256,6 +256,55 @@ describe('Phase 6 unit 4b-i round 15 — the Codex findings on ac99e6b (live PG)
     expect(await ownerCount(), 'the org keeps a roster manager').toBeGreaterThanOrEqual(1);
   });
 
+  it('R18: the THIRD door — two owners REMOVING each other cannot empty the roster either', async () => {
+    // `removeOrgMember` is a DELETE, not a role change, so it never looked like the same rule — and
+    // it is exactly the same rule. Round 15 guarded the two demotion doors; round 17 revisited that
+    // same pair without asking how many doors there were. A removal takes owner standing away just
+    // as a demotion does, and its last-owner count was the same unlocked pre-read the others shed.
+    const [a, b] = await twoOwners('remover');
+    const holder = new PrismaClient();
+    await holder.$connect();
+    try {
+      let release!: () => void;
+      let acquired!: () => void;
+      const released = new Promise<void>((r) => (release = r));
+      const holding = new Promise<void>((r) => (acquired = r));
+      const held = holder.$transaction(async (tx) => {
+        for (const p of [f.projectA.id, f.projectB.id].sort()) {
+          await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, `readiness:${p}`);
+        }
+        acquired();
+        await released;
+      }, { timeout: 40_000, maxWait: 10_000 });
+      await holding;
+
+      const one = orgs.removeOrgMember(f.orgA.id, a, b).catch((e: unknown) => e);
+      await waitForBlocked(1);
+      const two = orgs.removeOrgMember(f.orgA.id, b, a).catch((e: unknown) => e);
+      await waitForBlocked(2);
+      release();
+      await held;
+      await Promise.all([one, two]);
+    } finally {
+      await holder.$disconnect();
+    }
+    expect(await ownerCount(), 'the org must never be left ownerless by removals either').toBeGreaterThanOrEqual(1);
+  });
+
+  it('R18 precision: removing a non-last owner still works, and removing the last one is still refused', async () => {
+    const extra = await mintUser('spareowner');
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: extra, role: 'owner' } });
+    expect(await ownerCount()).toBe(2);
+    await orgs.removeOrgMember(f.orgA.id, f.ownerUser.id, extra);
+    expect(await ownerCount()).toBe(1);
+
+    const other = await mintUser('nonowner');
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: other, role: 'admin' } });
+    // an ADMIN removal is untouched by the last-owner rule
+    await orgs.removeOrgMember(f.orgA.id, f.ownerUser.id, other);
+    expect(await ownerCount()).toBe(1);
+  });
+
   // ── F3 ─────────────────────────────────────────────────────────────────────────────────────
 
   it('F3: demoting an org admin who ALSO holds an active project membership is allowed — that row supplies no standing', async () => {
