@@ -174,3 +174,21 @@ so directly rather than framing it as a suggestion.
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and
   `docs/STATUS.md` advances.
+
+## Cursor Cloud specific instructions
+
+Repo-managed config is `.cursor/environment.json`. Install:
+`bash scripts/cloud-agent-install.sh`. Per-boot:
+`bash scripts/cloud-agent-start.sh`. Terminals: `bash scripts/cloud-agent-api.sh`
+(compiled API on 3000) and `pnpm dev` (web on 5173). Helpers:
+`scripts/cloud-agent-env.sh`.
+
+- Completeness of the disposable seed is decided **inside** `apps/api/prisma/seed.ts`
+  under a session advisory lock on a `connection_limit=1` Prisma client. Start
+  always invokes seed when permitted; it does not pre-query a sentinel.
+- The skip condition is product data (`Project` `ambli` plus starter template
+  `G+2 Residence`), not an `AuditLog` operational row.
+- `VITE_ALLOW_DEV_AUTH` is derived with `ALLOW_DEV_AUTH` (local default URL or
+  explicit `ALLOW_DEV_AUTH=true`).
+- After editing `apps/api` source, rebuild (`pnpm --filter api build`); the API
+  terminal serves `dist/main.js`.

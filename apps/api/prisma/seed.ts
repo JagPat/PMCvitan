@@ -7,12 +7,28 @@ import {
   SEED_ACTIVITIES,
   SEED_INSPECTIONS,
   SEED_LOG_MATERIALS,
+  STARTER_TEMPLATE,
   createStarterLibrary,
 } from '../src/domain/seed-data';
 import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
 import { ddMmmYyyy } from '../src/domain/dates';
 
-const prisma = new PrismaClient();
+const LOCK_KEY = 'vitan-pmc-destructive-seed';
+const LOCK_SQL = `SELECT pg_advisory_lock(hashtext('${LOCK_KEY}'))`;
+const UNLOCK_SQL = `SELECT pg_advisory_unlock(hashtext('${LOCK_KEY}'))`;
+
+function seedDatabaseUrl(): string {
+  const raw = process.env.DATABASE_URL ?? '';
+  if (/[?&]connection_limit=/i.test(raw)) {
+    return raw.replace(/([?&]connection_limit=)[^&]*/i, '$11');
+  }
+  return `${raw}${raw.includes('?') ? '&' : '?'}connection_limit=1`;
+}
+
+// One backend: session advisory locks do not follow Prisma's default pool.
+const prisma = new PrismaClient({
+  datasources: { db: { url: seedDatabaseUrl() } },
+});
 
 const PROJECT_ID = 'ambli';
 
@@ -23,7 +39,55 @@ const PROJECT_ID = 'ambli';
 const SCHEDULE_ANCHOR = '2026-06-01';
 const atDay = (offset: number): Date => fromIsoCivilDate(addCivilDays(SCHEDULE_ANCHOR, offset))!;
 
+async function backendPid(): Promise<number> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ pid: number }>>(
+    'SELECT pg_backend_pid() AS pid',
+  );
+  return Number(rows[0]!.pid);
+}
+
+/** Last durable fact of a successful seed — not an AuditLog operational row. */
+async function fixtureComplete(): Promise<boolean> {
+  const project = await prisma.project.findUnique({ where: { id: PROJECT_ID } });
+  if (!project) return false;
+  const template = await prisma.projectTemplate.findFirst({
+    where: { name: STARTER_TEMPLATE.name },
+  });
+  return template !== null;
+}
+
 async function main(): Promise<void> {
+  const pidAtConnect = await backendPid();
+  await prisma.$executeRawUnsafe(LOCK_SQL);
+  try {
+    const pidHolding = await backendPid();
+    if (pidHolding !== pidAtConnect) {
+      throw new Error(
+        'destructive seed lost its Postgres backend after connect; advisory locks require connection_limit=1',
+      );
+    }
+    if (await fixtureComplete()) {
+      const db = await prisma.$queryRawUnsafe<Array<{ d: string }>>('SELECT current_database() AS d');
+      // eslint-disable-next-line no-console
+      console.log(
+        'Seed fixture already complete (project ambli + starter template) — skipping',
+        db[0]?.d ?? '',
+      );
+      return;
+    }
+    await seedBody();
+    const pidAfter = await backendPid();
+    if (pidAfter !== pidHolding) {
+      throw new Error(
+        'destructive seed changed Postgres backends mid-run; advisory lock would not cover the writes',
+      );
+    }
+  } finally {
+    await prisma.$executeRawUnsafe(UNLOCK_SQL);
+  }
+}
+
+async function seedBody(): Promise<void> {
   // wipe (children first) for an idempotent seed. A previous suite run can
   // leave rows in every NO ACTION child table, so the order must hold for a
   // FULLY populated database, not just the fixture this seed creates:
