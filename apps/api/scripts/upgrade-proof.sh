@@ -3640,6 +3640,62 @@ assert_rejects "4b unresolved #344 F2: TRUNCATE cannot erase an attributed appro
   "TRUNCATE \"Decision\" CASCADE" \
   "TRUNCATE would erase permanent approval/withdrawal evidence"
 
+# ---- Round 1 (Codex F1): the holder freeze does not rest on a nullable publication value ----
+# Attack step 1 — clear the value the freeze keyed on. Publication is a permanent register fact,
+# so the rewrite cannot even begin; step 2 is refused independently on the still-published row.
+assert_rejects "4b round 1 F1: a published decision cannot be un-published" \
+  "UPDATE \"Decision\" SET \"publishedAt\" = NULL WHERE \"id\"='UP4B-ATTR'" \
+  "cannot be un-published"
+assert_rejects "4b round 1 F1: a published decision still refuses a holder rewrite" \
+  "UPDATE \"Decision\" SET \"deciderKind\"='pmc', \"deciderMembershipId\"=NULL WHERE \"id\"='UP4B-ATTR'" \
+  "keeps its holder"
+
+# An attributed approval, and a tupleless legacy approval, each freeze the holder with NO
+# publication fact at all — the second half of the finding.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round 1 F1: unpublished holder fixtures were rejected"; FAIL=1; }
+INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","publishedAt","deciderKind","deciderMembershipId","approvedDeciderKind","approvedDeciderMembershipId","approvedDeciderLabel")
+VALUES ('UP4B-UNPUB-ATTR','p1','Unpublished attributed approval','Hall','approved','stone',NULL,'member','UP4A-M1','member','UP4A-M1','Legacy PMC');
+INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","publishedAt","deciderKind","deciderMembershipId","approvedById","approver","approvedOption")
+VALUES ('UP4B-UNPUB-OLD','p1','Unpublished legacy approval','Hall','approved','stone',NULL,'member','UP4A-M1','USER-1','Legacy PMC','Legacy option');
+SQL
+assert_rejects "4b round 1 F1: an unpublished attributed approval still freezes its holder" \
+  "UPDATE \"Decision\" SET \"deciderKind\"='pmc', \"deciderMembershipId\"=NULL WHERE \"id\"='UP4B-UNPUB-ATTR'" \
+  "keeps its holder"
+assert_rejects "4b round 1 F1: an unpublished tupleless approval still freezes its holder" \
+  "UPDATE \"Decision\" SET \"deciderKind\"='pmc', \"deciderMembershipId\"=NULL WHERE \"id\"='UP4B-UNPUB-OLD'" \
+  "keeps its holder"
+assert "4b round 1 F1: both unpublished approvals still name their original holder" \
+  "SELECT string_agg(\"id\" || '=' || \"deciderKind\"::text || '/' || COALESCE(\"deciderMembershipId\",'<null>'), ',' ORDER BY \"id\") FROM \"Decision\" WHERE \"id\" IN ('UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
+  "UP4B-UNPUB-ATTR=member/UP4A-M1,UP4B-UNPUB-OLD=member/UP4A-M1"
+
+# ---- Round 1 (Codex F2): a 4a repair replay cannot reopen approval deletion ----
+# The 4a migration is deliberately rerunnable for operator repair. Replay it for real — it
+# restores its own older, withdrawn-only `phase6_t4a_withdrawn_no_delete` body over the
+# consolidated one this unit installs. UP4B-OLD is the compatibility-window class the finding
+# names: approved by the pre-4b writer, no tuple, no migration stamp, no revision or event child.
+echo "replaying the rerunnable 4a migration (operator repair) on top of 4b"
+$PSQL --single-transaction -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null \
+  || { echo "FAILED  4b round 1 F2: the rerunnable 4a migration did not replay"; FAIL=1; }
+assert "4b round 1 F2: the replay really did restore the older withdrawn-only body" \
+  "SELECT (position('approvedById' in pg_get_functiondef('phase6_t4a_withdrawn_no_delete()'::regprocedure)) = 0)::text;" \
+  "true"
+assert_rejects "4b round 1 F2: the 4b seal alone refuses to delete a compatibility-window approval" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4B-OLD'" \
+  "approval attribution/evidence is permanent"
+assert "4b round 1 F2: the compatibility-window approval is still on the register" \
+  "SELECT COUNT(*)::text FROM \"Decision\" WHERE \"id\"='UP4B-OLD';" \
+  "1"
+# Redeploying 4b restores the consolidated body; the stamp INSERT stays skipped because the
+# sealed trigger already exists, so no evidence is invented on the repair path either.
+$PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_NAME/migration.sql" >/dev/null \
+  || { echo "FAILED  4b round 1 F2: redeploying 4b after the 4a replay"; FAIL=1; }
+assert_rejects "4b round 1 F2: after redeploy the consolidated arm refuses the same DELETE first" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4B-OLD'" \
+  "approval evidence is a permanent register entry"
+assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
+  "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
+  "0"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller

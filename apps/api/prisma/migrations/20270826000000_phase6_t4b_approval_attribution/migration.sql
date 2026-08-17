@@ -114,11 +114,32 @@ BEGIN
       RAISE EXCEPTION 'phase6-4b: decision register identity is frozen from birth (%).', OLD."id";
     END IF;
 
-    IF OLD."publishedAt" IS NOT NULL AND (
+    -- Round 1 (Codex F1): publication is a permanent register fact. Without this arm the holder
+    -- freeze below could be unlocked in two transactions — clear `publishedAt`, then rewrite the
+    -- holder while `OLD."publishedAt" IS NULL`. Nothing in the product ever un-publishes a
+    -- decision (publish is a one-way `publishedAt IS NULL` transition), so refusing it costs the
+    -- compatibility writer nothing and removes the nullable value's power to reopen the seal.
+    IF OLD."publishedAt" IS NOT NULL AND NEW."publishedAt" IS NULL THEN
+      RAISE EXCEPTION 'phase6-4b: a published decision cannot be un-published — publication is permanent (%).', OLD."id";
+    END IF;
+
+    -- Round 1 (Codex F1): the freeze must not rest on the current nullable publication value
+    -- alone. An approval tuple, approval/change standing, or a migration stamp each name the
+    -- holder just as durably as publication does — an unpublished row carrying any of them
+    -- would otherwise let its current holder drift away from the frozen approval claim, making
+    -- the trusted evidence contradict itself. None of the four can be cleared first to reopen
+    -- this arm: publication is permanent (above), the tuple is frozen and approval/change
+    -- standing cannot be left (below), and the stamp is migration-owned and sealed.
+    IF (
+         OLD."publishedAt" IS NOT NULL
+      OR OLD."approvedDeciderKind" IS NOT NULL
+      OR OLD."status"::text IN ('approved', 'change', 'withdrawn')
+      OR EXISTS (SELECT 1 FROM "DecisionLegacyApproval" l WHERE l."decisionId" = OLD."id")
+    ) AND (
          NEW."deciderKind" IS DISTINCT FROM OLD."deciderKind"
       OR NEW."deciderMembershipId" IS DISTINCT FROM OLD."deciderMembershipId"
     ) THEN
-      RAISE EXCEPTION 'phase6-4b: a published decision keeps its holder — the decider tuple is frozen (%).', OLD."id";
+      RAISE EXCEPTION 'phase6-4b: a published or attributed decision keeps its holder — the decider tuple is frozen (%).', OLD."id";
     END IF;
 
     IF OLD."approvedDeciderKind" IS NOT NULL AND (
@@ -240,13 +261,35 @@ BEGIN
   RETURN OLD;
 END $fn$ LANGUAGE plpgsql;
 
--- Keep the two 4b evidence classes protected by their own final trigger as well. The 4a
--- migration is intentionally rerunnable for operator repair and recreates its older function;
--- a later repair must not temporarily reopen DELETE for a tuple or migration stamp.
+-- Keep the 4b evidence classes protected by their own final trigger as well. The 4a migration is
+-- intentionally rerunnable for operator repair and recreates its older function; a later repair
+-- must not temporarily reopen DELETE for any approval evidence.
+--
+-- Round 1 (Codex F2): a tuple and a migration stamp were not the whole set. During the supported
+-- compatibility window the old writer approves WITHOUT a tuple, and the migration stamp covers
+-- only rows that already existed when this file ran — so such an approval was protected solely by
+-- the consolidated body above. A 4a repair replay restores that function's withdrawn-only body,
+-- and this trigger then also passed, reopening DELETE. This seal therefore carries the complete
+-- approval set independently: standing, every legacy approval column, the tuple, the stamp, and
+-- both alternate approval-evidence registers. `withdrawn` is deliberately absent — it is the 4a
+-- migration's own arm, restored verbatim by the very replay this trigger guards against.
+--
+-- Because this is now a full seal, the sanctioned destructive resets that already disable
+-- `Decision_t4a_d_no_delete` by name for exactly one wipe (prisma/seed.ts and the t4a/t4b suites)
+-- disable this named trigger in the same transaction.
 CREATE OR REPLACE FUNCTION decision_t4b_evidence_no_delete() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN
   IF OLD."approvedDeciderKind" IS NOT NULL
-     OR EXISTS (SELECT 1 FROM "DecisionLegacyApproval" l WHERE l."decisionId" = OLD."id") THEN
+     OR OLD."status"::text IN ('approved', 'change')
+     OR OLD."approvedById" IS NOT NULL
+     OR OLD."approver" IS NOT NULL
+     OR OLD."approvedOption" IS NOT NULL
+     OR EXISTS (SELECT 1 FROM "DecisionLegacyApproval" l WHERE l."decisionId" = OLD."id")
+     OR EXISTS (SELECT 1 FROM "DecisionApprovalRevision" r WHERE r."decisionId" = OLD."id")
+     OR EXISTS (
+       SELECT 1 FROM "DecisionEvent" e
+        WHERE e."decisionId" = OLD."id" AND e."type" IN ('approved', 'reapproved')
+     ) THEN
     RAISE EXCEPTION 'phase6-4b: approval attribution/evidence is permanent — decision % cannot be deleted.', OLD."id";
   END IF;
   RETURN OLD;

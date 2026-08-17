@@ -1,6 +1,27 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
+
+const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), '../../prisma/migrations');
+
+/** The exact `phase6_t4a_withdrawn_no_delete` definition a given migration file installs. The
+ *  4a migration is deliberately rerunnable for operator repair, so replaying it restores ITS
+ *  (older, withdrawn-only) body over the consolidated one 4b writes. Reading both bodies from
+ *  the real migration files keeps this probe honest if either ever changes. */
+const withdrawnNoDeleteBody = (migration: string): string => {
+  const sql = readFileSync(join(MIGRATIONS, migration, 'migration.sql'), 'utf8');
+  const match = sql.match(
+    /CREATE OR REPLACE FUNCTION phase6_t4a_withdrawn_no_delete\(\)[\s\S]*?END \$fn\$ LANGUAGE plpgsql;/,
+  );
+  if (!match) throw new Error(`phase6_t4a_withdrawn_no_delete not found in ${migration}`);
+  return match[0];
+};
+
+const T4A_MIGRATION = '20270810000000_phase6_t4a_withdraw';
+const T4B_MIGRATION = '20270826000000_phase6_t4b_approval_attribution';
 
 describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
   let db: PrismaClient;
@@ -74,9 +95,16 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionLegacyApproval_sealed') THEN
           ALTER TABLE "DecisionLegacyApproval" DISABLE TRIGGER "DecisionLegacyApproval_sealed";
         END IF;
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN
+          ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval";
+        END IF;
       END $do$`),
+      db.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
       db.decision.deleteMany({ where: { projectId } }),
       db.$executeRawUnsafe(`DO $do$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN
+          ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval";
+        END IF;
         IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionLegacyApproval_sealed') THEN
           ALTER TABLE "DecisionLegacyApproval" ENABLE TRIGGER "DecisionLegacyApproval_sealed";
         END IF;
@@ -99,6 +127,9 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
       approvedDeciderKind: 'client' | 'pmc' | 'member' | null;
       approvedDeciderMembershipId: string | null;
       approvedDeciderLabel: string | null;
+      approvedById: string | null;
+      approver: string | null;
+      approvedOption: string | null;
     }> = {},
   ): Promise<string> => {
     const id = nextId('decision');
@@ -112,6 +143,9 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
         ageDays: 0,
         photoSwatch: 'blue',
         authorId: userId,
+        approvedById: over.approvedById ?? null,
+        approver: over.approver ?? null,
+        approvedOption: over.approvedOption ?? null,
         publishedAt: over.publishedAt === undefined ? new Date() : over.publishedAt,
         deciderKind: over.deciderKind ?? 'client',
         deciderMembershipId: over.deciderMembershipId ?? null,
@@ -338,5 +372,158 @@ describe('Phase 6 unit 4b — approval attribution expansion (live PG)', () => {
 
     expect(truncateError, 'TRUNCATE must inspect the register after the writer commits').not.toBeNull();
     expect(await db.decision.count({ where: { id } })).toBe(1);
+  });
+
+  // ── Round 1 (Codex) — the two P1 findings on head 32cd6a1 ────────────────────────────────
+  describe('round 1 (Codex F1): the holder freeze does not rest on a nullable publication value', () => {
+    it('F1: a published decision cannot be un-published, so the two-transaction holder rewrite cannot even start', async () => {
+      const id = await seedDecision({ deciderKind: 'member', deciderMembershipId: membershipId });
+
+      // step 1 of the attack: clear the nullable value the freeze used to key on
+      await expect(
+        db.$executeRawUnsafe(`UPDATE "Decision" SET "publishedAt" = NULL WHERE "id" = $1`, id),
+      ).rejects.toThrow(/un-published|publication is permanent/i);
+      // step 2 is refused independently — the row is still published and still holds its holder
+      await expect(
+        db.decision.update({ where: { id }, data: { deciderKind: 'pmc', deciderMembershipId: null } }),
+      ).rejects.toThrow(/holder|decider|frozen/i);
+
+      const row = await db.decision.findUniqueOrThrow({ where: { id } });
+      expect(row.publishedAt).not.toBeNull();
+      expect(row.deciderKind).toBe('member');
+      expect(row.deciderMembershipId).toBe(membershipId);
+    });
+
+    it('F1: an attributed approval freezes its holder even with no publication fact at all', async () => {
+      const id = await seedDecision({ ...attributed(), publishedAt: null });
+
+      await expect(
+        db.decision.update({ where: { id }, data: { deciderKind: 'pmc', deciderMembershipId: null } }),
+      ).rejects.toThrow(/holder|decider|frozen/i);
+
+      const row = await db.decision.findUniqueOrThrow({ where: { id } });
+      expect(row.publishedAt).toBeNull();
+      // the frozen approval tuple and the current holder still name the same person
+      expect(row.deciderKind).toBe('member');
+      expect(row.deciderMembershipId).toBe(membershipId);
+      expect(row.approvedDeciderMembershipId).toBe(membershipId);
+    });
+
+    it('F1: approval standing and a migration stamp each freeze the holder without publication', async () => {
+      const legacyStanding = await seedDecision({
+        status: 'approved',
+        publishedAt: null,
+        deciderKind: 'member',
+        deciderMembershipId: membershipId,
+        approvedById: userId,
+        approver: 'Legacy approver',
+        approvedOption: 'Legacy option',
+      });
+      const stamped = await seedDecision({
+        publishedAt: null,
+        deciderKind: 'member',
+        deciderMembershipId: membershipId,
+      });
+      await seedLegacyStamp(stamped);
+
+      for (const id of [legacyStanding, stamped]) {
+        await expect(
+          db.decision.update({ where: { id }, data: { deciderKind: 'client', deciderMembershipId: null } }),
+        ).rejects.toThrow(/holder|decider|frozen/i);
+      }
+      expect(
+        await db.decision.count({ where: { id: { in: [legacyStanding, stamped] }, deciderKind: 'member' } }),
+      ).toBe(2);
+    });
+
+    it('F1 precision: a private, evidence-free draft still designates its holder freely', async () => {
+      const id = await seedDecision({ publishedAt: null });
+
+      await db.decision.update({
+        where: { id },
+        data: { deciderKind: 'member', deciderMembershipId: membershipId },
+      });
+      await db.decision.update({ where: { id }, data: { deciderKind: 'pmc', deciderMembershipId: null } });
+      // and publishing it is still the one-way transition the product performs
+      await db.decision.update({ where: { id }, data: { publishedAt: new Date() } });
+
+      const row = await db.decision.findUniqueOrThrow({ where: { id } });
+      expect(row.deciderKind).toBe('pmc');
+      expect(row.publishedAt).not.toBeNull();
+    });
+  });
+
+  describe('round 1 (Codex F2): replaying the rerunnable 4a migration cannot reopen evidence deletion', () => {
+    it('F2: a compatibility-window tupleless approval survives DELETE after the older 4a body is restored', async () => {
+      // exactly the UP4B-OLD shape: the still-serving pre-4b writer approved without the new
+      // tuple, and the migration stamp covers only rows that predate the 4b migration
+      const id = await seedDecision({
+        status: 'approved',
+        approvedById: userId,
+        approver: 'Legacy approver',
+        approvedOption: 'Legacy option',
+      });
+      expect(
+        await db.$queryRawUnsafe<Array<{ count: bigint }>>(
+          `SELECT COUNT(*) AS count FROM "DecisionLegacyApproval" WHERE "decisionId" = $1`,
+          id,
+        ).then((rows) => Number(rows[0]?.count ?? 0)),
+        'the fixture must be tupleless AND unstamped — the exact class the finding names',
+      ).toBe(0);
+
+      try {
+        // an operator replays the rerunnable 4a migration for repair; it restores its own older,
+        // withdrawn-only body over the consolidated one this unit installed
+        await db.$executeRawUnsafe(withdrawnNoDeleteBody(T4A_MIGRATION));
+        const regressed = await db.$queryRawUnsafe<Array<{ def: string }>>(
+          `SELECT pg_get_functiondef('phase6_t4a_withdrawn_no_delete()'::regprocedure) AS def`,
+        );
+        expect(
+          regressed[0]?.def ?? '',
+          'the replay must really have removed the consolidated approval arm — otherwise this probe proves nothing',
+        ).not.toContain('approvedById');
+
+        const error = await db
+          .$executeRawUnsafe(`DELETE FROM "Decision" WHERE "id" = $1`, id)
+          .then(() => null, (caught: unknown) => caught);
+        expect(error, 'the 4b seal must refuse the DELETE on its own').not.toBeNull();
+        expect(String(error)).toMatch(/approval attribution\/evidence is permanent/);
+        expect(await db.decision.count({ where: { id } })).toBe(1);
+      } finally {
+        await db.$executeRawUnsafe(withdrawnNoDeleteBody(T4B_MIGRATION));
+      }
+
+      // the consolidated body is back, and it refuses the same DELETE first
+      await expect(
+        db.$executeRawUnsafe(`DELETE FROM "Decision" WHERE "id" = $1`, id),
+      ).rejects.toThrow(/approval evidence is a permanent register entry/);
+    });
+
+    it('F2: the 4b seal independently covers every approval signal, and only approval signals', async () => {
+      const standing = await seedDecision({ status: 'approved' });
+      const legacyColumns = await seedDecision({ approvedById: userId, approver: 'Legacy approver' });
+      const event = await seedDecision();
+      await db.$executeRawUnsafe(
+        `INSERT INTO "DecisionEvent"("id","decisionId","type","actor") VALUES ($1, $2, 'approved', 'legacy writer')`,
+        nextId('ev'),
+        event,
+      );
+      const plainDraft = await seedDecision({ publishedAt: null });
+
+      try {
+        await db.$executeRawUnsafe(withdrawnNoDeleteBody(T4A_MIGRATION));
+        for (const id of [standing, legacyColumns, event]) {
+          await expect(
+            db.$executeRawUnsafe(`DELETE FROM "Decision" WHERE "id" = $1`, id),
+          ).rejects.toThrow(/approval attribution\/evidence is permanent/);
+        }
+        // precision: a decision carrying no approval signal at all is still deletable
+        expect(await db.$executeRawUnsafe(`DELETE FROM "Decision" WHERE "id" = $1`, plainDraft)).toBe(1);
+      } finally {
+        await db.$executeRawUnsafe(withdrawnNoDeleteBody(T4B_MIGRATION));
+      }
+
+      expect(await db.decision.count({ where: { id: { in: [standing, legacyColumns, event] } } })).toBe(3);
+    });
   });
 });
