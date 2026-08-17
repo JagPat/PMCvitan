@@ -4,11 +4,23 @@ import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-const LOCK_SQL = "SELECT pg_advisory_lock(hashtext('vitan-pmc-destructive-seed'))";
-const UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('vitan-pmc-destructive-seed'))";
+const LOCK_KEY = 'vitan-pmc-destructive-seed';
+const LOCK_SQL = `SELECT pg_advisory_lock(hashtext('${LOCK_KEY}'))`;
+const UNLOCK_SQL = `SELECT pg_advisory_unlock(hashtext('${LOCK_KEY}'))`;
 const MARKER_ID = 'cloud-agent-seed-complete';
 const SEED_PROJECT_ID = 'ambli';
 const apiRoot = join(__dirname, '../..');
+
+/** Session `pg_advisory_lock(int4)` is stored as a signed-int64 tag (objsubid = 1). */
+const SEED_LOCK_COUNT_SQL = `
+  SELECT COUNT(*)::int AS c
+    FROM pg_locks l
+   WHERE l.locktype = 'advisory'
+     AND l.granted = $1
+     AND l.objsubid = 1
+     AND l.pid <> pg_backend_pid()
+     AND l.classid::bigint = ((hashtext('${LOCK_KEY}')::bigint >> 32) & 4294967295)
+     AND l.objid::bigint   =  (hashtext('${LOCK_KEY}')::bigint       & 4294967295)`;
 
 function oneConnectionUrl(): string {
   const raw = process.env.DATABASE_URL ?? '';
@@ -28,11 +40,22 @@ function exitCode(child: ChildProcess): Promise<number> {
   });
 }
 
+function collectOutput(child: ChildProcess): () => string {
+  let buf = '';
+  child.stdout?.on('data', (chunk: Buffer | string) => {
+    buf += chunk.toString();
+  });
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    buf += chunk.toString();
+  });
+  return () => buf;
+}
+
 /**
  * Overlapping `pnpm seed` must serialize on the same session advisory lock seed.ts
- * takes before wiping the completion marker. The barrier uses pg_stat_activity (not
- * sleep). The fault probe kills the holder and asserts the marker exists only with
- * the complete ambli fixture.
+ * takes before wiping the completion marker. The barrier watches `pg_locks` by the
+ * lock's key (not `pg_stat_activity.query`): after the lock statement returns, the
+ * holder is inside TRUNCATE/writes and the query text no longer mentions the key.
  */
 describe('cloud-agent destructive seed lock', () => {
   let observer: PrismaClient;
@@ -56,36 +79,19 @@ describe('cloud-agent destructive seed lock', () => {
     await Promise.all([holder?.$disconnect(), waiter?.$disconnect(), observer?.$disconnect()]);
   });
 
-  const waitUntilBlockedOnSeedLock = async (): Promise<void> => {
-    for (let i = 0; i < 200; i++) {
-      const rows = await observer.$queryRawUnsafe<Array<{ c: number }>>(
-        `SELECT COUNT(*)::int AS c FROM pg_stat_activity
-          WHERE wait_event_type = 'Lock'
-            AND wait_event = 'advisory'
-            AND state = 'active'
-            AND query ILIKE '%vitan-pmc-destructive-seed%'
-            AND pid <> pg_backend_pid()`,
-      );
-      if (Number(rows[0]!.c) >= 1) return;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    throw new Error('barrier timeout: expected a backend blocked on the destructive-seed advisory lock');
+  const countSeedLocks = async (granted: boolean): Promise<number> => {
+    const rows = await observer.$queryRawUnsafe<Array<{ c: number }>>(SEED_LOCK_COUNT_SQL, granted);
+    return Number(rows[0]!.c);
   };
 
-  const waitUntilHoldingSeedLock = async (): Promise<void> => {
-    for (let i = 0; i < 400; i++) {
-      const rows = await observer.$queryRawUnsafe<Array<{ c: number }>>(
-        `SELECT COUNT(*)::int AS c FROM pg_locks l
-           JOIN pg_stat_activity a ON a.pid = l.pid
-          WHERE l.locktype = 'advisory'
-            AND l.granted
-            AND a.query ILIKE '%vitan-pmc-destructive-seed%'
-            AND a.pid <> pg_backend_pid()`,
-      );
-      if (Number(rows[0]!.c) >= 1) return;
+  const waitUntilSeedLock = async (granted: boolean, abort?: () => void): Promise<void> => {
+    const label = granted ? 'holding' : 'blocked on';
+    for (let i = 0; i < 800; i++) {
+      abort?.();
+      if ((await countSeedLocks(granted)) >= 1) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error('barrier timeout: expected a backend holding the destructive-seed advisory lock');
+    throw new Error(`barrier timeout: expected a backend ${label} the destructive-seed advisory lock`);
   };
 
   it('seed.ts takes the lock before deleteMany and unlocks in finally', () => {
@@ -101,6 +107,7 @@ describe('cloud-agent destructive seed lock', () => {
 
   it('a second session blocks on the lock until the first releases', async () => {
     await holder.$executeRawUnsafe(LOCK_SQL);
+    await waitUntilSeedLock(true);
 
     const waiterLock = waiter.$executeRawUnsafe(LOCK_SQL);
     const reflected = waiterLock.then(
@@ -108,7 +115,7 @@ describe('cloud-agent destructive seed lock', () => {
       (reason: unknown) => ({ status: 'rejected' as const, reason }),
     );
 
-    await waitUntilBlockedOnSeedLock();
+    await waitUntilSeedLock(false);
 
     await holder.$executeRawUnsafe(UNLOCK_SQL);
     const outcome = await reflected;
@@ -125,12 +132,24 @@ describe('cloud-agent destructive seed lock', () => {
       });
 
     const first = spawnSeed();
-    await waitUntilHoldingSeedLock();
+    const firstOut = collectOutput(first);
+    let firstExit: number | undefined;
+    void exitCode(first).then((code) => {
+      firstExit = code;
+    });
+
+    await waitUntilSeedLock(true, () => {
+      if (firstExit !== undefined) {
+        throw new Error(`first seed exited ${firstExit} before taking the lock:\n${firstOut()}`);
+      }
+    });
+
     const second = spawnSeed();
-    await waitUntilBlockedOnSeedLock();
+    const secondOut = collectOutput(second);
+    await waitUntilSeedLock(false);
     first.kill('SIGKILL');
     const code = await exitCode(second);
-    expect(code).toBe(0);
+    expect(code, secondOut()).toBe(0);
 
     const marker = await observer.auditLog.findUnique({ where: { id: MARKER_ID } });
     const project = await observer.project.findUnique({ where: { id: SEED_PROJECT_ID } });
