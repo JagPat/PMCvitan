@@ -57,6 +57,36 @@ export class OrgsParticipant {
   }
 
   /**
+   * Does this user have decision authority on this project RIGHT NOW?
+   *
+   * Phase 6 task 4b, round 13 (Codex R13-1). `orgs_user_decision_authority` is the DB primitive
+   * three seal doors ask — filing a record, converting a draft into one, and (as of round 12)
+   * publishing one. The third door had no service spokesman, so an ordinary stale-draft publish
+   * surfaced as a raw PostgreSQL exception and a 500 for something that is an actionable conflict.
+   *
+   * This is the spokesman, and it is here rather than in decisions for the reason every other
+   * member of this file is: the question is about `Membership`, `OrgMembership` and `Project`
+   * status, which are orgs-owned. The decisions service asks; it does not read those tables.
+   *
+   * It calls the SAME function the trigger calls — deliberately, so the two cannot drift into
+   * different answers. That function takes `FOR SHARE` on the project row (it is VOLATILE for
+   * exactly that reason), so the answer cannot go stale between this check and the write it
+   * authorises, provided the caller holds the readiness lock the publish path already takes.
+   */
+  async userHasDecisionAuthority(
+    tx: OrgsParticipantClient | Prisma.TransactionClient,
+    projectId: string,
+    userId: string | null,
+  ): Promise<boolean> {
+    if (!userId) return false;
+    const rows = await (tx as OrgsParticipantClient).$queryRawUnsafe<Array<{ ok: boolean }>>(
+      `SELECT orgs_user_decision_authority($1, $2) AS ok`,
+      projectId, userId,
+    );
+    return rows.length > 0 && rows[0]!.ok === true;
+  }
+
+  /**
    * Everyone on this project who WOULD satisfy `hasProjectRoleStanding` for `roles`.
    *
    * §I's authorisation form needs to offer candidates, and the alternative was a client-side

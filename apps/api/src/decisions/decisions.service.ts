@@ -105,10 +105,27 @@ export class DecisionsService {
   private async assertPublishableHolder(
     tx: Prisma.TransactionClient,
     projectId: string,
-    head: { deciderKind: unknown; deciderMembershipId: string | null },
+    head: { deciderKind: unknown; deciderMembershipId: string | null; authorId?: string | null },
     memberGoneMessage: string,
   ): Promise<void> {
     const kind = head.deciderKind as string;
+    // Round 13 (Codex R13-1) — the RECORD arm. Round 12 added publish-time author revalidation to
+    // the seal, and this function covered only `member`/`client`/`pmc`, so the seal's refusal
+    // escaped through Prisma as a 500 for the ordinary case it exists to catch: a record draft
+    // saved while its author held authority, published after they lost it.
+    //
+    // A record has no HOLDER to check — that is what `none` means — so the question is about its
+    // AUTHOR, and it is asked of the module that owns the tables the answer depends on. The
+    // publish path already holds the readiness lock (round 4, R4-3), which is what keeps this
+    // answer true until the write lands.
+    if (kind === 'none') {
+      if (!(await this.orgsParticipant.userHasDecisionAuthority(tx, projectId, head.authorId ?? null))) {
+        throw new ConflictException(
+          'The author of this record no longer has decision authority on this project — a saved record can only be published while its author still holds it',
+        );
+      }
+      return;
+    }
     // The HOLDER question first, then the surface question. Both refuse, and both refusals are
     // true — but "the member you named has left" is the more specific and more actionable of the
     // two, and it is the behaviour round 4 proved. A gate that swallowed it would be trading a
@@ -245,7 +262,9 @@ export class DecisionsService {
           await this.assertPublishableHolder(
             tx,
             projectId,
-            { deciderKind, deciderMembershipId: input.deciderMembershipId ?? null },
+            // Round 13 (R13-1): the record arm reads the AUTHOR, and on this door that is the
+            // caller — the same value the row is being inserted with two statements above.
+            { deciderKind, deciderMembershipId: input.deciderMembershipId ?? null, authorId: user.sub },
             'The member this decision names is not an active member of this project — name a current decider, or save it as a draft',
           );
         }

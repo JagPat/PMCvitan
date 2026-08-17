@@ -103,15 +103,6 @@ CREATE TABLE IF NOT EXISTS "DecisionLegacyApproval" (
 -- Every run after — present, so the predicate is empty and the migration is a true no-op.
 -- Re-opening the stamp means dropping that trigger, which needs table ownership: the same
 -- privilege as every other sanctioned bypass in this schema, and no less visible.
-INSERT INTO "DecisionLegacyApproval" ("decisionId")
-SELECT d."id" FROM "Decision" d
- WHERE d."status"::text IN ('approved', 'change')
-   AND d."approvedDeciderKind" IS NULL
-   AND NOT EXISTS (
-         SELECT 1 FROM pg_trigger tg
-           JOIN pg_class c ON c.oid = tg.tgrelid
-          WHERE c.relname = 'DecisionLegacyApproval'
-            AND tg.tgname = 'DecisionLegacyApproval_sealed');
 
 -- …and close the door behind the migration. This is the property the whole redesign rests on: the
 -- exemption set is enumerated once and can never be added to.
@@ -133,11 +124,6 @@ BEGIN
   END IF;
   RAISE EXCEPTION 'phase6-4b: "DecisionLegacyApproval" is one-time migration evidence — it cannot be written after 20270827000000, which is the only reason it can be trusted.';
 END $$;
-
-DROP TRIGGER IF EXISTS "DecisionLegacyApproval_sealed" ON "DecisionLegacyApproval";
-CREATE TRIGGER "DecisionLegacyApproval_sealed"
-  BEFORE INSERT OR UPDATE OR DELETE ON "DecisionLegacyApproval"
-  FOR EACH ROW EXECUTE FUNCTION decision_t4b_legacy_evidence_sealed();
 
 -- ROUND 11 (R11-5): …and TRUNCATE, which fires NO row trigger. Elsewhere in this schema a truncate
 -- is a sanctioned test/seed reset and is deliberately left uncovered; here it is not, because this
@@ -164,10 +150,7 @@ BEGIN
   RETURN NULL;
 END $$;
 
-DROP TRIGGER IF EXISTS "DecisionLegacyApproval_no_truncate" ON "DecisionLegacyApproval";
-CREATE TRIGGER "DecisionLegacyApproval_no_truncate"
-  BEFORE TRUNCATE ON "DecisionLegacyApproval"
-  FOR EACH STATEMENT EXECUTE FUNCTION decision_t4b_legacy_evidence_no_truncate();
+-- (both triggers are created inside the atomic DO block above — see R13-2.)
 
 -- ── R10-2: the reverse of the link rule, asked of the modules that own the dependents ────────
 -- Named for their owners and defined here for the same reason `orgs_user_decision_authority` is:
@@ -188,6 +171,40 @@ RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
     SELECT 1 FROM "SiteMaterial" m
      WHERE m."projectId" = p_project_id AND m."decisionId" = p_decision_id);
 $$;
+
+-- ROUND 13 (R13-2): the stamp and its seal are ONE STATEMENT, so they commit together or not at
+-- all. The guard alone is not enough. Applied non-transactionally — which is exactly how
+-- `upgrade-proof.sh` applies migration files, with `psql -f` autocommitting each statement — an
+-- interruption between the INSERT and the CREATE TRIGGER commits the rows and leaves no seal. The
+-- retry then sees no seal, re-selects the same legacy rows, and dies on the primary key before it
+-- can ever close the set: a state that cannot be resumed and cannot be re-run.
+--
+-- A per-row "skip what is stamped" guard would make that retry succeed and would reintroduce the
+-- widening round 11 removed, because with no seal present it cannot tell a resumed apply from a
+-- dropped seal. A DO block removes the question instead of answering it: PostgreSQL treats it as a
+-- single statement, so the partially-applied state this finding describes cannot exist.
+DO $do$
+BEGIN
+  IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger tg
+          JOIN pg_class c ON c.oid = tg.tgrelid
+         WHERE c.relname = 'DecisionLegacyApproval'
+           AND tg.tgname = 'DecisionLegacyApproval_sealed') THEN
+
+    INSERT INTO "DecisionLegacyApproval" ("decisionId")
+    SELECT d."id" FROM "Decision" d
+     WHERE d."status"::text IN ('approved', 'change')
+       AND d."approvedDeciderKind" IS NULL;
+
+    EXECUTE 'DROP TRIGGER IF EXISTS "DecisionLegacyApproval_no_truncate" ON "DecisionLegacyApproval"';
+    EXECUTE 'CREATE TRIGGER "DecisionLegacyApproval_sealed"
+               BEFORE INSERT OR UPDATE OR DELETE ON "DecisionLegacyApproval"
+               FOR EACH ROW EXECUTE FUNCTION decision_t4b_legacy_evidence_sealed()';
+    EXECUTE 'CREATE TRIGGER "DecisionLegacyApproval_no_truncate"
+               BEFORE TRUNCATE ON "DecisionLegacyApproval"
+               FOR EACH STATEMENT EXECUTE FUNCTION decision_t4b_legacy_evidence_no_truncate()';
+  END IF;
+END $do$;
 
 CREATE OR REPLACE FUNCTION decision_t4b_recorded_seal() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 DECLARE

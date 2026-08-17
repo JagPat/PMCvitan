@@ -4078,6 +4078,43 @@ assert "4b round 11 (R11-5): the evidence survived every attempt above — the s
 # aborting the retry this repository requires of every migration. Proven by RE-RUNNING the real
 # migration file over the already-upgraded database — the state where every stamped row still
 # matches the SELECT that stamped it.
+# R13-2 — the stamp and its seal must be ATOMIC. Codex's case: applied non-transactionally (which
+# is exactly how THIS script applies migration files — `psql -f`, one autocommit per statement), an
+# interruption between the INSERT and the CREATE TRIGGER commits the rows and leaves no seal. The
+# retry then re-selects the same legacy rows and dies on the primary key: unresumable.
+#
+# The fix puts both inside one `DO` block, so the window cannot exist. Proven by FORCING an
+# interruption at exactly that point: stage the pre-DO state (no seals, no rows), install a decoy
+# AFTER INSERT statement trigger that raises — the migration file cannot repair it, because the file
+# only ever drops triggers it owns by name — then run the file. The INSERT executes, the decoy
+# raises, and the assertion below is that the rows went back with it.
+echo ""
+echo "=== 4b round 11/13: the stamp is one-shot AND atomic ==="
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round-13 pre-DO state could not be staged"; FAIL=1; }
+DROP TRIGGER IF EXISTS "DecisionLegacyApproval_sealed" ON "DecisionLegacyApproval";
+DROP TRIGGER IF EXISTS "DecisionLegacyApproval_no_truncate" ON "DecisionLegacyApproval";
+DELETE FROM "DecisionLegacyApproval";
+CREATE OR REPLACE FUNCTION zz_r13_interrupt() RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN RAISE EXCEPTION 'r13: simulated interruption after the stamp'; END $fn$;
+CREATE TRIGGER "zz_r13_interrupt" AFTER INSERT ON "DecisionLegacyApproval"
+  FOR EACH STATEMENT EXECUTE FUNCTION zz_r13_interrupt();
+SQL
+if $PSQL -q -f "$MIG_DIR/20270827000000_phase6_t4b_correction10/migration.sql" >/dev/null 2>&1; then
+  echo "FAILED  4b round 13 (R13-2): the migration must ABORT when the stamp is interrupted"; FAIL=1
+fi
+assert "4b round 13 (R13-2): the interrupted apply left NOTHING behind — the stamp rolled back with the seals it never reached" \
+  "SELECT (SELECT COUNT(*) FROM \"DecisionLegacyApproval\")::text || '/' || (SELECT COUNT(*) FROM pg_trigger tg JOIN pg_class c ON c.oid = tg.tgrelid WHERE c.relname = 'DecisionLegacyApproval' AND NOT tg.tgisinternal AND tg.tgname LIKE 'DecisionLegacyApproval%')::text;" \
+  "0/0"
+$PSQL -q >/dev/null <<'SQL'
+DROP TRIGGER IF EXISTS "zz_r13_interrupt" ON "DecisionLegacyApproval";
+DROP FUNCTION IF EXISTS zz_r13_interrupt();
+SQL
+$PSQL -q -f "$MIG_DIR/20270827000000_phase6_t4b_correction10/migration.sql" >/dev/null \
+  || { echo "FAILED  4b round 13 (R13-2): the RESUMED apply must succeed once the interruption is cleared"; FAIL=1; }
+assert "4b round 13 (R13-2): the resumed apply rebuilt the set AND both seals in one statement" \
+  "SELECT (SELECT COUNT(*) > 0 FROM \"DecisionLegacyApproval\")::text || '/' || (SELECT string_agg(tg.tgname, ',' ORDER BY tg.tgname) FROM pg_trigger tg JOIN pg_class c ON c.oid = tg.tgrelid WHERE c.relname = 'DecisionLegacyApproval' AND NOT tg.tgisinternal);" \
+  "true/DecisionLegacyApproval_no_truncate,DecisionLegacyApproval_sealed"
+
 STAMP_SET=$($PSQL -tAc "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\";")
 $PSQL -q -f "$MIG_DIR/20270827000000_phase6_t4b_correction10/migration.sql" >/dev/null \
   || { echo "FAILED  4b round 11 (R11-4): re-running 20270827000000 over an upgraded database must be a no-op, not an abort"; FAIL=1; }

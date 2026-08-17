@@ -508,3 +508,48 @@ catalogue pin.
 
 `20270815000000` … `20270827000000` are byte-for-byte unchanged; `20270828000000` carries
 `20270818000000`'s publication seal forward with one arm added.
+
+## Round 13 — the two Codex findings on `99cbada`
+
+Two P2, answered on this head. **Classification: no seam findings; both are this PR's own
+corrections biting back — each one stopping at the edge of what its finding named.**
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R13-1 (P2) | round 12 added publish-time author revalidation to the seal, and `assertPublishableHolder` covered only `member`/`client`/`pmc` — so the seal's refusal escaped through Prisma as a 500 for the ordinary case the arm exists to catch | a `none` arm on `assertPublishableHolder`, asking the new orgs-owned `OrgsParticipant.userHasDecisionAuthority`, which calls the SAME SQL primitive the trigger calls so the two cannot drift |
+| R13-2 (P2) | round 11's one-shot GUARD is not atomicity. The INSERT and the `CREATE TRIGGER` were separate statements, so a non-transactional apply interrupted between them commits rows with no seal — and the retry re-selects the same rows and dies on the primary key | the stamp and BOTH seals moved inside one `DO` block, which PostgreSQL treats as a single statement, so the partial state cannot exist |
+
+### Why not a per-row guard for R13-2
+
+Making the retry succeed with `NOT EXISTS (… WHERE l."decisionId" = d."id")` would reintroduce
+exactly the widening round 11 removed: with no seal present, the migration cannot distinguish a
+RESUMED apply from a DROPPED seal, so a later re-run would stamp rows that entered `change` after
+the upgrade. The `DO` block removes the question rather than answering it.
+
+The scenario is not hypothetical for this repository: `upgrade-proof.sh` applies migration files with
+`psql -f`, which autocommits every statement. The proof harness is the non-transactional applier
+Codex described.
+
+### Two wrong turns on the way, both caught by running it
+
+**The `DO` block landed before the functions it references**, so the migration failed outright on a
+fresh database with `function decision_t4b_legacy_evidence_sealed() does not exist`. Moved after both
+`CREATE OR REPLACE FUNCTION` statements.
+
+**The first forced-interruption proof used "rename the function away"** — which the migration file
+repairs itself, because it defines that function, so the apply succeeded and the proof asserted
+nothing. The working proof installs a decoy `AFTER INSERT` statement trigger the file does not know
+about: the stamp runs, the decoy raises, and the assertion is that the rows went back with the seals
+they never reached, followed by a clean resumed apply.
+
+### Verification at this head
+
+| Gate | Result |
+| --- | --- |
+| `phase6-t4b-correction13.test.ts` | **4 passed** |
+| Full integration suite, pristine DB | **107 files, 1274 passed / 3 skipped / 0 failed** |
+| `pnpm check` (repo root) | **EXIT 0** — web 790/790, API 793/793 |
+| `upgrade-proof.sh` | **658 assertions, EXIT 0**, including the forced-interruption atomicity proof |
+
+`20270827000000` changes this round; `20270815000000` … `20270826000000` and `20270828000000` are
+byte-for-byte unchanged.

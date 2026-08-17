@@ -15,7 +15,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `92868d7` | round-8 fold + this audit's ninth/tenth editions | 3 (2 P1, 1 P2) | corrected on `a283568` via `20270826000000` plus its service half: the restoration proof required to PREDATE the open change request; user+membership provisioning folded into one transaction holding the readiness key; and `members.add` running the same departure guard `updateRole` runs |
 | `a283568` | round-9 fold | 2 (2 P1) | corrected on `f113f94` via `20270827000000`: the restoration exemption's forgeable clause REPLACED by a set enumerated once at upgrade time (`DecisionLegacyApproval`, sealed against every later write), keeping round 7's two statement-shape conditions; and the draft → record conversion made to ask the OWNING modules whether anything already depends on the draft — the reverse of a link rule that was only enforced forwards |
 | `f113f94` | round-10 fold + this audit's eleventh edition | 5 (2 P1, 3 P2) | corrected on `7988f26`, all inside the unmerged `20270827000000`: the stamp widened to legacy approvals already sitting in `change` (an ordinary pre-existing change request was otherwise unwithdrawable forever); the register declared in `schema.prisma` so drift cannot DROP it; R4-2's born-approved-tupleless INSERT door CLOSED, its justification having been dissolved by round 10 itself; the stamp made genuinely ONE-SHOT (guarded on the seal's own existence, not per row, so a later re-run cannot enlarge the set); and a statement-level `BEFORE TRUNCATE` seal for the verb a row trigger never sees |
-| `7988f26` | round-11 fold + this audit's twelfth edition | 3 (3 P2) | corrected on this head via `20270828000000` plus a schema and a service edit: the evidence FK's UPDATE action DECLARED `NoAction` to match the database (a Prisma relation defaults to `Cascade`, and `migrate diff` was emitting `ON UPDATE CASCADE` for it); `addOrgMember`'s upsert routed through the SAME transactional holder guard — and the same last-owner rule — that `updateOrgMemberRole` runs; and publication revalidating a RECORD's author, the third of three doors that the migration's own header already claimed all asked |
+| `7988f26` | round-11 fold + this audit's twelfth edition | 3 (3 P2) | corrected on `99cbada` via `20270828000000` plus a schema and a service edit: the evidence FK's UPDATE action DECLARED `NoAction` to match the database (a Prisma relation defaults to `Cascade`, and `migrate diff` was emitting `ON UPDATE CASCADE` for it); `addOrgMember`'s upsert routed through the SAME transactional holder guard — and the same last-owner rule — that `updateOrgMemberRole` runs; and publication revalidating a RECORD's author, the third of three doors that the migration's own header already claimed all asked |
+| `99cbada` | round-12 fold + this audit's thirteenth edition | 2 (2 P2) | corrected on this head: the RECORD arm added to `assertPublishableHolder` through a new orgs-owned `userHasDecisionAuthority` participant method calling the SAME primitive the trigger calls (round 12 added the seal and left it without a spokesman, so an ordinary stale-draft publish 500'd); and the stamp + both its seals folded into ONE `DO` block, because round 11's one-shot GUARD is not atomicity — an interrupted non-transactional apply committed rows with no seal, and the retry then died on the primary key |
 
 ## Root analysis — one generative class, three faces
 
@@ -1016,3 +1017,87 @@ because it invites the next reader to stop checking.
 All three findings are answered in code on this head. `20270815000000` … `20270827000000` are
 byte-for-byte unchanged; the publication seal is replaced by a new `20270828000000` carrying
 `20270818000000`'s body forward with one arm added.
+
+---
+
+## Fourteenth edition — round 13, where two corrections each grew their own tail
+
+Two findings on `99cbada` (2×P2). **2 of 2 SELF-INFLICTED. 0 SEAM.**
+
+| # | P | Which correction in THIS PR caused it |
+| --- | --- | --- |
+| R13-1 | P2 | **round 12's own R12-3 fix** — it added the seal arm and left the service without the matching spokesman |
+| R13-2 | P2 | **round 11's own R11-4 fix** — it made the stamp one-shot with a guard, and a guard is not atomicity |
+
+Both are the same story one level down: a correction that answered its finding correctly, and stopped
+at the edge of what the finding named.
+
+### R13-1: the spokesman rule, at the fifth door
+
+This PR has a standing rule, established in round 3 and applied repeatedly since: **the database is
+the authority, and the service says the same thing first, in words a caller can act on.** Round 12
+added the publish-time author check to the seal and did not add its spokesman, so the ordinary case
+the arm exists to catch — a record draft saved while its author held authority, published after they
+lost it — arrived as a raw `PrismaClientKnownRequestError` and a 500.
+
+The answer is the shape every other spokesman in this PR has: the question is asked of the module
+that owns the tables it depends on (`orgs`), through a participant method that calls the SAME SQL
+primitive the trigger calls, so the two cannot drift into different answers. `assertPublishableHolder`
+gains a `none` arm and returns early; the member/client/pmc arms are untouched and a probe asserts
+their specific refusals survive, because a spokesman that is *stricter* than its seal is the failure
+round 5 already recorded here.
+
+### R13-2: a guard is not atomicity
+
+Round 11 made the stamp one-shot by asking "has this migration already run?", answered by the seal
+trigger's existence. That is the right question and it does not survive an interrupted apply: the
+INSERT and the `CREATE TRIGGER` were separate statements, so a non-transactional application that
+dies between them commits the rows with no seal. The retry then re-selects the same legacy rows and
+dies on the primary key — **a state that can be neither resumed nor re-run.**
+
+And "non-transactional application" is not hypothetical here: `upgrade-proof.sh` applies migration
+files with `psql -f`, which autocommits every statement. The repository's own proof harness is the
+case Codex described.
+
+The fix removes the window instead of making it recoverable. A per-row "skip what is already
+stamped" guard would make the retry succeed and would reintroduce exactly the widening round 11
+removed — with no seal present it cannot tell a resumed apply from a dropped seal. Putting the
+INSERT and both `CREATE TRIGGER`s inside one `DO` block makes them a single statement, so the
+partial state cannot exist at all.
+
+**Two mistakes on the way there, both mine, both caught by running it.** The `DO` block first landed
+*before* the functions it references, so the migration failed outright on a fresh database. Then the
+forced-interruption proof used "rename the function away" — which the migration file repairs itself,
+because it defines that function. The working proof installs a decoy `AFTER INSERT` statement trigger
+the file does not know about: the stamp runs, the decoy raises, and the assertion is that the rows
+went back with the seals they never reached.
+
+### The count
+
+| round | findings | seam | self-inflicted |
+| --- | --- | --- | --- |
+| 7 | 3 | 0 | 3 |
+| 8 | 3 | 0 | 2 (+1 latent) |
+| 9 | 3 | 0 | 3 |
+| 10 | 2 | 0 | 2 |
+| 11 | 5 | 0 | 5 |
+| 12 | 3 | 0 | 3 |
+| 13 | 2 | 0 | 2 |
+
+**Seven consecutive rounds, twenty-one findings, zero seam defects.**
+
+### The rule this round contributes
+
+> A correction is not finished at the boundary of the finding. **Ask what the fix now implies —
+> which spokesman it owes, which window it opens, which neighbouring rule it just invalidated.**
+
+Rounds 11, 12 and 13 are one chain: R11-4 fixed re-runnability and left an atomicity window; R12-3
+fixed the seal and left the spokesman; R11-2 fixed the drift and left the referential action. Each
+was a correct answer to the question asked. The findings that followed were the questions the answer
+raised, and every one of them was visible from inside the change.
+
+### Nothing is deferred
+
+Both findings are answered in code on this head. `20270827000000` changes this round (the stamp and
+its seals become one `DO` block); `20270815000000` … `20270826000000` and `20270828000000` are
+byte-for-byte unchanged.
