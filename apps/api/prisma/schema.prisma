@@ -91,6 +91,7 @@ model Project {
   drawings      Drawing[]
   phases        Phase[]
   gateOverrides GateOverride[]
+  activityDependencies ActivityDependency[]
   // Tenant — NON-NULL since Phase 2 Task 4 (the event envelope's composite tenant key
   // (organizationId, projectId) references Project(orgId, id); a project cannot exist
   // without an org). Legacy null-org projects are backfilled by the migration's diagnostic,
@@ -2180,6 +2181,12 @@ model Activity {
   inspections    Inspection[]
   // manual readiness exceptions — attributable, evidenced, EXPIRING (Phase 1 Task 6)
   gateOverrides  GateOverride[]
+  // Schedule graph: the finish-to-start edges this activity sits on. `dependsOn` are the
+  // edges where THIS activity is the successor (its predecessors); `enables` are the edges
+  // where it is the predecessor (what it unblocks). An activity with no `dependsOn` edge is
+  // a ROOT and takes its start from an authorized anchor, not from another activity.
+  dependsOn      ActivityDependency[] @relation("DependencySuccessor")
+  enables        ActivityDependency[] @relation("DependencyPredecessor")
 
   @@unique([projectId, id])
   @@index([nodeId])
@@ -2187,6 +2194,46 @@ model Activity {
   labourMismatches LabourMismatch[]
   workOutputs      ActivityWorkOutput[]
   measurements Measurement[]
+}
+
+// One FINISH-TO-START dependency: `successor` may not commence until `predecessor` is
+// VERIFIED complete and any lag has elapsed. Multiple predecessors per successor are the
+// normal case — the successor waits for the latest of them.
+//
+// What the database guarantees about this graph, so no reader has to trust a caller:
+//   * both endpoints are activities of the SAME project (two composite FKs carrying the
+//     row's own `projectId`) — a cross-project edge is unrepresentable, not merely unwritten;
+//   * no self-dependency (CHECK);
+//   * no duplicate edge (the unique below);
+//   * non-negative lag (CHECK) — a negative lag would let a successor start before its
+//     predecessor finished, which is the whole thing this table exists to prevent;
+//   * NO CYCLES, even under concurrent writers (the insert trigger; see the migration).
+//
+// Endpoint identity is FROZEN after insert: re-pointing an edge is how a cycle sneaks past a
+// check that only ran at insert time. Lag stays editable, so a re-plan is an ordinary update.
+model ActivityDependency {
+  id            String   @id @default(cuid())
+  project       Project  @relation(fields: [projectId], references: [id])
+  projectId     String
+  predecessor   Activity @relation("DependencyPredecessor", fields: [projectId, predecessorId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  predecessorId String
+  successor     Activity @relation("DependencySuccessor", fields: [projectId, successorId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  successorId   String
+  /// Working days that must elapse AFTER the predecessor completes before the successor may
+  /// start — concrete curing, screed drying. Working days, so the project calendar applies.
+  lagWorkingDays Int     @default(0)
+  // Attribution is not decoration: only `schedule.manage` may shape a programme, and the
+  // record of who added an edge is what makes a disputed sequence answerable later.
+  createdAt     DateTime @default(now())
+  createdById   String
+  createdByName String
+
+  // the edge's candidate key — one edge per ordered pair, and the target an edge-scoped
+  // dependency override references (a successor-wide override would clear the wrong
+  // predecessors, so the override must name the exact pair)
+  @@unique([projectId, successorId, predecessorId])
+  @@index([projectId, predecessorId])
+  @@index([projectId, successorId])
 }
 
 // A manual readiness exception (Phase 1 Task 6): the PMC overrides ONE gate's
