@@ -94,9 +94,13 @@ function declarationBlock(body) {
  *   invalid       — a marker naming an agent this loop does not route to
  *   contradictory — two different owners, or an owner the branch contradicts
  *
- * A repeated IDENTICAL marker is unambiguous and is accepted: an author who
- * edits the template's marker in place rather than adding a line must not be
- * blocked for tidiness.
+ * EXACTLY ONE marker, not merely one distinct owner. An earlier draft
+ * deduplicated first and accepted a marker repeated twice, on the reasoning that
+ * an author editing the template's marker in place should not be blocked for
+ * tidiness — which had it backwards: editing in place produces ONE marker, and a
+ * duplicate comes from ADDING a line, the same slip that produces a
+ * contradiction. AGENTS.md, CLAUDE.md and the PR template all say exactly one,
+ * so the parser now says it too.
  */
 export function parseCorrectionOwner(body, { headRef } = {}) {
   const declared = declarationBlock(body);
@@ -119,6 +123,19 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
       declared,
       detail: `the PR body declares conflicting correction owners (${distinct.join(', ')}); `
         + 'exactly one owner may be declared',
+    };
+  }
+
+  // One owner named more than once is malformed rather than contradictory —
+  // nothing conflicts, the contract is simply not met — so it reports as
+  // `invalid` and the recovery text below tells the author to replace, not add.
+  if (declared.length > 1) {
+    return {
+      state: 'invalid',
+      owner: null,
+      declared,
+      detail: `the correction owner is declared ${declared.length} times; exactly one `
+        + `${MARKER_HELP} marker is required`,
     };
   }
 
@@ -193,10 +210,19 @@ function declaredInstruction(owner, { reason, pullRequestNumber }) {
   // An owner GitHub cannot wake gets the same instruction plus the truth about
   // who has to start it. Omitting that is how a routed-but-unstarted correction
   // reads as one in progress.
+  //
+  // SPECIALIZED for a replacement. An exhausted unit must never be asked for
+  // another head on its own branch — that is the prohibited third correction
+  // head — so the ordinary "until a new head appears" wording would contradict
+  // the instruction it is appended to and could produce exactly the push the
+  // round limit forbids.
   const start = AWAKENABLE_FROM_GITHUB.has(owner)
     ? ''
-    : ' GitHub cannot start that session, so no correction is in flight until a new head '
-      + 'appears on this branch.';
+    : reason === 'replacement'
+      ? ' GitHub cannot start that session, so this PR stays where it is until someone opens '
+        + 'the replacement.'
+      : ' GitHub cannot start that session, so no correction is in flight until a new head '
+        + 'appears on this branch.';
   if (reason === 'ci') {
     return `${who} owns this correction: fix the failed required checks and push one new head. `
       + `Review begins only after CI is green on the exact head.${start}`;
@@ -222,8 +248,18 @@ function declaredInstruction(owner, { reason, pullRequestNumber }) {
 function undeclaredInstruction(declaration, { reason, pullRequestNumber }) {
   const opening = `Correction ownership is not established on this PR: ${declaration.detail}. `
     + 'No agent is routed and no correction is in flight.';
-  const resume = `Resume action: add exactly one ${MARKER_HELP} marker to the PR body. `
-    + 'The edit reruns the scope gate and routes the correction to the declared owner.';
+  // ADD only when the block is empty. Told to a body that already carries a
+  // marker — an unknown agent, two owners, a duplicate, or one the branch
+  // contradicts — "add one" leaves TWO declarations, which parses as
+  // contradictory and keeps review-scope blocked. The recovery text has to
+  // resolve the state it is actually addressed to.
+  const resume = declaration.state === 'missing'
+    ? `Resume action: add exactly one ${MARKER_HELP} marker to the marker block at the top of `
+      + 'the PR body. The edit reruns the scope gate and routes the correction to the declared '
+      + 'owner.'
+    : `Resume action: replace the correction-owner marker(s) in the PR body with exactly one `
+      + `${MARKER_HELP}, leaving no other declaration in the block. The edit reruns the scope `
+      + 'gate and routes the correction to the declared owner.';
   if (reason === 'replacement') {
     // The replacement POLICY is stated even when no owner is: the remedy does
     // not depend on who performs it, and leaving it out would make an

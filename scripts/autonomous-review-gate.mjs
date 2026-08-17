@@ -1111,7 +1111,7 @@ export async function enforceReviewConvergence(
     `review: ${detail}`,
     pullRequest.html_url,
   );
-  const notice = correctionNotice(pullRequest, { detail, reason: 'replacement' });
+  const notice = correctionNotice(live, { detail, reason: 'replacement' });
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({
@@ -1163,7 +1163,7 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
     `scope: ${result.detail}`,
     pullRequest.html_url,
   );
-  const notice = correctionNotice(pullRequest, {
+  const notice = correctionNotice(live, {
     detail: result.detail,
     reason: 'scope',
   });
@@ -1361,7 +1361,13 @@ export async function publishCurrentHeadFinding(
   // The instruction is DERIVED here, not accepted from the caller. A call site
   // that could pass its own sentence is a call site that can reintroduce the
   // "Claude Auto-fix handles this" claim on a PR Claude does not own.
-  const notice = correctionNotice(pullRequest, { detail, reason: 'review' });
+  //
+  // Derived from `live` — the pull request as refreshed above — not from the
+  // snapshot captured when the run started. A Codex poll lasts many minutes, and
+  // an owner marker edited during it would otherwise be ignored: a PR that now
+  // declares `cursor` would still be told Claude will fix it, which is the
+  // original defect returning through a stale read.
+  const notice = correctionNotice(live, { detail, reason: 'review' });
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({

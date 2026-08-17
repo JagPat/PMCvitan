@@ -496,8 +496,20 @@ export async function handOffCorrectionLease(
     client.reviews(pullRequest.number),
   ]);
 
+  // Re-read the pull request IMMEDIATELY before assessing.
+  //
+  // `pullRequest` comes from the open-PR snapshot taken once at the top of the
+  // handoff loop, and everything since — conflict handling for other PRs, the
+  // status read, three comment fetches — takes time a correction can land in. A
+  // stale snapshot still names the old head, so the lease would match itself and
+  // publish a stalled notice for a head that has already been superseded: the
+  // one thing a lease keyed to an exact head must never do. `assessCorrectionLease`
+  // already treats a moved head as satisfied; it just has to be given the live
+  // pull request to see it.
+  const live = await client.pullRequest(pullRequest.number);
+
   const assessment = assessCorrectionLease({
-    pullRequest,
+    pullRequest: live,
     head,
     findingHeads: codexFindingHeads(reviewComments, reviews),
     detail: String(finding.description ?? '').replace(/^review:\s*/u, ''),

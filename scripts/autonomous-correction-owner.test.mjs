@@ -197,14 +197,14 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   assert.equal(contradictory.state, 'contradictory');
   assert.equal(contradictory.owner, null);
 
-  // A repeated IDENTICAL declaration is unambiguous, so it is accepted. The
-  // template carries the marker, and an author who edits it in place rather than
-  // adding a line must not be blocked for tidiness.
+  // A repeated marker is REFUSED: exactly one declaration, not merely one
+  // distinct owner. This probe originally asserted the opposite — see C3, which
+  // reproduces why that reasoning had the authoring slip backwards.
   const repeated = parseCorrectionOwner(
     '<!-- correction-owner: cursor -->\n<!-- correction-owner: cursor -->',
   );
-  assert.equal(repeated.state, 'declared');
-  assert.equal(repeated.owner, 'cursor');
+  assert.equal(repeated.state, 'invalid');
+  assert.equal(repeated.owner, null);
 
   // Only the MARKER BLOCK at the top declares. A body that also EXPLAINS the
   // markers in prose — which the PR template's own guidance does, and which the
@@ -584,4 +584,171 @@ test('O8: the PR template and the loop documentation carry the declaration', asy
     assert.match(read(document), /correction-owner/u, `${document} must state the requirement`);
   }
   assert.match(read('../docs/AUTONOMOUS_LOOP.md'), /correction_stalled/u);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C1-C5 — round-1 Codex findings on `cdae569`. All five reproduce here.
+//
+// Four of them are the same shape: an instruction that is correct about WHO and
+// wrong about WHAT to do next, or a decision taken from a stale snapshot. The
+// unit's whole claim is that these notices are derived rather than assumed, so a
+// notice that contradicts itself, or that describes a PR as it was rather than
+// as it is, is a defect in exactly the thing under review.
+
+test('C1: the watchdog assesses the LIVE head, not the snapshot it was handed', async () => {
+  // The open-PR snapshot is taken once at the top of the handoff loop. A
+  // correction pushing a new head while the loop works through conflicts and
+  // status reads leaves that snapshot stale, and a lease keyed to the stale head
+  // matches itself — so a notice is published for a head that has already been
+  // superseded, which is the one thing the lease must never do.
+  const source = readFileSync(HANDOFF, 'utf8');
+  const watchdog = source.slice(
+    source.indexOf('export async function handOffCorrectionLease('),
+    source.indexOf('export async function run()'),
+  );
+  assert.match(
+    watchdog,
+    /await client\.pullRequest\(/u,
+    'the watchdog must re-read the pull request before assessing the lease',
+  );
+  const refetch = watchdog.indexOf('await client.pullRequest(');
+  const assess = watchdog.indexOf('assessCorrectionLease(');
+  assert.ok(refetch > 0 && refetch < assess, 'and it must re-read BEFORE assessing');
+
+  // Behaviourally: a lease whose PR has moved on is superseded, never notified.
+  const { assessCorrectionLease } = await leaseModule();
+  const moved = assessCorrectionLease({
+    pullRequest: pullRequest({ body: '<!-- correction-owner: claude -->', head: 'newhead' }),
+    head: HEAD,
+    body: '<!-- correction-owner: claude -->',
+    findingHeads: [HEAD],
+    detail: '3 current-head Codex findings',
+    findingObservedAt: '2026-08-17T10:00:00Z',
+    now: '2026-08-17T12:00:00Z',
+    comments: [],
+  });
+  assert.equal(moved.state, 'superseded');
+  assert.equal(moved.body, null);
+});
+
+test('C2: a finding notice is routed from the REFRESHED declaration', async () => {
+  // `setDraftForCurrentHead` returns the live pull request. Routing from the
+  // object captured at run start means an owner marker edited during the Codex
+  // poll is ignored — and the specific failure is the original defect returning:
+  // a PR that now declares `cursor` is told Claude will fix it.
+  const gate = readFileSync(GATE, 'utf8');
+  const publisher = gate.slice(
+    gate.indexOf('export async function publishCurrentHeadFinding('),
+    gate.indexOf('export async function guardAgainstCurrentHeadFinding('),
+  );
+  assert.match(
+    publisher,
+    /correctionNotice\(live\b/u,
+    'the finding notice must be derived from the refreshed pull request',
+  );
+  assert.doesNotMatch(
+    publisher,
+    /correctionNotice\(pullRequest\b/u,
+    'never from the stale run-start snapshot',
+  );
+
+  // Behaviourally: the client serves a body that changed after the run started,
+  // and the published notice must follow the NEW owner.
+  const stale = pullRequest({ number: 352, body: '<!-- correction-owner: claude -->' });
+  const edited = { ...stale, body: '<!-- correction-owner: cursor -->' };
+  const calls = { stickies: [] };
+  const client = {
+    reviews: async () => [],
+    reviewComments: async () => findingComments(HEAD, 2),
+    pullRequest: async () => edited,
+    setDraft: async (target, draft) => ({ ...target, draft }),
+    setStatus: async () => {},
+    updateStickyComment: async (_number, body) => calls.stickies.push(body),
+  };
+  await guardAgainstCurrentHeadFinding(client, stale, HEAD, null);
+  assert.equal(calls.stickies.length, 1);
+  assert.doesNotMatch(
+    calls.stickies[0],
+    /claude/iu,
+    'an owner edited to cursor mid-run must not still be told Claude will fix it',
+  );
+});
+
+test('C3: exactly ONE marker is required, not merely one distinct owner', async () => {
+  // The documented contract — AGENTS.md, CLAUDE.md, the template — says exactly
+  // one marker. The parser deduplicated first, so two identical markers passed.
+  // The earlier justification (an author editing in place) was backwards:
+  // editing in place produces one marker, and a duplicate comes from ADDING a
+  // line, which is the same slip that produces a contradiction.
+  const { parseCorrectionOwner } = await ownerModule();
+
+  const twice = parseCorrectionOwner(
+    '<!-- correction-owner: claude -->\n<!-- correction-owner: claude -->\n\n## Objective',
+  );
+  assert.notEqual(twice.state, 'declared', 'a repeated marker is not a valid declaration');
+  assert.equal(twice.owner, null);
+  assert.match(twice.detail, /exactly one/u);
+
+  // One marker still passes, and the four-state contract is unchanged.
+  assert.equal(parseCorrectionOwner('<!-- correction-owner: claude -->').state, 'declared');
+});
+
+test('C4: an exhausted unit is never asked for another head on its own branch', async () => {
+  // The replacement instruction says "close this PR without another correction
+  // head" and the shared non-awakenable suffix then said "…until a new head
+  // appears on this branch". Following the suffix produces the prohibited third
+  // correction head instead of the required replacement.
+  const { correctionRouting, parseCorrectionOwner } = await ownerModule();
+  const cursor = parseCorrectionOwner('<!-- correction-owner: cursor -->');
+
+  const replacement = correctionRouting({
+    declaration: cursor, head: HEAD, detail: '2 finding-bearing heads',
+    reason: 'replacement', pullRequestNumber: 352,
+  });
+  assert.match(replacement.instruction, /replacement/iu, 'it still demands a replacement');
+  assert.doesNotMatch(
+    replacement.instruction,
+    /new head (appears|on this branch)|push (a|one) new head/iu,
+    'and never asks for another head on the exhausted branch',
+  );
+
+  // The ordinary correction path still carries the honest "nobody started this"
+  // note — the fix is specialisation, not deletion.
+  const review = correctionRouting({
+    declaration: cursor, head: HEAD, detail: '3 findings', reason: 'review',
+  });
+  assert.match(review.instruction, /new head/iu);
+  assert.match(review.instruction, /GitHub cannot start/iu);
+});
+
+test('C5: a malformed declaration is told to REPLACE the marker, not add one', async () => {
+  // "Add exactly one marker" is correct only when none exists. Told to a PR that
+  // already carries an invalid or branch-contradicting marker, following it
+  // leaves two declarations in the block — which parses as contradictory and
+  // keeps review-scope blocked. The recovery text must resolve the state it is
+  // actually addressed to.
+  const { correctionRouting, parseCorrectionOwner } = await ownerModule();
+
+  const missing = correctionRouting({ declaration: parseCorrectionOwner(''), head: HEAD });
+  assert.match(missing.instruction, /\badd\b/iu, 'nothing there yet: add one');
+
+  for (const [label, body, headRef] of [
+    ['unknown agent', '<!-- correction-owner: codex -->', 'codex/x'],
+    ['two owners', '<!-- correction-owner: claude -->\n<!-- correction-owner: cursor -->', 'codex/x'],
+    ['branch conflict', '<!-- correction-owner: cursor -->', 'claude/x'],
+  ]) {
+    const routed = correctionRouting({
+      declaration: parseCorrectionOwner(body, { headRef }), head: HEAD,
+    });
+    assert.match(
+      routed.instruction,
+      /replace/iu,
+      `${label}: a marker already exists, so the instruction must say replace it`,
+    );
+    assert.doesNotMatch(
+      routed.instruction,
+      /Resume action: add\b/iu,
+      `${label}: telling the author to ADD leaves two declarations and stays blocked`,
+    );
+  }
 });
