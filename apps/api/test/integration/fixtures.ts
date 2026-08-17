@@ -121,3 +121,42 @@ export async function wipeDecisionEvents(
     await prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"');
   }
 }
+
+/** Phase 6 unit 4b — an APPROVED decision is now permanent register evidence in a LIVE database:
+ *  the consolidated `Decision_t4a_d_no_delete` arm and the independent `Decision_t4b_evidence_no_delete`
+ *  seal each refuse its DELETE (approval standing, the legacy approver columns, the attribution
+ *  tuple, the migration stamp, approval revisions and approval events). Suites that approve a
+ *  decision therefore wipe it through THIS sanctioned destructive-reset helper, which disables
+ *  both named seals for exactly the wipe — the same contract as `wipeDecisionEvents` above, the
+ *  DomainEvent TRUNCATE, and the seed's guarded transaction. Both are re-enabled in `finally`, so
+ *  no failure path leaves the shared database's evidence seals off for a later probe. */
+export async function wipeDecisions(
+  prisma: PrismaService,
+  where: Record<string, unknown>,
+): Promise<void> {
+  await wipeDecisionsVia(prisma, (tx) => tx.decision.deleteMany({ where }));
+}
+
+/** The same sanctioned bypass for a reset that is not a plain `decision.deleteMany` — a TRUNCATE,
+ *  or a delete that must run together with its children.
+ *
+ *  ONE interactive transaction, like `prisma/seed.ts` (R6-F4) and the t4a suite (R14-F2): PostgreSQL
+ *  DDL is transactional, so a wipe that throws rolls the DISABLE back with it, and the ACCESS
+ *  EXCLUSIVE lock `ALTER TABLE` takes means a PARALLEL suite's probe never observes the seal off —
+ *  it blocks until this transaction commits, by which time the triggers are enabled again. */
+export async function wipeDecisionsVia(
+  prisma: PrismaService,
+  wipe: (tx: TxClient) => Promise<unknown>,
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"');
+    await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_evidence_no_delete"');
+    await tx.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_no_truncate"');
+    await wipe(tx);
+    await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_no_truncate"');
+    await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"');
+    await tx.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"');
+  }, { timeout: 60_000, maxWait: 30_000 });
+}
+
+type TxClient = Parameters<Parameters<PrismaService['$transaction']>[0]>[0];

@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import request from 'supertest';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
 import { RealtimeGateway } from '../../src/realtime/realtime.gateway';
 import { PushService } from '../../src/push/push.service';
 import { pendingDecisionNotice } from '../../src/domain/notifications';
@@ -117,7 +117,7 @@ describe('Phase 2 Task 1 — per-mutation consequences (live PG)', () => {
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: pid } } });
     await t.prisma.activity.deleteMany({ where: { projectId: pid } });
-    await t.prisma.decision.deleteMany({ where: { projectId: pid } });
+    await wipeDecisions(t.prisma, { projectId: pid });
     await t.prisma.phase.deleteMany({ where: { projectId: pid } });
     await t.prisma.projectNode.deleteMany({ where: { projectId: pid } });
     await t.prisma.membership.deleteMany({ where: { projectId: pid, userId: engId } });

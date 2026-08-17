@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
 import { ActivitiesService } from '../../src/activities/activities.service';
 
 /**
@@ -51,7 +51,7 @@ describe('start vs readiness concurrency (integration)', () => {
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId } } });
     await wipeDecisionEvents(t.prisma, { decision: { projectId } });
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } });
-    await t.prisma.decision.deleteMany({ where: { projectId } });
+    await wipeDecisions(t.prisma, { projectId });
     await f?.cleanup();
     await t?.close();
   });
