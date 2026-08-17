@@ -2110,7 +2110,14 @@ model DecisionOptionTouch {
 model DecisionLegacyApproval {
   decisionId String   @id
   stampedAt  DateTime @default(now()) @db.Timestamptz(6)
-  decision   Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+  // `onUpdate: NoAction` is DECLARED, not left to the default (round 12, R12-1). The migration
+  // writes `REFERENCES "Decision"("id") ON DELETE CASCADE`, and PostgreSQL's unstated update action
+  // is NO ACTION — but a Prisma relation defaults to `onUpdate: Cascade`. Leaving it unsaid made
+  // this model describe a database the migration does not install, so a generated migration could
+  // later "resolve" the disagreement by making a `Decision.id` re-key CASCADE into the evidence.
+  // The id is frozen from birth (`20270818000000` R3-3) so no re-key gets that far — which is
+  // exactly why the two must not disagree: the gap is invisible until something closes it wrongly.
+  decision   Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
 
 // The IMMUTABLE approval register of a decision (Phase 3 Task 1 correction round 2, finding 1).

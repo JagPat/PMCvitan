@@ -448,3 +448,63 @@ that would have let the omission pass unnoticed.
 | `test:e2e:api:allmodules` / `:allmodules:outbox` | 37 / 37 |
 
 `20270815000000` … `20270826000000` are byte-for-byte unchanged.
+
+## Round 12 — the three Codex findings on `7988f26`
+
+Three P2, answered on this head. **Classification: no seam findings; all three are this PR's own
+corrections biting back — one of them round 11's, one round 4's, one the base migration's own
+stated claim.**
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| R12-1 (P2) | round 11's R11-2 fix declared the evidence table in `schema.prisma` and left `onUpdate` unsaid. A Prisma relation defaults to `onUpdate: Cascade`; the migration installs `NO ACTION`. `prisma migrate diff` was emitting `ON DELETE CASCADE ON UPDATE CASCADE` for this constraint, so a generated migration could have made a `Decision.id` re-key cascade into the one-time evidence | `onUpdate: NoAction` DECLARED, plus a probe pinning the database's actual referential actions |
+| R12-2 (P2) | `addOrgMember`'s upsert can DEMOTE an existing owner/admin, and it was the one org-roster door that never asked the holder guard — the seal refused correctly and its raw PostgreSQL error escaped as a 500 where `updateOrgMemberRole` returns an actionable 409. It also took no readiness key, so under contention the seal's try-acquire refused rather than waited | the guard and the upsert are ONE transaction holding each affected project's readiness key, exactly as `updateOrgMemberRole` does — and the last-owner rule is asked at this door too |
+| R12-3 (P2) | `20270815000000`'s header claims a record's author is revalidated when it becomes visible. The INSERT-of-`recorded` door asked and the CONVERSION door asked; PUBLICATION checked only that the option count was zero, so a record draft saved by someone who later lost authority could still be published into a permanent, undeletable, team-visible register entry | the `none` arm added to the publication seal in `20270828000000`, asking exactly what the other two doors ask |
+
+### R12-2 is the third instance of one shape in this PR
+
+| round | the rule | the door that asked | the door that did not |
+| --- | --- | --- | --- |
+| 9 | the departure guard | `updateRole` | `members.add` |
+| 11 | the attribution demand | `change → approved` | INSERT-of-`approved` |
+| 12 | the holder guard | `updateOrgMemberRole` | `addOrgMember`'s upsert |
+
+One write, two ways in, the rule stated at one of them — Face A of the packet's root analysis,
+now generating a finding in three of the last four rounds.
+
+### Two things caught by this round's own probes, not by review
+
+**The composed migration dropped the option floor.** Carrying `20270818000000`'s publication seal
+forward, the extracted range stopped one line short, so the new function reached the holder arms
+without the floor that shares their branch — a record could have published *with* options. The
+precision probe asserting "the floor is unchanged" failed on the first run and named it. Every arm
+added to a shared branch owes proof it did not displace its neighbours; this is the round that
+justifies the habit.
+
+**A `sed` fix corrupted eight unrelated relations.** Reproducing R12-1 by editing `schema.prisma`
+in place appended `onUpdate: NoAction` to every line ending in `onDelete: Cascade)`. Caught by
+reading `git diff` before proceeding, reverted with `git checkout --`, and re-applied as a single
+targeted edit. The reproduction was then done against a COPY of the schema in the scratchpad, never
+the tracked file.
+
+### A correction to this packet's own round-11 claim
+
+Round 11 recorded R11-2 as "proven by `schema-migration-drift.test.ts`". **It is not.** That suite is
+deliberately scoped to the party models and says so in its own header — a blanket `migrate diff`
+assertion was tried there and abandoned. The citation was made because the suite is *named* for
+drift, not because its scope was read. R12-1's evidence is the `migrate diff` comparison (the
+constraint appears in the generated SQL without the fix and is absent with it) plus the new
+catalogue pin.
+
+### Verification at this head
+
+| Gate | Result |
+| --- | --- |
+| `phase6-t4b-correction12.test.ts` | **7 passed**; the three behavioural probes RED at `7988f26` (R12-1's is a pin, and is labelled in the file as passing at base) |
+| Full integration suite, pristine DB | **106 files, 1270 passed / 3 skipped / 0 failed** |
+| `pnpm check` (repo root) | **EXIT 0** — web 790/790, API 793/793 |
+| `upgrade-proof.sh` | **656 assertions, EXIT 0** over the migrated legacy DB |
+| `orgs.service.test.ts` | 57 passed (the double now keys `orgMembership.findUnique` by userId and carries `$transaction`) |
+
+`20270815000000` … `20270827000000` are byte-for-byte unchanged; `20270828000000` carries
+`20270818000000`'s publication seal forward with one arm added.

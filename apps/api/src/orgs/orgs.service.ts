@@ -242,10 +242,36 @@ export class OrgsService {
       user = await this.prisma.user.create({ data: { projectId: homeProject.id, role: 'contractor', name: input.name, email, phone } });
     }
 
-    const membership = await this.prisma.orgMembership.upsert({
-      where: { orgId_userId: { orgId, userId: user.id } },
-      update: { role: input.role },
-      create: { orgId, userId: user.id, role: input.role },
+    // Round 12 (Codex R12-2) — this upsert's UPDATE arm is a role change, and it was the one org
+    // roster door that never asked the holder question. Adding an existing owner/admin with
+    // `role: 'member'` DEMOTES them; if they are a project's sole effective pmc, the seal correctly
+    // refuses and its raw PostgreSQL exception escaped as a 500 for something `updateOrgMemberRole`
+    // answers with an actionable 409. It also took no readiness key, so under contention the seal's
+    // try-acquire REFUSED rather than waited.
+    //
+    // This is the third instance of one shape in this PR (R9-3 `members.add` vs `updateRole`;
+    // R11-3 the INSERT vs CONVERSION doors): a rule asked at one of the two ways into the same
+    // write. The fix is the same each time — the second door asks what the first door asks, in the
+    // same transaction, holding the same keys.
+    //
+    // The last-owner rule is asked here for the same reason. `updateOrgMemberRole` refuses to strip
+    // the org's last owner, and this door could do it silently — a defect the finding does not name
+    // but which is the identical sentence at the identical door, and splitting them would leave the
+    // pair disagreeing again by the next round.
+    const existing = await this.prisma.orgMembership.findUnique({ where: { orgId_userId: { orgId, userId: user.id } } });
+    if (existing && existing.role === 'owner' && input.role !== 'owner' && (await this.ownerCount(orgId)) <= 1) {
+      throw new BadRequestException('The org must keep at least one owner');
+    }
+    const membership = await this.prisma.$transaction(async (tx) => {
+      // A pure CREATE short-circuits inside the guard: with no row to lock, the departing role is
+      // the one being written, and a role that still supplies pmc standing (or never did) returns
+      // before any project is examined.
+      await this.assertOrgWriteKeepsDecisionHolders(tx, orgId, user.id, existing?.role ?? input.role, input.role);
+      return tx.orgMembership.upsert({
+        where: { orgId_userId: { orgId, userId: user.id } },
+        update: { role: input.role },
+        create: { orgId, userId: user.id, role: input.role },
+      });
     });
     return { userId: user.id, name: user.name, email: user.email, phone: user.phone, orgRole: membership.role, credentialState: user.passwordHash ? 'active' : 'not_set' };
   }

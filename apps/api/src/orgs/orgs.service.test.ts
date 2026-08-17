@@ -436,12 +436,26 @@ describe('OrgsService.createOrg', () => {
 });
 
 describe('OrgsService.addOrgMember', () => {
-  function makeRoster(callerRole: string | null, existingUser: unknown = null, projects: unknown[] = [{ id: 'ambli' }]) {
+  function makeRoster(
+    callerRole: string | null,
+    existingUser: { id: string } | null = null,
+    projects: unknown[] = [{ id: 'ambli' }],
+    // the TARGET's existing org role, when the add is really a re-role (round 12, R12-2)
+    targetOrgRole: string | null = null,
+  ) {
     const created: unknown[] = [];
     const orgMemberships: unknown[] = [];
-    const prisma = {
+    const prisma: Record<string, unknown> = {
       orgMembership: {
-        findUnique: vi.fn(async () => (callerRole ? { role: callerRole } : null)),
+        // Round 12 (R12-2): `addOrgMember` now reads the TARGET's membership as well as the
+        // caller's, so one blanket mock can no longer serve both — it would report the caller's
+        // role as the target's and send a fresh add down the demotion path. Keyed by userId.
+        findUnique: vi.fn(async ({ where }: { where: { orgId_userId: { userId: string } } }) => {
+          const uid = where.orgId_userId.userId;
+          if (uid === (existingUser?.id ?? 'newuser')) return targetOrgRole ? { role: targetOrgRole } : null;
+          return callerRole ? { role: callerRole } : null;
+        }),
+        count: vi.fn(async () => 2), // two owners, so the last-owner rule never fires in these cases
         upsert: vi.fn(async ({ create, update }: { create: { role: string }; update: { role: string } }) => {
           const row = existingUser ? { ...update, ...create } : create;
           orgMemberships.push(row);
@@ -458,6 +472,11 @@ describe('OrgsService.addOrgMember', () => {
         }),
       },
       membership: { create: vi.fn() }, // must NOT be called by addOrgMember (no phantom project grant)
+      // Round 12 (R12-2): the guard and the upsert are ONE transaction now, so the double hands the
+      // callback itself — the same shape `makeTx` uses above.
+      $transaction: vi.fn(async (run: (client: unknown) => Promise<unknown>) => run(prisma)),
+      project: { findMany: vi.fn(async () => projects) },
+      $queryRawUnsafe: vi.fn(async () => []),
     };
     return { svc: new OrgsService(prisma as unknown as PrismaService, { today: () => '2026-07-03' }, ...initParticipants(prisma)), prisma, created, orgMemberships };
   }

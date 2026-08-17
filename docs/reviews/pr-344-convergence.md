@@ -14,7 +14,8 @@ Owed at the second finding-bearing head per the review-efficiency protocol.
 | `90ec557` | round-7 fold + this audit's fifth edition | 3 (2 P1, 1 P2) | corrected on this head via `20270823000000` plus its service half: the restoration exemption NARROWED to a real withdrawal (from `change`, evidence unchanged, and an approval that actually happened); the decision row LOCKED before `publish` judges its holder and held through the update; and the holder's identity HELD (`FOR SHARE`, through its owner) across the first approval's derive → write → recompute |
 | `92868d7` | round-8 fold + this audit's ninth/tenth editions | 3 (2 P1, 1 P2) | corrected on `a283568` via `20270826000000` plus its service half: the restoration proof required to PREDATE the open change request; user+membership provisioning folded into one transaction holding the readiness key; and `members.add` running the same departure guard `updateRole` runs |
 | `a283568` | round-9 fold | 2 (2 P1) | corrected on `f113f94` via `20270827000000`: the restoration exemption's forgeable clause REPLACED by a set enumerated once at upgrade time (`DecisionLegacyApproval`, sealed against every later write), keeping round 7's two statement-shape conditions; and the draft → record conversion made to ask the OWNING modules whether anything already depends on the draft — the reverse of a link rule that was only enforced forwards |
-| `f113f94` | round-10 fold + this audit's eleventh edition | 5 (2 P1, 3 P2) | corrected on this head, all inside the unmerged `20270827000000`: the stamp widened to legacy approvals already sitting in `change` (an ordinary pre-existing change request was otherwise unwithdrawable forever); the register declared in `schema.prisma` so drift cannot DROP it; R4-2's born-approved-tupleless INSERT door CLOSED, its justification having been dissolved by round 10 itself; the stamp made genuinely ONE-SHOT (guarded on the seal's own existence, not per row, so a later re-run cannot enlarge the set); and a statement-level `BEFORE TRUNCATE` seal for the verb a row trigger never sees |
+| `f113f94` | round-10 fold + this audit's eleventh edition | 5 (2 P1, 3 P2) | corrected on `7988f26`, all inside the unmerged `20270827000000`: the stamp widened to legacy approvals already sitting in `change` (an ordinary pre-existing change request was otherwise unwithdrawable forever); the register declared in `schema.prisma` so drift cannot DROP it; R4-2's born-approved-tupleless INSERT door CLOSED, its justification having been dissolved by round 10 itself; the stamp made genuinely ONE-SHOT (guarded on the seal's own existence, not per row, so a later re-run cannot enlarge the set); and a statement-level `BEFORE TRUNCATE` seal for the verb a row trigger never sees |
+| `7988f26` | round-11 fold + this audit's twelfth edition | 3 (3 P2) | corrected on this head via `20270828000000` plus a schema and a service edit: the evidence FK's UPDATE action DECLARED `NoAction` to match the database (a Prisma relation defaults to `Cascade`, and `migrate diff` was emitting `ON UPDATE CASCADE` for it); `addOrgMember`'s upsert routed through the SAME transactional holder guard — and the same last-owner rule — that `updateOrgMemberRole` runs; and publication revalidating a RECORD's author, the third of three doors that the migration's own header already claimed all asked |
 
 ## Root analysis — one generative class, three faces
 
@@ -916,3 +917,102 @@ things worse*, instead of asking *does this still make sense at all*.
 All five findings are answered in code on this head. `20270815000000` … `20270826000000` remain
 byte-for-byte unchanged; every round-11 change is inside the unmerged `20270827000000`, its Prisma
 declaration, the probes, and the fixtures the closed door touched.
+
+---
+
+## Thirteenth edition — round 12, and a claim this audit made too confidently
+
+Three findings on `7988f26` (3×P2). **3 of 3 SELF-INFLICTED. 0 SEAM.**
+
+| # | P | Which correction in THIS PR caused it |
+| --- | --- | --- |
+| R12-1 | P2 | **round 11's own R11-2 fix** — declaring the register in `schema.prisma` fixed the drift it named and introduced a quieter one, because a Prisma relation defaults to `onUpdate: Cascade` and the migration installs `NO ACTION` |
+| R12-2 | P2 | **round 4's org holder guard** — written for `updateOrgMemberRole`, never applied to the other door onto the same write |
+| R12-3 | P2 | **`20270815000000`'s own publish-time revalidation claim** — the header states it, and two of the three doors did it |
+
+### R12-1 is the correction of a correction, and of a sentence in this audit
+
+Round 11's R11-2 was right: a table living only in hand-written SQL is drift a generated migration
+can DROP. The fix — declare it — closed that and opened a narrower one. The migration writes
+`REFERENCES "Decision"("id") ON DELETE CASCADE`, whose unstated update action is `NO ACTION`;
+a Prisma relation that says nothing means `onUpdate: Cascade`. So the model described a database the
+migration does not install, and `prisma migrate diff` emitted
+`ON DELETE CASCADE ON UPDATE CASCADE` for exactly this constraint — a later generated migration
+would have made a `Decision.id` re-key cascade into the one-time evidence.
+
+**And the twelfth edition claimed `schema-migration-drift.test.ts` proved R11-2. It does not.** That
+suite is deliberately scoped to the party models and says so in its own header — a blanket
+`migrate diff` assertion was tried there and abandoned. The claim was made because the suite is
+*named* for drift, not because its scope was read. Corrected here rather than quietly restated: the
+evidence for R12-1 is the `migrate diff` comparison (the constraint appears without the fix, and is
+absent with it), plus a new probe that pins the database's ACTUAL referential actions so the two
+sides cannot diverge silently again.
+
+That probe passes at `7988f26` as well, and is labelled as such in the file. The database was always
+`NO ACTION`; the disagreement was schema-side, so no runtime behaviour differed and no behavioural
+probe could have caught it. Calling it a reproduction would be the same overstatement one paragraph
+later.
+
+### R12-2 is the same shape for the third time in this PR
+
+| round | the rule | the door that asked | the door that did not |
+| --- | --- | --- | --- |
+| 9 | the departure guard | `updateRole` | `members.add` |
+| 11 | the attribution demand | `change → approved` | INSERT-of-`approved` |
+| 12 | the holder guard | `updateOrgMemberRole` | `addOrgMember`'s upsert |
+
+Each time: one write, two ways in, the rule stated at one of them. This is Face A of the root
+analysis at the top of this audit, and it has now generated a finding in three of the last four
+rounds. The mechanism is not carelessness about any single rule — it is that a rule gets written
+where the change happened to be, and the OTHER door is discovered by a reviewer.
+
+The last-owner rule is fixed at the same door in the same head, though the finding does not name it.
+`updateOrgMemberRole` refuses to strip the org's last owner and `addOrgMember` could do it silently:
+the identical sentence at the identical write. Splitting them would leave the pair disagreeing again
+by the next round, which is precisely the failure this table describes.
+
+### R12-3: the third of three doors
+
+`20270815000000`'s header says a record's author is revalidated when the record becomes visible.
+The INSERT-of-`recorded` door asked; the draft → record CONVERSION door asked (that was R2-2, round
+2); PUBLICATION never did — for a record it checked only that the option count was zero.
+
+The gap needs no forgery. A user with decision authority saves a record DRAFT, then loses that
+authority; the draft stays legal, and anyone can publish it into a permanent, team-visible,
+undeletable register entry attributed to someone with no standing on the project. A record is the
+one status with no transition out, so there is nothing to do about it afterwards.
+
+**Composing that arm broke the branch it joined, and the precision probe caught it before the
+battery did.** Carrying `20270818000000`'s body forward, the extracted range stopped one line short
+and dropped the option floor — so a record could have published *with* options. The probe that
+asserts "the floor is unchanged" failed on the first run. It exists because every arm added to a
+shared branch owes proof that it did not displace its neighbours; this round is the case that
+justifies the habit.
+
+### The count
+
+| round | findings | seam | self-inflicted |
+| --- | --- | --- | --- |
+| 7 | 3 | 0 | 3 |
+| 8 | 3 | 0 | 2 (+1 latent) |
+| 9 | 3 | 0 | 3 |
+| 10 | 2 | 0 | 2 |
+| 11 | 5 | 0 | 5 |
+| 12 | 3 | 0 | 3 |
+
+**Six consecutive rounds, nineteen findings, zero seam defects.**
+
+### The rule this round contributes
+
+> A test suite's NAME is not its SCOPE. Before citing one as evidence, read what it actually covers.
+
+R11-2 was answered correctly and then credited to a suite that never looked at the model in
+question. The citation was plausible, the suite was green, and the claim was still false. This audit
+exists to make the reasoning inspectable; a wrong citation inside it is worse than no citation,
+because it invites the next reader to stop checking.
+
+### Nothing is deferred
+
+All three findings are answered in code on this head. `20270815000000` … `20270827000000` are
+byte-for-byte unchanged; the publication seal is replaced by a new `20270828000000` carrying
+`20270818000000`'s body forward with one arm added.
