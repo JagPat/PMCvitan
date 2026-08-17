@@ -85,6 +85,10 @@ each secret/config key before shipping.
 | seed marker in notification feed | `Notification` is snapshotted to the bell | `AuditLog` row `cloud-agent-seed-complete` | demo bell count |
 | stale marker after failed reseed | TRUNCATE left the marker table | delete marker before first TRUNCATE | overlapping `pnpm seed` |
 | `.env` `$` expansion on source | double-quoted assignment | `shlex.quote` POSIX single quotes | password `$(...)` / `$$` |
+| operator `.env` still `source`d | bash expands `"strong-$suffix"` | dotenv parse → `declare -gx` | `set -u` / SMTP_PASS |
+| restore replays placeholder JWT | `export -p` included `change-me` | skip generated JWT; keep operator `.env` | inherited example secret |
+| overlapping seed marker race | two `pnpm seed` unsynchronized | session `pg_advisory_lock` + kill-fault barrier | concurrent seed / start |
+| inherited `NODE_ENV=production` locally | pin returned without changing it | pin `NODE_ENV=development` on default URL | `/auth/session` demo |
 | restore replays placeholder JWT | `export -p` included `change-me` | skip generated JWT; keep operator `.env` | inherited example secret |
 | overlapping seed marker race | two `pnpm seed` unsynchronized | session `pg_advisory_lock` + barrier | concurrent seed / start |
 | psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
@@ -106,9 +110,9 @@ each secret/config key before shipping.
 
 ## Status
 
-Round 9 on head `36444ef` (sourced `.env` expanded `$` in DATABASE_URL, restore
-replayed a placeholder JWT over an operator file secret, and overlapping `pnpm seed`
-could leave a stale completion marker) is corrected on this head. The compiled-API
-choice remains a documented trade-off.
+Round 10 on head `2dfe0e9` (bash `source` still expanded operator double-quoted
+`$` secrets, the lock probe never asserted marker↔fixture, and inherited
+`NODE_ENV=production` on the local DB left `/auth/session` dead) is corrected on
+this head. The compiled-API choice remains a documented trade-off.
 
 Review-Convergence: complete

@@ -208,11 +208,11 @@ test('pin_api_runtime_env forces PORT=3000 and production OTP stubs on an extern
 test('pin_api_runtime_env keeps local disposable DB off production stubs', () => {
   const out = bashEval(
     `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
-    + `export PORT=8080 && unset NODE_ENV && `
+    + `export PORT=8080 && export NODE_ENV=production && `
     + `export DATABASE_URL='postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public' && `
-    + `pin_api_runtime_env && printf 'PORT=%s NODE_ENV=%s\\n' "$PORT" "\${NODE_ENV-}"`,
+    + `pin_api_runtime_env && printf 'PORT=%s NODE_ENV=%s\\n' "$PORT" "$NODE_ENV"`,
   );
-  assert.equal(out, 'PORT=3000 NODE_ENV=');
+  assert.equal(out, 'PORT=3000 NODE_ENV=development');
 });
 
 test('apply_api_env_defaults restores inherited secrets then pins PORT=3000', () => {
@@ -256,6 +256,22 @@ test('apply_api_env_defaults does not restore a placeholder JWT over an operator
       + `apply_api_env_defaults && printf '%s' "$JWT_SECRET"`,
     );
     assert.equal(out, 'operator-staging-secret');
+  });
+});
+
+test('apply_api_env_defaults loads double-quoted .env $ literally under set -u', () => {
+  withApiEnv((apiEnv) => {
+    execSync(
+      `printf '%s\\n' "DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging'" 'JWT_SECRET="strong-$suffix"' > ${JSON.stringify(apiEnv)}`,
+      { cwd: root },
+    );
+    const out = bashEval(
+      `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+      + `export DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging' && `
+      + `unset JWT_SECRET && unset suffix && `
+      + `apply_api_env_defaults && printf '%s' "$JWT_SECRET"`,
+    );
+    assert.equal(out, 'strong-$suffix');
   });
 });
 

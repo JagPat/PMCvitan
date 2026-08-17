@@ -121,7 +121,6 @@ read_env_var() {
   python3 - "$file" "$key" <<'PY'
 import pathlib
 import re
-import shlex
 import sys
 
 path, key = sys.argv[1], sys.argv[2]
@@ -129,8 +128,58 @@ text = pathlib.Path(path).read_text(encoding="utf-8")
 match = re.search(rf"^{re.escape(key)}=(.*)$", text, re.MULTILINE)
 if not match:
     raise SystemExit(0)
-parsed = shlex.split(match.group(1).strip(), posix=True)
-print(parsed[0] if parsed else "")
+raw = match.group(1).strip()
+if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+    value = raw[1:-1]
+    if raw[0] == '"':
+        value = value.replace(r"\"", '"').replace(r"\\", "\\")
+else:
+    value = raw
+print(value)
+PY
+}
+
+# Emit `declare -gx KEY='value'` lines from a dotenv file without shell expansion.
+dotenv_declare_globals() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  python3 - "$file" <<'PY'
+import pathlib
+import re
+import sys
+
+path = sys.argv[1]
+text = pathlib.Path(path).read_text(encoding="utf-8") if pathlib.Path(path).exists() else ""
+key_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+def posix_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+def parse_value(raw: str) -> str:
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        inner = raw[1:-1]
+        if raw[0] == '"':
+            inner = inner.replace(r"\"", '"').replace(r"\\", "\\")
+        return inner
+    return raw
+
+for line in text.splitlines():
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+    if stripped.startswith("export "):
+        stripped = stripped[7:].strip()
+    if "=" not in stripped:
+        continue
+    key, _, raw = stripped.partition("=")
+    key = key.strip()
+    if not key_re.match(key):
+        continue
+    value = parse_value(raw)
+    if "\n" in value or "\r" in value:
+        continue
+    print(f"declare -gx {key}={posix_quote(value)}")
 PY
 }
 
@@ -201,6 +250,7 @@ pin_api_runtime_env() {
   declare -gx PORT=3000
   resolve_database_url
   if [ "$DATABASE_URL" = "$DEFAULT_DATABASE_URL" ]; then
+    declare -gx NODE_ENV=development
     return 0
   fi
   case "${CLOUD_AGENT_ALLOW_AUTH_STUBS:-}" in
@@ -212,13 +262,12 @@ pin_api_runtime_env() {
 apply_api_env_defaults() {
   local -a _pre=()
   mapfile -t _pre < <(export -p)
-  set -a
-  if [ -f apps/api/.env ]; then
-    # shellcheck disable=SC1091
-    source apps/api/.env
-  fi
-  set +a
   local _line
+  if [ -f apps/api/.env ]; then
+    while IFS= read -r _line; do
+      eval "$_line"
+    done < <(dotenv_declare_globals apps/api/.env)
+  fi
   for _line in "${_pre[@]}"; do
     eval "${_line/declare -x/declare -gx}"
   done

@@ -1,3 +1,4 @@
+import { spawn, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PrismaClient } from '@prisma/client';
@@ -5,6 +6,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const LOCK_SQL = "SELECT pg_advisory_lock(hashtext('vitan-pmc-destructive-seed'))";
 const UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('vitan-pmc-destructive-seed'))";
+const MARKER_ID = 'cloud-agent-seed-complete';
+const SEED_PROJECT_ID = 'ambli';
+const apiRoot = join(__dirname, '../..');
 
 function oneConnectionUrl(): string {
   const raw = process.env.DATABASE_URL ?? '';
@@ -14,11 +18,21 @@ function oneConnectionUrl(): string {
   return `${raw}${raw.includes('?') ? '&' : '?'}connection_limit=1`;
 }
 
+function exitCode(child: ChildProcess): Promise<number> {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (signal) resolve(1);
+      else resolve(code ?? 1);
+    });
+  });
+}
+
 /**
  * Overlapping `pnpm seed` must serialize on the same session advisory lock seed.ts
- * takes before wiping the completion marker. This probe holds that lock on one
- * backend, confirms the second is blocked (pg_stat_activity, not sleep), then
- * releases and lets the waiter acquire.
+ * takes before wiping the completion marker. The barrier uses pg_stat_activity (not
+ * sleep). The fault probe kills the holder and asserts the marker exists only with
+ * the complete ambli fixture.
  */
 describe('cloud-agent destructive seed lock', () => {
   let observer: PrismaClient;
@@ -42,6 +56,38 @@ describe('cloud-agent destructive seed lock', () => {
     await Promise.all([holder?.$disconnect(), waiter?.$disconnect(), observer?.$disconnect()]);
   });
 
+  const waitUntilBlockedOnSeedLock = async (): Promise<void> => {
+    for (let i = 0; i < 200; i++) {
+      const rows = await observer.$queryRawUnsafe<Array<{ c: number }>>(
+        `SELECT COUNT(*)::int AS c FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND state = 'active'
+            AND query ILIKE '%vitan-pmc-destructive-seed%'
+            AND pid <> pg_backend_pid()`,
+      );
+      if (Number(rows[0]!.c) >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('barrier timeout: expected a backend blocked on the destructive-seed advisory lock');
+  };
+
+  const waitUntilHoldingSeedLock = async (): Promise<void> => {
+    for (let i = 0; i < 400; i++) {
+      const rows = await observer.$queryRawUnsafe<Array<{ c: number }>>(
+        `SELECT COUNT(*)::int AS c FROM pg_locks l
+           JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE l.locktype = 'advisory'
+            AND l.granted
+            AND a.query ILIKE '%vitan-pmc-destructive-seed%'
+            AND a.pid <> pg_backend_pid()`,
+      );
+      if (Number(rows[0]!.c) >= 1) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error('barrier timeout: expected a backend holding the destructive-seed advisory lock');
+  };
+
   it('seed.ts takes the lock before deleteMany and unlocks in finally', () => {
     const text = readFileSync(join(__dirname, '../../prisma/seed.ts'), 'utf8');
     const lock = text.indexOf(LOCK_SQL);
@@ -62,27 +108,34 @@ describe('cloud-agent destructive seed lock', () => {
       (reason: unknown) => ({ status: 'rejected' as const, reason }),
     );
 
-    let blocked = false;
-    for (let i = 0; i < 200; i++) {
-      const rows = await observer.$queryRawUnsafe<Array<{ c: number }>>(
-        `SELECT COUNT(*)::int AS c FROM pg_stat_activity
-          WHERE wait_event_type = 'Lock'
-            AND wait_event = 'advisory'
-            AND state = 'active'
-            AND query ILIKE '%vitan-pmc-destructive-seed%'
-            AND pid <> pg_backend_pid()`,
-      );
-      if (Number(rows[0]!.c) >= 1) {
-        blocked = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(blocked).toBe(true);
+    await waitUntilBlockedOnSeedLock();
 
     await holder.$executeRawUnsafe(UNLOCK_SQL);
     const outcome = await reflected;
     expect(outcome.status).toBe('fulfilled');
     await waiter.$executeRawUnsafe(UNLOCK_SQL);
   });
+
+  it('killed overlapping seed cannot leave a completion marker without the ambli fixture', async () => {
+    const spawnSeed = (): ChildProcess =>
+      spawn('pnpm', ['exec', 'tsx', 'prisma/seed.ts'], {
+        cwd: apiRoot,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+    const first = spawnSeed();
+    await waitUntilHoldingSeedLock();
+    const second = spawnSeed();
+    await waitUntilBlockedOnSeedLock();
+    first.kill('SIGKILL');
+    const code = await exitCode(second);
+    expect(code).toBe(0);
+
+    const marker = await observer.auditLog.findUnique({ where: { id: MARKER_ID } });
+    const project = await observer.project.findUnique({ where: { id: SEED_PROJECT_ID } });
+    expect(marker).not.toBeNull();
+    expect(project).not.toBeNull();
+    expect(marker?.entityId).toBe(SEED_PROJECT_ID);
+  }, 180_000);
 });
