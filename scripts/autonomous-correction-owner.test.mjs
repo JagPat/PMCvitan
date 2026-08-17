@@ -567,3 +567,75 @@ test('C5: a malformed declaration is told to REPLACE the marker, not add one', a
     );
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C6-C7 — Codex findings on `3a5ab3e`. One defect, two symptoms.
+//
+// `correctionRouting` returns four things — owner, mention, state, instruction —
+// and the sticky published two. The wake-up handle and the machine-readable
+// stalled state were computed and dropped on the floor.
+//
+// This is the THIRD appearance of "computed but never asked" in this lineage:
+// the round-2 finding on #352 (a lease path unreachable behind a filter) and D3
+// itself (a threshold nothing consulted) are the same shape. A value that no
+// consumer reads is indistinguishable from one that is wrong.
+
+test('C6: an awakenable owner is actually mentioned, and only when it must act', async () => {
+  // The routing decides `@claude` is the handle that starts the subscribed
+  // session. Publishing everything EXCEPT that handle leaves the PR waiting for
+  // a human — the failure this whole unit exists to remove, one field short.
+  const claude = await publishedSticky({
+    number: 349,
+    body: '<!-- correction-owner: claude -->',
+    ref: 'codex/phase6-4b-approval-attribution',
+    head: '32cd6a152346d3a28c7695546e2ab6eccb982f6f',
+  });
+  assert.match(claude.body, /@claude/u, 'the declared, awakenable owner is mentioned');
+
+  // And never for an owner GitHub cannot start: a mention that reaches nobody is
+  // the false activity signal this unit refuses to publish.
+  const cursor = await publishedSticky({
+    number: 350,
+    body: '<!-- correction-owner: cursor -->',
+  });
+  assert.doesNotMatch(cursor.body, /@claude/u);
+  assert.doesNotMatch(cursor.body, /@cursor/u, 'and no handle is invented for it');
+
+  // Mentions are for states that need the owner to ACT. Tagging on every sticky
+  // update — including the ones that are merely progress — is noise, and noise
+  // is how a real wake-up stops being read.
+  const gate = readFileSync(GATE, 'utf8');
+  const renderer = gate.slice(gate.indexOf('function statusBody({'), gate.indexOf('export async function settleRecoveryRequest'));
+  assert.match(renderer, /\bmention\b/u, 'statusBody renders the mention');
+
+  const writes = [...gate.matchAll(/statusBody\(\{[\s\S]*?\n\s*\}\)/gu)].map((m) => m[0]);
+  const progressOnly = writes.filter((w) => /state: '(review_pending|review_retry|clear|ci_retry)'/u.test(w));
+  assert.ok(progressOnly.length >= 3, 'found the progress-only sticky writes');
+  for (const write of progressOnly) {
+    assert.doesNotMatch(write, /\bmention\b/u, `a progress sticky must not tag anyone:\n${write.slice(0, 90)}`);
+  }
+});
+
+test('C7: correction_stalled reaches the notice it describes', async () => {
+  // `correctionRouting` reports `correction_stalled` for exactly the inputs that
+  // need it — no declaration, an unknown agent, two owners — and the published
+  // notice showed only `scope_required`/`blocked`/`changes_required` with an
+  // `undeclared` label. The promised machine-readable state was never visible to
+  // the humans or automation that read the comment.
+  const { CORRECTION_STALLED } = await ownerModule();
+
+  const undeclared = await publishedSticky({ number: 400, body: '## Objective\n\nno marker' });
+  assert.match(
+    undeclared.body,
+    new RegExp(`- \\*\\*Correction state:\\*\\* \`${CORRECTION_STALLED}\``, 'u'),
+    'the stalled state is published as its own machine-readable field',
+  );
+  assert.match(undeclared.body, /- \*\*Correction owner:\*\* `undeclared`/u);
+
+  // A routed owner is not stalled, and must not be labelled as though it were.
+  const routed = await publishedSticky({
+    number: 401,
+    body: '<!-- correction-owner: claude -->',
+  });
+  assert.doesNotMatch(routed.body, new RegExp(CORRECTION_STALLED, 'u'));
+});

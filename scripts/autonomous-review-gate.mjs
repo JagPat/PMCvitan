@@ -8,6 +8,7 @@ import {
 } from './autonomous-review-state.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
+  CORRECTION_STALLED,
   correctionOwnerDeclaration,
   correctionRouting,
 } from './correction-owner.mjs';
@@ -870,8 +871,33 @@ function correctionNotice(pullRequest, { detail = null, reason = 'review' } = {}
   });
 }
 
-function statusBody({ state, head, detail, attempt, next, advisory = null, owner = null }) {
+// Only a state a reader must ACT on is published. `routed` is the ordinary case
+// and adds nothing beside the owner label; `correction_stalled` is the one that
+// says nobody is coming, which is exactly what a reader needs to see.
+function noticeState(notice) {
+  return notice?.state === CORRECTION_STALLED ? CORRECTION_STALLED : null;
+}
+
+function statusBody({
+  state,
+  head,
+  detail,
+  attempt,
+  next,
+  advisory = null,
+  owner = null,
+  correctionState = null,
+  mention = null,
+}) {
   return [
+    // The wake-up handle, FIRST, so it opens the comment body a subscribed
+    // session receives. Routing decides this handle; publishing every other
+    // field and dropping it left the correction waiting on a human, which is the
+    // failure this unit exists to remove — one field short of removing it.
+    //
+    // Passed only for states that need the owner to ACT. A progress update that
+    // tags someone is noise, and noise is how a real wake-up stops being read.
+    ...(mention ? [mention, ''] : []),
     '## Autonomous review state',
     '',
     `- **Head:** \`${head}\``,
@@ -881,6 +907,11 @@ function statusBody({ state, head, detail, attempt, next, advisory = null, owner
     // Machine-readable, beside the instruction it explains: a reader (human or
     // agent) can see WHO is expected to act without parsing the sentence.
     ...(owner ? [`- **Correction owner:** \`${owner}\``] : []),
+    // And WHETHER anyone is routed at all. `correction_stalled` is computed for
+    // exactly the inputs that need it — no declaration, an unknown agent, two
+    // owners — and publishing only the owner label left that state invisible to
+    // every reader of the comment.
+    ...(correctionState ? [`- **Correction state:** \`${correctionState}\``] : []),
     `- **Next:** ${next}`,
     // The lifecycle advisory rides the sticky comment, not just the Actions log.
     // The loop's actors — and humans — read PR comments and statuses; a workflow
@@ -1120,6 +1151,8 @@ export async function enforceReviewConvergence(
       detail,
       attempt: 0,
       owner: notice.owner ?? 'undeclared',
+      correctionState: noticeState(notice),
+      mention: notice.mention,
       next: notice.instruction,
     }),
   );
@@ -1175,6 +1208,8 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       detail: result.detail,
       attempt: 0,
       owner: notice.owner ?? 'undeclared',
+      correctionState: noticeState(notice),
+      mention: notice.mention,
       next: notice.instruction,
     }),
   );
@@ -1377,6 +1412,8 @@ export async function publishCurrentHeadFinding(
       detail,
       attempt,
       owner: notice.owner ?? 'undeclared',
+      correctionState: noticeState(notice),
+      mention: notice.mention,
       next: notice.instruction,
     }),
   );
@@ -1575,6 +1612,8 @@ export async function run() {
         detail: ciDetail,
         attempt: 0,
         owner: ciNotice.owner ?? 'undeclared',
+        correctionState: noticeState(ciNotice),
+        mention: ciNotice.mention,
         next: ciNotice.instruction,
       }),
     );
@@ -1663,6 +1702,8 @@ export async function run() {
         detail,
         attempt: 0,
         owner: settleNotice.owner ?? 'undeclared',
+        correctionState: noticeState(settleNotice),
+        mention: settleNotice.mention,
         next: settleNotice.instruction,
       }),
     );
@@ -1771,6 +1812,8 @@ export async function run() {
             detail,
             attempt,
             owner: evidenceNotice.owner ?? 'undeclared',
+            correctionState: noticeState(evidenceNotice),
+            mention: evidenceNotice.mention,
             next: evidenceNotice.instruction,
           }),
         );
