@@ -84,8 +84,11 @@ import re
 import sys
 
 path, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+if "\n" in value or "\r" in value:
+    raise SystemExit("refusing newline in env value")
 text = pathlib.Path(path).read_text(encoding="utf-8") if pathlib.Path(path).exists() else ""
-line = f'{key}="{value}"'
+# Always POSIX-single-quote so bash source cannot expand `$`, `$(...)`, or backticks.
+line = f"{key}='" + value.replace("'", "'\"'\"'") + "'"
 pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
 if pattern.search(text):
     text = pattern.sub(line, text)
@@ -118,6 +121,7 @@ read_env_var() {
   python3 - "$file" "$key" <<'PY'
 import pathlib
 import re
+import shlex
 import sys
 
 path, key = sys.argv[1], sys.argv[2]
@@ -125,10 +129,8 @@ text = pathlib.Path(path).read_text(encoding="utf-8")
 match = re.search(rf"^{re.escape(key)}=(.*)$", text, re.MULTILINE)
 if not match:
     raise SystemExit(0)
-value = match.group(1).strip()
-if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-    value = value[1:-1]
-print(value)
+parsed = shlex.split(match.group(1).strip(), posix=True)
+print(parsed[0] if parsed else "")
 PY
 }
 
@@ -220,6 +222,15 @@ apply_api_env_defaults() {
   for _line in "${_pre[@]}"; do
     eval "${_line/declare -x/declare -gx}"
   done
+  # Inherited Cursor/example placeholders must not overwrite an operator JWT in .env.
+  if jwt_is_generated "${JWT_SECRET:-}"; then
+    unset JWT_SECRET || true
+    local file_jwt
+    file_jwt="$(read_env_var apps/api/.env JWT_SECRET || true)"
+    if [ -n "$file_jwt" ] && ! jwt_is_generated "$file_jwt"; then
+      declare -gx JWT_SECRET="$file_jwt"
+    fi
+  fi
   pin_api_runtime_env
 }
 

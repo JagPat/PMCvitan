@@ -84,6 +84,9 @@ each secret/config key before shipping.
 | OTP stubs on external DB | stubs key off `NODE_ENV`, not JWT | pin `NODE_ENV=production` unless `CLOUD_AGENT_ALLOW_AUTH_STUBS` | email/phone OTP takeover |
 | seed marker in notification feed | `Notification` is snapshotted to the bell | `AuditLog` row `cloud-agent-seed-complete` | demo bell count |
 | stale marker after failed reseed | TRUNCATE left the marker table | delete marker before first TRUNCATE | overlapping `pnpm seed` |
+| `.env` `$` expansion on source | double-quoted assignment | `shlex.quote` POSIX single quotes | password `$(...)` / `$$` |
+| restore replays placeholder JWT | `export -p` included `change-me` | skip generated JWT; keep operator `.env` | inherited example secret |
+| overlapping seed marker race | two `pnpm seed` unsynchronized | session `pg_advisory_lock` + barrier | concurrent seed / start |
 | psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
 | psql schema mismatch | stripped `schema=` without `search_path` | `psql_tc` sets `search_path` from Prisma param | non-public schema sentinel |
 | Prisma pool args in psql | only `schema=` stripped | drop Prisma-only query keys (`connection_limit`, `pool_timeout`, …) | mixed Prisma+libpq URL |
@@ -103,9 +106,9 @@ each secret/config key before shipping.
 
 ## Status
 
-Round 8 on head `c502455` (OTP stubs still live on an external DB, inherited `PORT`
-steering the API off :3000, the seed marker living in the notification feed, and a
-failed reseed leaving that marker) is corrected on this head. The compiled-API choice
-remains a documented trade-off.
+Round 9 on head `36444ef` (sourced `.env` expanded `$` in DATABASE_URL, restore
+replayed a placeholder JWT over an operator file secret, and overlapping `pnpm seed`
+could leave a stale completion marker) is corrected on this head. The compiled-API
+choice remains a documented trade-off.
 
 Review-Convergence: complete

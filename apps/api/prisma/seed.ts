@@ -12,7 +12,18 @@ import {
 import { addCivilDays, fromIsoCivilDate } from '../src/common/civil-date';
 import { ddMmmYyyy } from '../src/domain/dates';
 
-const prisma = new PrismaClient();
+function seedDatabaseUrl(): string {
+  const raw = process.env.DATABASE_URL ?? '';
+  if (/[?&]connection_limit=/i.test(raw)) {
+    return raw.replace(/([?&]connection_limit=)[^&]*/i, '$11');
+  }
+  return `${raw}${raw.includes('?') ? '&' : '?'}connection_limit=1`;
+}
+
+// One backend so a session advisory lock is held across TRUNCATE / writes.
+const prisma = new PrismaClient({
+  datasources: { db: { url: seedDatabaseUrl() } },
+});
 
 const PROJECT_ID = 'ambli';
 
@@ -24,6 +35,19 @@ const SCHEDULE_ANCHOR = '2026-06-01';
 const atDay = (offset: number): Date => fromIsoCivilDate(addCivilDays(SCHEDULE_ANCHOR, offset))!;
 
 async function main(): Promise<void> {
+  await prisma.$executeRawUnsafe(
+    "SELECT pg_advisory_lock(hashtext('vitan-pmc-destructive-seed'))",
+  );
+  try {
+    await seedBody();
+  } finally {
+    await prisma.$executeRawUnsafe(
+      "SELECT pg_advisory_unlock(hashtext('vitan-pmc-destructive-seed'))",
+    );
+  }
+}
+
+async function seedBody(): Promise<void> {
   // Drop the cloud-agent completion marker BEFORE any destructive reset so a
   // failed reseed cannot leave a stale "complete" row while fixture data is gone.
   await prisma.auditLog.deleteMany({ where: { id: 'cloud-agent-seed-complete' } });

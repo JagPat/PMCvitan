@@ -105,8 +105,8 @@ test('ensure_api_env writes dev auth defaults for the local disposable URL', () 
       + `export DATABASE_URL='postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public' && ensure_api_env`,
     );
     const text = execSync(`cat ${JSON.stringify(apiEnv)}`, { cwd: root, encoding: 'utf8' });
-    assert.match(text, /JWT_SECRET="dev-secret-change-in-prod"/);
-    assert.match(text, /ALLOW_DEV_AUTH="true"/);
+    assert.match(text, /JWT_SECRET='dev-secret-change-in-prod'/);
+    assert.match(text, /ALLOW_DEV_AUTH='true'/);
   });
 });
 
@@ -184,7 +184,7 @@ test('ensure_web_env disables VITE_ALLOW_DEV_AUTH for an external database', () 
       + `unset ALLOW_DEV_AUTH && ensure_web_env`,
     );
     const text = execSync(`cat ${JSON.stringify(webEnv)}`, { cwd: root, encoding: 'utf8' });
-    assert.match(text, /VITE_ALLOW_DEV_AUTH="false"/);
+    assert.match(text, /VITE_ALLOW_DEV_AUTH='false'/);
   } finally {
     if (hadBackup) {
       execSync(`mv ${JSON.stringify(backup)} ${JSON.stringify(webEnv)}`, { cwd: root });
@@ -225,15 +225,53 @@ test('apply_api_env_defaults restores inherited secrets then pins PORT=3000', ()
   assert.equal(out, 'PORT=3000 JWT=operator-staging-secret NODE_ENV=production');
 });
 
+test('set_env_var shell-quotes values so sourced $ and $(...) stay literal', () => {
+  withApiEnv(() => {
+    const url = 'postgresql://u:p$a$(echo pwned)@db.example.com:5432/staging';
+    bashEval(
+      `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+      + `set_env_var apps/api/.env DATABASE_URL 'postgresql://u:p$a$(echo pwned)@db.example.com:5432/staging'`,
+    );
+    const sourced = bashEval(
+      `cd ${JSON.stringify(root)} && set -a && source apps/api/.env && set +a && printf '%s' "$DATABASE_URL"`,
+    );
+    assert.equal(sourced, url);
+    const roundTrip = bashEval(
+      `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && read_env_var apps/api/.env DATABASE_URL`,
+    );
+    assert.equal(roundTrip, url);
+  });
+});
+
+test('apply_api_env_defaults does not restore a placeholder JWT over an operator .env secret', () => {
+  withApiEnv((apiEnv) => {
+    execSync(
+      `printf '%s\\n' "DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging'" "JWT_SECRET='operator-staging-secret'" > ${JSON.stringify(apiEnv)}`,
+      { cwd: root },
+    );
+    const out = bashEval(
+      `cd ${JSON.stringify(root)} && source scripts/cloud-agent-env.sh && `
+      + `export DATABASE_URL='postgresql://remote:secret@db.example.com:5432/staging' && `
+      + `export JWT_SECRET='change-me' && `
+      + `apply_api_env_defaults && printf '%s' "$JWT_SECRET"`,
+    );
+    assert.equal(out, 'operator-staging-secret');
+  });
+});
+
 test('seed.ts drops the completion marker before TRUNCATE and writes it last as AuditLog', () => {
   const text = execSync('cat apps/api/prisma/seed.ts', { cwd: root, encoding: 'utf8' });
+  const lock = text.indexOf("SELECT pg_advisory_lock(hashtext('vitan-pmc-destructive-seed'))");
   const drop = text.indexOf("auditLog.deleteMany({ where: { id: 'cloud-agent-seed-complete' } })");
   const truncate = text.indexOf('TRUNCATE TABLE');
   const library = text.indexOf('createStarterLibrary');
   const create = text.lastIndexOf("prisma.auditLog.create");
   const marker = text.lastIndexOf("id: 'cloud-agent-seed-complete'");
-  assert.ok(drop >= 0 && truncate >= 0 && library >= 0 && create >= 0 && marker >= 0);
+  const unlock = text.indexOf("SELECT pg_advisory_unlock(hashtext('vitan-pmc-destructive-seed'))");
+  assert.ok(lock >= 0 && drop >= 0 && truncate >= 0 && library >= 0 && create >= 0 && marker >= 0 && unlock >= 0);
+  assert.ok(lock < drop, 'advisory lock must be taken before the marker is cleared');
   assert.ok(drop < truncate, 'marker must be removed before the first TRUNCATE');
   assert.ok(library < create && create < marker, 'marker must be written last as AuditLog after the starter library');
+  assert.match(text, /finally\s*\{[\s\S]*pg_advisory_unlock/u);
   assert.doesNotMatch(text, /prisma\.notification\.create\([\s\S]{0,200}cloud-agent-seed-complete/u);
 });
