@@ -8,6 +8,10 @@ import {
 } from './autonomous-review-state.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
+  correctionOwnerDeclaration,
+  correctionRouting,
+} from './correction-owner.mjs';
+import {
   assessReviewScope,
   codexFindingHeads,
   PRE_REVIEW_ENFORCE_AFTER_PR,
@@ -850,7 +854,23 @@ export async function reportReviewLifecycle(client, pullRequest, log = console.l
   return { ...observation, advisory };
 }
 
-function statusBody({ state, head, detail, attempt, next, advisory = null }) {
+// Who the loop will ask to fix this, and what it will ask them to do.
+//
+// Derived from the pull request's own declaration on EVERY notice, rather than
+// asserted by a string literal at the call site. Before this, three call sites
+// each said "Claude Auto-fix handles the review comments" unconditionally, and
+// said it to a Cursor-owned PR. See scripts/correction-owner.mjs.
+function correctionNotice(pullRequest, { detail = null, reason = 'review' } = {}) {
+  return correctionRouting({
+    declaration: correctionOwnerDeclaration(pullRequest),
+    head: pullRequest?.head?.sha ?? null,
+    detail,
+    reason,
+    pullRequestNumber: pullRequest?.number,
+  });
+}
+
+function statusBody({ state, head, detail, attempt, next, advisory = null, owner = null }) {
   return [
     '## Autonomous review state',
     '',
@@ -858,6 +878,9 @@ function statusBody({ state, head, detail, attempt, next, advisory = null }) {
     `- **State:** \`${state}\``,
     `- **Codex attempt:** ${attempt}/${MAX_REVIEW_ATTEMPTS}`,
     `- **Detail:** ${detail}`,
+    // Machine-readable, beside the instruction it explains: a reader (human or
+    // agent) can see WHO is expected to act without parsing the sentence.
+    ...(owner ? [`- **Correction owner:** \`${owner}\``] : []),
     `- **Next:** ${next}`,
     // The lifecycle advisory rides the sticky comment, not just the Actions log.
     // The loop's actors — and humans — read PR comments and statuses; a workflow
@@ -1088,6 +1111,7 @@ export async function enforceReviewConvergence(
     `review: ${detail}`,
     pullRequest.html_url,
   );
+  const notice = correctionNotice(live, { detail, reason: 'replacement' });
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({
@@ -1095,7 +1119,8 @@ export async function enforceReviewConvergence(
       head: expectedHead,
       detail,
       attempt: 0,
-      next: `Claude must close this PR without another correction head, open a smaller replacement from current main, carry only the unresolved scope, and record \`Replaces: #${pullRequest.number}\` in its body. Every finding remains blocking; no safety check is waived.`,
+      owner: notice.owner ?? 'undeclared',
+      next: notice.instruction,
     }),
   );
   return result;
@@ -1138,6 +1163,10 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
     `scope: ${result.detail}`,
     pullRequest.html_url,
   );
+  const notice = correctionNotice(live, {
+    detail: result.detail,
+    reason: 'scope',
+  });
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({
@@ -1145,7 +1174,8 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       head: expectedHead,
       detail: result.detail,
       attempt: 0,
-      next: 'Claude splits the review unit or completes every justified-large invariant row with concrete risk and verification evidence.',
+      owner: notice.owner ?? 'undeclared',
+      next: notice.instruction,
     }),
   );
   return result;
@@ -1289,7 +1319,7 @@ export async function publishCurrentHeadFinding(
   pullRequest,
   expectedHead,
   recoveryRequest,
-  { detail, attempt, next },
+  { detail, attempt },
 ) {
   const reset = await enforceReviewConvergence(
     client,
@@ -1328,6 +1358,16 @@ export async function publishCurrentHeadFinding(
     recoveryRequest,
     'review finding',
   );
+  // The instruction is DERIVED here, not accepted from the caller. A call site
+  // that could pass its own sentence is a call site that can reintroduce the
+  // "Claude Auto-fix handles this" claim on a PR Claude does not own.
+  //
+  // Derived from `live` — the pull request as refreshed above — not from the
+  // snapshot captured when the run started. A Codex poll lasts many minutes, and
+  // an owner marker edited during it would otherwise be ignored: a PR that now
+  // declares `cursor` would still be told Claude will fix it, which is the
+  // original defect returning through a stale read.
+  const notice = correctionNotice(live, { detail, reason: 'review' });
   await client.updateStickyComment(
     pullRequest.number,
     statusBody({
@@ -1336,7 +1376,8 @@ export async function publishCurrentHeadFinding(
       head: expectedHead,
       detail,
       attempt,
-      next,
+      owner: notice.owner ?? 'undeclared',
+      next: notice.instruction,
     }),
   );
   return { state: 'changes_required', allowed: false, detail };
@@ -1369,11 +1410,7 @@ export async function guardAgainstCurrentHeadFinding(
     pullRequest,
     expectedHead,
     recoveryRequest,
-    {
-      detail: result.detail,
-      attempt: 0,
-      next: 'Claude Auto-fix handles the review comments and pushes a new head.',
-    },
+    { detail: result.detail, attempt: 0 },
   );
   return result.detail;
 }
@@ -1526,6 +1563,10 @@ export async function run() {
         pullRequest.html_url,
       );
     }
+    const ciNotice = correctionNotice(pullRequest, {
+      detail: ciDetail,
+      reason: ciSummary.failed.includes('review-scope') ? 'scope' : 'ci',
+    });
     await client.updateStickyComment(
       pullRequest.number,
       statusBody({
@@ -1533,9 +1574,8 @@ export async function run() {
         head: expectedHead,
         detail: ciDetail,
         attempt: 0,
-        next: ciSummary.failed.includes('review-scope')
-          ? 'Claude splits the review unit or completes the justified-large invariant matrix; editing the PR body reruns the scope gate.'
-          : 'Claude Auto-fix addresses CI before review begins.',
+        owner: ciNotice.owner ?? 'undeclared',
+        next: ciNotice.instruction,
       }),
     );
     throw new Error(ciDetail);
@@ -1614,6 +1654,7 @@ export async function run() {
       `ci: ${detail}`,
       pullRequest.html_url,
     );
+    const settleNotice = correctionNotice(pullRequest, { detail, reason: 'ci' });
     await client.updateStickyComment(
       pullRequest.number,
       statusBody({
@@ -1621,7 +1662,8 @@ export async function run() {
         head: expectedHead,
         detail,
         attempt: 0,
-        next: 'Claude Auto-fix addresses CI; a new head restarts the loop.',
+        owner: settleNotice.owner ?? 'undeclared',
+        next: settleNotice.instruction,
       }),
     );
     throw new Error(detail);
@@ -1661,11 +1703,7 @@ export async function run() {
         pullRequest,
         expectedHead,
         recoveryRequest,
-        {
-          detail: result.detail,
-          attempt,
-          next: 'Claude Auto-fix handles the review comments and pushes a new head.',
-        },
+        { detail: result.detail, attempt },
       );
       if (published.superseded) return;
       throw new Error(result.detail);
@@ -1698,11 +1736,7 @@ export async function run() {
             pullRequest,
             expectedHead,
             recoveryRequest,
-            {
-              detail,
-              attempt,
-              next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
-            },
+            { detail, attempt },
           );
           if (published.superseded) return;
           throw new Error(detail);
@@ -1727,6 +1761,7 @@ export async function run() {
           recoveryRequest,
           'changed review evidence',
         );
+        const evidenceNotice = correctionNotice(pullRequest, { detail, reason: 'review' });
         await client.updateStickyComment(
           pullRequest.number,
           statusBody({
@@ -1735,7 +1770,8 @@ export async function run() {
             head: expectedHead,
             detail,
             attempt,
-            next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
+            owner: evidenceNotice.owner ?? 'undeclared',
+            next: evidenceNotice.instruction,
           }),
         );
         throw new Error(detail);

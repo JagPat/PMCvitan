@@ -1380,7 +1380,13 @@ test('the trusted owner enforces the review-round reset after CI and before Code
   assert.ok(reset > checks);
   assert.ok(review > reset);
   assert.match(gate, /state: 'replacement_required'/u);
-  assert.match(gate, /Replaces: #\$\{pullRequest\.number\}/u);
+  // The `Replaces: #<n>` sentence moved into scripts/correction-owner.mjs so it
+  // is phrased for the PR's DECLARED correction owner rather than for Claude
+  // unconditionally. What the gate must still do is ASK for it on this path —
+  // the rendered instruction is asserted below, in the behavioural probe.
+  // Derived from the REFRESHED pull request (`live`), not the run-start
+  // snapshot: an owner marker edited mid-run must change who the notice names.
+  assert.match(gate, /correctionNotice\(live, \{ detail, reason: 'replacement' \}\)/u);
   assert.match(gate, /assessReviewScope\(pullRequest,/u);
   assert.match(gate, /state: 'scope_required'/u);
   assert.match(

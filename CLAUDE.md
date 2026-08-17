@@ -14,6 +14,19 @@ the required `codex-current-head` status and queues auto-merge. Never start the
 next task while STATUS keeps the current task open. No human technical approval
 is required, but the exact-head GitHub gate is mandatory and fails closed.
 
+Every PR body must declare its correction owner as exactly one
+`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`
+marker. `review-scope` refuses a missing, unknown, or contradictory declaration
+before any expensive job runs, and a `claude/**` branch may only declare
+`claude`. Every finding, CI, scope and replacement notice is routed from that
+declaration — never assume Claude owns a correction, and never tag `@claude` on
+a PR that declares another owner. An undeclared or malformed declaration routes
+to no agent and reports `correction_stalled` naming the marker that fixes it; a
+declared owner GitHub cannot start is named, with the notice saying so rather
+than implying work is under way. Detecting that an asked owner never started is
+a separate follow-up unit and is not implemented yet. See
+`docs/AUTONOMOUS_LOOP.md`.
+
 When you open or resume an autonomous `claude/**` draft PR, update `docs/STATUS.md`
 in the same change: set `open_pr` to that PR number and align `task_state` with
 whether the PR is still being built (`in_progress`) or waiting on Codex (`in_review`).
