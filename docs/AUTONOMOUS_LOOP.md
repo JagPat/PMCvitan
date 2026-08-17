@@ -8,6 +8,7 @@ This repository is designed to progress without the owner's laptop or technical 
 | --- | --- |
 | Cloud runner | Read `docs/STATUS.md`, start the current work item, and never skip ahead |
 | Claude Code web | Author code, tests, migrations, packets, and corrections on `claude/**`; keep Auto-fix subscribed until the PR reaches a terminal state |
+| Cursor agent | Author and correct the PRs that declare `<!-- correction-owner: cursor -->`; GitHub cannot start this session, so its stalled corrections are reported for a human to resume |
 | Codex Cloud | Independently review every PR head using `AGENTS.md`; never implement its own findings |
 | GitHub | Hold drafts, run required CI, trigger Codex by moving CI-green drafts to ready, enforce an exact-head review status, and merge |
 | Coolify | Deploy merged `main` |
@@ -28,7 +29,7 @@ This repository is designed to progress without the owner's laptop or technical 
 2. Claude starts from latest `origin/main`, records the base SHA, opens a draft PR, enables web Auto-fix, and remains subscribed.
 3. GitHub first runs the two dependency-free gates `review-scope` and `battery-plan`, then requires `web`, `api`, `e2e`, `api-e2e`, and `upgrade-proof`. An unjustified broad review unit stops before the expensive jobs. A first product-CI failure receives one GitHub-native failed-job retry; deterministic `review-scope` failures do not. A second product failure remains draft and blocked for a real correction. When all seven pass on the current head, the trusted default-branch workflow sets `codex-current-head` pending and marks the draft ready.
 4. Marking the PR ready triggers Codex. The same exact-head workflow run polls that one invocation to its terminal result and accepts only evidence from `chatgpt-codex-connector[bot]` for the current SHA and review cycle. Review and review-comment webhooks never start or mutate the merge workflow.
-5. A current-head finding fails `codex-current-head` and returns the PR to draft. Claude Auto-fix reproduces the complete first-round finding set and may push one coherent correction; that push invalidates every prior clearance. If the correction head also receives findings, the trusted owner stops that PR and requires a newly scoped replacement from current `main`.
+5. A current-head finding fails `codex-current-head` and returns the PR to draft. The PR's DECLARED correction owner reproduces the complete first-round finding set and may push one coherent correction; that push invalidates every prior clearance. If the correction head also receives findings, the trusted owner stops that PR and requires a newly scoped replacement from current `main`.
 6. A fresh current-head clean Codex signal succeeds `codex-current-head`. GitHub then squash-merges that exact reviewed SHA immediately when the PR is clean. If GitHub still reports a waiting state, the controller queues squash auto-merge with the same expected head OID; a clean-state race retries the exact-SHA merge once. Missing CI, stale evidence, timeout, or inactive authoring all fail closed.
 7. The merge controller explicitly dispatches the trusted handoff workflow because GitHub suppresses ordinary workflow events produced by `GITHUB_TOKEN`. The dispatch is retried three times, and an hourly GitHub-side watchdog drains the durable cursor if the immediate dispatch is interrupted. The handoff waits for a queued merge when necessary, always drains merged work and conflict state before rescheduling an open wait target, and posts one marked `@claude` continuation. Coolify deploys `main`; the runner updates `docs/STATUS.md` and begins the next work item only after merge.
 
@@ -77,6 +78,83 @@ This repository is designed to progress without the owner's laptop or technical 
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 
+## Correction Ownership
+
+Every pull request declares, in its body, which agent will fix its review
+findings:
+
+```
+<!-- correction-owner: claude -->
+<!-- correction-owner: cursor -->
+```
+
+Exactly one, and it is not optional. `review-scope` — the first CI job, which
+every product job declares `needs:` on — refuses a missing declaration, an
+unknown agent, two different declared owners, or a `claude/**` branch declaring
+anything other than `claude`. A refusal there costs no product battery and no
+Codex invocation. The trusted default-branch controller re-evaluates the same
+assessment before review promotion, so editing the PR-side script cannot bypass
+it.
+
+Nothing infers the owner, because nothing can. The branch prefix does not carry
+it — PR #349 (Claude-owned) and PR #350 (Cursor-owned) were both on `codex/**` —
+the PR author is the repository owner either way, and no API tells GitHub
+whether a subscription-backed Claude or Cursor session is alive. Before the
+declaration existed the controller answered anyway, telling both PRs
+"Claude Auto-fix handles the review comments and pushes a new head"; on #350
+that was false, and the owner had to notice and kick both by hand.
+
+Every correction notice is now derived from the declaration:
+
+| Declared owner | Finding notice | Watchdog outcome |
+| --- | --- | --- |
+| `claude` | Claude Code web Auto-fix is named and `@claude` is tagged | one marked `@claude` recovery notification |
+| `cursor` | the Cursor agent is named; Claude is never tagged or claimed | `correction_stalled` |
+| undeclared / invalid / contradictory | no agent is routed, and the marker is requested | `correction_stalled` |
+
+### The correction lease
+
+The hourly handoff job holds one lease per **pull request, exact head, and
+owner**, keyed by an `<!-- autonomous-correction-lease: … -->` marker on the
+notification it publishes. It applies only while that exact head's
+`codex-current-head` status is a Codex finding failure.
+
+- At most ONE notification per key, ever. A repeated cron tick, a replaced
+  Actions run, or a second event for the same head adds no second comment.
+- The lease is satisfied by ONE thing: a new head on the branch. A reaction, a
+  reply, or a subscription acknowledgement is not progress — both #349 and #350
+  were "acknowledged only as a subscription" while producing nothing, which is
+  exactly the state an acknowledgement-based check would have called healthy.
+- Past the two-finding-head limit the notification asks for a replacement PR,
+  never a third correction head.
+- It only comments. It never publishes `codex-current-head`, changes draft
+  state, merges, or invokes Codex, and the exact-head gate remains the only
+  thing that admits a merge. If the watchdog cannot assess a PR, the handoff job
+  fails rather than reporting green over an unobserved correction.
+
+### `correction_stalled`
+
+`correction_stalled` is published when a correction is owed and GitHub cannot
+start the agent that owes it — today, any owner other than `claude`, and every
+undeclared PR. It carries the exact owner, the exact head, the findings on that
+head, how long the head has not moved, and the required resume action. It never
+says a correction is under way. This is the honest reading of a
+subscription-only loop: a Cursor session is started by a human, and pretending
+otherwise is what let two PRs sit for an hour.
+
+### Bootstrapping PRs #349 and #350
+
+Both were open before the declaration was required, and this change does not
+edit them or reassign their ownership. `CORRECTION_OWNER_ENFORCE_AFTER_PR` is
+`350`, so neither is retroactively blocked by the scope gate. They are
+bootstrapped by declaring: adding `<!-- correction-owner: claude -->` to #349's
+body and `<!-- correction-owner: cursor -->` to #350's — each by that PR's own
+owner — reruns the scope gate through the ordinary `edited` CI event and routes
+every subsequent notice correctly. Until that edit lands, neither PR is told
+that Claude is fixing it: an undeclared owner routes to nobody, and its watchdog
+outcome is `correction_stalled` naming the missing declaration. PR #338 is
+closed and is not touched.
+
 ## Non-Negotiable Safety Rules
 
 - Review happens before merge, especially for migrations.
@@ -85,8 +163,10 @@ No human approval is required. The owner may interrupt or redirect the loop, but
   state exists only to invoke Codex after CI passes.
 - Claude does not self-certify a Codex finding as closed; Codex re-reviews the new head.
 - Task N+1 never starts while `docs/STATUS.md` keeps Task N open.
-- Never add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or an AI action. Codex GitHub
-  review and Claude Code web Auto-fix use the owner's product subscriptions.
+- Never add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, a Cursor credential, or an AI
+  action. Codex GitHub review, Claude Code web Auto-fix, and any Cursor agent use
+  the owner's product subscriptions. This is why an agent GitHub cannot wake is
+  reported as `correction_stalled` rather than started.
 - A write-capable workflow checks out only the trusted default branch, never PR
   code. Only open same-repository PRs are eligible.
 - Credentials and raw transcripts never enter Git. In particular, never commit Coolify tokens, SMTP credentials, database passwords, `.env` contents, or local attachments.

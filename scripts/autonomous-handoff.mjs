@@ -10,11 +10,20 @@ import {
   selectAutonomousOpenPullRequests,
 } from './runner-continuation.mjs';
 import { loadStatusDocument, parseStatusNow, parseMaintenanceQueue } from './autonomous-status-state.mjs';
+import { isCorrectionEligiblePullRequest } from './correction-owner.mjs';
+import { assessCorrectionLease } from './correction-lease.mjs';
+import { codexFindingHeads } from './review-efficiency.mjs';
 
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
 const MERGE_MARKER = '<!-- autonomous-post-merge:';
 const DRIFT_MARKER = '<!-- autonomous-status-drift:';
+// The `codex-current-head` failure descriptions the review gate publishes when
+// Codex found something on the exact head. Anything else on that context (a CI
+// failure, a timeout, a scope refusal) is not an owed CORRECTION and is left to
+// the gate's own retry paths.
+const CURRENT_HEAD_FINDING =
+  /current-head Codex finding|Codex submitted a current-head review/u;
 const STATE_ISSUE_NUMBER = 235;
 const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 // The backlog starts after this workflow was introduced, so historical Claude
@@ -162,6 +171,24 @@ class GitHubClient {
       method: 'POST',
       body: { body },
     });
+  }
+
+  async paginated(path) {
+    const items = [];
+    for (let page = 1; ; page += 1) {
+      const separator = path.includes('?') ? '&' : '?';
+      const batch = await this.request(`${path}${separator}per_page=100&page=${page}`);
+      items.push(...batch);
+      if (batch.length < 100) return items;
+    }
+  }
+
+  reviews(number) {
+    return this.paginated(`/repos/${this.repository}/pulls/${number}/reviews`);
+  }
+
+  reviewComments(number) {
+    return this.paginated(`/repos/${this.repository}/pulls/${number}/comments`);
   }
 
   async fileContent(path, ref) {
@@ -429,6 +456,66 @@ export async function handOffStatusDrift(
   await client.comment(primary.number, [marker, body].join('\n'));
 }
 
+// The correction WATCHDOG.
+//
+// Until now this job drained conflicts, merge continuation and status drift, and
+// reported green while a finding-bearing head sat untouched — which is what
+// happened to PR #349 and PR #350 on 2026-08-17. A correction that nobody
+// started looks, from GitHub's side, exactly like one in progress; the
+// difference is only visible as time passing with no new head.
+//
+// So this asks the one question the loop could not: has the head that drew
+// findings moved? It only ever COMMENTS. It never publishes `codex-current-head`,
+// never changes draft state, never merges, and never invokes Codex — the exact-head
+// gate is untouched and still the only thing that admits a merge.
+export async function handOffCorrectionLease(
+  client,
+  pullRequest,
+  repository,
+  defaultBranch,
+  { now = new Date().toISOString() } = {},
+) {
+  if (!isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch)) return null;
+  const head = pullRequest.head?.sha;
+  if (!head) return null;
+
+  // The combined status returns the LATEST status per context, so this is true
+  // only while the exact head's required status is still a finding failure: a
+  // newer success, or a head that never drew findings, produces nothing.
+  const combined = await client.combinedStatus(head);
+  const finding = (combined?.statuses ?? []).find(
+    (status) => status.context === 'codex-current-head'
+      && status.state === 'failure'
+      && CURRENT_HEAD_FINDING.test(status.description ?? ''),
+  );
+  if (!finding) return null;
+
+  const [comments, reviewComments, reviews] = await Promise.all([
+    client.comments(pullRequest.number),
+    client.reviewComments(pullRequest.number),
+    client.reviews(pullRequest.number),
+  ]);
+
+  const assessment = assessCorrectionLease({
+    pullRequest,
+    head,
+    findingHeads: codexFindingHeads(reviewComments, reviews),
+    detail: String(finding.description ?? '').replace(/^review:\s*/u, ''),
+    findingObservedAt: finding.updated_at ?? finding.created_at,
+    now,
+    comments,
+  });
+
+  if (assessment.state === 'notify') {
+    await client.comment(pullRequest.number, assessment.body);
+    console.log(
+      `Published ${assessment.reportedState} for PR #${pullRequest.number} `
+        + `head ${head} owner ${assessment.owner}.`,
+    );
+  }
+  return assessment;
+}
+
 export async function run() {
   const eventName = requiredEnvironment('GITHUB_EVENT_NAME');
   const event = JSON.parse(
@@ -492,9 +579,11 @@ export async function run() {
     );
   }
 
-  // Every event also drains open conflict state. A pending Actions run may be
-  // replaced within the global group, so no event-specific path is essential.
+  // Every event also drains open conflict state and every owed correction. A
+  // pending Actions run may be replaced within the global group, so no
+  // event-specific path is essential.
   let retryNeeded = false;
+  const watchdogFailures = [];
   for (const pullRequest of await client.openPullRequests()) {
     try {
       await handOffConflict(client, pullRequest, repository, defaultBranch);
@@ -503,9 +592,24 @@ export async function run() {
       retryNeeded = true;
       console.warn(error.message);
     }
+    try {
+      await handOffCorrectionLease(client, pullRequest, repository, defaultBranch);
+    } catch (error) {
+      // Collected rather than thrown here, so one unreadable pull request cannot
+      // stop the others from being watched — and rethrown below, so a watchdog
+      // that could not run never leaves this job reporting green. Reporting green
+      // over unobserved corrections is the defect this whole change removes.
+      watchdogFailures.push(`#${pullRequest?.number}: ${error?.message}`);
+    }
   }
   if (retryWaitForPullRequest || retryNeeded) {
     await client.dispatchRetry(defaultBranch, retryWaitForPullRequest);
+  }
+  if (watchdogFailures.length > 0) {
+    throw new Error(
+      `The correction watchdog could not assess ${watchdogFailures.length} pull request(s): `
+        + watchdogFailures.join('; '),
+    );
   }
 }
 

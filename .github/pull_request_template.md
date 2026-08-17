@@ -1,5 +1,6 @@
 <!-- review-size: standard -->
 <!-- migration-scope: separated -->
+<!-- correction-owner: claude -->
 
 ## Objective
 
@@ -23,6 +24,17 @@ Keep migration review units separate from service/UI changes when there is a
 viable seam. Only replace the second marker with
 `<!-- migration-scope: inseparable -->` when they cannot be reviewed safely
 apart, and explain that boundary in `Migration/service seam`.
+
+Declare which agent will fix this PR's review findings. Replace the third marker
+with `<!-- correction-owner: cursor -->` when a Cursor agent owns the
+corrections; keep `<!-- correction-owner: claude -->` when Claude Code web
+Auto-fix does. The declaration is required, is validated by `review-scope`
+before any expensive job runs, and decides every correction notice the
+controller publishes — an undeclared, unknown, or self-contradicting owner is
+refused, and a `claude/**` branch may only declare `claude`. GitHub cannot start
+a Cursor session, so a Cursor-owned finding is reported as `correction_stalled`
+for a human to resume; declaring the wrong owner therefore sends the correction
+to nobody.
 
 ## Pre-review checklist
 
