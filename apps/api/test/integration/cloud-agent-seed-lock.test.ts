@@ -10,6 +10,7 @@ const UNLOCK_SQL = `SELECT pg_advisory_unlock(hashtext('${LOCK_KEY}'))`;
 const MARKER_ID = 'cloud-agent-seed-complete';
 const SEED_PROJECT_ID = 'ambli';
 const apiRoot = join(__dirname, '../..');
+const tsxBin = join(apiRoot, 'node_modules/.bin/tsx');
 
 /** Session `pg_advisory_lock(int4)` is stored as a signed-int64 tag (objsubid = 1). */
 const SEED_LOCK_COUNT_SQL = `
@@ -53,9 +54,12 @@ function collectOutput(child: ChildProcess): () => string {
 
 /**
  * Overlapping `pnpm seed` must serialize on the same session advisory lock seed.ts
- * takes before wiping the completion marker. The barrier watches `pg_locks` by the
- * lock's key (not `pg_stat_activity.query`): after the lock statement returns, the
- * holder is inside TRUNCATE/writes and the query text no longer mentions the key.
+ * takes before wiping the completion marker.
+ *
+ * Do not spawn two `pnpm exec` processes: they contend on pnpm's store mutex, so the
+ * second never reaches Postgres while the first still holds the advisory lock.
+ * Hold the lock on a Prisma session (in-flight seed A) and spawn `tsx prisma/seed.ts`
+ * directly (seed B).
  */
 describe('cloud-agent destructive seed lock', () => {
   let observer: PrismaClient;
@@ -94,6 +98,13 @@ describe('cloud-agent destructive seed lock', () => {
     throw new Error(`barrier timeout: expected a backend ${label} the destructive-seed advisory lock`);
   };
 
+  const spawnSeed = (): ChildProcess =>
+    spawn(tsxBin, ['prisma/seed.ts'], {
+      cwd: apiRoot,
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
   it('seed.ts takes the lock before deleteMany and unlocks in finally', () => {
     const text = readFileSync(join(__dirname, '../../prisma/seed.ts'), 'utf8');
     const lock = text.indexOf(LOCK_SQL);
@@ -124,32 +135,30 @@ describe('cloud-agent destructive seed lock', () => {
   });
 
   it('killed overlapping seed cannot leave a completion marker without the ambli fixture', async () => {
-    const spawnSeed = (): ChildProcess =>
-      spawn('pnpm', ['exec', 'tsx', 'prisma/seed.ts'], {
-        cwd: apiRoot,
-        env: { ...process.env },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+    await holder.$executeRawUnsafe(LOCK_SQL);
+    await waitUntilSeedLock(true);
 
-    const first = spawnSeed();
-    const firstOut = collectOutput(first);
-    let firstExit: number | undefined;
-    void exitCode(first).then((code) => {
-      firstExit = code;
+    const blocked = spawnSeed();
+    const blockedOut = collectOutput(blocked);
+    let blockedExit: number | undefined;
+    void exitCode(blocked).then((code) => {
+      blockedExit = code;
     });
 
-    await waitUntilSeedLock(true, () => {
-      if (firstExit !== undefined) {
-        throw new Error(`first seed exited ${firstExit} before taking the lock:\n${firstOut()}`);
+    await waitUntilSeedLock(false, () => {
+      if (blockedExit !== undefined) {
+        throw new Error(`seed exited ${blockedExit} before blocking on the lock:\n${blockedOut()}`);
       }
     });
 
-    const second = spawnSeed();
-    const secondOut = collectOutput(second);
-    await waitUntilSeedLock(false);
-    first.kill('SIGKILL');
-    const code = await exitCode(second);
-    expect(code, secondOut()).toBe(0);
+    blocked.kill('SIGKILL');
+    await exitCode(blocked);
+    await holder.$executeRawUnsafe(UNLOCK_SQL);
+
+    const recovery = spawnSeed();
+    const recoveryOut = collectOutput(recovery);
+    const code = await exitCode(recovery);
+    expect(code, recoveryOut()).toBe(0);
 
     const marker = await observer.auditLog.findUnique({ where: { id: MARKER_ID } });
     const project = await observer.project.findUnique({ where: { id: SEED_PROJECT_ID } });
