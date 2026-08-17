@@ -3695,6 +3695,54 @@ assert_rejects "4b round 1 F2: after redeploy the consolidated arm refuses the s
 assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
   "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
   "0"
+# ---- Schedule B1 — the acyclic activity dependency graph ------------------------------------
+echo ""
+echo "=== schedule B1: the activity dependency graph over a legacy database ==="
+
+# A legacy database has no dependency edges, and the guards did not exist when its rows were
+# written — so the table must arrive EMPTY. Rows here would be edges nothing ever cycle-checked.
+assert "B1: a legacy database upgrades ROW-FREE — no edge predates the guards that judge them" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
+  "0"
+assert "B1: the containment FKs, both CHECKs, the ordered-pair key and both seals are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('ActivityDependency_projectId_fkey','ActivityDependency_projectId_predecessorId_fkey','ActivityDependency_projectId_successorId_fkey','ActivityDependency_no_self_check','ActivityDependency_lag_nonneg_check'))::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname='ActivityDependency_projectId_successorId_predecessorId_key')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('ActivityDependency_acyclic','ActivityDependency_endpoints_frozen'))::text;" \
+  "5|1|2"
+# the guard is only correct because it serializes; assert the lock is actually in the shipped body
+assert "B1: the cycle guard serializes on the project schedule-graph advisory lock (its own key namespace)" \
+  "SELECT (prosrc LIKE '%pg_advisory_xact_lock%' AND prosrc LIKE '%vitan:schedule-graph:%')::text FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
+  "true"
+
+# PRECISION FIRST — a legal edge between two activities of ONE legacy project commits. Without
+# this the rejections below would pass on a table that simply refuses everything.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1 precision: a legal same-project edge was refused"; FAIL=1; }
+INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","lagWorkingDays","createdById","createdByName")
+VALUES ('UPB1-E1','p1','ACT-1','ACT-2',7,'USER-1','Legacy PMC');
+SQL
+assert "B1 precision: a same-project finish-to-start edge with a 7-working-day lag is accepted" \
+  "SELECT \"predecessorId\" || '->' || \"successorId\" || '+' || \"lagWorkingDays\"::text FROM \"ActivityDependency\" WHERE \"id\"='UPB1-E1';" \
+  "ACT-1->ACT-2+7"
+
+assert_rejects "B1: a CROSS-PROJECT edge (p1 successor, p3 predecessor) is unrepresentable, not merely unwritten" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-X','p1','ACT-P3','ACT-2','USER-1','Legacy PMC')" \
+  "foreign key"
+assert_rejects "B1: a SELF-dependency — an activity waiting for itself can never start" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-S','p1','ACT-1','ACT-1','USER-1','Legacy PMC')" \
+  "cannot depend on itself|no_self_check"
+assert_rejects "B1: a DUPLICATE edge for the same ordered pair" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-D','p1','ACT-1','ACT-2','USER-1','Legacy PMC')" \
+  "already exists"
+assert_rejects "B1: a NEGATIVE lag, which would let a successor begin before its predecessor finished" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"lagWorkingDays\",\"createdById\",\"createdByName\") VALUES ('UPB1-N','p1','ACT-P5T3','ACT-2',-1,'USER-1','Legacy PMC')" \
+  "lag_nonneg_check"
+assert_rejects "B1: a CYCLE — ACT-1 -> ACT-2 already stands, so ACT-2 -> ACT-1 closes the loop" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-C','p1','ACT-2','ACT-1','USER-1','Legacy PMC')" \
+  "dependency cycle"
+assert_rejects "B1: RE-POINTING an accepted edge, the route by which a cycle would evade an insert-time check" \
+  "UPDATE \"ActivityDependency\" SET \"predecessorId\"='ACT-2', \"successorId\"='ACT-1' WHERE \"id\"='UPB1-E1'" \
+  "endpoints of dependency edge"
+assert "B1: after every rejection the graph still holds exactly the one legal edge" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
+  "1"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
