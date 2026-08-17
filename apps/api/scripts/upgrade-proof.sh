@@ -3696,6 +3696,66 @@ assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
   "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
   "0"
 
+# ---- Issue generalization A1 — an option is not necessarily a material choice ----------------
+echo ""
+echo "=== A1: option generalization over a legacy database ==="
+
+assert "A1: the option-kind menu is seeded with the four stable base kinds, ordered and localization-keyed" \
+  "SELECT string_agg(\"code\" || ':' || \"baseKind\"::text, ',' ORDER BY \"displayOrder\") FROM \"DecisionOptionKind\" WHERE \"orgId\" IS NULL AND \"active\";" \
+  "material:material,technology:technology,solution:solution,other:other"
+assert "A1: no menu row smuggles a display string in place of a localization key" \
+  "SELECT COUNT(*)::text FROM \"DecisionOptionKind\" WHERE \"labelKey\" NOT LIKE 'option.kind.%' AND \"orgId\" IS NULL;" \
+  "0"
+
+# Every legacy option WAS a material choice — the columns admitted nothing else — so classifying
+# them `material` states a fact rather than guessing one.
+# Scoped to the options that existed AT MIGRATION TIME. A global "none left kindless" assertion
+# would be WRONG here, and wrong in an instructive way: this script goes on to plant more options
+# after the migration, exactly as the running release does, and `kindCode` is deliberately nullable
+# so that release keeps inserting valid rows. The migration classifies what it found; it makes no
+# claim about rows written afterwards, and neither should this.
+assert "A1: every option that existed at migration time is classified as a material choice" \
+  "SELECT string_agg(\"id\" || '=' || COALESCE(\"kindCode\",'<null>'), ',' ORDER BY \"id\") FROM \"DecisionOption\" WHERE \"id\" IN ('OPT-31','OPT-32','OPT-41','OPT-42','OPT-61','OPT-62');" \
+  "OPT-31=material,OPT-32=material,OPT-41=material,OPT-42=material,OPT-61=material,OPT-62=material"
+# The careful half. A legacy `delta` is a number a PMC really entered, but nothing in the history
+# says whether it was provisional or final — so a non-zero delta lands as `estimated` carrying the
+# amount, and a literal zero as `none`, because a stated zero IS an assessment. `confirmed` is
+# never invented, and no amount is ever attached to an unassessed row.
+assert "A1: a non-zero legacy delta becomes an ESTIMATE carrying its amount — never a fabricated 'confirmed'" \
+  "SELECT string_agg(\"id\" || '=' || \"costImpact\"::text || '/' || COALESCE(\"costAmount\"::text,'-'), ',' ORDER BY \"id\") FROM \"DecisionOption\" WHERE \"id\" IN ('OPT-32','OPT-42','OPT-62');" \
+  "OPT-32=estimated/500,OPT-42=estimated/900,OPT-62=estimated/700"
+assert "A1: a legacy ZERO delta becomes 'none' with NO amount — an assessed zero, not a priced one" \
+  "SELECT string_agg(\"id\" || '=' || \"costImpact\"::text || '/' || COALESCE(\"costAmount\"::text,'-'), ',' ORDER BY \"id\") FROM \"DecisionOption\" WHERE \"id\" IN ('OPT-31','OPT-41','OPT-61');" \
+  "OPT-31=none/-,OPT-41=none/-,OPT-61=none/-"
+assert "A1: nothing was left 'confirmed' — the migration manufactured no finality" \
+  "SELECT COUNT(*)::text FROM \"DecisionOption\" WHERE \"costImpact\"='confirmed';" \
+  "0"
+assert "A1: material, swatch and the issue's own colour chip are all nullable now" \
+  "SELECT string_agg(\"table_name\" || '.' || \"column_name\", ',' ORDER BY \"table_name\", \"column_name\") FROM information_schema.columns WHERE \"is_nullable\"='YES' AND ((\"table_name\"='DecisionOption' AND \"column_name\" IN ('material','swatch')) OR (\"table_name\"='Decision' AND \"column_name\"='photoSwatch'));" \
+  "Decision.photoSwatch,DecisionOption.material,DecisionOption.swatch"
+
+# PRECISION FIRST — the whole point of the unit: an option with NO material commits.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1 precision: a technology option with no material was refused"; FAIL=1; }
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","kindCode","description","delta","costImpact")
+VALUES ('UPA1-TECH','DL-3','Post-tensioned','tech','technology','A structural approach, no product named',0,'pending');
+SQL
+assert "A1 precision: a technology option with no material, no swatch and an UNPRICED cost is accepted" \
+  "SELECT \"kindCode\" || '/' || COALESCE(\"material\",'-') || '/' || \"costImpact\"::text || '/' || COALESCE(\"costAmount\"::text,'-') FROM \"DecisionOption\" WHERE \"id\"='UPA1-TECH';" \
+  "technology/-/pending/-"
+
+assert_rejects "A1: a priced state with no amount — a claim with nothing behind it" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"kindCode\",\"delta\",\"costImpact\") VALUES ('UPA1-NOAMT','DL-3','x','noamt','other',0,'estimated')" \
+  "cost_impact_check"
+assert_rejects "A1: an amount on an UNASSESSED option, which would read as a price nobody set" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"kindCode\",\"delta\",\"costImpact\",\"costAmount\") VALUES ('UPA1-STALE','DL-3','x','stale','other',0,'pending',900)" \
+  "cost_impact_check"
+assert_rejects "A1: a material requirement pinned to a TECHNOLOGY option — a purchase order behind a structural note" \
+  "INSERT INTO \"MaterialRequirementSpec\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"materialCategory\",\"make\",\"grade\",\"normalizedAttributes\",\"specFingerprint\",\"decisionId\",\"decisionVersion\",\"optionKey\") VALUES ('UPA1-SPEC','p1','req-upa1',1,'timber','X','A','{}','fp','DL-3',1,'tech')" \
+  "only a material option can back a material requirement"
+assert "A1: after every rejection the legacy option set is unchanged plus exactly the one accepted technology option" \
+  "SELECT COUNT(*)::text FROM \"DecisionOption\" WHERE \"id\" LIKE 'UPA1-%';" \
+  "1"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
