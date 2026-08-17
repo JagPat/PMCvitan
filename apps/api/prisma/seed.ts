@@ -282,9 +282,19 @@ async function main(): Promise<void> {
     // create writes the PARENT before its children — so a published row would arrive at the
     // INSERT door with zero options. Every row is born unpublished with its options and only
     // then published, which is the same order the product's own create path now uses.
+    // Phase 6 task 4b round 16 (Codex P2) — a REOPENED decision was approved BEFORE it was
+    // reopened, and the approval holder tuple is the frozen act of that first approval. Seeding
+    // DL-003 straight into `change` gave it no tuple, and the tuple cannot be added afterwards:
+    // the INSERT door refuses one on a non-approved row, and `20270827000000` sealed the legacy
+    // register that would otherwise excuse it. `withdrawChange()` then met a `change → approved`
+    // transition with no attribution and no stamp, and the seal refused the demo's own workflow
+    // with a raw database error. So the row is seeded through the sequence that really happened:
+    // approved WITH its attribution, then reopened below, after its change request exists.
+    const reopened = rest.status === 'change';
     await prisma.decision.create({
       data: {
         ...rest,
+        ...(reopened ? { status: 'approved' as const } : {}),
         projectId: PROJECT_ID,
         publishedAt: null,
         authorId: draft ? pmcId : null,
@@ -294,7 +304,7 @@ async function main(): Promise<void> {
         // default decider), so the tuple is the canonical one `decisions_t4b_holder_label`
         // renders for `client`; `approver` stays the demo's human name, which is display text
         // and not the holder.
-        ...(rest.status === 'approved'
+        ...(rest.status === 'approved' || reopened
           ? { approvedDeciderKind: 'client' as const, approvedDeciderLabel: 'Client' }
           : {}),
         options: { create: options },
@@ -316,6 +326,9 @@ async function main(): Promise<void> {
       requestedById: pmcId,
     },
   });
+  // …and only NOW is it reopened, by the same transition `requestChange` performs. Its approval
+  // attribution was written by the approval, which is the only door allowed to write it.
+  await prisma.decision.update({ where: { id: 'DL-003' }, data: { status: 'change' } });
 
   // Project phases group activities for phase-level monitoring. The legacy
   // day-offsets stay for display geometry; the canonical civil dates derive from

@@ -1339,3 +1339,88 @@ byte-for-byte unchanged, and no seal function is redefined by this round's migra
 round were the tree's history misleading a careful reader. 4b-ii must carry the audience and
 visibility OVER this seal network as it stands — and the 4b-i lineage needs a single current-state
 map before anyone reads it again.
+
+---
+
+## Seventeenth edition — round 16, and the tree becomes the dominant cause
+
+Three findings on `ac99e6b`'s successor `7ffeb0d` (2×P1, 1×P2). **2 SELF-INFLICTED. 1 REFUTED. 0 SEAM.**
+
+| # | P | Class | Disposition |
+| --- | --- | --- | --- |
+| F1 | P1 | **SELF-INFLICTED, round 15** — I edited the bytes of a DEPLOYED migration | bytes restored; correction relocated |
+| F3 | P2 | **SELF-INFLICTED, rounds 10/11** — the stamp design met a seed that predates it | seeded through the real sequence |
+| F2 | P1 | **REFUTED** — the cited body was superseded by rounds 1 and 2 of this PR | live-database evidence |
+
+### F1: I broke a rule I had already noticed I was near
+
+`AGENTS.md` is unambiguous — deployed migrations are immutable, and any diff touching their bytes
+must be flagged. Round 15 edited a comment in `20270225000000` to correct a false claim. I checked
+the wrong thing before doing it ("does anything verify checksums locally?") instead of the actual
+rule, and I recorded at the time that it was "still a smell". That is not a near-miss; it is having
+the right instinct and overriding it.
+
+The bytes are restored to the deployed version, verified by an empty diff against `ac99e6b`. The
+correction lives in a NEW sibling file, `20270225000000_phase4_t3_correction3/CORRECTION.md` — Prisma
+reads only `migration.sql` from a migration directory, proven by the atomicity proof, which applies
+the entire ledger from zero with the sibling present.
+
+**What makes this worth writing down: the right fix was available and cheaper.** A sibling file was
+always possible. I reached for the edit because it was the smallest keystroke, not because it was the
+smallest risk.
+
+### F3: the seed predates the register that now judges it
+
+`withdrawChange()` restores a reopened decision with `change → approved`. Rounds 10–11 made that
+transition require either an approval holder tuple or membership of the enumerated legacy set, and
+sealed the set. The seed inserts DL-003 directly at `change`, and the tuple conditional covers only
+rows currently `approved` — so the demo's own reopened decision could never be restored.
+
+The tuple cannot be added afterwards: the INSERT door refuses one on a non-approved row (R11-3) and
+the legacy register is closed (R10-1). Both refusals are correct. So DL-003 is now seeded through the
+sequence that actually happened — approved WITH its attribution, its change request raised, and only
+then reopened — which is also the sequence `requestChange` performs.
+
+### F2: the third finding in two rounds caused by a superseded body
+
+Codex quoted `change_request_t4b_seal` at `20270815000000:592`, reading the decision status with a
+plain `SELECT`. That body was replaced twice **inside this PR**: `20270816000000` (round 1) added
+`FOR SHARE`; `20270817000000` (round 2) strengthened it to `FOR UPDATE`.
+
+```
+SELECT status::text INTO v_status FROM "Decision" WHERE id = NEW."decisionId" FOR UPDATE;
+```
+— `pg_get_functiondef` on the live database. `FOR UPDATE` is strictly stronger than the `FOR SHARE`
+the finding asks for.
+
+### The pattern has changed, and it matters more than any single finding
+
+| rounds | findings | caused by my incomplete fixes | caused by STALE ARTIFACTS in this tree | genuinely new |
+| --- | --- | --- | --- | --- |
+| 7–13 | 21 | 20 | 0 | 1 |
+| 14–16 | 10 | 3 | **3** | 3 |
+
+Rounds 7–13 were mine: I fixed reported instances rather than the classes they belonged to. That is
+largely spent — the classes are closed and the severity has fallen.
+
+What replaced it is worse in one specific way. `prisma/migrations/` now holds **nine successive
+definitions of `decision_t4b_recorded_seal`**, three of `change_request_t4b_seal`, two of
+`org_membership_t4b_holder_seal`, and nothing anywhere states which is live. A reviewer reading this
+repository carefully gets the wrong answer, and has now done so three times in two rounds. **That is
+not reviewer error; it is a trap we built one correction at a time**, and it will keep producing
+review rounds no matter how correct the code becomes.
+
+### The rule this round contributes
+
+> A correction lineage is a data structure, and this one has no index. **When the same class of false
+> finding recurs, stop answering the findings and publish the map** — for each seal function, which
+> migration last defines it, verified against `pg_proc` so it cannot go stale.
+
+That map is the recommended content of the next head, and it is worth more than any remaining patch
+in this unit.
+
+### What is deferred
+
+Nothing from this round. F1 and F3 are answered in code; F2 is answered with live-database evidence.
+The authoritative-definition map is NAMED as the next head's work rather than smuggled into this one —
+it is a new artifact with its own test, and this head is a correction.

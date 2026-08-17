@@ -732,3 +732,70 @@ superseded definitions of one trigger live in the tree, plus a comment that stat
 the truth. Neither is the reviewer's error. **A fifteen-head correction lineage owes its readers a
 current-state map, and this one does not have one** — which is now the strongest argument yet that
 4b-ii should carry the audience and visibility over this seal network rather than extend it.
+
+---
+
+## Round 16 — the three Codex findings on `7ffeb0d`
+
+Two P1, one P2. **Two land in code; one is refuted.**
+
+| # | Finding | Disposition |
+| --- | --- | --- |
+| F1 | round 15 edited the bytes of a DEPLOYED migration | **accepted** — bytes restored, correction relocated |
+| F3 | the seed's reopened decision can never be restored | **fixed** — seeded through the real sequence |
+| F2 | the ChangeRequest reverse guard reads status without a lock | **refuted** — superseded in rounds 1 and 2 |
+
+### F1 — the rule, and why I broke it
+
+`AGENTS.md`: *"Deployed migrations are immutable. Never edit, reorder, or rewrite a migration that has
+already shipped… Flag any diff that touches the bytes of an already-deployed migration."*
+
+Round 15 edited a comment in `20270225000000` to correct a false claim about Prisma's transaction
+behaviour. The edit was comment-only and the reasoning was that nothing verifies checksums locally —
+which is the wrong test. The rule protects the ledger's agreement with **deployed databases**, not a
+local check.
+
+- `migration.sql` restored: `git diff ac99e6b -- …/20270225000000…/migration.sql` is **empty**.
+- The correction now lives in `…/20270225000000_phase4_t3_correction3/CORRECTION.md`, a new sibling.
+  Prisma reads only `migration.sql` from a migration directory; `prisma-migration-atomicity-proof.sh`
+  applies the **entire ledger from zero** on a scratch database with that sibling present and passes.
+
+### F3 — the demo's reopened decision could not be restored
+
+`withdrawChange()` performs `change → approved`. Rounds 10–11 require that transition to carry an
+approval holder tuple or belong to the enumerated legacy set, and sealed the set. The seed inserted
+DL-003 straight at `change`, and its tuple conditional covered only rows currently `approved`.
+
+Adding the tuple afterwards is impossible by design — the INSERT door refuses a tuple on a
+non-approved row (R11-3), and the legacy register is closed (R10-1). **Both refusals are correct**, so
+the seed changed instead: DL-003 is created `approved` with its attribution, its open change request
+is raised, and only then is it reopened — the same order `requestChange` performs.
+
+**Evidence:** after `prisma db seed`, `DL-003` reads `change/client/Client`, and the restoring
+transition `UPDATE "Decision" SET status='approved' WHERE id='DL-003'` now commits.
+
+### F2 — refuted; superseded twice inside this PR
+
+The finding quotes `change_request_t4b_seal` from `20270815000000:592`. `20270816000000` (round 1)
+replaced it with a `FOR SHARE` read; `20270817000000` (round 2) strengthened that to `FOR UPDATE`.
+
+```
+$ psql -tAc "SELECT pg_get_functiondef(oid) FROM pg_proc WHERE proname='change_request_t4b_seal'"
+  …
+  SELECT status::text INTO v_status FROM "Decision" WHERE id = NEW."decisionId" FOR UPDATE;
+```
+
+`FOR UPDATE` conflicts with everything, including the conversion's `FOR NO KEY UPDATE` — strictly
+stronger than the `FOR SHARE` requested. No change is warranted, and adding a redundant guard would
+make the seal harder to read for no gain.
+
+### The thing this round is actually about
+
+Three findings across rounds 15–16 (r15 F2, r15 F3, r16 F2) were caused by **superseded artifacts in
+this repository**, not by defects. The tree holds nine successive definitions of
+`decision_t4b_recorded_seal`, three of `change_request_t4b_seal`, two of
+`org_membership_t4b_holder_seal`, and states nowhere which is authoritative.
+
+The next head should publish that map — for each seal function, the migration that last defines it,
+**verified against `pg_proc` by a test** so it cannot rot. It is named here rather than folded in,
+because it is a new artifact with its own test and this head is a correction.

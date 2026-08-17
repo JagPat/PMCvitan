@@ -175,22 +175,12 @@ BEGIN
 END $$;
 
 -- ══ DIAGNOSE AND SEAL — ONE STATEMENT, ONE TRANSACTION ════════════════════════════════════════
--- CORRECTION (phase 6 unit 4b-i, round 15): the sentence that stood here was WRONG, and being
--- wrong in the tree it was read as evidence and cost a review round. It claimed "this migration has
--- NO transaction wrapper: Prisma runs the file statement by statement, so every statement boundary
--- is a commit". It does not. A migration file is sent as one multi-statement string, which
--- PostgreSQL runs in an IMPLICIT transaction, so the whole file commits or none of it does —
--- proven by execution in `apps/api/scripts/prisma-migration-atomicity-proof.sh`. Only the claim is
--- corrected; not one line of SQL below is changed.
---
--- The design it justified is still right, for a different and narrower reason: `upgrade-proof.sh`
--- re-applies migration files with a bare `psql -f`, which DOES autocommit per statement. Under
--- that applier — and under any hand-run of this file — diagnosing in one statement and installing
--- the guard in the next leaves a real window, after the diagnostic has passed and before the
--- marker prefix is reserved, in which a concurrent direct writer can insert a PRE-REVOKED marked
--- row. The CHECK added later accepts it (it is revoked), no diagnostic runs again, and the
--- migration succeeds over forged repair provenance: exactly the state this correction exists to
--- make unreachable. A single DO block closes that window for every applier, which is why it is one.
+-- This migration has NO transaction wrapper: Prisma runs the file statement by statement, so every
+-- statement boundary is a commit. Diagnosing in one statement and installing the guard in the next
+-- therefore leaves a real window — after the diagnostic has passed and before the marker prefix is
+-- reserved — in which a concurrent direct writer can insert a PRE-REVOKED marked row. The CHECK
+-- added later accepts it (it is revoked), no diagnostic runs again, and the migration succeeds over
+-- forged repair provenance: exactly the state this correction exists to make unreachable.
 --
 -- A single DO block is a single statement and therefore a single transaction. The ACCESS EXCLUSIVE
 -- lock is taken FIRST, so the diagnostic reads a table no one else can be mid-write on, and it is
