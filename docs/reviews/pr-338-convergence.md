@@ -7,7 +7,16 @@ three shell scripts). No domain schema, no migrations, no module boundaries.
 |---|---|---|---|
 | `a293a93` | initial environment + install/start scripts | 8 (4 P1, 4 P2) | corrected on `df236aa` |
 | `df236aa` | round-1 batch (seed sentinel, CORS, DATABASE_URL sync, psql path, Playwright deps) | 4 (1 P1, 3 P2) | corrected on `09c6bb3` |
-| `09c6bb3` | round-2 batch (`cloud-agent-env.sh`, seed gating, safe .env writes, masked errors) | GATE: `convergence_required` | this head |
+| `09c6bb3` | round-2 batch (`cloud-agent-env.sh`, seed gating, safe .env writes, masked errors) | GATE: `convergence_required` | packet `4a2f604` |
+| `74b5f38` | empty-host `postgresql:///dbname?host=` URIs | P2 URI round-trip | corrected |
+| `8fd1e1c` | gate leftover local JWT; honour Prisma `schema` in `psql`; seed sentinel | auth + sentinel | corrected |
+| `2f8bcdc` | leftover JWT + Prisma pool args in psql | P1/P2 URL/auth | corrected |
+| `c502455` | example JWT placeholders, empty ALLOW_DEV_AUTH, marker after library | 4 | corrected on `36444ef` |
+| `36444ef` | pin PORT/NODE_ENV; OTP stubs; AuditLog marker | 3 | corrected on `2dfe0e9` |
+| `2dfe0e9` | quote `.env`; skip placeholder restore; serialize seed | 3 P2 | corrected on `c4a8b48` |
+| `c4a8b48` | dotenv parse without bash `source`; local NODE_ENV=development; kill-fault seed | 3 P2 | corrected on `0422486` |
+| `0422486` | observe lock via `pg_locks` key, not `pg_stat_activity.query` | api CI barrier | corrected on `cb43e67` |
+| `cb43e67` | do not spawn overlapping seed via `pnpm exec` (store mutex) | GATE: missing packet on head | this packet-only head |
 
 Round 1's review was delivered twice against the same SHA (timeout retry) — one head, two
 deliveries, counted once.
@@ -110,9 +119,18 @@ each secret/config key before shipping.
 
 ## Status
 
-Round 10 on head `2dfe0e9` (bash `source` still expanded operator double-quoted
-`$` secrets, the lock probe never asserted marker↔fixture, and inherited
-`NODE_ENV=production` on the local DB left `/auth/session` dead) is corrected on
-this head. The compiled-API choice remains a documented trade-off.
+Past the two-head cap, **every current head must change this packet** (trailer
+alone is not enough — `cb43e67` had `Review-Convergence: complete` and still
+failed `codex-current-head` with `missing packet`).
+
+`cb43e67` closed the last product-CI hole: overlapping seed must not go through
+two `pnpm exec` children (they serialize on pnpm's store mutex, so the second
+never reaches Postgres while the first holds `pg_advisory_lock`). The probe holds
+the lock on a Prisma session and spawns `tsx prisma/seed.ts` directly.
+
+Product CI on `cb43e67` later succeeded (`api` included). This head is packet
+currency only — no runtime change.
+
+The compiled-API choice remains a documented trade-off.
 
 Review-Convergence: complete

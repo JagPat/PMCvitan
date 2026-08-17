@@ -193,3 +193,29 @@ so directly rather than framing it as a suggestion.
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and
   `docs/STATUS.md` advances.
+
+## Cursor Cloud specific instructions
+
+Repo-managed config is `.cursor/environment.json`. Install is
+`bash scripts/cloud-agent-install.sh`; per-boot Postgres/migrate/seed is
+`bash scripts/cloud-agent-start.sh`; long-running terminals are
+`bash scripts/cloud-agent-api.sh` (compiled `pnpm --filter api start` on
+port 3000) and `pnpm dev` (web on 5173). Shared helpers live in
+`scripts/cloud-agent-env.sh`.
+
+- The API terminal is **compiled** `dist/main.js`, not `start:dev`. After
+  editing `apps/api` source, run `pnpm --filter api build` (or re-run install)
+  or the running process will keep serving the previous compile.
+- Destructive `pnpm --filter api seed` runs only when `DATABASE_URL` is the
+  default local URL (`postgresql://vitan:vitan@localhost:5432/vitan_pmc?schema=public`)
+  or `CLOUD_AGENT_ALLOW_SEED=true`. Seed takes a session advisory lock and
+  writes `AuditLog` id `cloud-agent-seed-complete` last; start skips seed when
+  that row exists.
+- Local demo JWT / `ALLOW_DEV_AUTH` / `NODE_ENV=development` apply only on that
+  default URL. External URLs pin `NODE_ENV=production` unless
+  `CLOUD_AGENT_ALLOW_AUTH_STUBS=true`, and placeholder JWTs (`change-me`,
+  `dev-secret-change-in-prod`) are refused.
+- Dashboard Save of a personal environment is **not** required once this file
+  is on the checked-out revision; a committed `.cursor/environment.json` wins
+  over dashboard config. Draft environment builds from a non-`main` ref cannot
+  be promoted to the team-active snapshot.
