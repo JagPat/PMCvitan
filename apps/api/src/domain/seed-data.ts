@@ -11,7 +11,7 @@
  * representation from the web view-model in `shared/seed.ts`, not a mirror — and
  * `seed-data.test.ts` still guards that they file only onto nodes of the shared tree.
  */
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import type { ProjectNode } from '@vitan/shared';
 import type { ModulePayload } from '../contracts';
 
@@ -304,25 +304,29 @@ export const STARTER_TEMPLATE = {
  * (never fights a curated library), and commits in one transaction. Used by both the
  * demo seed (fresh DB) and ensure-accounts (live-safe boot provisioning).
  */
-export async function createStarterLibrary(prisma: PrismaClient, orgId: string): Promise<boolean> {
+type StarterLibraryDb = Pick<Prisma.TransactionClient, 'templateModule' | 'projectTemplate'>;
+
+export async function createStarterLibraryInTransaction(prisma: StarterLibraryDb, orgId: string): Promise<boolean> {
   const existing = await prisma.templateModule.count({ where: { orgId } });
   if (existing > 0) return false;
-  await prisma.$transaction(async (tx) => {
-    const idByName = new Map<string, string>();
-    for (const m of STARTER_MODULES) {
-      const created = await tx.templateModule.create({
-        data: { orgId, name: m.name, category: m.category, anchorKind: m.anchorKind, description: m.description, payload: m.payload },
-      });
-      idByName.set(m.name, created.id);
-    }
-    await tx.projectTemplate.create({
-      data: {
-        orgId,
-        name: STARTER_TEMPLATE.name,
-        description: STARTER_TEMPLATE.description,
-        items: STARTER_TEMPLATE.items.map((i) => ({ moduleId: idByName.get(i.moduleName)!, count: i.count })),
-      },
+  const idByName = new Map<string, string>();
+  for (const m of STARTER_MODULES) {
+    const created = await prisma.templateModule.create({
+      data: { orgId, name: m.name, category: m.category, anchorKind: m.anchorKind, description: m.description, payload: m.payload },
     });
+    idByName.set(m.name, created.id);
+  }
+  await prisma.projectTemplate.create({
+    data: {
+      orgId,
+      name: STARTER_TEMPLATE.name,
+      description: STARTER_TEMPLATE.description,
+      items: STARTER_TEMPLATE.items.map((i) => ({ moduleId: idByName.get(i.moduleName)!, count: i.count })),
+    },
   });
   return true;
+}
+
+export async function createStarterLibrary(prisma: PrismaClient, orgId: string): Promise<boolean> {
+  return prisma.$transaction((tx) => createStarterLibraryInTransaction(tx, orgId));
 }

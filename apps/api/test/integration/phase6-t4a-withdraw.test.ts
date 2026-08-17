@@ -940,8 +940,8 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
   describe('round 5 (Codex): the seed wipe order', () => {
     it('R5-F2: the guarded decision wipe PRECEDES the membership wipe in seed.ts — the withdrawnById FK makes a withdrawn decision block membership deletion', () => {
       const seedSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../prisma/seed.ts'), 'utf8');
-      const decisionWipe = seedSrc.indexOf('prisma.decision.deleteMany()');
-      const membershipWipe = seedSrc.indexOf('prisma.membership.deleteMany()');
+      const decisionWipe = seedSrc.indexOf('tx.decision.deleteMany()');
+      const membershipWipe = seedSrc.indexOf('tx.membership.deleteMany()');
       expect(decisionWipe).toBeGreaterThan(-1);
       expect(membershipWipe).toBeGreaterThan(-1);
       expect(decisionWipe, 'the guarded decision wipe must run before membership.deleteMany — Decision.withdrawnById FKs Membership(projectId,userId) ON DELETE NO ACTION').toBeLessThan(membershipWipe);
@@ -950,16 +950,16 @@ describe('Phase 6 unit 4a — decisions.withdraw (live PG)', () => {
     it('R6-F4: the disable → wipe → enable trio is ONE transaction — a failed wipe rolls the DISABLE back, so no failure path leaves the delete seal off', () => {
       const seedSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../prisma/seed.ts'), 'utf8');
       const disableIdx = seedSrc.indexOf('DISABLE TRIGGER "Decision_t4a_d_no_delete"');
-      const wipeIdx = seedSrc.indexOf('prisma.decision.deleteMany()');
+      const wipeIdx = seedSrc.indexOf('tx.decision.deleteMany()');
       const enableIdx = seedSrc.indexOf('ENABLE TRIGGER "Decision_t4a_d_no_delete"');
       expect(disableIdx).toBeGreaterThan(-1);
-      const txIdx = seedSrc.lastIndexOf('prisma.$transaction([', disableIdx);
-      expect(txIdx, 'the trigger disable must open inside a prisma.$transaction array').toBeGreaterThan(-1);
+      const txIdx = seedSrc.indexOf('prisma.$transaction(async (tx) => {');
+      const seedBodyCall = seedSrc.indexOf('await seedBody(tx)', txIdx);
+      expect(txIdx, 'the seed must open one interactive transaction').toBeGreaterThan(-1);
+      expect(seedBodyCall, 'the destructive seed body must receive that transaction client').toBeGreaterThan(txIdx);
       expect(wipeIdx).toBeGreaterThan(disableIdx);
       expect(enableIdx).toBeGreaterThan(wipeIdx);
-      // no awaited statement may sit between the transaction open and the re-enable — the trio
-      // is one atomic expression, not three independent round-trips
-      expect(seedSrc.slice(txIdx + 'prisma.$transaction(['.length, enableIdx)).not.toContain('await ');
+      expect(seedSrc.slice(disableIdx, enableIdx)).not.toContain('prisma.');
     });
   });
 

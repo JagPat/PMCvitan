@@ -1,0 +1,19 @@
+{
+  "name": "Vitan PMC",
+  "install": "bash scripts/cloud-agent-install.sh",
+  "start": "bash scripts/cloud-agent-start.sh",
+  "terminals": [
+    {
+      "name": "api",
+      "command": "bash scripts/cloud-agent-api.sh"
+    },
+    {
+      "name": "web",
+      "command": "bash scripts/cloud-agent-web.sh"
+    }
+  ],
+  "ports": [
+    { "name": "web", "port": 5173 },
+    { "name": "api", "port": 3000 }
+  ]
+}
