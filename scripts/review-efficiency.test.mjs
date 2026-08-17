@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import {
   assessConvergence,
+  assessReplacementLineage,
   deferralPhases,
   assessReviewScope,
   codexFindingHeads,
@@ -1184,4 +1185,69 @@ test('the recorded next_task names a stop the deferral gate can resolve, or is d
   // …and the guard is only worth having if it can fail: the shape #328 was caught with.
   const unparseable = deferralPhases({ ...handed, next_task: 'phase-6-unit-6.1b' });
   assert.deepEqual(unparseable, [], 'a unit-style next_task must still be rejected by the gate');
+});
+
+// ── replacement lineage: an OPEN replacement is being addressed, and must not freeze the repo ──
+// Regression cover for the deadlock reached on 2026-08-17, when #344/#349 and #338/#350 were both
+// outstanding and NO declaration could pass, so no new unit could be promoted to review at all.
+
+const exhausted = (number) => [{ pullRequest: { number, state: 'closed' } }];
+const openReplacement = (number, source) =>
+  [{ number, state: 'open', merged_at: null, body: `Replaces: #${source}` }];
+
+test('an unrelated unit is allowed while an exhausted unit already has an OPEN replacement', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 353, body: 'Replaces: none' },
+    requiredReplacements: exhausted(344),
+    replacementPullRequests: openReplacement(349, 344),
+  });
+  assert.equal(verdict.allowed, true, verdict.detail ?? '');
+});
+
+test('two exhausted units, both openly replaced, still do not block an unrelated unit', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 353, body: 'Replaces: none' },
+    requiredReplacements: [...exhausted(344), ...exhausted(338)],
+    replacementPullRequests: [...openReplacement(349, 344), ...openReplacement(350, 338)],
+  });
+  assert.equal(verdict.allowed, true, verdict.detail ?? '');
+});
+
+test('the rule still does its job: an exhausted unit with NO replacement blocks fresh work', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 353, body: 'Replaces: none' },
+    requiredReplacements: exhausted(344),
+    replacementPullRequests: [],
+  });
+  assert.equal(verdict.allowed, false);
+  assert.match(verdict.detail, /exhausted PR #344 still requires a replacement/);
+});
+
+test('abandoning a replacement does not discharge the obligation — a CLOSED one blocks again', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 353, body: 'Replaces: none' },
+    requiredReplacements: exhausted(344),
+    replacementPullRequests: [{ number: 349, state: 'closed', merged_at: null, body: 'Replaces: #344' }],
+  });
+  assert.equal(verdict.allowed, false);
+  assert.match(verdict.detail, /exhausted PR #344 still requires a replacement/);
+});
+
+test('naming a source another OPEN pull request already claims is still the clearer refusal', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 353, body: 'Replaces: #344' },
+    requiredReplacements: exhausted(344),
+    replacementPullRequests: openReplacement(349, 344),
+  });
+  assert.equal(verdict.allowed, false);
+  assert.match(verdict.detail, /already claimed by open PR #349/);
+});
+
+test('a MERGED replacement discharges the obligation, as it always did', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 353, body: 'Replaces: none' },
+    requiredReplacements: exhausted(344),
+    replacementPullRequests: [{ number: 349, state: 'closed', merged_at: '2026-08-17T00:00:00Z', body: 'Replaces: #344' }],
+  });
+  assert.equal(verdict.allowed, true, verdict.detail ?? '');
 });

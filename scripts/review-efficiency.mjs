@@ -140,8 +140,33 @@ export function assessReplacementLineage({
     return { allowed: true, detail: null };
   }
 
-  if (pending.length > 0) {
-    const source = pending[0].pullRequest;
+  // An exhausted unit whose replacement is ALREADY OPEN is being addressed, and must not block
+  // UNRELATED work. The two-round reset exists to stop an exhausted unit being abandoned or given
+  // a third correction head — not to freeze every other line of work in the repository behind it.
+  //
+  // Without this, the two rules above compose into a deadlock with no legal way out, because an
+  // open replacement simultaneously (a) fails to discharge its source's obligation, which is only
+  // settled by a MERGE, and (b) `competing`-blocks anyone else from naming that source:
+  //
+  //   `Replaces: none`  -> "exhausted PR #N still requires a replacement"
+  //   `Replaces: #N`    -> "is already claimed by open PR #M"
+  //
+  // Every new unit is then unreviewable until #M merges, however unrelated it is. That state was
+  // reached for real on 2026-08-17 with #344/#349 and #338/#350 outstanding at once.
+  //
+  // Deliberately NOT relaxed: an exhausted unit with no replacement at all still blocks fresh
+  // work, which is the rule's actual purpose, and this set is not consulted by the source-naming
+  // branch above, so `Replaces: #N` still reports the more useful "already claimed" refusal. If
+  // the open replacement is closed without merging, its source becomes unaddressed again and
+  // blocks once more — abandoning a replacement must not quietly discharge the obligation.
+  const claimedByOpen = new Set(replacementPullRequests
+    .filter((candidate) => candidate?.state === 'open')
+    .map((candidate) => replacementSource(candidate?.body))
+    .filter((number) => typeof number === 'number'));
+  const unaddressed = pending.filter(({ pullRequest: source }) => !claimedByOpen.has(source?.number));
+
+  if (unaddressed.length > 0) {
+    const source = unaddressed[0].pullRequest;
     return {
       allowed: false,
       detail: `exhausted PR #${source.number} still requires a replacement; declare Replaces: #${source.number} before starting fresh work`,
