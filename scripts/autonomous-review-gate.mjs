@@ -11,6 +11,7 @@ import {
   assessReviewScope,
   codexFindingHeads,
   PRE_REVIEW_ENFORCE_AFTER_PR,
+  REPLACEMENT_REQUIRED_LABEL,
   REVIEW_RESET_AFTER_FINDING_HEADS,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
 } from './review-efficiency.mjs';
@@ -581,6 +582,53 @@ export class GitHubClient {
     );
   }
 
+  async ensureReplacementRequiredLabel() {
+    const path = `/repos/${this.repository}/labels/${encodeURIComponent(REPLACEMENT_REQUIRED_LABEL)}`;
+    try {
+      await this.request(path);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('(404)')) throw error;
+      await this.request(`/repos/${this.repository}/labels`, {
+        method: 'POST',
+        body: {
+          name: REPLACEMENT_REQUIRED_LABEL,
+          color: 'b60205',
+          description: 'Review-round limit reached; a declared replacement is required',
+        },
+      });
+    }
+  }
+
+  async markReplacementRequired(number) {
+    await this.ensureReplacementRequiredLabel();
+    await this.request(`/repos/${this.repository}/issues/${number}/labels`, {
+      method: 'POST',
+      body: { labels: [REPLACEMENT_REQUIRED_LABEL] },
+    });
+  }
+
+  async replacementLineage() {
+    const label = encodeURIComponent(REPLACEMENT_REQUIRED_LABEL);
+    const [issues, pullRequests] = await Promise.all([
+      this.paginated(
+        `/repos/${this.repository}/issues?state=all&labels=${label}`,
+      ),
+      this.paginated(`/repos/${this.repository}/pulls?state=all`),
+    ]);
+    const pullsByNumber = new Map(
+      pullRequests.map((pullRequest) => [pullRequest.number, pullRequest]),
+    );
+    const requiredReplacements = await Promise.all(
+      issues
+        .filter((issue) => issue.pull_request)
+        .map(async (issue) => ({
+          pullRequest: pullsByNumber.get(issue.number)
+            ?? await this.pullRequest(issue.number),
+        })),
+    );
+    return { requiredReplacements, replacementPullRequests: pullRequests };
+  }
+
   // A file's text AT a ref. Used for the convergence packet, whose CONTENT carries the
   // deferral ledger — a filename alone cannot show that the ledger exists.
 
@@ -1032,6 +1080,7 @@ export async function enforceReviewConvergence(
     true,
   );
   if (!live) return { ...result, superseded: true };
+  await client.markReplacementRequired(pullRequest.number);
   const detail = `${findingHeadCount} finding-bearing heads reached the review-round limit; this unit requires a replacement PR`;
   await client.setStatus(
     expectedHead,
@@ -1054,16 +1103,25 @@ export async function enforceReviewConvergence(
 
 export async function enforceReviewScope(client, pullRequest, expectedHead) {
   let changedFiles;
+  let lineage;
   if (pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR) {
-    try {
-      changedFiles = await client.pullRequestFiles(pullRequest.number);
-    } catch {
-      changedFiles = undefined;
-    }
+    const [filesResult, lineageResult] = await Promise.allSettled([
+      client.pullRequestFiles(pullRequest.number),
+      client.replacementLineage(),
+    ]);
+    changedFiles = filesResult.status === 'fulfilled'
+      ? filesResult.value
+      : undefined;
+    lineage = lineageResult.status === 'fulfilled'
+      ? lineageResult.value
+      : undefined;
   }
   const result = assessReviewScope(pullRequest, {
     changedFiles,
     requireChangedFiles: true,
+    requireReplacementLineage: pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR,
+    requiredReplacements: lineage?.requiredReplacements,
+    replacementPullRequests: lineage?.replacementPullRequests,
   });
   if (result.allowed) return result;
 
@@ -1226,6 +1284,64 @@ async function reclassifyCurrentCodexEvidence(
   });
 }
 
+export async function publishCurrentHeadFinding(
+  client,
+  pullRequest,
+  expectedHead,
+  recoveryRequest,
+  { detail, attempt, next },
+) {
+  const reset = await enforceReviewConvergence(
+    client,
+    pullRequest,
+    expectedHead,
+  );
+  if (reset.superseded) return reset;
+  if (!reset.allowed) {
+    await settleRecoveryRequest(
+      client,
+      expectedHead,
+      pullRequest,
+      recoveryRequest,
+      'review-round reset',
+    );
+    return reset;
+  }
+
+  const live = await setDraftForCurrentHead(
+    client,
+    pullRequest.number,
+    expectedHead,
+    true,
+  );
+  if (!live) return { state: 'superseded', superseded: true };
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `review: ${detail}`,
+    pullRequest.html_url,
+  );
+  await settleRecoveryRequest(
+    client,
+    expectedHead,
+    pullRequest,
+    recoveryRequest,
+    'review finding',
+  );
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: 'changes_required',
+      advisory: await freshAdvisory(client, pullRequest),
+      head: expectedHead,
+      detail,
+      attempt,
+      next,
+    }),
+  );
+  return { state: 'changes_required', allowed: false, detail };
+}
+
 export async function guardAgainstCurrentHeadFinding(
   client,
   pullRequest,
@@ -1248,38 +1364,16 @@ export async function guardAgainstCurrentHeadFinding(
   });
   if (result.state !== 'changes_required') return null;
 
-  const live = await setDraftForCurrentHead(
+  await publishCurrentHeadFinding(
     client,
-    pullRequest.number,
-    expectedHead,
-    true,
-  );
-  if (!live) return result.detail;
-  await client.setStatus(
-    expectedHead,
-    'failure',
-    `review: ${result.detail}`,
-    pullRequest.html_url,
-  );
-  await settleRecoveryRequest(
-    client,
-    expectedHead,
     pullRequest,
+    expectedHead,
     recoveryRequest,
-    'current-head finding observed before recovery',
-  );
-  await client.updateStickyComment(
-    pullRequest.number,
-    statusBody({
-      state: 'changes_required',
-      // Recomputed here, not carried in: the finding that just landed may BE
-      // the crossing.
-      advisory: await freshAdvisory(client, pullRequest),
-      head: expectedHead,
+    {
       detail: result.detail,
       attempt: 0,
       next: 'Claude Auto-fix handles the review comments and pushes a new head.',
-    }),
+    },
   );
   return result.detail;
 }
@@ -1562,37 +1656,18 @@ export async function run() {
     if (result.state === 'superseded') return;
 
     if (result.state === 'changes_required') {
-      pullRequest = await setDraftForCurrentHead(
+      const published = await publishCurrentHeadFinding(
         client,
-        pullRequest.number,
-        expectedHead,
-        true,
-      );
-      if (!pullRequest) return;
-      await client.setStatus(
-        expectedHead,
-        'failure',
-        `review: ${result.detail}`,
-        pullRequest.html_url,
-      );
-      await settleRecoveryRequest(
-        client,
-        expectedHead,
         pullRequest,
+        expectedHead,
         recoveryRequest,
-        'review finding',
-      );
-      await client.updateStickyComment(
-        pullRequest.number,
-        statusBody({
-          state: 'changes_required',
-          advisory: await freshAdvisory(client, pullRequest),
-          head: expectedHead,
+        {
           detail: result.detail,
           attempt,
           next: 'Claude Auto-fix handles the review comments and pushes a new head.',
-        }),
+        },
       );
+      if (published.superseded) return;
       throw new Error(result.detail);
     }
 
@@ -1614,6 +1689,24 @@ export async function run() {
         reviewNotBefore,
       );
       if (verifiedResult.state !== 'clear') {
+        const detail = verifiedResult.state === 'changes_required'
+          ? verifiedResult.detail
+          : 'Codex evidence changed during final verification';
+        if (verifiedResult.state === 'changes_required') {
+          const published = await publishCurrentHeadFinding(
+            client,
+            pullRequest,
+            expectedHead,
+            recoveryRequest,
+            {
+              detail,
+              attempt,
+              next: 'Claude Auto-fix handles the latest review evidence and pushes a new head.',
+            },
+          );
+          if (published.superseded) return;
+          throw new Error(detail);
+        }
         pullRequest = await setDraftForCurrentHead(
           client,
           pullRequest.number,
@@ -1621,9 +1714,6 @@ export async function run() {
           true,
         );
         if (!pullRequest) return;
-        const detail = verifiedResult.state === 'changes_required'
-          ? verifiedResult.detail
-          : 'Codex evidence changed during final verification';
         await client.setStatus(
           expectedHead,
           'failure',

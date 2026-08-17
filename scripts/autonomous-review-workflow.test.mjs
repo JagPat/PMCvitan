@@ -626,6 +626,7 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     },
     async reviewComments() { return reviewComments; },
     async reviews() { return []; },
+    async markReplacementRequired() {},
     async commit() {
       return { commit: { message: 'fix: ordinary head' }, files: [] };
     },
@@ -1050,6 +1051,53 @@ test('live current-head findings stop recovery before another ready transition',
   assert.match(statusWrites[0].description, /1 current-head Codex finding/u);
 });
 
+test('a finding on the second distinct head publishes replacement_required immediately', async () => {
+  const expectedHead = 'b'.repeat(40);
+  const pullRequest = {
+    number: 346,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
+  };
+  const sticky = [];
+  const marked = [];
+  const client = {
+    async reviews() { return []; },
+    async reviewComments() {
+      return [
+        {
+          user: { login: 'chatgpt-codex-connector[bot]' },
+          original_commit_id: 'a'.repeat(40),
+          body: '**P1** first-head finding',
+        },
+        {
+          user: { login: 'chatgpt-codex-connector[bot]' },
+          original_commit_id: expectedHead,
+          body: '**P1** second-head finding',
+        },
+      ];
+    },
+    async pullRequest() { return pullRequest; },
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus() {},
+    async markReplacementRequired(number) { marked.push(number); },
+    async updateStickyComment(...args) { sticky.push(args); },
+  };
+
+  await reviewGate.guardAgainstCurrentHeadFinding(
+    client,
+    pullRequest,
+    expectedHead,
+    null,
+  );
+
+  assert.deepEqual(marked, [346]);
+  assert.match(sticky.at(-1)[1], /replacement_required/u);
+  assert.match(sticky.at(-1)[1], /Replaces: #346/u);
+  assert.doesNotMatch(sticky.at(-1)[1], /pushes a new head/u);
+});
+
 test('a durable recovery request survives owner-job replacement', () => {
   assert.equal(typeof reviewGate.pendingRecoveryRequest, 'function');
   assert.equal(typeof reviewGate.recoveryRequestTerminal, 'function');
@@ -1340,6 +1388,11 @@ test('the trusted owner enforces the review-round reset after CI and before Code
     /async paginated\(path\)[\s\S]*?page \+= 1/u,
   );
   assert.match(gate, /reviewComments\(number\)[\s\S]*?this\.paginated/u);
+  assert.equal(
+    [...gate.matchAll(/await publishCurrentHeadFinding\(/gu)].length,
+    3,
+    'every finding-result path must re-evaluate the reset before directing another push',
+  );
 });
 
 test('trusted scope enforcement rejects a spoofed green preflight', async () => {
@@ -1361,6 +1414,7 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async markReplacementRequired() {},
     async updateStickyComment(...args) { sticky.push(args); },
   };
 
@@ -1379,6 +1433,7 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
   const checklist = [
     '<!-- review-size: standard -->',
     '<!-- migration-scope: separated -->',
+    'Replaces: none',
     '- [x] `concurrency-serialization` — checked',
     '- [x] `old-release-migration-compatibility` — checked',
     '- [x] `trigger-alternate-writers` — checked',
@@ -1405,6 +1460,9 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
         { filename: 'apps/api/prisma/migrations/20260817000000_example/migration.sql' },
         { filename: 'apps/api/src/example/example.service.ts' },
       ];
+    },
+    async replacementLineage() {
+      return { requiredReplacements: [], replacementPullRequests: [] };
     },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
@@ -1439,6 +1497,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     async updateStickyComment(...args) { sticky.push(args); },
     async reviewComments() { return []; },
     async reviews() { return []; },
+    async markReplacementRequired() {},
     async commit() { return { commit: { message: 'fix: no convergence' }, files: [] }; },
   };
 
@@ -1523,6 +1582,38 @@ test('Codex review records and inline comments are fully paginated', async () =>
   }
 });
 
+test('the trusted client persists the replacement requirement as a repository label', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, method: options.method, body: options.body });
+    if (options.method === 'GET' && url.includes('/labels/review-replacement-required')) {
+      return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 });
+    }
+    return new Response('{}', {
+      status: url.endsWith('/labels') ? 201 : 200,
+    });
+  };
+  try {
+    const client = new reviewGate.GitHubClient({
+      repository: 'JagPat/PMCvitan',
+      token: 'test-token',
+    });
+    await client.markReplacementRequired(346);
+    assert.ok(calls.some((call) =>
+      call.method === 'POST'
+      && call.url.endsWith('/repos/JagPat/PMCvitan/labels')));
+    const assignment = calls.find((call) =>
+      call.method === 'POST'
+      && call.url.endsWith('/repos/JagPat/PMCvitan/issues/346/labels'));
+    assert.deepEqual(JSON.parse(assignment.body), {
+      labels: ['review-replacement-required'],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('the second finding-bearing head requires replacement even when convergence evidence exists', async () => {
   const head = 'c'.repeat(40);
   const pullRequest = {
@@ -1552,6 +1643,7 @@ test('the second finding-bearing head requires replacement even when convergence
     async pullRequest() { return pullRequest; },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { statuses.push(args); },
+    async markReplacementRequired() {},
     async updateStickyComment(...args) { sticky.push(args); },
   };
 
