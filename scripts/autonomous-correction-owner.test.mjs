@@ -1,0 +1,554 @@
+// Owner-aware correction routing.
+//
+// THE DEFECT, as observed on 2026-08-17. PR #349 (Claude-owned) and PR #350
+// (Cursor-owned) both completed product CI, both received current-head Codex
+// findings, and both were correctly returned to draft. The controller then told
+// BOTH of them, verbatim:
+//
+//     Next: Claude Auto-fix handles the review comments and pushes a new head.
+//
+// That sentence is a claim about who is working, and on #350 it was false. The
+// controller has no way to know: nothing in a pull request declares which agent
+// owns its corrections, the branch prefix does not say (both PRs are on
+// `codex/**` branches), and GitHub cannot observe whether a subscription-backed
+// Claude or Cursor session is alive. Nothing then noticed that no correction
+// arrived — `scripts/autonomous-handoff.mjs` handles conflicts, merge
+// continuation and status drift, and reports success while a finding-bearing
+// head sits untouched for hours. The owner had to kick both PRs by hand.
+//
+// D1-D3 below are the reproduction: each one fails at `f9c1d3a` for exactly the
+// reason named in its comment. Everything after them is the specification of the
+// fix. Nothing here weakens the exact-head `codex-current-head` gate, the draft
+// discipline, the same-repository restriction, or the two-finding-head
+// replacement policy — O7 pins that.
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+
+import { guardAgainstCurrentHeadFinding, REQUIRED_CHECKS } from './autonomous-review-gate.mjs';
+import { REVIEW_RESET_AFTER_FINDING_HEADS, assessReviewScope } from './review-efficiency.mjs';
+import * as handoff from './autonomous-handoff.mjs';
+
+const CODEX = 'chatgpt-codex-connector[bot]';
+const HEAD = '76f2d00b4d43b0b1290a5904322290a3cb68ce63';
+const GATE = new URL('./autonomous-review-gate.mjs', import.meta.url);
+const HANDOFF = new URL('./autonomous-handoff.mjs', import.meta.url);
+const REPOSITORY = 'JagPat/PMCvitan';
+
+// Neither new module exists at the reproduction base, so both are imported
+// dynamically: a static import would fail to LINK and take the D1-D3
+// reproductions down with it, hiding the defects they exist to show.
+const ownerModule = () => import('./correction-owner.mjs');
+const leaseModule = () => import('./correction-lease.mjs');
+
+function findingComments(head = HEAD, count = 1) {
+  return Array.from({ length: count }, (_, index) => ({
+    user: { login: CODEX },
+    original_commit_id: head,
+    path: `file-${index}.ts`,
+    line: index + 1,
+    body: `finding ${index}`,
+  }));
+}
+
+function pullRequest({
+  number = 350,
+  body = '',
+  ref = 'codex/cloud-agent-env-replacement',
+  head = HEAD,
+} = {}) {
+  return {
+    number,
+    body,
+    state: 'open',
+    draft: true,
+    html_url: `https://github.com/${REPOSITORY}/pull/${number}`,
+    head: { ref, sha: head, repo: { full_name: REPOSITORY } },
+    base: { ref: 'main', repo: { full_name: REPOSITORY } },
+  };
+}
+
+function fakeGateClient(live, { comments = findingComments(), reviews = [] } = {}) {
+  const calls = { statuses: [], drafts: [], stickies: [] };
+  const client = {
+    reviews: async () => reviews,
+    reviewComments: async () => comments,
+    pullRequest: async () => live,
+    setDraft: async (target, draft) => {
+      calls.drafts.push(draft);
+      return { ...target, draft };
+    },
+    setStatus: async (head, state, description) => {
+      calls.statuses.push({ head, state, description });
+    },
+    updateStickyComment: async (number, body) => {
+      calls.stickies.push(body);
+    },
+  };
+  return { client, calls };
+}
+
+async function publishedSticky(prOverrides, findingCount = 1) {
+  const live = pullRequest(prOverrides);
+  const { client, calls } = fakeGateClient(live, {
+    comments: findingComments(live.head.sha, findingCount),
+  });
+  await guardAgainstCurrentHeadFinding(client, live, live.head.sha, null);
+  assert.equal(calls.stickies.length, 1, 'the finding path must publish exactly one sticky');
+  return { body: calls.stickies[0], calls };
+}
+
+// The line the controller tells the loop to act on.
+function nextLine(body) {
+  return /^- \*\*Next:\*\* (.+)$/mu.exec(body)?.[1] ?? '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D1-D3 — the reproduction. RED at the base commit.
+
+test('D1: a Cursor-owned PR is told that Claude will fix it', async () => {
+  // Verbatim reproduction of PR #350. The PR declares Cursor as its correction
+  // owner and the controller answers with a Claude claim, because the string is
+  // hardcoded at the call site.
+  const { body } = await publishedSticky({
+    number: 350,
+    body: '<!-- correction-owner: cursor -->\n\n## Objective\n\nCloud Agent environment.',
+  });
+
+  assert.doesNotMatch(
+    body,
+    /claude/iu,
+    'a Cursor-owned correction must never be attributed to Claude anywhere in the notice',
+  );
+  assert.doesNotMatch(body, /@claude/u, 'and it must never tag Claude');
+});
+
+test('D2: the controller cannot distinguish correction owners', async () => {
+  // Two PRs, two different declared owners, one identical instruction. Whatever
+  // the controller is saying, it is not reading the declaration — it has none to
+  // read.
+  const claude = await publishedSticky({
+    number: 349,
+    body: '<!-- correction-owner: claude -->',
+    ref: 'codex/phase6-4b-approval-attribution',
+    head: '32cd6a152346d3a28c7695546e2ab6eccb982f6f',
+  });
+  const cursor = await publishedSticky({
+    number: 350,
+    body: '<!-- correction-owner: cursor -->',
+  });
+
+  assert.notEqual(
+    nextLine(claude.body),
+    nextLine(cursor.body),
+    'a Claude-owned and a Cursor-owned PR must not receive the same correction instruction',
+  );
+  assert.match(nextLine(claude.body), /claude/iu);
+  assert.doesNotMatch(nextLine(cursor.body), /claude/iu);
+});
+
+test('D3: a green handoff can report success while no correction worker exists', () => {
+  // The handoff job is the only thing that runs on a schedule, and it has no
+  // notion of an unresolved correction: conflicts, merge continuation, drift.
+  // A finding-bearing head with no correction in flight passes through it
+  // silently, and the job goes green.
+  assert.equal(
+    typeof handoff.handOffCorrectionLease,
+    'function',
+    'the handoff must implement a correction watchdog, not only conflicts/merge/drift',
+  );
+  const source = readFileSync(HANDOFF, 'utf8');
+  assert.match(
+    source.slice(source.indexOf('export async function run()')),
+    /handOffCorrectionLease\(/u,
+    'and its own run loop must drive it',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// O1-O8 — the specification.
+
+test('O1: the declaration is machine-readable, and every failure mode is named', async () => {
+  const { parseCorrectionOwner, CORRECTION_OWNERS } = await ownerModule();
+
+  assert.deepEqual(CORRECTION_OWNERS, ['claude', 'cursor']);
+
+  const claude = parseCorrectionOwner('<!-- correction-owner: claude -->');
+  assert.equal(claude.state, 'declared');
+  assert.equal(claude.owner, 'claude');
+
+  const cursor = parseCorrectionOwner('body\n<!-- correction-owner:cursor -->\nmore');
+  assert.equal(cursor.state, 'declared', 'the separator space is optional');
+  assert.equal(cursor.owner, 'cursor');
+
+  assert.equal(parseCorrectionOwner('').state, 'missing');
+  assert.equal(parseCorrectionOwner('').owner, null);
+  assert.equal(parseCorrectionOwner(undefined).state, 'missing');
+
+  const invalid = parseCorrectionOwner('<!-- correction-owner: codex -->');
+  assert.equal(invalid.state, 'invalid');
+  assert.equal(invalid.owner, null, 'an unknown agent is never routed to');
+
+  const contradictory = parseCorrectionOwner(
+    '<!-- correction-owner: claude -->\n<!-- correction-owner: cursor -->',
+  );
+  assert.equal(contradictory.state, 'contradictory');
+  assert.equal(contradictory.owner, null);
+
+  // A repeated IDENTICAL declaration is unambiguous, so it is accepted. The
+  // template carries the marker, and an author who edits it in place rather than
+  // adding a line must not be blocked for tidiness.
+  const repeated = parseCorrectionOwner(
+    '<!-- correction-owner: cursor -->\n<!-- correction-owner: cursor -->',
+  );
+  assert.equal(repeated.state, 'declared');
+  assert.equal(repeated.owner, 'cursor');
+
+  // The branch prefix is not the authority — #349 and #350 are both Claude-loop
+  // PRs on `codex/**` branches — but `claude/**` IS reserved by
+  // docs/AUTONOMOUS_LOOP.md for Claude-authored work, so a `claude/**` branch
+  // declaring another owner contradicts itself.
+  const branchConflict = parseCorrectionOwner('<!-- correction-owner: cursor -->', {
+    headRef: 'claude/some-task',
+  });
+  assert.equal(branchConflict.state, 'contradictory');
+  assert.equal(
+    parseCorrectionOwner('<!-- correction-owner: cursor -->', {
+      headRef: 'codex/cloud-agent-env-replacement',
+    }).state,
+    'declared',
+    'any other prefix imposes nothing',
+  );
+});
+
+test('O2: review-scope rejects undeclared ownership before any expensive job', async () => {
+  const { CORRECTION_OWNER_ENFORCE_AFTER_PR } = await ownerModule();
+
+  const CHECKLIST = [
+    '- [x] `concurrency-serialization`',
+    '- [x] `old-release-migration-compatibility`',
+    '- [x] `trigger-alternate-writers`',
+    '- [x] `authorization-tenancy`',
+    '- [x] `ci-reproduce-first`',
+    'Replaces: none',
+  ].join('\n');
+
+  const scoped = ({ number = 400, ref = 'claude/task', declaration = '<!-- correction-owner: claude -->' }) =>
+    assessReviewScope(
+      {
+        number,
+        additions: 10,
+        deletions: 0,
+        changed_files: 1,
+        head: { ref },
+        body: declaration ? `${declaration}\n${CHECKLIST}` : CHECKLIST,
+      },
+      { changedFiles: [{ filename: 'scripts/a.mjs' }], requireChangedFiles: true },
+    );
+
+  assert.equal(scoped({}).allowed, true, 'a declared owner passes');
+
+  const undeclared = scoped({ declaration: '' });
+  assert.equal(undeclared.allowed, false);
+  assert.match(undeclared.detail, /correction-owner/u);
+
+  const invalid = scoped({ declaration: '<!-- correction-owner: codex -->', ref: 'codex/x' });
+  assert.equal(invalid.allowed, false, 'an unknown agent is refused');
+
+  const contradictory = scoped({
+    declaration: '<!-- correction-owner: claude -->\n<!-- correction-owner: cursor -->',
+    ref: 'codex/x',
+  });
+  assert.equal(contradictory.allowed, false, 'two different declared owners are refused');
+
+  const branchConflict = scoped({ declaration: '<!-- correction-owner: cursor -->' });
+  assert.equal(
+    branchConflict.allowed,
+    false,
+    'a `claude/**` branch declaring another owner contradicts itself',
+  );
+
+  // review-scope is the first job and everything expensive depends on it, so a
+  // refusal here costs no product battery and no Codex invocation.
+  const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.match(ci, /^  review-scope:$/mu);
+  for (const job of ['web', 'api', 'e2e', 'api-e2e', 'upgrade-proof']) {
+    assert.match(
+      ci,
+      new RegExp(`\\n  ${job}:\\n[\\s\\S]{0,400}?needs: \\[review-scope`, 'u'),
+      `${job} must not run before review-scope`,
+    );
+  }
+
+  // #349 and #350 predate the requirement and are bootstrapped by declaring the
+  // marker themselves, not by a forced edit from this branch.
+  assert.equal(CORRECTION_OWNER_ENFORCE_AFTER_PR, 350);
+  const openPr = scoped({ number: 350, ref: 'codex/cloud-agent-env-replacement', declaration: '' });
+  assert.equal(openPr.allowed, true, 'an already-open PR is not retroactively blocked');
+});
+
+test('O3: findings are routed by the declaration, and Claude is never claimed for Cursor', async () => {
+  const { correctionRouting, parseCorrectionOwner } = await ownerModule();
+
+  const claude = correctionRouting({
+    declaration: parseCorrectionOwner('<!-- correction-owner: claude -->'),
+    head: HEAD,
+    detail: '3 current-head Codex findings',
+  });
+  assert.equal(claude.owner, 'claude');
+  assert.equal(claude.state, 'routed');
+  assert.equal(claude.mention, '@claude');
+  assert.match(claude.instruction, /Auto-fix/u);
+
+  const cursor = correctionRouting({
+    declaration: parseCorrectionOwner('<!-- correction-owner: cursor -->'),
+    head: HEAD,
+    detail: '3 current-head Codex findings',
+  });
+  assert.equal(cursor.owner, 'cursor');
+  assert.equal(cursor.mention, null, 'a Cursor correction never tags Claude');
+  assert.doesNotMatch(cursor.instruction, /claude/iu);
+  assert.match(cursor.instruction, /cursor/iu);
+
+  const undeclared = correctionRouting({
+    declaration: parseCorrectionOwner(''),
+    head: HEAD,
+    detail: '2 current-head Codex findings',
+  });
+  assert.equal(undeclared.state, 'correction_stalled');
+  assert.equal(undeclared.owner, null, 'an undeclared owner never defaults to Claude');
+  assert.equal(undeclared.mention, null);
+  assert.doesNotMatch(
+    undeclared.instruction,
+    /Claude (Auto-fix|handles|will|owns)/iu,
+    'and nothing claims Claude is handling it',
+  );
+
+  // And the gate publishes exactly that, rather than a hardcoded sentence.
+  const cursorSticky = await publishedSticky({
+    number: 350,
+    body: '<!-- correction-owner: cursor -->',
+  });
+  assert.equal(nextLine(cursorSticky.body), cursor.instruction);
+  assert.match(cursorSticky.body, /- \*\*Correction owner:\*\* `cursor`/u);
+
+  const gate = readFileSync(GATE, 'utf8');
+  assert.doesNotMatch(
+    gate,
+    /next: '[^']*Claude/u,
+    'no call site may hardcode a Claude claim; the owner decides',
+  );
+});
+
+test('O4: the correction lease is keyed to PR, exact head and owner, and never repeats', async () => {
+  const { assessCorrectionLease, correctionLeaseMarker, CORRECTION_LEASE_GRACE_MS } =
+    await leaseModule();
+
+  const base = {
+    pullRequest: pullRequest({ body: '<!-- correction-owner: claude -->' }),
+    head: HEAD,
+    body: '<!-- correction-owner: claude -->',
+    findingHeads: [HEAD],
+    detail: '3 current-head Codex findings',
+    findingObservedAt: '2026-08-17T10:00:00Z',
+    comments: [],
+  };
+
+  const early = assessCorrectionLease({ ...base, now: '2026-08-17T10:10:00Z' });
+  assert.equal(early.state, 'waiting', 'a bounded interval passes before any notification');
+
+  const due = assessCorrectionLease({ ...base, now: '2026-08-17T11:00:00Z' });
+  assert.equal(due.state, 'notify');
+  assert.equal(due.owner, 'claude');
+  assert.match(due.body, /@claude/u);
+  assert.match(due.body, new RegExp(HEAD, 'u'), 'the notice names the exact head');
+  assert.match(due.body, /3 current-head Codex findings/u);
+
+  const key = correctionLeaseMarker({ number: 350, head: HEAD, owner: 'claude' });
+  assert.ok(due.body.includes(key), 'the notice carries its own idempotency marker');
+
+  // Published once, never again — for this PR, this head, this owner.
+  const already = assessCorrectionLease({
+    ...base,
+    now: '2026-08-17T13:00:00Z',
+    comments: [{ user: { login: 'github-actions[bot]' }, body: due.body }],
+  });
+  assert.equal(already.state, 'notified');
+  assert.equal(already.body, null);
+
+  // A DIFFERENT head is a different lease, so a real correction that then draws
+  // findings again is still watched.
+  const nextHead = assessCorrectionLease({
+    ...base,
+    pullRequest: pullRequest({ body: base.body, head: 'aaaa111' }),
+    head: 'aaaa111',
+    findingHeads: [HEAD, 'aaaa111'],
+    now: '2026-08-17T13:00:00Z',
+    comments: [{ user: { login: 'github-actions[bot]' }, body: due.body }],
+  });
+  assert.notEqual(nextHead.state, 'notified');
+
+  // A NOTIFICATION IS NOT PROOF A WORKER STARTED. Only head movement clears the
+  // lease: not the comment, not an acknowledgement reaction on it. This is the
+  // exact failure the owner hit — both PRs "acknowledged only as a subscription"
+  // and produced nothing.
+  const acknowledged = assessCorrectionLease({
+    ...base,
+    now: '2026-08-17T14:00:00Z',
+    comments: [
+      {
+        user: { login: 'github-actions[bot]' },
+        body: due.body,
+        reactions: { total_count: 1, eyes: 1 },
+      },
+    ],
+  });
+  assert.equal(acknowledged.state, 'notified', 'an acknowledged notice is still an open lease');
+
+  const moved = assessCorrectionLease({
+    ...base,
+    pullRequest: pullRequest({ body: base.body, head: 'bbbb222' }),
+    now: '2026-08-17T14:00:00Z',
+  });
+  assert.equal(moved.state, 'superseded', 'only a new head satisfies the lease');
+
+  assert.ok(CORRECTION_LEASE_GRACE_MS >= 15 * 60_000, 'the interval is bounded, not instant');
+});
+
+test('O5: an owner GitHub cannot awaken is reported as correction_stalled, never as progress', async () => {
+  const { assessCorrectionLease } = await leaseModule();
+  const { CORRECTION_STALLED } = await ownerModule();
+
+  const stalled = assessCorrectionLease({
+    pullRequest: pullRequest({ body: '<!-- correction-owner: cursor -->' }),
+    head: HEAD,
+    body: '<!-- correction-owner: cursor -->',
+    findingHeads: [HEAD],
+    detail: '3 current-head Codex findings',
+    findingObservedAt: '2026-08-17T10:00:00Z',
+    now: '2026-08-17T11:00:00Z',
+    comments: [],
+  });
+
+  assert.equal(stalled.state, 'notify');
+  assert.equal(stalled.reportedState, CORRECTION_STALLED);
+  assert.match(stalled.body, /correction_stalled/u);
+  assert.match(stalled.body, /cursor/iu, 'the exact owner');
+  assert.match(stalled.body, new RegExp(HEAD, 'u'), 'the exact head');
+  assert.match(stalled.body, /3 current-head Codex findings/u, 'the findings');
+  assert.match(stalled.body, /resume/iu, 'and the required resume action');
+  assert.doesNotMatch(stalled.body, /@claude/u);
+  assert.doesNotMatch(
+    stalled.body,
+    /(in progress|continuing|is working|will push)/iu,
+    'it must not claim progress that is not happening',
+  );
+
+  const undeclared = assessCorrectionLease({
+    pullRequest: pullRequest({ body: '' }),
+    head: HEAD,
+    body: '',
+    findingHeads: [HEAD],
+    detail: '3 current-head Codex findings',
+    findingObservedAt: '2026-08-17T10:00:00Z',
+    now: '2026-08-17T11:00:00Z',
+    comments: [],
+  });
+  assert.equal(undeclared.reportedState, CORRECTION_STALLED);
+  assert.match(undeclared.body, /correction-owner/u, 'and names how to fix the declaration');
+});
+
+test('O6: the lease never authorizes a correction past the two-finding-head limit', async () => {
+  const { assessCorrectionLease } = await leaseModule();
+
+  const exhausted = assessCorrectionLease({
+    pullRequest: pullRequest({ body: '<!-- correction-owner: claude -->' }),
+    head: HEAD,
+    body: '<!-- correction-owner: claude -->',
+    findingHeads: ['first', HEAD],
+    detail: '1 current-head Codex finding',
+    findingObservedAt: '2026-08-17T10:00:00Z',
+    now: '2026-08-17T11:00:00Z',
+    comments: [],
+  });
+
+  assert.equal(exhausted.state, 'notify');
+  assert.equal(exhausted.reportedState, 'replacement_required');
+  assert.match(exhausted.body, /replacement/iu);
+  assert.doesNotMatch(
+    exhausted.body,
+    /push (a|one) new head/iu,
+    'a third correction head must never be requested',
+  );
+  assert.equal(REVIEW_RESET_AFTER_FINDING_HEADS, 2);
+});
+
+test('O7: the watchdog changes no gate state, and the safety boundaries are unchanged', async () => {
+  const { isCorrectionEligiblePullRequest } = await ownerModule();
+
+  // Same-repository, base = default branch, open. Ownership now comes from the
+  // declaration rather than the branch name, so `codex/**` PRs are watched too —
+  // but a fork or a non-default base still is not.
+  assert.equal(
+    isCorrectionEligiblePullRequest(pullRequest(), REPOSITORY, 'main'),
+    true,
+  );
+  assert.equal(
+    isCorrectionEligiblePullRequest(
+      { ...pullRequest(), head: { ref: 'x', sha: HEAD, repo: { full_name: 'fork/repo' } } },
+      REPOSITORY,
+      'main',
+    ),
+    false,
+  );
+  assert.equal(
+    isCorrectionEligiblePullRequest(
+      { ...pullRequest(), base: { ref: 'release', repo: { full_name: REPOSITORY } } },
+      REPOSITORY,
+      'main',
+    ),
+    false,
+  );
+  assert.equal(
+    isCorrectionEligiblePullRequest({ ...pullRequest(), state: 'closed' }, REPOSITORY, 'main'),
+    false,
+  );
+
+  // The watchdog only ever comments. It cannot publish the required status,
+  // change draft state, merge, or invoke Codex.
+  const source = readFileSync(HANDOFF, 'utf8');
+  const watchdog = source.slice(
+    source.indexOf('export async function handOffCorrectionLease('),
+    source.indexOf('export async function run()'),
+  );
+  assert.ok(watchdog.length > 0, 'the watchdog must be locatable');
+  assert.doesNotMatch(watchdog, /setStatus|setDraft|merge|markPullRequestReadyForReview/u);
+
+  // The required-check contract and the exact-head status are untouched.
+  assert.deepEqual(REQUIRED_CHECKS, [
+    'review-scope',
+    'battery-plan',
+    'web',
+    'api',
+    'e2e',
+    'api-e2e',
+    'upgrade-proof',
+  ]);
+  assert.match(readFileSync(GATE, 'utf8'), /const STATUS_CONTEXT = 'codex-current-head';/u);
+});
+
+test('O8: the PR template and the loop documentation carry the declaration', async () => {
+  const { CORRECTION_OWNERS } = await ownerModule();
+  const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
+
+  const template = read('../.github/pull_request_template.md');
+  assert.match(template, /<!-- correction-owner: claude -->/u);
+  for (const owner of CORRECTION_OWNERS) {
+    assert.match(template, new RegExp(`correction-owner: ${owner}`, 'u'));
+  }
+
+  for (const document of ['../docs/AUTONOMOUS_LOOP.md', '../AGENTS.md', '../CLAUDE.md']) {
+    assert.match(read(document), /correction-owner/u, `${document} must state the requirement`);
+  }
+  assert.match(read('../docs/AUTONOMOUS_LOOP.md'), /correction_stalled/u);
+});
