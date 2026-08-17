@@ -25,9 +25,12 @@ export interface ProjectShellDto extends ProjectShellCounts {
 export interface OptionDto {
   label: string;
   key: string;
-  material: string;
+  // An option need not be a choice of MATERIAL — it may be a choice of technology, of an
+  // approach, or of a proposed remedy. Both of these are therefore absent on such an option.
+  // (The kind, description and cost-impact state join this DTO with the option surface unit.)
+  material?: string;
   delta: number;
-  swatch: string;
+  swatch?: string;
   photoUrl?: string;
   recommended: boolean;
 }
@@ -50,7 +53,9 @@ export interface DecisionDto {
   nodeId?: string;
   status: 'pending' | 'approved' | 'change' | 'withdrawn';
   ageDays?: number;
-  photoSwatch: string;
+  // Absent on an issue that is not about material at all (unit A1) — a technology or solution
+  // question has no colour chip, and inventing one would be decoration masquerading as evidence.
+  photoSwatch?: string;
   options: OptionDto[];
   approvedOption?: string;
   material?: string;

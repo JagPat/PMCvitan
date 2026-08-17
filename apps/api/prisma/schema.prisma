@@ -35,6 +35,28 @@ enum DeciderKind {
   member
 }
 
+// The STABLE SEMANTIC base kinds an option can have. Downstream behaviour keys off THESE, never
+// off a menu label: an organization may add its own kind, but it must map to one of these, so
+// procurement and the dynamic forms keep working without knowing every organization's vocabulary.
+// Deliberately closed and small — a new base kind means new downstream behaviour, which is a code
+// change, not a data change.
+enum OptionBaseKind {
+  material
+  technology
+  solution
+  other
+}
+
+// How much an option changes the cost, as a STATE rather than a number pretending to be one.
+// The distinction that carries the weight: `pending` and a missing amount are NOT zero. An option
+// whose cost nobody has assessed yet must never read as free.
+enum CostImpactState {
+  pending   // not assessed yet — the default, and never interpreted as no cost
+  none      // assessed, and confirmed to change nothing
+  estimated // a provisional amount
+  confirmed // a finalized amount
+}
+
 enum ActivityStatus {
   not_started
   in_progress
@@ -770,6 +792,8 @@ model Org {
   // Phase 6 unit 6.1a (§A) — the canonical external firms this org collaborates with.
   externalParties   ExternalParty[]
   promotedParties   ExternalParty[] @relation("externalPartyPromotedTo")
+  // this org's own additions to the option-kind menu (each mapped to a stable base kind)
+  optionKinds       DecisionOptionKind[]
 }
 
 // Templates Slice 3 (docs/TEMPLATES.md): a named PRESET — an ordered selection of modules
@@ -1990,7 +2014,9 @@ model Decision {
   nodeId         String?
   status         DecisionStatus   @default(pending)
   ageDays        Int?
-  photoSwatch    String
+  // A colour chip is MATERIAL evidence, and an issue need not be about material at all
+  // (unit A1). Nullable so a technology or solution question is not forced to invent one.
+  photoSwatch    String?
   approvedOption String?
   material       String?
   approver       String? // human-readable approver line (the caller's REAL name since Phase 1 Task 2)
@@ -2063,15 +2089,34 @@ model DecisionLegacyApproval {
   @@ignore
 }
 
+// One option offered on an issue. An option is NOT necessarily a choice of material: it may be a
+// choice of technology, of an approach, of a proposed remedy, or of anything else the question
+// actually turns on. `kindCode` names which, and its menu row carries the stable base kind that
+// downstream behaviour reads.
 model DecisionOption {
   id          String   @id @default(cuid())
   decision    Decision @relation(fields: [decisionId], references: [id])
   decisionId  String
   label       String
   optionKey   String
-  material    String
-  delta       Int // rupees
-  swatch      String
+  /// What this option proposes, in the author's own words. Nullable ONLY because options written
+  /// before this unit have no description and inventing one would be fabrication; the contract
+  /// requires it for every new option.
+  description String?
+  /// The menu row this option was chosen from. Nullable for the same legacy reason — the migration
+  /// classifies every pre-existing option as `material`, which is what they all were.
+  kind        DecisionOptionKind? @relation(fields: [kindCode], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  kindCode    String?
+  /// Structured material identity — OPTIONAL now, because a technology or solution option has none.
+  /// A material requirement may only cite an option that HAS it (enforced by trigger, not by the UI).
+  material    String?
+  swatch      String?
+  delta       Int // rupees — LEGACY cost delta, superseded by the cost-impact state below
+  /// Cost impact applies to EVERY kind and may be supplied later. `pending` is not zero.
+  costImpact  CostImpactState @default(pending)
+  /// Project currency, whole units. Required exactly when the state is estimated or confirmed
+  /// (CHECK); forbidden when the state is pending or none, so a stale number cannot linger.
+  costAmount  Int?
   photoUrl    String? // uploaded sample photo (media url); swatch is the fallback
   recommended Boolean  @default(false)
   order       Int      @default(0)
@@ -2081,6 +2126,33 @@ model DecisionOption {
   // the approval register (and requirement provenance behind it) pins an option by
   // (decisionId, optionKey) — the pair is a database-enforced candidate key
   @@unique([decisionId, optionKey])
+  @@index([kindCode])
+}
+
+// The SERVER-DRIVEN option-kind menu. The frontend renders what this table returns — active rows,
+// their localization key and their display order — and hardcodes no labels, so adding or retiring
+// a kind is a data change rather than a release.
+//
+// `baseKind` is the load-bearing column. An organization may add its own kind ('imported-stone',
+// 'precast-system'), but it MUST map to one of the four stable base kinds, because that is what
+// procurement and the dynamic form key off. Nothing downstream reads `code` or `labelKey`.
+model DecisionOptionKind {
+  code        String         @id
+  baseKind    OptionBaseKind
+  /// Localization key, not a display string — labels are served localized from the backend.
+  labelKey    String
+  displayOrder Int           @default(0)
+  active      Boolean        @default(true)
+  /// Null for the platform-seeded kinds; set for an organization's own addition. The two partial
+  /// unique indexes in the migration keep platform codes globally unique and org codes unique
+  /// per organization (a plain unique over a nullable column would allow duplicate platform rows).
+  org         Org?           @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgId       String?
+  createdAt   DateTime       @default(now())
+
+  options     DecisionOption[]
+
+  @@index([active, displayOrder])
 }
 
 // Phase 6 task 4a (round 13) — the per-transaction OPTION TOUCH NOTE behind the withdrawal
