@@ -58,29 +58,56 @@ const DECLARATION = /<!--\s*correction-owner:\s*([A-Za-z][A-Za-z0-9_-]*)\s*-->/g
 const CLAUDE_BRANCH_PREFIX = 'claude/';
 const MARKER_HELP = '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`';
 
+// A body DECLARES in its marker block and DESCRIBES everywhere else.
+//
+// The first head of PR #352 proved why that distinction has to exist: its body
+// carried `<!-- correction-owner: claude -->` at the top and, further down,
+// documented how #349 and #350 would each add their own marker — so a
+// whole-body scan read two owners and refused a correctly declared PR. The PR
+// template does the same thing, in its own guidance paragraph, which would have
+// refused every PR that kept it.
+//
+// The block is the leading run of marker lines, blanks allowed, ending at the
+// first line that is neither — the shape the template already uses for
+// `review-size` and `migration-scope`. A marker inside a sentence, a code fence,
+// or a later section is prose. Two DIFFERENT markers IN the block are still a
+// contradiction, which is exactly what an author who adds a line instead of
+// editing one produces.
+function declarationBlock(body) {
+  const declared = [];
+  for (const line of String(body ?? '').split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    if (!/^<!--[\s\S]*-->$/u.test(trimmed)) break;
+    for (const match of trimmed.matchAll(DECLARATION)) {
+      declared.push(match[1].toLowerCase());
+    }
+  }
+  return declared;
+}
+
 /**
  * Read the declaration. Four outcomes, all named:
  *
  *   declared      — exactly one owner, known, consistent with the branch
- *   missing       — no marker at all
+ *   missing       — no marker in the block at the top of the body
  *   invalid       — a marker naming an agent this loop does not route to
  *   contradictory — two different owners, or an owner the branch contradicts
  *
- * A repeated IDENTICAL marker is unambiguous and is accepted: the template
- * carries one, and an author who edits it in place rather than adding a line
- * must not be blocked for tidiness. Two DIFFERENT values are refused, which is
- * exactly what an author who adds a line instead of editing one produces.
+ * A repeated IDENTICAL marker is unambiguous and is accepted: an author who
+ * edits the template's marker in place rather than adding a line must not be
+ * blocked for tidiness.
  */
 export function parseCorrectionOwner(body, { headRef } = {}) {
-  const source = typeof body === 'string' ? body : '';
-  const declared = [...source.matchAll(DECLARATION)].map((match) => match[1].toLowerCase());
+  const declared = declarationBlock(body);
 
   if (declared.length === 0) {
     return {
       state: 'missing',
       owner: null,
       declared,
-      detail: `the PR body must declare its correction owner with ${MARKER_HELP}`,
+      detail: `the marker block at the top of the PR body must declare its correction owner `
+        + `with ${MARKER_HELP}`,
     };
   }
 

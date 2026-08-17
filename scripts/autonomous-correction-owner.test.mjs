@@ -177,7 +177,9 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   assert.equal(claude.state, 'declared');
   assert.equal(claude.owner, 'claude');
 
-  const cursor = parseCorrectionOwner('body\n<!-- correction-owner:cursor -->\nmore');
+  const cursor = parseCorrectionOwner(
+    '<!-- review-size: standard -->\n<!-- correction-owner:cursor -->\n\n## Objective',
+  );
   assert.equal(cursor.state, 'declared', 'the separator space is optional');
   assert.equal(cursor.owner, 'cursor');
 
@@ -203,6 +205,37 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   );
   assert.equal(repeated.state, 'declared');
   assert.equal(repeated.owner, 'cursor');
+
+  // Only the MARKER BLOCK at the top declares. A body that also EXPLAINS the
+  // markers in prose — which the PR template's own guidance does, and which the
+  // first head of PR #352 did while documenting the #349/#350 bootstrap — is
+  // declaring once and describing twice. Reading the whole body refused both.
+  const documented = parseCorrectionOwner(
+    [
+      '<!-- review-size: standard -->',
+      '<!-- correction-owner: claude -->',
+      '',
+      '## Objective',
+      '',
+      'Replace the marker with `<!-- correction-owner: cursor -->` when a Cursor agent owns it.',
+    ].join('\n'),
+  );
+  assert.equal(documented.state, 'declared');
+  assert.equal(documented.owner, 'claude');
+
+  // The strongest form of that probe: the repository's own template must be
+  // usable as written.
+  const template = readFileSync(
+    new URL('../.github/pull_request_template.md', import.meta.url),
+    'utf8',
+  );
+  assert.equal(parseCorrectionOwner(template).state, 'declared');
+  assert.equal(parseCorrectionOwner(template).owner, 'claude');
+
+  // A marker below the header block declares nothing, and says so.
+  const buried = parseCorrectionOwner('## Objective\n\n<!-- correction-owner: cursor -->');
+  assert.equal(buried.state, 'missing');
+  assert.match(buried.detail, /top of the PR body/u);
 
   // The branch prefix is not the authority — #349 and #350 are both Claude-loop
   // PRs on `codex/**` branches — but `claude/**` IS reserved by
