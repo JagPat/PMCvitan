@@ -42,6 +42,29 @@ function justifiedLargeBody(categories = REQUIRED_INVARIANTS) {
   ].join('\n');
 }
 
+const PRE_REVIEW_KEYS = [
+  'concurrency-serialization',
+  'old-release-migration-compatibility',
+  'trigger-alternate-writers',
+  'authorization-tenancy',
+  'ci-reproduce-first',
+];
+
+function preReviewBody({ migrationScope = 'separated', seam = 'n/a', omit } = {}) {
+  return [
+    '<!-- review-size: standard -->',
+    `<!-- migration-scope: ${migrationScope} -->`,
+    'Replaces: none',
+    '',
+    '## Pre-review checklist',
+    ...PRE_REVIEW_KEYS
+      .filter((key) => key !== omit)
+      .map((key) => `- [x] \`${key}\` — checked against this cumulative diff`),
+    '',
+    `- Migration/service seam: ${seam}`,
+  ].join('\n');
+}
+
 test('standard review units pass without large-PR ceremony', () => {
   const result = assessReviewScope(pullRequest());
   assert.equal(result.state, 'standard');
@@ -123,6 +146,176 @@ test('a justified large review unit passes only with the complete invariant matr
   assert.equal(result.state, 'justified_large');
   assert.equal(result.allowed, true);
   assert.deepEqual(result.missingInvariants, []);
+});
+
+test('future review units require the concise pre-review checklist', () => {
+  const complete = assessReviewScope(pullRequest({
+    number: 346,
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+  });
+  assert.equal(complete.allowed, true);
+
+  const incomplete = assessReviewScope(pullRequest({
+    number: 346,
+    body: preReviewBody({ omit: 'old-release-migration-compatibility' }),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+  });
+  assert.equal(incomplete.allowed, false);
+  assert.match(incomplete.detail, /old-release-migration-compatibility/u);
+});
+
+test('migration and service or UI changes need a recorded inseparable seam', () => {
+  const mixedFiles = [
+    { filename: 'apps/api/prisma/migrations/20260817000000_example/migration.sql' },
+    { filename: 'apps/api/src/example/example.service.ts' },
+  ];
+  const separated = assessReviewScope(pullRequest({
+    number: 346,
+    body: preReviewBody(),
+  }), { changedFiles: mixedFiles, requireChangedFiles: true });
+  assert.equal(separated.allowed, false);
+  assert.match(separated.detail, /migration.*service\/UI.*separate review units/iu);
+
+  const unexplained = assessReviewScope(pullRequest({
+    number: 346,
+    body: preReviewBody({ migrationScope: 'inseparable' }),
+  }), { changedFiles: mixedFiles, requireChangedFiles: true });
+  assert.equal(unexplained.allowed, false);
+  assert.match(unexplained.detail, /Migration\/service seam/u);
+
+  for (const placeholder of ['TBD', 'TODO', 'todo before review']) {
+    const placeholderSeam = assessReviewScope(pullRequest({
+      number: 346,
+      body: preReviewBody({
+        migrationScope: 'inseparable',
+        seam: placeholder,
+      }),
+    }), { changedFiles: mixedFiles, requireChangedFiles: true });
+    assert.equal(
+      placeholderSeam.allowed,
+      false,
+      `${placeholder} must not satisfy the seam explanation`,
+    );
+    assert.match(placeholderSeam.detail, /Migration\/service seam/u);
+  }
+
+  const inseparable = assessReviewScope(pullRequest({
+    number: 346,
+    body: preReviewBody({
+      migrationScope: 'inseparable',
+      seam: 'the old and new service binaries require the same expand-contract compatibility probe',
+    }),
+  }), { changedFiles: mixedFiles, requireChangedFiles: true });
+  assert.equal(inseparable.allowed, true);
+});
+
+test('an exhausted review unit cannot be bypassed by fresh work without declared lineage', () => {
+  const currentFiles = [{ filename: 'scripts/autonomous-review-gate.mjs' }];
+  const exhausted = {
+    pullRequest: {
+      number: 346,
+      state: 'closed',
+      head: {
+        ref: 'codex/review-round-reset',
+        repo: { full_name: 'JagPat/PMCvitan' },
+      },
+    },
+    changedFiles: currentFiles,
+  };
+  const reopened = pullRequest({
+    number: 347,
+    body: preReviewBody(),
+    head: exhausted.pullRequest.head,
+  });
+  const undeclared = assessReviewScope(reopened, {
+    changedFiles: currentFiles,
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [exhausted],
+    replacementPullRequests: [],
+  });
+  assert.equal(undeclared.allowed, false);
+  assert.match(undeclared.detail, /Replaces: #346/u);
+
+  const disguisedAsFresh = assessReviewScope({
+    ...reopened,
+    head: {
+      ref: 'codex/apparently-unrelated',
+      repo: { full_name: 'JagPat/PMCvitan' },
+    },
+  }, {
+    changedFiles: [{ filename: 'scripts/apparently-unrelated.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [exhausted],
+    replacementPullRequests: [],
+  });
+  assert.equal(disguisedAsFresh.allowed, false);
+  assert.match(disguisedAsFresh.detail, /Replaces: #346/u);
+
+  const declared = assessReviewScope({
+    ...reopened,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #346'),
+  }, {
+    changedFiles: currentFiles,
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [exhausted],
+    replacementPullRequests: [],
+  });
+  assert.equal(declared.allowed, true);
+});
+
+test('replacement declarations must name a closed unit awaiting replacement', () => {
+  const result = assessReviewScope(pullRequest({
+    number: 347,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #999'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [],
+    replacementPullRequests: [],
+  });
+  assert.equal(result.allowed, false);
+  assert.match(result.detail, /#999.*awaiting replacement/iu);
+});
+
+test('a merged declared replacement fulfills its source requirement', () => {
+  const source = {
+    pullRequest: { number: 346, state: 'closed' },
+    changedFiles: [],
+  };
+  const result = assessReviewScope(pullRequest({
+    number: 348,
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/next-unit.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 347,
+      state: 'closed',
+      merged_at: '2026-08-17T12:00:00Z',
+      body: 'Replaces: #346',
+    }],
+  });
+  assert.equal(result.allowed, true);
+});
+
+test('future scope assessment fails closed when the cumulative file list is unreadable', () => {
+  const result = assessReviewScope(pullRequest({
+    number: 346,
+    body: preReviewBody(),
+  }), { changedFiles: undefined, requireChangedFiles: true });
+  assert.equal(result.allowed, false);
+  assert.match(result.detail, /cumulative file list/u);
 });
 
 test('finding history counts distinct Codex heads and ignores human comments', () => {
@@ -299,25 +492,37 @@ test('a removed packet or narrative marker cannot satisfy convergence', () => {
 });
 
 test('agent guidance and the PR template share the executable policy vocabulary', async () => {
-  const [agents, claude, loop, template] = await Promise.all([
+  const [agents, claude, loop, template, ci] = await Promise.all([
     readFile(new URL('../AGENTS.md', import.meta.url), 'utf8'),
     readFile(new URL('../CLAUDE.md', import.meta.url), 'utf8'),
     readFile(new URL('../docs/AUTONOMOUS_LOOP.md', import.meta.url), 'utf8'),
     readFile(new URL('../.github/pull_request_template.md', import.meta.url), 'utf8'),
+    readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'),
   ]);
 
   for (const text of [agents, claude, loop]) {
     assert.match(text, /20\s+files/u);
     assert.match(text, /1,500\s+changed lines/u);
-    assert.match(text, /Review-Convergence: complete/u);
+    assert.match(text, /Replaces: #<closed-pr>/u);
+    assert.doesNotMatch(text, /Review-Convergence: complete/u);
   }
   assert.match(template, /<!-- review-size: standard -->/u);
   assert.match(template, /<!-- review-size: justified-large -->/u);
+  assert.match(template, /<!-- migration-scope: separated -->/u);
+  assert.match(template, /<!-- migration-scope: inseparable -->/u);
+  assert.match(template, /Replaces: none/u);
+  for (const key of PRE_REVIEW_KEYS) {
+    assert.match(template, new RegExp(key, 'u'));
+  }
   assert.match(agents, /authoritative PR head/u);
   assert.match(agents, /synthetic merge/u);
   for (const invariant of REQUIRED_INVARIANTS) {
     assert.match(template, new RegExp(invariant, 'u'));
   }
+  assert.match(
+    ci,
+    /review-scope:[\s\S]*?pull-requests:\s*read[\s\S]*?GITHUB_TOKEN:[\s\S]*?review-scope\.mjs/u,
+  );
 });
 
 test('the dependency-free scope CLI returns success or failure from the PR event', async () => {
@@ -336,6 +541,43 @@ test('the dependency-free scope CLI returns success or failure from the PR event
     const blocked = await runScope({ eventPath });
     assert.equal(blocked.allowed, false);
     assert.equal(process.exitCode, 1);
+  } finally {
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the scope CLI reads cumulative paths before allowing a future review unit', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-paths-'));
+  const eventPath = join(directory, 'event.json');
+  const previousExitCode = process.exitCode;
+  const requests = [];
+  try {
+    await writeFile(eventPath, JSON.stringify({
+      repository: { full_name: 'JagPat/PMCvitan' },
+      pull_request: pullRequest({
+        number: 346,
+        changed_files: 2,
+        additions: 80,
+        deletions: 0,
+        body: preReviewBody(),
+      }),
+    }));
+    const result = await runScope({
+      eventPath,
+      token: 'test-token',
+      fetchImpl: async (url) => {
+        requests.push(String(url));
+        return new Response(JSON.stringify([
+          { filename: 'apps/api/prisma/migrations/20260817000000_example/migration.sql' },
+          { filename: 'apps/web/src/screens/ExampleScreen.tsx' },
+        ]));
+      },
+    });
+    assert.equal(result.allowed, false);
+    assert.equal(process.exitCode, 1);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0], /pulls\/346\/files/u);
   } finally {
     process.exitCode = previousExitCode;
     await rm(directory, { recursive: true, force: true });

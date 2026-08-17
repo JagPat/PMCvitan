@@ -20,21 +20,17 @@ whether the PR is still being built (`in_progress`) or waiting on Codex (`in_rev
 The hourly handoff cron posts a drift shepherd when live open PRs disagree with
 `open_pr: none`.
 
-Plan review is bounded. After 3 finding-bearing heads on a docs-only diff, the next
-head converts each still-open question into a named probe and carries
-`Review-Deferred-To-Probes: <task>`; nothing is dismissed and the exact-head gate still
-fails closed on every current-head finding — only the place of verification moves, from
-prose to probes. See `docs/AUTONOMOUS_LOOP.md`.
-
 Review efficiency is also mandatory. Keep one PR to one user workflow or one
 architectural concern; the standard budget is 20 files and 1,500 changed lines.
-Complete the PR template's six-row invariant matrix before the first review. Read
-and batch every Codex finding before pushing a correction. After two distinct
-finding-bearing heads, do not make another isolated patch: produce the required
-`docs/reviews/*convergence*.md` architectural audit and add
-`Review-Convergence: complete` to the correction commit. The `review-scope` check
-and trusted exact-head gate enforce this protocol without replacing any product
-test or independent review.
+Complete the PR template's five pre-review checks and six-row invariant matrix
+before the first review. Separate migrations from service/UI work when there is a
+viable seam; explicitly justify the rare inseparable unit. Read and batch every
+Codex finding before pushing a correction. After two distinct finding-bearing
+heads, close that PR and open a smaller replacement from current `main`, carrying
+`Replaces: #<closed-pr>` and only the unresolved unit. Never use another correction
+head, a historical convergence packet, or a trailer to reset the count. The
+`review-scope` check and trusted exact-head gate enforce this protocol without
+replacing any product test or independent review.
 
 Before architecture or implementation work, read:
 

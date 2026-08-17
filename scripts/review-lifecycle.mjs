@@ -13,7 +13,12 @@
 // prove that another correction head is the wrong instrument? It never dismisses
 // a finding and never clears a head. Its only outcomes are "keep reviewing" and
 // "stop; restructure".
-import { codexFindingHeads, findingHeadSeverity } from './review-efficiency.mjs';
+import {
+  codexFindingHeads,
+  findingHeadSeverity,
+  replacementSource,
+} from './review-efficiency.mjs';
+export { replacementSource } from './review-efficiency.mjs';
 
 // ONE cap, deliberately.
 //
@@ -39,21 +44,9 @@ export const LIFECYCLE_STATES = [
   'replacement_reviewing',
 ];
 
-// A replacement declares its source in the PR body. The declaration is what makes
-// a fresh review history legitimate: the lineage stays visible, and the metrics of
-// the PR being replaced are not silently discarded.
-const REPLACES = /^[\t ]*replaces:[\t ]*#(?<number>\d+)[\t ]*$/imu;
-
 // Machine-readable metrics carried on the sticky comment. The recorded count is a
 // FLOOR, never a fresh reading: see `mergeFindingHeadCount`.
 const METRICS_MARKER = '<!-- autonomous-review-metrics:';
-
-export function replacementSource(body) {
-  const match = REPLACES.exec(typeof body === 'string' ? body : '');
-  if (!match) return null;
-  const number = Number(match.groups.number);
-  return Number.isInteger(number) && number > 0 ? number : null;
-}
 
 export function readMetrics(commentBody) {
   const source = typeof commentBody === 'string' ? commentBody : '';

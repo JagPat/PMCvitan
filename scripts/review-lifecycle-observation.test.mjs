@@ -194,7 +194,7 @@ test('L7: the advisory reaches a PR-VISIBLE channel, not only the Actions log', 
   const keepCorrecting = stickyWrites.filter(
     (w) => /state: '(review_pending|changes_required)'/u.test(w),
   );
-  assert.ok(keepCorrecting.length >= 4, 'found the keep-correcting sticky writes');
+  assert.ok(keepCorrecting.length >= 2, 'found the keep-correcting sticky writes');
   for (const write of keepCorrecting) {
     assert.match(
       write,
@@ -222,7 +222,7 @@ test('L8: the crossing CAUSED by the current review still reaches the sticky', a
 
   const stickyWrites = [...source.matchAll(/statusBody\(\{[\s\S]*?\n\s*\}\)/gu)].map((m) => m[0]);
   const afterFindings = stickyWrites.filter((w) => /state: 'changes_required'/u.test(w));
-  assert.ok(afterFindings.length >= 3, 'found the post-finding sticky writes');
+  assert.ok(afterFindings.length >= 1, 'found the post-finding sticky writer');
   for (const write of afterFindings) {
     assert.match(
       write,
@@ -230,6 +230,11 @@ test('L8: the crossing CAUSED by the current review still reaches the sticky', a
       `a post-finding sticky must RECOMPUTE the advisory, not carry a stale one:\n${write.slice(0, 140)}`,
     );
   }
+  assert.equal(
+    [...source.matchAll(/await publishCurrentHeadFinding\(/gu)].length,
+    3,
+    'every path that observes findings must use the reset-aware publisher',
+  );
 
   // The pre-review sticky is the one case where the snapshot is correct — it is
   // written before the review that could cross the limit.

@@ -3,9 +3,23 @@
 import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
 
 export const REVIEW_SCOPE_ENFORCE_AFTER_PR = 246;
+export const PRE_REVIEW_ENFORCE_AFTER_PR = 345;
 export const STANDARD_MAX_FILES = 20;
 export const STANDARD_MAX_CHANGED_LINES = 1_500;
-export const CONVERGENCE_AFTER_FINDING_HEADS = 2;
+export const REVIEW_RESET_AFTER_FINDING_HEADS = 2;
+export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
+// Retained for the legacy convergence-evidence parser below. The trusted
+// controller now applies REVIEW_RESET_AFTER_FINDING_HEADS before that older
+// evidence shape can authorize another correction head.
+export const CONVERGENCE_AFTER_FINDING_HEADS = REVIEW_RESET_AFTER_FINDING_HEADS;
+
+export const REQUIRED_PRE_REVIEW_CHECKS = [
+  'concurrency-serialization',
+  'old-release-migration-compatibility',
+  'trigger-alternate-writers',
+  'authorization-tenancy',
+  'ci-reproduce-first',
+];
 
 // How many finding-bearing heads a DOCS-ONLY review may take before the still-open
 // questions must be handed to probes.
@@ -42,7 +56,11 @@ export const REQUIRED_INVARIANTS = [
 
 const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 const LARGE_MARKER = '<!-- review-size: justified-large -->';
+const INSEPARABLE_MIGRATION_MARKER = '<!-- migration-scope: inseparable -->';
 const CONVERGENCE_PACKET = /^docs\/reviews\/[^/]*convergence[^/]*\.md$/iu;
+const MIGRATION_FILE = /^apps\/api\/prisma\/migrations\/[^/]+\/migration\.sql$/u;
+const SERVICE_OR_UI_FILE = /^(?:apps\/api\/src|apps\/web\/src|packages\/shared\/src)\//u;
+const REPLACES_DECLARATION = /^[\t ]*replaces:[\t ]*(none|#\d+)[\t ]*$/gimu;
 // The state file `deferralPhases` reads. Named here because the gate must also notice when a
 // PR CHANGES it — see the phase check in assessConvergence.
 export const STATUS_DOCUMENT = 'docs/STATUS.md';
@@ -52,76 +70,215 @@ function finiteCount(value) {
   return Number.isFinite(count) && count >= 0 ? count : 0;
 }
 
+export function replacementDeclaration(body) {
+  const source = typeof body === 'string' ? body : '';
+  const matches = [...source.matchAll(REPLACES_DECLARATION)];
+  if (matches.length !== 1) return { kind: 'invalid', source: null };
+  if (matches[0][1].toLowerCase() === 'none') {
+    return { kind: 'none', source: null };
+  }
+  const number = Number(matches[0][1].slice(1));
+  return Number.isInteger(number) && number > 0
+    ? { kind: 'source', source: number }
+    : { kind: 'invalid', source: null };
+}
+
+export function replacementSource(body) {
+  const declaration = replacementDeclaration(body);
+  return declaration.kind === 'source' ? declaration.source : null;
+}
+
+export function assessReplacementLineage({
+  pullRequest,
+  requiredReplacements,
+  replacementPullRequests,
+}) {
+  const declaration = replacementDeclaration(pullRequest?.body);
+  if (!Array.isArray(requiredReplacements) || !Array.isArray(replacementPullRequests)) {
+    return {
+      allowed: false,
+      detail: 'required replacement lineage could not be read from GitHub',
+    };
+  }
+
+  const fulfilledSources = new Set(requiredReplacements
+    .filter(({ pullRequest: source }) => replacementPullRequests.some((candidate) =>
+      candidate?.merged_at
+      && candidate.number > source?.number
+      && replacementSource(candidate.body) === source?.number))
+    .map(({ pullRequest: source }) => source.number));
+  const pending = requiredReplacements.filter(({ pullRequest: source }) =>
+    source?.number !== pullRequest?.number
+    && !fulfilledSources.has(source?.number));
+
+  if (declaration.kind === 'source') {
+    const requirement = pending.find(
+      ({ pullRequest: source }) => source?.number === declaration.source,
+    );
+    if (!requirement) {
+      return {
+        allowed: false,
+        detail: `Replaces: #${declaration.source} does not name a review unit awaiting replacement`,
+      };
+    }
+    if (requirement.pullRequest.state !== 'closed') {
+      return {
+        allowed: false,
+        detail: `Replaces: #${declaration.source} is not closed; close the exhausted unit before reviewing its replacement`,
+      };
+    }
+    const competing = replacementPullRequests.find((candidate) =>
+      candidate?.number !== pullRequest?.number
+      && candidate?.state === 'open'
+      && replacementSource(candidate.body) === declaration.source);
+    if (competing) {
+      return {
+        allowed: false,
+        detail: `Replaces: #${declaration.source} is already claimed by open PR #${competing.number}`,
+      };
+    }
+    return { allowed: true, detail: null };
+  }
+
+  if (pending.length > 0) {
+    const source = pending[0].pullRequest;
+    return {
+      allowed: false,
+      detail: `exhausted PR #${source.number} still requires a replacement; declare Replaces: #${source.number} before starting fresh work`,
+    };
+  }
+  return { allowed: true, detail: null };
+}
+
 export function assessReviewScope(
   pullRequest,
   {
     enforceAfterPr = REVIEW_SCOPE_ENFORCE_AFTER_PR,
+    preReviewEnforceAfterPr = PRE_REVIEW_ENFORCE_AFTER_PR,
     maxFiles = STANDARD_MAX_FILES,
     maxChangedLines = STANDARD_MAX_CHANGED_LINES,
+    changedFiles,
+    requireChangedFiles = false,
+    requireReplacementLineage = false,
+    requiredReplacements,
+    replacementPullRequests,
   } = {},
 ) {
   const additions = finiteCount(pullRequest?.additions);
   const deletions = finiteCount(pullRequest?.deletions);
-  const changedFiles = finiteCount(pullRequest?.changed_files);
+  const changedFileCount = finiteCount(pullRequest?.changed_files);
   const changedLines = additions + deletions;
-  const large = changedFiles > maxFiles || changedLines > maxChangedLines;
+  const large = changedFileCount > maxFiles || changedLines > maxChangedLines;
+  const number = finiteCount(pullRequest?.number);
+  const body = String(pullRequest?.body ?? '');
+  const preReviewRequired = number > preReviewEnforceAfterPr;
+  const replaces = replacementDeclaration(body);
+  const missingChecklist = preReviewRequired
+    ? REQUIRED_PRE_REVIEW_CHECKS.filter((key) => {
+      const escaped = key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+      return !new RegExp(
+        '^[\\t ]*- \\[x\\] `' + escaped + '`(?:[\\t ]|$)',
+        'imu',
+      ).test(body);
+    })
+    : [];
+  const fileListUnreadable = preReviewRequired
+    && requireChangedFiles
+    && !Array.isArray(changedFiles);
+  const paths = Array.isArray(changedFiles)
+    ? changedFiles.flatMap((file) => changedPaths(file))
+    : [];
+  const migrationServiceMix = paths.some((path) => MIGRATION_FILE.test(path))
+    && paths.some((path) => SERVICE_OR_UI_FILE.test(path));
+  const migrationScope = /<!--\s*migration-scope:\s*(separated|inseparable)\s*-->/iu
+    .exec(body)?.[1]?.toLowerCase();
+  const seam = /^[\t ]*- Migration\/service seam:[\t ]*(.+?)[\t ]*$/imu.exec(body)?.[1]?.trim();
+  const meaningfulSeam = typeof seam === 'string'
+    && seam.length > 0
+    && !/^(?:n\/?a|none|not applicable|separated|tbd|todo|to do|pending|unknown|fixme)(?:\b.*)?$/iu
+      .test(seam)
+    && !/^[-?.]+$/u.test(seam)
+    && !/^<[^>]+>$/u.test(seam);
+  const lineage = preReviewRequired && requireReplacementLineage
+    ? assessReplacementLineage({
+      pullRequest,
+      requiredReplacements,
+      replacementPullRequests,
+    })
+    : { allowed: true, detail: null };
+  const preReviewProblems = [
+    ...(missingChecklist.length > 0
+      ? [`pre-review checklist items: ${missingChecklist.join(', ')}`]
+      : []),
+    ...(fileListUnreadable
+      ? ["the PR's cumulative file list could not be read"]
+      : []),
+    ...(preReviewRequired && replaces.kind === 'invalid'
+      ? ['the PR body needs exactly one `Replaces: none` or `Replaces: #<closed-pr>` declaration']
+      : []),
+    ...(!lineage.allowed ? [lineage.detail] : []),
+    ...(migrationServiceMix && migrationScope !== 'inseparable'
+      ? [`migration and service/UI changes must use separate review units when a viable seam exists; `
+        + `use ${INSEPARABLE_MIGRATION_MARKER} only when they cannot be reviewed safely apart`]
+      : []),
+    ...(migrationServiceMix && migrationScope === 'inseparable' && !meaningfulSeam
+      ? ['an inseparable migration/service unit needs a concrete "Migration/service seam" explanation']
+      : []),
+  ];
   const common = {
-    changedFiles,
+    changedFiles: changedFileCount,
     changedLines,
     large,
     limits: { maxFiles, maxChangedLines },
+    missingChecklist,
+    migrationServiceMix,
   };
+  let state = 'standard';
+  let missingInvariants = [];
+  let sizeProblem = null;
 
-  if (!large) {
-    return { ...common, state: 'standard', allowed: true, missingInvariants: [] };
+  if (large && number <= enforceAfterPr) {
+    state = 'grandfathered';
+  } else if (large) {
+    const sizeDeclaration = /^<!--\s*review-size:\s*(standard|justified-large)\s*-->/iu
+      .exec(body.trimStart());
+    const justified = sizeDeclaration?.[1]?.toLowerCase() === 'justified-large';
+    const tableRows = body
+      .split(/\r?\n/u)
+      .filter((line) => line.trimStart().startsWith('|'))
+      .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()));
+    missingInvariants = REQUIRED_INVARIANTS.filter(
+      (invariant) => !tableRows.some(
+        (cells) => cells[0]?.toLowerCase() === invariant
+          && Boolean(cells[1])
+          && Boolean(cells[2]),
+      ),
+    );
+    if (!justified || missingInvariants.length > 0) {
+      const missing = [
+        ...(!justified ? [`the ${LARGE_MARKER} marker`] : []),
+        ...(missingInvariants.length > 0
+          ? [`invariant matrix rows: ${missingInvariants.join(', ')}`]
+          : []),
+      ];
+      sizeProblem = `Large review unit requires a justified-large marker and complete invariant matrix; missing ${missing.join('; ')}`;
+    } else {
+      state = 'justified_large';
+    }
   }
 
-  if (finiteCount(pullRequest?.number) <= enforceAfterPr) {
-    return {
-      ...common,
-      state: 'grandfathered',
-      allowed: true,
-      missingInvariants: [],
-    };
-  }
-
-  const body = String(pullRequest?.body ?? '');
-  const sizeDeclaration = /^<!--\s*review-size:\s*(standard|justified-large)\s*-->/iu
-    .exec(body.trimStart());
-  const justified = sizeDeclaration?.[1]?.toLowerCase() === 'justified-large';
-  const tableRows = body
-    .split(/\r?\n/u)
-    .filter((line) => line.trimStart().startsWith('|'))
-    .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()));
-  const missingInvariants = REQUIRED_INVARIANTS.filter(
-    (invariant) => !tableRows.some(
-      (cells) => cells[0]?.toLowerCase() === invariant
-        && Boolean(cells[1])
-        && Boolean(cells[2]),
-    ),
-  );
-  if (!justified || missingInvariants.length > 0) {
-    const missing = [
-      ...(!justified ? [`the ${LARGE_MARKER} marker`] : []),
-      ...(missingInvariants.length > 0
-        ? [`invariant matrix rows: ${missingInvariants.join(', ')}`]
-        : []),
-    ];
+  const problems = [...(sizeProblem ? [sizeProblem] : []), ...preReviewProblems];
+  if (problems.length > 0) {
     return {
       ...common,
       state: 'blocked',
       allowed: false,
       missingInvariants,
-      detail: `Large review unit requires a justified-large marker and complete invariant matrix; missing ${missing.join('; ')}`,
+      detail: problems.join('; '),
     };
   }
 
-  return {
-    ...common,
-    state: 'justified_large',
-    allowed: true,
-    missingInvariants: [],
-  };
+  return { ...common, state, allowed: true, missingInvariants };
 }
 
 // Which finding heads carry a CRITICAL finding.
