@@ -3730,6 +3730,33 @@ assert "A1: a legacy ZERO delta becomes 'none' with NO amount — an assessed ze
 assert "A1: nothing was left 'confirmed' — the migration manufactured no finality" \
   "SELECT COUNT(*)::text FROM \"DecisionOption\" WHERE \"costImpact\"='confirmed';" \
   "0"
+
+# The case a task-4a seal stands in front of. `UP4A-OW` belongs to the WITHDRAWN decision UP4A-D1,
+# and `DecisionOption_t4a_frozen` refuses every change to it — correctly, for an application. But a
+# withdrawn decision is visible history rather than a deletion: its option still renders, so it
+# still needs a kind, and leaving it null would push a special case onto every future reader. The
+# migration therefore crosses that seal BY NAME and re-arms it, and these four assertions are the
+# whole contract — the row IS classified, both seals ARE armed again, no touch evidence was
+# invented for a question nobody touched, and the seal still BITES against an application.
+assert "A1: a WITHDRAWN decision's frozen option is classified too — history still has to render" \
+  "SELECT COALESCE(\"kindCode\",'<null>') || '/' || \"costImpact\"::text || '/' || COALESCE(\"costAmount\"::text,'-') FROM \"DecisionOption\" WHERE \"id\"='UP4A-OW';" \
+  "material/none/-"
+# `tgenabled` is PostgreSQL's `"char"` type, and `text || "char"` has no unambiguous operator — it
+# raises rather than returning a wrong answer, so the cast is required, not cosmetic.
+assert "A1: both task-4a option seals are ARMED again after the backfill crossed them" \
+  "SELECT string_agg(tgname || '=' || tgenabled::text, ',' ORDER BY tgname) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('DecisionOption_t4a_frozen','DecisionOption_t4a_touch');" \
+  "DecisionOption_t4a_frozen=O,DecisionOption_t4a_touch=O"
+# Exactly one, and it is the task-4a fixture's OWN — the touch trigger fired when 4a inserted
+# `UP4A-OW`, before the withdrawal. The backfill ran with that trigger disabled and added none, so
+# a second row here would mean it fabricated evidence. (The migration proves the same thing from
+# the inside, where it can compare against its own `txid_current()`; this is the outside view.)
+assert "A1: the backfill added no option-touch evidence — only task-4a's own insert is on record" \
+  "SELECT COUNT(*)::text FROM \"DecisionOptionTouch\" WHERE \"decisionId\"='UP4A-D1';" \
+  "1"
+assert_rejects "A1: and the seal still BITES — an application still cannot touch that frozen option" \
+  "UPDATE \"DecisionOption\" SET \"description\"='edited after withdrawal' WHERE \"id\"='UP4A-OW'" \
+  "withdrawn"
+
 assert "A1: material, swatch and the issue's own colour chip are all nullable now" \
   "SELECT string_agg(\"table_name\" || '.' || \"column_name\", ',' ORDER BY \"table_name\", \"column_name\") FROM information_schema.columns WHERE \"is_nullable\"='YES' AND ((\"table_name\"='DecisionOption' AND \"column_name\" IN ('material','swatch')) OR (\"table_name\"='Decision' AND \"column_name\"='photoSwatch'));" \
   "Decision.photoSwatch,DecisionOption.material,DecisionOption.swatch"

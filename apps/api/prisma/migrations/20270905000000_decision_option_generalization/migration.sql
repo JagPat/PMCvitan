@@ -93,12 +93,60 @@ CREATE INDEX IF NOT EXISTS "DecisionOption_kindCode_idx" ON "DecisionOption"("ki
 -- would manufacture a finality nobody ever asserted, and `none` for a zero delta would do the
 -- same in the other direction — a stated zero is an assessment, so it maps to `none` only where
 -- the author really wrote zero, which is what the CASE below says.
+-- Two task-4a seals stand between this backfill and the rows it must classify, and BOTH are
+-- right to. They are crossed deliberately, by name, and re-armed before this migration commits.
+--
+--   `DecisionOption_t4a_frozen` refuses ANY change to a WITHDRAWN decision's options. A withdrawn
+--     decision is visible history, not a deletion — it still renders in the Decision Log, so its
+--     options still need a kind. Skipping them would leave permanent nulls that every future
+--     reader has to special-case, which is a worse answer than classifying them.
+--   `DecisionOption_t4a_touch` writes a `DecisionOptionTouch` row per changed option. A schema
+--     backfill is not a person editing an option, and recording that it was would be a lie in the
+--     evidence table.
+--
+-- What makes this legitimate rather than a bypass: the backfill does not change what any option
+-- SAYS. `delta` is left untouched, the material identity is untouched, and the new columns only
+-- re-express the meaning those columns already carried. This is the DISABLE/backfill/ENABLE idiom
+-- migrations `20261222000000` and `20261224000000` already use — with a re-arm assertion added,
+-- because a migration that silently left a seal disabled would be far worse than one that fails.
+DO $$
+DECLARE missing TEXT;
+BEGIN
+  SELECT string_agg(t.name, ', ') INTO missing
+    FROM (VALUES ('DecisionOption_t4a_frozen'), ('DecisionOption_t4a_touch')) AS t(name)
+   WHERE NOT EXISTS (
+     SELECT 1 FROM pg_trigger WHERE tgname = t.name AND NOT tgisinternal);
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'option generalization: expected task-4a option seal(s) % are absent; refusing to backfill against an unknown seal network.', missing;
+  END IF;
+END $$;
+
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen";
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_touch";
+
 UPDATE "DecisionOption"
    SET "kindCode" = COALESCE("kindCode", 'material'),
        "costImpact" = CASE WHEN "delta" = 0 THEN 'none'::"CostImpactState"
                            ELSE 'estimated'::"CostImpactState" END,
        "costAmount" = CASE WHEN "delta" = 0 THEN NULL ELSE "delta" END
  WHERE "kindCode" IS NULL;
+
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen";
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_touch";
+
+-- Both seals armed again, verified from the catalog rather than assumed from the statements above.
+DO $$
+DECLARE still_off TEXT;
+BEGIN
+  SELECT string_agg(tgname, ', ') INTO still_off
+    FROM pg_trigger
+   WHERE NOT tgisinternal
+     AND tgname IN ('DecisionOption_t4a_frozen', 'DecisionOption_t4a_touch')
+     AND tgenabled = 'D';
+  IF still_off IS NOT NULL THEN
+    RAISE EXCEPTION 'option generalization: task-4a option seal(s) % are still DISABLED after the backfill. Aborting with the database unchanged.', still_off;
+  END IF;
+END $$;
 
 -- ── 5. Now relax the material columns ─────────────────────────────────────────────────────────
 -- Done AFTER the backfill so no window exists in which a row could be written with neither a
@@ -168,8 +216,17 @@ CREATE TRIGGER "MaterialRequirementSpec_option_is_material"
 -- whole migration if either fails — `prisma migrate deploy` sends the file as one multi-statement
 -- query, which PostgreSQL runs in an implicit transaction, so an abort changes nothing.
 DO $$
-DECLARE v_kindless INT; v_incoherent INT; v_unqualified INT;
+DECLARE v_kindless INT; v_incoherent INT; v_unqualified INT; v_fabricated INT;
 BEGIN
+  -- The touch seal was disabled across the backfill, so no touch row should bear this
+  -- migration's own transaction id. `txid_current()` is exact here: the whole migration runs in
+  -- one implicit transaction, so a row carrying this txid could only have come from the backfill.
+  SELECT COUNT(*) INTO v_fabricated
+    FROM "DecisionOptionTouch" WHERE "txid" = txid_current();
+  IF v_fabricated > 0 THEN
+    RAISE EXCEPTION 'option generalization: the backfill fabricated % option-touch evidence row(s). Aborting with the database unchanged.', v_fabricated;
+  END IF;
+
   SELECT COUNT(*) INTO v_kindless FROM "DecisionOption" WHERE "kindCode" IS NULL;
   IF v_kindless > 0 THEN
     RAISE EXCEPTION 'option generalization: % pre-existing option(s) were left without a kind. Aborting with the database unchanged.', v_kindless;
