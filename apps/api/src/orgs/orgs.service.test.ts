@@ -476,10 +476,10 @@ describe('OrgsService.addOrgMember', () => {
       // callback itself — the same shape `makeTx` uses above.
       $transaction: vi.fn(async (run: (client: unknown) => Promise<unknown>) => run(prisma)),
       project: { findMany: vi.fn(async () => projects) },
-      // round 15 — same owner-row read, served from this suite's own roster
+      // round 16 — the whole-roster lock, served from this suite's own roster
       $queryRawUnsafe: vi.fn(async (sql: string) =>
-        /FROM "OrgMembership"[\s\S]*FOR UPDATE/.test(sql) && /'owner'/.test(sql)
-          ? orgMemberships.filter((m: { role: string }) => m.role === 'owner').map((m: { userId: string }) => ({ userId: m.userId }))
+        /FROM "OrgMembership"[\s\S]*FOR UPDATE/.test(sql)
+          ? orgMemberships.map((m: { userId: string; role: string }) => ({ userId: m.userId, role: m.role }))
           : [],
       ),
     };
@@ -560,9 +560,11 @@ describe('OrgsService.updateOrgMemberRole / removeOrgMember', () => {
       // round 15 (Codex P2) — the last-owner count is now taken INSIDE the transaction, under
       // `FOR UPDATE` on the org's owner rows. The double must serve that read from the same
       // in-memory roster the rest of this suite mutates, or every demotion looks like the last one.
+      // round 16 — the guard locks the org's WHOLE roster and filters in TypeScript, so the
+      // double serves rows WITH their roles rather than a pre-filtered owner list
       $queryRawUnsafe: vi.fn(async (sql: string) =>
-        /FROM "OrgMembership"[\s\S]*FOR UPDATE/.test(sql) && /'owner'/.test(sql)
-          ? state.filter((m) => m.role === 'owner').map((m) => ({ userId: m.userId }))
+        /FROM "OrgMembership"[\s\S]*FOR UPDATE/.test(sql)
+          ? state.map((m) => ({ userId: m.userId, role: m.role }))
           : [],
       ),
       $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),

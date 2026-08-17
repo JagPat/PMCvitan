@@ -194,18 +194,44 @@ export class OrgsService {
    * loser re-reads a count that now includes its rival's commit. It is taken FIRST, before
    * `assertOrgWriteKeepsDecisionHolders` reaches for the target row and the projects' readiness
    * keys, so every org roster writer acquires the same locks in the same order.
+   *
+   * Round 16 (Codex P2) — and WHETHER the rule applies is decided from that same locked set, not
+   * from the caller's pre-read. Round 15 put the COUNT under the lock and left the entry condition
+   * reading a `departingRole` fetched before the transaction opened: a request that saw the target
+   * as `member` skipped the lock entirely, so a promotion committing in between made its own write
+   * the one that removed the last owner. The guard was holding a lock it had already decided it
+   * did not need.
+   *
+   * The parameter is therefore GONE rather than validated. `assertOrgWriteKeepsDecisionHolders`
+   * next door learned this in round 6 — "the DEPARTING role comes from the row LOCKED inside this
+   * transaction, never from the caller's pre-read" — and a stale value that cannot be passed cannot
+   * be trusted. The owner set is read first and answers both questions: is this target currently an
+   * owner, and is it the last one.
+   *
+   * The lock is now taken for any write that does not RESULT in an owner, including a plain
+   * addition. That is a little more contention on the org's owner rows and it buys the only
+   * ordering that is safe: decide under the lock, or do not decide.
    */
   private async assertOrgKeepsAnOwner(
     tx: Prisma.TransactionClient,
     orgId: string,
-    departingRole: string | undefined,
+    userId: string,
     nextRole: string,
   ): Promise<void> {
-    if (departingRole !== 'owner' || nextRole === 'owner') return;
-    const owners = await tx.$queryRawUnsafe<Array<{ userId: string }>>(
-      `SELECT "userId" FROM "OrgMembership" WHERE "orgId" = $1 AND "role" = 'owner' ORDER BY "userId" FOR UPDATE`,
+    if (nextRole === 'owner') return; // the write leaves an owner behind by construction
+    // The lock is over the org's WHOLE roster, not over `role = 'owner'`. A predicate lock is the
+    // trap this round nearly shipped: under READ COMMITTED, `FOR UPDATE` re-checks the rows it
+    // scanned and DROPS the ones that stopped matching, but it never picks up rows that started
+    // matching while it waited. A request blocked behind a promotion would resume, see the old
+    // owner drop out of its result, never see the new owner arrive, and conclude the org had no
+    // owners at all — the opposite of the truth, and silently permissive. Membership of an org is
+    // stable in a way its roles are not, so that is what is locked.
+    const roster = await tx.$queryRawUnsafe<Array<{ userId: string; role: string }>>(
+      `SELECT "userId", "role" FROM "OrgMembership" WHERE "orgId" = $1 ORDER BY "userId" FOR UPDATE`,
       orgId,
     );
+    const owners = roster.filter((m) => m.role === 'owner');
+    if (!owners.some((o) => o.userId === userId)) return; // not an owner NOW — this write removes none
     if (owners.length <= 1) throw new BadRequestException('The org must keep at least one owner');
   }
 
@@ -291,7 +317,7 @@ export class OrgsService {
     const membership = await this.prisma.$transaction(async (tx) => {
       // round 15 — the last-owner count is taken UNDER the org's owner-row locks, inside the
       // transaction that demotes. Read outside it, two owners demoting each other both passed.
-      await this.assertOrgKeepsAnOwner(tx, orgId, existing?.role, input.role);
+      await this.assertOrgKeepsAnOwner(tx, orgId, user.id, input.role);
       // A pure CREATE short-circuits inside the guard: with no row to lock, the departing role is
       // the one being written, and a role that still supplies pmc standing (or never did) returns
       // before any project is examined.
@@ -384,7 +410,7 @@ export class OrgsService {
       // round 15 — and the last-owner rule is asked HERE too, under the same owner-row locks. The
       // finding named `addOrgMember`; this door had the identical read-outside-the-write defect,
       // and fixing one of a pair has been this PR's most repeated mistake.
-      await this.assertOrgKeepsAnOwner(tx, orgId, existing.role, input.role);
+      await this.assertOrgKeepsAnOwner(tx, orgId, userId, input.role);
       await this.assertOrgWriteKeepsDecisionHolders(tx, orgId, userId, existing.role, input.role);
       return tx.orgMembership.update({ where: { orgId_userId: { orgId, userId } }, data: { role: input.role } });
     });

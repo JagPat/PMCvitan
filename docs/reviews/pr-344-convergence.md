@@ -1424,3 +1424,62 @@ in this unit.
 Nothing from this round. F1 and F3 are answered in code; F2 is answered with live-database evidence.
 The authoritative-definition map is NAMED as the next head's work rather than smuggled into this one —
 it is a new artifact with its own test, and this head is a correction.
+
+---
+
+## Eighteenth edition — round 17, and a fix that was wrong twice before it was right
+
+One finding on `7c86abf` (P2). **1 SELF-INFLICTED, from round 15. 0 SEAM.**
+
+### The finding
+
+Round 15 moved the last-owner COUNT inside the transaction and under `FOR UPDATE`. It left the
+ENTRY CONDITION — *does this rule apply at all?* — reading a `departingRole` fetched before the
+transaction opened. A request that saw its target as `member` skipped the lock entirely, so a
+promotion committing in between made its own write the one that removed the last owner. **The guard
+decided it did not need a lock, using the very value the lock exists to make true.**
+
+The parameter is deleted rather than validated. `assertOrgWriteKeepsDecisionHolders` next door
+learned this in round 6 — *"the DEPARTING role comes from the row LOCKED inside this transaction,
+never from the caller's pre-read"* — and a stale value that cannot be passed cannot be trusted.
+
+### The part the finding did not contain
+
+The first fix was still wrong, and the probe caught it, not the reviewer.
+
+Locking `WHERE "role" = 'owner'` reads correctly and behaves incorrectly. Under READ COMMITTED,
+`SELECT … FOR UPDATE` re-checks the rows it scanned when the lock is granted and **drops** those
+that no longer match — but it never **picks up** rows that started matching while it waited. A
+request blocked behind a promotion resumes, watches the old owner fall out of its result, never sees
+the new owner arrive, and concludes the org has no owners at all: the opposite of the truth, and
+silently permissive.
+
+The lock is therefore over the org's whole roster (`WHERE "orgId" = $1`), whose membership is stable
+in a way its roles are not, and the owners are filtered from the locked rows.
+
+**This is the most useful failure in the PR so far**: a probe written before the fix was believed,
+which then failed *green-on-green* — the code compiled, the old tests passed, and only the new probe
+said the invariant still did not hold.
+
+### The count
+
+| round | findings | seam | self-inflicted | original | refuted |
+| --- | --- | --- | --- | --- | --- |
+| 13 | 2 | 0 | 2 | 0 | 0 |
+| 14 | 3 | 0 | 1 | 2 | 1 |
+| 15 | 4 | 0 | 1 | 1 | 2 |
+| 16 | 3 | 0 | 2 | 0 | 1 |
+| 17 | 1 | 0 | 1 | 0 | 0 |
+
+**Eleven consecutive rounds, thirty-two findings, zero seam defects.** Severity has fallen to a
+single P2 on this head.
+
+### The rule this round contributes
+
+> A lock makes a value true. **Never let that value decide whether to take the lock** — and when the
+> locked set is defined by a predicate others can change, lock the set that cannot change instead.
+
+### What is deferred
+
+Nothing from this round. The authoritative-definition map remains the named next unit of work — it
+is the fix for the class that produced three findings in rounds 15–16, and it has not moved.

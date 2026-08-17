@@ -203,6 +203,59 @@ describe('Phase 6 unit 4b-i round 15 — the Codex findings on ac99e6b (live PG)
     expect(await ownerCount()).toBe(1);
   });
 
+  it('R16: the last-owner rule is decided from the LOCKED set — a caller whose view is stale still cannot strip the last owner', async () => {
+    // Round 15 put the COUNT under the lock and left the ENTRY CONDITION reading a role fetched
+    // before the transaction opened. A request that saw its target as `member` skipped the lock
+    // altogether, so a promotion committing in between made its own write the one that removed the
+    // last owner.
+    //
+    // This holds the owner rows from another session, mutates the roster underneath a caller that
+    // has already taken its pre-read, and then releases. The caller's view of the target says
+    // `member`; the database says `owner` by the time the lock is granted. The write must be
+    // refused on what the lock says.
+    const target = await mintUser('stalerole');
+    await t.prisma.orgMembership.create({ data: { orgId: f.orgA.id, userId: target, role: 'member' } });
+    expect(await ownerCount()).toBe(1); // the fixture owner is the sole owner
+
+    const holder = new PrismaClient();
+    await holder.$connect();
+    let outcome: unknown;
+    try {
+      let release!: () => void;
+      let acquired!: () => void;
+      const released = new Promise<void>((r) => (release = r));
+      const holding = new Promise<void>((r) => (acquired = r));
+      const held = holder.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe(
+          `SELECT "userId" FROM "OrgMembership" WHERE "orgId" = $1 AND "role" = 'owner' ORDER BY "userId" FOR UPDATE`,
+          f.orgA.id,
+        );
+        acquired();
+        await released;
+        // underneath the waiting caller: the target BECOMES the owner, and the previous one steps
+        // down — so the caller's `member` view of the target is now false
+        await tx.$executeRawUnsafe(
+          `UPDATE "OrgMembership" SET "role" = 'owner' WHERE "orgId" = $1 AND "userId" = $2`, f.orgA.id, target);
+        await tx.$executeRawUnsafe(
+          `UPDATE "OrgMembership" SET "role" = 'member' WHERE "orgId" = $1 AND "userId" = $2`, f.orgA.id, f.ownerUser.id);
+      }, { timeout: 40_000, maxWait: 10_000 });
+      await holding;
+
+      const demote = orgs
+        .updateOrgMemberRole(f.orgA.id, f.ownerUser.id, target, { role: 'member' })
+        .then(() => 'committed' as const, (e: unknown) => e);
+      await waitForBlocked(1, '%FROM "OrgMembership"%FOR UPDATE%');
+      release();
+      await held;
+      outcome = await demote;
+    } finally {
+      await holder.$disconnect();
+    }
+
+    expect(outcome, 'the demotion must not commit against a set it never looked at').not.toBe('committed');
+    expect(await ownerCount(), 'the org keeps a roster manager').toBeGreaterThanOrEqual(1);
+  });
+
   // ── F3 ─────────────────────────────────────────────────────────────────────────────────────
 
   it('F3: demoting an org admin who ALSO holds an active project membership is allowed — that row supplies no standing', async () => {

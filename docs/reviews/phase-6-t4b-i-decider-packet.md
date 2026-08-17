@@ -799,3 +799,28 @@ this repository**, not by defects. The tree holds nine successive definitions of
 The next head should publish that map — for each seal function, the migration that last defines it,
 **verified against `pg_proc` by a test** so it cannot rot. It is named here rather than folded in,
 because it is a new artifact with its own test and this head is a correction.
+
+---
+
+## Round 17 — the single Codex finding on `7c86abf`
+
+One P2, self-inflicted by round 15, and the fix took two attempts.
+
+**Finding.** `assertOrgKeepsAnOwner` early-returned on a `departingRole` read before the transaction
+opened, so a caller whose view of the target said `member` never took the owner lock at all.
+
+**Fix.** The parameter is removed. The guard takes the org's roster lock first and derives both
+answers from it: *is this target an owner now*, and *is it the last one*. A stale role can no longer
+be passed, which is the same shape round 6 applied to the sibling guard.
+
+**The correction inside the correction.** The first attempt locked `WHERE "role" = 'owner'`. Under
+READ COMMITTED that lock drops rows that stopped matching and never adds rows that started matching,
+so a request blocked behind a promotion would see an EMPTY owner set and permit the write. The lock
+is now over `WHERE "orgId" = $1` — membership is stable where roles are not — and the owners are
+filtered from the locked rows in TypeScript.
+
+**Evidence.** `phase6-t4b-correction15.test.ts` R16 holds the roster from a second session, promotes
+the target and demotes the incumbent underneath a caller that has already taken its pre-read, then
+releases: RED without the fix (the demotion commits), RED with the *first* fix (empty owner set),
+GREEN with the roster lock. Suite 8/8. `pnpm check` EXIT 0 (web 790/790, API 793/793) with both orgs
+unit doubles updated to serve the whole-roster read.
