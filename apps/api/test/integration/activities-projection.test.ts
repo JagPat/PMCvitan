@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
@@ -86,7 +86,7 @@ describe('Phase 2 Task 10 (Module 4) — activities projection == live slices, l
     await t.prisma.dailyLog.deleteMany({ where: { projectId: pids } });
     await t.prisma.activity.deleteMany({ where: { projectId: pids } });
     await t.prisma.phase.deleteMany({ where: { projectId: pids } });
-    await t.prisma.decision.deleteMany({ where: { projectId: pids } });
+    await wipeDecisions(t.prisma, { projectId: pids });
     await t.prisma.projectNode.deleteMany({ where: { projectId: pids } });
     await t.prisma.notification.deleteMany({ where: { projectId: pids } });
     await t.prisma.auditLog.deleteMany({ where: { projectId: pids } });

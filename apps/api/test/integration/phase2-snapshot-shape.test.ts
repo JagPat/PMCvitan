@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
 import { SnapshotService } from '../../src/snapshot/snapshot.service';
 import type { Role } from '../../src/common/auth';
 
@@ -273,7 +273,7 @@ describe('Phase 2 Task 1 — snapshot shape, gating, drafts & exact nested DTOs 
     await t.prisma.phase.deleteMany({ where: { projectId: pid } });
     await t.prisma.activity.deleteMany({ where: { projectId: pid } });
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: pid } } });
-    await t.prisma.decision.deleteMany({ where: { projectId: pid } });
+    await wipeDecisions(t.prisma, { projectId: pid });
     await t.prisma.projectNode.deleteMany({ where: { projectId: pid } });
     await f.cleanup();
     await t.close();

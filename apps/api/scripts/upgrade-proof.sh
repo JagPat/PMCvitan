@@ -78,6 +78,11 @@ PHASE1_FIRST=20260910000000
 # planted at the pre-round-2 point, the migration is REHEARSED against forged provenance
 # (it must ABORT), the operator repairs, and only then does it apply.
 PHASE3_R2=20261212000000
+# Phase 6 task 4b is exercised after the task-4a regression packet. The packet deliberately
+# plants pre-4b alternate-writer shapes and re-runs the 4a migration; applying 4b first would
+# make those historical fixtures impossible to plant and would no longer prove the old ledger.
+PHASE6_T4B=20270826000000
+PHASE6_T4B_NAME=20270826000000_phase6_t4b_approval_attribution
 
 PSQL_ADMIN="psql -X -q -v ON_ERROR_STOP=1 -d postgres"
 PSQL="psql -X -v ON_ERROR_STOP=1 -d $DB"
@@ -90,12 +95,15 @@ $PSQL_ADMIN -c "CREATE DATABASE $DB;" || exit 1
 baseline=0
 phase1_dirs=()
 phase3_r2_dirs=()
+phase6_t4b_dirs=()
 for d in $(ls -d "$MIG_DIR"/*/ | sort); do
   name="$(basename "$d")"
   stamp="${name%%_*}"
   if [ "$stamp" -lt "$PHASE1_FIRST" ] 2>/dev/null || [ "$name" = "0_init" ]; then
     $PSQL -q -f "$d/migration.sql" >/dev/null || { echo "baseline migration failed: $name"; exit 1; }
     baseline=$((baseline + 1))
+  elif [ "$stamp" -ge "$PHASE6_T4B" ] 2>/dev/null; then
+    phase6_t4b_dirs+=("$d")
   elif [ "$stamp" -ge "$PHASE3_R2" ] 2>/dev/null; then
     phase3_r2_dirs+=("$d")
   else
@@ -3541,6 +3549,152 @@ assert "4a round 8 (R8-F3) + round 14 (R14-F1): the migration retires the pre-wi
 assert "4a round 8 (R8-F2): the servable decisions.inbox generation claiming the pre-withdrawn row is pending is RETIRED — reads fall back to canonical truth until the next delivery/rebuild" \
   "SELECT \"status\" FROM \"ProjectionGeneration\" WHERE \"id\"='UP4A-GEN1';" \
   "retired"
+
+# ---- Phase 6 task 4b replacement: database-only approval attribution/evidence expansion ----
+# The 4a proof above deliberately re-runs its older migration after planting pre-4b shapes. Apply
+# the deferred ledger tail now, in order, then retry this migration once to prove its sealed
+# legacy-table trigger does not intercept the migration-owned `ON CONFLICT` path.
+echo ""
+echo "=== Phase 6 task 4b: approval attribution/evidence expansion ==="
+for d in "${phase6_t4b_dirs[@]}"; do
+  name="$(basename "$d")"
+  echo "applying deferred ledger migration: $name"
+  $PSQL --single-transaction -q -f "$d/migration.sql" >/dev/null \
+    || { echo "FAILED  deferred ledger migration: $name"; exit 1; }
+done
+[ -d "$MIG_DIR/$PHASE6_T4B_NAME" ] \
+  || { echo "FAILED  expected 4b migration missing from the ledger"; exit 1; }
+$PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_NAME/migration.sql" >/dev/null \
+  || { echo "FAILED  4b approval-attribution migration retry"; FAIL=1; }
+
+assert "4b: every legacy decision keeps the client holder default and no approval tuple was invented" \
+  "SELECT string_agg(\"id\" || '=' || \"deciderKind\"::text || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>'), ',' ORDER BY \"id\") FROM \"Decision\" WHERE \"id\" IN ('DL-1','DL-2');" \
+  "DL-1=client/<null>,DL-2=client/<null>"
+assert "4b: the migration, and only the migration, stamped the pre-existing change/approved approvals" \
+  "SELECT string_agg(\"decisionId\", ',' ORDER BY \"decisionId\") FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('DL-1','DL-2');" \
+  "DL-1,DL-2"
+assert "4b: the same-project holder FK, two coherence CHECKs and four lookup/candidate indexes are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('Decision_projectId_deciderMembershipId_fkey','Decision_t4b_decider_pair_check','Decision_t4b_approved_tuple_check'))::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname IN ('Membership_projectId_id_key','Decision_deciderMembershipId_idx','Decision_approvedDeciderMembershipId_idx','Decision_open_holder_idx'))::text;" \
+  "3|4"
+assert "4b: holder/attribution, alternate-writer, legacy and truncate seals are installed" \
+  "SELECT COUNT(*) FROM pg_trigger WHERE tgname IN ('Decision_t4b_attribution_seal','Membership_t4b_identity_frozen','Decision_t4a_d_no_delete','Decision_t4b_evidence_no_delete','DecisionLegacyApproval_sealed','DecisionLegacyApproval_no_truncate','Decision_t4b_no_truncate') AND NOT tgisinternal;" \
+  "7"
+
+# Compatibility-window proof: this is the exact pre-4b writer shape. It approves without naming
+# the new tuple and must keep working until the later writer/deployment/enforcement unit.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b old-writer compatibility: tupleless approval was rejected"; FAIL=1; }
+INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","publishedAt")
+VALUES ('UP4B-OLD','p1','Compatibility-window approval','Hall','pending','stone',now());
+UPDATE "Decision"
+   SET "status"='approved', "approvedById"='USER-1', "approver"='Legacy PMC',
+       "approvedOption"='Legacy option'
+ WHERE "id"='UP4B-OLD';
+SQL
+assert "4b compatibility: the old writer still approves, leaves the tuple null, and cannot forge a migration stamp" \
+  "SELECT \"status\"::text || '/' || COALESCE(\"approvedDeciderKind\"::text,'<null>') || '/' || (SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\"='UP4B-OLD') FROM \"Decision\" WHERE \"id\"='UP4B-OLD';" \
+  "approved/<null>/0"
+
+# A valid tuple-bearing approval proves the expansion is usable without requiring it from old
+# writers. The named holder already exists in the legacy fixture (UP4A-M1).
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b attributed approval fixture"; FAIL=1; }
+INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","publishedAt","deciderKind","deciderMembershipId")
+VALUES ('UP4B-ATTR','p1','Attributed approval','Hall','pending','stone',now(),'member','UP4A-M1');
+UPDATE "Decision"
+   SET "status"='approved', "approvedDeciderKind"='member',
+       "approvedDeciderMembershipId"='UP4A-M1', "approvedDeciderLabel"='Legacy PMC'
+ WHERE "id"='UP4B-ATTR';
+SQL
+assert "4b: a coherent approval transition freezes the exact current holder tuple" \
+  "SELECT \"approvedDeciderKind\"::text || '/' || \"approvedDeciderMembershipId\" || '/' || \"approvedDeciderLabel\" FROM \"Decision\" WHERE \"id\"='UP4B-ATTR';" \
+  "member/UP4A-M1/Legacy PMC"
+
+assert_rejects "4b: an application cannot add a row to the migration-owned legacy set" \
+  "INSERT INTO \"DecisionLegacyApproval\"(\"decisionId\") VALUES ('UP4B-OLD')" \
+  "migration-owned and sealed"
+assert_rejects "4b: a cross-project named holder is rejected by the composite FK" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"deciderKind\",\"deciderMembershipId\") VALUES ('UP4B-CROSS','p2','Cross tenant','Hall','pending','stone','member','UP4A-M1')" \
+  "foreign key constraint"
+assert_rejects "4b: whitespace-only approval labels fail the complete ASCII-whitespace CHECK" \
+  "INSERT INTO \"Decision\"(\"id\",\"projectId\",\"title\",\"room\",\"status\",\"photoSwatch\",\"deciderKind\",\"deciderMembershipId\",\"approvedDeciderKind\",\"approvedDeciderMembershipId\",\"approvedDeciderLabel\") VALUES ('UP4B-BLANK','p1','Blank tuple','Hall','approved','stone','member','UP4A-M1','member','UP4A-M1',E' \\t\\n\\x0B\\f\\r')" \
+  "Decision_t4b_approved_tuple_check"
+# Existing writers historically may append the approval event before changing the head. Keep
+# that order compatible, then prove the parent DELETE seal counts the alternate evidence.
+$PSQL -q -c "INSERT INTO \"DecisionEvent\"(\"id\",\"decisionId\",\"type\",\"actor\") VALUES ('UP4B-EV','UP4A-D2','approved','legacy writer');" >/dev/null \
+  || { echo "FAILED  4b alternate-writer compatibility: approval event was rejected"; FAIL=1; }
+assert_rejects "4b: DELETE cannot cascade away approval evidence from an alternate writer" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4A-D2'" \
+  "approval evidence is a permanent register entry"
+assert_rejects "4b: approval attribution is immutable after the act" \
+  "UPDATE \"Decision\" SET \"approvedDeciderLabel\"='Rewritten' WHERE \"id\"='UP4B-ATTR'" \
+  "attribution is frozen"
+assert_rejects "4b: approval evidence cannot be moved to another project's register" \
+  "UPDATE \"Decision\" SET \"projectId\"='p2' WHERE \"id\"='UP4B-OLD'" \
+  "register identity is frozen"
+assert_rejects "4b unresolved #344 F1: DELETE cannot erase a tuple-attributed approval" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4B-ATTR'" \
+  "approval evidence is a permanent register entry"
+assert_rejects "4b unresolved #344 F1: DELETE cannot cascade away a migration-stamped approval" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='DL-2'" \
+  "approval evidence is a permanent register entry"
+assert_rejects "4b unresolved #344 F2: TRUNCATE cannot erase an attributed approval" \
+  "TRUNCATE \"Decision\" CASCADE" \
+  "TRUNCATE would erase permanent approval/withdrawal evidence"
+
+# ---- Round 1 (Codex F1): the holder freeze does not rest on a nullable publication value ----
+# Attack step 1 — clear the value the freeze keyed on. Publication is a permanent register fact,
+# so the rewrite cannot even begin; step 2 is refused independently on the still-published row.
+assert_rejects "4b round 1 F1: a published decision cannot be un-published" \
+  "UPDATE \"Decision\" SET \"publishedAt\" = NULL WHERE \"id\"='UP4B-ATTR'" \
+  "cannot be un-published"
+assert_rejects "4b round 1 F1: a published decision still refuses a holder rewrite" \
+  "UPDATE \"Decision\" SET \"deciderKind\"='pmc', \"deciderMembershipId\"=NULL WHERE \"id\"='UP4B-ATTR'" \
+  "keeps its holder"
+
+# An attributed approval, and a tupleless legacy approval, each freeze the holder with NO
+# publication fact at all — the second half of the finding.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  4b round 1 F1: unpublished holder fixtures were rejected"; FAIL=1; }
+INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","publishedAt","deciderKind","deciderMembershipId","approvedDeciderKind","approvedDeciderMembershipId","approvedDeciderLabel")
+VALUES ('UP4B-UNPUB-ATTR','p1','Unpublished attributed approval','Hall','approved','stone',NULL,'member','UP4A-M1','member','UP4A-M1','Legacy PMC');
+INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","publishedAt","deciderKind","deciderMembershipId","approvedById","approver","approvedOption")
+VALUES ('UP4B-UNPUB-OLD','p1','Unpublished legacy approval','Hall','approved','stone',NULL,'member','UP4A-M1','USER-1','Legacy PMC','Legacy option');
+SQL
+assert_rejects "4b round 1 F1: an unpublished attributed approval still freezes its holder" \
+  "UPDATE \"Decision\" SET \"deciderKind\"='pmc', \"deciderMembershipId\"=NULL WHERE \"id\"='UP4B-UNPUB-ATTR'" \
+  "keeps its holder"
+assert_rejects "4b round 1 F1: an unpublished tupleless approval still freezes its holder" \
+  "UPDATE \"Decision\" SET \"deciderKind\"='pmc', \"deciderMembershipId\"=NULL WHERE \"id\"='UP4B-UNPUB-OLD'" \
+  "keeps its holder"
+assert "4b round 1 F1: both unpublished approvals still name their original holder" \
+  "SELECT string_agg(\"id\" || '=' || \"deciderKind\"::text || '/' || COALESCE(\"deciderMembershipId\",'<null>'), ',' ORDER BY \"id\") FROM \"Decision\" WHERE \"id\" IN ('UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
+  "UP4B-UNPUB-ATTR=member/UP4A-M1,UP4B-UNPUB-OLD=member/UP4A-M1"
+
+# ---- Round 1 (Codex F2): a 4a repair replay cannot reopen approval deletion ----
+# The 4a migration is deliberately rerunnable for operator repair. Replay it for real — it
+# restores its own older, withdrawn-only `phase6_t4a_withdrawn_no_delete` body over the
+# consolidated one this unit installs. UP4B-OLD is the compatibility-window class the finding
+# names: approved by the pre-4b writer, no tuple, no migration stamp, no revision or event child.
+echo "replaying the rerunnable 4a migration (operator repair) on top of 4b"
+$PSQL --single-transaction -q -f "$MIG_DIR/20270810000000_phase6_t4a_withdraw/migration.sql" >/dev/null \
+  || { echo "FAILED  4b round 1 F2: the rerunnable 4a migration did not replay"; FAIL=1; }
+assert "4b round 1 F2: the replay really did restore the older withdrawn-only body" \
+  "SELECT (position('approvedById' in pg_get_functiondef('phase6_t4a_withdrawn_no_delete()'::regprocedure)) = 0)::text;" \
+  "true"
+assert_rejects "4b round 1 F2: the 4b seal alone refuses to delete a compatibility-window approval" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4B-OLD'" \
+  "approval attribution/evidence is permanent"
+assert "4b round 1 F2: the compatibility-window approval is still on the register" \
+  "SELECT COUNT(*)::text FROM \"Decision\" WHERE \"id\"='UP4B-OLD';" \
+  "1"
+# Redeploying 4b restores the consolidated body; the stamp INSERT stays skipped because the
+# sealed trigger already exists, so no evidence is invented on the repair path either.
+$PSQL --single-transaction -q -f "$MIG_DIR/$PHASE6_T4B_NAME/migration.sql" >/dev/null \
+  || { echo "FAILED  4b round 1 F2: redeploying 4b after the 4a replay"; FAIL=1; }
+assert_rejects "4b round 1 F2: after redeploy the consolidated arm refuses the same DELETE first" \
+  "DELETE FROM \"Decision\" WHERE \"id\"='UP4B-OLD'" \
+  "approval evidence is a permanent register entry"
+assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
+  "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
+  "0"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

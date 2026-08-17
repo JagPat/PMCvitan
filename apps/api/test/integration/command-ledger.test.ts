@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { ConflictException, BadRequestException } from '@nestjs/common';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
 import { executeCommand, hashRequest, type CommandScope } from '../../src/platform/commands';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import type { Actor } from '../../src/common/actor';
@@ -265,7 +265,7 @@ describe('Phase 2 Task 5 — decision pillar is idempotent end-to-end (live PG)'
     await t.prisma.changeRequest.deleteMany({ where: { decisionId: id } });
     await wipeDecisionEvents(t.prisma, { decisionId: id });
     await t.prisma.decisionOption.deleteMany({ where: { decisionId: id } });
-    await t.prisma.decision.deleteMany({ where: { id } });
+    await wipeDecisions(t.prisma, { id });
   };
 
   it('approving twice with the SAME key locks the decision exactly once and replays the same result', async () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisions } from './fixtures';
 import { emitEvent } from '../../src/platform/events';
 import { OutboxRelay } from '../../src/platform/outbox/relay.service';
 import { ProjectionRebuilder } from '../../src/platform/projections/rebuilder.service';
@@ -49,7 +49,7 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
     await t.prisma.$executeRawUnsafe('TRUNCATE TABLE "DomainEvent", "OutboxDelivery", "ProcessedEvent", "ProjectionCursor", "ProjectionGeneration", "DecisionProjection" CASCADE');
     await t.prisma.decisionOption.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
     await t.prisma.changeRequest.deleteMany({ where: { decision: { projectId: { startsWith: 'it-dpj-' } } } });
-    await t.prisma.decision.deleteMany({ where: { projectId: { startsWith: 'it-dpj-' } } });
+    await wipeDecisions(t.prisma, { projectId: { startsWith: 'it-dpj-' } });
     await t.prisma.project.deleteMany({ where: { id: { startsWith: 'it-dpj-' } } });
   });
 
@@ -197,7 +197,7 @@ describe('Phase 2 Task 9 — decisions projection == live slice, live == rebuild
       expect(dec.body.decisions.map((d: { id: string }) => d.id)).toContain('DL-HTTP');
     } finally {
       await t.prisma.decisionOption.deleteMany({ where: { decisionId: 'DL-HTTP' } });
-      await t.prisma.decision.deleteMany({ where: { id: 'DL-HTTP' } });
+      await wipeDecisions(t.prisma, { id: 'DL-HTTP' });
     }
   });
 });

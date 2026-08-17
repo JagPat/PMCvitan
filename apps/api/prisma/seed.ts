@@ -108,9 +108,20 @@ async function main(): Promise<void> {
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" DISABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
     ),
+    // Phase 6 unit 4b — the approval-evidence delete seal (`Decision_t4b_evidence_no_delete`) is
+    // a complete, independent twin of the consolidated 4a arm, so a 4a repair replay cannot
+    // reopen DELETE for an approval. It joins the same sanctioned-reset contract: disabled by
+    // name for exactly this wipe, inside the same transaction. Guarded: a pre-4b database has no
+    // such trigger.
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b_evidence_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_evidence_no_delete"'; END IF; END $$;`,
+    ),
     prisma.decisionEvent.deleteMany(),
     prisma.decisionOption.deleteMany(),
     prisma.decision.deleteMany(),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'Decision_t4b_evidence_no_delete') THEN EXECUTE 'ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"'; END IF; END $$;`,
+    ),
     prisma.$executeRawUnsafe(
       `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'DecisionEvent_no_withdrawn_approval') THEN EXECUTE 'ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'; END IF; END $$;`,
     ),

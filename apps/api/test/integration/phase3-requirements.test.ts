@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
-import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents } from './fixtures';
+import { createTwoProjectFixture, type TwoProjectFixture, wipeDecisionEvents, wipeDecisions } from './fixtures';
 import { RequirementsService } from '../../src/activities/requirements.service';
 import { DecisionsService } from '../../src/decisions/decisions.service';
 import { MembersService } from '../../src/orgs/members.service';
@@ -91,6 +91,13 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
       ['labourSkill', { projectId: { startsWith: 'it-p3-' } }],
       ['project', { id: { startsWith: 'it-p3-' } }],
     ] as const) {
+      // Phase 6 unit 4b: an APPROVED decision is permanent register evidence — the consolidated
+      // 4a arm and the independent 4b seal each refuse its DELETE, so the decision wipe goes
+      // through the sanctioned destructive-reset helper.
+      if (model === 'decision') {
+        await wipeDecisions(t.prisma, where as Record<string, unknown>);
+        continue;
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (t.prisma as any)[model].deleteMany({ where });
     }

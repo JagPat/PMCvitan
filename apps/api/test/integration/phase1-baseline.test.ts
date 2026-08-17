@@ -39,7 +39,14 @@ describe('phase 1 baseline characterization (integration)', () => {
       t.prisma.inspectionItem.deleteMany({ where: { inspection: { projectId } } }),
       t.prisma.inspection.deleteMany({ where: { projectId } }),
       t.prisma.activity.deleteMany({ where: { projectId } }),
+      // Phase 6 unit 4b: an APPROVED decision is permanent register evidence — the consolidated
+      // 4a arm and the independent 4b seal each refuse its DELETE. Same sanctioned-bypass
+      // contract as the DecisionEvent disable above, in the same atomic transaction.
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_evidence_no_delete"'),
       t.prisma.decision.deleteMany({ where: { projectId } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
       t.prisma.drawingAck.deleteMany({ where: { revision: { drawing: { projectId } } } }),
       t.prisma.drawingRevision.deleteMany({ where: { drawing: { projectId } } }),
       t.prisma.drawing.deleteMany({ where: { projectId } }),

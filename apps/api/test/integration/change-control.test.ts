@@ -44,7 +44,14 @@ describe('decision change-control (integration)', () => {
       t.prisma.decisionEvent.deleteMany({ where: { decision: { projectId } } }),
       t.prisma.$executeRawUnsafe('ALTER TABLE "DecisionEvent" ENABLE TRIGGER "DecisionEvent_no_withdrawn_approval"'),
       t.prisma.decisionOption.deleteMany({ where: { decision: { projectId } } }),
+      // Phase 6 unit 4b: an APPROVED decision is permanent register evidence — the consolidated
+      // 4a arm and the independent 4b seal each refuse its DELETE. Same sanctioned-bypass
+      // contract as the DecisionEvent disable above, in the same atomic transaction.
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4a_d_no_delete"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" DISABLE TRIGGER "Decision_t4b_evidence_no_delete"'),
       t.prisma.decision.deleteMany({ where: { projectId } }),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4b_evidence_no_delete"'),
+      t.prisma.$executeRawUnsafe('ALTER TABLE "Decision" ENABLE TRIGGER "Decision_t4a_d_no_delete"'),
     ]);
     await f?.cleanup();
     await t?.close();

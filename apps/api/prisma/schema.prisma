@@ -27,6 +27,14 @@ enum DecisionStatus {
   withdrawn
 }
 
+// Phase 6 task 4b expansion — the current holder and frozen approval tuple share this
+// designation. `none` and the record-only workflow remain outside this database-only unit.
+enum DeciderKind {
+  client
+  pmc
+  member
+}
+
 enum ActivityStatus {
   not_started
   in_progress
@@ -852,8 +860,12 @@ model Membership {
   completionClaims Activity[] @relation("CompletionClaims")
   // decisions this member withdrew (Phase 6 task 4a) — attribution is FK-backed, never free-text
   decisionWithdrawals Decision[] @relation("DecisionWithdrawals")
+  // current decision-holder designations (Phase 6 task 4b expansion)
+  decisionsHeld Decision[] @relation("DecisionDeciders")
 
   @@unique([projectId, userId])
+  // candidate key for Decision's same-project holder FK
+  @@unique([projectId, id])
   @@index([userId])
   responsibleFor ActivityRequirement[]
 }
@@ -1984,6 +1996,16 @@ model Decision {
   approver       String? // human-readable approver line (the caller's REAL name since Phase 1 Task 2)
   approvedById   String? // the approving user's id — real attribution (Phase 1 Task 2)
   onBehalfOf     String? // 'client' when a PMC approves on the client's behalf — never disguised
+  // Phase 6 task 4b expansion. The default preserves every older writer's client-held behavior.
+  // Holder state can be supplied before publication; the migration freezes it once published.
+  deciderKind         DeciderKind @default(client)
+  deciderMembershipId String?
+  deciderMembership   Membership? @relation("DecisionDeciders", fields: [projectId, deciderMembershipId], references: [projectId, id], onDelete: NoAction, onUpdate: NoAction)
+  // The optional tuple freezes the holder represented by an approval act. It remains nullable
+  // until tuple-writing application code has replaced every older writer.
+  approvedDeciderKind         DeciderKind?
+  approvedDeciderMembershipId String?
+  approvedDeciderLabel        String?
   date           String? // display date, e.g. "12 Jun 2026"
   cost           Int? // rupees
   createdAt      DateTime         @default(now())
@@ -2017,6 +2039,7 @@ model Decision {
   media          Media[]
   drawings       Drawing[]
   optionTouches  DecisionOptionTouch[] // phase6-4a round 13 — per-tx option touch notes
+  legacyApproval DecisionLegacyApproval? @ignore
 
   // composite identity so referencing models can carry (projectId, decisionId)
   // foreign keys — the DB itself rejects a cross-project link (Phase 0 Task 5)
@@ -2024,6 +2047,20 @@ model Decision {
   // pre-existing in the DB since 20260715000000_add_location_tree; declared here so
   // the schema matches the database exactly (drift found by `prisma migrate diff`)
   @@index([nodeId])
+  @@index([projectId, deciderMembershipId], map: "Decision_deciderMembershipId_idx")
+  @@index([projectId, approvedDeciderMembershipId], map: "Decision_approvedDeciderMembershipId_idx")
+}
+
+// Migration-owned evidence for approvals that predate tuple-writing application code. Rows are
+// stamped before the migration closes every application-writable door on this table.
+model DecisionLegacyApproval {
+  decisionId String   @id
+  stampedAt  DateTime @default(now()) @db.Timestamptz(6)
+  decision   Decision @relation(fields: [decisionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  // The application has no delegate for migration-owned evidence. `@@ignore` keeps this
+  // database-only unit out of service/module wiring while preserving the table declaration.
+  @@ignore
 }
 
 model DecisionOption {
