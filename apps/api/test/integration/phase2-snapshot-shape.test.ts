@@ -114,9 +114,17 @@ const EXPECT: Record<string, Spec> = {
     // the visibility rule removes the whole row for every other viewer): withdrawnAt, the
     // withdrawer's frozen display identity, and the reason.
     keys: ['id', 'title', 'room', 'nodeId', 'status', 'ageDays', 'photoSwatch', 'options', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(),
-    optional: ['nodeId', 'ageDays', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
+    // Issue generalization A1 — `photoSwatch` joins the optional set. It is the issue's OWN colour
+    // chip, fed from the chosen option's swatch, so leaving it compulsory would re-impose through
+    // the back door exactly the material requirement this unit removes: a technology question
+    // would still have to invent a colour.
+    optional: ['nodeId', 'ageDays', 'photoSwatch', 'approvedOption', 'material', 'approver', 'date', 'cost', 'onBehalfOf', 'changeRequest', 'draft', 'withdrawnAt', 'withdrawnBy', 'withdrawReason'].sort(), nullable: [],
   },
-  OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['photoUrl'], nullable: [] },
+  // Issue generalization A1 — `material` and `swatch` become optional. This is the contract change
+  // the unit exists to make: an option may be a choice of technology or of a proposed solution, and
+  // those have no material and no colour. The KEY set is unchanged — the fields still exist and a
+  // material option still carries both — so no reader loses a field it was relying on.
+  OptionDto: { keys: ['label', 'key', 'material', 'delta', 'swatch', 'photoUrl', 'recommended'].sort(), optional: ['material', 'photoUrl', 'swatch'].sort(), nullable: [] },
   ActivityDto: {
     keys: ['id', 'name', 'zone', 'decisionId', 'phaseId', 'nodeId', 'ps', 'pe', 'as', 'ae', 'plannedStartDate', 'plannedEndDate', 'actualStartDate', 'actualEndDate', 'status', 'gm', 'gt', 'gi', 'block', 'readiness', 'overrides'].sort(),
     optional: ['nodeId', 'block'].sort(),

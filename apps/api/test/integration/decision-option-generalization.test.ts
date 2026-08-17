@@ -188,6 +188,59 @@ describe('A1 — option generalization (live PG)', () => {
     expect(admitted).toMatch(/foreign key|requirementId/i);
   });
 
+  // ── P6 ─────────────────────────────────────────────────────────────────────────────────────
+  // THE COMPATIBILITY WINDOW, which the first version of this unit broke.
+  //
+  // `kindCode` is deliberately nullable so the release running during deployment keeps writing
+  // valid options — and it writes them exactly as it always has: a material and a swatch, no kind.
+  // The first trigger treated a NULL kind as "not a material option" and refused procurement on
+  // every such row, which is a break for the running release rather than a rule about options.
+  //
+  // The rule the migration's own backfill states is the rule that must hold going forward: an
+  // option carrying a material IS a material option. It cannot be true for a row written yesterday
+  // and false for the byte-identical row written tomorrow.
+  it('P6 an option written by the OLD release — material, no kind — still backs a requirement', async () => {
+    const d = await issue();
+    // exactly the pre-A1 writer's shape: no kindCode, no description, no cost columns named
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+       VALUES ('opt-a1-legacy-${seq++}','${d}','Teak','oldrel','Teak 18mm',0,'sw')`,
+    );
+    const kindless = await t.prisma.$queryRawUnsafe<{ kindCode: string | null }[]>(
+      `SELECT "kindCode" FROM "DecisionOption" WHERE "decisionId"='${d}' AND "optionKey"='oldrel'`,
+    );
+    expect(kindless[0].kindCode).toBeNull(); // the state under test, asserted rather than assumed
+
+    const admitted = await refusal(
+      `INSERT INTO "MaterialRequirementSpec"
+         ("id","projectId","requirementId","revision","materialCategory","make","grade",
+          "normalizedAttributes","specFingerprint","decisionId","decisionVersion","optionKey")
+       VALUES ('spec-a1-${seq++}','${f.projectA.id}','req-a1',1,'timber','X','A','{}','fp',
+               '${d}',1,'oldrel')`,
+    );
+    // admitted by the kind seal; refused downstream by the requirement FK, as a real spec would be
+    expect(admitted).not.toMatch(/only a material option|carries no material identity/);
+    expect(admitted).toMatch(/foreign key|requirementId/i);
+  });
+
+  // ── P7 ─────────────────────────────────────────────────────────────────────────────────────
+  // EXISTENCE IS NOT THE KIND SEAL'S QUESTION. A spec citing an option that is not there must be
+  // refused by the four-column provenance FK, in those terms. The first version answered first and
+  // called a nonexistent option "kindless" — a claim about the kind of something that has none,
+  // and it displaced the precise error three existing phase-3 provenance probes assert on.
+  it('P7 a spec citing a NONEXISTENT option is refused by provenance, not by the kind seal', async () => {
+    const d = await issue();
+    const err = await refusal(
+      `INSERT INTO "MaterialRequirementSpec"
+         ("id","projectId","requirementId","revision","materialCategory","make","grade",
+          "normalizedAttributes","specFingerprint","decisionId","decisionVersion","optionKey")
+       VALUES ('spec-a1-${seq++}','${f.projectA.id}','req-a1',1,'timber','X','A','{}','fp',
+               '${d}',1,'DOES-NOT-EXIST')`,
+    );
+    expect(err).not.toMatch(/kindless|only a material option|carries no material identity/);
+    expect(err).toMatch(/foreign key|provenance|requirementId/i);
+  });
+
   // ── P5 ─────────────────────────────────────────────────────────────────────────────────────
   it('P5 an organization may add its own kind, mapped to a base kind, without collisions', async () => {
     // an org addition MUST map to one of the stable base kinds — that is how procurement and the

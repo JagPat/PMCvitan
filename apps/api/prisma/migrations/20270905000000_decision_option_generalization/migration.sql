@@ -184,25 +184,45 @@ END $$;
 -- so this is a trigger. It fires on the requirement side, because that is where the reference is
 -- created, and it reads the option and its base kind rather than trusting the caller.
 CREATE OR REPLACE FUNCTION material_spec_option_is_material() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_material TEXT; v_base TEXT;
+DECLARE v_material TEXT; v_kind TEXT; v_base TEXT; v_found BOOLEAN;
 BEGIN
   IF NEW."decisionId" IS NULL OR NEW."optionKey" IS NULL THEN
     RETURN NEW; -- a manual spec cites no option at all; nothing to qualify
   END IF;
-  SELECT o."material", k."baseKind"::text
-    INTO v_material, v_base
+
+  SELECT TRUE, o."material", o."kindCode", k."baseKind"::text
+    INTO v_found, v_material, v_kind, v_base
     FROM "DecisionOption" o
     LEFT JOIN "DecisionOptionKind" k ON k."code" = o."kindCode"
    WHERE o."decisionId" = NEW."decisionId" AND o."optionKey" = NEW."optionKey";
 
-  IF v_base IS DISTINCT FROM 'material' THEN
-    RAISE EXCEPTION 'procurement: option % on decision % is a % option — only a material option can back a material requirement.',
-      NEW."optionKey", NEW."decisionId", COALESCE(v_base, 'kindless');
+  -- EXISTENCE IS NOT THIS TRIGGER'S QUESTION. A spec citing an option that is not there is refused
+  -- by the four-column provenance FK, which is the authority on whether the reference resolves and
+  -- says so in those terms. Answering here would replace that precise error with a claim about the
+  -- option's KIND — and a nonexistent option has no kind to be wrong about.
+  IF NOT COALESCE(v_found, FALSE) THEN
+    RETURN NEW;
   END IF;
+
+  -- A NULL kind is the compatibility window, not a defect. `kindCode` is deliberately nullable so
+  -- the release running during deployment keeps writing valid options, and it writes them exactly
+  -- as it always has: a material and a swatch, no kind. Those rows are material options — that is
+  -- precisely what this migration's own backfill asserts about every row that predates it, and the
+  -- rule cannot be true for yesterday's rows and false for the identical row written tomorrow.
+  -- Refusing them would break procurement for the running release, which is the one thing an
+  -- expansion-phase migration must never do.
+  IF v_kind IS NOT NULL AND v_base IS DISTINCT FROM 'material' THEN
+    RAISE EXCEPTION 'procurement: option % on decision % is a % option — only a material option can back a material requirement.',
+      NEW."optionKey", NEW."decisionId", COALESCE(v_base, v_kind);
+  END IF;
+
+  -- An option carries material identity or it does not, and that is the question procurement
+  -- actually needs answered: a purchase order cannot be raised against a note.
   IF v_material IS NULL OR btrim(v_material) = '' THEN
     RAISE EXCEPTION 'procurement: option % on decision % carries no material identity — a material requirement cannot be pinned to it.',
       NEW."optionKey", NEW."decisionId";
   END IF;
+
   RETURN NEW;
 END $$;
 
@@ -247,7 +267,8 @@ BEGIN
     JOIN "DecisionOption" o ON o."decisionId" = s."decisionId" AND o."optionKey" = s."optionKey"
     LEFT JOIN "DecisionOptionKind" k ON k."code" = o."kindCode"
    WHERE s."decisionId" IS NOT NULL AND s."optionKey" IS NOT NULL
-     AND (k."baseKind" IS DISTINCT FROM 'material' OR o."material" IS NULL OR btrim(o."material") = '');
+     AND (o."material" IS NULL OR btrim(o."material") = ''
+          OR (o."kindCode" IS NOT NULL AND k."baseKind" IS DISTINCT FROM 'material'));
   IF v_unqualified > 0 THEN
     RAISE EXCEPTION 'option generalization: % existing material requirement(s) cite an option with no material identity. Aborting with the database unchanged.', v_unqualified;
   END IF;
