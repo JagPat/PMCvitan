@@ -9,9 +9,9 @@ pin_cloud_agent_api_env
 corepack enable
 corepack prepare pnpm@10.33.3 --activate
 
-if ! command -v psql >/dev/null 2>&1 || ! command -v pg_isready >/dev/null 2>&1; then
+if cloud_agent_needs_postgres_packages; then
   if ! command -v apt-get >/dev/null 2>&1; then
-    echo '[cloud-agent-install] PostgreSQL is missing and this image has no apt-get installer' >&2
+    echo '[cloud-agent-install] PostgreSQL server is missing and this image has no apt-get installer' >&2
     exit 1
   fi
   sudo apt-get update

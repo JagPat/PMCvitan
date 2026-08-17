@@ -10,7 +10,7 @@ exec 9>/tmp/vitan-pmc-cloud-agent-start.lock
 flock 9
 
 if ! pg_isready -h localhost -p 5432 -q 2>/dev/null; then
-  sudo service postgresql start >/dev/null 2>&1 || true
+  sudo service postgresql start >/dev/null 2>&1 || sudo pg_ctlcluster --all start >/dev/null 2>&1 || true
 fi
 
 for _ in $(seq 1 30); do

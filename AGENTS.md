@@ -174,3 +174,27 @@ so directly rather than framing it as a suggestion.
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and
   `docs/STATUS.md` advances.
+
+## Cursor Cloud specific instructions
+
+Repo-managed Cloud Agent lifecycle: `.cursor/environment.json` plus
+`scripts/cloud-agent-{install,start,api,web,env}.sh`. Standard install/run
+commands stay in the package scripts; these notes are the non-obvious local
+pins.
+
+- `cloud-agent-install.sh` installs the PostgreSQL **server** package when
+  `psql`/`pg_isready` exist without `pg_ctlcluster` or
+  `/usr/lib/postgresql/*/bin/postgres`. Client tools alone cannot start
+  `localhost:5432`.
+- `pin_cloud_agent_api_env` always retargets `DATABASE_URL` to the local demo
+  database and **unsets** inherited S3, SMTP, SMS-provider, VAPID, Google, AWS,
+  worker-enroll, and `OUTBOX_SENDER_MODE` credentials so the local API uses
+  in-process stubs.
+- The API terminal compiles watched `apps/api/src` with `tsc --watch` and
+  runs `node --watch dist/main.js`. Do not use `pnpm --filter api start`
+  (stale install-time dist) or `start:dev` (`tsx watch` cannot emit Nest
+  decorator metadata, so the process dies during DI).
+- `cloud-agent-start.sh` migrates and runs `tsx prisma/seed.ts` under
+  `CLOUD_AGENT_SEED_IF_COMPLETE=true`. Completeness is the product fixture
+  predicate inside the same transaction as the advisory lock; do not replace
+  that with a sentinel row.
