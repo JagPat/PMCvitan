@@ -161,10 +161,27 @@ so directly rather than framing it as a suggestion.
 - Codex reviews only after the orchestrator moves the CI-green draft to ready.
   Codex does not fix its own findings; that keeps the reviewer independent of the
   author.
+- Every PR declares its correction owner in the body, as exactly one
+  `<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`
+  marker. `review-scope` refuses a missing, unknown, or contradictory
+  declaration before any expensive job runs, and a `claude/**` branch may only
+  declare `claude`. Nothing infers the owner: the branch prefix does not carry
+  it, and GitHub cannot see whether a subscription-backed agent session is
+  alive.
 - A current-head finding makes `codex-current-head` fail and returns the PR to
-  draft. Claude Code web Auto-fix, which must remain subscribed until merge or
-  close, reads every current-head finding before editing, reproduces the complete
-  set, fixes forward as one coherent batch, and pushes a new head.
+  draft. The DECLARED owner reads every current-head finding before editing,
+  reproduces the complete set, fixes forward as one coherent batch, and pushes a
+  new head. Claude Code web Auto-fix must remain subscribed until merge or close
+  on the PRs it owns; a notice must never attribute a correction to an agent the
+  PR did not declare.
+- A notice never claims more than it knows. An owner GitHub cannot start (today,
+  anything other than `claude`) is named and the notice says plainly that GitHub
+  cannot begin that session; an undeclared or malformed declaration reports
+  `correction_stalled` and names the marker that fixes it. Naming an owner is not
+  waking one: an actionable mention needs a new comment, and detecting that an
+  asked owner never started needs a lease keyed to pull request, exact head and
+  owner. Both are a separate follow-up unit, so a stalled correction is still
+  noticed by a human.
 - On the second finding-bearing head, Claude makes no further correction on that
   PR. It closes the exhausted PR and opens a smaller replacement from current
   `main`, preserving the unresolved findings and reproduce-first proofs and

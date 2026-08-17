@@ -1,6 +1,10 @@
 // The deferral-phase check shares docs/STATUS.md's own state vocabulary rather than keeping
 // a second copy of it — see phaseHasOpenWork.
 import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
+// Correction ownership is checked HERE, in the one assessment both the PR-side
+// `review-scope` job and the trusted controller's `enforceReviewScope` call, so
+// the cheap gate and the merge boundary cannot disagree about who owns a fix.
+import { correctionOwnerProblem } from './correction-owner.mjs';
 
 export const REVIEW_SCOPE_ENFORCE_AFTER_PR = 246;
 export const PRE_REVIEW_ENFORCE_AFTER_PR = 345;
@@ -267,7 +271,15 @@ export function assessReviewScope(
     }
   }
 
-  const problems = [...(sizeProblem ? [sizeProblem] : []), ...preReviewProblems];
+  // Its own threshold, stricter than `preReviewEnforceAfterPr`, so it is applied
+  // outside the pre-review block: PRs already open when the declaration became
+  // required are bootstrapped by declaring, never blocked retroactively.
+  const ownerProblem = correctionOwnerProblem(pullRequest);
+  const problems = [
+    ...(sizeProblem ? [sizeProblem] : []),
+    ...(ownerProblem ? [ownerProblem] : []),
+    ...preReviewProblems,
+  ];
   if (problems.length > 0) {
     return {
       ...common,
