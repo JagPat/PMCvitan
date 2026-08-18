@@ -186,9 +186,14 @@ so directly rather than framing it as a suggestion.
   by the hourly handoff job's watchdog: it opens on a failing required status
   (classified by the gate's `review:`/`scope:`/`ci:` prefix, never by its
   wording), publishes at most ONE new comment per pull request, exact head and
-  owner — carrying `@claude` only where GitHub can actually wake the owner — and
-  is cleared by a new head or by that status ceasing to fail, never by an
-  acknowledgement. It comments and nothing else: no status, no draft change, no
+  owner — carrying `@claude` only where GitHub can actually wake the owner AND
+  the owner actually has something to do — and is cleared by a new head or by
+  that status ceasing to fail, never by an acknowledgement. A timed-out review
+  owes no correction: it is reported, names the gate's re-dispatch, and asks for
+  no head. A scope notice leads with the verdict that is failing, because the
+  size remedy cannot clear a lineage or checklist verdict. The status is re-read
+  immediately before publishing, so a failure cleared by a body edit while the
+  watchdog was reading is never announced. It comments and nothing else: no status, no draft change, no
   merge, no Codex call. A watchdog that could not assess a pull request fails the
   handoff job rather than reporting green over an unobserved correction.
 - On the second finding-bearing head, the PR's declared correction owner makes

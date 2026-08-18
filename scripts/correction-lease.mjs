@@ -65,6 +65,24 @@ const OWED_REASON_BY_PREFIX = new Map([
 // `recovery:` is the gate asking ITSELF to retry, not an agent to fix anything.
 const SELF_HEALING_PREFIXES = new Set(['recovery']);
 
+// One `review:` failure is not a finding at all: the gate publishes it when the
+// Codex integration did not answer twice. Its remedy is a re-dispatch, and
+// asking for a head instead invalidates the reviewed one and restarts CI without
+// touching the outage.
+//
+// This is prose matching, which the prefix rule above exists to avoid — but the
+// two do different jobs and fail in opposite directions. The PREFIX decides
+// WHETHER a correction is owed, and a missed prefix means silence, which is the
+// failure this unit removes. This phrase only refines WHAT is asked; if the gate
+// ever rewords it, the lease falls back to the ordinary correction notice, which
+// is merely too generic rather than absent.
+const REVIEW_TIMEOUT = /review timed out/iu;
+
+// The reasons whose remedy is an action by the declared owner. A reason outside
+// this set is reported but never mentions anyone: waking an owner who has
+// nothing to do is the same false signal as claiming work that is not happening.
+const OWNER_ACTIONABLE_REASONS = new Set(['review', 'scope', 'ci', 'replacement']);
+
 /**
  * The correction reason a failing required status implies, or null when the
  * status is not an owed correction.
@@ -78,9 +96,11 @@ const SELF_HEALING_PREFIXES = new Set(['recovery']);
 export function correctionReasonFor(status) {
   if (status?.context !== CORRECTION_STATUS_CONTEXT) return null;
   if (status?.state !== 'failure') return null;
-  const prefix = /^\s*([a-z]+):/u.exec(String(status?.description ?? ''))?.[1];
+  const description = String(status?.description ?? '');
+  const prefix = /^\s*([a-z]+):/u.exec(description)?.[1];
   if (prefix && SELF_HEALING_PREFIXES.has(prefix)) return null;
-  return OWED_REASON_BY_PREFIX.get(prefix) ?? 'review';
+  const reason = OWED_REASON_BY_PREFIX.get(prefix) ?? 'review';
+  return reason === 'review' && REVIEW_TIMEOUT.test(description) ? 'timeout' : reason;
 }
 
 /** The failing required status on this exact head, or null. */
@@ -98,8 +118,10 @@ export function correctionLeaseMarker({ number, head, owner }) {
 // that cannot notify is the "computed but never asked" defect this lineage kept
 // producing, so it is derived from the same set that decides `awakenable` and
 // can never name an owner GitHub could not have woken.
-export function awakeningMention(owner) {
-  return AWAKENABLE_FROM_GITHUB.has(owner) ? `@${owner}` : null;
+export function awakeningMention(owner, reason = 'review') {
+  return AWAKENABLE_FROM_GITHUB.has(owner) && OWNER_ACTIONABLE_REASONS.has(reason)
+    ? `@${owner}`
+    : null;
 }
 
 function minutesBetween(fromIso, toIso) {
@@ -270,7 +292,7 @@ export function assessCorrectionLease({
     body: leaseBody({
       resumeAction,
       marker,
-      mention: awakeningMention(routing.owner),
+      mention: awakeningMention(routing.owner, exhausted ? 'replacement' : reason),
       reportedState,
       pullRequestNumber: pullRequest?.number,
       head: expected,

@@ -516,6 +516,22 @@ export async function handOffCorrectionLease(
   });
 
   if (assessment.state === 'notify') {
+    // RE-READ the status immediately before publishing.
+    //
+    // It was read before three paginated collections and the live pull request,
+    // and a scope refusal cleared by a body edit in that window leaves the head
+    // UNCHANGED — so the head check above cannot see it, and the notice would
+    // wake the owner for a failure that no longer exists. The head is one of the
+    // lease's two satisfactions; this is the other, checked at the last moment
+    // it can still suppress a comment.
+    if (!owedCorrectionStatus(await client.combinedStatus(head))) {
+      return {
+        ...assessment,
+        state: 'superseded',
+        body: null,
+        reason: 'the required status stopped failing while the watchdog was reading',
+      };
+    }
     await client.comment(pullRequest.number, assessment.body);
     console.log(
       `Published ${assessment.reportedState} for PR #${pullRequest.number} `

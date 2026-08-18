@@ -389,3 +389,101 @@ test('L8: the notice is cleared by movement, never by acknowledgement', async ()
   assert.equal(headless.state, 'superseded');
   assert.equal(headless.body, null);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L9-L11 — Codex findings on `dad8949`, #359's first finding-bearing head.
+// Three ways the notice was accurate about WHO and wrong about WHAT.
+
+test('L9: a timed-out review asks for no correction and wakes nobody', async () => {
+  // The gate publishes `review: Codex review timed out after two attempts` when
+  // the integration failed, not when it found something. Classified by prefix
+  // alone that became an ordinary correction, so the notice tagged the owner and
+  // told them to read findings that do not exist and push a head — which
+  // invalidates the reviewed head and restarts CI without touching the outage.
+  // The gate's own recovery is to re-dispatch.
+  const { published, assessment } = await watch({
+    statuses: [status('review: Codex review timed out after two attempts')],
+  });
+
+  assert.ok(published, 'the lease stays visible — a stalled review is still worth reporting');
+  assert.equal(assessment.state, 'notify');
+  assert.doesNotMatch(
+    published,
+    /read every current-head Codex finding|reproduce the complete set/iu,
+    'it must not ask for a correction that is not owed',
+  );
+  assert.match(published, /do not push a new head/iu, 'it says so explicitly');
+  assert.doesNotMatch(published, /@claude/u, 'and must not wake an owner with nothing to do');
+  assert.match(published, /re-?dispatch/iu, 'it names the gate’s actual recovery');
+  assert.match(published, /timed out/iu, 'and says why');
+
+  // A real finding on the same prefix is unaffected.
+  const finding = await watch({
+    statuses: [status('review: 3 current-head Codex findings')],
+    reviewComments: [codexFinding(HEAD)],
+  });
+  assert.match(finding.published, /@claude/u);
+  assert.match(finding.published, /push one new head/iu);
+});
+
+test('L10: a scope notice carries the verdict that is actually failing', async () => {
+  // The `scope` reason alone always produced "split the review unit, or complete
+  // every justified-large invariant row" — the remedy for exactly one of the
+  // verdicts this gate publishes. This PR was itself refused for replacement
+  // lineage and told to split, which would not have cleared it.
+  const lineage = await watch({
+    statuses: [status('scope: exhausted PR #361 still requires a replacement; declare Replaces: #361 before starting fresh work')],
+  });
+  assert.match(
+    lineage.published,
+    /exhausted PR #361 still requires a replacement/u,
+    'the specific verdict is carried',
+  );
+  assert.doesNotMatch(
+    lineage.published,
+    /split the review unit|justified-large/iu,
+    'and the size remedy — which cannot clear a lineage verdict — is not asserted',
+  );
+  assert.match(lineage.published, /body edit|editing the PR body/iu, 'with the action that clears it');
+
+  const owner = await watch({
+    statuses: [status('scope: the PR body declares no correction owner')],
+  });
+  assert.match(owner.published, /declares no correction owner/u);
+  assert.doesNotMatch(owner.published, /split the review unit|justified-large/iu);
+
+  // The size remedy still appears where it is the verdict.
+  const size = await watch({
+    statuses: [status('scope: Large review unit requires a justified-large marker and complete invariant matrix')],
+  });
+  assert.match(size.published, /justified-large/iu);
+  assert.match(size.published, /split the review unit/iu);
+});
+
+test('L11: a failure cleared while the watchdog was reading is never published', async () => {
+  // The status is read first, then three paginated collections and the live pull
+  // request. A scope refusal cleared by a body edit during those reads leaves
+  // the head unchanged, so the head check cannot see it — and the notice would
+  // wake the owner for a failure that no longer exists.
+  const pull = pullRequest();
+  const calls = { posted: [], statusReads: 0 };
+  const client = {
+    combinedStatus: async () => {
+      calls.statusReads += 1;
+      // Failing on the first read, cleared by the time the notice is composed.
+      return calls.statusReads === 1
+        ? { statuses: [status('scope: the PR body declares no correction owner')] }
+        : { statuses: [status('scope: cleared', 'success')] };
+    },
+    comments: async () => [],
+    reviews: async () => [],
+    reviewComments: async () => [],
+    pullRequest: async () => pull,
+    comment: async (number, body) => { calls.posted.push({ number, body }); },
+  };
+
+  const assessment = await handOffCorrectionLease(client, pull, REPOSITORY, 'main', { now: DUE });
+  assert.equal(calls.posted.length, 0, 'nothing is published for a resolved failure');
+  assert.ok(calls.statusReads >= 2, 'the status is re-read immediately before publishing');
+  assert.equal(assessment?.state, 'superseded');
+});

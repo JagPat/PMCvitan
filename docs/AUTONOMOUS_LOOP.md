@@ -128,6 +128,23 @@ so never saw the review-round-limit failure, which is the one state whose remedy
 is a replacement PR rather than another head. `recovery:` is the gate retrying
 itself and opens no lease.
 
+Two refinements sit on top of that, and neither weakens it. The prefix decides
+WHETHER a correction is owed — a missed prefix means silence, the failure this
+unit exists to remove — while the sentence may still refine WHAT is asked, where
+a miss only makes the notice more generic:
+
+- **A timed-out review owes nobody a correction.** `review: Codex review timed
+  out after two attempts` means the integration did not answer, not that
+  something was found. The lease still reports it, but it names the gate's own
+  re-dispatch, asks for no head, and mentions no owner — waking someone with
+  nothing to do is the same false signal as claiming work that is not happening.
+- **A scope notice leads with the verdict that is failing.** The scope gate
+  publishes several — an undeclared correction owner, replacement lineage, an
+  unchecked pre-review item, a missing migration seam, the review unit's size —
+  and they have different remedies. Naming only the size remedy sent every other
+  verdict an instruction that could not clear it, and the lease publishes once
+  per head, so the wrong instruction was the only one that arrived.
+
 The lease has three properties the manual kick it replaces cannot guarantee:
 
 - **Idempotent.** Keyed to `(pull request, exact head, owner)` and carried in the
@@ -141,7 +158,9 @@ The lease has three properties the manual kick it replaces cannot guarantee:
   Cursor-owned correction is never tagged and never attributed to Claude.
 - **Honest.** It is cleared by a new head, or by that required status ceasing to
   fail — a scope refusal is routinely cleared by editing the PR body with no new
-  head at all — and by nothing else. Not by the notification existing, not by a
+  head at all, which is also why the status is re-read immediately before the
+  comment is published, and the notice suppressed if it has stopped failing —
+  and by nothing else. Not by the notification existing, not by a
   reaction, not by a reply. Both PRs that started this work were acknowledged
   only as a subscription and produced no correction, which is exactly the state
   an acknowledgement-based check would have called healthy.
