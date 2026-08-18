@@ -156,6 +156,29 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   return { state: 'declared', owner, declared, detail: null };
 }
 
+/**
+ * Whether a pull request is inside the correction watchdog's remit.
+ *
+ * Deliberately NOT `isAutonomousPullRequest`, which additionally requires a
+ * `claude/**` branch: the whole point of the declaration is that a correction
+ * owner is not inferable from the branch, and PR #350 — the Cursor-owned unit
+ * that started this work — was on `codex/**`. Every same-repository pull request
+ * targeting the default branch is watched, and the declaration in its body
+ * decides who is asked.
+ *
+ * The same-repository and default-branch conditions are the existing trust
+ * boundary and are unchanged: a fork head is never watched, and nothing here
+ * runs untrusted code.
+ */
+export function isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch) {
+  return (
+    pullRequest?.state === 'open'
+    && pullRequest?.head?.repo?.full_name === repository
+    && pullRequest?.base?.repo?.full_name === repository
+    && pullRequest?.base?.ref === defaultBranch
+  );
+}
+
 export function correctionOwnerDeclaration(pullRequest) {
   return parseCorrectionOwner(pullRequest?.body, { headRef: pullRequest?.head?.ref });
 }
@@ -187,7 +210,7 @@ function ownerLabel(owner) {
 
 // What the loop asks the declared owner to do, per reason. The OWNER decision is
 // made once, above; these only phrase it.
-function declaredInstruction(owner, { reason, pullRequestNumber }) {
+function declaredInstruction(owner, { reason, pullRequestNumber, detail }) {
   const who = ownerLabel(owner);
   // An owner GitHub cannot wake gets the same instruction plus the truth about
   // who has to start it. Omitting that is how a routed-but-unstarted correction
@@ -210,9 +233,22 @@ function declaredInstruction(owner, { reason, pullRequestNumber }) {
       + `Review begins only after CI is green on the exact head.${start}`;
   }
   if (reason === 'scope') {
-    return `${who} owns this correction: split the review unit, or complete every `
-      + 'justified-large invariant row with concrete risk and verification evidence. '
-      + `Editing the PR body reruns the scope gate.${start}`;
+    // The VERDICT leads, because the scope gate publishes several and they have
+    // different remedies — an undeclared correction owner, replacement lineage,
+    // an unchecked pre-review item, a missing migration seam, and the review
+    // unit's size. Naming only the size remedy sent every other verdict an
+    // actionable instruction that could not clear it, and the lease publishes
+    // once per head, so the wrong instruction is the only one that arrives.
+    const verdict = typeof detail === 'string' && detail.trim().length > 0
+      ? `\`${detail.trim()}\``
+      : 'the verdict on the required status';
+    const size = /justified-large|invariant matrix|Large review unit/iu.test(String(detail ?? ''))
+      ? ' Here that means: split the review unit, or complete every justified-large '
+        + 'invariant row with concrete risk and verification evidence.'
+      : '';
+    return `${who} owns this correction: resolve the scope verdict this head is failing on — `
+      + `${verdict}.${size} Editing the PR body reruns the scope gate, so most scope verdicts `
+      + `clear with no new head.${start}`;
   }
   if (reason === 'replacement') {
     return `${who} owns this correction: close this PR without another correction head, open a `
@@ -296,6 +332,6 @@ export function correctionRouting({
     awakenable,
     head,
     detail,
-    instruction: declaredInstruction(resolved.owner, { reason, pullRequestNumber }),
+    instruction: declaredInstruction(resolved.owner, { reason, pullRequestNumber, detail }),
   };
 }
