@@ -75,6 +75,16 @@ This repository is designed to progress without the owner's laptop or technical 
 - The replacement receives a fresh comprehensive review and the full applicable
   CI battery. Resetting the PR bounds accumulated patch risk; it does not waive,
   dismiss, or downgrade any finding.
+- The obligation is discharged by a MERGE, and discharge FOLLOWS THE CHAIN. A
+  merged pull request naming an exhausted unit discharges it, and so does a
+  merged pull request naming a replacement that was itself closed unmerged —
+  that later unit carries the unresolved scope of everything before it. A
+  replacement still open discharges nothing; work in flight is not work merged.
+  Without the transitive step the debt strands permanently: on 2026-08-18 #354
+  reached the limit, #360 replaced it and reached the limit too, and #361
+  replaced #360, so nothing would ever name #354 again. Every `Replaces: none`
+  unit in the repository — including the fix for that defect — was blocked until
+  the label was cleared by hand, three times in one night.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 
