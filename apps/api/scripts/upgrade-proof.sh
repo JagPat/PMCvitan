@@ -3712,6 +3712,15 @@ assert "B1: the cycle guard serializes on the project schedule-graph advisory lo
   "SELECT (prosrc LIKE '%pg_advisory_xact_lock%' AND prosrc LIKE '%vitan:schedule-graph:%')::text FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
   "true"
 
+# Two extra fixture activities: a third in project 1, and a second in project 3. Both probes below
+# need pairs that are legal in every OTHER respect, so that the refusal they assert is the only
+# thing standing in the way.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1: could not add the extra fixture activities"; FAIL=1; }
+INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd","status")
+VALUES('ACT-P1C','p1','Third project-1 activity','Hall',0,5,'done'),
+      ('ACT-P3B','p3','Second pre-T4 activity','Hall',0,5,'done');
+SQL
+
 # PRECISION FIRST — a legal edge between two activities of ONE legacy project commits. Without
 # this the rejections below would pass on a table that simply refuses everything.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1 precision: a legal same-project edge was refused"; FAIL=1; }
@@ -3740,6 +3749,21 @@ assert_rejects "B1: a CYCLE — ACT-1 -> ACT-2 already stands, so ACT-2 -> ACT-1
 assert_rejects "B1: RE-POINTING an accepted edge, the route by which a cycle would evade an insert-time check" \
   "UPDATE \"ActivityDependency\" SET \"predecessorId\"='ACT-2', \"successorId\"='ACT-1' WHERE \"id\"='UPB1-E1'" \
   "endpoints of dependency edge"
+assert_rejects "B1: attribution that is present but not answerable — a name of pure whitespace" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-W','p1','ACT-1','ACT-P1C','USER-1',E'\\t ')" \
+  "attribution_check"
+# The trigger must read the table the insert writes, not whatever the caller's search path resolves
+# first. Asserted from the catalog, because the property is invisible in the function body.
+assert "B1: the cycle check resolves its table through a pinned search path" \
+  "SELECT COALESCE(array_to_string(proconfig, ','), '<none>') FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
+  "search_path=pg_catalog, public"
+# One project per transaction: the per-project lock is taken by a ROW trigger, so a transaction
+# spanning two projects takes two locks in row order and can deadlock against one going the other
+# way. Both statements below run in a single transaction (psql -c), which is exactly that shape.
+assert_rejects "B1: two projects' edges in ONE transaction, the shape that lets two writers deadlock" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-T1','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC');
+   INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-T2','p3','ACT-P3','ACT-P3B','USER-1','Legacy PMC')" \
+  "one project per transaction"
 assert "B1: after every rejection the graph still holds exactly the one legal edge" \
   "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
   "1"
