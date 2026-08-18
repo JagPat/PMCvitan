@@ -16,24 +16,36 @@ task: 4
 task_state: in_review
 work_item: schedule-b1-dependency-graph
 reviewed_merge: 44ceef9
-open_pr: 361
+open_pr: 363
 next_task: none
 blocking_directive: none
 updated: 2026-08-18
 ```
 
-**The open PR is #361 — schedule B1, the acyclic activity dependency graph.** It is the third
-carrier of this unit: #354 reached the enforced two-finding-head limit and was closed, its
-replacement #360 reached the same limit and was closed, and #361 declares `Replaces: #360` and
-carries the unit from current `main` with every finding from both lineages closed.
+**The open PR is #363 — schedule B1, the acyclic activity dependency graph.** It is the fourth
+carrier of this unit and the first that changes approach rather than repeating it. #354, #360 and
+#361 each reached the enforced two-finding-head limit and were closed; #363 declares
+`Replaces: #361`.
+
+**What changed, and why it should be the last one.** Classifying all 21 findings across the three
+closed PRs showed that since #354 round 1 essentially every finding was about the INSTALL/REPAIR
+protocol — preflight predicates, re-run semantics, catalog scoping, disabled and REPLICA triggers,
+transactionality, NOT VALID constraints, lock-before-count. The graph invariant itself drew none.
+That branch defended a state that cannot arise: `ActivityDependency` exists nowhere on `main`, so no
+deployed database has one, and the file is a single transaction, so a failed apply leaves no table.
+#363 DELETES the repair branch — if the table exists, the migration stops and a person decides —
+which also retires the outstanding tgenabled/tgfoid finding instead of answering it.
 
 Two consequences worth stating, because they decide what the runner may do next. First, **#355
-(issue generalization A1) is BLOCKED until #361 merges** — not by anything wrong with it. The
+(issue generalization A1) is BLOCKED until #363 merges** — not by anything wrong with it. The
 lineage rule in `scripts/review-efficiency.mjs` discharges an exhausted unit's obligation only
-through a MERGED replacement, so while #361 is open, #360 stays pending and every other unit reads
-`scope_required`. That serialization is the design, not a defect, and #355 must NOT declare
-`Replaces: #360` to escape it: the declaration would be false, and it would also register as a
-competing claim that blocks #361 itself. Second, #355's own work is DELIVERED and its gates are
+through a MERGED replacement. #360 and #361 were both closed UNMERGED, and #354 before them, so
+their obligations are chained and NONE of them can be discharged by #363 alone — #363 declares
+`Replaces: #361` and would free only that one. Every other unit therefore keeps reading
+`scope_required` even after #363 merges. This is a real gap in the gate (it models replacement as
+one hop, with no transitive closure) and is recorded for the owner rather than worked around: #355
+must NOT declare someone else's number to escape it, because the declaration would be false and
+would register as a competing claim against #363 itself. Second, #355's own work is DELIVERED and its gates are
 green; the only red on it is `api-e2e`, failing on the documented commercial deadlock
 (`phase5_t4_billed_bound_check` against `Membership ... FOR UPDATE`) and the `test-empty-site`
 Drawing foreign key — neither of which A1 touches.
