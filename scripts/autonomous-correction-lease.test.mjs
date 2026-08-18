@@ -65,7 +65,7 @@ function fakeClient({
   reviews = [],
   reviewComments = [],
 }) {
-  const calls = { posted: [], forbidden: [], reads: [] };
+  const calls = { posted: [], forbidden: [], dispatched: [] };
   const allowed = {
     combinedStatus: async () => ({ statuses }),
     comments: async () => comments,
@@ -73,13 +73,11 @@ function fakeClient({
     reviewComments: async () => reviewComments,
     pullRequest: async () => live ?? pull,
     comment: async (number, body) => { calls.posted.push({ number, body }); return { id: 1 }; },
+    dispatchRecovery: async (ref, inputs) => { calls.dispatched.push({ ref, inputs }); },
   };
   const client = new Proxy(allowed, {
     get(target, property) {
-      if (property in target) {
-        calls.reads.push(property);
-        return target[property];
-      }
+      if (property in target) return target[property];
       return (...args) => {
         calls.forbidden.push({ method: String(property), args });
         throw new Error(`the watchdog must not call ${String(property)}`);
@@ -160,6 +158,18 @@ test('L1: an unmoved failing head produces exactly one published notice, ever', 
   assert.equal(acknowledged.published, null);
 
   assert.ok(CORRECTION_LEASE_GRACE_MS >= 15 * 60_000, 'the interval is bounded, not instant');
+
+  // And the published notice says so, because a human reading it decides what
+  // to do next. A scope refusal is routinely cleared by a body edit with no new
+  // head, so "a new head" is not the only satisfaction and the notice must not
+  // claim it is.
+  assert.match(due.published, /cleared by a new head, or by this required status ceasing to fail/u);
+  assert.match(due.published, /never by an acknowledgement, a reaction or a reply/u);
+  assert.match(due.published, /published at most once/u);
+
+  const headless = assessCorrectionLease({ pullRequest: pullRequest(), head: null });
+  assert.equal(headless.state, 'superseded');
+  assert.equal(headless.body, null);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,31 +179,10 @@ test('L1: an unmoved failing head produces exactly one published notice, ever', 
 // whose remedy is a replacement rather than another head never reached the lease
 // — `replacement_required` was documented, unit-tested, and unreachable.
 
-test('L2: the round-limit failure reaches the lease and asks for a replacement', async () => {
-  const { published, assessment } = await watch({
-    statuses: [status(
-      'review: 2 finding-bearing heads reached the review-round limit; '
-      + 'this unit requires a replacement PR',
-    )],
-    reviewComments: [codexFinding('first'), codexFinding(HEAD)],
-  });
-
-  assert.ok(published, 'the round-limit failure is an owed correction');
-  assert.equal(assessment.reportedState, 'replacement_required');
-  assert.match(published, /replacement_required/u);
-  assert.match(published, /replacement/iu, 'the published notice asks for a replacement');
-  assert.doesNotMatch(
-    published,
-    /push (a|one) new head/iu,
-    'and never for a third correction head',
-  );
-  assert.equal(REVIEW_RESET_AFTER_FINDING_HEADS, 2);
-});
-
 test('L2b: the owed reason comes from the status PREFIX, not its wording', async () => {
   // Prefixes are the review gate's own vocabulary. Selecting on the sentence
-  // after them is what made a whole state unreachable, so the classification is
-  // pinned here directly.
+  // after them is what made the round-limit failure — the ONE state whose remedy
+  // is a replacement rather than another head — unreachable in an earlier draft.
   assert.equal(correctionReasonFor(status('review: 3 current-head Codex findings')), 'review');
   assert.equal(correctionReasonFor(status('scope: the PR body declares no correction owner')), 'scope');
   assert.equal(correctionReasonFor(status('ci: required checks failed')), 'ci');
@@ -203,8 +192,20 @@ test('L2b: the owed reason comes from the status PREFIX, not its wording', async
     'the round limit is owed like any other review failure',
   );
 
-  // `recovery:` is the gate asking ITSELF to retry. Nobody owes a correction, so
-  // no lease is opened.
+  // And on the published artefact: it asks for a replacement, never a third head.
+  const exhausted = await watch({
+    statuses: [status(
+      'review: 2 finding-bearing heads reached the review-round limit; '
+      + 'this unit requires a replacement PR',
+    )],
+    reviewComments: [codexFinding('first'), codexFinding(HEAD)],
+  });
+  assert.equal(exhausted.assessment.reportedState, 'replacement_required');
+  assert.match(exhausted.published, /replacement/iu);
+  assert.doesNotMatch(exhausted.published, /push (a|one) new head/iu);
+  assert.equal(REVIEW_RESET_AFTER_FINDING_HEADS, 2);
+
+  // `recovery:` is the gate asking ITSELF to retry, so nobody owes anything.
   assert.equal(correctionReasonFor(status('recovery: request superseded by newer review state')), null);
   const recovering = await watch({
     statuses: [status('recovery: request superseded by newer review state')],
@@ -217,8 +218,7 @@ test('L2b: the owed reason comes from the status PREFIX, not its wording', async
   assert.equal(correctionReasonFor({ context: 'ci/other', state: 'failure', description: 'x' }), null);
 
   // An unrecognized prefix is a FUTURE one of ours — only this repository's gate
-  // writes this context. Silence is the failure being removed, so it is treated
-  // as owed rather than dropped.
+  // writes this context. Silence is the failure being removed, so it is owed.
   assert.equal(correctionReasonFor(status('novel: something new')), 'review');
 });
 
@@ -279,6 +279,10 @@ test('L5: an owner GitHub cannot start is published as correction_stalled with a
   assert.match(published, new RegExp(HEAD, 'u'), 'the exact head');
   assert.match(published, /3 current-head Codex findings/u, 'the findings');
   assert.match(published, /Required resume action/u, 'and the required resume action');
+  // Conditional, never an assertion that a session must be started: GitHub
+  // cannot see whether one is already running, and a human following a bare
+  // "start the session" starts a second one against the same branch.
+  assert.match(published, /if no .*session is already running|confirm .*not already running/iu);
   assert.match(published, /codex\/task/u, 'naming the branch the session must run on');
   assert.doesNotMatch(
     published,
@@ -354,29 +358,6 @@ test('L7: the handoff run loop drives the watchdog and cannot report green witho
     'and a watchdog that could not run fails the job instead of reporting green',
   );
 });
-
-test('L8: the notice is cleared by movement, never by acknowledgement', async () => {
-  // Stated in the published artefact, because a human reading it decides what to
-  // do next. A scope refusal is routinely cleared by editing the PR body with no
-  // new head at all, so "a new head" is not the only satisfaction and the notice
-  // must not say it is.
-  const { published } = await watch({
-    statuses: [status('review: 1 current-head Codex finding')],
-    reviewComments: [codexFinding(HEAD)],
-  });
-  assert.match(published, /cleared by a new head, or by this required status ceasing to fail/u);
-  assert.match(published, /never by an acknowledgement, a reaction or a reply/u);
-  assert.match(published, /published at most once/u);
-
-  // And the composer agrees with the publisher: no exact head, no lease.
-  const headless = assessCorrectionLease({ pullRequest: pullRequest(), head: null });
-  assert.equal(headless.state, 'superseded');
-  assert.equal(headless.body, null);
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// L9-L11 — Codex findings on `dad8949`, #359's first finding-bearing head.
-// Three ways the notice was accurate about WHO and wrong about WHAT.
 
 test('L10: a scope notice carries the verdict that is actually failing', async () => {
   // The `scope` reason alone always produced "split the review unit, or complete
@@ -555,59 +536,6 @@ test('L25: a pull request closed while the watchdog was reading is never notifie
   assert.equal(assessment?.state, 'superseded');
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// L16 — the boundary this unit deliberately does not cross.
-
-test('L16: a failure the gate recovers from opens no lease at all', async () => {
-  const { isRetryableReviewFailureDescription } = await import('./review-efficiency.mjs');
-  const gate = await import('./autonomous-review-gate.mjs');
-
-  // The gate publishes these when it did not reach a verdict, and recovers them
-  // by re-dispatching itself. No agent owes anything, so the watchdog stays out
-  // — exactly as it does for the `recovery:` prefix.
-  //
-  // Reporting them, and performing that dispatch, are SPLIT OUT to a follow-up
-  // unit. Three review rounds established that reporting them well means
-  // rendering a runnable `workflow_dispatch` with the exact head, the terminal
-  // status id, that failure's own precondition and the owner-marker repair that
-  // must precede it — a runbook printed by a reporter, when the better shape is
-  // the watchdog performing the dispatch. That is a capability change and is
-  // reviewed as one.
-  for (const description of [
-    'review: Codex review timed out after two attempts',
-    'review: Codex evidence changed during final verification',
-    'review: Required CI changed during current-head Codex review',
-    'review: bootstrap exact-head review requested',
-  ]) {
-    assert.equal(isRetryableReviewFailureDescription(description), true, description);
-    assert.equal(correctionReasonFor(status(description)), null, description);
-    assert.equal(
-      gate.isRetryableTerminalReviewFailure({
-        context: 'codex-current-head', state: 'failure', description,
-      }),
-      true,
-      'the gate and the watchdog read ONE definition, so a fifth cannot diverge',
-    );
-
-    const { published, assessment } = await watch({ statuses: [status(description)] });
-    assert.equal(published, null, `${description}: nothing is published`);
-    assert.equal(assessment, null, `${description}: no lease is opened`);
-  }
-
-  // A real finding on the same prefix is untouched.
-  assert.equal(correctionReasonFor(status('review: 3 current-head Codex findings')), 'review');
-  const finding = await watch({
-    statuses: [status('review: 3 current-head Codex findings')],
-    reviewComments: [codexFinding(HEAD)],
-  });
-  assert.match(finding.published, /@claude/u);
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// L26 — Codex finding on `5e8d747`. "Re-derived from a fresh read" was true of
-// the status, the head and the declaration, and false of the finding history —
-// which is what decides whether a correction is owed AT ALL or a replacement is.
-
 test('L26: the finding history is refreshed before the notice is published', async () => {
   // One finding-bearing head is already recorded; delayed Codex evidence for a
   // second becomes visible after the initial fetch. Head, owner and failing
@@ -633,4 +561,138 @@ test('L26: the finding history is refreshed before the notice is published', asy
   assert.ok(calls.evidenceReads >= 2, 'the finding history is re-read before publishing');
   assert.equal(assessment?.state, 'superseded', 'the notice it composed is no longer the true one');
   assert.equal(calls.posted.length, 0, 'and the forbidden third-head instruction is never published');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L27-L29 — Codex findings on `0a1c7f3`. (The fourth, on gate-retryable
+// failures having no automated recovery path, is a scope decision and is
+// recorded on the PR rather than answered here.)
+
+test('L27: a failure reintroduced after its lease cleared opens a new lease', async () => {
+  // A scope failure notified, cleared by a body edit, then reintroduced on the
+  // same head with the same owner and the same description produced an
+  // identical key, so the old comment silenced the new failure and nobody was
+  // woken. The status's own id distinguishes the two postings while a persisting
+  // failure — same id across ticks — is still published once.
+  const first = { ...status('scope: the PR body declares no correction owner'), id: 111 };
+  const opened = await watch({ statuses: [first] });
+  assert.ok(opened.published);
+
+  const persisting = await watch({
+    statuses: [first],
+    comments: [{ user: { login: BOT }, body: opened.published }],
+    now: '2026-08-17T13:00:00Z',
+  });
+  assert.equal(persisting.assessment.state, 'notified', 'the same failure is published once');
+
+  const reintroduced = await watch({
+    statuses: [{ ...first, id: 222 }],
+    comments: [{ user: { login: BOT }, body: opened.published }],
+    now: '2026-08-17T13:00:00Z',
+  });
+  assert.equal(reintroduced.assessment.state, 'notify', 'a new occurrence is a new lease');
+  assert.notEqual(reintroduced.assessment.marker, opened.assessment.marker);
+});
+
+test('L28: a body edited while the watchdog reads defers to the next tick', async () => {
+  // The rendered notice can be identical while the raw body has changed — a
+  // checklist item ticked, clearing a scope verdict the status has not caught up
+  // with. Comparing only the rendered text let that publish a permanent stale
+  // wake-up.
+  const snapshot = pullRequest();
+  const calls = { posted: [], prReads: 0 };
+  const client = {
+    combinedStatus: async () => ({ statuses: [{ ...status('scope: incomplete pre-review checklist'), id: 7 }] }),
+    comments: async () => [],
+    reviews: async () => [],
+    reviewComments: async () => [],
+    pullRequest: async () => {
+      calls.prReads += 1;
+      return calls.prReads === 1
+        ? snapshot
+        : { ...snapshot, body: `${snapshot.body}\n\n- [x] checklist item now ticked` };
+    },
+    comment: async (number, body) => { calls.posted.push({ number, body }); },
+  };
+
+  const assessment = await handOffCorrectionLease(client, snapshot, REPOSITORY, 'main', { now: DUE });
+  assert.equal(calls.posted.length, 0, 'the edit defers this tick');
+  assert.equal(assessment?.state, 'superseded');
+});
+
+test('L30: a failure the gate recovers from is dispatched, not merely excluded', async () => {
+  const { isRetryableReviewFailureDescription } = await import('./review-efficiency.mjs');
+  const gate = await import('./autonomous-review-gate.mjs');
+
+  // All four, from ONE definition the gate reads too, so a fifth cannot be added
+  // there and silently become an actionable correction here.
+  for (const description of [
+    'review: Codex review timed out after two attempts',
+    'review: Codex evidence changed during final verification',
+    'review: Required CI changed during current-head Codex review',
+    'review: bootstrap exact-head review requested',
+  ]) {
+    assert.equal(isRetryableReviewFailureDescription(description), true, description);
+    assert.equal(correctionReasonFor(status(description)), null, description);
+    assert.equal(
+      gate.isRetryableTerminalReviewFailure({
+        context: 'codex-current-head', state: 'failure', description,
+      }),
+      true,
+      'the gate and the watchdog read one definition',
+    );
+    const { published, assessment } = await watch({ statuses: [status(description)] });
+    assert.equal(published, null, `${description}: no lease comment`);
+    assert.equal(assessment?.state, 'dispatched', `${description}: the gate is asked to recover`);
+  }
+
+  // Excluding these from the lease was only half an answer: `auto-merge.yml`
+  // recovers exclusively through `workflow_dispatch`, and the timeout path
+  // publishes its failure and throws, so no later CI event arrives. Nothing
+  // dispatched it, and the PR stayed draft until a human noticed.
+  //
+  // The handoff workflow already holds `actions: write` and already dispatches
+  // itself, so the watchdog performs the recovery rather than printing
+  // instructions for it.
+  const pull = pullRequest();
+  const calls = { posted: [], dispatched: [] };
+  const client = {
+    combinedStatus: async () => ({
+      statuses: [{ ...status('review: Codex review timed out after two attempts'), id: 5150 }],
+    }),
+    comments: async () => [],
+    reviews: async () => [],
+    reviewComments: async () => [],
+    pullRequest: async () => pull,
+    comment: async (number, body) => { calls.posted.push({ number, body }); },
+    dispatchRecovery: async (ref, inputs) => { calls.dispatched.push({ ref, inputs }); },
+  };
+
+  const assessment = await handOffCorrectionLease(client, pull, REPOSITORY, 'main', { now: DUE });
+  assert.equal(calls.dispatched.length, 1, 'the recovery is actually dispatched');
+  assert.deepEqual(calls.dispatched[0].inputs, {
+    pr_number: '358',
+    head_sha: HEAD,
+    terminal_status_id: '5150',
+  }, 'with the exact head and terminal status id the gate authorises against');
+  assert.equal(calls.posted.length, 0, 'and no lease comment is published');
+  assert.equal(assessment?.state, 'dispatched');
+
+  // Once the gate has accepted the request it publishes `recovery: requested
+  // terminal status <id>`, which this watchdog already ignores — so the next
+  // tick dispatches nothing.
+  const accepted = { ...client, combinedStatus: async () => ({
+    statuses: [{ ...status('recovery: requested terminal status 5150', 'pending'), id: 5151 }],
+  }) };
+  const again = await handOffCorrectionLease(accepted, pull, REPOSITORY, 'main', { now: DUE });
+  assert.equal(calls.dispatched.length, 1, 'an accepted request is not re-dispatched');
+  assert.equal(again, null);
+
+  // A real finding is a correction, not a recovery: it is never dispatched.
+  const finding = { ...client, combinedStatus: async () => ({
+    statuses: [{ ...status('review: 3 current-head Codex findings'), id: 77 }],
+  }), reviewComments: async () => [codexFinding(HEAD)] };
+  await handOffCorrectionLease(finding, pull, REPOSITORY, 'main', { now: DUE });
+  assert.equal(calls.dispatched.length, 1, 'a finding dispatches nothing');
+  assert.equal(calls.posted.length, 1, 'it wakes the owner instead');
 });

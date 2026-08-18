@@ -133,24 +133,20 @@ WHETHER a correction is owed — a missed prefix means silence, the failure this
 unit exists to remove — while the sentence may still refine WHAT is asked, where
 a miss only makes the notice more generic:
 
-- **A gate-retryable review failure opens no lease at all.** A timed-out review,
-  evidence that moved under the gate, required CI changing mid-review, a
+- **A gate-retryable review failure is DISPATCHED, not reported.** A timed-out
+  review, evidence that moved under the gate, required CI changing mid-review, a
   requested bootstrap review — all four mean the gate did not reach a verdict,
-  and all four are recovered by the gate being RE-DISPATCHED. No agent owes
-  anything, so the watchdog stays out, exactly as it does for the `recovery:`
-  prefix. The list lives in `review-efficiency.mjs` and the gate reads the same
-  one, so a fifth cannot be added there and silently become an actionable
+  and all four are recovered by the gate being re-dispatched. No agent owes
+  anything, so no lease opens; instead the watchdog calls the recovery
+  `workflow_dispatch` with the pull request, the exact head and the terminal
+  status id the gate authorises against. It already holds `actions: write` and
+  already dispatches itself, so asking the gate directly is smaller than printing
+  a runbook for a human — and cannot go stale, which three rounds of wording that
+  runbook demonstrated. An accepted request publishes `recovery: requested
+  terminal status <id>`, which is never an owed correction, so the next tick sees
+  nothing to do. The list lives in `review-efficiency.mjs` and the gate reads the
+  same one, so a fifth cannot be added there and silently become an actionable
   correction here.
-
-  **Reporting those failures, and performing that dispatch, are a follow-up
-  unit.** Three review rounds established that reporting them well means
-  rendering a runnable `workflow_dispatch` — the exact head, the terminal status
-  id, that failure's own precondition, and the owner-marker repair that must
-  precede it, since the dispatched job re-runs `review-scope` on the same head.
-  That is a runbook printed by a reporter, and the better shape is the watchdog
-  performing the dispatch itself. Both belong to one unit reviewed as a
-  capability change; until it lands the gate's recovery path is exactly where it
-  was before this work.
 
 - **A scope notice leads with the verdict that is failing.** The scope gate
   publishes several — an undeclared correction owner, replacement lineage, an

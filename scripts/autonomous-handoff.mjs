@@ -14,6 +14,7 @@ import { isCorrectionEligiblePullRequest } from './correction-owner.mjs';
 import {
   assessCorrectionLease,
   correctionReasonFor,
+  gateRecoveryStatus,
   owedCorrectionStatus,
 } from './correction-lease.mjs';
 import { codexFindingHeads } from './review-efficiency.mjs';
@@ -131,6 +132,16 @@ class GitHubClient {
           ].join('\n'),
         },
       },
+    );
+  }
+
+  // The review gate's recovery entry point. `auto-merge.yml` runs recovery only
+  // on `workflow_dispatch`, and it authorises the request against the exact head
+  // and terminal status id, so all three inputs are mandatory.
+  dispatchRecovery(defaultBranch, inputs) {
+    return this.request(
+      `/repos/${this.repository}/actions/workflows/auto-merge.yml/dispatches`,
+      { method: 'POST', body: { ref: defaultBranch, inputs } },
     );
   }
 
@@ -483,7 +494,35 @@ export async function handOffCorrectionLease(
   // failing: a newer success, or a head that never failed, produces nothing.
   // That is the lease's second satisfaction — a scope refusal cleared by a body
   // edit moves no head, and must still end the watch.
-  const owed = owedCorrectionStatus(await client.combinedStatus(head));
+  const combined = await client.combinedStatus(head);
+
+  // A failure the GATE recovers from is DISPATCHED, not reported. `auto-merge.yml`
+  // recovers only through `workflow_dispatch` and the timeout path publishes its
+  // failure and throws, so no later CI event arrives — excluding these from the
+  // lease left the pull request draft until a human noticed. This workflow
+  // already holds `actions: write` and already dispatches itself, so the
+  // watchdog asks for the recovery rather than printing instructions for it.
+  //
+  // Idempotent by the gate's own bookkeeping: an accepted request publishes
+  // `recovery: requested terminal status <id>` on this context, and a
+  // `recovery:` status is never an owed correction, so the next tick sees
+  // nothing to do. A duplicate within that window is harmless — the gate
+  // authorises against the exact terminal status id.
+  const recoverable = gateRecoveryStatus(combined);
+  if (recoverable) {
+    await client.dispatchRecovery(defaultBranch, {
+      pr_number: String(pullRequest.number),
+      head_sha: head,
+      terminal_status_id: String(recoverable.id),
+    });
+    console.log(
+      `Dispatched gate recovery for PR #${pullRequest.number} head ${head} `
+        + `terminal status ${recoverable.id}.`,
+    );
+    return { state: 'dispatched', head, terminalStatusId: recoverable.id ?? null };
+  }
+
+  const owed = owedCorrectionStatus(combined);
   if (!owed) return null;
 
   const [comments, reviewComments, reviews] = await Promise.all([
@@ -502,15 +541,16 @@ export async function handOffCorrectionLease(
   // one thing a lease keyed to an exact head must never do. `assessCorrectionLease`
   // already treats a moved head as satisfied; it just has to be given the live
   // pull request to see it.
-  const live = await client.pullRequest(pullRequest.number);
+  const assessed = await client.pullRequest(pullRequest.number);
 
   const assessment = assessCorrectionLease({
-    pullRequest: live,
+    pullRequest: assessed,
     head,
     findingHeads: codexFindingHeads(reviewComments, reviews),
     reason: correctionReasonFor(owed),
     detail: String(owed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
     findingObservedAt: owed.updated_at ?? owed.created_at,
+    occurrence: owed.id ?? null,
     now,
     comments,
   });
@@ -518,26 +558,20 @@ export async function handOffCorrectionLease(
   if (assessment.state === 'notify') {
     // PUBLISH ONLY WHAT A FRESH READ STILL SAYS.
     //
-    // The notice is composed from a snapshot — the failing status, the head, the
-    // owner declaration — and everything since (three paginated collections, the
-    // live pull request) takes time each of those can change in. Three review
-    // rounds each found a different input that could move in that window, so the
-    // guard is not a list of inputs: the whole assessment is RE-DERIVED from a
-    // fresh read, and the comment is published only if it comes out identical.
-    // A body that differs by one character means something the notice depends on
-    // changed, and the next hourly tick reassesses with fresh evidence rather
-    // than this one publishing a verdict that is already stale — a lease key is
-    // claimed forever, so a wrong notice is worse than a late one.
+    // The notice is composed from a snapshot, and everything after it takes time
+    // each of its inputs can change in. Successive review rounds each found a
+    // different one — the status, the head, which failure it is, the declared
+    // owner, the finding history — so the guard is not a list of inputs: the
+    // whole assessment is RE-DERIVED here and published only if it comes out
+    // identical. A lease key is claimed forever, so a wrong notice is worse than
+    // a late one, and anything that moved defers to the next hourly tick.
     const [freshStatuses, live, freshReviewComments, freshReviews] = await Promise.all([
       client.combinedStatus(head),
       client.pullRequest(pullRequest.number),
-      // The FINDING HISTORY too. It decides whether a correction is owed at all
-      // or the round limit has been reached, and reusing the first fetch made
-      // "re-derived from a fresh read" true of the status, the head and the
-      // declaration but false of the one input that can turn a correction into a
-      // replacement. Delayed Codex evidence for a second head, arriving while
-      // the watchdog reads, would otherwise publish the forbidden third-head
-      // instruction with every other guard passing.
+      // The FINDING HISTORY too: it decides whether a correction is owed at all
+      // or the round limit has been reached, so delayed evidence for a second
+      // head would otherwise publish the forbidden third-head instruction with
+      // every other guard passing.
       client.reviewComments(pullRequest.number),
       client.reviews(pullRequest.number),
     ]);
@@ -562,11 +596,16 @@ export async function handOffCorrectionLease(
         reason: correctionReasonFor(freshOwed),
         detail: String(freshOwed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
         findingObservedAt: freshOwed.updated_at ?? freshOwed.created_at,
+        occurrence: freshOwed.id ?? null,
         now,
         comments,
       })
       : null;
-    if (fresh?.state !== 'notify' || fresh.body !== assessment.body) {
+    // The RAW BODY too, not only the notice it renders. A checklist item ticked
+    // while the watchdog reads can clear a scope verdict the status has not
+    // caught up with, leaving the rendered text identical — and a lease key is
+    // claimed forever, so publishing then is a permanent stale wake-up.
+    if (fresh?.state !== 'notify' || fresh.body !== assessment.body || live.body !== assessed.body) {
       return {
         ...assessment,
         state: 'superseded',

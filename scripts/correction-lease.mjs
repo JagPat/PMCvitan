@@ -1,30 +1,20 @@
 // The correction LEASE: a bounded, idempotent watch over one owed correction.
 //
-// A failing required status returns the PR to draft, the controller publishes
+// A failing required status returns the PR to draft and the controller publishes
 // WHO owns the correction — and then, under subscription-only authentication,
-// nothing in this repository can observe whether that owner ever started. On
-// 2026-08-17 both PR #349 and PR #350 sat on a finding-bearing head for about an
-// hour with the handoff job reporting green, and the repository owner had to
-// notice by hand and post the kick himself, twice.
+// nothing here can observe whether that owner ever started. On 2026-08-17 both
+// PR #349 and PR #350 sat on a finding-bearing head for about an hour with the
+// handoff job reporting green, and the repository owner had to notice by hand
+// and post the kick himself, twice.
 //
-// This module is the automated version of exactly that kick, with the three
-// properties a human doing it by hand cannot guarantee:
-//
-//   IDEMPOTENT — the lease is keyed to (pull request, EXACT head, owner). One
-//   notification per key, ever. A repeated cron tick, a replaced Actions run, or
-//   a second event for the same head produces no second comment.
-//
-//   ACTIONABLE — the notice is a NEW comment, which is the only thing that
-//   creates a GitHub notification. Claude Code web Auto-fix wakes on that
-//   notification, so the mention lives HERE and not in the state comment, which
-//   is `PATCH`ed after it exists and therefore notifies nobody. Routing decided
-//   who; this is the unit that asks them.
-//
-//   HONEST — the lease is satisfied by head movement or by the required status
-//   ceasing to fail, and by nothing else. Not by the notification existing, not
-//   by a reaction on it, not by a reply. Both PRs above were "acknowledged only
-//   as a subscription and produced no correction activity", which is precisely
-//   the state an acknowledgement-based check would have called healthy.
+// This is that kick, automated, with the three properties a human doing it by
+// hand cannot guarantee — IDEMPOTENT (one notification per pull request, exact
+// head, owner and owed failure), ACTIONABLE (a NEW comment, the only thing that
+// notifies; the state comment is PATCHed and wakes nobody), and HONEST (cleared
+// by head movement or by the status ceasing to fail, never by an
+// acknowledgement — both PRs above were acknowledged as a subscription and
+// produced no correction). `docs/AUTONOMOUS_LOOP.md` states the contract; this
+// file implements it.
 //
 // It publishes a comment and nothing else. It never touches
 // `codex-current-head`, draft state, auto-merge, or Codex.
@@ -71,20 +61,11 @@ const OWED_REASON_BY_PREFIX = new Map([
 const SELF_HEALING_PREFIXES = new Set(['recovery']);
 
 // Some `review:` failures are not corrections at all: the gate publishes them
-// when it did not reach a verdict — the Codex integration did not answer, the
-// evidence moved under it, required CI changed mid-review, a bootstrap review
-// was requested. All four are recovered by RE-DISPATCHING the gate, so no agent
-// owes anything and this watchdog opens no lease, exactly as it does not for the
-// `recovery:` prefix.
-//
-// SPLIT OUT, DELIBERATELY. Reporting those failures is worth doing, and three
-// review rounds established that doing it well means rendering a runnable
-// `workflow_dispatch` — the exact head, the terminal status id, that failure's
-// own precondition, and the owner-marker repair that must precede it. That is a
-// runbook printed by a reporter, and the better shape is the watchdog performing
-// the dispatch itself. Both belong to one follow-up unit reviewed as a
-// capability change; until it lands the gate's recovery path is unchanged and
-// unobserved by this watchdog, which is where it was before this work.
+// when it did not reach a verdict — the integration did not answer, the evidence
+// moved under it, required CI changed mid-review, a bootstrap review was
+// requested. All four are recovered by RE-DISPATCHING the gate, so no agent owes
+// anything, no lease opens, and the watchdog performs that dispatch instead
+// (see `handOffCorrectionLease`).
 //
 // The list lives in `review-efficiency.mjs` and the GATE reads the same one, so
 // a fifth retryable failure cannot be added there and silently become an
@@ -115,6 +96,20 @@ export function correctionReasonFor(status) {
   return reason;
 }
 
+/**
+ * The failing required status on this exact head that the GATE recovers from,
+ * or null. Nobody owes a correction for these — the gate re-dispatches itself —
+ * but something has to ASK it to, which is why they are surfaced separately
+ * rather than merely skipped.
+ */
+export function gateRecoveryStatus(combinedStatus) {
+  return (combinedStatus?.statuses ?? []).find(
+    (status) => status?.context === CORRECTION_STATUS_CONTEXT
+      && status?.state === 'failure'
+      && isRetryableReviewFailureDescription(status?.description),
+  ) ?? null;
+}
+
 /** The failing required status on this exact head, or null. */
 export function owedCorrectionStatus(combinedStatus) {
   return (combinedStatus?.statuses ?? []).find(
@@ -132,8 +127,15 @@ export function owedCorrectionStatus(combinedStatus) {
 // failure on that same SHA — and with a reason-agnostic key the first notice
 // silenced the second, leaving the loop stalled behind a verdict nobody could
 // act on. Distinct failures are distinct leases.
-export function owedFailureId(reason, detail) {
-  const normalized = `${reason ?? 'review'}\u001f${String(detail ?? '').trim().toLowerCase()}`;
+export function owedFailureId(reason, detail, occurrence = null) {
+  // The OCCURRENCE — the failing status's own id — distinguishes two postings of
+  // the same verdict. A scope failure notified, cleared by a body edit, and then
+  // reintroduced on the same head with the same owner and description produced
+  // an identical key, so the first comment silenced the second and nobody was
+  // woken for the new correction. A persisting failure keeps its id across
+  // watchdog ticks, so it is still published exactly once.
+  const normalized = [reason ?? 'review', String(detail ?? '').trim().toLowerCase(), occurrence ?? '']
+    .join('\u001f');
   return `${reason ?? 'review'}-${createHash('sha256').update(normalized).digest('hex').slice(0, 8)}`;
 }
 
@@ -215,6 +217,7 @@ export function assessCorrectionLease({
   reason = 'review',
   detail = 'current-head Codex findings',
   findingObservedAt,
+  occurrence = null,
   now,
   comments = [],
   graceMs = CORRECTION_LEASE_GRACE_MS,
@@ -255,7 +258,7 @@ export function assessCorrectionLease({
     number: pullRequest?.number,
     head: expected,
     owner,
-    kind: `correction:${owedFailureId(effectiveReason, detail)}`,
+    kind: `correction:${owedFailureId(effectiveReason, detail, occurrence)}`,
   });
   const reportedState = exhausted
     ? 'replacement_required'
@@ -304,10 +307,11 @@ export function assessCorrectionLease({
   const resumeAction = reportedState !== CORRECTION_STALLED
     ? null
     : routing.owner
-      ? `**Required resume action:** start the \`${routing.owner}\` session on branch `
-        + `\`${pullRequest?.head?.ref}\` and have it correct head \`${expected}\`. `
-        + 'GitHub can neither start that session nor observe whether one is already running, '
-        + 'so this notice does not report whether the correction has begun.'
+      ? `**Required resume action:** if no \`${routing.owner}\` session is already running on `
+        + `branch \`${pullRequest?.head?.ref}\`, start one and have it correct head `
+        + `\`${expected}\`. GitHub can neither start that session nor observe whether one is `
+        + 'already running, so check before starting: a second session on the same branch is a '
+        + 'real risk of this notice, not a hypothetical one.'
       : '**Required resume action:** declare the correction owner in the PR body, then the '
         + 'declared owner corrects this head.';
 
