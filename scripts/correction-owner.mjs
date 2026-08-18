@@ -260,33 +260,6 @@ function declaredInstruction(owner, { reason, pullRequestNumber, detail }) {
     + `complete set, fix them forward as one coherent batch, and push one new head.${start}`;
 }
 
-// A failure the review gate recovers from — by being RE-DISPATCHED. It renders
-// the command, filled in, because nothing triggers that recovery on its own:
-// `auto-merge.yml` recovers only through `workflow_dispatch`, and `request-recovery`
-// rejects a missing or wrong `terminal_status_id`. A notice that asks for nothing
-// AND cannot be executed as written leaves the pull request in draft indefinitely.
-function recoveryInstruction(declaration, { head, pullRequestNumber, statusId, precondition }) {
-  // ORDER MATTERS. The dispatched `orchestrate` job runs `enforceReviewScope` on
-  // this same exact head, and ownership is required at every PR number since
-  // #358 — so dispatching first would only replace this retryable failure with a
-  // scope failure. The repair is a body edit and needs no new head.
-  const repairFirst = declaration.state !== 'declared'
-    ? ' FIRST repair the correction-owner declaration: the recovery re-runs `review-scope` on '
-      + `this same head, and it will refuse it (${declaration.detail}). Put exactly one `
-      + '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->` marker in the '
-      + 'marker block at the top of the PR body — a body edit, no new head. Then dispatch.'
-    : '';
-  return 'No correction is owed on this head: the review gate did not reach a verdict, so there '
-    + 'is nothing to read and nothing to fix. Do not push a new head — it would invalidate the '
-    + `exact head being recovered and restart CI without resolving the failure.${repairFirst} `
-    + 'Recovery is a re-dispatch of the `Autonomous review and merge` workflow, which runs only '
-    + `on \`workflow_dispatch\`. Run it ${precondition ?? 'once the gate is able to review again'}, `
-    + `with \`pr_number=${pullRequestNumber ?? '<this PR>'}\`, `
-    + `\`head_sha=${head ?? '<this exact head>'}\` and `
-    + `\`terminal_status_id=${statusId ?? '<the failing codex-current-head status id>'}\`. `
-    + 'The gate authorises that request against the exact head and status id.';
-}
-
 // And what it says when nobody is declared. It names the defect and the exact
 // action that resolves it, and it resolves to no agent — least of all to Claude
 // by default, which is the assumption this whole module exists to remove.
@@ -337,29 +310,8 @@ export function correctionRouting({
   detail = null,
   reason = 'review',
   pullRequestNumber = null,
-  statusId = null,
-  precondition = null,
 } = {}) {
   const resolved = declaration ?? parseCorrectionOwner('');
-  // A gate-retryable failure owes NOBODY a correction, so it is answered before
-  // the declaration is consulted. Routed through the undeclared branch it picked
-  // up "Resume action: add exactly one marker…", telling someone to fix a
-  // declaration so that they could correct a failure a correction cannot fix.
-  // The declaration defect is real and is still named — `review-scope` refuses
-  // the next head over it — but naming is not the same as asking.
-  if (reason === 'recovery') {
-    return {
-      owner: resolved.state === 'declared' ? resolved.owner : null,
-      declarationState: resolved.state,
-      state: 'routed',
-      awakenable: false,
-      head,
-      detail,
-      instruction: recoveryInstruction(resolved, {
-        head, pullRequestNumber, statusId, precondition,
-      }),
-    };
-  }
   if (resolved.state !== 'declared') {
     return {
       owner: null,

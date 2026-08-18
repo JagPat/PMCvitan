@@ -191,15 +191,10 @@ so directly rather than framing it as a suggestion.
   the owner actually has something to do — and is cleared by a new head or by
   that status ceasing to fail, never by an acknowledgement. A gate-retryable
   review failure — a timeout, moved evidence, CI changing mid-review, a
-  requested bootstrap review — owes NO correction: it is reported as
-  `gate_recovery` with no resume action and its own lease key, renders the actual
-  recovery as a runnable command — a `workflow_dispatch` of `Autonomous review
-  and merge` with the PR, the exact head and the terminal status id filled in,
-  under that failure's own precondition, and preceded by the owner-marker repair
-  when the declaration is broken, since the dispatched job re-runs `review-scope`
-  on the same head — and asks for no head, so a later re-dispatch that DOES find
-  something can still open the actionable lease. That list has one definition,
-  which the gate reads too. A scope notice leads with the verdict that is
+  requested bootstrap review — opens NO lease: the gate recovers those by
+  re-dispatching itself, so no agent owes anything. That list has one
+  definition, which the gate reads too. Reporting them and automating that
+  dispatch are a follow-up unit, reviewed as a capability change. A scope notice leads with the verdict that is
   failing, because the size remedy cannot clear a lineage or checklist verdict.
   And the whole assessment is re-derived from a fresh read immediately before
   publishing: the notice goes out only if it comes out identical, so anything

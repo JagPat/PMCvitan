@@ -378,38 +378,6 @@ test('L8: the notice is cleared by movement, never by acknowledgement', async ()
 // L9-L11 — Codex findings on `dad8949`, #359's first finding-bearing head.
 // Three ways the notice was accurate about WHO and wrong about WHAT.
 
-test('L9: a timed-out review asks for no correction and wakes nobody', async () => {
-  // The gate publishes `review: Codex review timed out after two attempts` when
-  // the integration failed, not when it found something. Classified by prefix
-  // alone that became an ordinary correction, so the notice tagged the owner and
-  // told them to read findings that do not exist and push a head — which
-  // invalidates the reviewed head and restarts CI without touching the outage.
-  // The gate's own recovery is to re-dispatch.
-  const { published, assessment } = await watch({
-    statuses: [status('review: Codex review timed out after two attempts')],
-  });
-
-  assert.ok(published, 'the lease stays visible — a stalled review is still worth reporting');
-  assert.equal(assessment.state, 'notify');
-  assert.doesNotMatch(
-    published,
-    /read every current-head Codex finding|reproduce the complete set/iu,
-    'it must not ask for a correction that is not owed',
-  );
-  assert.match(published, /do not push a new head/iu, 'it says so explicitly');
-  assert.doesNotMatch(published, /@claude/u, 'and must not wake an owner with nothing to do');
-  assert.match(published, /re-?dispatch/iu, 'it names the gate’s actual recovery');
-  assert.match(published, /timed out/iu, 'and says why');
-
-  // A real finding on the same prefix is unaffected.
-  const finding = await watch({
-    statuses: [status('review: 3 current-head Codex findings')],
-    reviewComments: [codexFinding(HEAD)],
-  });
-  assert.match(finding.published, /@claude/u);
-  assert.match(finding.published, /push one new head/iu);
-});
-
 test('L10: a scope notice carries the verdict that is actually failing', async () => {
   // The `scope` reason alone always produced "split the review unit, or complete
   // every justified-large invariant row" — the remedy for exactly one of the
@@ -444,43 +412,6 @@ test('L10: a scope notice carries the verdict that is actually failing', async (
   assert.match(size.published, /split the review unit/iu);
 });
 
-test('L12: a timeout report does not consume the correction lease', async () => {
-  // The timeout report carried the SAME (pr, head, owner) marker as a real
-  // correction. If the gate then re-dispatches that exact head and Codex returns
-  // findings, the status becomes an actionable `review:` failure — but the
-  // earlier timeout comment matches the marker, the lease reports `notified`,
-  // and the actionable @claude wake-up is never published. The only notice on
-  // the PR would be the one that says NOT to push.
-  const timeout = await watch({
-    statuses: [status('review: Codex review timed out after two attempts')],
-  });
-  assert.ok(timeout.published);
-
-  const recovered = await watch({
-    statuses: [status('review: 3 current-head Codex findings')],
-    reviewComments: [codexFinding(HEAD)],
-    comments: [{ user: { login: BOT }, body: timeout.published }],
-    now: '2026-08-17T13:00:00Z',
-  });
-  assert.equal(recovered.assessment.state, 'notify', 'the recovered findings open their own lease');
-  assert.match(recovered.published, /@claude/u, 'and the owner is actually woken');
-
-  // The converse also holds: a correction notice does not silence a later
-  // timeout report on the same head, and neither repeats itself.
-  const again = await watch({
-    statuses: [status('review: Codex review timed out after two attempts')],
-    comments: [{ user: { login: BOT }, body: timeout.published }],
-    now: '2026-08-17T13:00:00Z',
-  });
-  assert.equal(again.assessment.state, 'notified', 'the timeout report is still published once only');
-});
-
-// Every way the pull request can move while the watchdog is reading. Each was
-// once its own probe, found one review round at a time — the head moving before
-// the assessment, the status clearing, the head moving before the POST, the
-// failure changing kind, the owner being re-declared. They are ONE property, and
-// stating it once is the point: a notice is published only if a fresh read still
-// produces the identical notice.
 test('L15: only a notice a fresh read still produces is published', async () => {
   const base = (overrides) => {
     const pull = pullRequest();
@@ -555,81 +486,6 @@ test('L15: only a notice a fresh read still produces is published', async () => 
   assert.match(steady.calls.posted[0].body, /@claude/u);
 });
 
-test('L16: every gate-retryable review failure is a recovery report', async () => {
-  const { isRetryableReviewFailureDescription } = await import('./review-efficiency.mjs');
-  const gate = await import('./autonomous-review-gate.mjs');
-
-  // The gate's own list, not a second copy of it. A timeout was only the first
-  // of four; the others prescribe the same re-dispatch and would have drawn an
-  // @claude "push a new head" that invalidates the exact head being recovered.
-  const retryable = [
-    'review: Codex review timed out after two attempts',
-    'review: Codex evidence changed during final verification',
-    'review: Required CI changed during current-head Codex review',
-    'review: bootstrap exact-head review requested',
-  ];
-  for (const description of retryable) {
-    assert.equal(isRetryableReviewFailureDescription(description), true, description);
-    assert.equal(correctionReasonFor(status(description)), 'recovery', description);
-    assert.equal(
-      gate.isRetryableTerminalReviewFailure({
-        context: 'codex-current-head', state: 'failure', description,
-      }),
-      true,
-      'the gate and the watchdog read one definition',
-    );
-
-    const { published } = await watch({ statuses: [status(description)] });
-    assert.doesNotMatch(published, /@claude/u, `${description}: nobody is woken`);
-    assert.doesNotMatch(published, /read every current-head Codex finding/iu, description);
-    assert.match(published, /do not push a new head/iu, description);
-  }
-
-  // A real finding is untouched.
-  assert.equal(correctionReasonFor(status('review: 3 current-head Codex findings')), 'review');
-});
-
-test('L17: a recovery report never carries a resume action, declared or not', async () => {
-  // Covers the Cursor case too: not being awakenable once made a recovery report
-  // `correction_stalled`, which pulled in "start the session and correct head"
-  // beside "do not push a new head".
-  // `actionable` suppressed the stalled-owner resume text, but an UNDECLARED
-  // owner took a different branch entirely and still produced "Resume action:
-  // add …", telling someone to fix a declaration so they could correct a failure
-  // that owes no correction.
-  for (const [label, body, ref] of [
-    ['undeclared', '## Objective', 'codex/task'],
-    ['contradictory', '<!-- correction-owner: cursor -->\n<!-- correction-owner: claude -->', 'codex/task'],
-    ['cursor', '<!-- correction-owner: cursor -->', 'codex/task'],
-    ['claude', '<!-- correction-owner: claude -->', 'claude/task'],
-  ]) {
-    const { published } = await watch({
-      pull: pullRequest({ body, ref }),
-      statuses: [status('review: Codex review timed out after two attempts')],
-    });
-    assert.doesNotMatch(published, /Resume action/iu, `${label}: nobody is asked to resume`);
-    assert.doesNotMatch(published, /correction_stalled/u, `${label}: not stalled on an owner`);
-    assert.match(published, /gate_recovery/u, `${label}: its own honest state`);
-    assert.match(published, /do not push a new head/iu, label);
-    assert.doesNotMatch(published, /@claude|@cursor/u, `${label}: wakes nobody`);
-  }
-});
-
-test('L18: a recovery report still names an unresolved declaration defect', async () => {
-  // Suppressing the resume action must not lose the information. The
-  // declaration is genuinely broken and `review-scope` will refuse the next
-  // head; the notice says so without asking for a correction now.
-  const { published } = await watch({
-    pull: pullRequest({ body: '## Objective', ref: 'codex/task' }),
-    statuses: [status('review: Codex review timed out after two attempts')],
-  });
-  assert.match(published, /correction-owner/u, 'the marker is still named');
-  assert.match(published, /undeclared/u);
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// L19-L21 — Codex findings on `3bdcaf9`.
-
 test('L19: each distinct owed failure gets its own lease on the same head', async () => {
   // A scope failure cleared by a body edit does not move the head, so the next
   // gate run can publish a DIFFERENT failure on that same SHA. Both notices took
@@ -679,95 +535,6 @@ test('L20: a review-scope CI failure is asked for as a scope verdict', async () 
   assert.match(ci.published, /fix the failed required checks/iu);
 });
 
-test('L21: a gate recovery names the dispatch that actually performs it', async () => {
-  // `auto-merge.yml` has no schedule: its only recovery entry point is a
-  // `workflow_dispatch` taking the PR number, the exact head and the terminal
-  // status id. Claiming "the gate re-dispatches itself" was false, and a
-  // one-shot notice saying so left the PR draft forever with everyone told to
-  // do nothing.
-  const { published } = await watch({
-    statuses: [status('review: Codex review timed out after two attempts')],
-  });
-  assert.match(published, /workflow_dispatch|Autonomous review and merge/u, 'it names the entry point');
-  assert.match(published, /terminal.status/iu, 'and the inputs it needs');
-  assert.doesNotMatch(
-    published,
-    /re-?dispatches the review itself|the gate will re-?dispatch/iu,
-    'it never claims a recovery nothing triggers',
-  );
-  assert.match(published, /do not push a new head/iu, 'while still asking for no correction');
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// L22-L25 — Codex findings on `760d45f`. One surface: a recovery notice that
-// nobody can execute is the same dead end as one that asks for the wrong thing.
-
-test('L22: a recovery notice carries the exact dispatch inputs', async () => {
-  // `request-recovery` rejects a missing or wrong `terminal_status_id`, and the
-  // notice told the operator to go find it. The id is in the very status the
-  // watchdog read to open the lease.
-  const failing = { ...status('review: Codex review timed out after two attempts'), id: 998877 };
-  const { published } = await watch({ statuses: [failing] });
-
-  assert.match(published, /998877/u, 'the terminal status id is rendered, not described');
-  assert.match(published, new RegExp(HEAD, 'u'), 'with the exact head');
-  assert.match(published, /pr_number/u);
-  assert.match(published, /head_sha/u);
-  assert.match(published, /terminal_status_id/u);
-  assert.doesNotMatch(
-    published,
-    /the `terminal_status_id` of the failing/u,
-    'it does not send the operator looking for a value it already has',
-  );
-});
-
-test('L23: the precondition named is the one that failure actually needs', async () => {
-  // Only the timeout implies an integration outage. Told to wait for Codex
-  // health, a `Required CI changed` recovery waits out the check deadline and is
-  // then replaced by a CI failure.
-  const cases = [
-    ['review: Codex review timed out after two attempts', /Codex integration is healthy/iu],
-    ['review: Required CI changed during current-head Codex review', /required CI is green again/iu],
-    ['review: Codex evidence changed during final verification', /evidence.*settled|no longer changing/iu],
-    ['review: bootstrap exact-head review requested', /immediately|no precondition/iu],
-  ];
-  for (const [description, expected] of cases) {
-    const { published } = await watch({ statuses: [{ ...status(description), id: 42 }] });
-    assert.match(published, expected, description);
-  }
-
-  const ciChanged = await watch({
-    statuses: [{ ...status('review: Required CI changed during current-head Codex review'), id: 42 }],
-  });
-  assert.doesNotMatch(
-    ciChanged.published,
-    /Codex integration is healthy/iu,
-    'a CI-changed recovery does not wait on Codex health',
-  );
-});
-
-test('L24: a broken declaration is repaired BEFORE the recovery is dispatched', async () => {
-  // The dispatched `orchestrate` job runs `enforceReviewScope` on this same
-  // exact head, and ownership is now required at every PR — so dispatching
-  // first merely replaces the retryable failure with a scope failure. The notice
-  // said the defect "does not block the recovery", which #358 made false.
-  const { published } = await watch({
-    pull: pullRequest({ body: '## Objective', ref: 'codex/task' }),
-    statuses: [{ ...status('review: Codex review timed out after two attempts'), id: 42 }],
-  });
-
-  assert.doesNotMatch(published, /does not block the (re-?dispatch|recovery)/iu);
-  assert.match(published, /before (dispatching|the dispatch)|first/iu, 'the repair comes first');
-  assert.match(published, /correction-owner/u, 'and names the marker that repairs it');
-  assert.match(published, /review-scope|enforceReviewScope|scope gate/u, 'saying why it blocks');
-
-  // A declared owner is not told to repair anything.
-  const declared = await watch({
-    statuses: [{ ...status('review: Codex review timed out after two attempts'), id: 42 }],
-  });
-  assert.doesNotMatch(declared.published, /correction-owner/u);
-});
-
 test('L25: a pull request closed while the watchdog was reading is never notified', async () => {
   // `openPullRequests()` is a snapshot. A PR closed between it and the refresh
   // keeps the same head and body, so nothing else in the assessment notices —
@@ -786,4 +553,52 @@ test('L25: a pull request closed while the watchdog was reading is never notifie
   const assessment = await handOffCorrectionLease(client, snapshot, REPOSITORY, 'main', { now: DUE });
   assert.equal(calls.posted.length, 0, 'a closed pull request is never notified');
   assert.equal(assessment?.state, 'superseded');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L16 — the boundary this unit deliberately does not cross.
+
+test('L16: a failure the gate recovers from opens no lease at all', async () => {
+  const { isRetryableReviewFailureDescription } = await import('./review-efficiency.mjs');
+  const gate = await import('./autonomous-review-gate.mjs');
+
+  // The gate publishes these when it did not reach a verdict, and recovers them
+  // by re-dispatching itself. No agent owes anything, so the watchdog stays out
+  // — exactly as it does for the `recovery:` prefix.
+  //
+  // Reporting them, and performing that dispatch, are SPLIT OUT to a follow-up
+  // unit. Three review rounds established that reporting them well means
+  // rendering a runnable `workflow_dispatch` with the exact head, the terminal
+  // status id, that failure's own precondition and the owner-marker repair that
+  // must precede it — a runbook printed by a reporter, when the better shape is
+  // the watchdog performing the dispatch. That is a capability change and is
+  // reviewed as one.
+  for (const description of [
+    'review: Codex review timed out after two attempts',
+    'review: Codex evidence changed during final verification',
+    'review: Required CI changed during current-head Codex review',
+    'review: bootstrap exact-head review requested',
+  ]) {
+    assert.equal(isRetryableReviewFailureDescription(description), true, description);
+    assert.equal(correctionReasonFor(status(description)), null, description);
+    assert.equal(
+      gate.isRetryableTerminalReviewFailure({
+        context: 'codex-current-head', state: 'failure', description,
+      }),
+      true,
+      'the gate and the watchdog read ONE definition, so a fifth cannot diverge',
+    );
+
+    const { published, assessment } = await watch({ statuses: [status(description)] });
+    assert.equal(published, null, `${description}: nothing is published`);
+    assert.equal(assessment, null, `${description}: no lease is opened`);
+  }
+
+  // A real finding on the same prefix is untouched.
+  assert.equal(correctionReasonFor(status('review: 3 current-head Codex findings')), 'review');
+  const finding = await watch({
+    statuses: [status('review: 3 current-head Codex findings')],
+    reviewComments: [codexFinding(HEAD)],
+  });
+  assert.match(finding.published, /@claude/u);
 });

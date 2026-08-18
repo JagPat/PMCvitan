@@ -133,30 +133,25 @@ WHETHER a correction is owed — a missed prefix means silence, the failure this
 unit exists to remove — while the sentence may still refine WHAT is asked, where
 a miss only makes the notice more generic:
 
-- **A gate-retryable review failure owes nobody a correction.** A timed-out
-  review, evidence that moved under the gate, required CI changing mid-review, a
+- **A gate-retryable review failure opens no lease at all.** A timed-out review,
+  evidence that moved under the gate, required CI changing mid-review, a
   requested bootstrap review — all four mean the gate did not reach a verdict,
-  and all four are recovered by the gate re-dispatching. The list lives in
-  `review-efficiency.mjs` and the Gate reads the same one, so a fifth cannot be
-  added there and silently become an actionable correction here. The lease still
-  reports it, but it RENDERS the re-dispatch as a command anyone can run — the
-  `Autonomous review and merge` workflow, which runs only on `workflow_dispatch`,
-  with the PR number, the exact head and the failing status's
-  `terminal_status_id` filled in, since `request-recovery` rejects a missing or
-  wrong id — under the precondition that failure actually needs (Codex health for
-  a timeout, green required CI for a mid-review CI change, settled evidence, or
-  none at all for a bootstrap request; the precondition lives beside the marker
-  it belongs to). If the correction-owner declaration is broken it says to repair
-  that FIRST, because the dispatched job re-runs `review-scope` on the same head
-  and would refuse it. It asks for no head, and mentions no owner — waking someone with nothing to do is the same false signal as claiming
-  work that is not happening. It reports as `gate_recovery`, NOT
-  `correction_stalled`: the latter means an owner cannot be asked, this means
-  nobody needs to be, and it carries no resume action for a declared OR an
-  undeclared owner (a broken declaration is still named, because `review-scope`
-  will refuse the next head over it — but naming is not asking). Its lease key
-  carries a different `kind`, so it cannot occupy the actionable lease: the gate
-  can re-dispatch that exact head, Codex can come back with findings, and the
-  real wake-up still gets published.
+  and all four are recovered by the gate being RE-DISPATCHED. No agent owes
+  anything, so the watchdog stays out, exactly as it does for the `recovery:`
+  prefix. The list lives in `review-efficiency.mjs` and the gate reads the same
+  one, so a fifth cannot be added there and silently become an actionable
+  correction here.
+
+  **Reporting those failures, and performing that dispatch, are a follow-up
+  unit.** Three review rounds established that reporting them well means
+  rendering a runnable `workflow_dispatch` — the exact head, the terminal status
+  id, that failure's own precondition, and the owner-marker repair that must
+  precede it, since the dispatched job re-runs `review-scope` on the same head.
+  That is a runbook printed by a reporter, and the better shape is the watchdog
+  performing the dispatch itself. Both belong to one unit reviewed as a
+  capability change; until it lands the gate's recovery path is exactly where it
+  was before this work.
+
 - **A scope notice leads with the verdict that is failing.** The scope gate
   publishes several — an undeclared correction owner, replacement lineage, an
   unchecked pre-review item, a missing migration seam, the review unit's size —

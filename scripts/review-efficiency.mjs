@@ -369,38 +369,20 @@ export function findingHeadSeverity(comments, reviews = []) {
 // owes a correction at all. An earlier draft recognised only the timeout, so the
 // other three drew an actionable "push a new head" for a failure a new head
 // cannot fix — it would invalidate the exact head the gate is trying to recover.
-// Each retryable failure with the precondition its re-dispatch actually needs.
-// The precondition sits BESIDE the marker rather than in the notice that prints
-// it, because they are one fact: a shared "wait until the Codex integration is
-// healthy" fitted only the timeout, and told a `Required CI changed` recovery to
-// wait out the check deadline and be replaced by a CI failure.
+// The review gate's own retryable terminal failures, by the description it
+// publishes. ONE definition, because two consumers read it: the gate decides
+// whether to re-dispatch, and the correction watchdog decides whether anyone
+// owes a correction at all — for these, nobody does, so it opens no lease.
 const RETRYABLE_REVIEW_FAILURES = [
-  {
-    marker: 'Codex review timed out',
-    precondition: 'once the Codex integration is healthy again',
-  },
-  {
-    marker: 'Codex evidence changed during final verification',
-    precondition: 'once the review evidence on this head has settled and is no longer changing',
-  },
-  {
-    marker: 'review: Required CI changed during current-head Codex review',
-    precondition: 'once required CI is green again on this exact head',
-  },
-  {
-    marker: 'review: bootstrap exact-head review requested',
-    precondition: 'immediately — a bootstrap request has no precondition beyond green required CI',
-  },
+  'Codex review timed out',
+  'Codex evidence changed during final verification',
+  'review: Required CI changed during current-head Codex review',
+  'review: bootstrap exact-head review requested',
 ];
 
 export function isRetryableReviewFailureDescription(description) {
-  return retryableReviewRecovery(description) !== null;
-}
-
-/** The retryable failure this description names, with its precondition, or null. */
-export function retryableReviewRecovery(description) {
   const text = String(description ?? '');
-  return RETRYABLE_REVIEW_FAILURES.find((entry) => text.includes(entry.marker)) ?? null;
+  return RETRYABLE_REVIEW_FAILURES.some((marker) => text.includes(marker));
 }
 
 export function codexFindingHeads(comments, reviews = []) {

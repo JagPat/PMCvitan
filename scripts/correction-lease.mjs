@@ -33,7 +33,6 @@ import { createHash } from 'node:crypto';
 import {
   REVIEW_RESET_AFTER_FINDING_HEADS,
   isRetryableReviewFailureDescription,
-  retryableReviewRecovery,
 } from './review-efficiency.mjs';
 import {
   AWAKENABLE_FROM_GITHUB,
@@ -71,32 +70,25 @@ const OWED_REASON_BY_PREFIX = new Map([
 // `recovery:` is the gate asking ITSELF to retry, not an agent to fix anything.
 const SELF_HEALING_PREFIXES = new Set(['recovery']);
 
-// Some `review:` failures are not findings at all: the gate publishes them when
-// the Codex integration did not answer, when the evidence moved under it, when
-// required CI changed mid-review, or when a bootstrap review was requested. All
-// four prescribe the same recovery — the gate re-dispatches — and asking for a
-// head instead invalidates the very head being recovered.
+// Some `review:` failures are not corrections at all: the gate publishes them
+// when it did not reach a verdict — the Codex integration did not answer, the
+// evidence moved under it, required CI changed mid-review, a bootstrap review
+// was requested. All four are recovered by RE-DISPATCHING the gate, so no agent
+// owes anything and this watchdog opens no lease, exactly as it does not for the
+// `recovery:` prefix.
+//
+// SPLIT OUT, DELIBERATELY. Reporting those failures is worth doing, and three
+// review rounds established that doing it well means rendering a runnable
+// `workflow_dispatch` — the exact head, the terminal status id, that failure's
+// own precondition, and the owner-marker repair that must precede it. That is a
+// runbook printed by a reporter, and the better shape is the watchdog performing
+// the dispatch itself. Both belong to one follow-up unit reviewed as a
+// capability change; until it lands the gate's recovery path is unchanged and
+// unobserved by this watchdog, which is where it was before this work.
 //
 // The list lives in `review-efficiency.mjs` and the GATE reads the same one, so
 // a fifth retryable failure cannot be added there and silently become an
 // actionable correction here.
-//
-// This is prose matching, which the prefix rule above exists to avoid — but the
-// two do different jobs and fail in opposite directions. The PREFIX decides
-// WHETHER a correction is owed, and a missed prefix means silence, which is the
-// failure this unit removes. These phrases only refine WHAT is asked; if the
-// gate rewords one, the lease falls back to the ordinary correction notice,
-// which is merely too generic rather than absent.
-
-// The reasons whose remedy is an action by the declared owner. A reason outside
-// this set is reported but never mentions anyone: waking an owner who has
-// nothing to do is the same false signal as claiming work that is not happening.
-const OWNER_ACTIONABLE_REASONS = new Set(['review', 'scope', 'ci', 'replacement']);
-
-// What a non-actionable report calls itself. Distinct from `correction_stalled`,
-// which means an owner cannot be asked; this means nobody needs to be.
-export const GATE_RECOVERY_STATE = 'gate_recovery';
-
 /**
  * The correction reason a failing required status implies, or null when the
  * status is not an owed correction.
@@ -114,7 +106,7 @@ export function correctionReasonFor(status) {
   const prefix = /^\s*([a-z]+):/u.exec(description)?.[1];
   if (prefix && SELF_HEALING_PREFIXES.has(prefix)) return null;
   const reason = OWED_REASON_BY_PREFIX.get(prefix) ?? 'review';
-  if (reason === 'review' && isRetryableReviewFailureDescription(description)) return 'recovery';
+  if (reason === 'review' && isRetryableReviewFailureDescription(description)) return null;
   // The gate summarises a FAILED PR-side `review-scope` check as
   // `ci: Failed checks: review-scope`, while its own sticky routes that same
   // result as a scope verdict. Read as CI it told the owner to push a new head,
@@ -153,10 +145,8 @@ export function correctionLeaseMarker({ number, head, owner, kind = 'correction'
 // that cannot notify is the "computed but never asked" defect this lineage kept
 // producing, so it is derived from the same set that decides `awakenable` and
 // can never name an owner GitHub could not have woken.
-export function awakeningMention(owner, reason = 'review') {
-  return AWAKENABLE_FROM_GITHUB.has(owner) && OWNER_ACTIONABLE_REASONS.has(reason)
-    ? `@${owner}`
-    : null;
+export function awakeningMention(owner) {
+  return AWAKENABLE_FROM_GITHUB.has(owner) ? `@${owner}` : null;
 }
 
 function minutesBetween(fromIso, toIso) {
@@ -225,8 +215,6 @@ export function assessCorrectionLease({
   reason = 'review',
   detail = 'current-head Codex findings',
   findingObservedAt,
-  statusId = null,
-  precondition = null,
   now,
   comments = [],
   graceMs = CORRECTION_LEASE_GRACE_MS,
@@ -253,36 +241,27 @@ export function assessCorrectionLease({
   // The round limit outranks the status's own reason: once two heads have borne
   // findings the remedy is a replacement whatever the current failure says.
   const exhausted = (findingHeads ?? []).length >= resetAfterFindingHeads;
+  const effectiveReason = exhausted ? 'replacement' : reason;
   const routing = correctionRouting({
     declaration,
     head: expected,
     detail,
-    reason: exhausted ? 'replacement' : reason,
+    reason: effectiveReason,
     pullRequestNumber: pullRequest?.number,
-    statusId,
-    precondition,
   });
 
   const owner = routing.owner ?? 'undeclared';
-  const effectiveReason = exhausted ? 'replacement' : reason;
-  const actionable = OWNER_ACTIONABLE_REASONS.has(effectiveReason);
   const marker = correctionLeaseMarker({
     number: pullRequest?.number,
     head: expected,
     owner,
-    kind: `${actionable ? 'correction' : effectiveReason}:${owedFailureId(effectiveReason, detail)}`,
+    kind: `correction:${owedFailureId(effectiveReason, detail)}`,
   });
-  // A timed-out review is not stalled on its OWNER — nobody owes anything, and
-  // labelling it `correction_stalled` pulled in the stalled-owner resume action,
-  // which contradicted the instruction it was appended to. It is stalled on the
-  // integration, and says so under its own name.
   const reportedState = exhausted
     ? 'replacement_required'
-    : !actionable
-      ? GATE_RECOVERY_STATE
-      : routing.awakenable
-        ? 'correction_recovery'
-        : CORRECTION_STALLED;
+    : routing.awakenable
+      ? 'correction_recovery'
+      : CORRECTION_STALLED;
 
   const base = {
     owner,
@@ -322,7 +301,7 @@ export function assessCorrectionLease({
   // `correction_stalled` is a dead end unless the notice says how to leave it.
   // A declared owner GitHub cannot wake needs a human to start that session; an
   // undeclared one needs the marker, which the routed instruction already names.
-  const resumeAction = !actionable || reportedState !== CORRECTION_STALLED
+  const resumeAction = reportedState !== CORRECTION_STALLED
     ? null
     : routing.owner
       ? `**Required resume action:** start the \`${routing.owner}\` session on branch `
@@ -340,7 +319,7 @@ export function assessCorrectionLease({
     body: leaseBody({
       resumeAction,
       marker,
-      mention: awakeningMention(routing.owner, effectiveReason),
+      mention: awakeningMention(routing.owner),
       reportedState,
       pullRequestNumber: pullRequest?.number,
       head: expected,

@@ -16,7 +16,7 @@ import {
   correctionReasonFor,
   owedCorrectionStatus,
 } from './correction-lease.mjs';
-import { codexFindingHeads, retryableReviewRecovery } from './review-efficiency.mjs';
+import { codexFindingHeads } from './review-efficiency.mjs';
 
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
@@ -511,8 +511,6 @@ export async function handOffCorrectionLease(
     reason: correctionReasonFor(owed),
     detail: String(owed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
     findingObservedAt: owed.updated_at ?? owed.created_at,
-    statusId: owed.id ?? null,
-    precondition: retryableReviewRecovery(owed.description)?.precondition ?? null,
     now,
     comments,
   });
@@ -555,8 +553,6 @@ export async function handOffCorrectionLease(
         reason: correctionReasonFor(freshOwed),
         detail: String(freshOwed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
         findingObservedAt: freshOwed.updated_at ?? freshOwed.created_at,
-        statusId: freshOwed.id ?? null,
-        precondition: retryableReviewRecovery(freshOwed.description)?.precondition ?? null,
         now,
         comments,
       })
