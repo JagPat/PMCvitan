@@ -24,7 +24,10 @@ function pullRequest(overrides = {}) {
     additions: 700,
     deletions: 300,
     changed_files: 12,
-    body: '',
+    // A declared owner by default: ownership is orthogonal to the size and
+    // lineage behaviour these fixtures exercise, but it is now a precondition of
+    // every scope assessment, so omitting it would block on an unrelated axis.
+    body: '<!-- correction-owner: claude -->',
     ...overrides,
   };
 }
@@ -32,6 +35,9 @@ function pullRequest(overrides = {}) {
 function justifiedLargeBody(categories = REQUIRED_INVARIANTS) {
   return [
     '<!-- review-size: justified-large -->',
+    // Ownership is a precondition of every scope assessment now, with no
+    // exemption by number, so a fixture declares one exactly as a real PR must.
+    '<!-- correction-owner: claude -->',
     '## Review-unit justification',
     'This workflow crosses generated contracts and their acceptance fixture.',
     '',
@@ -54,6 +60,7 @@ function preReviewBody({ migrationScope = 'separated', seam = 'n/a', omit } = {}
   return [
     '<!-- review-size: standard -->',
     `<!-- migration-scope: ${migrationScope} -->`,
+    '<!-- correction-owner: claude -->',
     'Replaces: none',
     '',
     '## Pre-review checklist',
@@ -303,7 +310,7 @@ test('a merged declared replacement fulfills its source requirement', () => {
       number: 347,
       state: 'closed',
       merged_at: '2026-08-17T12:00:00Z',
-      body: 'Replaces: #346',
+      body: '<!-- correction-owner: claude -->\nReplaces: #346',
     }],
   });
   assert.equal(result.allowed, true);

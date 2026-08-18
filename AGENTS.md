@@ -161,15 +161,39 @@ so directly rather than framing it as a suggestion.
 - Codex reviews only after the orchestrator moves the CI-green draft to ready.
   Codex does not fix its own findings; that keeps the reviewer independent of the
   author.
+- Every PR declares its correction owner in the body, as exactly one
+  `<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->`
+  marker. `review-scope` refuses a missing, unknown, or contradictory
+  declaration before any expensive job runs, and a `claude/**` branch may only
+  declare `claude`. Nothing infers the owner: the branch prefix does not carry
+  it, and GitHub cannot see whether a subscription-backed agent session is
+  alive.
 - A current-head finding makes `codex-current-head` fail and returns the PR to
-  draft. Claude Code web Auto-fix, which must remain subscribed until merge or
-  close, reads every current-head finding before editing, reproduces the complete
-  set, fixes forward as one coherent batch, and pushes a new head.
-- On the second finding-bearing head, Claude makes no further correction on that
-  PR. It closes the exhausted PR and opens a smaller replacement from current
-  `main`, preserving the unresolved findings and reproduce-first proofs and
-  declaring `Replaces: #<closed-pr>`. The replacement starts a new comprehensive
-  review round; it does not inherit a clean signal or bypass any check.
+  draft. The DECLARED owner reads every current-head finding before editing,
+  reproduces the complete set, fixes forward as one coherent batch, and pushes a
+  new head. Claude Code web Auto-fix must remain subscribed until merge or close
+  on the PRs it owns; a notice must never attribute a correction to an agent the
+  PR did not declare.
+- A notice never claims more than it knows. An owner GitHub cannot start (today,
+  anything other than `claude`) is named and the notice says plainly that GitHub
+  can neither begin that session nor observe whether it is already running — it
+  never asserts that no correction is in flight, and never treats a new head as
+  the test of one, because a body edit clears a scope refusal without producing
+  one; an undeclared or malformed declaration reports
+  `correction_stalled` and names the marker that fixes it. Naming an owner is not
+  waking one: an actionable mention needs a new comment, and detecting that an
+  asked owner never started needs a lease keyed to pull request, exact head and
+  owner. Both are a separate follow-up unit, so a stalled correction is still
+  noticed by a human.
+- On the second finding-bearing head, the PR's declared correction owner makes
+  no further correction on that PR. That same owner closes the exhausted PR and
+  opens a smaller replacement from current `main`, preserving the unresolved
+  findings and reproduce-first proofs and declaring `Replaces: #<closed-pr>`.
+  Ownership carries to the replacement path exactly as it does to a fix: a
+  Cursor-owned unit is closed and replaced by Cursor, and Claude — subscribed to
+  every PR — must not perform it on that owner's behalf. The replacement starts a
+  new comprehensive review round; it does not inherit a clean signal or bypass
+  any check.
 - A fresh current-head clean signal makes `codex-current-head` succeed and queues
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and
