@@ -23,11 +23,17 @@
 DO $$
 DECLARE v_rows INT;
 BEGIN
-  IF to_regclass('"ActivityDependency"') IS NULL THEN
+  IF to_regclass('public."ActivityDependency"') IS NULL THEN
     RETURN;
   END IF;
+  -- Scoped by `tgrelid`, not by name alone. A trigger name is unique per TABLE, not per database,
+  -- so an unrelated table — in any schema — carrying a trigger called `ActivityDependency_acyclic`
+  -- would otherwise satisfy this test. That matters precisely here: this branch decides that the
+  -- rows already present were judged on their way in, and getting it wrong the optimistic way lets
+  -- a pre-existing cycle survive the very installation meant to make cycles impossible.
   IF EXISTS (SELECT 1 FROM pg_trigger
-              WHERE tgname = 'ActivityDependency_acyclic' AND NOT tgisinternal) THEN
+              WHERE tgname = 'ActivityDependency_acyclic' AND NOT tgisinternal
+                AND tgrelid = to_regclass('public."ActivityDependency"')) THEN
     RAISE NOTICE 'schedule: the dependency guards are already installed — this is a re-application, and the rows present were judged by those guards when they were written.';
     RETURN;
   END IF;
@@ -66,19 +72,22 @@ CREATE TABLE IF NOT EXISTS "ActivityDependency" (
 -- convention: no service, import, script or hand-written UPDATE can produce one.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_projectId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_projectId_fkey'
+                  AND conrelid = to_regclass('public."ActivityDependency"')) THEN
     ALTER TABLE "ActivityDependency"
       ADD CONSTRAINT "ActivityDependency_projectId_fkey"
       FOREIGN KEY ("projectId") REFERENCES "Project"("id")
       ON DELETE RESTRICT ON UPDATE CASCADE;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_projectId_predecessorId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_projectId_predecessorId_fkey'
+                  AND conrelid = to_regclass('public."ActivityDependency"')) THEN
     ALTER TABLE "ActivityDependency"
       ADD CONSTRAINT "ActivityDependency_projectId_predecessorId_fkey"
       FOREIGN KEY ("projectId", "predecessorId") REFERENCES "Activity"("projectId", "id")
       ON DELETE NO ACTION ON UPDATE NO ACTION;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_projectId_successorId_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_projectId_successorId_fkey'
+                  AND conrelid = to_regclass('public."ActivityDependency"')) THEN
     ALTER TABLE "ActivityDependency"
       ADD CONSTRAINT "ActivityDependency_projectId_successorId_fkey"
       FOREIGN KEY ("projectId", "successorId") REFERENCES "Activity"("projectId", "id")
@@ -99,13 +108,15 @@ CREATE INDEX IF NOT EXISTS "ActivityDependency_projectId_successorId_idx"
 DO $$
 BEGIN
   -- An activity waiting for itself can never start. Cheap to state, so state it.
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_no_self_check') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_no_self_check'
+                  AND conrelid = to_regclass('public."ActivityDependency"')) THEN
     ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_no_self_check"
       CHECK ("predecessorId" <> "successorId");
   END IF;
   -- A NEGATIVE lag would let a successor begin before its predecessor finished, which is the one
   -- thing this table exists to forbid. Zero is legal and is the common case.
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_lag_nonneg_check') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_lag_nonneg_check'
+                  AND conrelid = to_regclass('public."ActivityDependency"')) THEN
     ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check"
       CHECK ("lagWorkingDays" >= 0);
   END IF;
@@ -177,10 +188,32 @@ CREATE TRIGGER "ActivityDependency_endpoints_frozen"
 CREATE OR REPLACE FUNCTION activity_dependency_acyclic() RETURNS TRIGGER LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
 DECLARE
-  v_path TEXT; v_closes_loop BOOLEAN; v_scope TEXT;
+  v_path TEXT; v_closes_loop BOOLEAN; v_scope INT; v_key INT; v_isolation TEXT;
   v_frontier TEXT[]; v_next TEXT[]; v_seen TEXT[]; v_parent JSONB; v_node TEXT; v_from TEXT;
 BEGIN
-  -- One project per transaction, checked before any lock is taken.
+  -- A FRESH SNAPSHOT AFTER THE LOCK IS THE WHOLE MECHANISM, so the isolation level is checked
+  -- before anything else.
+  --
+  -- The lock below makes the second writer wait for the first. What makes waiting useful is that
+  -- the reachability query afterwards then SEES the first writer's edge. Under READ COMMITTED it
+  -- does: every statement takes its own snapshot. Under REPEATABLE READ and SERIALIZABLE the
+  -- snapshot is fixed when the transaction starts, and no amount of waiting refreshes it — so T2
+  -- blocks, T1 commits A -> B, T2 wakes, walks a graph that still does not contain A -> B, and
+  -- commits B -> A. Both succeed, and the cycle is in the table. The lock did its job; the read
+  -- was answering a question about the past.
+  --
+  -- SERIALIZABLE would probably be caught by SSI's read-write conflict detection, but "probably"
+  -- is not the standard for an invariant the rest of the system treats as physically impossible,
+  -- and a trigger is the wrong place to reason about predicate locks. So the guard states its
+  -- requirement instead of hoping: it needs a snapshot taken after the lock, only READ COMMITTED
+  -- provides one, and anything else is refused rather than silently unguarded.
+  v_isolation := current_setting('transaction_isolation');
+  IF v_isolation <> 'read committed' THEN
+    RAISE EXCEPTION 'schedule: dependency edges cannot be written under % isolation. The cycle check needs a snapshot taken AFTER the project graph lock, and only READ COMMITTED gives it one — under a fixed snapshot two transactions can each add an edge the other cannot see and compose a cycle. Write dependency edges in a READ COMMITTED transaction.',
+      v_isolation;
+  END IF;
+
+  -- One project per transaction, derived from the locks this transaction ALREADY HOLDS.
   --
   -- The lock below is per project, and this is a ROW trigger, so a single statement spanning two
   -- projects takes two of them in the order the rows happen to arrive. One transaction inserting
@@ -189,20 +222,31 @@ BEGIN
   -- ordering rule inside a row trigger can fix that, because the trigger cannot see the rows still
   -- to come.
   --
-  -- So the scope is enforced rather than assumed. `set_config(..., true)` is transaction-local and
-  -- unwinds with a rollback, which makes it exactly the right place to remember the first project
-  -- this transaction claimed. A cross-project write now gets a refusal that names the fix instead
-  -- of a nondeterministic deadlock, and single-project writers — which is every real caller, since
-  -- one project is one site — keep running concurrently with each other.
-  v_scope := current_setting('vitan.schedule_graph_project', true);
-  IF v_scope IS NULL OR v_scope = '' THEN
-    PERFORM set_config('vitan.schedule_graph_project', NEW."projectId", true);
-  ELSIF v_scope <> NEW."projectId" THEN
-    RAISE EXCEPTION 'schedule: this transaction already wrote dependency edges for project %, and edges for project % cannot be written in the same transaction — the per-project graph lock would be taken out of order. Write one project per transaction.',
-      v_scope, NEW."projectId";
+  -- The first version of this remembered the claimed project in a custom GUC. That was the right
+  -- idea in the wrong place: a GUC is ordinary session state, and any writer able to insert an edge
+  -- is equally able to `set_config(..., true)` it back to empty between statements — which restores
+  -- the deadlock exactly, and does so most easily for the direct-SQL writer this migration
+  -- explicitly treats as an alternate writer. A guard a caller can switch off is a convention.
+  --
+  -- `pg_locks` is not switchable. A transaction-scoped advisory lock CANNOT be released before
+  -- commit — `pg_advisory_unlock` refuses xact-scoped locks outright — so the set of graph locks
+  -- this backend holds is authoritative transaction state, and it is exactly the state the ordering
+  -- hazard is about. The key is taken in two-int form so the namespace is a column to filter on
+  -- rather than a range to decode: `classid` is the namespace, `objid` the project.
+  v_key := hashtext(NEW."projectId");
+  SELECT l.objid::INT INTO v_scope
+    FROM pg_locks l
+   WHERE l.locktype = 'advisory' AND l.granted
+     AND l.pid = pg_backend_pid()
+     AND l.classid = hashtext('vitan:schedule-graph') AND l.objsubid = 2
+     AND l.objid::INT <> v_key
+   LIMIT 1;
+  IF v_scope IS NOT NULL THEN
+    RAISE EXCEPTION 'schedule: this transaction already holds the dependency graph lock for another project, and edges for project % cannot be written in the same transaction — the per-project locks would be taken out of order and two such writers would deadlock. Write one project per transaction.',
+      NEW."projectId";
   END IF;
 
-  PERFORM pg_advisory_xact_lock(hashtext('vitan:schedule-graph:' || NEW."projectId"));
+  PERFORM pg_advisory_xact_lock(hashtext('vitan:schedule-graph'), v_key);
 
   IF NEW."predecessorId" = NEW."successorId" THEN
     RAISE EXCEPTION 'schedule: activity % cannot depend on itself.', NEW."successorId";

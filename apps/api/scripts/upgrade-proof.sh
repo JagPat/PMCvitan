@@ -3709,7 +3709,7 @@ assert "B1: the containment FKs, both CHECKs, the ordered-pair key and both seal
   "5|1|2"
 # the guard is only correct because it serializes; assert the lock is actually in the shipped body
 assert "B1: the cycle guard serializes on the project schedule-graph advisory lock (its own key namespace)" \
-  "SELECT (prosrc LIKE '%pg_advisory_xact_lock%' AND prosrc LIKE '%vitan:schedule-graph:%')::text FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
+  "SELECT (prosrc LIKE '%pg_advisory_xact_lock%' AND prosrc LIKE '%vitan:schedule-graph%')::text FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
   "true"
 
 # Two extra fixture activities: a third in project 1, and a second in project 3. Both probes below
@@ -3754,6 +3754,22 @@ assert_rejects "B1: attribution that is present but not answerable — a name of
   "attribution_check"
 # The trigger must read the table the insert writes, not whatever the caller's search path resolves
 # first. Asserted from the catalog, because the property is invisible in the function body.
+# The guard needs a snapshot taken AFTER its lock, and only READ COMMITTED provides one. Under a
+# fixed snapshot two writers can each add an edge the other cannot see, so the level is refused
+# rather than silently unguarded. Asserted through a real REPEATABLE READ transaction.
+assert_rejects "B1: an edge written under a FIXED SNAPSHOT, where waiting on the lock proves nothing" \
+  "BEGIN ISOLATION LEVEL REPEATABLE READ;
+   INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-RR','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC');
+   COMMIT" \
+  "READ COMMITTED"
+# The one-project scope is derived from the transaction's own advisory locks, which cannot be
+# released before commit — so clearing session state does not restore the deadlock shape.
+assert_rejects "B1: two projects in one transaction, with the caller CLEARING session state in between" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-R1','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC');
+   SELECT set_config('vitan.schedule_graph_project', '', true);
+   RESET ALL;
+   INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-R2','p3','ACT-P3','ACT-P3B','USER-1','Legacy PMC')" \
+  "one project per transaction"
 assert "B1: the cycle check resolves its table through a pinned search path" \
   "SELECT COALESCE(array_to_string(proconfig, ','), '<none>') FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
   "search_path=pg_catalog, public"

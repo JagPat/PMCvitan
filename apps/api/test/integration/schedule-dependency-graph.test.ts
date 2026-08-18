@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
@@ -368,5 +370,100 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
       await tx.$executeRawUnsafe(edge(a2, a3));
     });
     expect(await edgeCount()).toBe(2);
+  });
+  // ── P14 ────────────────────────────────────────────────────────────────────────────────────
+  it('P14 a fixed snapshot cannot be used to write edges at all', async () => {
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+
+    // Why the lock is not enough on its own. The lock makes the second writer WAIT; what makes
+    // waiting useful is that the reachability query afterwards sees the first writer's edge. Under
+    // REPEATABLE READ the snapshot is fixed when the transaction starts and no amount of waiting
+    // refreshes it, so T2 would wake up, walk a graph that still does not contain a -> b, and
+    // commit b -> a. Both edges land and the table holds a cycle. Rather than hope SSI notices,
+    // the guard states its requirement and refuses anything that cannot meet it.
+    for (const level of ['REPEATABLE READ', 'SERIALIZABLE'] as const) {
+      await expect(
+        t.prisma.$transaction(async (tx) => {
+          await tx.$executeRawUnsafe(`SET TRANSACTION ISOLATION LEVEL ${level}`);
+          await tx.$executeRawUnsafe(edge(b, a));
+        }),
+      ).rejects.toThrow(/READ COMMITTED/i);
+    }
+
+    // …and the ordinary isolation the application actually uses is untouched: the same write is
+    // refused, but as the CYCLE it is, which is the whole point of getting this far.
+    expect(await refusal(edge(b, a))).toMatch(/dependency cycle/i);
+    expect(await edgeCount()).toBe(1);
+  });
+
+  // ── P15 ────────────────────────────────────────────────────────────────────────────────────
+  it('P15 the one-project scope cannot be switched off by the caller', async () => {
+    const [a1, a2] = [await activity(), await activity()];
+    const [b1, b2] = [await activity(f.projectB.id), await activity(f.projectB.id)];
+
+    // The first version of this guard remembered the claimed project in a custom GUC, which any
+    // writer able to insert an edge could clear between statements — restoring the deadlock, and
+    // most easily for the direct-SQL writer the migration treats as an alternate writer. The scope
+    // is now derived from the transaction's own advisory locks, which cannot be released before
+    // commit. This drives exactly that escape and requires it to fail.
+    await expect(
+      t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(edge(a1, a2));
+        await tx.$executeRawUnsafe(`SELECT set_config('vitan.schedule_graph_project', '', true)`);
+        await tx.$executeRawUnsafe(`RESET ALL`);
+        await tx.$executeRawUnsafe(edge(b1, b2, { projectId: f.projectB.id }));
+      }),
+    ).rejects.toThrow(/one project per transaction/i);
+    expect(await edgeCount()).toBe(0);
+
+    // and the lock genuinely cannot be handed back mid-transaction, which is what makes the
+    // derived state authoritative rather than merely inconvenient to forge
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(edge(a1, a2));
+      const [{ released }] = await tx.$queryRawUnsafe<Array<{ released: boolean }>>(
+        `SELECT pg_advisory_unlock(hashtext('vitan:schedule-graph'), hashtext('${f.projectA.id}')) AS released`,
+      );
+      expect(released, 'a transaction-scoped advisory lock must not be releasable').toBe(false);
+    });
+    expect(await edgeCount()).toBe(1);
+  });
+
+  // ── P16 ────────────────────────────────────────────────────────────────────────────────────
+  it('P16 the install preflight identifies its guards by table, not by name alone', async () => {
+    // A trigger name is unique per TABLE, not per database. The preflight uses the presence of
+    // `ActivityDependency_acyclic` to decide that the rows already in the table were checked on
+    // their way in — so if an unrelated table anywhere carries that name, the optimistic branch
+    // wins and pre-existing cycles survive the installation meant to make them impossible.
+    //
+    // The REAL preflight text is extracted from the migration and executed, rather than a copy of
+    // it restated here, because a copy would keep passing after the migration stopped matching it.
+    const sql = readFileSync(
+      join(__dirname, '..', '..', 'prisma', 'migrations',
+           '20270910000000_schedule_dependency_graph', 'migration.sql'),
+      'utf8',
+    );
+    const preflight = sql.slice(sql.indexOf('DO $$'), sql.indexOf('END $$;') + 'END $$;'.length);
+    expect(preflight, 'the preflight block should be the first DO block in the migration')
+      .toMatch(/already holds/);
+
+    const [a, b] = [await activity(), await activity()];
+    await expect(
+      t.prisma.$transaction(async (tx) => {
+        // an unrelated table, carrying a trigger with the guard's name
+        await tx.$executeRawUnsafe(`CREATE TABLE "b1_decoy" ("id" TEXT PRIMARY KEY)`);
+        await tx.$executeRawUnsafe(
+          `CREATE TRIGGER "ActivityDependency_acyclic" BEFORE INSERT ON "b1_decoy"
+             FOR EACH ROW EXECUTE FUNCTION activity_dependency_acyclic()`,
+        );
+        // the real guards gone, and an unchecked edge already present — the exact partial-install
+        // state the preflight exists to refuse
+        await tx.$executeRawUnsafe(`DROP TRIGGER "ActivityDependency_acyclic" ON "ActivityDependency"`);
+        await tx.$executeRawUnsafe(edge(a, b));
+        await tx.$executeRawUnsafe(preflight);
+      }),
+    ).rejects.toThrow(/already holds 1 row\(s\) before its guards existed/i);
+
+    expect(await edgeCount()).toBe(0); // the whole probe rolled back with the refusal
   });
 });
