@@ -109,7 +109,7 @@ Every correction notice is now derived from the declaration:
 | Declared owner | Finding, CI, scope and replacement notices |
 | --- | --- |
 | `claude` | Claude Code web Auto-fix is named as the owner of the correction |
-| `cursor` | the Cursor agent is named; Claude is never tagged or claimed, and the notice states plainly that GitHub cannot start that session |
+| `cursor` | routed but not awakenable — the Cursor agent is named, Claude is never claimed, and the notice states plainly that GitHub cannot start that session |
 | undeclared / invalid / contradictory | no agent is routed; the notice reports `correction_stalled` and names the marker that fixes it |
 
 ### Naming an owner is not waking one — FOLLOW-UP UNIT
@@ -166,8 +166,11 @@ closed and is not touched.
 - Task N+1 never starts while `docs/STATUS.md` keeps Task N open.
 - Never add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, a Cursor credential, or an AI
   action. Codex GitHub review, Claude Code web Auto-fix, and any Cursor agent use
-  the owner's product subscriptions. This is why an agent GitHub cannot wake is
-  reported as `correction_stalled` rather than started.
+  the owner's product subscriptions. This is why a declared owner GitHub cannot
+  wake is ROUTED BUT NOT AWAKENABLE — named in the notice, which states plainly
+  that GitHub cannot begin that session — rather than started. Only an absent or
+  malformed declaration is `correction_stalled`, because only then is there no
+  owner to name.
 - A write-capable workflow checks out only the trusted default branch, never PR
   code. Only open same-repository PRs are eligible.
 - Credentials and raw transcripts never enter Git. In particular, never commit Coolify tokens, SMTP credentials, database passwords, `.env` contents, or local attachments.

@@ -25,13 +25,6 @@
 
 export const CORRECTION_OWNERS = ['claude', 'cursor'];
 
-// PRs at or below this number were already open when the declaration became
-// required, and this branch is not permitted to edit them. They are bootstrapped
-// by DECLARING — the owner adds the marker to the PR body, which reruns the
-// scope gate and routes the correction — never by being retroactively blocked on
-// a rule that did not exist when they were opened. See docs/AUTONOMOUS_LOOP.md.
-export const CORRECTION_OWNER_ENFORCE_AFTER_PR = 350;
-
 // Which owners GitHub can actually WAKE, under this repository's
 // subscription-only authentication.
 //
@@ -175,13 +168,15 @@ export function correctionOwnerDeclaration(pullRequest) {
  * the two cannot drift. `review-scope` is the first CI job and every product job
  * declares `needs: [review-scope]`, so an undeclared owner costs no product
  * battery and no Codex invocation.
+ *
+ * EVERY pull request, with no exemption by number. An earlier draft grandfathered
+ * PRs at or below #350 so that #349 and #350 — open at the time, and off-limits
+ * to edit — were not retroactively blocked. Both are closed now, as is every
+ * other PR in that range, so the carve-out protected nothing and contradicted
+ * the contract it was written beside: a PR inside it could pass `review-scope`
+ * with no owner and then route to nobody on its first finding.
  */
-export function correctionOwnerProblem(
-  pullRequest,
-  { enforceAfterPr = CORRECTION_OWNER_ENFORCE_AFTER_PR } = {},
-) {
-  const number = Number(pullRequest?.number);
-  if (!Number.isFinite(number) || number <= enforceAfterPr) return null;
+export function correctionOwnerProblem(pullRequest) {
   const declaration = correctionOwnerDeclaration(pullRequest);
   return declaration.state === 'declared' ? null : declaration.detail;
 }

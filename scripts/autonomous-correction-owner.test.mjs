@@ -231,8 +231,7 @@ test('O1: the declaration is machine-readable, and every failure mode is named',
   );
 });
 
-test('O2: review-scope rejects undeclared ownership before any expensive job', async () => {
-  const { CORRECTION_OWNER_ENFORCE_AFTER_PR } = await ownerModule();
+test('O2: review-scope rejects undeclared ownership before any expensive job', () => {
 
   const CHECKLIST = [
     '- [x] `concurrency-serialization`',
@@ -290,11 +289,11 @@ test('O2: review-scope rejects undeclared ownership before any expensive job', a
     );
   }
 
-  // #349 and #350 predate the requirement and are bootstrapped by declaring the
-  // marker themselves, not by a forced edit from this branch.
-  assert.equal(CORRECTION_OWNER_ENFORCE_AFTER_PR, 350);
-  const openPr = scoped({ number: 350, ref: 'codex/cloud-agent-env-replacement', declaration: '' });
-  assert.equal(openPr.allowed, true, 'an already-open PR is not retroactively blocked');
+  // No exemption by number: the grandfathering that once protected #349 and #350
+  // is gone with them (C8). A low-numbered PR is refused exactly like a new one.
+  const legacy = scoped({ number: 350, ref: 'codex/cloud-agent-env-replacement', declaration: '' });
+  assert.equal(legacy.allowed, false, 'an old number earns no exemption');
+  assert.match(legacy.detail, /correction owner/u);
 });
 
 test('O3: findings are routed by the declaration, and Claude is never claimed for Cursor', async () => {
@@ -636,4 +635,98 @@ test('C7: correction_stalled reaches the notice it describes', async () => {
     body: '<!-- correction-owner: claude -->',
   });
   assert.doesNotMatch(routed.body, new RegExp(CORRECTION_STALLED, 'u'));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C8-C10 — Codex findings on `4841f80`. Three ways the CONTRACT and the CODE
+// disagreed: a rule with an exemption, a directive that outlived it, and a
+// documented state the implementation stopped producing.
+
+test('C8: every pull request declares an owner — no number is exempt', async () => {
+  const owner = await ownerModule();
+
+  // The grandfathering existed to avoid retroactively blocking #349 and #350
+  // while they were open and off-limits to edit. Both are closed, as is every
+  // other PR in that range, so the exemption now protects nothing and only
+  // contradicts the contract: a PR inside it could pass `review-scope` with no
+  // owner and then route to nobody on its first finding.
+  assert.ok(
+    !('CORRECTION_OWNER_ENFORCE_AFTER_PR' in owner),
+    'the exemption is gone rather than merely unused',
+  );
+
+  const undeclared = { number: 350, body: '## Objective', head: { ref: 'codex/x' } };
+  assert.match(
+    owner.correctionOwnerProblem(undeclared) ?? '',
+    /correction owner/u,
+    'a low-numbered PR is refused exactly like a new one',
+  );
+  assert.equal(
+    owner.correctionOwnerProblem({ ...undeclared, number: 1 }) ?? '',
+    owner.correctionOwnerProblem({ ...undeclared, number: 9999 }) ?? '',
+    'and the refusal does not depend on the number at all',
+  );
+  assert.equal(
+    owner.correctionOwnerProblem({
+      number: 1, body: '<!-- correction-owner: claude -->', head: { ref: 'claude/x' },
+    }),
+    null,
+    'a declared owner passes at any number',
+  );
+});
+
+test('C9: the replacement handoff names the declared owner, not Claude', async () => {
+  // The ownership rules landed beside an older directive that still said Claude
+  // closes the exhausted PR and opens its replacement. On a Cursor-owned unit
+  // those two paragraphs instruct different agents to do the same thing, and
+  // they do it on the replacement path — the one place the loop is already
+  // fragile.
+  const agents = readFileSync(new URL('../AGENTS.md', import.meta.url), 'utf8');
+  const handoff = agents.slice(agents.indexOf('## Review → fix handoff'));
+  const secondHead = handoff.slice(handoff.indexOf('On the second finding-bearing head'));
+  const directive = secondHead.slice(0, secondHead.indexOf('\n- '));
+
+  // The property is who is INSTRUCTED, not whether a name appears: the directive
+  // may — and should — say that Claude must not do it on another owner's behalf.
+  assert.doesNotMatch(
+    directive,
+    /Claude (closes|opens|makes|must close|must open|makes no further)/iu,
+    'the replacement action must not be assigned to Claude unconditionally',
+  );
+  assert.match(directive, /declared (correction )?owner/iu, 'it names the declared owner');
+  assert.match(directive, /closes the exhausted PR/u, 'and still states the action');
+});
+
+test('C10: the documented meaning of correction_stalled matches what routing emits', async () => {
+  const { correctionRouting, parseCorrectionOwner, CORRECTION_STALLED } = await ownerModule();
+
+  // Routing calls a declared-but-unwakeable owner `routed`; only an absent or
+  // malformed declaration is `correction_stalled`. The docs and the template
+  // said any owner GitHub cannot wake is reported stalled, which would give the
+  // machine-readable field two incompatible meanings.
+  const cursor = correctionRouting({
+    declaration: parseCorrectionOwner('<!-- correction-owner: cursor -->'),
+    head: HEAD,
+    detail: '3 current-head Codex findings',
+  });
+  assert.equal(cursor.state, 'routed', 'cursor is routed…');
+  assert.equal(cursor.awakenable, false, '…but not awakenable');
+
+  const undeclared = correctionRouting({ declaration: parseCorrectionOwner(''), head: HEAD });
+  assert.equal(undeclared.state, CORRECTION_STALLED, 'only an undeclared owner is stalled');
+
+  const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
+  for (const doc of ['../docs/AUTONOMOUS_LOOP.md', '../.github/pull_request_template.md']) {
+    const text = read(doc);
+    assert.doesNotMatch(
+      text,
+      /Cursor[^.]*is reported as `?correction_stalled|cannot (start|wake)[^.]*reported as `?correction_stalled/iu,
+      `${doc} must not say a declared Cursor owner is reported stalled`,
+    );
+  }
+  assert.match(
+    read('../docs/AUTONOMOUS_LOOP.md'),
+    /routed[^.]*not awakenable|routed but not awakenable/iu,
+    'the loop doc states the routed-but-not-awakenable meaning',
+  );
 });

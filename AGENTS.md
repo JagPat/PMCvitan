@@ -182,11 +182,15 @@ so directly rather than framing it as a suggestion.
   asked owner never started needs a lease keyed to pull request, exact head and
   owner. Both are a separate follow-up unit, so a stalled correction is still
   noticed by a human.
-- On the second finding-bearing head, Claude makes no further correction on that
-  PR. It closes the exhausted PR and opens a smaller replacement from current
-  `main`, preserving the unresolved findings and reproduce-first proofs and
-  declaring `Replaces: #<closed-pr>`. The replacement starts a new comprehensive
-  review round; it does not inherit a clean signal or bypass any check.
+- On the second finding-bearing head, the PR's declared correction owner makes
+  no further correction on that PR. That same owner closes the exhausted PR and
+  opens a smaller replacement from current `main`, preserving the unresolved
+  findings and reproduce-first proofs and declaring `Replaces: #<closed-pr>`.
+  Ownership carries to the replacement path exactly as it does to a fix: a
+  Cursor-owned unit is closed and replaced by Cursor, and Claude — subscribed to
+  every PR — must not perform it on that owner's behalf. The replacement starts a
+  new comprehensive review round; it does not inherit a clean signal or bypass
+  any check.
 - A fresh current-head clean signal makes `codex-current-head` succeed and queues
   squash auto-merge. No human tags anyone and no human technical approval is
   involved. The runner continues only after the reviewed PR merges and
