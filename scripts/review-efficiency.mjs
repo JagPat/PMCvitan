@@ -271,9 +271,11 @@ export function assessReviewScope(
     }
   }
 
-  // Its own threshold, stricter than `preReviewEnforceAfterPr`, so it is applied
-  // outside the pre-review block: PRs already open when the declaration became
-  // required are bootstrapped by declaring, never blocked retroactively.
+  // Deliberately outside the pre-review block, which is gated on
+  // `preReviewEnforceAfterPr`: ownership is required at EVERY pull request
+  // number, with no exemption. An earlier draft carried its own threshold; the
+  // carve-out let a PR inside it pass this gate with no owner and then route to
+  // nobody on its first finding, so it was deleted rather than raised.
   const ownerProblem = correctionOwnerProblem(pullRequest);
   const problems = [
     ...(sizeProblem ? [sizeProblem] : []),
