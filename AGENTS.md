@@ -192,10 +192,12 @@ so directly rather than framing it as a suggestion.
   that status ceasing to fail, never by an acknowledgement. A gate-retryable
   review failure — a timeout, moved evidence, CI changing mid-review, a
   requested bootstrap review — owes NO correction: it is reported as
-  `gate_recovery` with no resume action and its own lease key, names the actual
-  recovery — a `workflow_dispatch` of `Autonomous review and merge` with the PR,
-  the exact head and the terminal status id, since nothing triggers it on its
-  own — and asks for no head, so a later re-dispatch that DOES find
+  `gate_recovery` with no resume action and its own lease key, renders the actual
+  recovery as a runnable command — a `workflow_dispatch` of `Autonomous review
+  and merge` with the PR, the exact head and the terminal status id filled in,
+  under that failure's own precondition, and preceded by the owner-marker repair
+  when the declaration is broken, since the dispatched job re-runs `review-scope`
+  on the same head — and asks for no head, so a later re-dispatch that DOES find
   something can still open the actionable lease. That list has one definition,
   which the gate reads too. A scope notice leads with the verdict that is
   failing, because the size remedy cannot clear a lineage or checklist verdict.

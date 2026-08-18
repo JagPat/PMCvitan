@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import {
   REVIEW_RESET_AFTER_FINDING_HEADS,
   isRetryableReviewFailureDescription,
+  retryableReviewRecovery,
 } from './review-efficiency.mjs';
 import {
   AWAKENABLE_FROM_GITHUB,
@@ -224,6 +225,8 @@ export function assessCorrectionLease({
   reason = 'review',
   detail = 'current-head Codex findings',
   findingObservedAt,
+  statusId = null,
+  precondition = null,
   now,
   comments = [],
   graceMs = CORRECTION_LEASE_GRACE_MS,
@@ -256,6 +259,8 @@ export function assessCorrectionLease({
     detail,
     reason: exhausted ? 'replacement' : reason,
     pullRequestNumber: pullRequest?.number,
+    statusId,
+    precondition,
   });
 
   const owner = routing.owner ?? 'undeclared';

@@ -260,26 +260,31 @@ function declaredInstruction(owner, { reason, pullRequestNumber, detail }) {
     + `complete set, fix them forward as one coherent batch, and push one new head.${start}`;
 }
 
-// A failure the review gate recovers from — by being RE-DISPATCHED. It says who
-// has to trigger that and with what, because nothing triggers it on its own:
-// `auto-merge.yml` recovers only through `workflow_dispatch`, and an earlier
-// draft of this notice claimed "the gate re-dispatches the review itself", which
-// is false. A one-shot notice that asks for nothing AND overstates what happens
-// next leaves the pull request in draft indefinitely with everyone told to wait.
-function recoveryInstruction(declaration, { head, pullRequestNumber }) {
-  const undeclared = declaration.state !== 'declared'
-    ? ` This PR's correction owner is also \`undeclared\` (${declaration.detail}); that does not `
-      + 'block the recovery, but `review-scope` will refuse the next head until exactly one '
-      + '`<!-- correction-owner: claude|cursor -->` marker sits in the marker block.'
+// A failure the review gate recovers from — by being RE-DISPATCHED. It renders
+// the command, filled in, because nothing triggers that recovery on its own:
+// `auto-merge.yml` recovers only through `workflow_dispatch`, and `request-recovery`
+// rejects a missing or wrong `terminal_status_id`. A notice that asks for nothing
+// AND cannot be executed as written leaves the pull request in draft indefinitely.
+function recoveryInstruction(declaration, { head, pullRequestNumber, statusId, precondition }) {
+  // ORDER MATTERS. The dispatched `orchestrate` job runs `enforceReviewScope` on
+  // this same exact head, and ownership is required at every PR number since
+  // #358 — so dispatching first would only replace this retryable failure with a
+  // scope failure. The repair is a body edit and needs no new head.
+  const repairFirst = declaration.state !== 'declared'
+    ? ' FIRST repair the correction-owner declaration: the recovery re-runs `review-scope` on '
+      + `this same head, and it will refuse it (${declaration.detail}). Put exactly one `
+      + '`<!-- correction-owner: claude -->` or `<!-- correction-owner: cursor -->` marker in the '
+      + 'marker block at the top of the PR body — a body edit, no new head. Then dispatch.'
     : '';
   return 'No correction is owed on this head: the review gate did not reach a verdict, so there '
     + 'is nothing to read and nothing to fix. Do not push a new head — it would invalidate the '
-    + 'exact head being recovered and restart CI without resolving the failure. Recovery is a '
-    + 'RE-DISPATCH of the `Autonomous review and merge` workflow, which runs only on '
-    + '`workflow_dispatch`: once the Codex integration is healthy, run it with '
-    + `\`pr_number=${pullRequestNumber ?? '<this PR>'}\`, \`head_sha=${head ?? '<this exact head>'}\` `
-    + 'and the `terminal_status_id` of the failing `codex-current-head` status. The gate '
-    + `authorises that request against the exact head and status id.${undeclared}`;
+    + `exact head being recovered and restart CI without resolving the failure.${repairFirst} `
+    + 'Recovery is a re-dispatch of the `Autonomous review and merge` workflow, which runs only '
+    + `on \`workflow_dispatch\`. Run it ${precondition ?? 'once the gate is able to review again'}, `
+    + `with \`pr_number=${pullRequestNumber ?? '<this PR>'}\`, `
+    + `\`head_sha=${head ?? '<this exact head>'}\` and `
+    + `\`terminal_status_id=${statusId ?? '<the failing codex-current-head status id>'}\`. `
+    + 'The gate authorises that request against the exact head and status id.';
 }
 
 // And what it says when nobody is declared. It names the defect and the exact
@@ -332,6 +337,8 @@ export function correctionRouting({
   detail = null,
   reason = 'review',
   pullRequestNumber = null,
+  statusId = null,
+  precondition = null,
 } = {}) {
   const resolved = declaration ?? parseCorrectionOwner('');
   // A gate-retryable failure owes NOBODY a correction, so it is answered before
@@ -348,7 +355,9 @@ export function correctionRouting({
       awakenable: false,
       head,
       detail,
-      instruction: recoveryInstruction(resolved, { head, pullRequestNumber }),
+      instruction: recoveryInstruction(resolved, {
+        head, pullRequestNumber, statusId, precondition,
+      }),
     };
   }
   if (resolved.state !== 'declared') {

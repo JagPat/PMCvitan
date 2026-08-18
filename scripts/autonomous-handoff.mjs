@@ -16,7 +16,7 @@ import {
   correctionReasonFor,
   owedCorrectionStatus,
 } from './correction-lease.mjs';
-import { codexFindingHeads } from './review-efficiency.mjs';
+import { codexFindingHeads, retryableReviewRecovery } from './review-efficiency.mjs';
 
 const API_ROOT = 'https://api.github.com';
 const CONFLICT_MARKER = '<!-- autonomous-conflict:';
@@ -511,6 +511,8 @@ export async function handOffCorrectionLease(
     reason: correctionReasonFor(owed),
     detail: String(owed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
     findingObservedAt: owed.updated_at ?? owed.created_at,
+    statusId: owed.id ?? null,
+    precondition: retryableReviewRecovery(owed.description)?.precondition ?? null,
     now,
     comments,
   });
@@ -532,6 +534,18 @@ export async function handOffCorrectionLease(
       client.combinedStatus(head),
       client.pullRequest(pullRequest.number),
     ]);
+    // Eligibility again, on the REFRESHED object. A pull request closed between
+    // the open-PR snapshot and this read keeps the same head and body, so
+    // nothing else in the assessment notices — and the watchdog would wake an
+    // owner on a closed PR.
+    if (!isCorrectionEligiblePullRequest(live, repository, defaultBranch)) {
+      return {
+        ...assessment,
+        state: 'superseded',
+        body: null,
+        reason: 'the pull request left the watchdog\'s remit while it was reading',
+      };
+    }
     const freshOwed = owedCorrectionStatus(freshStatuses);
     const fresh = freshOwed
       ? assessCorrectionLease({
@@ -541,6 +555,8 @@ export async function handOffCorrectionLease(
         reason: correctionReasonFor(freshOwed),
         detail: String(freshOwed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
         findingObservedAt: freshOwed.updated_at ?? freshOwed.created_at,
+        statusId: freshOwed.id ?? null,
+        precondition: retryableReviewRecovery(freshOwed.description)?.precondition ?? null,
         now,
         comments,
       })

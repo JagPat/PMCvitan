@@ -139,10 +139,16 @@ a miss only makes the notice more generic:
   and all four are recovered by the gate re-dispatching. The list lives in
   `review-efficiency.mjs` and the Gate reads the same one, so a fifth cannot be
   added there and silently become an actionable correction here. The lease still
-  reports it, but it names the re-dispatch — the `Autonomous review and merge`
-  workflow, which runs only on `workflow_dispatch`, with the PR number, the exact
-  head and the failing status's `terminal_status_id` — asks for no head, and
-  mentions no owner — waking someone with nothing to do is the same false signal as claiming
+  reports it, but it RENDERS the re-dispatch as a command anyone can run — the
+  `Autonomous review and merge` workflow, which runs only on `workflow_dispatch`,
+  with the PR number, the exact head and the failing status's
+  `terminal_status_id` filled in, since `request-recovery` rejects a missing or
+  wrong id — under the precondition that failure actually needs (Codex health for
+  a timeout, green required CI for a mid-review CI change, settled evidence, or
+  none at all for a bootstrap request; the precondition lives beside the marker
+  it belongs to). If the correction-owner declaration is broken it says to repair
+  that FIRST, because the dispatched job re-runs `review-scope` on the same head
+  and would refuse it. It asks for no head, and mentions no owner — waking someone with nothing to do is the same false signal as claiming
   work that is not happening. It reports as `gate_recovery`, NOT
   `correction_stalled`: the latter means an owner cannot be asked, this means
   nobody needs to be, and it carries no resume action for a declared OR an

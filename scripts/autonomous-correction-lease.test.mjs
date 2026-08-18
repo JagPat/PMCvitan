@@ -697,3 +697,93 @@ test('L21: a gate recovery names the dispatch that actually performs it', async 
   );
   assert.match(published, /do not push a new head/iu, 'while still asking for no correction');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L22-L25 — Codex findings on `760d45f`. One surface: a recovery notice that
+// nobody can execute is the same dead end as one that asks for the wrong thing.
+
+test('L22: a recovery notice carries the exact dispatch inputs', async () => {
+  // `request-recovery` rejects a missing or wrong `terminal_status_id`, and the
+  // notice told the operator to go find it. The id is in the very status the
+  // watchdog read to open the lease.
+  const failing = { ...status('review: Codex review timed out after two attempts'), id: 998877 };
+  const { published } = await watch({ statuses: [failing] });
+
+  assert.match(published, /998877/u, 'the terminal status id is rendered, not described');
+  assert.match(published, new RegExp(HEAD, 'u'), 'with the exact head');
+  assert.match(published, /pr_number/u);
+  assert.match(published, /head_sha/u);
+  assert.match(published, /terminal_status_id/u);
+  assert.doesNotMatch(
+    published,
+    /the `terminal_status_id` of the failing/u,
+    'it does not send the operator looking for a value it already has',
+  );
+});
+
+test('L23: the precondition named is the one that failure actually needs', async () => {
+  // Only the timeout implies an integration outage. Told to wait for Codex
+  // health, a `Required CI changed` recovery waits out the check deadline and is
+  // then replaced by a CI failure.
+  const cases = [
+    ['review: Codex review timed out after two attempts', /Codex integration is healthy/iu],
+    ['review: Required CI changed during current-head Codex review', /required CI is green again/iu],
+    ['review: Codex evidence changed during final verification', /evidence.*settled|no longer changing/iu],
+    ['review: bootstrap exact-head review requested', /immediately|no precondition/iu],
+  ];
+  for (const [description, expected] of cases) {
+    const { published } = await watch({ statuses: [{ ...status(description), id: 42 }] });
+    assert.match(published, expected, description);
+  }
+
+  const ciChanged = await watch({
+    statuses: [{ ...status('review: Required CI changed during current-head Codex review'), id: 42 }],
+  });
+  assert.doesNotMatch(
+    ciChanged.published,
+    /Codex integration is healthy/iu,
+    'a CI-changed recovery does not wait on Codex health',
+  );
+});
+
+test('L24: a broken declaration is repaired BEFORE the recovery is dispatched', async () => {
+  // The dispatched `orchestrate` job runs `enforceReviewScope` on this same
+  // exact head, and ownership is now required at every PR — so dispatching
+  // first merely replaces the retryable failure with a scope failure. The notice
+  // said the defect "does not block the recovery", which #358 made false.
+  const { published } = await watch({
+    pull: pullRequest({ body: '## Objective', ref: 'codex/task' }),
+    statuses: [{ ...status('review: Codex review timed out after two attempts'), id: 42 }],
+  });
+
+  assert.doesNotMatch(published, /does not block the (re-?dispatch|recovery)/iu);
+  assert.match(published, /before (dispatching|the dispatch)|first/iu, 'the repair comes first');
+  assert.match(published, /correction-owner/u, 'and names the marker that repairs it');
+  assert.match(published, /review-scope|enforceReviewScope|scope gate/u, 'saying why it blocks');
+
+  // A declared owner is not told to repair anything.
+  const declared = await watch({
+    statuses: [{ ...status('review: Codex review timed out after two attempts'), id: 42 }],
+  });
+  assert.doesNotMatch(declared.published, /correction-owner/u);
+});
+
+test('L25: a pull request closed while the watchdog was reading is never notified', async () => {
+  // `openPullRequests()` is a snapshot. A PR closed between it and the refresh
+  // keeps the same head and body, so nothing else in the assessment notices —
+  // and the watchdog would wake an owner on a closed PR.
+  const snapshot = pullRequest();
+  const calls = { posted: [] };
+  const client = {
+    combinedStatus: async () => ({ statuses: [status('review: 1 current-head Codex finding')] }),
+    comments: async () => [],
+    reviews: async () => [],
+    reviewComments: async () => [codexFinding(HEAD)],
+    pullRequest: async () => pullRequest({ state: 'closed' }),
+    comment: async (number, body) => { calls.posted.push({ number, body }); },
+  };
+
+  const assessment = await handOffCorrectionLease(client, snapshot, REPOSITORY, 'main', { now: DUE });
+  assert.equal(calls.posted.length, 0, 'a closed pull request is never notified');
+  assert.equal(assessment?.state, 'superseded');
+});
