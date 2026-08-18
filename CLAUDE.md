@@ -23,11 +23,14 @@ declaration — never assume Claude owns a correction, and never tag `@claude` o
 a PR that declares another owner. An undeclared or malformed declaration routes
 to no agent and reports `correction_stalled` naming the marker that fixes it; a
 declared owner GitHub cannot start is named, with the notice saying so rather
-than implying work is under way. Naming an owner is not WAKING one: an
-actionable mention needs a new comment, and detecting that an asked owner never
-started needs a correction lease. Both are a separate follow-up unit, so the
-wake-up remains the owner's marked `@claude` comment. See
-`docs/AUTONOMOUS_LOOP.md`.
+than implying work is under way. Naming an owner is not WAKING one: both the
+actionable mention and the detection that an asked owner never started are the
+CORRECTION LEASE, driven by the hourly handoff watchdog. It opens on a failing
+required status (classified by the gate's `review:`/`scope:`/`ci:` prefix, never
+by its wording), publishes at most ONE new comment per pull request, exact head
+and owner — mentioning `@claude` only where GitHub can wake the owner — and is
+cleared by a new head or by that status ceasing to fail, never by an
+acknowledgement. It comments and nothing else. See `docs/AUTONOMOUS_LOOP.md`.
 
 When you open or resume an autonomous `claude/**` draft PR, update `docs/STATUS.md`
 in the same change: set `open_pr` to that PR number and align `task_state` with
