@@ -156,6 +156,29 @@ export function parseCorrectionOwner(body, { headRef } = {}) {
   return { state: 'declared', owner, declared, detail: null };
 }
 
+/**
+ * Whether a pull request is inside the correction watchdog's remit.
+ *
+ * Deliberately NOT `isAutonomousPullRequest`, which additionally requires a
+ * `claude/**` branch: the whole point of the declaration is that a correction
+ * owner is not inferable from the branch, and PR #350 — the Cursor-owned unit
+ * that started this work — was on `codex/**`. Every same-repository pull request
+ * targeting the default branch is watched, and the declaration in its body
+ * decides who is asked.
+ *
+ * The same-repository and default-branch conditions are the existing trust
+ * boundary and are unchanged: a fork head is never watched, and nothing here
+ * runs untrusted code.
+ */
+export function isCorrectionEligiblePullRequest(pullRequest, repository, defaultBranch) {
+  return (
+    pullRequest?.state === 'open'
+    && pullRequest?.head?.repo?.full_name === repository
+    && pullRequest?.base?.repo?.full_name === repository
+    && pullRequest?.base?.ref === defaultBranch
+  );
+}
+
 export function correctionOwnerDeclaration(pullRequest) {
   return parseCorrectionOwner(pullRequest?.body, { headRef: pullRequest?.head?.ref });
 }
