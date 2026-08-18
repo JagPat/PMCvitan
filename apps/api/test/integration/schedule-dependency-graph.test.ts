@@ -71,6 +71,27 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
   const migrationPath = join(__dirname, '..', '..', 'prisma', 'migrations',
                              '20270910000000_schedule_dependency_graph', 'migration.sql');
 
+  /**
+   * `DATABASE_URL` with its query string removed, because psql and Prisma do not accept the same
+   * URL. Prisma's carries `?schema=public`; psql rejects it outright — `invalid URI query
+   * parameter: "schema"` — and takes the whole invocation down with it.
+   *
+   * This is worth a named helper rather than an inline `.split('?')`, because the failure is
+   * invisible in local development and unmissable in CI: a developer URL usually has no query
+   * string at all, so the probe passes here and fails there for a reason that has nothing to do
+   * with what it is testing. It cost a full CI round on three heads before the log said so.
+   */
+  const psqlUrl = (): string => {
+    const url = new URL(process.env.DATABASE_URL!);
+    url.search = '';
+    return url.toString();
+  };
+
+  const applyMigration = (): void => {
+    execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-q', '-d', psqlUrl(), '-f', migrationPath],
+                 { encoding: 'utf8' });
+  };
+
   const edgeCount = async (): Promise<number> => {
     const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
       `SELECT COUNT(*) AS n FROM "ActivityDependency" WHERE "id" LIKE 'dep-b1-%'`,
@@ -502,8 +523,7 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     // repairs it — and a repair that only runs when the assertions pass would let one red probe
     // turn every later one red for a reason none of them mention.
     try {
-      execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-q', '-d', process.env.DATABASE_URL!,
-                            '-f', migrationPath], { encoding: 'utf8' });
+      applyMigration();
       expect(await constraintCount('ActivityDependency_attribution_check')).toBe(1);
       expect(await constraintCount('ActivityDependency_createdById_fkey')).toBe(1);
 
@@ -514,8 +534,7 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
          VALUES ('dep-b1-${run}-${seq++}','${f.projectA.id}','${a}','${b}',0,'${f.memberUser.id}',' ')`,
       )).toMatch(/attribution_check/u);
     } finally {
-      execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-q', '-d', process.env.DATABASE_URL!,
-                            '-f', migrationPath], { encoding: 'utf8' });
+      applyMigration();
     }
   });
 
