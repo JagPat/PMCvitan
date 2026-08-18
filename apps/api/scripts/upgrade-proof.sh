@@ -3763,22 +3763,71 @@ assert "A1: material, swatch and the issue's own colour chip are all nullable no
 
 # PRECISION FIRST — the whole point of the unit: an option with NO material commits.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1 precision: a technology option with no material was refused"; FAIL=1; }
-INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","kindCode","description","delta","costImpact")
-VALUES ('UPA1-TECH','DL-3','Post-tensioned','tech','technology','A structural approach, no product named',0,'pending');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","kindScope","kindCode","description","delta","costImpact")
+VALUES ('UPA1-TECH','DL-3','Post-tensioned','tech','platform','technology','A structural approach, no product named',0,'pending');
 SQL
 assert "A1 precision: a technology option with no material, no swatch and an UNPRICED cost is accepted" \
   "SELECT \"kindCode\" || '/' || COALESCE(\"material\",'-') || '/' || \"costImpact\"::text || '/' || COALESCE(\"costAmount\"::text,'-') FROM \"DecisionOption\" WHERE \"id\"='UPA1-TECH';" \
   "technology/-/pending/-"
 
 assert_rejects "A1: a priced state with no amount — a claim with nothing behind it" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"kindCode\",\"delta\",\"costImpact\") VALUES ('UPA1-NOAMT','DL-3','x','noamt','other',0,'estimated')" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"kindScope\",\"kindCode\",\"delta\",\"costImpact\") VALUES ('UPA1-NOAMT','DL-3','x','noamt','platform','other',0,'estimated')" \
   "cost_impact_check"
 assert_rejects "A1: an amount on an UNASSESSED option, which would read as a price nobody set" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"kindCode\",\"delta\",\"costImpact\",\"costAmount\") VALUES ('UPA1-STALE','DL-3','x','stale','other',0,'pending',900)" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"kindScope\",\"kindCode\",\"delta\",\"costImpact\",\"costAmount\") VALUES ('UPA1-STALE','DL-3','x','stale','platform','other',0,'pending',900)" \
   "cost_impact_check"
+# A spec's provenance foreign key demands a real approval revision, so the technology option has to
+# have been genuinely APPROVED for the hostile inserts to reach the rule under test. That is the
+# scenario this unit exists for: the issue really was decided, the decision really was a technology
+# choice, and somebody then tries to raise a material requirement behind it.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1: could not record the technology option's approval"; FAIL=1; }
+INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+VALUES ('UPA1-REV','p1','DL-3',2,'tech',now(),'USER-1');
+SQL
+
+# Each hostile spec below builds its OWN valid parent chain in the same statement batch — psql's
+# `-c` runs them as one transaction. That is not ceremony: a spec pointing at a requirement that
+# does not exist is refused by the PARENT foreign key, which proves nothing about this unit. The old
+# cross-module trigger hid that, being a BEFORE-row trigger that fired ahead of any reference check;
+# a CHECK and a foreign key do not, so the chain has to be real for the rejection to mean anything.
+assert_rejects "A1: a spec that cites an option WITHOUT asserting it is a material option" \
+  "INSERT INTO \"ActivityRequirementRoot\"(\"id\",\"projectId\",\"createdById\") VALUES ('UPA1-ROOT1','p1','USER-1');
+   INSERT INTO \"ActivityRequirement\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"activityId\",\"requiredQty\",\"baseUom\",\"requiredBy\",\"createdById\") VALUES ('UPA1-AR1','p1','UPA1-ROOT1',1,'ACT-1',1,'bag','2026-09-01','USER-1');
+   INSERT INTO \"MaterialRequirementSpec\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"materialCategory\",\"make\",\"grade\",\"normalizedAttributes\",\"specFingerprint\",\"decisionId\",\"decisionVersion\",\"optionKey\") VALUES ('UPA1-SPEC1','p1','UPA1-ROOT1',1,'timber','X','A','{}','fp','DL-3',2,'tech')" \
+  "MaterialRequirementSpec_option_qualified_check"
+# …and the arm that carries the actual meaning. The claim `optionMaterialQualified = true` is not
+# taken on trust: it is half of a foreign key into the option's OWN qualification, so a spec can
+# assert it only about an option that really carries it. This is what replaced a trigger reaching
+# across the module boundary to read the option's kind — the reference is the enforcement now.
 assert_rejects "A1: a material requirement pinned to a TECHNOLOGY option — a purchase order behind a structural note" \
-  "INSERT INTO \"MaterialRequirementSpec\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"materialCategory\",\"make\",\"grade\",\"normalizedAttributes\",\"specFingerprint\",\"decisionId\",\"decisionVersion\",\"optionKey\") VALUES ('UPA1-SPEC','p1','req-upa1',1,'timber','X','A','{}','fp','DL-3',1,'tech')" \
-  "only a material option can back a material requirement"
+  "INSERT INTO \"ActivityRequirementRoot\"(\"id\",\"projectId\",\"createdById\") VALUES ('UPA1-ROOT2','p1','USER-1');
+   INSERT INTO \"ActivityRequirement\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"activityId\",\"requiredQty\",\"baseUom\",\"requiredBy\",\"createdById\") VALUES ('UPA1-AR2','p1','UPA1-ROOT2',1,'ACT-1',1,'bag','2026-09-01','USER-1');
+   INSERT INTO \"MaterialRequirementSpec\"(\"id\",\"projectId\",\"requirementId\",\"revision\",\"materialCategory\",\"make\",\"grade\",\"normalizedAttributes\",\"specFingerprint\",\"decisionId\",\"decisionVersion\",\"optionKey\",\"optionMaterialQualified\") VALUES ('UPA1-SPEC2','p1','UPA1-ROOT2',1,'timber','X','A','{}','fp','DL-3',2,'tech',true)" \
+  "MaterialRequirementSpec_option_qualified_fkey"
+
+# The same chain with the MATERIAL option is ACCEPTED, so the two rejections above are the rule
+# biting rather than the chain being unbuildable.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1: a spec citing a real MATERIAL option was refused"; FAIL=1; }
+BEGIN;
+INSERT INTO "ActivityRequirementRoot"("id","projectId","createdById") VALUES ('UPA1-ROOT3','p1','USER-1');
+INSERT INTO "ActivityRequirement"("id","projectId","requirementId","revision","activityId","requiredQty","baseUom","requiredBy","createdById")
+VALUES ('UPA1-AR3','p1','UPA1-ROOT3',1,'ACT-1',1,'bag','2026-09-01','USER-1');
+INSERT INTO "MaterialRequirementSpec"("id","projectId","requirementId","revision","materialCategory","make","grade","normalizedAttributes","specFingerprint","decisionId","decisionVersion","optionKey","optionMaterialQualified")
+VALUES ('UPA1-SPEC3','p1','UPA1-ROOT3',1,'timber','X','A','{}','fp','DL-3',1,'a',true);
+COMMIT;
+SQL
+assert "A1: …and that legitimate spec is on record" \
+  "SELECT \"optionKey\" || '/' || \"optionMaterialQualified\"::text FROM \"MaterialRequirementSpec\" WHERE \"id\"='UPA1-SPEC3';" \
+  "a/true"
+
+# A kind is identified by scope AND code. The composite reference is MATCH SIMPLE, so a half-written
+# pair would switch it off entirely and be filed as not-material — accepted, wrong, and silent.
+assert_rejects "A1: an option naming a kind CODE with no scope, which no foreign key would catch" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"kindCode\") VALUES ('UPA1-HALF1','DL-3','x','half1','Teak 18mm',0,'material')" \
+  "DecisionOption_kind_pair_check"
+assert_rejects "A1: and the same mistake written the other way round" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"kindScope\") VALUES ('UPA1-HALF2','DL-3','x','half2','Teak 18mm',0,'platform')" \
+  "DecisionOption_kind_pair_check"
 assert "A1: after every rejection the legacy option set is unchanged plus exactly the one accepted technology option" \
   "SELECT COUNT(*)::text FROM \"DecisionOption\" WHERE \"id\" LIKE 'UPA1-%';" \
   "1"

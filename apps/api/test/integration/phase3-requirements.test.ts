@@ -506,6 +506,9 @@ describe('Phase 3 Task 1 (corrected) — capability + requirements (live PG)', (
             projectId, requirementId: 'it-p3-forge', revision: 1,
             materialCategory: 'cement', make: 'x', grade: 'x', normalizedAttributes: '', specFingerprint: 'forged',
             decisionId: 'IT-P3-REAL', decisionVersion: 999, optionKey: 'DOES-NOT-EXIST',
+            // stated, so the forgery is refused by the PROVENANCE reference this probe is about
+            // and not by the check that merely requires the qualification to be asserted
+            optionMaterialQualified: true,
           },
         }),
       ]),

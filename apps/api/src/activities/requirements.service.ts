@@ -227,7 +227,13 @@ export class RequirementsService {
     // the unit stays part of the fingerprinted §B identity but is stored ONCE, on the revision
     // row — the spec record has no baseUom column to disagree with (round-2 finding 4)
     const { baseUom: _uomOnRevisionRow, ...columns } = identity;
-    return { ...columns, specFingerprint, ...provenance };
+    // An option is no longer necessarily a choice of material, so citing one is not the same as
+    // citing a MATERIAL one. The spec states the qualification explicitly and the database checks
+    // it: the column is half of a foreign key into the option's own `materialQualified`, so this
+    // claim is only writable about an option that really carries it. Declining to state it is not
+    // an escape — the CHECK requires it wherever a decision and option are named.
+    const optionMaterialQualified = provenance.optionKey === null ? null : true;
+    return { ...columns, specFingerprint, ...provenance, optionMaterialQualified };
   }
 
   /** Write ONE requirement revision's type detail (create/revise). Material writes the spec row
@@ -396,6 +402,9 @@ export class RequirementsService {
               materialCategory: s.materialCategory, make: s.make, grade: s.grade,
               normalizedAttributes: s.normalizedAttributes, specFingerprint: s.specFingerprint,
               decisionId: s.decisionId, decisionVersion: s.decisionVersion, optionKey: s.optionKey,
+              // carried forward verbatim: a cancellation revision restates the pinned provenance,
+              // and the qualification is part of what was pinned
+              optionMaterialQualified: s.optionMaterialQualified,
             },
           });
         }

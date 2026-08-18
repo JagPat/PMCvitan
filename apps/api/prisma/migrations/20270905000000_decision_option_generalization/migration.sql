@@ -94,6 +94,25 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS "DecisionOption_kind_idx" ON "DecisionOption"("kindScope", "kindCode");
 
+-- A kind is identified by scope AND code, so the two are one fact and must be written as one.
+-- Without this they are independently nullable, and the gap is not cosmetic: the composite foreign
+-- key above is MATCH SIMPLE, so a NULL in EITHER column switches the reference off entirely. A row
+-- naming `kindCode = 'material'` with no scope would therefore be accepted with a code that
+-- matches no kind at all, and — because the classification below resolves the base kind by
+-- (scope, code) and would find nothing — be recorded as NOT a material option. Silently, and in
+-- the direction that loses a procurement reference.
+--
+-- Both NULL stays legal, and deliberately: that is the compatibility window for the running
+-- release, which does not know these columns exist. It is the HALF-written pair that is refused.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DecisionOption_kind_pair_check') THEN
+    ALTER TABLE "DecisionOption" ADD CONSTRAINT "DecisionOption_kind_pair_check"
+      CHECK (("kindScope" IS NULL AND "kindCode" IS NULL)
+             OR ("kindScope" IS NOT NULL AND "kindCode" IS NOT NULL));
+  END IF;
+END $$;
+
 -- ── 4. Classify what already exists, without inventing anything ───────────────────────────────
 -- Every pre-existing option WAS a material choice — the columns left no other possibility — so
 -- `material` is the truthful classification rather than a guess.
@@ -242,20 +261,28 @@ BEGIN
       NEW."optionKey", NEW."decisionId", OLD."costAmount";
   END IF;
 
-  -- (c) The qualification fact itself. `btrim` with the full ASCII whitespace set, because the
-  -- one-argument form strips only spaces — a tab, newline, vertical tab, form feed or carriage
-  -- return would otherwise pass as a material identity nobody can order against.
+  -- (c) The qualification fact itself. Blankness is tested with the POSIX class rather than a
+  -- hand-assembled `btrim` set, and that is not a style preference — the set I wrote first,
+  -- E' \t\n\r\v\f', was wrong twice over. PostgreSQL does not accept \v in an E-string: it
+  -- yields the LETTER v (ascii 118), so the set silently failed to strip a real vertical tab while
+  -- stripping the v from material names like "vinyl". `[[:space:]]` covers every ASCII whitespace
+  -- character, including the one that started this, and cannot be mis-assembled.
   SELECT k."baseKind"::text INTO v_base
     FROM "DecisionOptionKind" k
    WHERE k."scope" = NEW."kindScope" AND k."code" = NEW."kindCode";
 
+  -- COALESCE, because this column is NOT NULL and the comparison is three-valued: an unresolvable
+  -- kind leaves `v_base` NULL, the AND-chain evaluates to NULL rather than false, and the insert
+  -- dies on a NOT NULL violation naming a column the writer never mentioned. The row still fails —
+  -- but with an opaque message instead of the constraint that describes the actual mistake.
+  -- Unresolvable means NOT a material option, which is what false says.
   NEW."materialQualified" :=
     NEW."material" IS NOT NULL
-    AND btrim(NEW."material", E' \t\n\r\v\f') <> ''
+    AND NEW."material" !~ '^[[:space:]]*$'
     -- a NULL kind is the compatibility window, and such a row IS a material option: that is what
     -- the backfill asserts about every row predating it, and the rule cannot differ for the
     -- byte-identical row written tomorrow.
-    AND (NEW."kindCode" IS NULL OR v_base = 'material');
+    AND COALESCE(NEW."kindCode" IS NULL OR v_base = 'material', false);
 
   RETURN NEW;
 END $$;
@@ -280,17 +307,71 @@ CREATE UNIQUE INDEX IF NOT EXISTS "DecisionOption_qualified_key"
 ALTER TABLE "MaterialRequirementSpec"
   ADD COLUMN IF NOT EXISTS "optionMaterialQualified" BOOLEAN;
 
+-- Every existing spec was written while the old cross-module trigger stood, and that trigger let
+-- a spec cite an option only if the option really named a material. `true` is therefore what these
+-- rows already asserted; the column only writes it down where the reference can see it.
+--
+-- `MaterialRequirementSpec_append_only` stands in the way and is right to: a spec is procurement
+-- evidence. It is crossed by name and re-armed below, on the same terms as the option seals above —
+-- this does not change what any spec SAYS, it records the qualification the row already relied on.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                  WHERE tgname = 'MaterialRequirementSpec_append_only' AND NOT tgisinternal) THEN
+    RAISE EXCEPTION 'option generalization: the MaterialRequirementSpec append-only seal is absent; refusing to backfill against an unknown seal network.';
+  END IF;
+END $$;
+
+ALTER TABLE "MaterialRequirementSpec" DISABLE TRIGGER "MaterialRequirementSpec_append_only";
+
 UPDATE "MaterialRequirementSpec" s
    SET "optionMaterialQualified" = true
  WHERE s."decisionId" IS NOT NULL AND s."optionKey" IS NOT NULL
    AND s."optionMaterialQualified" IS NULL;
 
+ALTER TABLE "MaterialRequirementSpec" ENABLE TRIGGER "MaterialRequirementSpec_append_only";
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger
+                  WHERE tgname = 'MaterialRequirementSpec_append_only' AND NOT tgisinternal AND tgenabled <> 'D') THEN
+    RAISE EXCEPTION 'option generalization: the MaterialRequirementSpec append-only seal was NOT re-armed after the backfill.';
+  END IF;
+END $$;
+
+-- Diagnose before constraining. The foreign key below requires each cited option to carry the
+-- qualification, and the option backfill grants it to every legacy option that names a material.
+-- A legacy option whose material is blank rather than absent would not qualify, and its spec would
+-- then fail the reference — as an opaque foreign-key error naming neither row. This says which
+-- rows and stops, rather than making an operator reverse-engineer it. Nothing is invented: the
+-- fix is a decision about real data, and it belongs to a person.
+DO $$
+DECLARE offenders TEXT; n INTEGER;
+BEGIN
+  SELECT COUNT(*), string_agg(sample, '; ') INTO n, offenders FROM (
+    SELECT s."id" || ' → option ' || s."decisionId" || '/' || s."optionKey" AS sample
+      FROM "MaterialRequirementSpec" s
+      LEFT JOIN "DecisionOption" o
+        ON o."decisionId" = s."decisionId" AND o."optionKey" = s."optionKey"
+     WHERE s."optionMaterialQualified" = true
+       AND (o."id" IS NULL OR o."materialQualified" IS NOT TRUE)
+     LIMIT 20) q;
+  IF n > 0 THEN
+    RAISE EXCEPTION 'option generalization: % material specification(s) cite an option that does not qualify as a material option: %. Resolve these before deploying.', n, offenders;
+  END IF;
+END $$;
+
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MaterialRequirementSpec_option_qualified_check') THEN
     ALTER TABLE "MaterialRequirementSpec" ADD CONSTRAINT "MaterialRequirementSpec_option_qualified_check"
+      -- `IS TRUE`, not `= true`. This is the same three-valued trap the classifier above hit, and
+      -- here it is worse: a CHECK PASSES when its expression is NULL, so `= true` against a NULL
+      -- lets a spec cite an option while simply declining to assert the qualification — and the
+      -- MATCH SIMPLE foreign key below is switched off by that same NULL, so nothing else catches
+      -- it either. Both guards would be open at once. `IS TRUE` is two-valued and closes them.
       CHECK (("decisionId" IS NULL AND "optionKey" IS NULL AND "optionMaterialQualified" IS NULL)
-             OR ("decisionId" IS NOT NULL AND "optionKey" IS NOT NULL AND "optionMaterialQualified" = true));
+             OR ("decisionId" IS NOT NULL AND "optionKey" IS NOT NULL AND "optionMaterialQualified" IS TRUE));
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MaterialRequirementSpec_option_qualified_fkey') THEN
     ALTER TABLE "MaterialRequirementSpec" ADD CONSTRAINT "MaterialRequirementSpec_option_qualified_fkey"

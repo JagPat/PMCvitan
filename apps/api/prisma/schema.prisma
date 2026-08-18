@@ -1390,6 +1390,14 @@ model MaterialRequirementSpec {
   approvalRevision DecisionApprovalRevision? @relation(fields: [projectId, decisionId, decisionVersion, optionKey], references: [projectId, decisionId, version, optionKey], onDelete: NoAction, onUpdate: NoAction)
   decisionVersion  Int?
   optionKey        String?
+  /// The qualification this spec REQUIRES of the option it cites, always `true` when it cites one.
+  /// It exists so a foreign key can hold the requirement and the option's own `materialQualified`
+  /// together: turning that option into a technology note breaks the key and PostgreSQL refuses
+  /// the update, so the guarantee covers the whole life of the reference and not just its
+  /// creation. This replaces a trigger that read the decisions module's tables from an
+  /// activities-owned trigger — a module edge that writing it in SQL hid without removing.
+  qualifiedOption  DecisionOption?           @relation(fields: [decisionId, optionKey, optionMaterialQualified], references: [decisionId, optionKey, materialQualified], onDelete: NoAction, onUpdate: NoAction)
+  optionMaterialQualified Boolean?
 
   @@unique([projectId, requirementId, revision])
   @@index([projectId, specFingerprint])
@@ -2105,11 +2113,17 @@ model DecisionOption {
   description String?
   /// The menu row this option was chosen from. Nullable for the same legacy reason — the migration
   /// classifies every pre-existing option as `material`, which is what they all were.
-  kind        DecisionOptionKind? @relation(fields: [kindCode], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  kind        DecisionOptionKind? @relation(fields: [kindScope, kindCode], references: [scope, code], onDelete: NoAction, onUpdate: NoAction)
+  kindScope   String?
   kindCode    String?
   /// Structured material identity — OPTIONAL now, because a technology or solution option has none.
-  /// A material requirement may only cite an option that HAS it (enforced by trigger, not by the UI).
   material    String?
+  /// Whether this option can back a material requirement: it names a material AND its kind is a
+  /// material kind (a null kind is the compatibility window and counts as material, exactly as the
+  /// backfill classified every row that predates it). Maintained by `DecisionOption_invariants`,
+  /// never written by a caller. `MaterialRequirementSpec` points a foreign key at this value, so
+  /// an option cannot be turned into a technology note while a procurement spec relies on it.
+  materialQualified Boolean @default(false)
   swatch      String?
   delta       Int // rupees — LEGACY cost delta, superseded by the cost-impact state below
   /// Cost impact applies to EVERY kind and may be supplied later. `pending` is not zero.
@@ -2126,7 +2140,11 @@ model DecisionOption {
   // the approval register (and requirement provenance behind it) pins an option by
   // (decisionId, optionKey) — the pair is a database-enforced candidate key
   @@unique([decisionId, optionKey])
-  @@index([kindCode])
+  /// Back-relation for the qualification foreign key on the procurement spec.
+  qualifiedSpecs MaterialRequirementSpec[]
+
+  @@unique([decisionId, optionKey, materialQualified], name: "DecisionOption_qualified_key")
+  @@index([kindScope, kindCode])
 }
 
 // The SERVER-DRIVEN option-kind menu. The frontend renders what this table returns — active rows,
@@ -2137,23 +2155,29 @@ model DecisionOption {
 // 'precast-system'), but it MUST map to one of the four stable base kinds, because that is what
 // procurement and the dynamic form key off. Nothing downstream reads `code` or `labelKey`.
 model DecisionOptionKind {
-  code        String         @id
+  /// The tenant this kind belongs to: the literal `platform` for the seeded kinds, or an
+  /// organization's own id. Identity is SCOPE PLUS CODE — a bare `code` primary key made codes
+  /// globally unique, so the first organization to add `precast` would have taken that word from
+  /// every other organization, and it gave `DecisionOption` nothing tenant-aware to point at.
+  scope       String
+  code        String
   baseKind    OptionBaseKind
   /// Localization key, not a display string — labels are served localized from the backend.
   labelKey    String
   displayOrder Int           @default(0)
   active      Boolean        @default(true)
-  /// Null for the platform-seeded kinds; set for an organization's own addition. The two partial
-  /// unique indexes in the migration keep platform codes globally unique and org codes unique
-  /// per organization (a plain unique over a nullable column would allow duplicate platform rows).
+  /// Null for the platform-seeded kinds; set for an organization's own addition. A CHECK in the
+  /// migration keeps this and `scope` in agreement.
   org         Org?           @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   orgId       String?
   createdAt   DateTime       @default(now())
 
   options     DecisionOption[]
 
+  @@id([scope, code])
   @@index([active, displayOrder])
 }
+
 
 // Phase 6 task 4a (round 13) — the per-transaction OPTION TOUCH NOTE behind the withdrawal
 // entry seal. Written ONLY by the `DecisionOption_t4a_touch` DB trigger (never by application
