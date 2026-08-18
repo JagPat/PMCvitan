@@ -271,9 +271,11 @@ export function assessReviewScope(
     }
   }
 
-  // Its own threshold, stricter than `preReviewEnforceAfterPr`, so it is applied
-  // outside the pre-review block: PRs already open when the declaration became
-  // required are bootstrapped by declaring, never blocked retroactively.
+  // Deliberately outside the pre-review block, which is gated on
+  // `preReviewEnforceAfterPr`: ownership is required at EVERY pull request
+  // number, with no exemption. An earlier draft carried its own threshold; the
+  // carve-out let a PR inside it pass this gate with no owner and then route to
+  // nobody on its first finding, so it was deleted rather than raised.
   const ownerProblem = correctionOwnerProblem(pullRequest);
   const problems = [
     ...(sizeProblem ? [sizeProblem] : []),
@@ -359,6 +361,28 @@ export function findingHeadSeverity(comments, reviews = []) {
     else severity.set(head, 'minor');
   }
   return severity;
+}
+
+// The review gate's own retryable terminal failures, by the description it
+// publishes. ONE definition, because two consumers read it: the gate decides
+// whether to re-dispatch, and the correction watchdog decides whether anyone
+// owes a correction at all. An earlier draft recognised only the timeout, so the
+// other three drew an actionable "push a new head" for a failure a new head
+// cannot fix — it would invalidate the exact head the gate is trying to recover.
+// The review gate's own retryable terminal failures, by the description it
+// publishes. ONE definition, because two consumers read it: the gate decides
+// whether to re-dispatch, and the correction watchdog decides whether anyone
+// owes a correction at all — for these, nobody does, so it opens no lease.
+const RETRYABLE_REVIEW_FAILURES = [
+  'Codex review timed out',
+  'Codex evidence changed during final verification',
+  'review: Required CI changed during current-head Codex review',
+  'review: bootstrap exact-head review requested',
+];
+
+export function isRetryableReviewFailureDescription(description) {
+  const text = String(description ?? '');
+  return RETRYABLE_REVIEW_FAILURES.some((marker) => text.includes(marker));
 }
 
 export function codexFindingHeads(comments, reviews = []) {
