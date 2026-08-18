@@ -96,6 +96,20 @@ BEGIN
   END IF;
 END $$;
 
+-- The primary key, for the same reason and by the same route. `CREATE TABLE IF NOT EXISTS` skips
+-- the key along with everything else in its body, and a table without one silently accepts
+-- duplicate ids — which the ordered-pair unique index below does NOT catch, because two rows may
+-- share an id while naming different endpoints. This is the same class of gap as the attribution
+-- CHECK above rather than a second coincidence: every constraint declared inline needs a guarded
+-- ALTER beside it, and these are now all of them.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ActivityDependency_pkey'
+                  AND conrelid = to_regclass('public."ActivityDependency"')) THEN
+    ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_pkey" PRIMARY KEY ("id");
+  END IF;
+END $$;
+
 -- ── F-C: the recorded creator is a real user ─────────────────────────────────────────────────
 -- `createdById` is the evidence of WHO imposed the sequencing constraint, and the freeze below
 -- makes whatever lands here permanent. A non-blank string is not an identity: without this a
@@ -172,7 +186,12 @@ END $$;
 -- that door and keeps the check meaningful, and it costs nothing real — re-sequencing is removing
 -- an edge and adding the one you meant, which is also the honest audit trail. `lagWorkingDays`
 -- stays editable, so an ordinary re-plan is an ordinary UPDATE.
-CREATE OR REPLACE FUNCTION activity_dependency_endpoints_frozen() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+-- Pinned like its sibling. This function resolves no relation — it only compares OLD to NEW — so
+-- unlike the acyclicity guard it was never exploitable through the caller's path. It is pinned
+-- anyway because "which of these two seals reads a table?" is not a question a future reader
+-- should have to re-derive to know which one is safe.
+CREATE OR REPLACE FUNCTION activity_dependency_endpoints_frozen() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
 BEGIN
   IF NEW."projectId" IS DISTINCT FROM OLD."projectId"
      OR NEW."predecessorId" IS DISTINCT FROM OLD."predecessorId"
