@@ -414,8 +414,18 @@ test('O7: the safety boundaries this unit must not move are unchanged', () => {
 
   // Routing is a pure read of the PR body: it publishes no status, moves no
   // draft, and merges nothing. Anything it touched would be a boundary change.
+  //
+  // Matched as CALLS, not as words. A notice may have to NAME a gate action —
+  // the recovery instruction cites the `Autonomous review and merge` workflow by
+  // its real name, which is the whole point of the notice — and a probe that
+  // banned the substring would force the text to be vague about the one thing a
+  // human has to run.
   const owner = readFileSync(new URL('./correction-owner.mjs', import.meta.url), 'utf8');
-  assert.doesNotMatch(owner, /setStatus|setDraft|merge|fetch\(/u);
+  assert.doesNotMatch(
+    owner,
+    /\b(setStatus|setDraft|setDraftForCurrentHead|mergePullRequest|enableAutoMerge|comment|dispatch\w*)\s*\(|fetch\s*\(/u,
+  );
+  assert.doesNotMatch(owner, /client\./u, 'and it holds no GitHub client at all');
 });
 
 test('O8: the PR template and the loop documentation carry the declaration', async () => {
