@@ -13,14 +13,30 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
-task_state: in_progress
-work_item: none
+task_state: in_review
+work_item: schedule-b1-dependency-graph
 reviewed_merge: 44ceef9
-open_pr: 358
+open_pr: 360
 next_task: none
 blocking_directive: none
-updated: 2026-08-17
+updated: 2026-08-18
 ```
+
+**The open PR is #360 — schedule B1, the acyclic activity dependency graph.** It is the
+REPLACEMENT for #354, which reached the enforced two-finding-head limit and was closed unmerged;
+#360 declares `Replaces: #354` and carries the same unit from current `main` with all four of that
+head's findings closed.
+
+Two consequences worth stating, because they decide what the runner may do next. First, **#355
+(issue generalization A1) is BLOCKED until #360 merges** — not by anything wrong with it. The
+lineage rule in `scripts/review-efficiency.mjs` discharges an exhausted unit's obligation only
+through a MERGED replacement, so while #360 is open, #354 stays pending and every other unit reads
+`scope_required`. That serialization is the design, not a defect, and #355 must NOT declare
+`Replaces: #354` to escape it: the declaration would be false, and it would also register as a
+competing claim that blocks #360 itself. Second, #355's own work is DELIVERED and its gates are
+green; the only red on it is `api-e2e`, failing on the documented commercial deadlock
+(`phase5_t4_billed_bound_check` against `Membership ... FOR UPDATE`) and the `test-empty-site`
+Drawing foreign key — neither of which A1 touches.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round

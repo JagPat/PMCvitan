@@ -3695,6 +3695,94 @@ assert_rejects "4b round 1 F2: after redeploy the consolidated arm refuses the s
 assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
   "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
   "0"
+# ---- Schedule B1 — the acyclic activity dependency graph ------------------------------------
+echo ""
+echo "=== schedule B1: the activity dependency graph over a legacy database ==="
+
+# A legacy database has no dependency edges, and the guards did not exist when its rows were
+# written — so the table must arrive EMPTY. Rows here would be edges nothing ever cycle-checked.
+assert "B1: a legacy database upgrades ROW-FREE — no edge predates the guards that judge them" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
+  "0"
+assert "B1: the containment FKs, both CHECKs, the ordered-pair key and both seals are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('ActivityDependency_projectId_fkey','ActivityDependency_projectId_predecessorId_fkey','ActivityDependency_projectId_successorId_fkey','ActivityDependency_no_self_check','ActivityDependency_lag_nonneg_check'))::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname='ActivityDependency_projectId_successorId_predecessorId_key')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('ActivityDependency_acyclic','ActivityDependency_endpoints_frozen'))::text;" \
+  "5|1|2"
+# the guard is only correct because it serializes; assert the lock is actually in the shipped body
+assert "B1: the cycle guard serializes on the project schedule-graph advisory lock (its own key namespace)" \
+  "SELECT (prosrc LIKE '%pg_advisory_xact_lock%' AND prosrc LIKE '%vitan:schedule-graph%')::text FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
+  "true"
+
+# Two extra fixture activities: a third in project 1, and a second in project 3. Both probes below
+# need pairs that are legal in every OTHER respect, so that the refusal they assert is the only
+# thing standing in the way.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1: could not add the extra fixture activities"; FAIL=1; }
+INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd","status")
+VALUES('ACT-P1C','p1','Third project-1 activity','Hall',0,5,'done'),
+      ('ACT-P3B','p3','Second pre-T4 activity','Hall',0,5,'done');
+SQL
+
+# PRECISION FIRST — a legal edge between two activities of ONE legacy project commits. Without
+# this the rejections below would pass on a table that simply refuses everything.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1 precision: a legal same-project edge was refused"; FAIL=1; }
+INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","lagWorkingDays","createdById","createdByName")
+VALUES ('UPB1-E1','p1','ACT-1','ACT-2',7,'USER-1','Legacy PMC');
+SQL
+assert "B1 precision: a same-project finish-to-start edge with a 7-working-day lag is accepted" \
+  "SELECT \"predecessorId\" || '->' || \"successorId\" || '+' || \"lagWorkingDays\"::text FROM \"ActivityDependency\" WHERE \"id\"='UPB1-E1';" \
+  "ACT-1->ACT-2+7"
+
+assert_rejects "B1: a CROSS-PROJECT edge (p1 successor, p3 predecessor) is unrepresentable, not merely unwritten" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-X','p1','ACT-P3','ACT-2','USER-1','Legacy PMC')" \
+  "foreign key"
+assert_rejects "B1: a SELF-dependency — an activity waiting for itself can never start" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-S','p1','ACT-1','ACT-1','USER-1','Legacy PMC')" \
+  "cannot depend on itself|no_self_check"
+assert_rejects "B1: a DUPLICATE edge for the same ordered pair" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-D','p1','ACT-1','ACT-2','USER-1','Legacy PMC')" \
+  "already exists"
+assert_rejects "B1: a NEGATIVE lag, which would let a successor begin before its predecessor finished" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"lagWorkingDays\",\"createdById\",\"createdByName\") VALUES ('UPB1-N','p1','ACT-P5T3','ACT-2',-1,'USER-1','Legacy PMC')" \
+  "lag_nonneg_check"
+assert_rejects "B1: a CYCLE — ACT-1 -> ACT-2 already stands, so ACT-2 -> ACT-1 closes the loop" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-C','p1','ACT-2','ACT-1','USER-1','Legacy PMC')" \
+  "dependency cycle"
+assert_rejects "B1: RE-POINTING an accepted edge, the route by which a cycle would evade an insert-time check" \
+  "UPDATE \"ActivityDependency\" SET \"predecessorId\"='ACT-2', \"successorId\"='ACT-1' WHERE \"id\"='UPB1-E1'" \
+  "endpoints of dependency edge"
+assert_rejects "B1: attribution that is present but not answerable — a name of pure whitespace" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-W','p1','ACT-1','ACT-P1C','USER-1',E'\\t ')" \
+  "attribution_check"
+# The trigger must read the table the insert writes, not whatever the caller's search path resolves
+# first. Asserted from the catalog, because the property is invisible in the function body.
+# The guard needs a snapshot taken AFTER its lock, and only READ COMMITTED provides one. Under a
+# fixed snapshot two writers can each add an edge the other cannot see, so the level is refused
+# rather than silently unguarded. Asserted through a real REPEATABLE READ transaction.
+assert_rejects "B1: an edge written under a FIXED SNAPSHOT, where waiting on the lock proves nothing" \
+  "BEGIN ISOLATION LEVEL REPEATABLE READ;
+   INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-RR','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC');
+   COMMIT" \
+  "READ COMMITTED"
+# The one-project scope is derived from the transaction's own advisory locks, which cannot be
+# released before commit — so clearing session state does not restore the deadlock shape.
+assert_rejects "B1: two projects in one transaction, with the caller CLEARING session state in between" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-R1','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC');
+   SELECT set_config('vitan.schedule_graph_project', '', true);
+   RESET ALL;
+   INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-R2','p3','ACT-P3','ACT-P3B','USER-1','Legacy PMC')" \
+  "one project per transaction"
+assert "B1: the cycle check resolves its table through a pinned search path" \
+  "SELECT COALESCE(array_to_string(proconfig, ','), '<none>') FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
+  "search_path=pg_catalog, public"
+# One project per transaction: the per-project lock is taken by a ROW trigger, so a transaction
+# spanning two projects takes two locks in row order and can deadlock against one going the other
+# way. Both statements below run in a single transaction (psql -c), which is exactly that shape.
+assert_rejects "B1: two projects' edges in ONE transaction, the shape that lets two writers deadlock" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-T1','p1','ACT-1','ACT-P1C','USER-1','Legacy PMC');
+   INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-T2','p3','ACT-P3','ACT-P3B','USER-1','Legacy PMC')" \
+  "one project per transaction"
+assert "B1: after every rejection the graph still holds exactly the one legal edge" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
+  "1"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

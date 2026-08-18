@@ -82,6 +82,11 @@ async function main(): Promise<void> {
   await prisma.drawingAck.deleteMany();
   await prisma.drawingRevision.deleteMany();
   await prisma.drawing.deleteMany();
+  // Before the activities themselves: a dependency edge FKs both endpoints ON DELETE NO ACTION,
+  // so PostgreSQL refuses to delete an activity any edge still names. This reset promises to wipe
+  // a fully populated database, and without this line it stops here on any database that has used
+  // the schedule graph — failing before it recreates the fixture.
+  await prisma.activityDependency.deleteMany();
   await prisma.activity.deleteMany();
   // Phase 6 task 4a — the decision wipe runs BEFORE the membership wipe (round 5, Codex):
   // `Decision.withdrawnById` FKs `Membership(projectId, userId)` ON DELETE NO ACTION, so a
