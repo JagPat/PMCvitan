@@ -25,7 +25,15 @@ BEGIN
 END $$;
 
 -- ── 2. The server-driven menu ─────────────────────────────────────────────────────────────────
+-- `scope` is the tenant this kind belongs to: the literal 'platform' for the seeded kinds, or an
+-- organization's own id. It exists because the identity of a custom kind IS its tenant plus its
+-- code, and a bare `code` primary key said otherwise — it made codes globally unique, so the first
+-- organization to add `precast` would have taken that word from everyone else, and the partial
+-- uniques written below to express the real rule could never come into play. A NOT NULL scope also
+-- gives `DecisionOption` something to point a composite foreign key at, which is what stops one
+-- tenant selecting another tenant's kind.
 CREATE TABLE IF NOT EXISTS "DecisionOptionKind" (
+  "scope"        TEXT NOT NULL,
   "code"         TEXT NOT NULL,
   "baseKind"     "OptionBaseKind" NOT NULL,
   "labelKey"     TEXT NOT NULL,
@@ -33,7 +41,11 @@ CREATE TABLE IF NOT EXISTS "DecisionOptionKind" (
   "active"       BOOLEAN NOT NULL DEFAULT true,
   "orgId"        TEXT,
   "createdAt"    TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT "DecisionOptionKind_pkey" PRIMARY KEY ("code")
+  CONSTRAINT "DecisionOptionKind_pkey" PRIMARY KEY ("scope", "code"),
+  -- the two halves of `scope` are the two halves of `orgId`, and they may not disagree
+  CONSTRAINT "DecisionOptionKind_scope_check" CHECK (
+    ("orgId" IS NULL AND "scope" = 'platform') OR ("orgId" IS NOT NULL AND "scope" = "orgId")
+  )
 );
 
 DO $$
@@ -48,40 +60,39 @@ END $$;
 CREATE INDEX IF NOT EXISTS "DecisionOptionKind_active_displayOrder_idx"
   ON "DecisionOptionKind"("active", "displayOrder");
 
--- A plain UNIQUE over a nullable `orgId` would let two platform rows share a code, because
--- PostgreSQL treats NULLs as distinct. Two PARTIAL uniques say what is actually meant: platform
--- codes are globally unique, and an organization's own codes are unique within that organization.
-CREATE UNIQUE INDEX IF NOT EXISTS "DecisionOptionKind_platform_code_key"
-  ON "DecisionOptionKind"("code") WHERE "orgId" IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS "DecisionOptionKind_org_code_key"
-  ON "DecisionOptionKind"("orgId", "code") WHERE "orgId" IS NOT NULL;
+-- The primary key `(scope, code)` now states both rules directly — platform codes are unique
+-- among platform codes, an organization's codes are unique within that organization, and the two
+-- namespaces cannot collide. The earlier pair of partial unique indexes tried to say this while a
+-- bare `code` primary key was quietly saying something stricter and wrong; they are gone rather
+-- than left as decoration that no longer decides anything.
 
 -- The four seeded platform kinds. `labelKey` is a localization key, not a display string — the
 -- frontend hardcodes no labels, so retiring or reordering a kind is a data change.
-INSERT INTO "DecisionOptionKind" ("code", "baseKind", "labelKey", "displayOrder", "active")
-VALUES ('material',   'material',   'option.kind.material',   10, true),
-       ('technology', 'technology', 'option.kind.technology', 20, true),
-       ('solution',   'solution',   'option.kind.solution',   30, true),
-       ('other',      'other',      'option.kind.other',      40, true)
-ON CONFLICT ("code") DO NOTHING;
+INSERT INTO "DecisionOptionKind" ("scope", "code", "baseKind", "labelKey", "displayOrder", "active")
+VALUES ('platform', 'material',   'material',   'option.kind.material',   10, true),
+       ('platform', 'technology', 'technology', 'option.kind.technology', 20, true),
+       ('platform', 'solution',   'solution',   'option.kind.solution',   30, true),
+       ('platform', 'other',      'other',      'option.kind.other',      40, true)
+ON CONFLICT ("scope", "code") DO NOTHING;
 
 -- ── 3. The option itself ──────────────────────────────────────────────────────────────────────
 ALTER TABLE "DecisionOption"
   ADD COLUMN IF NOT EXISTS "description" TEXT,
+  ADD COLUMN IF NOT EXISTS "kindScope"   TEXT,
   ADD COLUMN IF NOT EXISTS "kindCode"    TEXT,
   ADD COLUMN IF NOT EXISTS "costImpact"  "CostImpactState" NOT NULL DEFAULT 'pending',
   ADD COLUMN IF NOT EXISTS "costAmount"  INTEGER;
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DecisionOption_kindCode_fkey') THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DecisionOption_kind_fkey') THEN
     ALTER TABLE "DecisionOption"
-      ADD CONSTRAINT "DecisionOption_kindCode_fkey" FOREIGN KEY ("kindCode")
-      REFERENCES "DecisionOptionKind"("code") ON DELETE NO ACTION ON UPDATE NO ACTION;
+      ADD CONSTRAINT "DecisionOption_kind_fkey" FOREIGN KEY ("kindScope", "kindCode")
+      REFERENCES "DecisionOptionKind"("scope", "code") ON DELETE NO ACTION ON UPDATE NO ACTION;
   END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS "DecisionOption_kindCode_idx" ON "DecisionOption"("kindCode");
+CREATE INDEX IF NOT EXISTS "DecisionOption_kind_idx" ON "DecisionOption"("kindScope", "kindCode");
 
 -- ── 4. Classify what already exists, without inventing anything ───────────────────────────────
 -- Every pre-existing option WAS a material choice — the columns left no other possibility — so
@@ -125,7 +136,8 @@ ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen";
 ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_touch";
 
 UPDATE "DecisionOption"
-   SET "kindCode" = COALESCE("kindCode", 'material'),
+   SET "kindScope" = COALESCE("kindScope", 'platform'),
+       "kindCode" = COALESCE("kindCode", 'material'),
        "costImpact" = CASE WHEN "delta" = 0 THEN 'none'::"CostImpactState"
                            ELSE 'estimated'::"CostImpactState" END,
        "costAmount" = CASE WHEN "delta" = 0 THEN NULL ELSE "delta" END
@@ -176,60 +188,121 @@ BEGIN
 END $$;
 
 -- ── 7. Procurement may only draw on an option that really names a material ────────────────────
--- `MaterialRequirementSpec` pins an approved option through the four-column provenance FK. With
--- `material` now nullable, that FK alone no longer guarantees the option has material identity —
--- a requirement could be pinned to a TECHNOLOGY option and carry a purchase order behind it.
+-- `MaterialRequirementSpec` pins an approved option through a provenance FK. With `material` now
+-- nullable, that FK alone no longer guarantees the option HAS material identity — a requirement
+-- could be pinned to a technology note and carry a purchase order behind it.
 --
--- The UI must not be the thing standing between an unpriced technology note and a purchase order,
--- so this is a trigger. It fires on the requirement side, because that is where the reference is
--- created, and it reads the option and its base kind rather than trusting the caller.
-CREATE OR REPLACE FUNCTION material_spec_option_is_material() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_material TEXT; v_kind TEXT; v_base TEXT; v_found BOOLEAN;
+-- The first version answered this with a trigger on `MaterialRequirementSpec` that read
+-- `DecisionOption` and `DecisionOptionKind`. That was wrong twice over, and both are worth naming:
+--
+--   It crossed a module boundary. `MaterialRequirementSpec` is activities-owned; the two tables it
+--   read are decisions-owned and read-encapsulated. Doing the lookup in PL/pgSQL rather than Prisma
+--   hides the edge from the boundary analyzer but does not remove it — the dependency is just as
+--   real for being written in SQL.
+--
+--   It only judged the SPEC. Once a spec committed, nothing stopped the option itself being
+--   updated to a technology kind with a null material: no spec row changed, so the trigger never
+--   fired, and the terminal state held exactly the pairing this section exists to forbid.
+--
+-- Both dissolve if qualification is a FACT THE OPTION CARRIES rather than a question asked about
+-- it. `materialQualified` is maintained by decisions, on decisions' own tables; the spec names the
+-- value it requires and a foreign key holds the two together. Changing the option to a technology
+-- kind now breaks that key while a spec references it, so PostgreSQL refuses the update — the
+-- protection covers the whole lifetime of the reference rather than the instant it was created.
+-- This is the pattern `PurchaseOrder.comparisonStatus` already uses to pin a reference to an
+-- APPROVED comparison, applied to the same shape of problem.
+ALTER TABLE "DecisionOption"
+  ADD COLUMN IF NOT EXISTS "materialQualified" BOOLEAN NOT NULL DEFAULT false;
+
+-- One trigger, because these are all one thing: the option's own invariants, maintained by the
+-- module that owns it, before the row lands.
+CREATE OR REPLACE FUNCTION decision_option_invariants() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v_base TEXT;
 BEGIN
-  IF NEW."decisionId" IS NULL OR NEW."optionKey" IS NULL THEN
-    RETURN NEW; -- a manual spec cites no option at all; nothing to qualify
+  -- (a) COMPATIBILITY: the release still serving writes only the legacy `delta`. Left alone, a row
+  -- it inserts after this migration takes the new column DEFAULTS — `pending`/NULL — so a cost a
+  -- PMC really typed would read to the next release as "nobody has assessed this", and the amount
+  -- would be gone. The backfill's rule is therefore applied to those writes too, which is the only
+  -- way the same input keeps the same meaning on both sides of the deployment.
+  IF TG_OP = 'INSERT' AND NEW."kindCode" IS NULL
+     AND NEW."costImpact" = 'pending' AND NEW."costAmount" IS NULL THEN
+    NEW."costImpact" := CASE WHEN NEW."delta" = 0 THEN 'none'::"CostImpactState"
+                             ELSE 'estimated'::"CostImpactState" END;
+    NEW."costAmount" := CASE WHEN NEW."delta" = 0 THEN NULL ELSE NEW."delta" END;
   END IF;
 
-  SELECT TRUE, o."material", o."kindCode", k."baseKind"::text
-    INTO v_found, v_material, v_kind, v_base
-    FROM "DecisionOption" o
-    LEFT JOIN "DecisionOptionKind" k ON k."code" = o."kindCode"
-   WHERE o."decisionId" = NEW."decisionId" AND o."optionKey" = NEW."optionKey";
-
-  -- EXISTENCE IS NOT THIS TRIGGER'S QUESTION. A spec citing an option that is not there is refused
-  -- by the four-column provenance FK, which is the authority on whether the reference resolves and
-  -- says so in those terms. Answering here would replace that precise error with a claim about the
-  -- option's KIND — and a nonexistent option has no kind to be wrong about.
-  IF NOT COALESCE(v_found, FALSE) THEN
-    RETURN NEW;
+  -- (b) FINALIZED COST IS EVIDENCE. `confirmed` is a financial claim somebody stands behind; the
+  -- pairwise CHECK below permits its coherence but says nothing about its history, so without this
+  -- a confirmed 31,500 could be quietly rewritten to `pending`/NULL or to a different number.
+  -- Correcting a finalized figure is a new option, not an edit of the old one.
+  IF TG_OP = 'UPDATE' AND OLD."costImpact" = 'confirmed'
+     AND (NEW."costImpact" IS DISTINCT FROM OLD."costImpact"
+          OR NEW."costAmount" IS DISTINCT FROM OLD."costAmount") THEN
+    RAISE EXCEPTION 'decisions: option % on decision % records a CONFIRMED cost of % — a finalized figure is evidence and cannot be rewritten; record a new option instead.',
+      NEW."optionKey", NEW."decisionId", OLD."costAmount";
   END IF;
 
-  -- A NULL kind is the compatibility window, not a defect. `kindCode` is deliberately nullable so
-  -- the release running during deployment keeps writing valid options, and it writes them exactly
-  -- as it always has: a material and a swatch, no kind. Those rows are material options — that is
-  -- precisely what this migration's own backfill asserts about every row that predates it, and the
-  -- rule cannot be true for yesterday's rows and false for the identical row written tomorrow.
-  -- Refusing them would break procurement for the running release, which is the one thing an
-  -- expansion-phase migration must never do.
-  IF v_kind IS NOT NULL AND v_base IS DISTINCT FROM 'material' THEN
-    RAISE EXCEPTION 'procurement: option % on decision % is a % option — only a material option can back a material requirement.',
-      NEW."optionKey", NEW."decisionId", COALESCE(v_base, v_kind);
-  END IF;
+  -- (c) The qualification fact itself. `btrim` with the full ASCII whitespace set, because the
+  -- one-argument form strips only spaces — a tab, newline, vertical tab, form feed or carriage
+  -- return would otherwise pass as a material identity nobody can order against.
+  SELECT k."baseKind"::text INTO v_base
+    FROM "DecisionOptionKind" k
+   WHERE k."scope" = NEW."kindScope" AND k."code" = NEW."kindCode";
 
-  -- An option carries material identity or it does not, and that is the question procurement
-  -- actually needs answered: a purchase order cannot be raised against a note.
-  IF v_material IS NULL OR btrim(v_material) = '' THEN
-    RAISE EXCEPTION 'procurement: option % on decision % carries no material identity — a material requirement cannot be pinned to it.',
-      NEW."optionKey", NEW."decisionId";
-  END IF;
+  NEW."materialQualified" :=
+    NEW."material" IS NOT NULL
+    AND btrim(NEW."material", E' \t\n\r\v\f') <> ''
+    -- a NULL kind is the compatibility window, and such a row IS a material option: that is what
+    -- the backfill asserts about every row predating it, and the rule cannot differ for the
+    -- byte-identical row written tomorrow.
+    AND (NEW."kindCode" IS NULL OR v_base = 'material');
 
   RETURN NEW;
 END $$;
 
+DROP TRIGGER IF EXISTS "DecisionOption_invariants" ON "DecisionOption";
+CREATE TRIGGER "DecisionOption_invariants"
+  BEFORE INSERT OR UPDATE ON "DecisionOption"
+  FOR EACH ROW EXECUTE FUNCTION decision_option_invariants();
+
+-- Re-derive the flag for everything the backfill just classified (the trigger did not exist yet).
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen";
+ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_touch";
+UPDATE "DecisionOption" SET "materialQualified" = "materialQualified";
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen";
+ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_touch";
+
+-- The key the spec points at. Adding `materialQualified` to an already-unique pair keeps it unique
+-- and gives the reference something to require.
+CREATE UNIQUE INDEX IF NOT EXISTS "DecisionOption_qualified_key"
+  ON "DecisionOption"("decisionId", "optionKey", "materialQualified");
+
+ALTER TABLE "MaterialRequirementSpec"
+  ADD COLUMN IF NOT EXISTS "optionMaterialQualified" BOOLEAN;
+
+UPDATE "MaterialRequirementSpec" s
+   SET "optionMaterialQualified" = true
+ WHERE s."decisionId" IS NOT NULL AND s."optionKey" IS NOT NULL
+   AND s."optionMaterialQualified" IS NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MaterialRequirementSpec_option_qualified_check') THEN
+    ALTER TABLE "MaterialRequirementSpec" ADD CONSTRAINT "MaterialRequirementSpec_option_qualified_check"
+      CHECK (("decisionId" IS NULL AND "optionKey" IS NULL AND "optionMaterialQualified" IS NULL)
+             OR ("decisionId" IS NOT NULL AND "optionKey" IS NOT NULL AND "optionMaterialQualified" = true));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'MaterialRequirementSpec_option_qualified_fkey') THEN
+    ALTER TABLE "MaterialRequirementSpec" ADD CONSTRAINT "MaterialRequirementSpec_option_qualified_fkey"
+      FOREIGN KEY ("decisionId", "optionKey", "optionMaterialQualified")
+      REFERENCES "DecisionOption"("decisionId", "optionKey", "materialQualified")
+      ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
+END $$;
+
+-- The cross-module trigger is removed outright rather than narrowed. Its job is done by the key.
 DROP TRIGGER IF EXISTS "MaterialRequirementSpec_option_is_material" ON "MaterialRequirementSpec";
-CREATE TRIGGER "MaterialRequirementSpec_option_is_material"
-  BEFORE INSERT OR UPDATE ON "MaterialRequirementSpec"
-  FOR EACH ROW EXECUTE FUNCTION material_spec_option_is_material();
+DROP FUNCTION IF EXISTS material_spec_option_is_material();
 
 -- ── 8. Closing verification ───────────────────────────────────────────────────────────────────
 -- The backfill is the one step that reads existing data. Re-derive its promises and abort the
@@ -265,10 +338,8 @@ BEGIN
   SELECT COUNT(*) INTO v_unqualified
     FROM "MaterialRequirementSpec" s
     JOIN "DecisionOption" o ON o."decisionId" = s."decisionId" AND o."optionKey" = s."optionKey"
-    LEFT JOIN "DecisionOptionKind" k ON k."code" = o."kindCode"
    WHERE s."decisionId" IS NOT NULL AND s."optionKey" IS NOT NULL
-     AND (o."material" IS NULL OR btrim(o."material") = ''
-          OR (o."kindCode" IS NOT NULL AND k."baseKind" IS DISTINCT FROM 'material'));
+     AND NOT o."materialQualified";
   IF v_unqualified > 0 THEN
     RAISE EXCEPTION 'option generalization: % existing material requirement(s) cite an option with no material identity. Aborting with the database unchanged.', v_unqualified;
   END IF;
