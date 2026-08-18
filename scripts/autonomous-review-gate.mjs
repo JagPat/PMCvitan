@@ -14,6 +14,7 @@ import {
 } from './correction-owner.mjs';
 import {
   assessReviewScope,
+  isRetryableReviewFailureDescription,
   codexFindingHeads,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
@@ -377,11 +378,7 @@ export function isRetryableTerminalReviewFailure(status) {
   if (!status || status.state !== 'failure' || !isTerminalReviewStatus(status)) {
     return false;
   }
-  const description = status.description ?? '';
-  return description.includes('Codex review timed out')
-    || description.includes('Codex evidence changed during final verification')
-    || description === 'review: Required CI changed during current-head Codex review'
-    || description === 'review: bootstrap exact-head review requested';
+  return isRetryableReviewFailureDescription(status.description);
 }
 
 export function authorizeRecoveryDispatch(statuses, requestedStatusId) {

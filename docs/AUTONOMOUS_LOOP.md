@@ -112,31 +112,99 @@ Every correction notice is now derived from the declaration:
 | `cursor` | routed but not awakenable — the Cursor agent is named, Claude is never claimed, and the notice states plainly that GitHub can neither start that session nor observe whether it is running |
 | undeclared / invalid / contradictory | no agent is routed; the notice reports `correction_stalled` and names the marker that fixes it |
 
-### Naming an owner is not waking one — FOLLOW-UP UNIT
+### Naming an owner is not waking one — the correction lease
 
-Routing decides WHO is asked. It does not ask them, and it does not detect that
-they never started — so a notice for a non-awakenable owner reports the routing
-and nothing more. It must never assert that no correction is in flight, or make
-a new head the test of one: a human may have started the session already, and a
-scope refusal is routinely cleared by editing the PR body with no new head at
-all. Reporting that as stalled invites a duplicate intervention. Both belong to a follow-up unit, and until that lands the
-wake-up is what it has always been — but it is OWNER-SPECIFIC, and a marked
-`@claude` comment is correct only on a PR that declares `claude`. A Cursor-owned
-correction is resumed by a human starting that session; tagging Claude there
-would notify the wrong agent and is forbidden by `CLAUDE.md`.
+Routing decides WHO is asked. Asking them, and noticing that nobody started, is
+the **correction lease** (`scripts/correction-lease.mjs`), driven by the hourly
+handoff job's watchdog (`handOffCorrectionLease`). Routing shipped first, as its
+own reviewed unit; the lease followed, because a handle, a threshold, or a state
+ships WITH the consumer that reads it, never ahead of it.
 
-Two facts make this a real boundary rather than an omission. A mention is
-actionable only in a NEW comment — the state comment above is maintained by
-PATCH once it exists, and an edit creates no notification, so a handle written
-there would look like a wake-up and wake nobody. And an unstarted correction is
-indistinguishable from one in progress until time passes with no new head, which
-takes a lease keyed to pull request, exact head and owner, publishing at most one
-notification and cleared only by a new head.
+The watchdog opens a lease when the exact head's required `codex-current-head`
+status is a **failure someone owes a correction for**. That is decided by the
+status PREFIX the review gate writes — `review:`, `scope:`, `ci:` — never by the
+sentence after it. An earlier draft matched the two Codex-finding sentences and
+so never saw the review-round-limit failure, which is the one state whose remedy
+is a replacement PR rather than another head. `recovery:` is the gate retrying
+itself and opens no lease.
 
-Both were split out at the review-round limit, after their defects proved to be
-the riskier half of the change. The rule that produced this split is worth
-keeping: a handle, a threshold, or a state ships WITH the consumer that reads it,
-never ahead of it.
+Two refinements sit on top of that, and neither weakens it. The prefix decides
+WHETHER a correction is owed — a missed prefix means silence, the failure this
+unit exists to remove — while the sentence may still refine WHAT is asked, where
+a miss only makes the notice more generic:
+
+- **A gate-retryable review failure opens no lease at all.** A timed-out review,
+  evidence that moved under the gate, required CI changing mid-review, a
+  requested bootstrap review — all four mean the gate did not reach a verdict,
+  and all four are recovered by the gate being RE-DISPATCHED. No agent owes
+  anything, so the watchdog stays out, exactly as it does for the `recovery:`
+  prefix. The list lives in `review-efficiency.mjs` and the gate reads the same
+  one, so a fifth cannot be added there and silently become an actionable
+  correction here.
+
+  **Reporting those failures, and performing that dispatch, are a follow-up
+  unit.** Three review rounds established that reporting them well means
+  rendering a runnable `workflow_dispatch` — the exact head, the terminal status
+  id, that failure's own precondition, and the owner-marker repair that must
+  precede it, since the dispatched job re-runs `review-scope` on the same head.
+  That is a runbook printed by a reporter, and the better shape is the watchdog
+  performing the dispatch itself. Both belong to one unit reviewed as a
+  capability change; until it lands the gate's recovery path is exactly where it
+  was before this work.
+
+- **A scope notice leads with the verdict that is failing.** The scope gate
+  publishes several — an undeclared correction owner, replacement lineage, an
+  unchecked pre-review item, a missing migration seam, the review unit's size —
+  and they have different remedies. Naming only the size remedy sent every other
+  verdict an instruction that could not clear it, and the lease publishes once
+  per failure, so the wrong instruction was the only one that arrived. The gate
+  summarises a failed PR-side `review-scope` check as
+  `ci: Failed checks: review-scope`; that is routed as the scope verdict it is,
+  not as CI, because a new head cannot clear it and a body edit can.
+
+The lease has three properties the manual kick it replaces cannot guarantee:
+
+- **Idempotent.** Keyed to `(pull request, exact head, owner, owed failure)` and
+  carried in the published comment's own marker. The failure is part of the key
+  because the head does NOT move when a body edit clears a scope refusal, so the
+  next gate run can publish a different failure on that same SHA — and a
+  reason-agnostic key let the first notice silence the second, stalling the loop
+  behind a verdict nobody could act on. One notification per key, ever — a repeated
+  cron tick, a replaced Actions run, or a second event for the same head all
+  publish nothing.
+- **Actionable.** The notice is a **new** comment, which is the only thing that
+  creates a GitHub notification. The `@claude` mention lives there, and only for
+  an owner GitHub can wake; the state comment above is `PATCH`ed once it exists,
+  so a handle written there would look like a wake-up and wake nobody. A
+  Cursor-owned correction is never tagged and never attributed to Claude.
+- **Honest.** It is cleared by a new head, or by that required status ceasing to
+  fail — a scope refusal is routinely cleared by editing the PR body with no new
+  head at all. Nothing else clears it.
+
+  **A notice is published only if a fresh read still produces the identical
+  notice.** It is composed from a snapshot — the failing status, the head, the
+  owner declaration — and everything after that takes time each of them can
+  change in. Three review rounds each found a different input that could move in
+  that window, so the guard is not a list of inputs: the whole assessment is
+  re-derived from a fresh read and compared. A body differing by one character
+  means something the notice depends on changed, and the next hourly tick
+  reassesses rather than this one publishing a stale verdict — a lease key is
+  claimed forever, so a wrong notice is worse than a late one. Not by the notification existing, not by a
+  reaction, not by a reply. Both PRs that started this work were acknowledged
+  only as a subscription and produced no correction, which is exactly the state
+  an acknowledgement-based check would have called healthy.
+
+It publishes a comment and nothing else: no `codex-current-head`, no draft
+change, no merge, no Codex invocation. Its remit is every same-repository pull
+request against the default branch, `codex/**` included, because ownership is
+declared and not inferable from the branch. A watchdog that could not assess a
+pull request fails the handoff job rather than letting it report green over an
+unobserved correction — reporting green is the defect this replaces.
+
+A notice for a non-awakenable owner reports the routing and nothing more. It
+never asserts that no correction is in flight, and never makes a new head the
+test of one: a human may have started the session already. Reporting that as
+stalled invites a duplicate intervention.
 
 ### `correction_stalled`
 
