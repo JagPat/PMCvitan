@@ -182,9 +182,30 @@ so directly rather than framing it as a suggestion.
   one; an undeclared or malformed declaration reports
   `correction_stalled` and names the marker that fixes it. Naming an owner is not
   waking one: an actionable mention needs a new comment, and detecting that an
-  asked owner never started needs a lease keyed to pull request, exact head and
-  owner. Both are a separate follow-up unit, so a stalled correction is still
-  noticed by a human.
+  asked owner never started needs a lease. Both are the CORRECTION LEASE, driven
+  by the hourly handoff job's watchdog: it opens on a failing required status
+  (classified by the gate's `review:`/`scope:`/`ci:` prefix, never by its
+  wording), publishes at most ONE new comment per pull request, exact head,
+  owner and owed failure (the head does not move when a body edit clears a scope
+  refusal, so a later failure on the same SHA is its own lease) — carrying `@claude` only where GitHub can actually wake the owner AND
+  the owner actually has something to do — and is cleared by a new head or by
+  that status ceasing to fail, never by an acknowledgement. A gate-retryable
+  review failure — a timeout, moved evidence, CI changing mid-review, a
+  requested bootstrap review — owes NO correction: it is reported as
+  `gate_recovery` with no resume action and its own lease key, names the actual
+  recovery — a `workflow_dispatch` of `Autonomous review and merge` with the PR,
+  the exact head and the terminal status id, since nothing triggers it on its
+  own — and asks for no head, so a later re-dispatch that DOES find
+  something can still open the actionable lease. That list has one definition,
+  which the gate reads too. A scope notice leads with the verdict that is
+  failing, because the size remedy cannot clear a lineage or checklist verdict.
+  And the whole assessment is re-derived from a fresh read immediately before
+  publishing: the notice goes out only if it comes out identical, so anything
+  that changed while the watchdog was reading — the head, the status, which
+  failure it is, the declared owner — defers to the next tick instead of
+  claiming the lease key with a stale verdict. It comments and nothing else: no status, no draft change, no
+  merge, no Codex call. A watchdog that could not assess a pull request fails the
+  handoff job rather than reporting green over an unobserved correction.
 - On the second finding-bearing head, the PR's declared correction owner makes
   no further correction on that PR. That same owner closes the exhausted PR and
   opens a smaller replacement from current `main`, preserving the unresolved
