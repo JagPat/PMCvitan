@@ -1,0 +1,389 @@
+-- Schedule unit B1 — the ACYCLIC ACTIVITY DEPENDENCY GRAPH.
+--
+-- One concern: a finish-to-start edge between two activities of one project, and the guarantee
+-- that the set of those edges is always a valid DAG. Durations, the working calendar, baselines,
+-- forecast computation and the readiness gate are separate units; this one installs the graph and
+-- the rules that keep it honest, so nothing built on top has to re-check them.
+--
+-- Additive and retry-safe: one new table, no existing table altered, every object guarded so a
+-- second application is a no-op. Nothing in the running release reads or writes this table, so it
+-- is inert on deploy.
+
+-- ── Pre-flight: this table must arrive ROW-FREE on a FIRST installation ───────────────────────
+-- Evaluated BEFORE anything below is created, because the question it asks — "were these edges
+-- written before the guards that judge them existed?" — stops being answerable the moment this
+-- migration installs those guards. Asking it at the end of the file would read the triggers this
+-- run just created and pass unconditionally, which is a check that cannot fail rather than a
+-- check that holds.
+--
+--   fresh install  → the table does not exist yet; nothing to judge.
+--   re-application → the guards are already present, so every row was cycle-checked on its way
+--                    in, and this migration stays re-runnable for an operator repair.
+--   anything else  → rows exist that no guard ever saw. Stop, and change nothing.
+-- ONE TRANSACTION, on every path that can apply this file.
+--
+-- `prisma migrate deploy` already wraps a migration, but that is not the only way this file runs:
+-- `psql -f` does NOT, and then every statement autocommits. That matters most at the two
+-- DROP TRIGGER / CREATE TRIGGER pairs near the end — between the drop and the create the table has
+-- no acyclicity guard at all, and a re-application takes the early "already installed" branch, so
+-- it never held the lock either. A concurrent writer inserting opposing edges in that window leaves
+-- both rows behind, unchecked, and the recreated trigger only judges what comes after them.
+--
+-- Wrapping the file makes the preflight lock and both trigger replacements atomic however it is
+-- applied. This is the shape `20270610000000_phase5_t6b_status_derivation` already uses for the
+-- same hazard.
+BEGIN;
+
+-- Everything below runs in the `public` schema, whoever applies it.
+--
+-- `prisma migrate deploy` sets this up; `psql -f` does not, and takes the caller's search path
+-- instead. Under a role whose path names a per-user or temporary schema first, every unqualified
+-- CREATE TABLE, ALTER TABLE, CREATE FUNCTION and CREATE TRIGGER below would build the whole graph
+-- somewhere else and commit successfully, while the application's `public` schema still has no
+-- table at all — and a re-run would follow the same shadow objects and never notice.
+SET LOCAL search_path = public;
+
+-- REFUSE a table that already exists. That is the whole preflight.
+--
+-- This is deliberately blunter than what stood here through three review rounds, and the reason is
+-- worth stating, because the elaborate version was the more careful-looking one and it was wrong.
+--
+-- `ActivityDependency` is a NEW table: nothing on `main` references it, so no deployed database
+-- has one. The file is also a single transaction, so a failed apply rolls back completely and
+-- leaves no table behind. Between those two facts, the "partial install" this migration used to
+-- try to repair — table present, guards missing or half-installed — cannot arise from anything
+-- this repository does. Every version of that repair branch had to decide whether the rows already
+-- present had been judged, and each answer was wrong in a new way: a decoy trigger on another
+-- table, a disabled trigger, a trigger set to REPLICA, a constraint added NOT VALID. Five review
+-- rounds went into that branch and none into the graph invariant itself.
+--
+-- So the branch is gone. If the table exists, this migration does not guess what it is or how it
+-- got there — it stops and says so, and a person decides. A migration that refuses is repairable;
+-- a migration that guesses optimistically installs a guard over rows nothing ever checked.
+DO $$
+BEGIN
+  IF to_regclass('public."ActivityDependency"') IS NOT NULL THEN
+    RAISE EXCEPTION 'schedule: "ActivityDependency" already exists. This migration creates that table and does not adopt an existing one, because it cannot know whether the rows in it were ever cycle-checked. Inspect the table and drop it if it is not wanted, then re-run.';
+  END IF;
+END $$;
+
+CREATE TABLE "ActivityDependency" (
+  "id"             TEXT NOT NULL,
+  "projectId"      TEXT NOT NULL,
+  "predecessorId"  TEXT NOT NULL,
+  "successorId"    TEXT NOT NULL,
+  "lagWorkingDays" INTEGER NOT NULL DEFAULT 0,
+  "createdAt"      TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdById"    TEXT NOT NULL,
+  "createdByName"  TEXT NOT NULL,
+  -- Removal is a REVOCATION, not a delete. See the DELETE seal further down for why.
+  "revokedAt"      TIMESTAMP(3),
+  "revokedById"    TEXT,
+  "revokedByName"  TEXT,
+  CONSTRAINT "ActivityDependency_pkey" PRIMARY KEY ("id"),
+  -- NOT NULL is not the same as answerable. An empty string satisfies it, and so does a run of
+  -- spaces or a lone tab — and the freeze below then makes that unusable value permanent, so an
+  -- edge whose sequencing someone later disputes cannot say who imposed it. The point of storing
+  -- attribution at all is to answer that question.
+  --
+  -- `[[:space:]]`, not a hand-assembled trim set. PostgreSQL reads `\v` in an E-string as the
+  -- LETTER v, so E' \t\n\r\v\f' both fails to strip a real vertical tab and strips the v out of
+  -- ordinary words. The POSIX class covers every ASCII whitespace character and cannot be
+  -- mis-assembled.
+  CONSTRAINT "ActivityDependency_attribution_check"
+    CHECK ("createdById" !~ '^[[:space:]]*$' AND "createdByName" !~ '^[[:space:]]*$')
+);
+
+-- ── F-C: the recorded creator is a real user ─────────────────────────────────────────────────
+-- `createdById` is the evidence of WHO imposed the sequencing constraint, and the freeze below
+-- makes whatever lands here permanent. A non-blank string is not an identity: without this a
+-- direct writer can record `forged-user` and the freeze preserves the fabrication forever. Bound
+-- the way every other attributed record in this repository binds it.
+ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdById_fkey"
+  FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+
+-- ── Containment: both endpoints are activities of THIS row's project ──────────────────────────
+-- Each foreign key carries the edge's own `projectId`, so an edge between two different projects
+-- does not exist as a representable row. That is the difference between an invariant and a
+-- convention: no service, import, script or hand-written UPDATE can produce one.
+ALTER TABLE "ActivityDependency"
+  ADD CONSTRAINT "ActivityDependency_projectId_fkey"
+  FOREIGN KEY ("projectId") REFERENCES "Project"("id")
+  ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "ActivityDependency"
+  ADD CONSTRAINT "ActivityDependency_projectId_predecessorId_fkey"
+  FOREIGN KEY ("projectId", "predecessorId") REFERENCES "Activity"("projectId", "id")
+  ON DELETE NO ACTION ON UPDATE NO ACTION;
+ALTER TABLE "ActivityDependency"
+  ADD CONSTRAINT "ActivityDependency_projectId_successorId_fkey"
+  FOREIGN KEY ("projectId", "successorId") REFERENCES "Activity"("projectId", "id")
+  ON DELETE NO ACTION ON UPDATE NO ACTION;
+
+-- One edge per ordered pair. Also the candidate key an EDGE-SCOPED dependency override must
+-- reference: an override attached to the successor alone would excuse every predecessor at once,
+-- so the override has to be able to name the exact pair.
+-- PARTIAL, because a revoked edge stays on the record. Re-adding a constraint that was withdrawn
+-- earlier is an ordinary re-plan and must be allowed; what must not be allowed is two LIVE edges
+-- for one ordered pair.
+CREATE UNIQUE INDEX "ActivityDependency_projectId_successorId_predecessorId_key"
+  ON "ActivityDependency"("projectId", "successorId", "predecessorId")
+  WHERE "revokedAt" IS NULL;
+CREATE INDEX "ActivityDependency_projectId_predecessorId_idx"
+  ON "ActivityDependency"("projectId", "predecessorId");
+CREATE INDEX "ActivityDependency_projectId_successorId_idx"
+  ON "ActivityDependency"("projectId", "successorId");
+
+-- An activity waiting for itself can never start. Cheap to state, so state it.
+ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_no_self_check"
+  CHECK ("predecessorId" <> "successorId");
+-- A NEGATIVE lag would let a successor begin before its predecessor finished, which is the one
+-- thing this table exists to forbid. Zero is legal and is the common case.
+ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check"
+  CHECK ("lagWorkingDays" >= 0);
+
+-- ── Endpoint identity is frozen ───────────────────────────────────────────────────────────────
+-- The cycle check below runs at INSERT. If an edge could later be re-pointed, a cycle would walk
+-- straight past it: insert A->B legally, then UPDATE it to B->A. Freezing the endpoints closes
+-- that door and keeps the check meaningful, and it costs nothing real — re-sequencing is removing
+-- an edge and adding the one you meant, which is also the honest audit trail. `lagWorkingDays`
+-- stays editable, so an ordinary re-plan is an ordinary UPDATE.
+
+-- Removal must not launder attribution.
+--
+-- The freeze below makes the creation provenance permanent against UPDATE. It had nothing to hold
+-- on to against DELETE: an edge attributed to one person could be removed and the identical pair
+-- re-inserted under another name, with both statements accepted and the original author gone from
+-- the record. Since a disputed sequence is exactly what the attribution exists to answer, the
+-- supported way to remove an edge is to REVOKE it — the row stays, both attributions stay, and the
+-- partial unique above lets the pair be re-added afterwards.
+--
+-- The three revocation columns move together or not at all: a stamp without an author would be the
+-- same erasure by another route.
+ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_revocation_check"
+  CHECK (("revokedAt" IS NULL AND "revokedById" IS NULL AND "revokedByName" IS NULL)
+         OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL
+             AND "revokedByName" !~ '^[[:space:]]*$'));
+ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_revokedById_fkey"
+  FOREIGN KEY ("revokedById") REFERENCES "User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+
+CREATE OR REPLACE FUNCTION activity_dependency_no_delete() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+BEGIN
+  RAISE EXCEPTION 'schedule: dependency edge % is not deletable — who imposed this sequencing constraint, and who withdrew it, are both part of the record. Revoke it instead (set revokedAt/revokedById/revokedByName).', OLD."id";
+END $$;
+
+CREATE TRIGGER "ActivityDependency_no_delete"
+  BEFORE DELETE ON "ActivityDependency"
+  FOR EACH ROW EXECUTE FUNCTION activity_dependency_no_delete();
+
+-- Pinned like its sibling. This function resolves no relation — it only compares OLD to NEW — so
+-- unlike the acyclicity guard it was never exploitable through the caller's path. It is pinned
+-- anyway because "which of these two seals reads a table?" is not a question a future reader
+-- should have to re-derive to know which one is safe.
+CREATE OR REPLACE FUNCTION activity_dependency_endpoints_frozen() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+BEGIN
+  IF NEW."projectId" IS DISTINCT FROM OLD."projectId"
+     OR NEW."predecessorId" IS DISTINCT FROM OLD."predecessorId"
+     OR NEW."successorId" IS DISTINCT FROM OLD."successorId" THEN
+    RAISE EXCEPTION 'schedule: the endpoints of dependency edge % are frozen — remove the edge and add the one you mean.', OLD."id";
+  END IF;
+  -- WHO constrained the schedule, and WHEN, is the whole point of recording it. A sequencing
+  -- dispute is answerable only if the attribution cannot be rewritten afterwards, so the creation
+  -- provenance is frozen exactly as hard as the endpoints are. Freezing the endpoints alone left
+  -- an alternate writer able to keep the constraint and change who imposed it.
+  IF NEW."createdById" IS DISTINCT FROM OLD."createdById"
+     OR NEW."createdByName" IS DISTINCT FROM OLD."createdByName"
+     OR NEW."createdAt" IS DISTINCT FROM OLD."createdAt" THEN
+    RAISE EXCEPTION 'schedule: the creation provenance of dependency edge % is frozen — who imposed a constraint, and when, is not rewritable.', OLD."id";
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER "ActivityDependency_endpoints_frozen"
+  BEFORE UPDATE ON "ActivityDependency"
+  FOR EACH ROW EXECUTE FUNCTION activity_dependency_endpoints_frozen();
+
+-- ── No cycles, and no cycles UNDER CONCURRENCY ────────────────────────────────────────────────
+-- The reachability test is the easy half. The hard half is that two sessions can each add one
+-- edge that is individually fine and jointly a loop:
+--
+--   T1: add A -> B   (asks: does B already reach A?  no)
+--   T2: add B -> A   (asks: does A already reach B?  no)
+--   both commit, and the graph now contains A -> B -> A.
+--
+-- Neither session is wrong on its own evidence. They touch different rows, so they conflict on
+-- nothing, and under READ COMMITTED neither can see the other uncommitted row.
+--
+-- Row locking cannot fix this, and it is worth saying why rather than leaving the next reader to
+-- rediscover it: `SELECT ... FOR UPDATE` over the existing edges re-checks the rows it scanned and
+-- drops those that stopped matching, but it NEVER picks up rows that started matching while it
+-- waited. A predicate over a set another transaction is still inserting into is not lockable that
+-- way. (This repository has paid for that lesson once already, in the org last-owner guard.)
+--
+-- So the decision is serialized with a transaction-scoped ADVISORY lock on the project's schedule
+-- graph. The second writer blocks until the first commits, then re-runs reachability with the
+-- first edge visible and is refused. One lock, one key, always taken before any other work in
+-- this trigger, so no ordering exists for two writers to invert.
+--
+-- The key namespace is deliberately its own. It is NOT the project readiness key: that one is
+-- TRY-acquired and refuses rather than waits, so borrowing it would make a held readiness key
+-- turn every schedule write into a spurious failure.
+--
+-- `SET search_path` is not decoration. Without it this function resolves `"ActivityDependency"`
+-- through the CALLING session's search path, and `pg_temp` comes first by default. Any writer
+-- holding the ordinary TEMP privilege could therefore create a temporary table of that name, and
+-- the walk below would traverse it — finding nothing — while the row landed in the real table. Two
+-- opposing edges would both commit and the graph would carry a cycle no guard ever saw. Pinning
+-- the path, and qualifying the relation, closes that off: the trigger reads the same table the
+-- insert writes, whoever calls it.
+CREATE OR REPLACE FUNCTION activity_dependency_acyclic() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+DECLARE
+  v_path TEXT; v_closes_loop BOOLEAN; v_scope INT; v_key INT; v_isolation TEXT;
+  v_frontier TEXT[]; v_next TEXT[]; v_seen TEXT[]; v_parent JSONB; v_node TEXT; v_from TEXT;
+BEGIN
+  -- A FRESH SNAPSHOT AFTER THE LOCK IS THE WHOLE MECHANISM, so the isolation level is checked
+  -- before anything else.
+  --
+  -- The lock below makes the second writer wait for the first. What makes waiting useful is that
+  -- the reachability query afterwards then SEES the first writer's edge. Under READ COMMITTED it
+  -- does: every statement takes its own snapshot. Under REPEATABLE READ and SERIALIZABLE the
+  -- snapshot is fixed when the transaction starts, and no amount of waiting refreshes it — so T2
+  -- blocks, T1 commits A -> B, T2 wakes, walks a graph that still does not contain A -> B, and
+  -- commits B -> A. Both succeed, and the cycle is in the table. The lock did its job; the read
+  -- was answering a question about the past.
+  --
+  -- SERIALIZABLE would probably be caught by SSI's read-write conflict detection, but "probably"
+  -- is not the standard for an invariant the rest of the system treats as physically impossible,
+  -- and a trigger is the wrong place to reason about predicate locks. So the guard states its
+  -- requirement instead of hoping: it needs a snapshot taken after the lock, only READ COMMITTED
+  -- provides one, and anything else is refused rather than silently unguarded.
+  v_isolation := current_setting('transaction_isolation');
+  IF v_isolation <> 'read committed' THEN
+    RAISE EXCEPTION 'schedule: dependency edges cannot be written under % isolation. The cycle check needs a snapshot taken AFTER the project graph lock, and only READ COMMITTED gives it one — under a fixed snapshot two transactions can each add an edge the other cannot see and compose a cycle. Write dependency edges in a READ COMMITTED transaction.',
+      v_isolation;
+  END IF;
+
+  -- One project per transaction, derived from the locks this transaction ALREADY HOLDS.
+  --
+  -- The lock below is per project, and this is a ROW trigger, so a single statement spanning two
+  -- projects takes two of them in the order the rows happen to arrive. One transaction inserting
+  -- for P1 then P2, against another inserting for P2 then P1, is a textbook deadlock: each holds
+  -- what the other is waiting for, and PostgreSQL kills one of two otherwise legal imports. No
+  -- ordering rule inside a row trigger can fix that, because the trigger cannot see the rows still
+  -- to come.
+  --
+  -- The first version of this remembered the claimed project in a custom GUC. That was the right
+  -- idea in the wrong place: a GUC is ordinary session state, and any writer able to insert an edge
+  -- is equally able to `set_config(..., true)` it back to empty between statements — which restores
+  -- the deadlock exactly, and does so most easily for the direct-SQL writer this migration
+  -- explicitly treats as an alternate writer. A guard a caller can switch off is a convention.
+  --
+  -- `pg_locks` is not switchable. A transaction-scoped advisory lock CANNOT be released before
+  -- commit — `pg_advisory_unlock` refuses xact-scoped locks outright — so the set of graph locks
+  -- this backend holds is authoritative transaction state, and it is exactly the state the ordering
+  -- hazard is about. The key is taken in two-int form so the namespace is a column to filter on
+  -- rather than a range to decode: `classid` is the namespace, `objid` the project.
+  v_key := hashtext(NEW."projectId");
+  SELECT l.objid::INT INTO v_scope
+    FROM pg_locks l
+   WHERE l.locktype = 'advisory' AND l.granted
+     AND l.pid = pg_backend_pid()
+     AND l.classid = hashtext('vitan:schedule-graph') AND l.objsubid = 2
+     AND l.objid::INT <> v_key
+   LIMIT 1;
+  IF v_scope IS NOT NULL THEN
+    RAISE EXCEPTION 'schedule: this transaction already holds the dependency graph lock for another project, and edges for project % cannot be written in the same transaction — the per-project locks would be taken out of order and two such writers would deadlock. Write one project per transaction.',
+      NEW."projectId";
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtext('vitan:schedule-graph'), v_key);
+
+  IF NEW."predecessorId" = NEW."successorId" THEN
+    RAISE EXCEPTION 'schedule: activity % cannot depend on itself.', NEW."successorId";
+  END IF;
+
+  -- Walk FORWARD from the proposed successor over the edges that already exist. If the proposed
+  -- predecessor is reachable, then predecessor -> successor closes a loop.
+  --
+  -- The walk carries NO path and dedupes on activity identity, and that is a correctness property
+  -- rather than a tidiness one. Carrying a path forces `UNION ALL`, because two routes to the same
+  -- activity differ in their path column — so a branching DAG enumerates every distinct ROUTE, not
+  -- every node. Thirty diamonds in series is a graph of sixty-odd edges and roughly a billion
+  -- paths, and the guard would exhaust the statement timeout on a schedule a person could draw by
+  -- hand. `UNION` dedupes against the working set, so this visits each activity once and is linear
+  -- in edges. Termination on an already-cyclic graph comes from the same dedup, so a diagnostic
+  -- still cannot hang on the data it is diagnosing.
+  WITH RECURSIVE reachable("activityId") AS (
+    SELECT NEW."successorId"
+    UNION
+    SELECT d."successorId"
+      FROM public."ActivityDependency" d
+      JOIN reachable r ON d."predecessorId" = r."activityId"
+     WHERE d."projectId" = NEW."projectId"
+  )
+  SELECT EXISTS (SELECT 1 FROM reachable r WHERE r."activityId" = NEW."predecessorId")
+    INTO v_closes_loop;
+
+  IF v_closes_loop THEN
+    -- Only now, and only to name ONE route for the person who has to fix it.
+    --
+    -- A per-path visited guard and a depth cap are NOT enough here, and the earlier version of this
+    -- block proved it. Carrying a path forces `UNION ALL`, so the walk enumerates every distinct
+    -- ROUTE rather than every node — and routes are exponential in a shape that is not exotic at
+    -- all: two activities per layer, fully connected between layers, is about 120 edges across 31
+    -- layers and over two billion paths. Capping the DEPTH does not help, because the explosion is
+    -- in the breadth at each depth. So a rejected insert could still exhaust its statement timeout,
+    -- and the guard would fail on the very graph it was refusing.
+    --
+    -- This is a breadth-first search that dedupes on activity identity and remembers how each
+    -- activity was first reached. Every activity enters the frontier at most once, so it is linear
+    -- in edges — the same property the detection walk above relies on — and the route is then read
+    -- back off the parent map. There is no cap, because none is needed.
+    v_frontier := ARRAY[NEW."successorId"];
+    v_seen     := ARRAY[NEW."successorId"];
+    v_parent   := '{}'::jsonb;
+
+    WHILE COALESCE(array_length(v_frontier, 1), 0) > 0
+          AND NOT (NEW."predecessorId" = ANY(v_seen)) LOOP
+      v_next := ARRAY[]::TEXT[];
+      FOR v_node, v_from IN
+        SELECT DISTINCT ON (d."successorId") d."successorId", d."predecessorId"
+          FROM public."ActivityDependency" d
+         WHERE d."projectId" = NEW."projectId"
+           AND d."predecessorId" = ANY(v_frontier)
+           AND NOT (d."successorId" = ANY(v_seen))
+         ORDER BY d."successorId", d."predecessorId"
+      LOOP
+        v_parent := v_parent || jsonb_build_object(v_node, v_from);
+        v_seen   := v_seen || v_node;
+        v_next   := v_next || v_node;
+      END LOOP;
+      v_frontier := v_next;
+    END LOOP;
+
+    -- Read the route back from the predecessor to the successor, then state it forwards.
+    IF NEW."predecessorId" = ANY(v_seen) THEN
+      v_path := NEW."predecessorId";
+      v_node := NEW."predecessorId";
+      WHILE v_node <> NEW."successorId" LOOP
+        v_node := v_parent ->> v_node;
+        EXIT WHEN v_node IS NULL;
+        v_path := v_node || ' -> ' || v_path;
+      END LOOP;
+    END IF;
+
+    RAISE EXCEPTION 'schedule: % -> % would create a dependency cycle — % already leads back.',
+      NEW."predecessorId", NEW."successorId",
+      COALESCE(v_path, format('%s reaches %s', NEW."successorId", NEW."predecessorId"));
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER "ActivityDependency_acyclic"
+  BEFORE INSERT ON "ActivityDependency"
+  FOR EACH ROW EXECUTE FUNCTION activity_dependency_acyclic();
+
+COMMIT;
