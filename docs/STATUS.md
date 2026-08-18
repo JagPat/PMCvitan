@@ -16,24 +16,24 @@ task: 4
 task_state: in_review
 work_item: schedule-b1-dependency-graph
 reviewed_merge: 44ceef9
-open_pr: 360
+open_pr: 361
 next_task: none
 blocking_directive: none
 updated: 2026-08-18
 ```
 
-**The open PR is #360 — schedule B1, the acyclic activity dependency graph.** It is the
-REPLACEMENT for #354, which reached the enforced two-finding-head limit and was closed unmerged;
-#360 declares `Replaces: #354` and carries the same unit from current `main` with all four of that
-head's findings closed.
+**The open PR is #361 — schedule B1, the acyclic activity dependency graph.** It is the third
+carrier of this unit: #354 reached the enforced two-finding-head limit and was closed, its
+replacement #360 reached the same limit and was closed, and #361 declares `Replaces: #360` and
+carries the unit from current `main` with every finding from both lineages closed.
 
 Two consequences worth stating, because they decide what the runner may do next. First, **#355
-(issue generalization A1) is BLOCKED until #360 merges** — not by anything wrong with it. The
+(issue generalization A1) is BLOCKED until #361 merges** — not by anything wrong with it. The
 lineage rule in `scripts/review-efficiency.mjs` discharges an exhausted unit's obligation only
-through a MERGED replacement, so while #360 is open, #354 stays pending and every other unit reads
+through a MERGED replacement, so while #361 is open, #360 stays pending and every other unit reads
 `scope_required`. That serialization is the design, not a defect, and #355 must NOT declare
-`Replaces: #354` to escape it: the declaration would be false, and it would also register as a
-competing claim that blocks #360 itself. Second, #355's own work is DELIVERED and its gates are
+`Replaces: #360` to escape it: the declaration would be false, and it would also register as a
+competing claim that blocks #361 itself. Second, #355's own work is DELIVERED and its gates are
 green; the only red on it is `api-e2e`, failing on the documented commercial deadlock
 (`phase5_t4_billed_bound_check` against `Membership ... FOR UPDATE`) and the `test-empty-site`
 Drawing foreign key — neither of which A1 touches.
