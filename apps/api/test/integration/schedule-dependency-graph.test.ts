@@ -266,33 +266,35 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
   // verdict was always correct, it just could not be reached. Against the UNION ALL walk this
   // times out; the bound is deliberately loose so it fails on the defect, not on a slow machine.
   it('P10 a branching DAG is judged in linear time, not once per distinct route', async () => {
+    // The shape matters, and getting it wrong hides the bug. A chain of diamonds does NOT
+    // reproduce this: each diamond is two nodes deep, so twenty of them put the route well past
+    // the old diagnostic's depth cap of 32, the walk gives up early and looks fast. Layers of two
+    // with complete edges between them keep every route SHORT — thirty-one nodes, inside the cap —
+    // while the number of distinct routes doubles per layer. About 120 edges, a billion routes,
+    // and a graph a person could draw by hand.
     const head = await activity();
-    let tail = head;
-    for (let i = 0; i < 20; i += 1) {
-      const left = await activity();
-      const right = await activity();
-      const join = await activity();
-      await t.prisma.$executeRawUnsafe(edge(tail, left));
-      await t.prisma.$executeRawUnsafe(edge(tail, right));
-      await t.prisma.$executeRawUnsafe(edge(left, join));
-      await t.prisma.$executeRawUnsafe(edge(right, join));
-      tail = join;
+    let prev = [head];
+    for (let layer = 0; layer < 30; layer += 1) {
+      const next = [await activity(), await activity()];
+      for (const p of prev) for (const n of next) await t.prisma.$executeRawUnsafe(edge(p, n));
+      prev = next;
     }
-    // 2^20 routes from head to tail; an unrelated activity keeps the answer NO, so the walk has to
-    // exhaust reachability rather than stopping at a lucky early hit.
-    const unrelated = await activity();
-    const started = Date.now();
-    await t.prisma.$executeRawUnsafe(edge(unrelated, head));
-    expect(Date.now() - started).toBeLessThan(5_000);
 
-    // …and the REJECTION path has to be linear too, which is a separate walk and was a separate
-    // bug. Detection dedupes on activity identity; the diagnostic that names a route for the user
-    // originally carried a path, which forces UNION ALL and enumerates every ROUTE — 2^20 of them
-    // in this graph. Refusing an edge must not cost more than accepting one.
+    // ACCEPTING an edge has to be linear: an unrelated activity keeps the answer NO, so the walk
+    // has to exhaust reachability rather than stop at a lucky early hit.
+    const unrelated = await activity();
+    const acceptStarted = Date.now();
+    await t.prisma.$executeRawUnsafe(edge(unrelated, head));
+    expect(Date.now() - acceptStarted).toBeLessThan(5_000);
+
+    // …and so has REFUSING one, which is a SEPARATE walk and was a separate bug. Detection dedupes
+    // on activity identity; the diagnostic that names a route for the person who has to fix the
+    // cycle originally carried a path, which forces UNION ALL and enumerates every distinct ROUTE.
+    // Refusing an edge must not cost more than accepting one.
     const rejectStarted = Date.now();
-    await expect(t.prisma.$executeRawUnsafe(edge(tail, head))).rejects.toThrow(/dependency cycle/i);
+    await expect(t.prisma.$executeRawUnsafe(edge(prev[0], head))).rejects.toThrow(/dependency cycle/i);
     expect(Date.now() - rejectStarted).toBeLessThan(5_000);
-  });
+  }, 120_000);
 
   // ── P11 ────────────────────────────────────────────────────────────────────────────────────
   it('P11 attribution has to be answerable, not merely present', async () => {
