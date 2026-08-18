@@ -133,16 +133,22 @@ WHETHER a correction is owed — a missed prefix means silence, the failure this
 unit exists to remove — while the sentence may still refine WHAT is asked, where
 a miss only makes the notice more generic:
 
-- **A timed-out review owes nobody a correction.** `review: Codex review timed
-  out after two attempts` means the integration did not answer, not that
-  something was found. The lease still reports it, but it names the gate's own
-  re-dispatch, asks for no head, and mentions no owner — waking someone with
-  nothing to do is the same false signal as claiming work that is not happening.
-  It reports as `review_timeout`, NOT `correction_stalled`: the latter means an
-  owner cannot be asked, this means nobody needs to be, and it carries no resume
-  action. Its lease key also carries a different `kind`, so it cannot occupy the
-  actionable lease — the gate can re-dispatch that exact head, Codex can come
-  back with findings, and the real wake-up still gets published.
+- **A gate-retryable review failure owes nobody a correction.** A timed-out
+  review, evidence that moved under the gate, required CI changing mid-review, a
+  requested bootstrap review — all four mean the gate did not reach a verdict,
+  and all four are recovered by the gate re-dispatching. The list lives in
+  `review-efficiency.mjs` and the Gate reads the same one, so a fifth cannot be
+  added there and silently become an actionable correction here. The lease still
+  reports it, but it names the re-dispatch, asks for no head, and mentions no
+  owner — waking someone with nothing to do is the same false signal as claiming
+  work that is not happening. It reports as `gate_recovery`, NOT
+  `correction_stalled`: the latter means an owner cannot be asked, this means
+  nobody needs to be, and it carries no resume action for a declared OR an
+  undeclared owner (a broken declaration is still named, because `review-scope`
+  will refuse the next head over it — but naming is not asking). Its lease key
+  carries a different `kind`, so it cannot occupy the actionable lease: the gate
+  can re-dispatch that exact head, Codex can come back with findings, and the
+  real wake-up still gets published.
 - **A scope notice leads with the verdict that is failing.** The scope gate
   publishes several — an undeclared correction owner, replacement lineage, an
   unchecked pre-review item, a missing migration seam, the review unit's size —
@@ -163,10 +169,17 @@ The lease has three properties the manual kick it replaces cannot guarantee:
   Cursor-owned correction is never tagged and never attributed to Claude.
 - **Honest.** It is cleared by a new head, or by that required status ceasing to
   fail — a scope refusal is routinely cleared by editing the PR body with no new
-  head at all. BOTH satisfactions are re-checked immediately before the comment
-  is published — the status and the pull request's current head — and the notice
-  is suppressed if either has moved, because a correction pushed during those
-  reads leaves the old commit's failing status in place. Nothing else clears it. Not by the notification existing, not by a
+  head at all. Nothing else clears it.
+
+  **A notice is published only if a fresh read still produces the identical
+  notice.** It is composed from a snapshot — the failing status, the head, the
+  owner declaration — and everything after that takes time each of them can
+  change in. Three review rounds each found a different input that could move in
+  that window, so the guard is not a list of inputs: the whole assessment is
+  re-derived from a fresh read and compared. A body differing by one character
+  means something the notice depends on changed, and the next hourly tick
+  reassesses rather than this one publishing a stale verdict — a lease key is
+  claimed forever, so a wrong notice is worse than a late one. Not by the notification existing, not by a
   reaction, not by a reply. Both PRs that started this work were acknowledged
   only as a subscription and produced no correction, which is exactly the state
   an acknowledgement-based check would have called healthy.

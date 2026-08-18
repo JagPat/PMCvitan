@@ -188,15 +188,19 @@ so directly rather than framing it as a suggestion.
   wording), publishes at most ONE new comment per pull request, exact head and
   owner — carrying `@claude` only where GitHub can actually wake the owner AND
   the owner actually has something to do — and is cleared by a new head or by
-  that status ceasing to fail, never by an acknowledgement. A timed-out review
-  owes no correction: it is reported as `review_timeout` with no resume action
-  and its own lease key, names the gate's re-dispatch, and asks for no head — so
-  a later re-dispatch that DOES find something can still open the actionable
-  lease. A scope notice leads with the verdict that is failing, because the size
-  remedy cannot clear a lineage or checklist verdict. Both the status and the
-  pull request's head are re-read immediately before publishing, so a failure
-  cleared by a body edit — or a correction pushed while the watchdog was reading
-  — is never announced. It comments and nothing else: no status, no draft change, no
+  that status ceasing to fail, never by an acknowledgement. A gate-retryable
+  review failure — a timeout, moved evidence, CI changing mid-review, a
+  requested bootstrap review — owes NO correction: it is reported as
+  `gate_recovery` with no resume action and its own lease key, names the gate's
+  re-dispatch, and asks for no head, so a later re-dispatch that DOES find
+  something can still open the actionable lease. That list has one definition,
+  which the gate reads too. A scope notice leads with the verdict that is
+  failing, because the size remedy cannot clear a lineage or checklist verdict.
+  And the whole assessment is re-derived from a fresh read immediately before
+  publishing: the notice goes out only if it comes out identical, so anything
+  that changed while the watchdog was reading — the head, the status, which
+  failure it is, the declared owner — defers to the next tick instead of
+  claiming the lease key with a stale verdict. It comments and nothing else: no status, no draft change, no
   merge, no Codex call. A watchdog that could not assess a pull request fails the
   handoff job rather than reporting green over an unobserved correction.
 - On the second finding-bearing head, the PR's declared correction owner makes

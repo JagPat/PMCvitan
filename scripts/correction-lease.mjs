@@ -28,7 +28,10 @@
 //
 // It publishes a comment and nothing else. It never touches
 // `codex-current-head`, draft state, auto-merge, or Codex.
-import { REVIEW_RESET_AFTER_FINDING_HEADS } from './review-efficiency.mjs';
+import {
+  REVIEW_RESET_AFTER_FINDING_HEADS,
+  isRetryableReviewFailureDescription,
+} from './review-efficiency.mjs';
 import {
   AWAKENABLE_FROM_GITHUB,
   CORRECTION_STALLED,
@@ -65,18 +68,22 @@ const OWED_REASON_BY_PREFIX = new Map([
 // `recovery:` is the gate asking ITSELF to retry, not an agent to fix anything.
 const SELF_HEALING_PREFIXES = new Set(['recovery']);
 
-// One `review:` failure is not a finding at all: the gate publishes it when the
-// Codex integration did not answer twice. Its remedy is a re-dispatch, and
-// asking for a head instead invalidates the reviewed one and restarts CI without
-// touching the outage.
+// Some `review:` failures are not findings at all: the gate publishes them when
+// the Codex integration did not answer, when the evidence moved under it, when
+// required CI changed mid-review, or when a bootstrap review was requested. All
+// four prescribe the same recovery — the gate re-dispatches — and asking for a
+// head instead invalidates the very head being recovered.
+//
+// The list lives in `review-efficiency.mjs` and the GATE reads the same one, so
+// a fifth retryable failure cannot be added there and silently become an
+// actionable correction here.
 //
 // This is prose matching, which the prefix rule above exists to avoid — but the
 // two do different jobs and fail in opposite directions. The PREFIX decides
 // WHETHER a correction is owed, and a missed prefix means silence, which is the
-// failure this unit removes. This phrase only refines WHAT is asked; if the gate
-// ever rewords it, the lease falls back to the ordinary correction notice, which
-// is merely too generic rather than absent.
-const REVIEW_TIMEOUT = /review timed out/iu;
+// failure this unit removes. These phrases only refine WHAT is asked; if the
+// gate rewords one, the lease falls back to the ordinary correction notice,
+// which is merely too generic rather than absent.
 
 // The reasons whose remedy is an action by the declared owner. A reason outside
 // this set is reported but never mentions anyone: waking an owner who has
@@ -85,7 +92,7 @@ const OWNER_ACTIONABLE_REASONS = new Set(['review', 'scope', 'ci', 'replacement'
 
 // What a non-actionable report calls itself. Distinct from `correction_stalled`,
 // which means an owner cannot be asked; this means nobody needs to be.
-export const REVIEW_TIMEOUT_STATE = 'review_timeout';
+export const GATE_RECOVERY_STATE = 'gate_recovery';
 
 /**
  * The correction reason a failing required status implies, or null when the
@@ -104,7 +111,9 @@ export function correctionReasonFor(status) {
   const prefix = /^\s*([a-z]+):/u.exec(description)?.[1];
   if (prefix && SELF_HEALING_PREFIXES.has(prefix)) return null;
   const reason = OWED_REASON_BY_PREFIX.get(prefix) ?? 'review';
-  return reason === 'review' && REVIEW_TIMEOUT.test(description) ? 'timeout' : reason;
+  return reason === 'review' && isRetryableReviewFailureDescription(description)
+    ? 'recovery'
+    : reason;
 }
 
 /** The failing required status on this exact head, or null. */
@@ -249,7 +258,7 @@ export function assessCorrectionLease({
   const reportedState = exhausted
     ? 'replacement_required'
     : !actionable
-      ? REVIEW_TIMEOUT_STATE
+      ? GATE_RECOVERY_STATE
       : routing.awakenable
         ? 'correction_recovery'
         : CORRECTION_STALLED;

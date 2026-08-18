@@ -228,18 +228,6 @@ function declaredInstruction(owner, { reason, pullRequestNumber, detail }) {
     ? ''
     : ' GitHub can neither start that session nor observe whether it is already running, so '
       + 'this notice reports the routing only, never whether the correction has begun.';
-  // NOT every failing required status is a correction someone owes. The gate
-  // publishes one `review:` failure when the Codex integration did not answer
-  // twice; asking the owner to read findings that do not exist and push a head
-  // would invalidate the reviewed head and restart CI without touching the
-  // outage. The notice stays — a stalled review is worth reporting — but it
-  // names the gate's own recovery and asks the owner for nothing.
-  if (reason === 'timeout') {
-    return 'No correction is owed on this head: the Codex review timed out rather than finding '
-      + 'anything. The review gate re-dispatches the review itself once the integration is '
-      + `healthy. Do not push a new head for this — it would invalidate the reviewed head and `
-      + `restart CI without resolving the outage. ${who} acts only if the gate stops re-dispatching.`;
-  }
   if (reason === 'ci') {
     return `${who} owns this correction: fix the failed required checks and push one new head. `
       + `Review begins only after CI is green on the exact head.${start}`;
@@ -270,6 +258,20 @@ function declaredInstruction(owner, { reason, pullRequestNumber, detail }) {
   }
   return `${who} owns this correction: read every current-head Codex finding, reproduce the `
     + `complete set, fix them forward as one coherent batch, and push one new head.${start}`;
+}
+
+// A failure the GATE recovers from. It names what happened and what will happen,
+// asks for nothing, and mentions nobody.
+function recoveryInstruction(declaration) {
+  const undeclared = declaration.state !== 'declared'
+    ? ` This PR's correction owner is also \`undeclared\` (${declaration.detail}); that does not `
+      + 'block the re-dispatch, but `review-scope` will refuse the next head until exactly one '
+      + '`<!-- correction-owner: claude|cursor -->` marker sits in the marker block.'
+    : '';
+  return 'No correction is owed on this head: the review gate did not reach a verdict, so there '
+    + 'is nothing to read and nothing to fix. The gate re-dispatches the review itself once the '
+    + 'integration is healthy. Do not push a new head for this — it would invalidate the exact '
+    + `head the gate is recovering and restart CI without resolving the failure.${undeclared}`;
 }
 
 // And what it says when nobody is declared. It names the defect and the exact
@@ -324,6 +326,23 @@ export function correctionRouting({
   pullRequestNumber = null,
 } = {}) {
   const resolved = declaration ?? parseCorrectionOwner('');
+  // A gate-retryable failure owes NOBODY a correction, so it is answered before
+  // the declaration is consulted. Routed through the undeclared branch it picked
+  // up "Resume action: add exactly one marker…", telling someone to fix a
+  // declaration so that they could correct a failure a correction cannot fix.
+  // The declaration defect is real and is still named — `review-scope` refuses
+  // the next head over it — but naming is not the same as asking.
+  if (reason === 'recovery') {
+    return {
+      owner: resolved.state === 'declared' ? resolved.owner : null,
+      declarationState: resolved.state,
+      state: 'routed',
+      awakenable: false,
+      head,
+      detail,
+      instruction: recoveryInstruction(resolved),
+    };
+  }
   if (resolved.state !== 'declared') {
     return {
       owner: null,

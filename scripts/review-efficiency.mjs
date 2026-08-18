@@ -363,6 +363,24 @@ export function findingHeadSeverity(comments, reviews = []) {
   return severity;
 }
 
+// The review gate's own retryable terminal failures, by the description it
+// publishes. ONE definition, because two consumers read it: the gate decides
+// whether to re-dispatch, and the correction watchdog decides whether anyone
+// owes a correction at all. An earlier draft recognised only the timeout, so the
+// other three drew an actionable "push a new head" for a failure a new head
+// cannot fix — it would invalidate the exact head the gate is trying to recover.
+const RETRYABLE_REVIEW_FAILURES = [
+  'Codex review timed out',
+  'Codex evidence changed during final verification',
+  'review: Required CI changed during current-head Codex review',
+  'review: bootstrap exact-head review requested',
+];
+
+export function isRetryableReviewFailureDescription(description) {
+  const text = String(description ?? '');
+  return RETRYABLE_REVIEW_FAILURES.some((marker) => text.includes(marker));
+}
+
 export function codexFindingHeads(comments, reviews = []) {
   const heads = new Set();
   for (const comment of comments ?? []) {

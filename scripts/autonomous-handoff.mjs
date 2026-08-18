@@ -516,36 +516,41 @@ export async function handOffCorrectionLease(
   });
 
   if (assessment.state === 'notify') {
-    // RE-READ the status immediately before publishing.
+    // PUBLISH ONLY WHAT A FRESH READ STILL SAYS.
     //
-    // It was read before three paginated collections and the live pull request,
-    // and a scope refusal cleared by a body edit in that window leaves the head
-    // UNCHANGED — so the head check above cannot see it, and the notice would
-    // wake the owner for a failure that no longer exists. The head is one of the
-    // lease's two satisfactions; this is the other, checked at the last moment
-    // it can still suppress a comment.
-    const [stillFailing, stillHere] = await Promise.all([
-      client.combinedStatus(head).then(owedCorrectionStatus),
+    // The notice is composed from a snapshot — the failing status, the head, the
+    // owner declaration — and everything since (three paginated collections, the
+    // live pull request) takes time each of those can change in. Three review
+    // rounds each found a different input that could move in that window, so the
+    // guard is not a list of inputs: the whole assessment is RE-DERIVED from a
+    // fresh read, and the comment is published only if it comes out identical.
+    // A body that differs by one character means something the notice depends on
+    // changed, and the next hourly tick reassesses with fresh evidence rather
+    // than this one publishing a verdict that is already stale — a lease key is
+    // claimed forever, so a wrong notice is worse than a late one.
+    const [freshStatuses, live] = await Promise.all([
+      client.combinedStatus(head),
       client.pullRequest(pullRequest.number),
     ]);
-    if (!stillFailing) {
+    const freshOwed = owedCorrectionStatus(freshStatuses);
+    const fresh = freshOwed
+      ? assessCorrectionLease({
+        pullRequest: live,
+        head,
+        findingHeads: codexFindingHeads(reviewComments, reviews),
+        reason: correctionReasonFor(freshOwed),
+        detail: String(freshOwed.description ?? '').replace(/^\s*[a-z]+:\s*/u, ''),
+        findingObservedAt: freshOwed.updated_at ?? freshOwed.created_at,
+        now,
+        comments,
+      })
+      : null;
+    if (fresh?.state !== 'notify' || fresh.body !== assessment.body) {
       return {
         ...assessment,
         state: 'superseded',
         body: null,
-        reason: 'the required status stopped failing while the watchdog was reading',
-      };
-    }
-    // BOTH satisfactions, at the last moment either can still stop a comment. A
-    // correction pushed after the live read leaves the OLD commit's failing
-    // status in place, so the status check alone would let the notice through
-    // for a branch that has already moved.
-    if (stillHere?.head?.sha !== head) {
-      return {
-        ...assessment,
-        state: 'superseded',
-        body: null,
-        reason: 'the branch moved past the failing head while the watchdog was reading',
+        reason: 'the pull request changed while the watchdog was reading; the next tick reassesses',
       };
     }
     await client.comment(pullRequest.number, assessment.body);

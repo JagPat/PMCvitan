@@ -524,7 +524,7 @@ test('L12: a timeout report does not consume the correction lease', async () => 
   assert.equal(again.assessment.state, 'notified', 'the timeout report is still published once only');
 });
 
-test('L13: a timeout never asks anyone to resume a session', async () => {
+test('L13: a gate-recovery report never asks anyone to resume a session', async () => {
   // A Cursor-owned PR is not awakenable, so a timeout was labelled
   // `correction_stalled` and picked up the stalled-owner resume action. The
   // published notice then said both "Do not push a new head" and "start the
@@ -537,8 +537,8 @@ test('L13: a timeout never asks anyone to resume a session', async () => {
 
   assert.doesNotMatch(published, /Required resume action/u, 'nobody is asked to resume');
   assert.doesNotMatch(published, /correction_stalled/u, 'a timeout is not stalled on its owner');
-  assert.match(published, /review_timeout/u, 'it has its own honest state');
-  assert.equal(assessment.reportedState, 'review_timeout');
+  assert.match(published, /gate_recovery/u, 'it has its own honest state');
+  assert.equal(assessment.reportedState, 'gate_recovery');
   assert.match(published, /do not push a new head/iu);
   assert.doesNotMatch(published, /@cursor|@claude/u);
 });
@@ -570,4 +570,134 @@ test('L14: a head that moves before the POST suppresses the notice', async () =>
   assert.equal(calls.posted.length, 0, 'the correction already landed; nothing is published');
   assert.ok(calls.prReads >= 2, 'the pull request is re-read in the final guard too');
   assert.equal(assessment?.state, 'superseded');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L15-L18 — Codex findings on `c998db3`. Three of the four are the SAME defect
+// this unit has now patched one input at a time across three review rounds: the
+// notice is composed from a snapshot and published later, and each round found
+// another input that could change in between (the status, then the head, now the
+// failure's reason and the owner declaration). L15 fixes the class — a notice is
+// published only if a fresh read still produces the identical notice — so there
+// is no fourth input to find.
+
+test('L15: only a notice a fresh read still produces is published', async () => {
+  const base = (overrides) => {
+    const pull = pullRequest();
+    const calls = { posted: [], statusReads: 0, prReads: 0 };
+    const client = {
+      combinedStatus: async () => {
+        calls.statusReads += 1;
+        return {
+          statuses: [calls.statusReads === 1 ? overrides.first : (overrides.second ?? overrides.first)],
+        };
+      },
+      comments: async () => [],
+      reviews: async () => [],
+      reviewComments: async () => [codexFinding(HEAD)],
+      pullRequest: async () => {
+        calls.prReads += 1;
+        return calls.prReads === 1 ? pull : (overrides.livePull ?? pull);
+      },
+      comment: async (number, body) => { calls.posted.push({ number, body }); },
+    };
+    return { client, calls, pull };
+  };
+
+  // The failing status changed KIND while the watchdog was reading. Publishing
+  // the composed scope notice would put a stale verdict under a lease key the
+  // correct CI notice then cannot claim.
+  const changed = base({
+    first: status('scope: the PR body declares no correction owner'),
+    second: status('ci: required checks failed'),
+  });
+  const a = await handOffCorrectionLease(changed.client, changed.pull, REPOSITORY, 'main', { now: DUE });
+  assert.equal(changed.calls.posted.length, 0, 'a notice for a superseded verdict is never published');
+  assert.equal(a?.state, 'superseded');
+
+  // The DECLARED OWNER changed while the watchdog was reading. The composed
+  // notice tags Claude; the PR now says Cursor.
+  const reowned = base({
+    first: status('review: 1 current-head Codex finding'),
+    livePull: pullRequest({ body: '<!-- correction-owner: cursor -->', ref: 'codex/task' }),
+  });
+  const b = await handOffCorrectionLease(reowned.client, reowned.pull, REPOSITORY, 'main', { now: DUE });
+  assert.equal(reowned.calls.posted.length, 0, 'the wrong correction agent is never woken');
+  assert.equal(b?.state, 'superseded');
+
+  // Nothing changed: the notice is published exactly once.
+  const steady = base({ first: status('review: 1 current-head Codex finding') });
+  const c = await handOffCorrectionLease(steady.client, steady.pull, REPOSITORY, 'main', { now: DUE });
+  assert.equal(steady.calls.posted.length, 1);
+  assert.equal(c?.state, 'notify');
+  assert.match(steady.calls.posted[0].body, /@claude/u);
+});
+
+test('L16: every gate-retryable review failure is a recovery report', async () => {
+  const { isRetryableReviewFailureDescription } = await import('./review-efficiency.mjs');
+  const gate = await import('./autonomous-review-gate.mjs');
+
+  // The gate's own list, not a second copy of it. A timeout was only the first
+  // of four; the others prescribe the same re-dispatch and would have drawn an
+  // @claude "push a new head" that invalidates the exact head being recovered.
+  const retryable = [
+    'review: Codex review timed out after two attempts',
+    'review: Codex evidence changed during final verification',
+    'review: Required CI changed during current-head Codex review',
+    'review: bootstrap exact-head review requested',
+  ];
+  for (const description of retryable) {
+    assert.equal(isRetryableReviewFailureDescription(description), true, description);
+    assert.equal(correctionReasonFor(status(description)), 'recovery', description);
+    assert.equal(
+      gate.isRetryableTerminalReviewFailure({
+        context: 'codex-current-head', state: 'failure', description,
+      }),
+      true,
+      'the gate and the watchdog read one definition',
+    );
+
+    const { published } = await watch({ statuses: [status(description)] });
+    assert.doesNotMatch(published, /@claude/u, `${description}: nobody is woken`);
+    assert.doesNotMatch(published, /read every current-head Codex finding/iu, description);
+    assert.match(published, /do not push a new head/iu, description);
+  }
+
+  // A real finding is untouched.
+  assert.equal(correctionReasonFor(status('review: 3 current-head Codex findings')), 'review');
+});
+
+test('L17: a recovery report never carries a resume action, declared or not', async () => {
+  // `actionable` suppressed the stalled-owner resume text, but an UNDECLARED
+  // owner took a different branch entirely and still produced "Resume action:
+  // add …", telling someone to fix a declaration so they could correct a failure
+  // that owes no correction.
+  for (const [label, body, ref] of [
+    ['undeclared', '## Objective', 'codex/task'],
+    ['contradictory', '<!-- correction-owner: cursor -->\n<!-- correction-owner: claude -->', 'codex/task'],
+    ['cursor', '<!-- correction-owner: cursor -->', 'codex/task'],
+    ['claude', '<!-- correction-owner: claude -->', 'claude/task'],
+  ]) {
+    const { published } = await watch({
+      pull: pullRequest({ body, ref }),
+      statuses: [status('review: Codex review timed out after two attempts')],
+    });
+    assert.doesNotMatch(published, /Resume action/iu, `${label}: nobody is asked to resume`);
+    assert.doesNotMatch(published, /correction_stalled/u, `${label}: not stalled on an owner`);
+    assert.match(published, /gate_recovery/u, `${label}: its own honest state`);
+    assert.match(published, /do not push a new head/iu, label);
+    assert.doesNotMatch(published, /@claude|@cursor/u, `${label}: wakes nobody`);
+  }
+});
+
+test('L18: a recovery report still names an unresolved declaration defect', async () => {
+  // Suppressing the resume action must not lose the information. The
+  // declaration is genuinely broken and `review-scope` will refuse the next
+  // head; the notice says so without asking for a correction now.
+  const { published } = await watch({
+    pull: pullRequest({ body: '## Objective', ref: 'codex/task' }),
+    statuses: [status('review: Codex review timed out after two attempts')],
+  });
+  assert.match(published, /correction-owner/u, 'the marker is still named');
+  assert.match(published, /undeclared/u);
 });
