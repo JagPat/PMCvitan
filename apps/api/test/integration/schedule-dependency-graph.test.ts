@@ -87,6 +87,32 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     return url.toString();
   };
 
+  /**
+   * Wait for a live condition instead of guessing how long it takes.
+   *
+   * A sleep encodes an assumption about machine speed, and when that assumption is wrong the test
+   * does not merely flake — it can pass the wrong way round. P19 originally slept 400ms to let a
+   * holder get its row in; on a slow runner the preflight would win the race instead, count zero,
+   * SUCCEED, and leave the schema without its acyclicity trigger. A green run would then have
+   * proven nothing and damaged the database it ran against.
+   */
+  const waitFor = async (
+    what: string,
+    query: (sql: string) => Promise<Array<{ n: bigint }>>,
+    sql: string,
+  ): Promise<void> => {
+    for (let i = 0; i < 400; i += 1) {
+      if (Number((await query(sql))[0]?.n ?? 0) > 0) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`barrier never satisfied after 10s: ${what}`);
+  };
+
+  const LOCK_ON_EDGES = (mode: string, granted: boolean): string =>
+    `SELECT COUNT(*) AS n FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+      WHERE c.relname = 'ActivityDependency' AND l.mode = '${mode}'
+        AND l.granted IS ${granted ? 'TRUE' : 'FALSE'}`;
+
   const applyMigration = (): void => {
     execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-q', '-d', psqlUrl(), '-f', migrationPath],
                  { encoding: 'utf8' });
@@ -468,6 +494,17 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     expect(preflight, 'the preflight block should be the first DO block in the migration')
       .toMatch(/already holds/);
 
+    // The file must apply as ONE transaction however it is run. `prisma migrate deploy` wraps a
+    // migration; `psql -f` does not, and then the DROP TRIGGER / CREATE TRIGGER pairs leave the
+    // table briefly unguarded with no lock held — a window a concurrent writer can put a cycle
+    // through. A structural pin, and it says so: it catches the wrapper being removed, which is the
+    // realistic regression, not the concurrent write itself.
+    const statements = sql.split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith('--'));
+    expect(statements[0], 'the migration must open a transaction').toBe('BEGIN;');
+    expect(statements[statements.length - 1], 'the migration must close it').toBe('COMMIT;');
+
     const [a, b] = [await activity(), await activity()];
     await expect(
       t.prisma.$transaction(async (tx) => {
@@ -483,7 +520,7 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
         await tx.$executeRawUnsafe(edge(a, b));
         await tx.$executeRawUnsafe(preflight);
       }),
-    ).rejects.toThrow(/already holds 1 row\(s\) before its guards existed/i);
+    ).rejects.toThrow(/already holds 1 row\(s\) that no ENABLED acyclicity guard ever judged/i);
 
     expect(await edgeCount()).toBe(0); // the whole probe rolled back with the refusal
   });
@@ -545,41 +582,97 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     // keys and CHECKs — none of which have an opinion about cycles — and install the trigger last,
     // by which time the cycle is committed and permanent.
     //
-    // The lock is what removes the race, and this proves it is the lock rather than luck: a second
-    // session holds an open transaction that has written to the table, and the preflight must
-    // BLOCK on it rather than read past it.
+    // This models the real partial-install path: the table exists, the guard does not, and the
+    // migration runs while somebody is mid-write. Both handoffs are condition barriers on
+    // `pg_locks`, which reports live lock state rather than anything snapshot-dependent, so the
+    // ordering is forced rather than hoped for.
     const sql = readFileSync(migrationPath, 'utf8');
     const preflight = sql.slice(sql.indexOf('DO $$'), sql.indexOf('END $$;') + 'END $$;'.length);
     expect(preflight).toMatch(/ACCESS EXCLUSIVE/);
 
+    const [a, b] = [await activity(), await activity()];
     const other = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL! } } });
     try {
-      const [a, b] = [await activity(), await activity()];
-      let holderDone = false;
-      // an open transaction that has written an edge and is NOT yet committed
+      // the partial-install state, committed up front so the preflight below meets the table
+      // exactly as a real repair run would
+      await t.prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS "ActivityDependency_acyclic" ON "ActivityDependency"`,
+      );
+
+      let committed = false;
       const holder = other.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(
           `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","lagWorkingDays","createdById","createdByName")
            VALUES ('dep-b1-${run}-hold','${f.projectA.id}','${a}','${b}',0,'${f.memberUser.id}','PMC')`,
         );
-        await new Promise((r) => setTimeout(r, 2_000));
-        holderDone = true;
-      }, { timeout: 20_000 });
-
-      await new Promise((r) => setTimeout(r, 400)); // let the holder get its row in
-      // the preflight drops the trigger first so it takes the counting branch, then must WAIT
-      const blocked = t.prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe(`DROP TRIGGER "ActivityDependency_acyclic" ON "ActivityDependency"`);
-        await tx.$executeRawUnsafe(preflight);
+        // hold until the installer is provably WAITING on this transaction, then release it
+        await waitFor('the installer blocked on the edge table',
+          (q) => tx.$queryRawUnsafe(q), LOCK_ON_EDGES('AccessExclusiveLock', false));
+        committed = true;
       }, { timeout: 30_000 });
 
-      await expect(blocked).rejects.toThrow(/already holds 1 row\(s\) before its guards existed/i);
-      // it can only have seen that row by waiting for the holder to commit
-      expect(holderDone, 'the preflight must block on the writer, not read past it').toBe(true);
+      // barrier 1: the holder's row is really written before the installer starts
+      await waitFor('the holder to write its edge',
+        (q) => t.prisma.$queryRawUnsafe(q), LOCK_ON_EDGES('RowExclusiveLock', true));
+
+      await expect(
+        t.prisma.$transaction((tx) => tx.$executeRawUnsafe(preflight), { timeout: 30_000 }),
+      ).rejects.toThrow(/already holds 1 row\(s\)/i);
+
+      // it can only have counted that row by waiting for the holder to commit
+      expect(committed, 'the preflight must block on the writer, not read past it').toBe(true);
       await holder;
     } finally {
       await other.$disconnect();
+      await t.prisma.$executeRawUnsafe(`DELETE FROM "ActivityDependency" WHERE "id" LIKE 'dep-b1-%'`);
+      applyMigration(); // the dropped guard is restored however this probe ended
     }
-    await t.prisma.$executeRawUnsafe(`DELETE FROM "ActivityDependency" WHERE "id" LIKE 'dep-b1-%'`);
+  });
+  // ── P20 ────────────────────────────────────────────────────────────────────────────────────
+  it('P20 a DISABLED guard is not a guard, and an unvalidated constraint is not a constraint', async () => {
+    const sql = readFileSync(migrationPath, 'utf8');
+    const preflight = sql.slice(sql.indexOf('DO $$'), sql.indexOf('END $$;') + 'END $$;'.length);
+    const [a, b] = [await activity(), await activity()];
+
+    try {
+      // A trigger switched off with DISABLE TRIGGER still satisfies an EXISTS test, and every row
+      // written while it was off went in unjudged. Treating that as "already installed" skips both
+      // the lock and the row count, so a cycle written during the disabled window survives the run
+      // meant to make cycles impossible.
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_acyclic"`,
+      );
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","lagWorkingDays","createdById","createdByName")
+         VALUES ('dep-b1-${run}-${seq++}','${f.projectA.id}','${a}','${b}',0,'${f.memberUser.id}','PMC')`,
+      );
+      await expect(
+        t.prisma.$transaction((tx) => tx.$executeRawUnsafe(preflight)),
+      ).rejects.toThrow(/no ENABLED acyclicity guard ever judged/i);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DELETE FROM "ActivityDependency" WHERE "id" LIKE 'dep-b1-%'`);
+      applyMigration();
+    }
+
+    // The same class on the other kind of guard: ADD CONSTRAINT ... NOT VALID records a rule in
+    // the catalog while declining to check the rows already there, so an existence test passes
+    // over data the rule was never applied to. Re-running the migration must validate it.
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_lag_nonneg_check"`,
+    );
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check"
+         CHECK ("lagWorkingDays" >= 0) NOT VALID`,
+    );
+    const validated = async (): Promise<boolean> => (
+      await t.prisma.$queryRawUnsafe<Array<{ v: boolean }>>(
+        `SELECT convalidated AS v FROM pg_constraint
+          WHERE conname = 'ActivityDependency_lag_nonneg_check'
+            AND conrelid = to_regclass('public."ActivityDependency"')`,
+      ))[0].v;
+    expect(await validated(), 'staged as NOT VALID').toBe(false);
+
+    applyMigration();
+    expect(await validated(), 'the re-run must validate what it found unvalidated').toBe(true);
   });
 });

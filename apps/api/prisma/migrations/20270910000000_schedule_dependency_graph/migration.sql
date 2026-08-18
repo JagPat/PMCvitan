@@ -20,6 +20,20 @@
 --   re-application → the guards are already present, so every row was cycle-checked on its way
 --                    in, and this migration stays re-runnable for an operator repair.
 --   anything else  → rows exist that no guard ever saw. Stop, and change nothing.
+-- ONE TRANSACTION, on every path that can apply this file.
+--
+-- `prisma migrate deploy` already wraps a migration, but that is not the only way this file runs:
+-- `psql -f` does NOT, and then every statement autocommits. That matters most at the two
+-- DROP TRIGGER / CREATE TRIGGER pairs near the end — between the drop and the create the table has
+-- no acyclicity guard at all, and a re-application takes the early "already installed" branch, so
+-- it never held the lock either. A concurrent writer inserting opposing edges in that window leaves
+-- both rows behind, unchecked, and the recreated trigger only judges what comes after them.
+--
+-- Wrapping the file makes the preflight lock and both trigger replacements atomic however it is
+-- applied. This is the shape `20270610000000_phase5_t6b_status_derivation` already uses for the
+-- same hazard.
+BEGIN;
+
 DO $$
 DECLARE v_rows INT;
 BEGIN
@@ -31,10 +45,18 @@ BEGIN
   -- would otherwise satisfy this test. That matters precisely here: this branch decides that the
   -- rows already present were judged on their way in, and getting it wrong the optimistic way lets
   -- a pre-existing cycle survive the very installation meant to make cycles impossible.
+  -- `tgenabled <> 'D'`, because presence is not enforcement. A trigger can be switched off with
+  -- ALTER TABLE ... DISABLE TRIGGER and still satisfy an EXISTS test — and every row written while
+  -- it was off went in unjudged. Taking the re-application branch on a disabled guard is therefore
+  -- the same mistake as taking it on a decoy: it skips both the lock and the row count, and a cycle
+  -- written during the disabled window survives the run that was supposed to make cycles
+  -- impossible. A disabled trigger falls through to the count below and is judged like any other
+  -- unguarded table.
   IF EXISTS (SELECT 1 FROM pg_trigger
               WHERE tgname = 'ActivityDependency_acyclic' AND NOT tgisinternal
-                AND tgrelid = to_regclass('public."ActivityDependency"')) THEN
-    RAISE NOTICE 'schedule: the dependency guards are already installed — this is a re-application, and the rows present were judged by those guards when they were written.';
+                AND tgrelid = to_regclass('public."ActivityDependency"')
+                AND tgenabled <> 'D') THEN
+    RAISE NOTICE 'schedule: the dependency guards are already installed and enabled — this is a re-application, and the rows present were judged by those guards when they were written.';
     RETURN;
   END IF;
   -- Lock BEFORE counting, and do not let go until this migration commits.
@@ -54,7 +76,7 @@ BEGIN
   LOCK TABLE "ActivityDependency" IN ACCESS EXCLUSIVE MODE;
   SELECT COUNT(*) INTO v_rows FROM "ActivityDependency";
   IF v_rows > 0 THEN
-    RAISE EXCEPTION 'schedule: "ActivityDependency" already holds % row(s) before its guards existed — those edges were never cycle-checked. Aborting with the database unchanged.', v_rows;
+    RAISE EXCEPTION 'schedule: "ActivityDependency" already holds % row(s) that no ENABLED acyclicity guard ever judged — either the table predates the guard or the guard was disabled while they were written. Aborting with the database unchanged.', v_rows;
   END IF;
 END $$;
 
@@ -186,6 +208,25 @@ END $$;
 -- that door and keeps the check meaningful, and it costs nothing real — re-sequencing is removing
 -- an edge and adding the one you meant, which is also the honest audit trail. `lagWorkingDays`
 -- stays editable, so an ordinary re-plan is an ordinary UPDATE.
+-- The same class as the disabled trigger above, on the other kind of guard.
+--
+-- A constraint can exist and still not be enforcing: `ADD CONSTRAINT ... NOT VALID` records it in
+-- the catalog while explicitly declining to check the rows already present. Every guarded ALTER in
+-- this file tests only for EXISTENCE, so on a repair path where someone added a constraint NOT
+-- VALID, the guard would skip it and the migration would report success over rows it never
+-- checked. Validating here closes that: an already-valid constraint is not listed, and a
+-- validation that fails aborts the migration rather than leaving an unenforced rule behind.
+DO $$
+DECLARE c RECORD;
+BEGIN
+  FOR c IN SELECT conname FROM pg_constraint
+            WHERE conrelid = to_regclass('public."ActivityDependency"') AND NOT convalidated
+  LOOP
+    RAISE NOTICE 'schedule: constraint % exists but was never validated against the rows present — validating it now.', c.conname;
+    EXECUTE format('ALTER TABLE %I VALIDATE CONSTRAINT %I', 'ActivityDependency', c.conname);
+  END LOOP;
+END $$;
+
 -- Pinned like its sibling. This function resolves no relation — it only compares OLD to NEW — so
 -- unlike the acyclicity guard it was never exploitable through the caller's path. It is pinned
 -- anyway because "which of these two seals reads a table?" is not a question a future reader
@@ -398,4 +439,4 @@ CREATE TRIGGER "ActivityDependency_acyclic"
   BEFORE INSERT ON "ActivityDependency"
   FOR EACH ROW EXECUTE FUNCTION activity_dependency_acyclic();
 
-
+COMMIT;
