@@ -109,13 +109,17 @@ Every correction notice is now derived from the declaration:
 | Declared owner | Finding, CI, scope and replacement notices |
 | --- | --- |
 | `claude` | Claude Code web Auto-fix is named as the owner of the correction |
-| `cursor` | routed but not awakenable — the Cursor agent is named, Claude is never claimed, and the notice states plainly that GitHub cannot start that session |
+| `cursor` | routed but not awakenable — the Cursor agent is named, Claude is never claimed, and the notice states plainly that GitHub can neither start that session nor observe whether it is running |
 | undeclared / invalid / contradictory | no agent is routed; the notice reports `correction_stalled` and names the marker that fixes it |
 
 ### Naming an owner is not waking one — FOLLOW-UP UNIT
 
 Routing decides WHO is asked. It does not ask them, and it does not detect that
-they never started. Both belong to a follow-up unit, and until that lands the
+they never started — so a notice for a non-awakenable owner reports the routing
+and nothing more. It must never assert that no correction is in flight, or make
+a new head the test of one: a human may have started the session already, and a
+scope refusal is routinely cleared by editing the PR body with no new head at
+all. Reporting that as stalled invites a duplicate intervention. Both belong to a follow-up unit, and until that lands the
 wake-up is what it has always been — but it is OWNER-SPECIFIC, and a marked
 `@claude` comment is correct only on a PR that declares `claude`. A Cursor-owned
 correction is resumed by a human starting that session; tagging Claude there

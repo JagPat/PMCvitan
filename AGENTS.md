@@ -176,7 +176,10 @@ so directly rather than framing it as a suggestion.
   PR did not declare.
 - A notice never claims more than it knows. An owner GitHub cannot start (today,
   anything other than `claude`) is named and the notice says plainly that GitHub
-  cannot begin that session; an undeclared or malformed declaration reports
+  can neither begin that session nor observe whether it is already running — it
+  never asserts that no correction is in flight, and never treats a new head as
+  the test of one, because a body edit clears a scope refusal without producing
+  one; an undeclared or malformed declaration reports
   `correction_stalled` and names the marker that fixes it. Naming an owner is not
   waking one: an actionable mention needs a new comment, and detecting that an
   asked owner never started needs a lease keyed to pull request, exact head and

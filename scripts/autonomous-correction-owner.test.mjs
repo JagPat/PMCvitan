@@ -356,8 +356,8 @@ test('O5: an owner GitHub cannot awaken is reported as correction_stalled, never
   // The honest limit, recorded in the routing itself. Claude Code web Auto-fix
   // receives PR comment events, so a marked mention reaches it. Nothing here can
   // start a Cursor session without a credential this loop forbids, so a Cursor
-  // correction is described rather than started — and the notice says so instead
-  // of implying work is under way.
+  // correction is described rather than started — and the notice says exactly
+  // that, without claiming to know whether the session is running (see C11).
   assert.deepEqual([...AWAKENABLE_FROM_GITHUB], ['claude']);
 
   const cursor = correctionRouting({
@@ -367,7 +367,7 @@ test('O5: an owner GitHub cannot awaken is reported as correction_stalled, never
   });
   assert.equal(cursor.owner, 'cursor');
   assert.equal(cursor.awakenable, false, 'GitHub cannot start it');
-  assert.match(cursor.instruction, /GitHub cannot start/iu);
+  assert.match(cursor.instruction, /GitHub can neither start that session nor observe/iu);
   assert.doesNotMatch(
     cursor.instruction,
     /(in progress|is working|continuing)/iu,
@@ -509,7 +509,9 @@ test('C4: an exhausted unit is never asked for another head on its own branch', 
   // The replacement instruction says "close this PR without another correction
   // head" and the shared non-awakenable suffix then said "…until a new head
   // appears on this branch". Following the suffix produces the prohibited third
-  // correction head instead of the required replacement.
+  // correction head instead of the required replacement. C11 removed the head
+  // claim from the suffix entirely, so the contradiction cannot return by any
+  // path — this probe keeps the property pinned on the replacement reason.
   const { correctionRouting, parseCorrectionOwner } = await ownerModule();
   const cursor = parseCorrectionOwner('<!-- correction-owner: cursor -->');
 
@@ -524,13 +526,14 @@ test('C4: an exhausted unit is never asked for another head on its own branch', 
     'and never asks for another head on the exhausted branch',
   );
 
-  // The ordinary correction path still carries the honest "nobody started this"
-  // note — the fix is specialisation, not deletion.
+  // The ordinary correction path still asks for one new head, and still carries
+  // the honest note about who has to start the session — the fix is wording, not
+  // deletion.
   const review = correctionRouting({
     declaration: cursor, head: HEAD, detail: '3 findings', reason: 'review',
   });
   assert.match(review.instruction, /new head/iu);
-  assert.match(review.instruction, /GitHub cannot start/iu);
+  assert.match(review.instruction, /GitHub can neither start that session nor observe/iu);
 });
 
 test('C5: a malformed declaration is told to REPLACE the marker, not add one', async () => {
@@ -729,4 +732,62 @@ test('C10: the documented meaning of correction_stalled matches what routing emi
     /routed[^.]*not awakenable|routed but not awakenable/iu,
     'the loop doc states the routed-but-not-awakenable meaning',
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C11 — Codex finding on `dc54a78`. The notice for an owner GitHub cannot wake
+// asserted a fact GitHub does not have: that no correction is in flight until a
+// new head appears. Both halves are unobservable from here. A human may have
+// started the Cursor session already, and a scope refusal is routinely fixed by
+// editing the PR body with NO new head at all — this very lineage did that on
+// PR #352. Detecting whether the named owner actually started is the correction
+// lease, a separate unit; until it exists the notice must report the routing and
+// stop there.
+
+test('C11: a non-awakenable owner is told what GitHub cannot do, not that nothing is happening', async () => {
+  const { correctionRouting, parseCorrectionOwner } = await ownerModule();
+  const cursor = parseCorrectionOwner('<!-- correction-owner: cursor -->');
+
+  for (const reason of ['review', 'ci', 'scope', 'replacement']) {
+    const { instruction } = correctionRouting({
+      declaration: cursor,
+      head: HEAD,
+      reason,
+      pullRequestNumber: 358,
+    });
+    assert.doesNotMatch(
+      instruction,
+      /no correction is in flight/iu,
+      `${reason}: absence of in-flight work is not observable from GitHub`,
+    );
+    assert.doesNotMatch(
+      instruction,
+      /until a new head appears/iu,
+      `${reason}: a head is not the only evidence of correction — a body edit clears a scope refusal`,
+    );
+    assert.match(
+      instruction,
+      /neither start(s)? (that session )?nor observe|cannot (start|observe)/iu,
+      `${reason}: it states the actual limitation`,
+    );
+    assert.match(instruction, /observe/iu, `${reason}: including that it cannot observe the session`);
+  }
+
+  // The property holds on the artefact the loop actually publishes, not just on
+  // the return value of the function that phrases it.
+  const { body } = await publishedSticky({
+    number: 358,
+    body: '<!-- correction-owner: cursor -->',
+  });
+  assert.doesNotMatch(nextLine(body), /no correction is in flight|until a new head appears/iu);
+  assert.match(nextLine(body), /observe/iu);
+
+  // An owner GitHub CAN wake carries no such caveat: the sticky itself is the
+  // notification, so there is nothing unobservable to disclose.
+  const claude = await publishedSticky({
+    number: 359,
+    body: '<!-- correction-owner: claude -->',
+    ref: 'claude/x',
+  });
+  assert.doesNotMatch(nextLine(claude.body), /cannot (start|observe)|neither start/iu);
 });

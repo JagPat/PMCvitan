@@ -193,18 +193,18 @@ function declaredInstruction(owner, { reason, pullRequestNumber }) {
   // who has to start it. Omitting that is how a routed-but-unstarted correction
   // reads as one in progress.
   //
-  // SPECIALIZED for a replacement. An exhausted unit must never be asked for
-  // another head on its own branch — that is the prohibited third correction
-  // head — so the ordinary "until a new head appears" wording would contradict
-  // the instruction it is appended to and could produce exactly the push the
-  // round limit forbids.
+  // It says only what GitHub actually knows. An earlier wording added "so no
+  // correction is in flight until a new head appears on this branch", and both
+  // halves are unobservable from here: a human may have started the session
+  // already, and a scope refusal is routinely cleared by editing the PR body
+  // with no new head at all. Reporting that as stalled invites a duplicate
+  // intervention. Detecting whether the named owner ever started is the
+  // correction lease, a separate unit; until it exists this notice reports the
+  // routing and stops there.
   const start = AWAKENABLE_FROM_GITHUB.has(owner)
     ? ''
-    : reason === 'replacement'
-      ? ' GitHub cannot start that session, so this PR stays where it is until someone opens '
-        + 'the replacement.'
-      : ' GitHub cannot start that session, so no correction is in flight until a new head '
-        + 'appears on this branch.';
+    : ' GitHub can neither start that session nor observe whether it is already running, so '
+      + 'this notice reports the routing only, never whether the correction has begun.';
   if (reason === 'ci') {
     return `${who} owns this correction: fix the failed required checks and push one new head. `
       + `Review begins only after CI is green on the exact head.${start}`;

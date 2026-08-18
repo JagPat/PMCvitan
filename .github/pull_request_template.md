@@ -31,9 +31,11 @@ corrections; keep `<!-- correction-owner: claude -->` when Claude Code web
 Auto-fix does. The declaration is required, is validated by `review-scope`
 before any expensive job runs, and decides every correction notice the
 controller publishes — an undeclared, unknown, or self-contradicting owner is
-refused, and a `claude/**` branch may only declare `claude`. GitHub cannot start
-a Cursor session, so a Cursor-owned finding is routed to Cursor by name with the
-notice saying so — a human resumes it. Only an undeclared or malformed marker is
+refused, and a `claude/**` branch may only declare `claude`. GitHub can neither
+start a Cursor session nor observe whether one is running, so a Cursor-owned
+finding is routed to Cursor by name with the notice saying exactly that — a
+human resumes it, and the notice never claims the correction has or has not
+begun. Only an undeclared or malformed marker is
 reported as `correction_stalled`. Declaring the wrong owner sends the correction
 to the wrong agent.
 
