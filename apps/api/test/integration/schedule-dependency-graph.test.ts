@@ -230,4 +230,62 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
       await Promise.all([holder.$disconnect(), racer.$disconnect()]);
     }
   });
+
+  // ── P9 (Codex round 1, P1) ───────────────────────────────────────────────────────────────────
+  // Freezing the endpoints alone left the ATTRIBUTION rewritable. Who imposed a sequencing
+  // constraint, and when, is the whole reason those columns exist — a disputed schedule is only
+  // answerable if that record cannot be edited after the fact.
+  it('P9 the creation provenance is frozen as hard as the endpoints are', async () => {
+    const a = await activity();
+    const b = await activity();
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    const id = (await t.prisma.$queryRawUnsafe<{ id: string }[]>(
+      `SELECT "id" FROM "ActivityDependency" WHERE "predecessorId"='${a}' AND "successorId"='${b}'`,
+    ))[0].id;
+
+    for (const [column, value] of [['createdById', "'forged-user'"], ['createdByName', "'Someone Else'"], ['createdAt', "now()"]] as const) {
+      await expect(
+        t.prisma.$executeRawUnsafe(`UPDATE "ActivityDependency" SET "${column}" = ${value} WHERE "id"='${id}'`),
+      ).rejects.toThrow(/creation provenance .* is frozen/i);
+    }
+
+    // …and the freeze is not blanket: the lag is a real property of the constraint and stays editable.
+    await t.prisma.$executeRawUnsafe(`UPDATE "ActivityDependency" SET "lagWorkingDays"=5 WHERE "id"='${id}'`);
+    const [row] = await t.prisma.$queryRawUnsafe<{ lagWorkingDays: number }[]>(
+      `SELECT "lagWorkingDays" FROM "ActivityDependency" WHERE "id"='${id}'`,
+    );
+    expect(row.lagWorkingDays).toBe(5);
+  });
+
+  // ── P10 (Codex round 1, P2) ──────────────────────────────────────────────────────────────────
+  // The first walk carried a path, which forces UNION ALL, which enumerates every distinct ROUTE
+  // rather than every node. Diamonds multiply routes: n of them in series gives 2^n. Twenty is a
+  // schedule a person could draw, and a million paths; the guard has to be linear in EDGES.
+  //
+  // This probe is a real timing assertion because that is the only thing the defect changes — the
+  // verdict was always correct, it just could not be reached. Against the UNION ALL walk this
+  // times out; the bound is deliberately loose so it fails on the defect, not on a slow machine.
+  it('P10 a branching DAG is judged in linear time, not once per distinct route', async () => {
+    const head = await activity();
+    let tail = head;
+    for (let i = 0; i < 20; i += 1) {
+      const left = await activity();
+      const right = await activity();
+      const join = await activity();
+      await t.prisma.$executeRawUnsafe(edge(tail, left));
+      await t.prisma.$executeRawUnsafe(edge(tail, right));
+      await t.prisma.$executeRawUnsafe(edge(left, join));
+      await t.prisma.$executeRawUnsafe(edge(right, join));
+      tail = join;
+    }
+    // 2^20 routes from head to tail; an unrelated activity keeps the answer NO, so the walk has to
+    // exhaust reachability rather than stopping at a lucky early hit.
+    const unrelated = await activity();
+    const started = Date.now();
+    await t.prisma.$executeRawUnsafe(edge(unrelated, head));
+    expect(Date.now() - started).toBeLessThan(5_000);
+
+    // and the verdict itself is unchanged: a real cycle in that graph is still refused
+    await expect(t.prisma.$executeRawUnsafe(edge(tail, head))).rejects.toThrow(/dependency cycle/i);
+  });
 });

@@ -9,6 +9,34 @@
 -- second application is a no-op. Nothing in the running release reads or writes this table, so it
 -- is inert on deploy.
 
+-- ── Pre-flight: this table must arrive ROW-FREE on a FIRST installation ───────────────────────
+-- Evaluated BEFORE anything below is created, because the question it asks — "were these edges
+-- written before the guards that judge them existed?" — stops being answerable the moment this
+-- migration installs those guards. Asking it at the end of the file would read the triggers this
+-- run just created and pass unconditionally, which is a check that cannot fail rather than a
+-- check that holds.
+--
+--   fresh install  → the table does not exist yet; nothing to judge.
+--   re-application → the guards are already present, so every row was cycle-checked on its way
+--                    in, and this migration stays re-runnable for an operator repair.
+--   anything else  → rows exist that no guard ever saw. Stop, and change nothing.
+DO $$
+DECLARE v_rows INT;
+BEGIN
+  IF to_regclass('"ActivityDependency"') IS NULL THEN
+    RETURN;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_trigger
+              WHERE tgname = 'ActivityDependency_acyclic' AND NOT tgisinternal) THEN
+    RAISE NOTICE 'schedule: the dependency guards are already installed — this is a re-application, and the rows present were judged by those guards when they were written.';
+    RETURN;
+  END IF;
+  SELECT COUNT(*) INTO v_rows FROM "ActivityDependency";
+  IF v_rows > 0 THEN
+    RAISE EXCEPTION 'schedule: "ActivityDependency" already holds % row(s) before its guards existed — those edges were never cycle-checked. Aborting with the database unchanged.', v_rows;
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS "ActivityDependency" (
   "id"             TEXT NOT NULL,
   "projectId"      TEXT NOT NULL,
@@ -85,6 +113,15 @@ BEGIN
      OR NEW."successorId" IS DISTINCT FROM OLD."successorId" THEN
     RAISE EXCEPTION 'schedule: the endpoints of dependency edge % are frozen — remove the edge and add the one you mean.', OLD."id";
   END IF;
+  -- WHO constrained the schedule, and WHEN, is the whole point of recording it. A sequencing
+  -- dispute is answerable only if the attribution cannot be rewritten afterwards, so the creation
+  -- provenance is frozen exactly as hard as the endpoints are. Freezing the endpoints alone left
+  -- an alternate writer able to keep the constraint and change who imposed it.
+  IF NEW."createdById" IS DISTINCT FROM OLD."createdById"
+     OR NEW."createdByName" IS DISTINCT FROM OLD."createdByName"
+     OR NEW."createdAt" IS DISTINCT FROM OLD."createdAt" THEN
+    RAISE EXCEPTION 'schedule: the creation provenance of dependency edge % is frozen — who imposed a constraint, and when, is not rewritable.', OLD."id";
+  END IF;
   RETURN NEW;
 END $$;
 
@@ -119,7 +156,7 @@ CREATE TRIGGER "ActivityDependency_endpoints_frozen"
 -- TRY-acquired and refuses rather than waits, so borrowing it would make a held readiness key
 -- turn every schedule write into a spurious failure.
 CREATE OR REPLACE FUNCTION activity_dependency_acyclic() RETURNS TRIGGER LANGUAGE plpgsql AS $$
-DECLARE v_path TEXT;
+DECLARE v_path TEXT; v_closes_loop BOOLEAN;
 BEGIN
   PERFORM pg_advisory_xact_lock(hashtext('vitan:schedule-graph:' || NEW."projectId"));
 
@@ -129,25 +166,49 @@ BEGIN
 
   -- Walk FORWARD from the proposed successor over the edges that already exist. If the proposed
   -- predecessor is reachable, then predecessor -> successor closes a loop.
-  -- The `<> ALL(path)` guard means the walk terminates on any graph shape, including one that is
-  -- already cyclic — a diagnostic must never hang on the data it is diagnosing.
-  WITH RECURSIVE reachable("activityId", "path") AS (
-    SELECT NEW."successorId", ARRAY[NEW."successorId"]
-    UNION ALL
-    SELECT d."successorId", r."path" || d."successorId"
+  --
+  -- The walk carries NO path and dedupes on activity identity, and that is a correctness property
+  -- rather than a tidiness one. Carrying a path forces `UNION ALL`, because two routes to the same
+  -- activity differ in their path column — so a branching DAG enumerates every distinct ROUTE, not
+  -- every node. Thirty diamonds in series is a graph of sixty-odd edges and roughly a billion
+  -- paths, and the guard would exhaust the statement timeout on a schedule a person could draw by
+  -- hand. `UNION` dedupes against the working set, so this visits each activity once and is linear
+  -- in edges. Termination on an already-cyclic graph comes from the same dedup, so a diagnostic
+  -- still cannot hang on the data it is diagnosing.
+  WITH RECURSIVE reachable("activityId") AS (
+    SELECT NEW."successorId"
+    UNION
+    SELECT d."successorId"
       FROM "ActivityDependency" d
       JOIN reachable r ON d."predecessorId" = r."activityId"
      WHERE d."projectId" = NEW."projectId"
-       AND d."successorId" <> ALL(r."path")
   )
-  SELECT array_to_string(r."path", ' -> ') INTO v_path
-    FROM reachable r
-   WHERE r."activityId" = NEW."predecessorId"
-   LIMIT 1;
+  SELECT EXISTS (SELECT 1 FROM reachable r WHERE r."activityId" = NEW."predecessorId")
+    INTO v_closes_loop;
 
-  IF v_path IS NOT NULL THEN
+  IF v_closes_loop THEN
+    -- Only now, and only to name ONE route for the person who has to fix it. This runs solely on
+    -- the rejection path and is bounded twice over — by the per-path visited guard and by an
+    -- explicit depth cap — so the expensive shape above cannot be reached through it. If no route
+    -- fits inside the cap the refusal still stands; only its detail is coarser.
+    WITH RECURSIVE walk("activityId", "path") AS (
+      SELECT NEW."successorId", ARRAY[NEW."successorId"]
+      UNION ALL
+      SELECT d."successorId", w."path" || d."successorId"
+        FROM "ActivityDependency" d
+        JOIN walk w ON d."predecessorId" = w."activityId"
+       WHERE d."projectId" = NEW."projectId"
+         AND d."successorId" <> ALL(w."path")
+         AND array_length(w."path", 1) < 32
+    )
+    SELECT array_to_string(w."path", ' -> ') INTO v_path
+      FROM walk w
+     WHERE w."activityId" = NEW."predecessorId"
+     LIMIT 1;
+
     RAISE EXCEPTION 'schedule: % -> % would create a dependency cycle — % already leads back.',
-      NEW."predecessorId", NEW."successorId", v_path;
+      NEW."predecessorId", NEW."successorId",
+      COALESCE(v_path, format('%s reaches %s by a route longer than this diagnostic prints', NEW."successorId", NEW."predecessorId"));
   END IF;
 
   RETURN NEW;
@@ -158,15 +219,4 @@ CREATE TRIGGER "ActivityDependency_acyclic"
   BEFORE INSERT ON "ActivityDependency"
   FOR EACH ROW EXECUTE FUNCTION activity_dependency_acyclic();
 
--- ── Closing verification ──────────────────────────────────────────────────────────────────────
--- The table is new, so a legacy database must upgrade ROW-FREE. Asserting it turns a silent
--- surprise (rows nobody expected, unchecked by the trigger that did not exist when they were
--- written) into a failed deploy that leaves the database exactly as it was.
-DO $$
-DECLARE v_rows INT;
-BEGIN
-  SELECT COUNT(*) INTO v_rows FROM "ActivityDependency";
-  IF v_rows > 0 THEN
-    RAISE EXCEPTION 'schedule: "ActivityDependency" already holds % row(s) before its guards existed — those edges were never cycle-checked. Aborting with the database unchanged.', v_rows;
-  END IF;
-END $$;
+
