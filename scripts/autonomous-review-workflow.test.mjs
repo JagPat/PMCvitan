@@ -604,6 +604,9 @@ test('a buried clean verdict cannot promote a draft without a fresh polled revie
     number: 230,
     state: 'open',
     draft: true,
+    // Ownership is a precondition of every scope assessment, so this fixture
+    // declares one; the test is about a buried clean verdict, not ownership.
+    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead },
     base: { ref: 'main' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
@@ -1380,7 +1383,13 @@ test('the trusted owner enforces the review-round reset after CI and before Code
   assert.ok(reset > checks);
   assert.ok(review > reset);
   assert.match(gate, /state: 'replacement_required'/u);
-  assert.match(gate, /Replaces: #\$\{pullRequest\.number\}/u);
+  // The `Replaces: #<n>` sentence moved into scripts/correction-owner.mjs so it
+  // is phrased for the PR's DECLARED correction owner rather than for Claude
+  // unconditionally. What the gate must still do is ASK for it on this path —
+  // the rendered instruction is asserted below, in the behavioural probe.
+  // Derived from the REFRESHED pull request (`live`), not the run-start
+  // snapshot: an owner marker edited mid-run must change who the notice names.
+  assert.match(gate, /correctionNotice\(live, \{ detail, reason: 'replacement' \}\)/u);
   assert.match(gate, /assessReviewScope\(pullRequest,/u);
   assert.match(gate, /state: 'scope_required'/u);
   assert.match(
@@ -1511,7 +1520,7 @@ test('final admission revalidates live scope and the late review-round reset', a
 
   pullRequest.additions = 1;
   pullRequest.changed_files = 1;
-  pullRequest.body = '<!-- review-size: standard -->';
+  pullRequest.body = '<!-- review-size: standard -->\n<!-- correction-owner: claude -->';
   client.reviewComments = async () => ([
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'b'.repeat(40) },
