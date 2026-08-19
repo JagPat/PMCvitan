@@ -807,6 +807,148 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
   });
 
   // ── P14 (Codex round 2, F3) ─────────────────────────────────────────────────────────────────
+  // ── P21 (#371 round 1, F5) ──────────────────────────────────────────────────────────────────
+  it('P21 two ordinary option writes touching the same kinds in opposite order do not deadlock', async () => {
+    // The note sweep that keeps this table bounded holds its DELETE locks until commit, so two
+    // ordinary transactions writing options on kinds A and B in OPPOSITE order each hold one old
+    // note and wait for the other — and PostgreSQL aborts one of them. An ordinary write failing
+    // because of a housekeeping delete is a defect of the housekeeping, not a race the caller
+    // should have to think about, so the sweep skips rows another transaction is already holding.
+    const A = `a1-${run}-${seq++}`;
+    const B = `a1-${run}-${seq++}`;
+    for (const code of [A, B]) {
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","displayOrder")
+         VALUES ('${code}','other','option.kind.p21',960)`);
+    }
+    // COMMITTED notes for both kinds — the rows the two transactions would contend over.
+    const seedD = await issue();
+    for (const code of [A, B]) {
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
+         VALUES ('opt-a1-${run}-${seq++}','${seedD}','O','k${seq}','Teak',0,'brown','${code}')`);
+    }
+    expect(Number((await one<{ n: bigint }>(
+      `SELECT COUNT(*) AS n FROM "DecisionOptionKindSelection" WHERE "kindCode" IN ('${A}','${B}')`)).n),
+      'both kinds must carry a committed note, or this probe contends over nothing').toBe(2);
+
+    const d1 = await issue();
+    const d2 = await issue();
+    const write = (tx: { $executeRawUnsafe: (sql: string) => Promise<unknown> }, d: string, code: string) =>
+      tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
+         VALUES ('opt-a1-${run}-${seq++}','${d}','O','o${seq}','Teak',0,'brown','${code}')`);
+
+    // Two sessions, opposite orders, each pausing between its two writes so the interleaving is
+    // real rather than hoped for.
+    const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const first = t.prisma.$transaction(async (tx) => {
+      await write(tx, d1, A);
+      await pause(400);
+      await write(tx, d1, B);
+    }, { timeout: 30_000 }).then(() => 'ok', (e: unknown) => String(e));
+    const second = raceDb.$transaction(async (tx) => {
+      await write(tx, d2, B);
+      await pause(400);
+      await write(tx, d2, A);
+    }, { timeout: 30_000 }).then(() => 'ok', (e: unknown) => String(e));
+
+    const [r1, r2] = await Promise.all([first, second]);
+    expect(r1, 'neither ordinary option write may be aborted by the housekeeping sweep').toBe('ok');
+    expect(r2, 'neither ordinary option write may be aborted by the housekeeping sweep').toBe('ok');
+    expect(`${r1}${r2}`).not.toMatch(/deadlock/iu);
+  });
+
+  // ── P18 (#371 round 1, F1) ──────────────────────────────────────────────────────────────────
+  it('P18 an option cannot be re-described INTO an approved decision, only within an unapproved one', async () => {
+    // The freeze asked only about the parent the option was LEAVING. One statement that changes
+    // `decisionId` AND `kindCode`/`description` together moves an option off a pending decision
+    // onto an APPROVED one while re-describing it, and the parent being asked carries no evidence.
+    // Reproduced at the previous head: the option landed on the approved decision carrying a kind
+    // and a description that decision never approved.
+    const mk = async (status: string): Promise<string> => {
+      const d = `DL-a1-${run}-${seq++}`;
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","authorId")
+         VALUES ('${d}','${f.projectA.id}','Q','Hall','${status}','stone','${f.memberUser.id}')`);
+      return d;
+    };
+    const pending = await mk('pending');
+    const alsoPending = await mk('pending');
+    const approved = await mk('approved');
+    const id = `opt-a1-${run}-${seq++}`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+       VALUES ('${id}','${pending}','O','moved','Teak',0,'brown')`);
+
+    expect(await refusal(
+      `UPDATE "DecisionOption" SET "decisionId"='${approved}', "kindCode"='technology',
+              "description"='never approved as this' WHERE "id"='${id}'`,
+    )).toMatch(/is being moved onto a decision carrying/u);
+    // it did not move
+    expect((await one<{ decisionId: string; kindCode: string }>(
+      `SELECT "decisionId","kindCode" FROM "DecisionOption" WHERE "id"='${id}'`)).decisionId)
+      .toBe(pending);
+
+    // …and the bare move is refused too, because ARRIVING is how identity a decision never
+    // approved would otherwise get in — the kind does not have to change for that to be true.
+    expect(await refusal(
+      `UPDATE "DecisionOption" SET "decisionId"='${approved}' WHERE "id"='${id}'`,
+    )).toMatch(/is being moved onto a decision carrying/u);
+
+    // PRECISION — between two UNAPPROVED decisions this is ordinary editing, and stays legal.
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "DecisionOption" SET "decisionId"='${alsoPending}', "kindCode"='solution' WHERE "id"='${id}'`);
+    const row = await one<{ decisionId: string; kindCode: string }>(
+      `SELECT "decisionId","kindCode" FROM "DecisionOption" WHERE "id"='${id}'`);
+    expect(row.decisionId).toBe(alsoPending);
+    expect(row.kindCode).toBe('solution');
+  });
+
+  // ── P19 (#371 round 1, F3) ──────────────────────────────────────────────────────────────────
+  it('P19 the selection notes cannot be truncated by the transaction that wrote them', async () => {
+    // The note table had only ROW guards, and this unit had already learned in the same head that
+    // TRUNCATE fires none of those. Reproduced at the previous head: insert the option, discharge
+    // the deferred check, TRUNCATE the notes, retire the kind — and it committed.
+    const code = `a1-${run}-${seq++}`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","displayOrder")
+       VALUES ('${code}','other','option.kind.p19',950)`);
+    const d = await issue();
+    const id = `opt-a1-${run}-${seq++}`;
+
+    const attempt = await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
+         VALUES ('${id}','${d}','O','p19','Teak',0,'brown','${code}')`);
+      await tx.$executeRawUnsafe(`SET CONSTRAINTS "DecisionOption_kind_selectable_ins" IMMEDIATE`);
+      await tx.$executeRawUnsafe(`TRUNCATE "DecisionOptionKindSelection"`);
+      await tx.$executeRawUnsafe(`UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='${code}'`);
+      return 'committed';
+    }).catch((e: unknown) => String(e));
+    expect(attempt).toMatch(/cannot be truncated by the transaction that wrote them/u);
+    expect(Number((await one<{ n: bigint }>(
+      `SELECT COUNT(*) AS n FROM "DecisionOption" WHERE "id"='${id}'`)).n)).toBe(0);
+    expect((await one<{ active: boolean }>(
+      `SELECT "active" FROM "DecisionOptionKind" WHERE "code"='${code}'`)).active).toBe(true);
+
+    // PRECISION — the seal is about THIS transaction's own evidence, not about the table being
+    // permanent: with no note of its own, a maintenance truncate of inert history is allowed.
+    await t.prisma.$executeRawUnsafe(`TRUNCATE "DecisionOptionKindSelection"`);
+  });
+
+  // ── P20 (#371 round 1, F4) ──────────────────────────────────────────────────────────────────
+  it('P20 a menu code must say something, exactly as its label key must', async () => {
+    // The key is the easiest column to leave unchecked, because a primary key is habitually
+    // assumed meaningful — but '' and a lone tab satisfy NOT NULL and uniqueness perfectly well.
+    expect(await refusal(
+      `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey") VALUES ('   ','other','option.kind.blank')`,
+    )).toMatch(/code_check/u);
+    expect(await refusal(
+      `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey") VALUES ('','other','option.kind.blank')`,
+    )).toMatch(/code_check/u);
+  });
+
   // ── P15 (#370 round 2, F1) ──────────────────────────────────────────────────────────────────
   it('P15 the built-in seed refuses a conflicting row instead of adopting it', async () => {
     // `ON CONFLICT DO NOTHING` accepted whatever the pre-baseline path left behind, and the freeze

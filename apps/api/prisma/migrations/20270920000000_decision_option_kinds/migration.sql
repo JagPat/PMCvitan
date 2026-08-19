@@ -82,6 +82,16 @@ BEGIN
     ALTER TABLE "DecisionOptionKind" ADD CONSTRAINT "DecisionOptionKind_labelKey_check"
       CHECK ("labelKey" !~ '^[[:space:]]*$');
   END IF;
+  -- …and the CODE itself, which is the harder one to notice precisely because it is the primary
+  -- key: a key is habitually assumed to be meaningful, and `''` or a lone tab satisfies NOT NULL
+  -- and uniqueness perfectly well. It would then be a live menu entry every option can reference
+  -- and no client can render or type. Same complete-whitespace discipline as its sibling.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'DecisionOptionKind_code_check'
+                    AND conrelid = '"DecisionOptionKind"'::regclass) THEN
+    ALTER TABLE "DecisionOptionKind" ADD CONSTRAINT "DecisionOptionKind_code_check"
+      CHECK ("code" !~ '^[[:space:]]*$');
+  END IF;
 END $$;
 
 CREATE INDEX IF NOT EXISTS "DecisionOptionKind_active_displayOrder_idx"
@@ -331,6 +341,31 @@ CREATE TRIGGER "DecisionOptionKindSelection_guard"
   BEFORE UPDATE OR DELETE ON "DecisionOptionKindSelection"
   FOR EACH ROW EXECUTE FUNCTION decision_option_kind_selection_guard();
 
+-- The row guard above is a ROW trigger, and this unit already had to learn once in this same head
+-- that TRUNCATE fires none of those. A note table sealed only row-wise is sealed against nothing:
+--     INSERT the option (a note is written) → SET CONSTRAINTS ... IMMEDIATE
+--     → TRUNCATE "DecisionOptionKindSelection"  → retire the kind → COMMIT
+-- and the retirement guard, looking for a note, finds an empty table. Reproduced by execution: the
+-- transaction committed, the option landed, the kind was retired.
+--
+-- The seal is PRECISE rather than blanket, and the difference matters here in a way it did not for
+-- the registry: notes from finished transactions are inert garbage that a maintenance truncate may
+-- legitimately clear. What may never be erased is the evidence THIS transaction just wrote about
+-- itself — which is exactly the bypass, and which a BEFORE TRUNCATE trigger can still see.
+CREATE OR REPLACE FUNCTION decision_option_kind_selection_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public."DecisionOptionKindSelection" n
+              WHERE n."txid" = txid_current()) THEN
+    RAISE EXCEPTION 'decisions: this transaction has selected an option kind, and its selection notes are the evidence the retirement guard reads — they cannot be truncated by the transaction that wrote them.';
+  END IF;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS "DecisionOptionKindSelection_no_truncate" ON "DecisionOptionKindSelection";
+CREATE TRIGGER "DecisionOptionKindSelection_no_truncate"
+  BEFORE TRUNCATE ON "DecisionOptionKindSelection"
+  FOR EACH STATEMENT EXECUTE FUNCTION decision_option_kind_selection_no_truncate();
+
 CREATE OR REPLACE FUNCTION decision_option_kind_selection_note() RETURNS TRIGGER LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
 BEGIN
@@ -348,8 +383,18 @@ BEGIN
   -- Only COMMITTED notes are visible to this DELETE, so a concurrent transaction's live note is
   -- never removed — and the note guard permits it, because the row it refuses is the one written
   -- by the deleting transaction itself.
+  --
+  -- SKIP LOCKED, and it is load-bearing rather than an optimisation. Without it two ordinary
+  -- option writes deadlock: one transaction selecting kinds A then B holds A's old note while
+  -- waiting on B's, and one selecting B then A holds B's while waiting on A's — and PostgreSQL
+  -- aborts one of them. Because this is best-effort garbage collection, a row another transaction
+  -- is already deleting is simply somebody else's job; skipping it is CORRECT, not a compromise,
+  -- and the next write on that kind collects whatever this one passed over.
   DELETE FROM public."DecisionOptionKindSelection"
-   WHERE "kindCode" = NEW."kindCode" AND "txid" <> txid_current();
+   WHERE ctid IN (
+     SELECT n.ctid FROM public."DecisionOptionKindSelection" n
+      WHERE n."kindCode" = NEW."kindCode" AND n."txid" <> txid_current()
+        FOR UPDATE SKIP LOCKED);
   RETURN NULL;
 END $$;
 DROP TRIGGER IF EXISTS "DecisionOption_kind_selection_note_ins" ON "DecisionOption";
@@ -415,31 +460,61 @@ CREATE TRIGGER "DecisionOptionKind_retire_guard"
 -- an approved decision `SET "material" = 'Walnut'` succeeds today. That wider rule is the approval
 -- register's own unit, where all of an option's identity is in scope together; this one does not
 -- widen the hole and does not pretend to close it.
-CREATE OR REPLACE FUNCTION decision_option_identity_frozen_once_approved() RETURNS TRIGGER LANGUAGE plpgsql
+-- The evidence question, asked of ONE decision and answered under its row lock. Split out because
+-- it has to be asked of TWO of them (see the trigger below), and a rule copied is a rule that
+-- diverges.
+CREATE OR REPLACE FUNCTION decision_approval_evidence(p_decision TEXT) RETURNS TEXT LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
-DECLARE v_status TEXT; v_evidence TEXT;
+DECLARE v_status TEXT;
 BEGIN
   SELECT d."status"::text INTO v_status
     FROM public."Decision" d
-   WHERE d."id" = OLD."decisionId"
+   WHERE d."id" = p_decision
      FOR UPDATE;
 
   IF v_status IN ('approved', 'change') THEN
-    v_evidence := 'the decision is ' || v_status;
+    RETURN 'the decision is ' || v_status;
   ELSIF EXISTS (SELECT 1 FROM public."DecisionApprovalRevision" r
-                 WHERE r."decisionId" = OLD."decisionId") THEN
-    v_evidence := 'an entry in the approval register';
+                 WHERE r."decisionId" = p_decision) THEN
+    RETURN 'an entry in the approval register';
   ELSIF EXISTS (SELECT 1 FROM public."DecisionLegacyApproval" l
-                 WHERE l."decisionId" = OLD."decisionId") THEN
-    v_evidence := 'a legacy approval stamp';
+                 WHERE l."decisionId" = p_decision) THEN
+    RETURN 'a legacy approval stamp';
   ELSIF EXISTS (SELECT 1 FROM public."DecisionEvent" e
-                 WHERE e."decisionId" = OLD."decisionId"
+                 WHERE e."decisionId" = p_decision
                    AND e."type" IN ('approved', 'reapproved')) THEN
-    v_evidence := 'a recorded approval event';
+    RETURN 'a recorded approval event';
+  END IF;
+  RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION decision_option_identity_frozen_once_approved() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+DECLARE v_evidence TEXT; v_where TEXT;
+BEGIN
+  -- BOTH parents, when the option is moving between them.
+  --
+  -- Round 1 of this PR asked only about `OLD."decisionId"`, and a review found the hole by reading
+  -- it: ONE statement that changes `decisionId` AND `kindCode`/`description` together moves an
+  -- option off a pending decision onto an APPROVED one while re-describing it, and the old parent
+  -- — the only one being asked — carries no evidence, so it commits. Reproduced by execution: the
+  -- option landed on the approved decision carrying a kind and a description that decision never
+  -- approved.
+  --
+  -- Stated as one rule rather than two checks: AN OPTION'S IDENTITY MAY NOT BE EDITED INTO, OR
+  -- MOVED INTO OR OUT OF, A DECISION THAT CARRIES APPROVAL EVIDENCE. The source parent is asked
+  -- because editing what it approved is the original rule; the destination is asked because
+  -- arriving is how identity data a decision never approved would otherwise get in. Both are
+  -- asked under `FOR UPDATE`, so an approval landing concurrently on either side serializes.
+  v_evidence := public.decision_approval_evidence(OLD."decisionId");
+  v_where := 'belongs to';
+  IF v_evidence IS NULL AND NEW."decisionId" IS DISTINCT FROM OLD."decisionId" THEN
+    v_evidence := public.decision_approval_evidence(NEW."decisionId");
+    v_where := 'is being moved onto';
   END IF;
 
   IF v_evidence IS NOT NULL THEN
-    RAISE EXCEPTION 'decisions: option % belongs to a decision carrying %, so what that option says it IS cannot be edited — its kind and description are part of the evidence.', OLD."optionKey", v_evidence;
+    RAISE EXCEPTION 'decisions: option % % a decision carrying %, so what that option says it IS cannot be edited — its kind and description are part of the evidence.', OLD."optionKey", v_where, v_evidence;
   END IF;
   RETURN NEW;
 END $$;
@@ -449,7 +524,8 @@ DROP TRIGGER IF EXISTS "DecisionOption_identity_frozen_once_approved" ON "Decisi
 CREATE TRIGGER "DecisionOption_identity_frozen_once_approved"
   BEFORE UPDATE ON "DecisionOption"
   FOR EACH ROW WHEN (NEW."kindCode" IS DISTINCT FROM OLD."kindCode"
-                     OR NEW."description" IS DISTINCT FROM OLD."description")
+                     OR NEW."description" IS DISTINCT FROM OLD."description"
+                     OR NEW."decisionId" IS DISTINCT FROM OLD."decisionId")
   EXECUTE FUNCTION decision_option_identity_frozen_once_approved();
 
 -- ── 5. What a menu row may not do once it is load-bearing ─────────────────────────────────────

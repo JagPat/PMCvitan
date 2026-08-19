@@ -3873,6 +3873,24 @@ else
     *) echo "FAILED  A1-i: the same-transaction retirement was rejected by the WRONG rule: $(printf '%s' "$out" | head -c 120)"; FAIL=1 ;;
   esac
 fi
+assert_rejects "A1-i: a menu code that says nothing, the key being the easiest column to leave unchecked" \
+  "INSERT INTO \"DecisionOptionKind\"(\"code\",\"baseKind\",\"labelKey\") VALUES ('   ','other','option.kind.blank')" \
+  "code_check"
+
+# The identity freeze asked only about the parent the option was LEAVING, so one statement could
+# move an option onto an APPROVED decision while re-describing it. `DL-3` is approved in this
+# fixture and `UP4A-D5` is a draft, so this is the real shape over a legacy database.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: the move fixture could not be created"; FAIL=1; }
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UPA1-MOVE','UP4A-D5','O','mv','Teak',0,'brown');
+SQL
+assert_rejects "A1-i: MOVING an option onto an approved decision while re-describing it" \
+  "UPDATE \"DecisionOption\" SET \"decisionId\"='DL-3', \"kindCode\"='technology', \"description\"='never approved as this' WHERE \"id\"='UPA1-MOVE'" \
+  "is being moved onto a decision carrying"
+assert "A1-i precision: the option did not move" \
+  "SELECT \"decisionId\" FROM \"DecisionOption\" WHERE \"id\"='UPA1-MOVE';" \
+  "UP4A-D5"
+
 assert "A1-i precision: neither the option nor the retirement landed" \
   "SELECT (SELECT COUNT(*) FROM \"DecisionOption\" WHERE \"id\"='UPA1-SAMETX')::text || '|' || (SELECT \"active\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-samefx');" \
   "0|true"
