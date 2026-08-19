@@ -293,19 +293,18 @@ test('replacement declarations must name a closed unit awaiting replacement', ()
   assert.match(result.detail, /#999.*awaiting replacement/iu);
 });
 
-test('a merged declared replacement fulfills its source requirement', () => {
-  const source = {
-    pullRequest: { number: 346, state: 'closed' },
-    changedFiles: [],
-  };
-  const result = assessReviewScope(pullRequest({
-    number: 348,
-    body: preReviewBody(),
-  }), {
+test('a merged unit owes nothing; a closed one still does', () => {
+  // The obligation moves when the controller admits a claim, so a unit that
+  // reached the round limit and then MERGED cannot still owe the work — its
+  // label is history. A unit that closed unmerged is holding a real debt, and a
+  // merged pull request whose body happens to name it does not settle that: the
+  // debt is settled by the transfer that admitted the claim, not by prose.
+  const fresh = pullRequest({ number: 348, body: preReviewBody() });
+  const scope = (source) => assessReviewScope(fresh, {
     changedFiles: [{ filename: 'scripts/next-unit.mjs' }],
     requireChangedFiles: true,
     requireReplacementLineage: true,
-    requiredReplacements: [source],
+    requiredReplacements: [{ pullRequest: source, changedFiles: [] }],
     replacementPullRequests: [{
       number: 347,
       state: 'closed',
@@ -313,7 +312,16 @@ test('a merged declared replacement fulfills its source requirement', () => {
       body: '<!-- correction-owner: claude -->\nReplaces: #346',
     }],
   });
-  assert.equal(result.allowed, true);
+
+  assert.equal(scope({
+    number: 346,
+    state: 'closed',
+    merged_at: '2026-08-17T11:00:00Z',
+  }).allowed, true);
+
+  const owed = scope({ number: 346, state: 'closed' });
+  assert.equal(owed.allowed, false);
+  assert.match(owed.detail, /exhausted PR #346 still requires a replacement/u);
 });
 
 test('future scope assessment fails closed when the cumulative file list is unreadable', () => {

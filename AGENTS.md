@@ -102,6 +102,18 @@ so directly rather than framing it as a suggestion.
   carrying `Replaces: #<closed-pr>` in its body. Historical convergence packets
   or trailers do not reset the count. The replacement receives a fresh full
   review and all safety checks; nothing is dismissed or waived.
+- The obligation MOVES with the claim: when the trusted controller admits a
+  `Replaces: #N` declaration it hands the `review-replacement-required` label to
+  the claiming unit and takes it off #N. That transfer is the record of the
+  lineage — written by the controller when it admitted the claim, and not
+  editable afterwards the way the `Replaces:` line that asked for it is. Only a
+  MERGE settles the debt; a unit still holding the label refuses every
+  `Replaces: none` unit in the repository, open or closed. One unit carries one
+  debt: a unit already holding an obligation cannot claim a second, unless it is
+  the claimant of an interrupted transfer — told apart by whether it reached the
+  review-round limit on its own heads. The labels
+  the previous rule left behind are migrated by an explicit list
+  (`LEGACY_SETTLED_OBLIGATIONS`), which nothing adds to again.
 
 ## Out of a review's scope
 

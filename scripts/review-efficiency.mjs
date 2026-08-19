@@ -12,6 +12,28 @@ export const STANDARD_MAX_FILES = 20;
 export const STANDARD_MAX_CHANGED_LINES = 1_500;
 export const REVIEW_RESET_AFTER_FINDING_HEADS = 2;
 export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
+/**
+ * The labels the PREVIOUS rule left behind, and why each is already settled.
+ *
+ * Until this change the label stayed on the exhausted unit and a merged pull
+ * request naming it discharged the debt. Reading a label as a live obligation
+ * without migrating that state would block every `Replaces: none` unit in the
+ * repository for good: a source whose replacement already merged still holds
+ * its label, and that merged replacement can never run the transfer path.
+ *
+ *   #344 — replaced by #349, merged 2026-08-17.
+ *   #357 — replaced by #358, merged 2026-08-18.
+ *   #367 — replaced by #373, which this change replaces in turn.
+ *   #373 — the unit this change replaces; its scope ships here.
+ *
+ * An explicit list rather than a rule, because every rule that could recognise
+ * these is the forgery this change exists to remove — pull request bodies and
+ * merge states are both reachable by anyone who can edit a pull request, so a
+ * "merged claimant settles it" clause would stay open forever. Four reviewed
+ * numbers cannot grow on their own, and nothing is added to this list again:
+ * from here the obligation is handed over when a claim is admitted.
+ */
+export const LEGACY_SETTLED_OBLIGATIONS = new Set([344, 357, 367, 373]);
 // Retained for the legacy convergence-evidence parser below. The trusted
 // controller now applies REVIEW_RESET_AFTER_FINDING_HEADS before that older
 // evidence shape can authorize another correction head.
@@ -92,10 +114,46 @@ export function replacementSource(body) {
   return declaration.kind === 'source' ? declaration.source : null;
 }
 
+/**
+ * Who owes the unresolved scope of an exhausted review unit.
+ *
+ * The obligation MOVES. When the trusted controller admits a `Replaces: #N`
+ * declaration it hands the label to the claiming unit and takes it off #N, and
+ * the label is then the record of who owes the work. That transfer is written
+ * by the controller at the moment it admits the claim; it is a timeline event,
+ * not a line of prose, so nothing that happens to a pull request BODY
+ * afterwards can move it.
+ *
+ * The alternative — leaving the label on the original and re-deriving lineage
+ * later from the bodies of closed pull requests — cannot be made sound. Matching
+ * only a merge that names the original strands the debt the moment a
+ * replacement dies unmerged: #354 exhausted, #360 replaced it and exhausted too,
+ * #361 replaced #360, and nothing would ever name #354 again, so every
+ * `Replaces: none` unit in the repository was refused until the label was
+ * cleared by hand, three times in one night. Following the chain instead trusts
+ * the bodies, and bodies are editable by anyone who can edit a pull request: an
+ * unrelated unit that exhausted its own rounds can have `Replaces: #354` written
+ * into it afterwards, and a merged replacement of THAT unit discharges scope it
+ * never carried. Ordering by number or by closing time narrows the window but
+ * proves nothing about when the declaration was written.
+ *
+ * Transferring at admission removes the question. There is no chain to walk: at
+ * every moment exactly one live unit holds each obligation, and it holds it
+ * because the controller put it there.
+ *
+ * A MERGED unit owes nothing — the work landed — so its label is history rather
+ * than a live debt. Everything else that holds one blocks fresh work, including
+ * a replacement still open: work in flight is not work merged.
+ */
 export function assessReplacementLineage({
   pullRequest,
   requiredReplacements,
   replacementPullRequests,
+  // Did THIS unit reach the review-round limit on its own heads? It separates
+  // the only two states the label cannot tell apart — see the claim branch
+  // below. Defaults to the refusing answer, because a caller that does not know
+  // must not be able to complete a transfer that may never have started.
+  claimantExhausted = true,
 }) {
   const declaration = replacementDeclaration(pullRequest?.body);
   if (!Array.isArray(requiredReplacements) || !Array.isArray(replacementPullRequests)) {
@@ -105,25 +163,55 @@ export function assessReplacementLineage({
     };
   }
 
-  const fulfilledSources = new Set(requiredReplacements
-    .filter(({ pullRequest: source }) => replacementPullRequests.some((candidate) =>
-      candidate?.merged_at
-      && candidate.number > source?.number
-      && replacementSource(candidate.body) === source?.number))
-    .map(({ pullRequest: source }) => source.number));
-  const pending = requiredReplacements.filter(({ pullRequest: source }) =>
-    source?.number !== pullRequest?.number
-    && !fulfilledSources.has(source?.number));
+  const owed = ({ pullRequest: source }) => Number.isInteger(source?.number)
+    && !source.merged_at
+    && !LEGACY_SETTLED_OBLIGATIONS.has(source.number);
+  const pending = requiredReplacements.filter((requirement) =>
+    requirement?.pullRequest?.number !== pullRequest?.number && owed(requirement));
+  // This unit already holds an obligation: either it was handed one when its
+  // claim was admitted, or it exhausted its own review rounds. Both mean the
+  // same thing — the unresolved scope is its debt until it merges.
+  const holdsObligation = requiredReplacements.some((requirement) =>
+    requirement?.pullRequest?.number === pullRequest?.number && owed(requirement));
 
   if (declaration.kind === 'source') {
     const requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
     );
     if (!requirement) {
+      // The obligation this declaration claims has already been handed over, and
+      // this unit is holding it. Refusing here would strand the unit that the
+      // controller itself admitted.
+      if (holdsObligation) return { allowed: true, detail: null, transferFrom: null };
       return {
         allowed: false,
         detail: `Replaces: #${declaration.source} does not name a review unit awaiting replacement`,
       };
+    }
+    if (holdsObligation) {
+      // Both this unit and the source it names hold the label, and the label is
+      // a boolean: two different histories arrive here identically.
+      //
+      // Either the transfer was interrupted — the label reached this unit and
+      // the removal from the source did not, because a label write is two calls
+      // and the second can fail — or this unit owes its OWN scope and its body
+      // was edited to claim a second obligation, which would collapse both into
+      // one boolean and let a single merge discharge scope it never carried.
+      //
+      // What separates them is durable and already recorded: a unit that owes
+      // its own scope reached the review-round limit on its own heads, and a
+      // claimant midway through a transfer has not.
+      if (claimantExhausted) {
+        return {
+          allowed: false,
+          detail: `PR #${pullRequest?.number} already carries a replacement obligation; `
+            + `one unit cannot also take on #${declaration.source}`,
+        };
+      }
+      // An interrupted transfer. Naming the source again lets the caller finish
+      // the removal, so the state converges to one holder instead of blocking
+      // the loop until someone repairs the labels by hand.
+      return { allowed: true, detail: null, transferFrom: declaration.source };
     }
     if (requirement.pullRequest.state !== 'closed') {
       return {
@@ -141,7 +229,9 @@ export function assessReplacementLineage({
         detail: `Replaces: #${declaration.source} is already claimed by open PR #${competing.number}`,
       };
     }
-    return { allowed: true, detail: null };
+    // Admitted. The caller with write access hands the obligation over; every
+    // later evaluation of this unit takes the `holdsObligation` path above.
+    return { allowed: true, detail: null, transferFrom: declaration.source };
   }
 
   if (pending.length > 0) {
@@ -151,7 +241,7 @@ export function assessReplacementLineage({
       detail: `exhausted PR #${source.number} still requires a replacement; declare Replaces: #${source.number} before starting fresh work`,
     };
   }
-  return { allowed: true, detail: null };
+  return { allowed: true, detail: null, transferFrom: null };
 }
 
 export function assessReviewScope(
@@ -166,6 +256,7 @@ export function assessReviewScope(
     requireReplacementLineage = false,
     requiredReplacements,
     replacementPullRequests,
+    claimantExhausted = true,
   } = {},
 ) {
   const additions = finiteCount(pullRequest?.additions);
@@ -208,6 +299,7 @@ export function assessReviewScope(
       pullRequest,
       requiredReplacements,
       replacementPullRequests,
+      claimantExhausted,
     })
     : { allowed: true, detail: null };
   const preReviewProblems = [
@@ -236,6 +328,11 @@ export function assessReviewScope(
     limits: { maxFiles, maxChangedLines },
     missingChecklist,
     migrationServiceMix,
+    // The unit this PR's declaration claims, for a caller with write access to
+    // hand the obligation over. Only meaningful once the whole assessment is
+    // allowed: a claim admitted alongside some other scope refusal has not been
+    // admitted at all, and the debt must not move until it has.
+    replacementTransferFrom: lineage.transferFrom ?? null,
   };
   let state = 'standard';
   let missingInvariants = [];

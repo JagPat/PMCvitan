@@ -609,6 +609,27 @@ export class GitHubClient {
     });
   }
 
+  // Hand an exhausted unit's obligation to the replacement that just claimed it.
+  //
+  // ADD before REMOVE, always: between the two calls the debt is held twice,
+  // which refuses fresh work — the safe direction. The other order leaves a
+  // window in which nothing holds it and any `Replaces: none` unit walks
+  // through. Adding a label already present and removing one already gone are
+  // both no-ops, so a retried evaluation transfers once.
+  async transferReplacementObligation(source, target) {
+    await this.markReplacementRequired(target);
+    const path = `/repos/${this.repository}/issues/${source}/labels/`
+      + encodeURIComponent(REPLACEMENT_REQUIRED_LABEL);
+    try {
+      await this.request(path, { method: 'DELETE' });
+    } catch (error) {
+      // A 404 is the label already being off the source — the transfer already
+      // happened. Anything else is a real failure: leave the source holding the
+      // debt, which keeps the gate refusing rather than silently discharging.
+      if (!/\b404\b/u.test(String(error?.message ?? ''))) throw error;
+    }
+  }
+
   async replacementLineage() {
     const label = encodeURIComponent(REPLACEMENT_REQUIRED_LABEL);
     const [issues, pullRequests] = await Promise.all([
@@ -1167,14 +1188,51 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       ? lineageResult.value
       : undefined;
   }
+  // Only a unit that itself holds the label can reach the state where an
+  // interrupted transfer and an absorbed second debt look the same, so the
+  // finding history is read only then — one extra call in a rare state rather
+  // than one on every evaluation.
+  const holdsLabel = (lineage?.requiredReplacements ?? []).some(({ pullRequest: held }) =>
+    held?.number === pullRequest.number && !held.merged_at);
+  let claimantExhausted = true;
+  if (holdsLabel) {
+    try {
+      const [comments, reviews] = await Promise.all([
+        client.reviewComments(pullRequest.number),
+        client.reviews(pullRequest.number),
+      ]);
+      claimantExhausted = codexFindingHeads(comments, reviews).length
+        >= REVIEW_RESET_AFTER_FINDING_HEADS;
+    } catch (error) {
+      // Unreadable history keeps the refusing answer: a transfer is finished by
+      // hand, never completed on a guess.
+      console.warn(
+        `Could not read the finding history for #${pullRequest.number}; `
+        + `treating its obligation as its own: ${error.message}`,
+      );
+    }
+  }
   const result = assessReviewScope(pullRequest, {
     changedFiles,
     requireChangedFiles: true,
     requireReplacementLineage: pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR,
     requiredReplacements: lineage?.requiredReplacements,
     replacementPullRequests: lineage?.replacementPullRequests,
+    claimantExhausted,
   });
-  if (result.allowed) return result;
+  if (result.allowed) {
+    // The claim is admitted, so the obligation moves here. This is the durable
+    // record of the lineage: written by the trusted controller at the moment it
+    // admitted the claim, and — unlike the `Replaces:` line that asked for it —
+    // not editable afterwards by anyone who can edit a pull request.
+    if (Number.isInteger(result.replacementTransferFrom)) {
+      await client.transferReplacementObligation(
+        result.replacementTransferFrom,
+        pullRequest.number,
+      );
+    }
+    return result;
+  }
 
   const live = await setDraftForCurrentHead(
     client,
