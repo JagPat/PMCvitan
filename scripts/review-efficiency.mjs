@@ -12,6 +12,32 @@ export const STANDARD_MAX_FILES = 20;
 export const STANDARD_MAX_CHANGED_LINES = 1_500;
 export const REVIEW_RESET_AFTER_FINDING_HEADS = 2;
 export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
+/**
+ * The labels the PREVIOUS rule left behind, and why each is already settled.
+ *
+ * Until this change the label stayed on the exhausted unit and a merged pull
+ * request naming it discharged the debt. Reading a label as a live obligation
+ * without migrating that state would block every `Replaces: none` unit in the
+ * repository for good: a source whose replacement already merged still holds
+ * its label, and that merged replacement can never run the transfer path.
+ *
+ *   #344 — replaced by #349, merged 2026-08-17.
+ *   #357 — replaced by #358, merged 2026-08-18.
+ *   #367 — replaced by #373, and #373 by #374, in turn replaced here.
+ *   #373 — as above; the chain's scope ships in this change.
+ *   #374 — as above; replaced by #375.
+ *   #375 — the unit this change replaces; its scope ships here.
+ *
+ * An explicit list rather than a rule, because every rule that could recognise
+ * these is the forgery this change exists to remove — pull request bodies and
+ * merge states are both reachable by anyone who can edit a pull request, so a
+ * "merged claimant settles it" clause would stay open forever. Four reviewed
+ * numbers cannot grow on their own. Every entry is a label the OLD controller
+ * applied — it still runs on `main` until this merges, so a unit closed under it
+ * joins the list — and once this is live the obligation is handed over when a
+ * claim is admitted, and nothing is added here again.
+ */
+export const LEGACY_SETTLED_OBLIGATIONS = new Set([344, 357, 367, 373, 374, 375]);
 // Retained for the legacy convergence-evidence parser below. The trusted
 // controller now applies REVIEW_RESET_AFTER_FINDING_HEADS before that older
 // evidence shape can authorize another correction head.
@@ -92,10 +118,162 @@ export function replacementSource(body) {
   return declaration.kind === 'source' ? declaration.source : null;
 }
 
+/**
+ * Who owes the unresolved scope of an exhausted review unit.
+ *
+ * `review-replacement-required` marks a unit that reached the review-round
+ * limit, and it never moves. What settles it is a CLAIM: when the trusted
+ * controller admits a `Replaces: #N` declaration it labels the claiming unit
+ * `review-replaces-N`, and that label — written by the controller at the moment
+ * it admitted the claim — is the lineage. Bodies are editable by anyone who can
+ * edit a pull request; a label the controller wrote is not, and it names WHICH
+ * obligation was taken on rather than merely that one was.
+ *
+ * Discharge follows the claims, and every edge is one the controller wrote: a
+ * MERGED unit claiming #N settles it, and so does a claiming unit that closed
+ * unmerged and is itself settled, since the later unit carries the unresolved
+ * scope of everything before it. Without that step the debt strands the moment a
+ * replacement dies unmerged — #354 exhausted, #360 replaced it and exhausted
+ * too, #361 replaced #360, and nothing would ever name #354 again, so every
+ * `Replaces: none` unit in the repository was refused until the label was
+ * cleared by hand, three times in one night.
+ *
+ * Three shapes this has already been through, and why it is here:
+ *
+ *   - Deriving the chain from `Replaces:` PROSE let an unrelated unit that
+ *     exhausted its own rounds have a source written into it afterwards, so a
+ *     merged replacement of that unit discharged scope it never carried.
+ *     Ordering the edges by number, then by closing time, narrowed the window
+ *     without ever proving when the declaration was written.
+ *   - MOVING one boolean label recorded that a debt was taken on but not which,
+ *     and moving it is two writes: an interrupted move and a unit absorbing a
+ *     second obligation are the same state, and inferring them apart from the
+ *     claimant's own review history cannot tell a half-finished transfer from a
+ *     completed transfer of a DIFFERENT source.
+ *   - A claim label names the source and is ONE write. There is no half state to
+ *     recover from and nothing to infer.
+ *
+ * A claimant must also be a replacement: opened after the unit it replaces, and
+ * after that unit closed, onto the default branch — the protocol's "close the
+ * exhausted unit and open a smaller replacement from current `main`". Otherwise
+ * an older pull request already in flight could have a source written into it
+ * and settle a debt its scope never carried.
+ */
+export function replacementClaimLabel(source) {
+  return `review-replaces-${source}`;
+}
+
+export function claimedSource(labelName) {
+  const match = /^review-replaces-(\d+)$/u.exec(String(labelName ?? '').trim());
+  const number = match ? Number(match[1]) : Number.NaN;
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+/**
+ * The claims a unit actually holds, from the controller's own label writes.
+ *
+ * NOT the label set. A label carries no proof of who applied it, and anyone who
+ * can manage a pull request in this repository can apply one — so reading the
+ * set by name would let an author write `review-replaces-354` onto an otherwise
+ * ineligible unit and skip every check below. GitHub records the actor and the
+ * time of each label application in the issue timeline, and nothing can edit
+ * that afterwards, so the caller resolves claims from there and passes them in.
+ *
+ * Each entry is `{ source, recordedAt }`. Removing the label later does not undo
+ * the claim: the controller admitted it, and that is a fact about the past.
+ */
+export function claimedSources(pullRequest) {
+  const claims = Array.isArray(pullRequest?.verifiedClaims) ? pullRequest.verifiedClaims : [];
+  return claims
+    .map((claim) => (typeof claim === 'number' ? claim : claim?.source))
+    .filter((number) => Number.isInteger(number) && number > 0);
+}
+
+// The actors whose label writes count as the controller's own. A claim applied
+// by anyone else is a label, not a claim.
+export const CLAIM_AUTHORS = new Set(['github-actions[bot]', 'github-actions']);
+
+/**
+ * The claims in an issue timeline: which sources the controller recorded, when.
+ *
+ * The timeline is server-written and carries the actor of every label event, so
+ * this is the one reading of a claim label that means anything. A later removal
+ * does not undo a claim — the controller admitted it, and that is a fact about
+ * the past; otherwise deleting a label would release an obligation.
+ */
+export function claimsFromTimeline(events, authors = CLAIM_AUTHORS) {
+  const claims = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.event !== 'labeled') continue;
+    const source = claimedSource(event?.label?.name);
+    if (source === null) continue;
+    if (!authors.has(event?.actor?.login)) continue;
+    if (claims.some((claim) => claim.source === source)) continue;
+    claims.push({ source, recordedAt: event.created_at });
+  }
+  return claims;
+}
+
+/** When the controller recorded this unit's claim on `source`, if it did. */
+export function claimRecordedAt(pullRequest, source) {
+  const claims = Array.isArray(pullRequest?.verifiedClaims) ? pullRequest.verifiedClaims : [];
+  const claim = claims.find((entry) => entry?.source === source);
+  const recorded = Date.parse(claim?.recordedAt ?? '');
+  return Number.isFinite(recorded) ? recorded : null;
+}
+
+/** The exhausted units whose claim chain reaches a merge. */
+function settledSources(candidates) {
+  const claimants = new Map();
+  for (const candidate of candidates) {
+    if (!Number.isInteger(candidate?.number)) continue;
+    for (const source of claimedSources(candidate)) {
+      if (!claimants.has(source)) claimants.set(source, []);
+      claimants.get(source).push(candidate);
+    }
+  }
+  // Two claimants can be admitted at once — each reads a state with no claim on
+  // the source, and both write one. Nothing in GitHub makes label writes
+  // mutually exclusive, but the timeline gives them a total order, so the
+  // EARLIEST recorded claim is the claim and the rest are not. Both runs
+  // converge on the same answer without needing to have been serialised.
+  for (const [source, holders] of claimants) {
+    if (holders.length < 2) continue;
+    const earliest = holders
+      .map((candidate) => ({ candidate, at: claimRecordedAt(candidate, source) }))
+      .filter(({ at }) => at !== null)
+      .sort((a, b) => a.at - b.at || a.candidate.number - b.candidate.number)[0];
+    claimants.set(source, earliest ? [earliest.candidate] : []);
+  }
+  const settled = new Map();
+  // `walking` breaks a cycle: nothing stops a chain of claims from closing on
+  // itself, and a walk that trusted the data would not return.
+  const reaches = (source, walking) => {
+    if (settled.has(source)) return settled.get(source);
+    if (walking.has(source)) return false;
+    walking.add(source);
+    const result = (claimants.get(source) ?? []).some((candidate) => {
+      if (candidate.merged_at) return true;
+      // A claim still open owes the work itself; only one that died without
+      // merging hands the obligation on to its own replacement.
+      if (candidate.state !== 'closed') return false;
+      return reaches(candidate.number, walking);
+    });
+    walking.delete(source);
+    settled.set(source, result);
+    return result;
+  };
+  return (source) => reaches(source, new Set());
+}
+
 export function assessReplacementLineage({
   pullRequest,
   requiredReplacements,
   replacementPullRequests,
+  defaultBranch = 'main',
+  // When the claimant's branch left the default branch, from the merge base the
+  // caller resolved. Unreadable means unproven, which refuses.
+  forkPoint = null,
 }) {
   const declaration = replacementDeclaration(pullRequest?.body);
   if (!Array.isArray(requiredReplacements) || !Array.isArray(replacementPullRequests)) {
@@ -105,17 +283,48 @@ export function assessReplacementLineage({
     };
   }
 
-  const fulfilledSources = new Set(requiredReplacements
-    .filter(({ pullRequest: source }) => replacementPullRequests.some((candidate) =>
-      candidate?.merged_at
-      && candidate.number > source?.number
-      && replacementSource(candidate.body) === source?.number))
-    .map(({ pullRequest: source }) => source.number));
-  const pending = requiredReplacements.filter(({ pullRequest: source }) =>
-    source?.number !== pullRequest?.number
-    && !fulfilledSources.has(source?.number));
+  const settled = settledSources(replacementPullRequests);
+  const owed = ({ pullRequest: source }) => Number.isInteger(source?.number)
+    && !source.merged_at
+    && !LEGACY_SETTLED_OBLIGATIONS.has(source.number)
+    && !settled(source.number);
+  const pending = requiredReplacements.filter((requirement) =>
+    requirement?.pullRequest?.number !== pullRequest?.number && owed(requirement));
+  // What this unit has already been admitted to replace. One unit carries one
+  // debt, and the label says which — so a body edited to name a different source
+  // changes nothing.
+  const [claimed] = claimedSources(pullRequest);
 
   if (declaration.kind === 'source') {
+    if (Number.isInteger(claimed)) {
+      // Re-evaluating the unit the controller already admitted. Its claim is
+      // recorded, so this is a no-op rather than a fresh admission.
+      if (claimed === declaration.source) {
+        // Unless another unit's claim on the same source was recorded FIRST. Two
+        // admissions can race; the earliest recorded claim is the claim, and the
+        // unit that lost is not a replacement however its own label reads.
+        const mine = claimRecordedAt(pullRequest, claimed);
+        const earlier = replacementPullRequests.find((candidate) => {
+          if (candidate?.number === pullRequest?.number) return false;
+          const theirs = claimRecordedAt(candidate, claimed);
+          if (theirs === null || mine === null) return false;
+          return theirs < mine || (theirs === mine && candidate.number < pullRequest.number);
+        });
+        if (earlier) {
+          return {
+            allowed: false,
+            detail: `Replaces: #${claimed} was claimed first by PR #${earlier.number}; `
+              + 'one obligation has one replacement',
+          };
+        }
+        return { allowed: true, detail: null, claimFor: null };
+      }
+      return {
+        allowed: false,
+        detail: `PR #${pullRequest?.number} was admitted as the replacement for #${claimed}; `
+          + `one unit cannot also take on #${declaration.source}`,
+      };
+    }
     const requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
     );
@@ -125,23 +334,64 @@ export function assessReplacementLineage({
         detail: `Replaces: #${declaration.source} does not name a review unit awaiting replacement`,
       };
     }
-    if (requirement.pullRequest.state !== 'closed') {
+    const source = requirement.pullRequest;
+    if (source.state !== 'closed') {
       return {
         allowed: false,
         detail: `Replaces: #${declaration.source} is not closed; close the exhausted unit before reviewing its replacement`,
       };
     }
+    // Any unit whose claim on this source the controller already recorded holds
+    // it — open or closed, since a closed claimant hands the debt to its own
+    // replacement rather than releasing it.
     const competing = replacementPullRequests.find((candidate) =>
       candidate?.number !== pullRequest?.number
-      && candidate?.state === 'open'
-      && replacementSource(candidate.body) === declaration.source);
+      && claimedSources(candidate).includes(declaration.source));
     if (competing) {
       return {
         allowed: false,
-        detail: `Replaces: #${declaration.source} is already claimed by open PR #${competing.number}`,
+        detail: `Replaces: #${declaration.source} is already claimed by PR #${competing.number}`,
       };
     }
-    return { allowed: true, detail: null };
+    // A replacement is OPENED after the unit it replaces is closed. An older
+    // pull request already in flight is not one, whatever its body now says.
+    if (!Number.isInteger(pullRequest?.number) || pullRequest.number <= source.number) {
+      return {
+        allowed: false,
+        detail: `Replaces: #${declaration.source} names a unit opened after this one; `
+          + 'a replacement is opened after the unit it replaces',
+      };
+    }
+    const opened = Date.parse(pullRequest?.created_at ?? '');
+    const closed = Date.parse(source.closed_at ?? '');
+    if (!Number.isFinite(opened) || !Number.isFinite(closed) || opened <= closed) {
+      return {
+        allowed: false,
+        detail: `Replaces: #${declaration.source} was closed after this unit was opened; `
+          + 'close the exhausted unit, then open its replacement from current `main`',
+      };
+    }
+    const base = pullRequest?.base?.ref;
+    if (typeof base === 'string' && base.length > 0 && base !== defaultBranch) {
+      return {
+        allowed: false,
+        detail: `a replacement is opened from \`${defaultBranch}\`, not \`${base}\``,
+      };
+    }
+    // Targeting the default branch is not the same as being BASED on it. A
+    // branch cut from a stale `main` long ago, opened as a pull request only
+    // after the source closed, passes every check above — and merging it would
+    // settle the obligation with scope that never carried it. The fork point is
+    // where the claimant actually left the default branch.
+    const forkedAt = Date.parse(forkPoint ?? '');
+    if (!Number.isFinite(forkedAt) || forkedAt <= closed) {
+      return {
+        allowed: false,
+        detail: `Replaces: #${declaration.source} requires a replacement branched from \`${defaultBranch}\` `
+          + 'after that unit closed; this one was cut before it',
+      };
+    }
+    return { allowed: true, detail: null, claimFor: declaration.source };
   }
 
   if (pending.length > 0) {
@@ -151,7 +401,7 @@ export function assessReplacementLineage({
       detail: `exhausted PR #${source.number} still requires a replacement; declare Replaces: #${source.number} before starting fresh work`,
     };
   }
-  return { allowed: true, detail: null };
+  return { allowed: true, detail: null, claimFor: null };
 }
 
 export function assessReviewScope(
@@ -166,6 +416,8 @@ export function assessReviewScope(
     requireReplacementLineage = false,
     requiredReplacements,
     replacementPullRequests,
+    defaultBranch = 'main',
+    forkPoint = null,
   } = {},
 ) {
   const additions = finiteCount(pullRequest?.additions);
@@ -208,6 +460,8 @@ export function assessReviewScope(
       pullRequest,
       requiredReplacements,
       replacementPullRequests,
+      defaultBranch,
+      forkPoint,
     })
     : { allowed: true, detail: null };
   const preReviewProblems = [
@@ -236,6 +490,11 @@ export function assessReviewScope(
     limits: { maxFiles, maxChangedLines },
     missingChecklist,
     migrationServiceMix,
+    // The obligation this PR has just been admitted to replace, for a caller
+    // with write access to record the claim. Only meaningful once the whole
+    // assessment is allowed: a claim admitted alongside some other scope refusal
+    // has not been admitted at all, and nothing may be recorded until it has.
+    replacementClaimFor: lineage.claimFor ?? null,
   };
   let state = 'standard';
   let missingInvariants = [];

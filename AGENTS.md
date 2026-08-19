@@ -102,6 +102,20 @@ so directly rather than framing it as a suggestion.
   carrying `Replaces: #<closed-pr>` in its body. Historical convergence packets
   or trailers do not reset the count. The replacement receives a fresh full
   review and all safety checks; nothing is dismissed or waived.
+- `review-replacement-required` marks the exhausted unit and never moves. When
+  the trusted controller admits a `Replaces: #N` declaration it labels the
+  claiming unit `review-replaces-N`, and that claim is the lineage. It is read
+  from the issue timeline, which records who applied each label — a label anyone
+  else wrote is not a claim — and among claims racing for one source the earliest
+  recorded one wins.
+- Discharge follows those claims — a merged claimant settles its source, and so
+  does a claimant that died unmerged and is itself settled — so a mid-chain
+  death strands nothing, and an edited body settles nothing.
+- A claimant must be a replacement: opened after the unit it replaces, after
+  that unit closed, and branched from the default branch after that closure.
+  One unit carries one claim.
+- The labels the previous rule left behind are migrated by an explicit list
+  (`LEGACY_SETTLED_OBLIGATIONS`), which nothing adds to again.
 
 ## Out of a review's scope
 
