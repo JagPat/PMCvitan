@@ -143,11 +143,21 @@ END $$;
 ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_frozen";
 ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_t4a_touch";
 
-UPDATE "DecisionOption"
-   SET "costImpact" = CASE WHEN "delta" = 0 THEN 'none'::"CostImpactState"
-                           ELSE 'estimated'::"CostImpactState" END,
-       "costAmount" = CASE WHEN "delta" = 0 THEN NULL ELSE "delta" END
- WHERE "costImpact" = 'pending' AND "costAmount" IS NULL;
+-- The rows this backfill actually rewrote, remembered so the closing verification can judge THIS
+-- migration's work rather than the whole table. A table-wide count would abort a legitimate operator
+-- replay the moment the feature had been used and a real `confirmed` option existed — punishing the
+-- migration for somebody else's correct data, and breaking the re-runnability it claims.
+CREATE TEMP TABLE _a1i_backfilled ("id" TEXT PRIMARY KEY) ON COMMIT DROP;
+
+WITH updated AS (
+  UPDATE "DecisionOption"
+     SET "costImpact" = CASE WHEN "delta" = 0 THEN 'none'::"CostImpactState"
+                             ELSE 'estimated'::"CostImpactState" END,
+         "costAmount" = CASE WHEN "delta" = 0 THEN NULL ELSE "delta" END
+   WHERE "costImpact" = 'pending' AND "costAmount" IS NULL
+  RETURNING "id"
+)
+INSERT INTO _a1i_backfilled ("id") SELECT "id" FROM updated;
 
 ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_frozen";
 ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_t4a_touch";
@@ -181,6 +191,23 @@ BEGIN
       ("costImpact" IN ('estimated', 'confirmed') AND "costAmount" IS NOT NULL)
       OR ("costImpact" IN ('pending', 'none') AND "costAmount" IS NULL)
     );
+  END IF;
+  -- The two representations of the same fact may not disagree while BOTH are being read.
+  --
+  -- `delta` is what the currently serving release returns to every client; `costImpact`/`costAmount`
+  -- are what the next one will. Nothing yet keeps them equal, so a new-shaped write of
+  -- `delta = 0, costImpact = 'estimated', costAmount = 31500` displays as FREE to everyone on the
+  -- old release, and `delta = 31500, costImpact = 'none'` displays as priced while the new state
+  -- says it costs nothing. Both are the same class of error the cost state exists to end.
+  --
+  -- One rule covers all four states, because `pending` and `none` both carry no amount and the
+  -- legacy field's only way to say "no amount" is zero. It is retired with the legacy reader, not
+  -- before.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'DecisionOption_delta_agrees_check'
+                    AND conrelid = '"DecisionOption"'::regclass) THEN
+    ALTER TABLE "DecisionOption" ADD CONSTRAINT "DecisionOption_delta_agrees_check"
+      CHECK ("delta" = COALESCE("costAmount", 0));
   END IF;
 END $$;
 
@@ -224,8 +251,15 @@ BEGIN
     -- expression evaluates to UNKNOWN, and `NULL !~ '...'` is UNKNOWN — so a bare regex on a
     -- nullable column is not a test at all for exactly the rows it is meant to catch.
     ALTER TABLE "DecisionOption" ADD CONSTRAINT "DecisionOption_says_what_it_is_check" CHECK (
-      COALESCE("material", '') !~ '^[[:space:]]*$'
-      OR COALESCE("description", '') !~ '^[[:space:]]*$'
+      -- the option is identifiable: it names a material, or it describes itself
+      (COALESCE("material", '') !~ '^[[:space:]]*$'
+       OR COALESCE("description", '') !~ '^[[:space:]]*$')
+      -- …AND the description, when present at all, actually says something. This second clause is
+      -- independent on purpose: without it a material-bearing option satisfies the first clause and
+      -- a whitespace-only description rides along unchecked, which is how a nullable text column
+      -- ends up with two ways to mean "absent" — NULL and a lone tab — only one of which any reader
+      -- will test for. Absence is NULL here; anything non-null must be legible.
+      AND ("description" IS NULL OR "description" !~ '^[[:space:]]*$')
     );
   END IF;
 END $$;
@@ -270,6 +304,23 @@ BEGIN
       NEW."optionKey", NEW."decisionId", OLD."costAmount";
   END IF;
 
+  -- (c) A RETIRED kind may not be newly selected. The foreign key proves the code exists, which is
+  -- not the same as it still being offered: after `active = false` the menu stops showing a kind,
+  -- and without this a stale client — or any direct writer — keeps classifying new options with it.
+  -- Existing references stay valid, which is the point of retiring rather than deleting; it is
+  -- INSERTS and kind-CHANGES that have to pick from what the server currently offers.
+  --
+  -- Tested as EXISTS-and-inactive rather than NOT-EXISTS-active, so that a code naming no kind at
+  -- all falls through to the foreign key and is reported as what it is. The looser form called a
+  -- nonexistent kind "retired", which sends whoever hit it looking for a menu row that was never
+  -- there.
+  IF TG_OP = 'INSERT' OR NEW."kindCode" IS DISTINCT FROM OLD."kindCode" THEN
+    IF EXISTS (SELECT 1 FROM public."DecisionOptionKind" k
+                WHERE k."code" = NEW."kindCode" AND NOT k."active") THEN
+      RAISE EXCEPTION 'decisions: option kind % has been retired and cannot be selected for new options; choose one the menu still offers.', NEW."kindCode";
+    END IF;
+  END IF;
+
   RETURN NEW;
 END $$;
 
@@ -277,6 +328,57 @@ DROP TRIGGER IF EXISTS "DecisionOption_invariants" ON "DecisionOption";
 CREATE TRIGGER "DecisionOption_invariants"
   BEFORE INSERT OR UPDATE ON "DecisionOption"
   FOR EACH ROW EXECUTE FUNCTION decision_option_invariants();
+
+-- ── 7b. A CONFIRMED cost cannot be ERASED, which is the other half of not being rewritten ─────
+-- Freezing the row against UPDATE while leaving DELETE open protects the evidence from being
+-- edited and not from being removed, and removal is the more complete erasure of the two. The
+-- task-4a delete seal does not cover this: it refuses deletes on a WITHDRAWN decision, and the
+-- decision carrying a confirmed price is typically very much alive.
+--
+-- These are SEPARATE named triggers rather than more branches on the invariants function, so a
+-- sanctioned destructive reset can disable exactly the seal it needs by name — the contract the
+-- repository's other evidence tables already use — without also switching off the cost derivation
+-- and the legibility rules that run on INSERT.
+CREATE OR REPLACE FUNCTION decision_option_confirmed_no_delete() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+BEGIN
+  IF OLD."costImpact" = 'confirmed' THEN
+    RAISE EXCEPTION 'decisions: option % on decision % records a CONFIRMED cost of % — a finalized figure is evidence and is not deletable. Record a superseding option instead.',
+      OLD."optionKey", OLD."decisionId", OLD."costAmount";
+  END IF;
+  RETURN OLD;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionOption_confirmed_no_delete" ON "DecisionOption";
+CREATE TRIGGER "DecisionOption_confirmed_no_delete"
+  BEFORE DELETE ON "DecisionOption"
+  FOR EACH ROW EXECUTE FUNCTION decision_option_confirmed_no_delete();
+
+-- A row trigger does not fire for TRUNCATE — it is a separate, statement-level event, so the seal
+-- above would be walked straight around by one statement available to the ordinary application
+-- role.
+--
+-- A TRUNCATE that erases no confirmed cost is PERMITTED, and that is deliberate rather than a
+-- softening: what must survive is the finalized financial claim, and a table holding none has none
+-- to lose. Refusing unconditionally would break every fixture reset that clears options on
+-- databases where no cost was ever confirmed, which teaches callers to disable the seal as a matter
+-- of routine — and a seal disabled by habit is not a seal. Race-free: TRUNCATE takes an ACCESS
+-- EXCLUSIVE lock on the table before this fires, so no session can confirm a cost in the gap.
+CREATE OR REPLACE FUNCTION decision_option_confirmed_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+DECLARE v_n INT;
+BEGIN
+  SELECT COUNT(*) INTO v_n FROM public."DecisionOption" WHERE "costImpact" = 'confirmed';
+  IF v_n > 0 THEN
+    RAISE EXCEPTION 'decisions: "DecisionOption" holds % option(s) with a CONFIRMED cost, and finalized figures are not erased by truncation. Remove them deliberately, or disable "DecisionOption_confirmed_no_truncate" by name for a sanctioned reset.', v_n;
+  END IF;
+  RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS "DecisionOption_confirmed_no_truncate" ON "DecisionOption";
+CREATE TRIGGER "DecisionOption_confirmed_no_truncate"
+  BEFORE TRUNCATE ON "DecisionOption"
+  FOR EACH STATEMENT EXECUTE FUNCTION decision_option_confirmed_no_truncate();
 
 -- ── 8. A kind's base classification is frozen once anything is classified by it ────────────────
 -- `baseKind` is what downstream behaviour keys off. Re-pointing it after options already carry the
@@ -295,6 +397,16 @@ BEGIN
      AND EXISTS (SELECT 1 FROM public."DecisionOption" o WHERE o."kindCode" = OLD."code") THEN
     RAISE EXCEPTION 'decisions: option kind % already classifies at least one option, so its base kind is frozen — retire it (active = false) and add a new kind instead of re-pointing this one.', OLD."code";
   END IF;
+
+  -- `material` is the COLUMN DEFAULT, which is how the currently serving release — which does not
+  -- know `kindCode` exists — writes a valid option at all. Retiring it would make every insert from
+  -- that release fail against the retired-kind rule above, taking the running application down by a
+  -- data edit. It stops being the default when a release that names its kind explicitly is the only
+  -- one serving, and it can be retired then.
+  IF OLD."code" = 'material' AND OLD."active" AND NOT NEW."active" THEN
+    RAISE EXCEPTION 'decisions: option kind "material" is the column default that the currently serving release relies on, and cannot be retired while it is; retire it only once no release depends on the default.';
+  END IF;
+
   RETURN NEW;
 END $$;
 
@@ -318,9 +430,15 @@ BEGIN
     RAISE EXCEPTION 'option kinds: the backfill fabricated % option-touch evidence row(s). Aborting with the database unchanged.', v_fabricated;
   END IF;
 
-  SELECT COUNT(*) INTO v_confirmed FROM "DecisionOption" WHERE "costImpact" = 'confirmed';
+  -- Scoped to the rows this run rewrote. `confirmed` has no arm in the CASE above, so this can only
+  -- fire if the statement were ever changed to produce one; a replay rewrites nothing, the set is
+  -- empty, and a legitimate confirmed option written after deployment is none of this check's
+  -- business.
+  SELECT COUNT(*) INTO v_confirmed
+    FROM "DecisionOption" o JOIN _a1i_backfilled b ON b."id" = o."id"
+   WHERE o."costImpact" = 'confirmed';
   IF v_confirmed > 0 THEN
-    RAISE EXCEPTION 'option kinds: the backfill asserted a CONFIRMED cost on % option(s); nothing in the history supports that finality. Aborting with the database unchanged.', v_confirmed;
+    RAISE EXCEPTION 'option kinds: the backfill asserted a CONFIRMED cost on % option(s) it rewrote; nothing in the history supports that finality. Aborting with the database unchanged.', v_confirmed;
   END IF;
 
   SELECT COUNT(*) INTO v_kindless FROM "DecisionOption" WHERE "kindCode" IS NULL;

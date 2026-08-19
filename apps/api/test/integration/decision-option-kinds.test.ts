@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, wipeDecisions, type TwoProjectFixture } from './fixtures';
@@ -22,6 +24,10 @@ import { createTwoProjectFixture, wipeDecisions, type TwoProjectFixture } from '
  *   P6  an option must say WHAT IT IS — it names a material, or it describes itself
  *   P7  the kind reference is real, and a kind in use cannot be deleted or re-keyed
  *   P8  nothing in this unit ever asserts a finality nobody claimed
+ *   P9  a confirmed cost cannot be ERASED either — not by delete, and not by truncate
+ *   P10 a retired kind cannot be newly selected, and the default kind cannot be retired
+ *   P11 the legacy `delta` and the new cost state may not disagree while both are read
+ *   P12 the migration re-applies cleanly even after a real confirmed cost exists
  */
 describe('A1-i — the option kind vocabulary and its cost state (live PG)', () => {
   let t: TestApp;
@@ -42,7 +48,17 @@ describe('A1-i — the option kind vocabulary and its cost state (live PG)', () 
   // A teardown that can fail reports OTHER people's tests as broken, so this one is written to
   // survive every seal these probes can meet.
   const wipe = async (): Promise<void> => {
-    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOption" WHERE "id" LIKE 'opt-a1-%'`);
+    // These probes record CONFIRMED costs, and a confirmed cost is not deletable (P9). A test reset
+    // is the same sanctioned destructive contract the repository's other evidence tables use:
+    // disable the ONE named seal for exactly this wipe, inside a transaction, so a wipe that throws
+    // rolls the disable back with it and no failure path leaves the seal off for later suites.
+    await t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "DecisionOption" DISABLE TRIGGER "DecisionOption_confirmed_no_delete"`),
+      t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOption" WHERE "id" LIKE 'opt-a1-%'`),
+      t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "DecisionOption" ENABLE TRIGGER "DecisionOption_confirmed_no_delete"`),
+    ]);
     await wipeDecisions(t.prisma, { id: { startsWith: 'DL-a1-' } });
     await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOptionKind" WHERE "code" LIKE 'a1-%'`);
   };
@@ -124,10 +140,14 @@ describe('A1-i — the option kind vocabulary and its cost state (live PG)', () 
   // ── P3 ──────────────────────────────────────────────────────────────────────────────────────
   it('P3 cost impact is a state: the amount is required where it means something, forbidden where it does not', async () => {
     const d = await issue();
+    // `delta` tracks the amount: the two representations of one fact may not disagree while both are
+    // being read (P11). Holding them consistent here keeps each refusal below attributable to the
+    // coherence rule it is actually testing.
     const base = (impact: string, amount: string): string => {
       const id = `opt-a1-${run}-${seq++}`;
+      const delta = amount === 'NULL' ? '0' : amount;
       return `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","costImpact","costAmount")
-              VALUES ('${id}','${d}','O','k${seq}','Teak',0,'brown','${impact}',${amount})`;
+              VALUES ('${id}','${d}','O','k${seq}','Teak',${delta},'brown','${impact}',${amount})`;
     };
 
     expect(await refusal(base('estimated', 'NULL'))).toMatch(/cost_impact_check/u);
@@ -224,6 +244,13 @@ describe('A1-i — the option kind vocabulary and its cost state (live PG)', () 
     expect(await refusal(mk('', 'NULL'))).toMatch(/says_what_it_is_check/u);
     expect(await refusal(mk('   ', "'   '"))).toMatch(/says_what_it_is_check/u);
 
+    // …and a description that is present but says nothing is refused INDEPENDENTLY of the material.
+    // Without that second clause a material-bearing option satisfies the identity rule and a lone
+    // tab rides along unchecked, leaving a nullable column with two ways to mean "absent" — NULL and
+    // whitespace — only one of which any reader will test for.
+    expect(await refusal(mk('Teak', "'   '"))).toMatch(/says_what_it_is_check/u);
+    expect(await refusal(mk('Teak', "E'\\t'"))).toMatch(/says_what_it_is_check/u);
+
     // PRECISION, and the reason this rule is shaped the way it is: an option identified by its
     // DESCRIPTION is already legal here, so when A1-ii makes the material half optional this same
     // constraint becomes exactly the rule that matters without being rewritten.
@@ -263,5 +290,128 @@ describe('A1-i — the option kind vocabulary and its cost state (live PG)', () 
     const n = await one<{ n: bigint }>(
       `SELECT COUNT(*) AS n FROM "DecisionOption" WHERE "costImpact"='confirmed' AND "id" LIKE 'opt-a1-%'`);
     expect(Number(n.n)).toBe(0);
+  });
+
+  // ── P9 (Codex round 1, P1) ──────────────────────────────────────────────────────────────────
+  it('P9 a confirmed cost cannot be ERASED either — not by delete, and not by truncate', async () => {
+    const d = await issue();
+    const id = `opt-a1-${run}-${seq++}`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","costImpact","costAmount")
+       VALUES ('${id}','${d}','Teak veneer','k1','Teak',31500,'brown','confirmed',31500)`);
+
+    // Freezing the row against UPDATE while leaving DELETE open protects the evidence from being
+    // edited and not from being removed — and removal is the more complete erasure of the two. The
+    // task-4a seal does not cover this: it refuses deletes on a WITHDRAWN decision, and a decision
+    // carrying a confirmed price is typically very much alive.
+    expect(await refusal(`DELETE FROM "DecisionOption" WHERE "id" = '${id}'`))
+      .toMatch(/not deletable/u);
+
+    // …and a row trigger does not fire for TRUNCATE, so one statement would walk straight around it
+    expect(await refusal(`TRUNCATE TABLE "DecisionOption" CASCADE`)).toMatch(/not erased by truncation/u);
+
+    const [row] = await t.prisma.$queryRawUnsafe<Array<{ costAmount: number }>>(
+      `SELECT "costAmount" FROM "DecisionOption" WHERE "id" = '${id}'`);
+    expect(row.costAmount).toBe(31500);
+
+    // PRECISION — an option carrying NO confirmed cost is ordinary data and deletes normally, and a
+    // truncate that erases no confirmed cost is permitted. Refusing those would teach every fixture
+    // reset to disable the seal as a matter of routine, and a seal disabled by habit is not a seal.
+    const plain = `opt-a1-${run}-${seq++}`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+       VALUES ('${plain}','${d}','Ordinary','k2','Birch',0,'tan')`);
+    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOption" WHERE "id" = '${plain}'`);
+  });
+
+  // ── P10 (Codex round 1, P2) ─────────────────────────────────────────────────────────────────
+  it('P10 a retired kind cannot be newly selected, and the default kind cannot be retired', async () => {
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey") VALUES ('a1-legacy','other','option.kind.a1Legacy')`);
+    const d = await issue();
+    const kept = `opt-a1-${run}-${seq++}`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
+       VALUES ('${kept}','${d}','Classified before retirement','k1','Teak',0,'brown','a1-legacy')`);
+
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='a1-legacy'`);
+
+    // The foreign key proves the code EXISTS, which is not the same as the menu still offering it.
+    const fresh = `opt-a1-${run}-${seq++}`;
+    expect(await refusal(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
+       VALUES ('${fresh}','${d}','Too late','k2','Teak',0,'brown','a1-legacy')`,
+    )).toMatch(/has been retired/u);
+
+    // …and moving a DIFFERENT option onto the retired kind is the same act by another route. It has
+    // to be a different one: re-writing `kept`'s code to the value it already holds changes nothing,
+    // so the rule correctly ignores it.
+    const mover = `opt-a1-${run}-${seq++}`;
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+       VALUES ('${mover}','${d}','On the default kind','k3','Birch',0,'tan')`);
+    expect(await refusal(
+      `UPDATE "DecisionOption" SET "kindCode"='a1-legacy' WHERE "id"='${mover}'`,
+    )).toMatch(/has been retired/u);
+
+    // PRECISION — retiring is not deleting: the option classified before retirement keeps its
+    // classification, and reads of it are untouched.
+    const [row] = await t.prisma.$queryRawUnsafe<Array<{ kindCode: string }>>(
+      `SELECT "kindCode" FROM "DecisionOption" WHERE "id" = '${kept}'`);
+    expect(row.kindCode).toBe('a1-legacy');
+
+    // The DEFAULT kind is load-bearing for the running release, which does not name a kind at all
+    // and therefore takes the default on every insert. Retiring it would take that release down by
+    // a data edit.
+    expect(await refusal(`UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='material'`))
+      .toMatch(/column default/u);
+  });
+
+  // ── P11 (Codex round 1, P2) ─────────────────────────────────────────────────────────────────
+  it('P11 the legacy and new cost representations may not disagree while both are read', async () => {
+    const d = await issue();
+    const mk = (delta: number, impact: string, amount: string): string => {
+      const id = `opt-a1-${run}-${seq++}`;
+      return `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","costImpact","costAmount")
+              VALUES ('${id}','${d}','O','k${seq}','Teak',${delta},'brown','${impact}',${amount})`;
+    };
+
+    // The serving release returns only `delta`. A row that says 31,500 in the new state and 0 in the
+    // old one displays as FREE to every client on that release…
+    expect(await refusal(mk(0, 'estimated', '31500'))).toMatch(/delta_agrees_check/u);
+    // …and the reverse displays as priced while the new state says it costs nothing.
+    expect(await refusal(mk(31500, 'none', 'NULL'))).toMatch(/delta_agrees_check/u);
+
+    // PRECISION — agreeing rows are accepted in every state the unit can produce
+    await t.prisma.$executeRawUnsafe(mk(31500, 'estimated', '31500'));
+    await t.prisma.$executeRawUnsafe(mk(0, 'none', 'NULL'));
+    await t.prisma.$executeRawUnsafe(mk(28000, 'confirmed', '28000'));
+  });
+
+  // ── P12 (Codex round 1, P2) ─────────────────────────────────────────────────────────────────
+  it('P12 the migration re-applies cleanly even after a real confirmed cost exists', async () => {
+    const d = await issue();
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","costImpact","costAmount")
+       VALUES ('opt-a1-${run}-${seq++}','${d}','Agreed','k1','Teak',31500,'brown','confirmed',31500)`);
+
+    // The closing verification asserts the BACKFILL never manufactured a finality. Counted over the
+    // whole table it would abort here — punishing the migration for somebody else's correct data the
+    // moment the feature is used, and breaking the re-runnability it claims. Scoped to the rows this
+    // run rewrote, a replay rewrites nothing and the question is trivially answered.
+    const migrationPath = join(__dirname, '..', '..', 'prisma', 'migrations',
+                               '20270915000000_decision_option_kinds', 'migration.sql');
+    const url = new URL(process.env.DATABASE_URL!);
+    url.search = '';
+    execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-q', '-d', url.toString(), '-f', migrationPath],
+                 { encoding: 'utf8', stdio: 'pipe' });
+
+    // …and the replay changed nothing about the confirmed row
+    const [row] = await t.prisma.$queryRawUnsafe<Array<{ costImpact: string; costAmount: number }>>(
+      `SELECT "costImpact"::text AS "costImpact","costAmount" FROM "DecisionOption"
+        WHERE "decisionId"='${d}' ORDER BY "id" DESC LIMIT 1`);
+    expect(row.costImpact).toBe('confirmed');
+    expect(row.costAmount).toBe(31500);
   });
 });

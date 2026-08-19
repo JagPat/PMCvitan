@@ -3747,7 +3747,7 @@ assert "A1-i rollout: an insert from the RUNNING RELEASE keeps its cost and is c
   "material|estimated|1750"
 
 assert_rejects "A1-i: an amount attached to a cost state that means nobody has priced it" \
-  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"costImpact\",\"costAmount\") VALUES ('UPA1-X1','DL-3','O','x1','Teak',0,'brown','pending',31500)" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"costImpact\",\"costAmount\") VALUES ('UPA1-X1','DL-3','O','x1','Teak',31500,'brown','pending',31500)" \
   "cost_impact_check"
 assert_rejects "A1-i: a priced state with NO amount, which would read as free" \
   "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"costImpact\") VALUES ('UPA1-X2','DL-3','O','x2','Teak',0,'brown','estimated')" \
@@ -3785,6 +3785,46 @@ SQL
 assert "A1-i precision: the confirmed figure and its proposal both survive that edit intact" \
   "SELECT \"costAmount\"::text || '|' || \"material\" || '|' || \"recommended\"::text FROM \"DecisionOption\" WHERE \"id\"='UPA1-CONF';" \
   "31500|Teak|true"
+
+# ERASURE is the other half of not being rewritten, and a row trigger does not see TRUNCATE.
+assert_rejects "A1-i: DELETING a confirmed cost, which erases the evidence the freeze protects from editing" \
+  "DELETE FROM \"DecisionOption\" WHERE \"id\"='UPA1-CONF'" \
+  "not deletable"
+assert_rejects "A1-i: TRUNCATE, which no row-level seal sees, while a confirmed cost is on the table" \
+  "TRUNCATE TABLE \"DecisionOption\" CASCADE" \
+  "not erased by truncation"
+assert "A1-i: after both erasure attempts the confirmed figure is still there" \
+  "SELECT \"costAmount\"::text FROM \"DecisionOption\" WHERE \"id\"='UPA1-CONF';" \
+  "31500"
+
+# The two representations of one cost may not disagree while BOTH are being read.
+assert_rejects "A1-i: a new-state price of 31,500 that the still-serving release would display as FREE" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"costImpact\",\"costAmount\") VALUES ('UPA1-X5','DL-3','O','x5','Teak',0,'brown','estimated',31500)" \
+  "delta_agrees_check"
+assert_rejects "A1-i: a new state of 'costs nothing' that the same release would display as priced" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"costImpact\") VALUES ('UPA1-X6','DL-3','O','x6','Teak',31500,'brown','none')" \
+  "delta_agrees_check"
+
+# A description that is present must say something, independently of the material.
+assert_rejects "A1-i: a whitespace-only description riding along on an option whose material is fine" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"description\") VALUES ('UPA1-X7','DL-3','O','x7','Teak',0,'brown','   ')" \
+  "says_what_it_is_check"
+
+# Retiring a kind must actually retire it: the foreign key proves the code exists, not that the
+# menu still offers it.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: a platform kind could not be retired"; FAIL=1; }
+UPDATE "DecisionOptionKind" SET "active" = false WHERE "code" = 'other';
+SQL
+assert_rejects "A1-i: classifying a NEW option with a kind the menu has retired" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X8','DL-3','O','x8','Teak',0,'brown','other')" \
+  "has been retired"
+assert_rejects "A1-i: retiring the DEFAULT kind, which the still-serving release takes on every insert" \
+  "UPDATE \"DecisionOptionKind\" SET \"active\" = false WHERE \"code\" = 'material'" \
+  "column default"
+# PRECISION — retiring is not deleting: options classified before retirement keep their kind.
+assert "A1-i precision: every legacy option still carries the classification it was given" \
+  "SELECT (COUNT(*) FILTER (WHERE \"kindCode\" <> 'material'))::text FROM \"DecisionOption\";" \
+  "0"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it

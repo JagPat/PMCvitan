@@ -123,6 +123,23 @@ if echo "$out" | grep -q "P3005"; then
   T3C_CORRECTION="20270225000000_phase4_t3_correction3"
   SKIP_T3C_CORRECTION=0
   SKIP_T3C_CORRECTION2=0
+
+  # Migrations that must EXECUTE on this path rather than be recorded as applied.
+  #
+  # The loop below baselines a pre-baseline database by resolving every migration as applied, which
+  # is right for the ones whose schema that database already has. It is wrong for a migration whose
+  # objects it cannot possibly have — and silently so: `schema.prisma` describes tables, columns and
+  # foreign keys, so a later `prisma db push`-shaped reconciliation can produce those, but it cannot
+  # produce a trigger, a CHECK, or a partial index. Resolving such a migration as applied leaves the
+  # ledger permanently claiming guards that never ran, which is the one failure mode a baseline must
+  # not have: it is indistinguishable from success.
+  #
+  # The T3C entries above decide this from a live probe, because those migrations may or may not have
+  # run. These are decided statically, because they cannot have: a pre-baseline database predates
+  # them. Leaving them pending costs nothing when they have somehow already been applied — each is
+  # written idempotently and re-applies as a no-op.
+  ALWAYS_EXECUTE="20270915000000_decision_option_kinds"
+
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -209,6 +226,10 @@ if echo "$out" | grep -q "P3005"; then
     fi
     if [ "$SKIP_T3C_CORRECTION2" -eq 1 ] && [ "$name" = "$T3C_CORRECTION2" ]; then
       echo "[migrate] skipping resolve --applied for $name (it will be executed by the deploy below)"
+      continue
+    fi
+    if printf '%s\n' "$ALWAYS_EXECUTE" | grep -qx "$name"; then
+      echo "[migrate] leaving $name pending so its raw guards really apply (baseline cannot have them)"
       continue
     fi
     npx prisma migrate resolve --applied "$name" || exit 1
