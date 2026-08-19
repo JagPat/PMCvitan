@@ -75,47 +75,45 @@ This repository is designed to progress without the owner's laptop or technical 
 - The replacement receives a fresh comprehensive review and the full applicable
   CI battery. Resetting the PR bounds accumulated patch risk; it does not waive,
   dismiss, or downgrade any finding.
-- The obligation MOVES. `review-replacement-required` marks the unit that owes
-  the unresolved scope, and when the trusted controller ADMITS a `Replaces: #N`
-  declaration it puts that label on the claiming unit and takes it off #N. The
-  transfer is written by the controller at the moment it admits the claim — a
-  timeline event, not a line of prose — so nothing done to a pull request BODY
-  afterwards can move a debt. Exactly one live unit holds each obligation at any
-  moment, and it holds it because the controller put it there.
-- Only a MERGE settles it. A unit still holding the label refuses every
-  `Replaces: none` unit in the repository, whether it is open or closed: work in
-  flight is not work merged, and a replacement that dies unmerged keeps the debt
-  until its own replacement claims it. A merged unit's label is history.
-- ONE unit, ONE debt. A unit already holding an obligation cannot also claim a
-  different pending source: the label is a boolean, so absorbing a second would
-  collapse both into it and one merge would discharge scope that unit never
-  carried.
-- A label move is two calls, so it can be INTERRUPTED — the claimant holds the
-  debt and the source has not let go. That state is identical to a unit
-  absorbing a second obligation, and the controller tells them apart by the one
-  durable fact already recorded: a unit that owes its OWN scope reached the
-  review-round limit on its own heads, and a claimant midway through a transfer
-  has not. An interrupted transfer is finished on the next evaluation; an
-  unreadable finding history refuses, because a transfer is completed by hand
-  rather than on a guess.
+- `review-replacement-required` marks the exhausted unit and NEVER moves. What
+  settles it is a CLAIM: when the trusted controller admits a `Replaces: #N`
+  declaration it labels the claiming unit `review-replaces-N`. That label is
+  written by the controller at the moment it admitted the claim, it names WHICH
+  obligation was taken on, and — unlike the `Replaces:` line that asked for it —
+  nobody who can edit a pull request can rewrite it.
+- Discharge follows the claims, and every edge is one the controller wrote: a
+  MERGED unit claiming #N settles it, and so does a claiming unit that closed
+  unmerged and is itself settled. A claim still open settles nothing — work in
+  flight is not work merged — so an exhausted unit keeps refusing every
+  `Replaces: none` unit in the repository until its chain reaches a merge.
+- A claimant must BE a replacement: opened after the unit it replaces, opened
+  after that unit closed, and based on the default branch. Otherwise an older
+  pull request already in flight could have a source written into it and settle
+  a debt its scope never carried.
+- One unit, one claim. A unit whose claim is recorded cannot take on a second:
+  its label names the source, so a declaration edited to point elsewhere changes
+  nothing.
+- The claim is recorded only after the pull request is re-read. The scope, files
+  and lineage are read asynchronously, and a head pushed or a declaration edited
+  while they were in flight would otherwise record a claim for scope the
+  controller never assessed.
+- Three shapes this has already been through, and each one is pinned by a probe.
+  Deriving the chain from `Replaces:` PROSE let an unrelated exhausted unit have
+  a source written into it afterwards, so a merged replacement of it discharged
+  scope it never carried; ordering the edges by number, then by closing time,
+  narrowed the window without proving when the declaration was written. MOVING
+  one boolean label recorded that a debt was taken on but not which, and moving
+  it is two writes, so an interrupted move and a unit absorbing a second
+  obligation became the same state. Telling those apart by the claimant's own
+  review history cannot distinguish a half-finished transfer from a completed
+  transfer of a different source.
 - The labels the previous rule left behind are named in
   `LEGACY_SETTLED_OBLIGATIONS` and are not live obligations — #344 and #357 were
-  discharged by merged replacements, and #367, #373 and #374 are the chain the
-  transfer rule shipped in. That list is an explicit migration, not a rule that
+  discharged by merged replacements, and #367, #373 and #374 are the chain
+  the claim rule shipped in. That list is an explicit migration, not a rule that
   keeps recognising such labels: any rule general enough to spot them would read
-  bodies and merge states, which is the forgery the transfer exists to remove.
-  Nothing is added to it again.
-- Neither of the rules this replaced can be made to work. Matching only a merge
-  that names the exhausted unit strands the debt as soon as a replacement dies
-  unmerged — on 2026-08-18 #354 exhausted, #360 replaced it and exhausted too,
-  #361 replaced #360, nothing would ever name #354 again, and every fresh unit
-  in the repository was refused until the label was cleared by hand three times
-  in one night. Walking the chain instead reads pull request bodies, which
-  anyone who can edit a pull request can rewrite: an unrelated unit that
-  exhausted its own rounds can have `Replaces: #354` written into it afterwards,
-  and a merged replacement of THAT discharges scope it never carried. Ordering
-  by number or by closing time narrows the window and still proves nothing about
-  when the declaration was written.
+  bodies and merge states, which is the forgery the claim label removes. Nothing
+  is added to it again.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 

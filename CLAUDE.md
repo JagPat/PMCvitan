@@ -46,11 +46,11 @@ viable seam; explicitly justify the rare inseparable unit. Read and batch every
 Codex finding before pushing a correction. After two distinct finding-bearing
 heads, close that PR and open a smaller replacement from current `main`, carrying
 `Replaces: #<closed-pr>` and only the unresolved unit. Never use another correction
-head, a historical convergence packet, or a trailer to reset the count. The
-obligation MOVES with the claim: admitting a `Replaces: #N` declaration hands the
-`review-replacement-required` label to the claiming unit and takes it off #N, so
-exactly one live unit owes each debt and only a MERGE settles it — a body edit
-never can. The `review-scope` check and trusted exact-head gate enforce this
+head, a historical convergence packet, or a trailer to reset the count. Admitting a
+`Replaces: #N` declaration labels the claiming unit `review-replaces-N`, and that
+controller-written claim is the lineage: discharge follows the claims to a MERGE,
+a claimant must be opened after the unit it replaces closed, and a body edit
+settles nothing. The `review-scope` check and trusted exact-head gate enforce this
 protocol without replacing any product test or independent review.
 
 Before architecture or implementation work, read:

@@ -17,6 +17,8 @@ import {
   isRetryableReviewFailureDescription,
   codexFindingHeads,
   PRE_REVIEW_ENFORCE_AFTER_PR,
+  replacementClaimLabel,
+  replacementSource,
   REPLACEMENT_REQUIRED_LABEL,
   REVIEW_RESET_AFTER_FINDING_HEADS,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
@@ -584,21 +586,24 @@ export class GitHubClient {
     );
   }
 
-  async ensureReplacementRequiredLabel() {
-    const path = `/repos/${this.repository}/labels/${encodeURIComponent(REPLACEMENT_REQUIRED_LABEL)}`;
+  async ensureLabel(name, { color, description }) {
+    const path = `/repos/${this.repository}/labels/${encodeURIComponent(name)}`;
     try {
       await this.request(path);
     } catch (error) {
       if (!(error instanceof Error) || !error.message.includes('(404)')) throw error;
       await this.request(`/repos/${this.repository}/labels`, {
         method: 'POST',
-        body: {
-          name: REPLACEMENT_REQUIRED_LABEL,
-          color: 'b60205',
-          description: 'Review-round limit reached; a declared replacement is required',
-        },
+        body: { name, color, description },
       });
     }
+  }
+
+  ensureReplacementRequiredLabel() {
+    return this.ensureLabel(REPLACEMENT_REQUIRED_LABEL, {
+      color: 'b60205',
+      description: 'Review-round limit reached; a declared replacement is required',
+    });
   }
 
   async markReplacementRequired(number) {
@@ -609,25 +614,21 @@ export class GitHubClient {
     });
   }
 
-  // Hand an exhausted unit's obligation to the replacement that just claimed it.
+  // Record that this unit was admitted as the replacement for `source`.
   //
-  // ADD before REMOVE, always: between the two calls the debt is held twice,
-  // which refuses fresh work — the safe direction. The other order leaves a
-  // window in which nothing holds it and any `Replaces: none` unit walks
-  // through. Adding a label already present and removing one already gone are
-  // both no-ops, so a retried evaluation transfers once.
-  async transferReplacementObligation(source, target) {
-    await this.markReplacementRequired(target);
-    const path = `/repos/${this.repository}/issues/${source}/labels/`
-      + encodeURIComponent(REPLACEMENT_REQUIRED_LABEL);
-    try {
-      await this.request(path, { method: 'DELETE' });
-    } catch (error) {
-      // A 404 is the label already being off the source — the transfer already
-      // happened. Anything else is a real failure: leave the source holding the
-      // debt, which keeps the gate refusing rather than silently discharging.
-      if (!/\b404\b/u.test(String(error?.message ?? ''))) throw error;
-    }
+  // ONE write, and adding a label already present is a no-op, so a retried
+  // evaluation records the same claim once. Nothing is removed: the exhausted
+  // unit keeps its own marker, and the claim is what settles it.
+  async recordReplacementClaim(number, source) {
+    const label = replacementClaimLabel(source);
+    await this.ensureLabel(label, {
+      color: '0e8a16',
+      description: `Admitted as the replacement for #${source}`,
+    });
+    await this.request(`/repos/${this.repository}/issues/${number}/labels`, {
+      method: 'POST',
+      body: { labels: [label] },
+    });
   }
 
   async replacementLineage() {
@@ -1188,47 +1189,39 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       ? lineageResult.value
       : undefined;
   }
-  // Only a unit that itself holds the label can reach the state where an
-  // interrupted transfer and an absorbed second debt look the same, so the
-  // finding history is read only then — one extra call in a rare state rather
-  // than one on every evaluation.
-  const holdsLabel = (lineage?.requiredReplacements ?? []).some(({ pullRequest: held }) =>
-    held?.number === pullRequest.number && !held.merged_at);
-  let claimantExhausted = true;
-  if (holdsLabel) {
-    try {
-      const [comments, reviews] = await Promise.all([
-        client.reviewComments(pullRequest.number),
-        client.reviews(pullRequest.number),
-      ]);
-      claimantExhausted = codexFindingHeads(comments, reviews).length
-        >= REVIEW_RESET_AFTER_FINDING_HEADS;
-    } catch (error) {
-      // Unreadable history keeps the refusing answer: a transfer is finished by
-      // hand, never completed on a guess.
-      console.warn(
-        `Could not read the finding history for #${pullRequest.number}; `
-        + `treating its obligation as its own: ${error.message}`,
-      );
-    }
-  }
   const result = assessReviewScope(pullRequest, {
     changedFiles,
     requireChangedFiles: true,
     requireReplacementLineage: pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR,
     requiredReplacements: lineage?.requiredReplacements,
     replacementPullRequests: lineage?.replacementPullRequests,
-    claimantExhausted,
   });
   if (result.allowed) {
-    // The claim is admitted, so the obligation moves here. This is the durable
-    // record of the lineage: written by the trusted controller at the moment it
-    // admitted the claim, and — unlike the `Replaces:` line that asked for it —
-    // not editable afterwards by anyone who can edit a pull request.
-    if (Number.isInteger(result.replacementTransferFrom)) {
-      await client.transferReplacementObligation(
-        result.replacementTransferFrom,
+    // The claim is admitted, so it is recorded. This label is the lineage:
+    // written by the trusted controller at the moment it admitted the claim,
+    // naming WHICH obligation was taken on, and — unlike the `Replaces:` line
+    // that asked for it — not editable afterwards by anyone who can edit a pull
+    // request.
+    //
+    // The reads above are asynchronous, so the pull request is re-read first: a
+    // head pushed or a declaration edited while they were in flight would
+    // otherwise record a claim for scope this controller never assessed, and the
+    // recorded claim would then admit that unit on every later evaluation.
+    if (Number.isInteger(result.replacementClaimFor)) {
+      const live = await client.pullRequest(pullRequest.number);
+      const unchanged = live?.head?.sha === expectedHead
+        && replacementSource(live?.body) === result.replacementClaimFor
+        && live?.state === 'open';
+      if (!unchanged) {
+        console.log(
+          `#${pullRequest.number} changed while its scope was assessed; `
+          + 'the claim is not recorded and the new head is assessed on its own.',
+        );
+        return { ...result, superseded: true };
+      }
+      await client.recordReplacementClaim(
         pullRequest.number,
+        result.replacementClaimFor,
       );
     }
     return result;

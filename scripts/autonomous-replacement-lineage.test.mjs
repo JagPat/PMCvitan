@@ -1,141 +1,212 @@
-// Who owes the unresolved scope of an exhausted review unit, and how that debt
-// is settled.
+// Who owes the unresolved scope of an exhausted review unit, and what settles it.
 //
 // The gate refuses every pull request in this repository, so the rule is worth
-// pinning directly. Two designs have already failed here:
+// pinning directly. Three designs have already failed here, and each probe below
+// is the state that killed one of them:
 //
-//   - Matching only a merge that names the exhausted unit STRANDS the debt the
-//     moment a replacement dies unmerged. On 2026-08-18 #354 exhausted, #360
-//     replaced it and exhausted too, and #361 replaced #360 — nothing would ever
-//     name #354 again, and every `Replaces: none` unit in the repository was
+//   - Deriving the chain from `Replaces:` PROSE. Matching only a merge that
+//     names the exhausted unit STRANDS the debt when a replacement dies
+//     unmerged: on 2026-08-18 #354 exhausted, #360 replaced it and exhausted
+//     too, #361 replaced #360, and every fresh unit in the repository was
 //     refused until the label was cleared by hand, three times in one night.
-//   - Following the chain instead trusts pull request BODIES, which anyone who
-//     can edit a pull request can rewrite. An unrelated unit that exhausted its
-//     own rounds can have `Replaces: #354` written into it afterwards, and a
-//     merged replacement of that unit discharges scope it never carried.
-//     Ordering by number or by closing time narrows the window without ever
-//     proving when the declaration was written.
+//     Following the chain instead trusts bodies, which anyone who can edit a
+//     pull request can rewrite.
+//   - MOVING one boolean label. It records that a debt was taken on but not
+//     WHICH, and moving it is two writes — so an interrupted move and a unit
+//     absorbing a second obligation are the same state.
+//   - Inferring those apart from the claimant's own review history. It cannot
+//     tell a half-finished transfer from a completed transfer of a different
+//     source.
 //
-// The obligation MOVES instead. The trusted controller hands the label to the
-// claiming unit at the moment it admits the claim, so at every moment exactly
-// one live unit holds each debt, and it holds it because the controller put it
-// there. T1-T3 pin the transfer, T4-T6 pin what it refuses.
+// A claim label names the source and is one write. `review-replacement-required`
+// marks the exhausted unit and never moves; `review-replaces-N` on a claimant is
+// the controller's record that it admitted that claim.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { LEGACY_SETTLED_OBLIGATIONS, assessReplacementLineage } from './review-efficiency.mjs';
+import {
+  LEGACY_SETTLED_OBLIGATIONS,
+  assessReplacementLineage,
+  replacementClaimLabel,
+} from './review-efficiency.mjs';
 import * as reviewGate from './autonomous-review-gate.mjs';
 
-function pr(number, { state = 'closed', merged = false, replaces = null } = {}) {
+// A unit is opened `number` minutes into the day and closed thirty seconds
+// later, so a higher-numbered unit is opened after a lower-numbered one closed —
+// the shape of every real replacement here (#374 closed 18:21:34Z, #375 opened
+// 18:45:11Z). Fixtures that need another history state it.
+const DAY = Date.parse('2026-08-18T00:00:00Z');
+const at = (minutes) => new Date(DAY + minutes * 60_000).toISOString();
+
+function pr(number, {
+  state = 'closed',
+  merged = false,
+  replaces = null,
+  claims = [],
+  openedAt = at(number),
+  closedAt = state === 'closed' ? at(number + 0.5) : null,
+  base = 'main',
+} = {}) {
   return {
     number,
     state,
-    merged_at: merged ? '2026-08-18T00:00:00Z' : null,
+    created_at: openedAt,
+    closed_at: closedAt,
+    merged_at: merged ? closedAt : null,
+    base: { ref: base },
+    labels: claims.map((source) => ({ name: replacementClaimLabel(source) })),
     body: `## Objective\n\nReplaces: ${replaces === null ? 'none' : `#${replaces}`}\n`,
   };
 }
 
-// `labelled` is what carries the `review-replacement-required` label right now.
-const lineage = (pullRequest, labelled, all = [], claimantExhausted = true) =>
-  assessReplacementLineage({
-    pullRequest,
-    requiredReplacements: labelled.map((source) => ({ pullRequest: source })),
-    replacementPullRequests: [...all, pullRequest],
-    // Whether the claimant reached the review-round limit on its own heads. The
-    // default is the refusing answer, so a fixture that does not say assumes the
-    // unit owes its own scope.
-    claimantExhausted,
-  });
+// `labelled` is what carries `review-replacement-required`.
+const lineage = (pullRequest, labelled, all = []) => assessReplacementLineage({
+  pullRequest,
+  requiredReplacements: labelled.map((source) => ({ pullRequest: source })),
+  replacementPullRequests: [...all, pullRequest],
+});
 
-test('T1: claiming an exhausted unit names the obligation to hand over', () => {
+test('T1: admitting a claim names the obligation to record', () => {
   const exhausted = pr(354);
   const claim = pr(360, { state: 'open', replaces: 354 });
 
   const result = lineage(claim, [exhausted], [exhausted]);
-  assert.equal(result.allowed, true);
-  assert.equal(result.transferFrom, 354, 'the caller is told which debt moves');
+  assert.equal(result.allowed, true, result.detail ?? '');
+  assert.equal(result.claimFor, 354, 'the caller is told which claim to record');
 });
 
-test('T2: once the debt has moved, its holder is not asked to claim it again', () => {
-  // The state after the controller transferred: #354 no longer holds the label,
-  // #360 does. #360's body still says `Replaces: #354`, and re-reading it must
-  // not refuse the very unit the controller admitted.
-  const claim = pr(360, { state: 'open', replaces: 354 });
-  const result = lineage(claim, [claim], [pr(354)]);
-  assert.equal(result.allowed, true);
-  assert.equal(result.transferFrom, null, 'nothing left to move');
+test('T2: a recorded claim is re-read, not re-admitted', () => {
+  const exhausted = pr(354);
+  const claim = pr(360, { state: 'open', replaces: 354, claims: [354] });
+
+  const result = lineage(claim, [exhausted], [exhausted]);
+  assert.equal(result.allowed, true, result.detail ?? '');
+  assert.equal(result.claimFor, null, 'nothing more to record');
 });
 
 test('T3: a chain of dead replacements never strands the debt', () => {
-  // The 2026-08-18 shape, replayed under transfer. #354 exhausted, #360 claimed
-  // it and exhausted too, #361 claimed #360. The debt is on #361 alone: #354 and
-  // #360 gave theirs away when their successors were admitted, and no walk over
-  // anybody's body is involved.
-  const live = pr(361, { state: 'open', replaces: 360 });
-  const history = [pr(354), pr(360, { replaces: 354 })];
+  // The 2026-08-18 shape. #360 claimed #354 and exhausted, #361 claimed #360.
+  // Until #361 merges the debt is owed; when it does, the whole chain settles —
+  // the state the prose rule could never reach without a human deleting a label.
+  const exhausted = [pr(354), pr(360, { claims: [354] })];
+  const open = pr(361, { state: 'open', replaces: 360, claims: [360] });
+  const fresh = pr(400, { state: 'open' });
 
-  assert.equal(lineage(live, [live], history).allowed, true);
-  // A merge settles it, and fresh work is free — the state the old rule could
-  // never reach without a human deleting a label.
-  const merged = pr(361, { merged: true, replaces: 360 });
-  assert.equal(lineage(pr(400, { state: 'open' }), [merged], history).allowed, true);
+  const blocked = lineage(fresh, exhausted, [...exhausted, open]);
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.detail, /exhausted PR #354 still requires a replacement/u);
+
+  const merged = pr(361, { merged: true, replaces: 360, claims: [360] });
+  assert.equal(lineage(fresh, exhausted, [...exhausted, merged]).allowed, true);
 });
 
-test('T4: an obligation still held blocks fresh work, open or closed', () => {
+test('T4: an obligation still owed blocks fresh work, open or closed', () => {
   const fresh = pr(400, { state: 'open' });
-  for (const holder of [pr(360, { state: 'open', replaces: 354 }), pr(360, { replaces: 354 })]) {
-    const result = lineage(fresh, [holder], [pr(354)]);
-    assert.equal(result.allowed, false, `${holder.state} holder must still block`);
-    assert.match(result.detail, /exhausted PR #360 still requires a replacement/u);
+  for (const claimant of [
+    pr(360, { state: 'open', replaces: 354, claims: [354] }),
+    pr(360, { replaces: 354, claims: [354] }),
+  ]) {
+    const result = lineage(fresh, [pr(354)], [pr(354), claimant]);
+    assert.equal(result.allowed, false, `a ${claimant.state} claimant settles nothing`);
+    assert.match(result.detail, /exhausted PR #354 still requires a replacement/u);
   }
 });
 
-test('T5: an edited body cannot discharge an obligation', () => {
-  // The forgery both earlier designs admitted: #360 exhausted its OWN review
-  // rounds, closed, and had `Replaces: #354` written into it afterwards; #361
-  // merged naming #360. Under a body-derived rule that discharges #354. Here the
-  // label on #354 was never handed anywhere, so #354 still owes the work — and
-  // no editable text can change that.
+test('T5: an edited body settles nothing', () => {
+  // The forgery every derived rule admitted: #360 exhausted its OWN rounds,
+  // closed, and had `Replaces: #354` written into it afterwards; #361 merged
+  // naming #360. Nothing here reads those bodies — only claims the controller
+  // recorded — so #354 still owes the work.
+  const fresh = pr(400, { state: 'open' });
   const forged = pr(360, { replaces: 354 });
   const merged = pr(361, { merged: true, replaces: 360 });
-  const fresh = pr(400, { state: 'open' });
 
   const result = lineage(fresh, [pr(354)], [forged, merged]);
   assert.equal(result.allowed, false);
   assert.match(result.detail, /exhausted PR #354 still requires a replacement/u);
 
-  // Naming it directly fails for the same reason: a merged body is editable too.
+  // Naming it directly fails the same way: a merged body is editable too.
   const direct = pr(361, { merged: true, replaces: 354 });
   assert.equal(lineage(fresh, [pr(354)], [direct]).allowed, false);
 });
 
 test('T6: two units cannot claim one obligation', () => {
   const exhausted = pr(354);
-  const first = pr(360, { state: 'open', replaces: 354 });
+  const first = pr(360, { state: 'open', replaces: 354, claims: [354] });
   const second = pr(361, { state: 'open', replaces: 354 });
 
-  // Before the transfer, the second claimant is refused as competing.
   const competing = lineage(second, [exhausted], [exhausted, first]);
   assert.equal(competing.allowed, false);
   assert.match(competing.detail, /already claimed by open PR #360/u);
-
-  // After it, there is no obligation left for the second to claim at all.
-  const afterTransfer = lineage(second, [first], [exhausted, first]);
-  assert.equal(afterTransfer.allowed, false);
-  assert.match(afterTransfer.detail, /#354 does not name a review unit awaiting replacement/u);
 });
 
-test('T7: the controller hands the label over when it admits the claim', async () => {
-  // The transfer is the durable record, so it has to actually happen — and in
-  // the safe order: the claimant holds the debt before the exhausted unit lets
-  // it go, so no moment exists in which nothing holds it.
+test('L1: the labels the previous rule left behind do not block the repository', () => {
+  // Under the rule this replaces, the label stayed on the exhausted unit and a
+  // merged pull request NAMING it discharged the debt. Those units carry no
+  // claim label, so reading claims alone would block every `Replaces: none` unit
+  // for good — #344's replacement #349 merged long before claims existed.
+  const fresh = pr(400, { state: 'open' });
+  const legacy = [...LEGACY_SETTLED_OBLIGATIONS].map((number) => pr(number));
+
+  assert.equal(lineage(fresh, legacy, legacy).allowed, true);
+
+  // The migration is those numbers and nothing else.
+  const current = lineage(fresh, [...legacy, pr(380)], [...legacy, pr(381, { merged: true, replaces: 380 })]);
+  assert.equal(current.allowed, false);
+  assert.match(current.detail, /exhausted PR #380 still requires a replacement/u);
+});
+
+test('L2: a recorded claim names its source, so a body cannot redirect it', () => {
+  // #360 was admitted as #354's replacement and its claim is recorded. Editing
+  // its declaration to a DIFFERENT pending source must not settle that one:
+  // merging #360 would then appear to discharge scope it never carried.
+  //
+  // This is what a boolean label could not express, and what the claimant's own
+  // review history could not distinguish — an interrupted transfer and a
+  // completed transfer of another source look identical in both.
+  const redirected = pr(360, { state: 'open', replaces: 350, claims: [354] });
+  const result = lineage(redirected, [pr(350), pr(354)], [pr(350), pr(354)]);
+
+  assert.equal(result.allowed, false);
+  assert.match(result.detail, /admitted as the replacement for #354/u);
+  assert.match(result.detail, /cannot also take on #350/u);
+  assert.equal(result.claimFor, undefined, 'nothing is recorded for the redirected source');
+});
+
+test('L3: a claimant must be a replacement, not an older unit already in flight', () => {
+  // An unrelated pull request opened BEFORE the exhausted unit closed can have a
+  // source written into it afterwards. The protocol is "close the exhausted
+  // unit, then open a smaller replacement from current `main`", and GitHub
+  // records both times.
+  const source = pr(380, { openedAt: at(100), closedAt: at(300) });
+
+  const older = pr(370, { state: 'open', replaces: 380, openedAt: at(110) });
+  const byNumber = lineage(older, [source], [source]);
+  assert.equal(byNumber.allowed, false);
+  assert.match(byNumber.detail, /a replacement is opened after the unit it replaces/u);
+
+  const inFlight = pr(390, { state: 'open', replaces: 380, openedAt: at(200) });
+  const byTime = lineage(inFlight, [source], [source]);
+  assert.equal(byTime.allowed, false);
+  assert.match(byTime.detail, /close the exhausted unit, then open its replacement/u);
+
+  const replacement = pr(390, { state: 'open', replaces: 380, openedAt: at(310) });
+  assert.equal(lineage(replacement, [source], [source]).allowed, true);
+
+  // And from `main`, not stacked on another branch.
+  const stacked = pr(391, { state: 'open', replaces: 380, openedAt: at(320), base: 'claude/other' });
+  const offBase = lineage(stacked, [source], [source]);
+  assert.equal(offBase.allowed, false);
+  assert.match(offBase.detail, /opened from `main`/u);
+});
+
+test('T7: the controller records the admitted claim, once', async () => {
   const head = 'a'.repeat(40);
   const claim = {
-    number: 360,
+    ...pr(360, { state: 'open', replaces: 354 }),
     additions: 40,
     deletions: 0,
     changed_files: 2,
-    state: 'open',
     draft: true,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/360',
     head: { sha: head },
@@ -155,6 +226,7 @@ test('T7: the controller hands the label over when it admits the claim', async (
   };
   const calls = [];
   const client = {
+    async pullRequest() { return claim; },
     async pullRequestFiles() { return [{ filename: 'scripts/review-efficiency.mjs' }]; },
     async replacementLineage() {
       return {
@@ -162,11 +234,8 @@ test('T7: the controller hands the label over when it admits the claim', async (
         replacementPullRequests: [pr(354), claim],
       };
     },
-    async markReplacementRequired(number) { calls.push(['add', number]); },
-    async transferReplacementObligation(source, target) {
-      await this.markReplacementRequired(target);
-      calls.push(['remove', source]);
-    },
+    async recordReplacementClaim(number, source) { calls.push(['claim', number, source]); },
+    async markReplacementRequired(number) { calls.push(['exhaust', number]); },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus(...args) { calls.push(['status', ...args]); },
     async updateStickyComment() { calls.push(['sticky']); },
@@ -174,20 +243,16 @@ test('T7: the controller hands the label over when it admits the claim', async (
 
   const result = await reviewGate.enforceReviewScope(client, claim, head);
   assert.equal(result.allowed, true, result.detail ?? '');
-  assert.deepEqual(calls, [['add', 360], ['remove', 354]]);
+  assert.deepEqual(calls, [['claim', 360, 354]], 'one write, nothing removed');
 });
 
-test('T8: a refused claim moves nothing', async () => {
-  // The debt moves only when the claim is admitted. A unit whose scope fails for
-  // any other reason has not been admitted, and taking the label off the
-  // exhausted unit there would discharge a debt nobody has picked up.
+test('T8: a refused claim records nothing', async () => {
   const head = 'b'.repeat(40);
   const oversized = {
-    number: 360,
+    ...pr(360, { state: 'open', replaces: 354 }),
     additions: 4_000,
     deletions: 0,
     changed_files: 40,
-    state: 'open',
     draft: true,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/360',
     head: { sha: head },
@@ -203,8 +268,7 @@ test('T8: a refused claim moves nothing', async () => {
         replacementPullRequests: [pr(354), oversized],
       };
     },
-    async markReplacementRequired(number) { calls.push(['add', number]); },
-    async transferReplacementObligation(source) { calls.push(['remove', source]); },
+    async recordReplacementClaim(...args) { calls.push(['claim', ...args]); },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus() {},
     async updateStickyComment() {},
@@ -215,152 +279,66 @@ test('T8: a refused claim moves nothing', async () => {
   assert.deepEqual(calls, []);
 });
 
-test('L1: the labels the previous rule left behind do not block the repository', () => {
-  // Under the rule this replaces, the label stayed on the exhausted unit and a
-  // merged pull request naming it discharged the debt. Reading a label as a live
-  // obligation without migrating that state blocks every `Replaces: none` unit
-  // for good: #344's replacement #349 MERGED, so nothing will ever transfer
-  // #344's label, and the merged unit cannot run the transfer path either.
-  const fresh = pr(400, { state: 'open' });
-  const legacy = [...LEGACY_SETTLED_OBLIGATIONS].map((number) => pr(number));
-
-  assert.equal(
-    lineage(fresh, legacy, [pr(349, { merged: true, replaces: 344 })]).allowed,
-    true,
-    'the migrated labels are history, not a live debt',
-  );
-
-  // The migration is those numbers and nothing else. A label this change did not
-  // inherit is a live obligation, whatever its body or its claimants say.
-  const current = lineage(fresh, [...legacy, pr(380)], [pr(381, { merged: true, replaces: 380 })]);
-  assert.equal(current.allowed, false);
-  assert.match(current.detail, /exhausted PR #380 still requires a replacement/u);
-});
-
-test('L2: a unit already owing scope cannot take on a second obligation', () => {
-  // #360 exhausted its own review rounds and holds the label for that. Editing
-  // its body to claim #354 as well would hand it a debt it is not carrying: the
-  // label is a boolean, both obligations collapse into it, and merging #360
-  // would discharge #354's unresolved scope along with its own.
-  const exhausted = pr(354);
-  const alreadyOwing = pr(360, { state: 'open', replaces: 354 });
-
-  const result = lineage(alreadyOwing, [exhausted, alreadyOwing], [exhausted]);
-  assert.equal(result.allowed, false);
-  assert.match(result.detail, /PR #360 already carries a replacement obligation/u);
-  assert.match(result.detail, /cannot also take on #354/u);
-
-  // The claimant that was HANDED #354's debt is the same shape minus the pending
-  // source, and it must still pass — that is T2, and this refusal must not eat it.
-  assert.equal(lineage(alreadyOwing, [alreadyOwing], [exhausted]).allowed, true);
-});
-
-test('L3: an interrupted transfer is finished, not treated as a second debt', () => {
-  // A label move is two calls, and the second can fail: the claimant holds the
-  // debt and the source has not let go. The state is identical to a unit
-  // absorbing a second obligation, and refusing it — as L2 must — would mean the
-  // transfer is never retried and the loop stays blocked until someone repairs
-  // the labels by hand.
-  //
-  // The two histories differ in one durable, already-recorded fact: a unit that
-  // owes its OWN scope reached the review-round limit on its own heads.
-  const exhausted = pr(354);
-  const claimant = pr(360, { state: 'open', replaces: 354 });
-  const bothLabelled = [exhausted, claimant];
-
-  const resumed = lineage(claimant, bothLabelled, [exhausted], false);
-  assert.equal(resumed.allowed, true, 'a claimant that never exhausted is mid-transfer');
-  assert.equal(resumed.transferFrom, 354, 'naming the source again finishes the removal');
-
-  // The same state, from a unit that DID exhaust its own rounds, is L2's refusal.
-  const absorbing = lineage(claimant, bothLabelled, [exhausted], true);
-  assert.equal(absorbing.allowed, false);
-  assert.match(absorbing.detail, /already carries a replacement obligation/u);
-});
-
-test('L4: the controller reads that fact only when this unit holds the label', async () => {
-  // The discriminator costs an API call, so it is read in the one state that
-  // needs it — and an unreadable history keeps the refusing answer rather than
-  // completing a transfer that may never have started.
+test('L4: a unit that changed while it was assessed has no claim recorded', async () => {
+  // The files, lineage and body are read asynchronously. A head pushed or a
+  // declaration edited while those were in flight would otherwise record a claim
+  // for scope this controller never assessed — and the recorded claim would then
+  // admit that unit on every later evaluation.
   const head = 'c'.repeat(40);
-  const body = [
-    '<!-- correction-owner: claude -->',
-    '## Objective',
-    '',
-    'Replaces: #354',
-    '',
-    '- [x] `concurrency-serialization` — n/a',
-    '- [x] `old-release-migration-compatibility` — n/a',
-    '- [x] `trigger-alternate-writers` — n/a',
-    '- [x] `authorization-tenancy` — n/a',
-    '- [x] `ci-reproduce-first` — probes RED first',
-    '',
-  ].join('\n');
-  const claimant = {
-    number: 360,
+  const assessed = {
+    ...pr(360, { state: 'open', replaces: 354 }),
     additions: 40,
     deletions: 0,
     changed_files: 2,
-    state: 'open',
     draft: true,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/360',
     head: { sha: head },
-    body,
+    body: [
+      '<!-- correction-owner: claude -->',
+      '## Objective',
+      '',
+      'Replaces: #354',
+      '',
+      '- [x] `concurrency-serialization` — n/a',
+      '- [x] `old-release-migration-compatibility` — n/a',
+      '- [x] `trigger-alternate-writers` — n/a',
+      '- [x] `authorization-tenancy` — n/a',
+      '- [x] `ci-reproduce-first` — probes RED first',
+      '',
+    ].join('\n'),
   };
 
-  const run = async ({ labelled, comments = [], reviews = [], failHistory = false }) => {
+  const run = async (live) => {
     const calls = [];
     const client = {
-      async pullRequest() { return claimant; },
+      async pullRequest() { return live; },
       async pullRequestFiles() { return [{ filename: 'scripts/review-efficiency.mjs' }]; },
       async replacementLineage() {
         return {
-          requiredReplacements: labelled.map((source) => ({ pullRequest: source })),
-          replacementPullRequests: [pr(354), claimant],
+          requiredReplacements: [{ pullRequest: pr(354) }],
+          replacementPullRequests: [pr(354), assessed],
         };
       },
-      async reviewComments() {
-        calls.push(['history']);
-        if (failHistory) throw new Error('GitHub 502');
-        return comments;
-      },
-      async reviews() { return reviews; },
-      async markReplacementRequired(number) { calls.push(['add', number]); },
-      async transferReplacementObligation(source, target) {
-        await this.markReplacementRequired(target);
-        calls.push(['remove', source]);
-      },
-      async setDraft(live, draft) { return { ...live, draft }; },
+      async recordReplacementClaim(...args) { calls.push(['claim', ...args]); },
+      async setDraft(live_, draft) { return { ...live_, draft }; },
       async setStatus() {},
       async updateStickyComment() {},
     };
-    const result = await reviewGate.enforceReviewScope(client, claimant, head);
-    return { result, calls };
+    return { result: await reviewGate.enforceReviewScope(client, assessed, head), calls };
   };
 
-  // Ordinary claim: this unit holds no label, so the history is never read.
-  const plain = await run({ labelled: [pr(354)] });
-  assert.equal(plain.result.allowed, true, plain.result.detail ?? '');
-  assert.deepEqual(plain.calls, [['add', 360], ['remove', 354]]);
+  const pushed = await run({ ...assessed, head: { sha: 'd'.repeat(40) } });
+  assert.equal(pushed.result.superseded, true);
+  assert.deepEqual(pushed.calls, [], 'a new head is assessed on its own');
 
-  // Both labelled, no finding-bearing head of its own: the transfer resumes.
-  const interrupted = await run({ labelled: [pr(354), claimant] });
-  assert.equal(interrupted.result.allowed, true, interrupted.result.detail ?? '');
-  assert.deepEqual(interrupted.calls, [['history'], ['add', 360], ['remove', 354]]);
+  const edited = await run({
+    ...assessed,
+    body: assessed.body.replace('Replaces: #354', 'Replaces: #350'),
+  });
+  assert.equal(edited.result.superseded, true);
+  assert.deepEqual(edited.calls, []);
 
-  // Both labelled, and this unit reached the round limit on two of its own
-  // heads: it owes its own scope and cannot take on another.
-  const twoHeads = [
-    { commit_id: 'd'.repeat(40), user: { login: 'chatgpt-codex-connector[bot]' }, body: 'P1 one' },
-    { commit_id: 'e'.repeat(40), user: { login: 'chatgpt-codex-connector[bot]' }, body: 'P1 two' },
-  ];
-  const owing = await run({ labelled: [pr(354), claimant], comments: twoHeads });
-  assert.equal(owing.result.allowed, false);
-  assert.match(owing.result.detail, /already carries a replacement obligation/u);
-  assert.deepEqual(owing.calls, [['history']], 'nothing is moved');
-
-  // Unreadable history refuses rather than guessing.
-  const unreadable = await run({ labelled: [pr(354), claimant], failHistory: true });
-  assert.equal(unreadable.result.allowed, false);
-  assert.deepEqual(unreadable.calls, [['history']]);
+  const unchanged = await run(assessed);
+  assert.equal(unchanged.result.allowed, true, unchanged.result.detail ?? '');
+  assert.deepEqual(unchanged.calls, [['claim', 360, 354]]);
 });

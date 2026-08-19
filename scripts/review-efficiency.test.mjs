@@ -227,6 +227,10 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
     pullRequest: {
       number: 346,
       state: 'closed',
+      // GitHub's own timestamps: a replacement is opened after the unit it
+      // replaces is closed, which is what makes it a replacement.
+      created_at: '2026-08-17T09:00:00Z',
+      closed_at: '2026-08-17T11:00:00Z',
       head: {
         ref: 'codex/review-round-reset',
         repo: { full_name: 'JagPat/PMCvitan' },
@@ -238,6 +242,7 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
     number: 347,
     body: preReviewBody(),
     head: exhausted.pullRequest.head,
+    created_at: '2026-08-17T11:05:00Z',
   });
   const undeclared = assessReviewScope(reopened, {
     changedFiles: currentFiles,
