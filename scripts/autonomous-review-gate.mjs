@@ -16,7 +16,6 @@ import {
   assessReviewScope,
   isRetryableReviewFailureDescription,
   codexFindingHeads,
-  claimedSource,
   claimsFromTimeline,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   replacementClaimLabel,
@@ -622,12 +621,15 @@ export class GitHubClient {
   // evaluation records the same claim once. Nothing is removed: the exhausted
   // unit keeps its own marker, and the claim is what settles it.
   async recordReplacementClaim(number, source) {
-    const label = replacementClaimLabel(source);
+    const label = replacementClaimLabel(number);
     await this.ensureLabel(label, {
       color: '0e8a16',
-      description: `Admitted as the replacement for #${source}`,
+      description: `Replaced by #${number}`,
     });
-    await this.request(`/repos/${this.repository}/issues/${number}/labels`, {
+    // On the SOURCE: the exhausted units are the ones this controller
+    // enumerates, so a record there is always found again — including after
+    // somebody removes the label, since the timeline keeps the event.
+    await this.request(`/repos/${this.repository}/issues/${source}/labels`, {
       method: 'POST',
       body: { labels: [label] },
     });
@@ -650,13 +652,15 @@ export class GitHubClient {
   // Where a branch left the default branch. Targeting `main` is not the same as
   // being cut from it: an old branch opened as a pull request today would
   // otherwise look like a fresh replacement.
-  async forkPoint(base, head) {
+  // Does `head` contain every commit on `base`? That is what "built on current
+  // `main`" means. The merge base's DATE cannot answer it: a source closing
+  // after the newest commit on `main` would make every valid replacement look
+  // stale, and the loop would strand until somebody else pushed to `main`.
+  async containsDefaultHead(base, head) {
     const comparison = await this.request(
       `/repos/${this.repository}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
     );
-    return comparison?.merge_base_commit?.commit?.committer?.date
-      ?? comparison?.merge_base_commit?.commit?.author?.date
-      ?? null;
+    return comparison?.behind_by === 0;
   }
 
   async replacementLineage() {
@@ -670,20 +674,17 @@ export class GitHubClient {
     const pullsByNumber = new Map(
       pullRequests.map((pullRequest) => [pullRequest.number, pullRequest]),
     );
-    // Claims are resolved for every candidate that LOOKS like it carries one, so
-    // a forged label costs one timeline read and then does not count.
-    await Promise.all(pullRequests
-      .filter((candidate) => (candidate?.labels ?? []).some(
-        (label) => claimedSource(label?.name) !== null))
-      .map(async (candidate) => {
-        candidate.verifiedClaims = await this.verifiedClaims(candidate.number);
-      }));
+    // Each exhausted unit's own timeline carries who was admitted to replace it.
+    // Reading it for every exhausted unit — a handful at any time — rather than
+    // following whatever claim labels currently exist means removing a label
+    // cannot erase an admitted lineage.
     const requiredReplacements = await Promise.all(
       issues
         .filter((issue) => issue.pull_request)
         .map(async (issue) => ({
           pullRequest: pullsByNumber.get(issue.number)
             ?? await this.pullRequest(issue.number),
+          claims: await this.verifiedClaims(issue.number),
         })),
     );
     return { requiredReplacements, replacementPullRequests: pullRequests };
@@ -1228,16 +1229,16 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
   // Only a unit declaring a numbered replacement needs its fork point, so the
   // comparison is fetched only then. An unreadable one is unproven, and unproven
   // refuses.
-  let forkPoint = null;
+  let containsDefaultHead = null;
   if (replacementSource(pullRequest.body) !== null) {
     try {
-      forkPoint = await client.forkPoint(
+      containsDefaultHead = await client.containsDefaultHead(
         pullRequest.base?.ref ?? 'main',
         expectedHead,
       );
     } catch (error) {
       console.warn(
-        `Could not resolve the fork point for #${pullRequest.number}: ${error.message}`,
+        `Could not compare #${pullRequest.number} against its base: ${error.message}`,
       );
     }
   }
@@ -1247,7 +1248,7 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
     requireReplacementLineage: pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR,
     requiredReplacements: lineage?.requiredReplacements,
     replacementPullRequests: lineage?.replacementPullRequests,
-    forkPoint,
+    containsDefaultHead,
   });
   if (result.allowed) {
     // The claim is admitted, so it is recorded. This label is the lineage:

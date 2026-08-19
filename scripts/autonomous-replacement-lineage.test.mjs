@@ -28,7 +28,6 @@ import {
   LEGACY_SETTLED_OBLIGATIONS,
   assessReplacementLineage,
   claimsFromTimeline,
-  replacementClaimLabel,
 } from './review-efficiency.mjs';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
@@ -44,18 +43,10 @@ function pr(number, {
   state = 'closed',
   merged = false,
   replaces = null,
-  // Claims the CONTROLLER recorded, as the caller resolves them from the issue
-  // timeline. `labels` is what the repository shows; the two differ exactly when
-  // somebody other than the controller applied one.
-  claims = [],
-  labels = null,
   openedAt = at(number),
   closedAt = state === 'closed' ? at(number + 0.5) : null,
   base = 'main',
 } = {}) {
-  const verified = claims.map((claim) => (typeof claim === 'number'
-    ? { source: claim, recordedAt: at(number + 1) }
-    : claim));
   return {
     number,
     state,
@@ -63,21 +54,33 @@ function pr(number, {
     closed_at: closedAt,
     merged_at: merged ? closedAt : null,
     base: { ref: base },
-    verifiedClaims: verified,
-    labels: (labels ?? verified.map((claim) => claim.source))
-      .map((source) => ({ name: replacementClaimLabel(source) })),
     body: `## Objective\n\nReplaces: ${replaces === null ? 'none' : `#${replaces}`}\n`,
   };
 }
 
+// An exhausted unit and the claims the CONTROLLER recorded on it, as resolved
+// from its own timeline. A number is shorthand for "recorded shortly after that
+// claimant opened".
+function exhausted(source, claimants = []) {
+  return {
+    pullRequest: source,
+    claims: claimants.map((claim) => (typeof claim === 'number'
+      ? { claimant: claim, recordedAt: at(claim + 1) }
+      : claim)),
+  };
+}
+
 // `labelled` is what carries `review-replacement-required`.
-const lineage = (pullRequest, labelled, all = [], forkPoint = at(9_000)) =>
+// `labelled` is what carries `review-replacement-required`: either a pull
+// request (no claims recorded) or an `exhausted(...)` entry that carries them.
+const lineage = (pullRequest, labelled, all = [], containsDefaultHead = true) =>
   assessReplacementLineage({
     pullRequest,
-    requiredReplacements: labelled.map((source) => ({ pullRequest: source })),
+    requiredReplacements: labelled.map((entry) => (entry?.pullRequest
+      ? entry
+      : { pullRequest: entry, claims: [] })),
     replacementPullRequests: [...all, pullRequest],
-    // Where the claimant's branch left `main`. Fixtures that care state it.
-    forkPoint,
+    containsDefaultHead,
   });
 
 test('T1: admitting a claim names the obligation to record', () => {
@@ -90,10 +93,10 @@ test('T1: admitting a claim names the obligation to record', () => {
 });
 
 test('T2: a recorded claim is re-read, not re-admitted', () => {
-  const exhausted = pr(354);
-  const claim = pr(360, { state: 'open', replaces: 354, claims: [354] });
+  const source = pr(354);
+  const claim = pr(360, { state: 'open', replaces: 354 });
 
-  const result = lineage(claim, [exhausted], [exhausted]);
+  const result = lineage(claim, [exhausted(source, [360])], [source]);
   assert.equal(result.allowed, true, result.detail ?? '');
   assert.equal(result.claimFor, null, 'nothing more to record');
 });
@@ -102,25 +105,27 @@ test('T3: a chain of dead replacements never strands the debt', () => {
   // The 2026-08-18 shape. #360 claimed #354 and exhausted, #361 claimed #360.
   // Until #361 merges the debt is owed; when it does, the whole chain settles —
   // the state the prose rule could never reach without a human deleting a label.
-  const exhausted = [pr(354), pr(360, { claims: [354] })];
-  const open = pr(361, { state: 'open', replaces: 360, claims: [360] });
+  const first = pr(354);
+  const second = pr(360, { replaces: 354 });
+  const owed = [exhausted(first, [360]), exhausted(second, [361])];
+  const open = pr(361, { state: 'open', replaces: 360 });
   const fresh = pr(400, { state: 'open' });
 
-  const blocked = lineage(fresh, exhausted, [...exhausted, open]);
+  const blocked = lineage(fresh, owed, [first, second, open]);
   assert.equal(blocked.allowed, false);
   assert.match(blocked.detail, /exhausted PR #354 still requires a replacement/u);
 
-  const merged = pr(361, { merged: true, replaces: 360, claims: [360] });
-  assert.equal(lineage(fresh, exhausted, [...exhausted, merged]).allowed, true);
+  const merged = pr(361, { merged: true, replaces: 360 });
+  assert.equal(lineage(fresh, owed, [first, second, merged]).allowed, true);
 });
 
 test('T4: an obligation still owed blocks fresh work, open or closed', () => {
   const fresh = pr(400, { state: 'open' });
   for (const claimant of [
-    pr(360, { state: 'open', replaces: 354, claims: [354] }),
-    pr(360, { replaces: 354, claims: [354] }),
+    pr(360, { state: 'open', replaces: 354 }),
+    pr(360, { replaces: 354 }),
   ]) {
-    const result = lineage(fresh, [pr(354)], [pr(354), claimant]);
+    const result = lineage(fresh, [exhausted(pr(354), [360])], [pr(354), claimant]);
     assert.equal(result.allowed, false, `a ${claimant.state} claimant settles nothing`);
     assert.match(result.detail, /exhausted PR #354 still requires a replacement/u);
   }
@@ -145,11 +150,11 @@ test('T5: an edited body settles nothing', () => {
 });
 
 test('T6: two units cannot claim one obligation', () => {
-  const exhausted = pr(354);
-  const first = pr(360, { state: 'open', replaces: 354, claims: [354] });
+  const source = pr(354);
+  const first = pr(360, { state: 'open', replaces: 354 });
   const second = pr(361, { state: 'open', replaces: 354 });
 
-  const competing = lineage(second, [exhausted], [exhausted, first]);
+  const competing = lineage(second, [exhausted(source, [360])], [source, first]);
   assert.equal(competing.allowed, false);
   assert.match(competing.detail, /already claimed by PR #360/u);
 });
@@ -178,8 +183,12 @@ test('L2: a recorded claim names its source, so a body cannot redirect it', () =
   // This is what a boolean label could not express, and what the claimant's own
   // review history could not distinguish — an interrupted transfer and a
   // completed transfer of another source look identical in both.
-  const redirected = pr(360, { state: 'open', replaces: 350, claims: [354] });
-  const result = lineage(redirected, [pr(350), pr(354)], [pr(350), pr(354)]);
+  const redirected = pr(360, { state: 'open', replaces: 350 });
+  const result = lineage(
+    redirected,
+    [exhausted(pr(350)), exhausted(pr(354), [360])],
+    [pr(350), pr(354)],
+  );
 
   assert.equal(result.allowed, false);
   assert.match(result.detail, /admitted as the replacement for #354/u);
@@ -248,7 +257,7 @@ test('T7: the controller records the admitted claim, once', async () => {
         replacementPullRequests: [pr(354), claim],
       };
     },
-    async forkPoint() { return at(9_000); },
+    async containsDefaultHead() { return true; },
     async recordReplacementClaim(number, source) { calls.push(['claim', number, source]); },
     async markReplacementRequired(number) { calls.push(['exhaust', number]); },
     async setDraft(live, draft) { return { ...live, draft }; },
@@ -283,7 +292,7 @@ test('T8: a refused claim records nothing', async () => {
         replacementPullRequests: [pr(354), oversized],
       };
     },
-    async forkPoint() { return at(9_000); },
+    async containsDefaultHead() { return true; },
     async recordReplacementClaim(...args) { calls.push(['claim', ...args]); },
     async setDraft(live, draft) { return { ...live, draft }; },
     async setStatus() {},
@@ -335,7 +344,7 @@ test('L4: a unit that changed while it was assessed has no claim recorded', asyn
           replacementPullRequests: [pr(354), assessed],
         };
       },
-      async forkPoint() { return at(9_000); },
+      async containsDefaultHead() { return true; },
       async recordReplacementClaim(...args) { calls.push(['claim', ...args]); },
       async setDraft(live_, draft) { return { ...live_, draft }; },
       async setStatus() {},
@@ -374,8 +383,6 @@ test('P1: a label the controller did not write is not a claim', () => {
     state: 'open',
     replaces: 380,
     openedAt: at(110),
-    labels: [380],                            // shown by GitHub
-    claims: [],                               // never written by the controller
   });
 
   const result = lineage(selfLabelled, [source], [source]);
@@ -384,7 +391,7 @@ test('P1: a label the controller did not write is not a claim', () => {
 
   // And it settles nothing either: a merged unit wearing a self-applied label
   // leaves the obligation exactly where it was.
-  const forged = pr(390, { merged: true, replaces: 380, labels: [380], claims: [] });
+  const forged = pr(390, { merged: true, replaces: 380 });
   const fresh = pr(400, { state: 'open' });
   const blocked = lineage(fresh, [source], [source, forged]);
   assert.equal(blocked.allowed, false);
@@ -396,30 +403,26 @@ test('P2: when two claims race, the earliest recorded one is the claim', () => {
   // read a state with no claim on #354 and both write one. The timeline gives
   // them a total order, so both runs converge on the same answer afterwards
   // without having been serialised.
-  const exhausted = pr(354);
-  const first = pr(360, {
-    state: 'open',
-    replaces: 354,
-    claims: [{ source: 354, recordedAt: at(500) }],
-  });
-  const second = pr(361, {
-    state: 'open',
-    replaces: 354,
-    claims: [{ source: 354, recordedAt: at(501) }],
-  });
-  const all = [exhausted, first, second];
+  const source = pr(354);
+  const first = pr(360, { state: 'open', replaces: 354 });
+  const second = pr(361, { state: 'open', replaces: 354 });
+  const raced = exhausted(source, [
+    { claimant: 360, recordedAt: at(500) },
+    { claimant: 361, recordedAt: at(501) },
+  ]);
+  const all = [source, first, second];
 
-  const loser = lineage(second, [exhausted], all);
+  const loser = lineage(second, [raced], all);
   assert.equal(loser.allowed, false);
   assert.match(loser.detail, /was claimed first by PR #360/u);
 
-  const winner = lineage(first, [exhausted], all);
+  const winner = lineage(first, [raced], all);
   assert.equal(winner.allowed, true, winner.detail ?? '');
 
   // And the loser's merge settles nothing — only the claim that was first does.
   const fresh = pr(400, { state: 'open' });
   const mergedLoser = { ...second, state: 'closed', merged_at: at(600) };
-  const stillOwed = lineage(fresh, [exhausted], [exhausted, first, mergedLoser]);
+  const stillOwed = lineage(fresh, [raced], [source, first, mergedLoser]);
   assert.equal(stillOwed.allowed, false);
   assert.match(stillOwed.detail, /exhausted PR #354 still requires a replacement/u);
 });
@@ -432,27 +435,50 @@ test('P3: a replacement is branched from the default branch, not merely aimed at
   const source = pr(380, { openedAt: at(100), closedAt: at(300) });
   const claimant = pr(390, { state: 'open', replaces: 380, openedAt: at(310) });
 
-  const stale = lineage(claimant, [source], [source], at(200));
+  const stale = lineage(claimant, [source], [source], false);
   assert.equal(stale.allowed, false);
-  assert.match(stale.detail, /branched from `main` after that unit closed/u);
+  assert.match(stale.detail, /built on current `main`; merge `main` into this branch/u);
 
   const unknown = lineage(claimant, [source], [source], null);
-  assert.equal(unknown.allowed, false, 'an unreadable fork point is unproven');
+  assert.equal(unknown.allowed, false, 'an unknown comparison is unproven');
 
-  const fresh = lineage(claimant, [source], [source], at(305));
-  assert.equal(fresh.allowed, true, fresh.detail ?? '');
+  const current = lineage(claimant, [source], [source], true);
+  assert.equal(current.allowed, true, current.detail ?? '');
 });
 
 test('P4: claims are read from the timeline actor, not the label set', () => {
   // The timeline is the only reading of a claim label that means anything: it is
   // server-written and names who applied each one.
   const claims = claimsFromTimeline([
-    { event: 'labeled', label: { name: 'review-replaces-354' }, actor: { login: 'a-collaborator' }, created_at: at(10) },
-    { event: 'labeled', label: { name: 'review-replaces-354' }, actor: { login: 'github-actions[bot]' }, created_at: at(20) },
-    { event: 'labeled', label: { name: 'review-replaces-350' }, actor: { login: 'a-collaborator' }, created_at: at(30) },
+    { event: 'labeled', label: { name: 'review-replaced-by-360' }, actor: { login: 'a-collaborator' }, created_at: at(10) },
+    { event: 'labeled', label: { name: 'review-replaced-by-361' }, actor: { login: 'github-actions[bot]' }, created_at: at(20) },
     { event: 'labeled', label: { name: 'review-replacement-required' }, actor: { login: 'github-actions[bot]' }, created_at: at(40) },
-    { event: 'unlabeled', label: { name: 'review-replaces-354' }, actor: { login: 'a-collaborator' }, created_at: at(50) },
+    { event: 'unlabeled', label: { name: 'review-replaced-by-361' }, actor: { login: 'a-collaborator' }, created_at: at(50) },
   ]);
 
-  assert.deepEqual(claims, [{ source: 354, recordedAt: at(20) }]);
+  assert.deepEqual(claims, [{ claimant: 361, recordedAt: at(20) }],
+    'the collaborator\'s label is not a claim, and removing the real one does not undo it');
+});
+
+test('P5: removing a claim label does not erase the lineage it recorded', () => {
+  // The claim is recorded on the EXHAUSTED unit, whose timeline this controller
+  // reads for every unit awaiting replacement — so the record is found again
+  // whatever the label set now says. Following claim labels instead would mean
+  // deleting one displaces an open claimant, and unsettles a merged one so every
+  // fresh unit in the repository is blocked again.
+  const source = pr(354);
+  const claimant = pr(360, { state: 'open', replaces: 354 });
+  // Recorded by the controller, then unlabelled by somebody. `claims` is what
+  // the timeline still shows.
+  const stillRecorded = exhausted(source, [360]);
+
+  const displacing = pr(361, { state: 'open', replaces: 354 });
+  const displaced = lineage(displacing, [stillRecorded], [source, claimant]);
+  assert.equal(displaced.allowed, false, 'the recorded claimant keeps its claim');
+  assert.match(displaced.detail, /already claimed by PR #360/u);
+
+  const merged = pr(360, { merged: true, replaces: 354 });
+  const fresh = pr(400, { state: 'open' });
+  assert.equal(lineage(fresh, [stillRecorded], [source, merged]).allowed, true,
+    'a merged claimant still settles its source');
 });

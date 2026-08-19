@@ -77,22 +77,30 @@ This repository is designed to progress without the owner's laptop or technical 
   dismiss, or downgrade any finding.
 - `review-replacement-required` marks the exhausted unit and NEVER moves. What
   settles it is a CLAIM: when the trusted controller admits a `Replaces: #N`
-  declaration it labels the claiming unit `review-replaces-N`.
-- A claim is read from the issue TIMELINE, never from the label set. Labels carry
-  no proof of who applied them and anyone who can manage a pull request here can
-  apply one; the timeline records the actor and the time of every label event and
-  nothing can edit it afterwards. A label the controller did not write is not a
-  claim, and removing one does not undo a claim it did write.
+  declaration it labels the EXHAUSTED unit `review-replaced-by-<claimant>`.
+- On the source, not the claimant, and read from the issue TIMELINE rather than
+  the label set. Labels carry no proof of who applied them and anyone who can
+  manage a pull request here can apply one; the timeline records the actor and
+  the time of every label event and nothing can edit it afterwards. The exhausted
+  units are the ones this controller enumerates, so a record there is always
+  found again — a claimant-side record could only be found by following the
+  labels that are currently present, and removing one would erase an admitted
+  lineage. A label the controller did not write is not a claim, and removing one
+  it did write does not undo the claim.
 - Discharge follows the claims, and every edge is one the controller wrote: a
   MERGED unit claiming #N settles it, and so does a claiming unit that closed
   unmerged and is itself settled. A claim still open settles nothing — work in
   flight is not work merged — so an exhausted unit keeps refusing every
   `Replaces: none` unit in the repository until its chain reaches a merge.
 - A claimant must BE a replacement: opened after the unit it replaces, opened
-  after that unit closed, and BRANCHED from the default branch after that
-  closure — targeting `main` is where a pull request is going, not where its
-  branch came from, and a branch cut from a stale `main` would otherwise settle
-  an obligation with scope that never carried it.
+  after that unit closed, and CONTAINING the current default-branch head —
+  targeting `main` is where a pull request is going, not what it is built on, and
+  a branch cut from a stale `main` would otherwise settle an obligation with
+  scope that never carried it. Containment is the check because a merge base's
+  commit DATE is the date of a commit on `main`, not the moment a branch was
+  cut: an exhausted unit closing after the newest commit on `main` would make
+  every valid replacement look stale and strand the loop until somebody else
+  pushed. A claimant that has fallen behind since clears it by merging `main`.
 - Two claims can be admitted at once: nothing in GitHub makes label writes
   mutually exclusive, so both runs can read a state with no claim and write one.
   The timeline orders them, the EARLIEST recorded claim is the claim, and the

@@ -279,9 +279,9 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
     requireReplacementLineage: true,
     requiredReplacements: [exhausted],
     replacementPullRequests: [],
-    // Where the replacement's branch left `main`: after the exhausted unit
-    // closed, which is what makes it a replacement rather than older work.
-    forkPoint: '2026-08-17T11:02:00Z',
+    // The replacement is built on the current default-branch head, which is what
+    // "opened from current `main`" means and what can actually be checked.
+    containsDefaultHead: true,
   });
   assert.equal(declared.allowed, true, declared.detail ?? '');
 });
