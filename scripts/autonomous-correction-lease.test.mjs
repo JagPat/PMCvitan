@@ -344,11 +344,11 @@ test('L10: a scope notice carries the verdict that is actually failing', async (
   // verdicts this gate publishes. This PR was itself refused for replacement
   // lineage and told to split, which would not have cleared it.
   const lineage = await watch({
-    statuses: [status('scope: exhausted PR #361 still requires a replacement; declare Replaces: #361 before starting fresh work')],
+    statuses: [status('scope: exhausted PR #361 has no open replacement; open that replacement (declaring Replaces: #361)')],
   });
   assert.match(
     lineage.published,
-    /exhausted PR #361 still requires a replacement/u,
+    /exhausted PR #361 has no open replacement/u,
     'the specific verdict is carried',
   );
   assert.doesNotMatch(
