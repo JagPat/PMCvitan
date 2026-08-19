@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS "ActivityDependency" (
   "revokedAt"      TIMESTAMP(3),
   "revokedById"    TEXT,
   "revokedByName"  TEXT,
-  CONSTRAINT "ActivityDependency_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "ActivityDependency_pkey" PRIMARY KEY ("id")
   -- NOT NULL is not the same as answerable. An empty string satisfies it, and so does a run of
   -- spaces or a lone tab — and the freeze below then makes that unusable value permanent, so an
   -- edge whose sequencing someone later disputes cannot say who imposed it. The point of storing
@@ -139,12 +139,22 @@ CREATE TABLE IF NOT EXISTS "ActivityDependency" (
   -- LETTER v, so E' \t\n\r\v\f' both fails to strip a real vertical tab and strips the v out of
   -- ordinary words. The POSIX class covers every ASCII whitespace character and cannot be
   -- mis-assembled.
-  CONSTRAINT "ActivityDependency_attribution_check"
-    CHECK ("createdById" !~ '^[[:space:]]*$' AND "createdByName" !~ '^[[:space:]]*$')
+  --
+  -- The constraint itself is added as a GUARDED ALTER below, not inline. `CREATE TABLE IF NOT
+  -- EXISTS` is skipped WHOLESALE when the table already exists, and `schema.prisma` describes this
+  -- table — so a baseline or `db push`-shaped reconciliation produces the table, its columns and
+  -- its foreign keys but never a CHECK. Written inline, this constraint would be silently absent
+  -- on exactly the databases that most need it, and the migration would report success.
 );
 
 DO $$
 BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_attribution_check'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_attribution_check"
+      CHECK ("createdById" !~ '^[[:space:]]*$' AND "createdByName" !~ '^[[:space:]]*$');
+  END IF;
   -- ── Attribution is bound to a MEMBER OF THIS PROJECT ────────────────────────────────────────
   -- A global `User` reference proves the id names somebody, not that the somebody had anything to
   -- do with this site. Without the project half, an edge on project A can be attributed —
