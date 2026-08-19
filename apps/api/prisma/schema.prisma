@@ -869,6 +869,10 @@ model Membership {
   @@unique([projectId, id])
   @@index([userId])
   responsibleFor ActivityRequirement[]
+  // schedule dependency edges this member imposed / withdrew (schedule B1) — attribution is
+  // FK-backed and project-scoped, never a bare global user id
+  scheduleDependenciesCreated ActivityDependency[] @relation("ScheduleDependencyAuthor")
+  scheduleDependenciesRevoked ActivityDependency[] @relation("ScheduleDependencyRevoker")
 }
 
 // A browser Web Push subscription (Phase 8). Endpoint is unique per device;
@@ -1149,8 +1153,6 @@ model User {
   paymentsRecorded Payment[] @relation("paymentsRecorded")
   paymentsReversed PaymentReversal[] @relation("paymentsReversed")
   advancesPaid VendorAdvance[] @relation("advancesPaid")
-  scheduleDependenciesCreated ActivityDependency[] @relation("ScheduleDependencyAuthor")
-  scheduleDependenciesRevoked ActivityDependency[] @relation("ScheduleDependencyRevoker")
 }
 
 // Durable, purpose-bound proof used only to establish or reset a password. It
@@ -2268,7 +2270,12 @@ model ActivityDependency {
   // so a foreign key that exists only in SQL can be diffed as drift and DROPPED by a later
   // generated migration — after which forged creator ids become insertable again and the freeze
   // below preserves them permanently.
-  createdBy     User     @relation("ScheduleDependencyAuthor", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  //
+  // `Membership`, not `User`: a global user reference proves the id names somebody, not that the
+  // somebody had anything to do with THIS site, so an edge on one project could be attributed —
+  // permanently — to a member of another. Same identity every other project-scoped evidence
+  // column binds to (`ActivityRequirement.responsibleId`, `Inspection.assigneeId`, …).
+  createdBy     Membership @relation("ScheduleDependencyAuthor", fields: [projectId, createdById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
   createdById   String
   createdByName String
   // Edges are REVOKED, never deleted. See the migration: the creation provenance is frozen against
@@ -2278,12 +2285,19 @@ model ActivityDependency {
   revokedAt     DateTime?
   revokedById   String?
   revokedByName String?
-  revokedBy     User?    @relation("ScheduleDependencyRevoker", fields: [revokedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  revokedBy     Membership? @relation("ScheduleDependencyRevoker", fields: [projectId, revokedById], references: [projectId, userId], onDelete: NoAction, onUpdate: NoAction)
 
-  // the edge's candidate key — one edge per ordered pair, and the target an edge-scoped
-  // dependency override references (a successor-wide override would clear the wrong
-  // predecessors, so the override must name the exact pair)
-  @@unique([projectId, successorId, predecessorId])
+  // One edge per ordered pair — and the target an edge-scoped dependency override references (a
+  // successor-wide override would clear the wrong predecessors, so the override must name the
+  // exact pair). Enforced by the PARTIAL unique index
+  // `ActivityDependency_projectId_successorId_predecessorId_key ... WHERE "revokedAt" IS NULL`,
+  // declared in raw SQL because Prisma cannot express a partial unique.
+  //
+  // Deliberately NOT `@@unique`: the pair is unique among LIVE edges only, and a revoked edge may
+  // legitimately share it with the replacement that succeeds it. Declaring it unconditionally
+  // would tell Prisma something false twice over — `findUnique` could match ambiguously once a
+  // pair has been re-imposed, and a later generated migration could install an unconditional
+  // constraint that rejects the supported history.
   @@index([projectId, predecessorId])
   @@index([projectId, successorId])
 }

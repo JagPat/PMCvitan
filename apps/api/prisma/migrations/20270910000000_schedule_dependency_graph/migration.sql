@@ -5,33 +5,16 @@
 -- forecast computation and the readiness gate are separate units; this one installs the graph and
 -- the rules that keep it honest, so nothing built on top has to re-check them.
 --
--- Additive and retry-safe: one new table, no existing table altered, every object guarded so a
--- second application is a no-op. Nothing in the running release reads or writes this table, so it
--- is inert on deploy.
+-- Additive: one new table, no existing table altered.
 
--- ── Pre-flight: this table must arrive ROW-FREE on a FIRST installation ───────────────────────
--- Evaluated BEFORE anything below is created, because the question it asks — "were these edges
--- written before the guards that judge them existed?" — stops being answerable the moment this
--- migration installs those guards. Asking it at the end of the file would read the triggers this
--- run just created and pass unconditionally, which is a check that cannot fail rather than a
--- check that holds.
---
---   fresh install  → the table does not exist yet; nothing to judge.
---   re-application → the guards are already present, so every row was cycle-checked on its way
---                    in, and this migration stays re-runnable for an operator repair.
---   anything else  → rows exist that no guard ever saw. Stop, and change nothing.
 -- ONE TRANSACTION, on every path that can apply this file.
 --
 -- `prisma migrate deploy` already wraps a migration, but that is not the only way this file runs:
--- `psql -f` does NOT, and then every statement autocommits. That matters most at the two
--- DROP TRIGGER / CREATE TRIGGER pairs near the end — between the drop and the create the table has
--- no acyclicity guard at all, and a re-application takes the early "already installed" branch, so
--- it never held the lock either. A concurrent writer inserting opposing edges in that window leaves
--- both rows behind, unchecked, and the recreated trigger only judges what comes after them.
---
--- Wrapping the file makes the preflight lock and both trigger replacements atomic however it is
--- applied. This is the shape `20270610000000_phase5_t6b_status_derivation` already uses for the
--- same hazard.
+-- `psql -f` does NOT, and then every statement autocommits. That matters most at the trigger
+-- replacements near the end — between a drop and its create the table has no acyclicity guard at
+-- all, and a concurrent writer inserting opposing edges in that window leaves both rows behind,
+-- unchecked. Wrapping the file makes the preflight and every replacement atomic however it is
+-- applied. This is the shape `20270610000000_phase5_t6b_status_derivation` already uses.
 BEGIN;
 
 -- Everything below runs in the `public` schema, whoever applies it.
@@ -43,31 +26,97 @@ BEGIN;
 -- table at all — and a re-run would follow the same shadow objects and never notice.
 SET LOCAL search_path = public;
 
--- REFUSE a table that already exists. That is the whole preflight.
+-- ── Preflight: RECOGNIZE, then either proceed or refuse ───────────────────────────────────────
+-- Three states, and the difference between the second and the third is the whole point:
 --
--- This is deliberately blunter than what stood here through three review rounds, and the reason is
--- worth stating, because the elaborate version was the more careful-looking one and it was wrong.
+--   the table is absent            → fresh install. Everything below creates it.
+--   the table is present and is EXACTLY what this migration installs, with every guard in force
+--                                  → this migration is already applied. Every statement below is
+--                                    idempotent and finds its object already there, so a second
+--                                    application is a no-op. That is the operator-repair path
+--                                    (`migrate resolve --rolled-back`, then deploy again) and the
+--                                    repository's re-runnability requirement.
+--   the table is present and is anything else
+--                                  → rows may exist that no guard ever judged. Stop, change
+--                                    nothing, and let a person decide.
 --
--- `ActivityDependency` is a NEW table: nothing on `main` references it, so no deployed database
--- has one. The file is also a single transaction, so a failed apply rolls back completely and
--- leaves no table behind. Between those two facts, the "partial install" this migration used to
--- try to repair — table present, guards missing or half-installed — cannot arise from anything
--- this repository does. Every version of that repair branch had to decide whether the rows already
--- present had been judged, and each answer was wrong in a new way: a decoy trigger on another
--- table, a disabled trigger, a trigger set to REPLICA, a constraint added NOT VALID. Five review
--- rounds went into that branch and none into the graph invariant itself.
+-- An earlier head of this unit refused BOTH of the last two cases with one blunt test, which
+-- bought refusal at the cost of re-runnability. The head before that went the other way and tried
+-- to REPAIR a partial install — adopting whatever rows it found, which is the one thing a guard
+-- cannot honestly do, because "were these edges ever cycle-checked?" is unanswerable after the
+-- fact. This preflight does neither: it only RECOGNIZES a complete, in-force installation, and
+-- refuses everything it does not recognize. Recognition is decidable; adoption is not.
 --
--- So the branch is gone. If the table exists, this migration does not guess what it is or how it
--- got there — it stops and says so, and a person decides. A migration that refuses is repairable;
--- a migration that guesses optimistically installs a guard over rows nothing ever checked.
+-- Why each attribute is checked rather than just the name:
+--   `tgrelid`     — a trigger of the right name on ANOTHER table proves nothing about this one.
+--   `tgenabled`   — 'D' (disabled) and 'R' (REPLICA, inert on an origin server) both read as
+--                   present while enforcing nothing.
+--   `tgfoid`      — a correctly-named trigger bound to some other function is a decoy.
+--   `tgtype`      — EXACT, not a require-bits test: a raising function bound to the wrong events is
+--                   either inert (the seal is missing) or blocks legitimate writes (the table is
+--                   unusable), and a require-bits test reports both healthy. Bits: 1=ROW,
+--                   2=BEFORE, 4=INSERT, 8=DELETE, 16=UPDATE, 32=TRUNCATE.
+--   `convalidated`— a constraint added NOT VALID exists in the catalog and enforces nothing about
+--                   the rows already in the table, which is precisely the population in question.
+--   `indisvalid`  — a failed concurrent build leaves an index that is present and not enforcing.
 DO $$
+DECLARE v_wrong TEXT;
 BEGIN
-  IF to_regclass('public."ActivityDependency"') IS NOT NULL THEN
-    RAISE EXCEPTION 'schedule: "ActivityDependency" already exists. This migration creates that table and does not adopt an existing one, because it cannot know whether the rows in it were ever cycle-checked. Inspect the table and drop it if it is not wanted, then re-run.';
+  IF to_regclass('public."ActivityDependency"') IS NULL THEN
+    RETURN;                                  -- fresh install; there is nothing to recognize
+  END IF;
+
+  SELECT string_agg(x, ', ' ORDER BY x) INTO v_wrong FROM (
+    SELECT 'trigger ' || e.name AS x
+      FROM (VALUES ('ActivityDependency_acyclic',     'activity_dependency_acyclic',      7),
+                   ('ActivityDependency_frozen',      'activity_dependency_frozen',      19),
+                   ('ActivityDependency_no_delete',   'activity_dependency_no_delete',   11),
+                   ('ActivityDependency_no_truncate', 'activity_dependency_no_truncate', 34))
+             AS e(name, fn, tgtype)
+     WHERE NOT EXISTS (
+       SELECT 1 FROM pg_trigger g
+        WHERE g.tgname = e.name
+          AND g.tgrelid = 'public."ActivityDependency"'::regclass
+          AND NOT g.tgisinternal
+          AND g.tgenabled = 'O'
+          AND g.tgfoid::regproc::text = e.fn
+          AND g.tgtype = e.tgtype)
+    UNION ALL
+    SELECT 'constraint ' || c.name
+      FROM (VALUES ('ActivityDependency_pkey'),
+                   ('ActivityDependency_attribution_check'),
+                   ('ActivityDependency_revocation_check'),
+                   ('ActivityDependency_no_self_check'),
+                   ('ActivityDependency_lag_nonneg_check'),
+                   ('ActivityDependency_projectId_fkey'),
+                   ('ActivityDependency_projectId_predecessorId_fkey'),
+                   ('ActivityDependency_projectId_successorId_fkey'),
+                   ('ActivityDependency_createdBy_fkey'),
+                   ('ActivityDependency_revokedBy_fkey')) AS c(name)
+     WHERE NOT EXISTS (
+       SELECT 1 FROM pg_constraint k
+        WHERE k.conname = c.name
+          AND k.conrelid = 'public."ActivityDependency"'::regclass
+          AND k.convalidated)
+    UNION ALL
+    SELECT 'index ' || i.name
+      FROM (VALUES ('ActivityDependency_projectId_successorId_predecessorId_key'),
+                   ('ActivityDependency_projectId_predecessorId_idx'),
+                   ('ActivityDependency_projectId_successorId_idx')) AS i(name)
+     WHERE NOT EXISTS (
+       SELECT 1 FROM pg_class ci
+         JOIN pg_index ix ON ix.indexrelid = ci.oid
+        WHERE ci.relname = i.name
+          AND ix.indrelid = 'public."ActivityDependency"'::regclass
+          AND ix.indisvalid)
+  ) q;
+
+  IF v_wrong IS NOT NULL THEN
+    RAISE EXCEPTION 'schedule: "ActivityDependency" already exists but is not the table this migration installs — % absent or not in force. This migration creates that table and does not adopt an existing one, because it cannot know whether the rows in it were ever cycle-checked. Inspect the table and drop it if it is not wanted, then re-run.', v_wrong;
   END IF;
 END $$;
 
-CREATE TABLE "ActivityDependency" (
+CREATE TABLE IF NOT EXISTS "ActivityDependency" (
   "id"             TEXT NOT NULL,
   "projectId"      TEXT NOT NULL,
   "predecessorId"  TEXT NOT NULL,
@@ -94,115 +143,222 @@ CREATE TABLE "ActivityDependency" (
     CHECK ("createdById" !~ '^[[:space:]]*$' AND "createdByName" !~ '^[[:space:]]*$')
 );
 
--- ── F-C: the recorded creator is a real user ─────────────────────────────────────────────────
--- `createdById` is the evidence of WHO imposed the sequencing constraint, and the freeze below
--- makes whatever lands here permanent. A non-blank string is not an identity: without this a
--- direct writer can record `forged-user` and the freeze preserves the fabrication forever. Bound
--- the way every other attributed record in this repository binds it.
-ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdById_fkey"
-  FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
+DO $$
+BEGIN
+  -- ── Attribution is bound to a MEMBER OF THIS PROJECT ────────────────────────────────────────
+  -- A global `User` reference proves the id names somebody, not that the somebody had anything to
+  -- do with this site. Without the project half, an edge on project A can be attributed —
+  -- permanently, because the freeze below makes it permanent — to a user who is only ever a member
+  -- of project B. That is cross-tenant attribution written into an immutable record.
+  --
+  -- `Membership(projectId, userId)` is the identity every other project-scoped evidence column in
+  -- this repository binds to: `ActivityRequirement.responsibleId`, `Inspection.assigneeId`,
+  -- `DrawingRecipient.userId`, `Activity.completionRequestedById`, `Decision.withdrawnById`.
+  --
+  -- The revoker reference is nullable and the key is MATCH SIMPLE, so a live edge — which has no
+  -- revoker — switches the reference off rather than failing it. That is the intended reading
+  -- here: the revocation CHECK below decides whether the three columns may be null at all, and
+  -- this key decides who the revoker may be once there is one.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_createdBy_fkey'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdBy_fkey"
+      FOREIGN KEY ("projectId", "createdById") REFERENCES "Membership"("projectId", "userId")
+      ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_revokedBy_fkey'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_revokedBy_fkey"
+      FOREIGN KEY ("projectId", "revokedById") REFERENCES "Membership"("projectId", "userId")
+      ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
 
--- ── Containment: both endpoints are activities of THIS row's project ──────────────────────────
--- Each foreign key carries the edge's own `projectId`, so an edge between two different projects
--- does not exist as a representable row. That is the difference between an invariant and a
--- convention: no service, import, script or hand-written UPDATE can produce one.
-ALTER TABLE "ActivityDependency"
-  ADD CONSTRAINT "ActivityDependency_projectId_fkey"
-  FOREIGN KEY ("projectId") REFERENCES "Project"("id")
-  ON DELETE RESTRICT ON UPDATE CASCADE;
-ALTER TABLE "ActivityDependency"
-  ADD CONSTRAINT "ActivityDependency_projectId_predecessorId_fkey"
-  FOREIGN KEY ("projectId", "predecessorId") REFERENCES "Activity"("projectId", "id")
-  ON DELETE NO ACTION ON UPDATE NO ACTION;
-ALTER TABLE "ActivityDependency"
-  ADD CONSTRAINT "ActivityDependency_projectId_successorId_fkey"
-  FOREIGN KEY ("projectId", "successorId") REFERENCES "Activity"("projectId", "id")
-  ON DELETE NO ACTION ON UPDATE NO ACTION;
+  -- ── Containment: both endpoints are activities of THIS row's project ────────────────────────
+  -- Each foreign key carries the edge's own `projectId`, so an edge between two different projects
+  -- does not exist as a representable row. That is the difference between an invariant and a
+  -- convention: no service, import, script or hand-written UPDATE can produce one.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_projectId_fkey'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_projectId_fkey"
+      FOREIGN KEY ("projectId") REFERENCES "Project"("id")
+      ON DELETE RESTRICT ON UPDATE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_projectId_predecessorId_fkey'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency"
+      ADD CONSTRAINT "ActivityDependency_projectId_predecessorId_fkey"
+      FOREIGN KEY ("projectId", "predecessorId") REFERENCES "Activity"("projectId", "id")
+      ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_projectId_successorId_fkey'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency"
+      ADD CONSTRAINT "ActivityDependency_projectId_successorId_fkey"
+      FOREIGN KEY ("projectId", "successorId") REFERENCES "Activity"("projectId", "id")
+      ON DELETE NO ACTION ON UPDATE NO ACTION;
+  END IF;
 
--- One edge per ordered pair. Also the candidate key an EDGE-SCOPED dependency override must
+  -- An activity waiting for itself can never start. Cheap to state, so state it.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_no_self_check'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_no_self_check"
+      CHECK ("predecessorId" <> "successorId");
+  END IF;
+  -- A NEGATIVE lag would let a successor begin before its predecessor finished, which is the one
+  -- thing this table exists to forbid. Zero is legal and is the common case.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_lag_nonneg_check'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check"
+      CHECK ("lagWorkingDays" >= 0);
+  END IF;
+
+  -- ── The revocation tuple moves together, or not at all ──────────────────────────────────────
+  -- `revokedByName IS NOT NULL` is stated EXPLICITLY, and it is not redundant with the regex
+  -- beside it. A CHECK constraint PASSES when its expression evaluates to UNKNOWN, and
+  -- `NULL !~ '...'` is UNKNOWN — so the revoked arm without this clause accepts a revocation
+  -- carrying a stamp and an id but NO NAME, which is exactly the erasure the DELETE seal below
+  -- exists to prevent, arriving through a different door. Three-valued logic is the recurring trap
+  -- in this file's history; every test that can meet a NULL is now written out two-valued in full.
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                  WHERE conname = 'ActivityDependency_revocation_check'
+                    AND conrelid = 'public."ActivityDependency"'::regclass) THEN
+    ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_revocation_check"
+      CHECK (("revokedAt" IS NULL AND "revokedById" IS NULL AND "revokedByName" IS NULL)
+             OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL
+                 AND "revokedByName" IS NOT NULL
+                 AND "revokedByName" !~ '^[[:space:]]*$'));
+  END IF;
+END $$;
+
+-- One LIVE edge per ordered pair. Also the candidate key an EDGE-SCOPED dependency override must
 -- reference: an override attached to the successor alone would excuse every predecessor at once,
 -- so the override has to be able to name the exact pair.
--- PARTIAL, because a revoked edge stays on the record. Re-adding a constraint that was withdrawn
+-- PARTIAL, because a revoked edge stays on the record. Re-imposing a constraint that was withdrawn
 -- earlier is an ordinary re-plan and must be allowed; what must not be allowed is two LIVE edges
 -- for one ordered pair.
-CREATE UNIQUE INDEX "ActivityDependency_projectId_successorId_predecessorId_key"
+CREATE UNIQUE INDEX IF NOT EXISTS "ActivityDependency_projectId_successorId_predecessorId_key"
   ON "ActivityDependency"("projectId", "successorId", "predecessorId")
   WHERE "revokedAt" IS NULL;
-CREATE INDEX "ActivityDependency_projectId_predecessorId_idx"
+CREATE INDEX IF NOT EXISTS "ActivityDependency_projectId_predecessorId_idx"
   ON "ActivityDependency"("projectId", "predecessorId");
-CREATE INDEX "ActivityDependency_projectId_successorId_idx"
+CREATE INDEX IF NOT EXISTS "ActivityDependency_projectId_successorId_idx"
   ON "ActivityDependency"("projectId", "successorId");
 
--- An activity waiting for itself can never start. Cheap to state, so state it.
-ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_no_self_check"
-  CHECK ("predecessorId" <> "successorId");
--- A NEGATIVE lag would let a successor begin before its predecessor finished, which is the one
--- thing this table exists to forbid. Zero is legal and is the common case.
-ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check"
-  CHECK ("lagWorkingDays" >= 0);
-
--- ── Endpoint identity is frozen ───────────────────────────────────────────────────────────────
--- The cycle check below runs at INSERT. If an edge could later be re-pointed, a cycle would walk
--- straight past it: insert A->B legally, then UPDATE it to B->A. Freezing the endpoints closes
--- that door and keeps the check meaningful, and it costs nothing real — re-sequencing is removing
--- an edge and adding the one you meant, which is also the honest audit trail. `lagWorkingDays`
--- stays editable, so an ordinary re-plan is an ordinary UPDATE.
-
--- Removal must not launder attribution.
---
--- The freeze below makes the creation provenance permanent against UPDATE. It had nothing to hold
--- on to against DELETE: an edge attributed to one person could be removed and the identical pair
+-- ── Removal must not launder attribution ─────────────────────────────────────────────────────
+-- The freeze below makes the record permanent against UPDATE. It has nothing to hold on to
+-- against DELETE: an edge attributed to one person could be removed and the identical pair
 -- re-inserted under another name, with both statements accepted and the original author gone from
 -- the record. Since a disputed sequence is exactly what the attribution exists to answer, the
 -- supported way to remove an edge is to REVOKE it — the row stays, both attributions stay, and the
--- partial unique above lets the pair be re-added afterwards.
---
--- The three revocation columns move together or not at all: a stamp without an author would be the
--- same erasure by another route.
-ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_revocation_check"
-  CHECK (("revokedAt" IS NULL AND "revokedById" IS NULL AND "revokedByName" IS NULL)
-         OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL
-             AND "revokedByName" !~ '^[[:space:]]*$'));
-ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_revokedById_fkey"
-  FOREIGN KEY ("revokedById") REFERENCES "User"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
-
+-- partial unique above lets the pair be re-imposed afterwards.
 CREATE OR REPLACE FUNCTION activity_dependency_no_delete() RETURNS TRIGGER LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
 BEGIN
   RAISE EXCEPTION 'schedule: dependency edge % is not deletable — who imposed this sequencing constraint, and who withdrew it, are both part of the record. Revoke it instead (set revokedAt/revokedById/revokedByName).', OLD."id";
 END $$;
 
+DROP TRIGGER IF EXISTS "ActivityDependency_no_delete" ON "ActivityDependency";
 CREATE TRIGGER "ActivityDependency_no_delete"
   BEFORE DELETE ON "ActivityDependency"
   FOR EACH ROW EXECUTE FUNCTION activity_dependency_no_delete();
 
--- Pinned like its sibling. This function resolves no relation — it only compares OLD to NEW — so
--- unlike the acyclicity guard it was never exploitable through the caller's path. It is pinned
--- anyway because "which of these two seals reads a table?" is not a question a future reader
--- should have to re-derive to know which one is safe.
-CREATE OR REPLACE FUNCTION activity_dependency_endpoints_frozen() RETURNS TRIGGER LANGUAGE plpgsql
+-- A ROW trigger does not fire for TRUNCATE. TRUNCATE is a separate, statement-level event, and
+-- without this seal one statement erases every edge and every attribution the DELETE seal above
+-- was installed to protect — available to exactly the ordinary application role, which is the
+-- writer this table is defended against. The repository already seals its evidence tables this way
+-- (`T3CRepairAction_no_truncate`, `DecisionEvent_t4a_no_truncate`, `Decision_t4b_no_truncate`), and
+-- the sanctioned test and seed resets disable the named seal for the duration of the reset rather
+-- than the seal being left out.
+--
+-- What this does NOT cover, stated rather than left to be discovered: `DROP TABLE` and
+-- `ALTER TABLE ... DROP COLUMN` fire no table trigger at all, so neither seal sees them. Only an
+-- EVENT trigger does, and this file does not install one. `20270225000000_phase4_t3_correction3`
+-- does install one for `T3CRepairAction`, because that table is the before-image evidence a repair
+-- path depends on and creating the guard is worth requiring a superuser deploy role for. This
+-- table is not in that position: it holds no rows on any deployed database, no service writes it
+-- yet, and a dropped table is caught as drift by the next migration rather than read as a
+-- schedule. Making a brand-new table's install depend on superuser to close a DDL hole nothing
+-- currently reaches would be the more dangerous trade.
+CREATE OR REPLACE FUNCTION activity_dependency_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
 BEGIN
-  IF NEW."projectId" IS DISTINCT FROM OLD."projectId"
-     OR NEW."predecessorId" IS DISTINCT FROM OLD."predecessorId"
-     OR NEW."successorId" IS DISTINCT FROM OLD."successorId" THEN
-    RAISE EXCEPTION 'schedule: the endpoints of dependency edge % are frozen — remove the edge and add the one you mean.', OLD."id";
+  -- A TRUNCATE that erases NOTHING erases nothing, and it is permitted.
+  --
+  -- This is not a softening of the seal, it is the seal being about the right thing. What must not
+  -- be destroyed is the RECORD — who imposed each constraint and who withdrew it. With no edges
+  -- there is no such record, and refusing anyway would mean refusing every fixture reset that
+  -- CASCADEs through "Activity" (this table has foreign keys into it) on databases where no edge
+  -- has ever been written. That would buy nothing and would push the many callers into disabling
+  -- the seal routinely — which is how a seal becomes a formality.
+  --
+  -- Race-free: TRUNCATE takes an ACCESS EXCLUSIVE lock on the table BEFORE firing this trigger, so
+  -- no concurrent transaction can insert the first edge between this test and the erasure.
+  IF NOT EXISTS (SELECT 1 FROM public."ActivityDependency") THEN
+    RETURN NULL;
   END IF;
-  -- WHO constrained the schedule, and WHEN, is the whole point of recording it. A sequencing
-  -- dispute is answerable only if the attribution cannot be rewritten afterwards, so the creation
-  -- provenance is frozen exactly as hard as the endpoints are. Freezing the endpoints alone left
-  -- an alternate writer able to keep the constraint and change who imposed it.
-  IF NEW."createdById" IS DISTINCT FROM OLD."createdById"
-     OR NEW."createdByName" IS DISTINCT FROM OLD."createdByName"
-     OR NEW."createdAt" IS DISTINCT FROM OLD."createdAt" THEN
-    RAISE EXCEPTION 'schedule: the creation provenance of dependency edge % is frozen — who imposed a constraint, and when, is not rewritable.', OLD."id";
+  RAISE EXCEPTION 'schedule: "ActivityDependency" holds the sequencing record — who imposed each constraint and who withdrew it — and is never truncated. Revoke edges individually; a sanctioned destructive reset disables "ActivityDependency_no_truncate" by name for the duration of the reset.';
+END $$;
+
+DROP TRIGGER IF EXISTS "ActivityDependency_no_truncate" ON "ActivityDependency";
+CREATE TRIGGER "ActivityDependency_no_truncate"
+  BEFORE TRUNCATE ON "ActivityDependency"
+  FOR EACH STATEMENT EXECUTE FUNCTION activity_dependency_no_truncate();
+
+-- ── The row is frozen; the ONE permitted transition is live → revoked ─────────────────────────
+-- This replaces three separate column freezes that between them left three doors open, and the
+-- single rule is both stronger and easier to check than the list was:
+--
+--   NOTHING about an edge changes, ever, except that a LIVE edge may be REVOKED, ONCE.
+--
+--   endpoints   — the cycle check runs at INSERT. If an edge could be re-pointed afterwards, a
+--                 cycle would walk straight past it: insert A->B legally, then UPDATE it to B->A.
+--   lag         — the lag is part of the sequencing claim, not a display attribute. Editing it in
+--                 place leaves the frozen creation attribution saying that whoever imposed a
+--                 seven-day constraint imposed today's zero-day one, with no record of the person
+--                 who actually re-planned it. Changing a lag is revoking the edge and imposing the
+--                 one you mean — the honest audit trail, and exactly what the partial unique index
+--                 above makes room for.
+--   attribution — who constrained the schedule, and when, is the whole point of recording it.
+--   revocation  — once withdrawn, the withdrawal is evidence too. Left unfrozen, a direct writer
+--                 could re-attribute the withdrawal to someone else, or set the three columns back
+--                 to NULL and resurrect the edge — which also returns a live edge to the graph
+--                 without passing the acyclicity trigger at all, since that trigger fires on
+--                 INSERT.
+--
+-- The frozen half is compared as JSONB with the three revocation keys removed, rather than as a
+-- list of column comparisons. A column added to this table later is then frozen BY DEFAULT: the
+-- next person to widen the row cannot silently create a fourth mutable field by forgetting to add
+-- it to a list. That is the failure this rewrite is fixing, so it should not be re-introduced in
+-- the fix.
+CREATE OR REPLACE FUNCTION activity_dependency_frozen() RETURNS TRIGGER LANGUAGE plpgsql
+SET search_path = pg_catalog, public AS $$
+BEGIN
+  IF to_jsonb(NEW) - 'revokedAt' - 'revokedById' - 'revokedByName'
+     IS DISTINCT FROM
+     to_jsonb(OLD) - 'revokedAt' - 'revokedById' - 'revokedByName' THEN
+    RAISE EXCEPTION 'schedule: dependency edge % is frozen — its endpoints, lag and creation attribution are the record of a sequencing decision and are not rewritable. Revoke the edge and impose the one you mean.', OLD."id";
   END IF;
+
+  IF OLD."revokedAt" IS NOT NULL THEN
+    RAISE EXCEPTION 'schedule: dependency edge % was already revoked by % at % — a withdrawal is evidence, and is neither re-attributable nor reversible. Impose a new edge instead.',
+      OLD."id", OLD."revokedByName", OLD."revokedAt";
+  END IF;
+
   RETURN NEW;
 END $$;
 
-CREATE TRIGGER "ActivityDependency_endpoints_frozen"
+DROP TRIGGER IF EXISTS "ActivityDependency_endpoints_frozen" ON "ActivityDependency";
+DROP TRIGGER IF EXISTS "ActivityDependency_frozen" ON "ActivityDependency";
+CREATE TRIGGER "ActivityDependency_frozen"
   BEFORE UPDATE ON "ActivityDependency"
-  FOR EACH ROW EXECUTE FUNCTION activity_dependency_endpoints_frozen();
+  FOR EACH ROW EXECUTE FUNCTION activity_dependency_frozen();
+DROP FUNCTION IF EXISTS activity_dependency_endpoints_frozen();
 
 -- ── No cycles, and no cycles UNDER CONCURRENCY ────────────────────────────────────────────────
 -- The reachability test is the easy half. The hard half is that two sessions can each add one
@@ -304,8 +460,14 @@ BEGIN
     RAISE EXCEPTION 'schedule: activity % cannot depend on itself.', NEW."successorId";
   END IF;
 
-  -- Walk FORWARD from the proposed successor over the edges that already exist. If the proposed
-  -- predecessor is reachable, then predecessor -> successor closes a loop.
+  -- Walk FORWARD from the proposed successor over the LIVE edges that already exist. If the
+  -- proposed predecessor is reachable, then predecessor -> successor closes a loop.
+  --
+  -- `revokedAt IS NULL` is what makes this walk agree with the rest of the file. A revoked edge is
+  -- a withdrawn constraint kept for the record; it binds nothing, and nobody is waiting on it.
+  -- Traversing history would refuse the very re-plan the partial unique index exists to permit:
+  -- revoke A -> B, and the legitimate replacement B -> A is rejected as a cycle through an edge
+  -- that was withdrawn precisely to make room for it.
   --
   -- The walk carries NO path and dedupes on activity identity, and that is a correctness property
   -- rather than a tidiness one. Carrying a path forces `UNION ALL`, because two routes to the same
@@ -322,6 +484,7 @@ BEGIN
       FROM public."ActivityDependency" d
       JOIN reachable r ON d."predecessorId" = r."activityId"
      WHERE d."projectId" = NEW."projectId"
+       AND d."revokedAt" IS NULL
   )
   SELECT EXISTS (SELECT 1 FROM reachable r WHERE r."activityId" = NEW."predecessorId")
     INTO v_closes_loop;
@@ -352,6 +515,7 @@ BEGIN
         SELECT DISTINCT ON (d."successorId") d."successorId", d."predecessorId"
           FROM public."ActivityDependency" d
          WHERE d."projectId" = NEW."projectId"
+           AND d."revokedAt" IS NULL
            AND d."predecessorId" = ANY(v_frontier)
            AND NOT (d."successorId" = ANY(v_seen))
          ORDER BY d."successorId", d."predecessorId"
@@ -382,6 +546,7 @@ BEGIN
   RETURN NEW;
 END $$;
 
+DROP TRIGGER IF EXISTS "ActivityDependency_acyclic" ON "ActivityDependency";
 CREATE TRIGGER "ActivityDependency_acyclic"
   BEFORE INSERT ON "ActivityDependency"
   FOR EACH ROW EXECUTE FUNCTION activity_dependency_acyclic();

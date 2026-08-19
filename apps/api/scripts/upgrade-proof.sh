@@ -3704,9 +3704,9 @@ echo "=== schedule B1: the activity dependency graph over a legacy database ==="
 assert "B1: a legacy database upgrades ROW-FREE — no edge predates the guards that judge them" \
   "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
   "0"
-assert "B1: the containment FKs, both CHECKs, the ordered-pair key and both seals are installed" \
-  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conname IN ('ActivityDependency_projectId_fkey','ActivityDependency_projectId_predecessorId_fkey','ActivityDependency_projectId_successorId_fkey','ActivityDependency_no_self_check','ActivityDependency_lag_nonneg_check'))::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname='ActivityDependency_projectId_successorId_predecessorId_key')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('ActivityDependency_acyclic','ActivityDependency_endpoints_frozen'))::text;" \
-  "5|1|2"
+assert "B1: the containment FKs, the project-scoped attribution FKs, the CHECKs, the ordered-pair key and all four seals are installed" \
+  "SELECT (SELECT COUNT(*) FROM pg_constraint WHERE conrelid='\"ActivityDependency\"'::regclass AND convalidated AND conname IN ('ActivityDependency_projectId_fkey','ActivityDependency_projectId_predecessorId_fkey','ActivityDependency_projectId_successorId_fkey','ActivityDependency_createdBy_fkey','ActivityDependency_revokedBy_fkey','ActivityDependency_no_self_check','ActivityDependency_lag_nonneg_check','ActivityDependency_revocation_check'))::text || '|' || (SELECT COUNT(*) FROM pg_indexes WHERE indexname='ActivityDependency_projectId_successorId_predecessorId_key')::text || '|' || (SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgenabled='O' AND tgrelid='\"ActivityDependency\"'::regclass AND tgname IN ('ActivityDependency_acyclic','ActivityDependency_frozen','ActivityDependency_no_delete','ActivityDependency_no_truncate'))::text;" \
+  "8|1|4"
 # the guard is only correct because it serializes; assert the lock is actually in the shipped body
 assert "B1: the cycle guard serializes on the project schedule-graph advisory lock (its own key namespace)" \
   "SELECT (prosrc LIKE '%pg_advisory_xact_lock%' AND prosrc LIKE '%vitan:schedule-graph%')::text FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
@@ -3719,6 +3719,11 @@ $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1: could not add the extra fixtu
 INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd","status")
 VALUES('ACT-P1C','p1','Third project-1 activity','Hall',0,5,'done'),
       ('ACT-P3B','p3','Second pre-T4 activity','Hall',0,5,'done');
+-- a real, active person on the OTHER project — the identity a cross-tenant attribution would use
+INSERT INTO "User"("id","projectId","role","name","email","passwordHash")
+VALUES('UPB1-U3','p3','pmc','Other-tenant PMC','upb1-u3@vitan.in','h') ON CONFLICT DO NOTHING;
+INSERT INTO "Membership"("id","projectId","userId","role","status")
+VALUES('UPB1-M3','p3','UPB1-U3','pmc','active') ON CONFLICT DO NOTHING;
 SQL
 
 # PRECISION FIRST — a legal edge between two activities of ONE legacy project commits. Without
@@ -3748,7 +3753,16 @@ assert_rejects "B1: a CYCLE — ACT-1 -> ACT-2 already stands, so ACT-2 -> ACT-1
   "dependency cycle"
 assert_rejects "B1: RE-POINTING an accepted edge, the route by which a cycle would evade an insert-time check" \
   "UPDATE \"ActivityDependency\" SET \"predecessorId\"='ACT-2', \"successorId\"='ACT-1' WHERE \"id\"='UPB1-E1'" \
-  "endpoints of dependency edge"
+  "is frozen"
+assert_rejects "B1: EDITING THE LAG in place, which would leave the frozen attribution describing a constraint nobody imposed" \
+  "UPDATE \"ActivityDependency\" SET \"lagWorkingDays\"=0 WHERE \"id\"='UPB1-E1'" \
+  "is frozen"
+assert_rejects "B1: attribution to a person who is a member of ANOTHER project — a real user, the wrong site" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-XT','p1','ACT-1','ACT-P1C','UPB1-U3','Other-tenant PMC')" \
+  "createdBy_fkey"
+assert_rejects "B1: attribution to a user id that names nobody at all" \
+  "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-XF','p1','ACT-1','ACT-P1C','forged-user','Legacy PMC')" \
+  "createdBy_fkey"
 assert_rejects "B1: attribution that is present but not answerable — a name of pure whitespace" \
   "INSERT INTO \"ActivityDependency\"(\"id\",\"projectId\",\"predecessorId\",\"successorId\",\"createdById\",\"createdByName\") VALUES ('UPB1-W','p1','ACT-1','ACT-P1C','USER-1',E'\\t ')" \
   "attribution_check"
@@ -3789,9 +3803,47 @@ assert_rejects "B1: DELETING an edge, which would launder who imposed the constr
 assert_rejects "B1: a revocation with no one attached to it" \
   "UPDATE \"ActivityDependency\" SET \"revokedAt\"=now() WHERE \"id\"='UPB1-E1'" \
   "revocation_check"
+# `NULL !~ '...'` is UNKNOWN and a CHECK PASSES on UNKNOWN, so a revoked arm that tests only the
+# regex accepts a withdrawal with no recorded revoker — the same erasure the DELETE seal refuses.
+assert_rejects "B1: a revocation carrying a stamp and an id but NO NAME, which three-valued logic would wave through" \
+  "UPDATE \"ActivityDependency\" SET \"revokedAt\"=now(), \"revokedById\"='USER-1', \"revokedByName\"=NULL WHERE \"id\"='UPB1-E1'" \
+  "revocation_check"
+assert_rejects "B1: TRUNCATE, which no row-level seal sees — one statement would erase every edge and both attributions" \
+  "TRUNCATE TABLE \"ActivityDependency\"" \
+  "never truncated"
 assert "B1: after every rejection the graph still holds exactly the one legal edge" \
   "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
   "1"
+
+# PRECISION for the whole revocation lifecycle: the seals above must refuse REWRITING history, not
+# refuse the one legitimate transition. A withdrawal lands, keeps both attributions, and frees the
+# ordered pair — including in the reverse direction, which is the re-plan the partial unique index
+# exists for and which a cycle walk over history rather than over LIVE edges would refuse.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1 precision: a fully attributed revocation was refused"; FAIL=1; }
+UPDATE "ActivityDependency"
+   SET "revokedAt"=now(), "revokedById"='USER-1', "revokedByName"='Legacy PMC'
+ WHERE "id"='UPB1-E1';
+SQL
+assert "B1 precision: a fully attributed revocation lands, and BOTH attributions survive on the row" \
+  "SELECT \"createdByName\" || '/' || \"revokedByName\" FROM \"ActivityDependency\" WHERE \"id\"='UPB1-E1';" \
+  "Legacy PMC/Legacy PMC"
+assert_rejects "B1: RE-ATTRIBUTING a withdrawal — who withdrew a constraint is as much the record as who imposed it" \
+  "UPDATE \"ActivityDependency\" SET \"revokedByName\"='Someone Else' WHERE \"id\"='UPB1-E1'" \
+  "already revoked"
+assert_rejects "B1: UN-REVOKING an edge, which would also return it to the graph without ever passing the cycle check" \
+  "UPDATE \"ActivityDependency\" SET \"revokedAt\"=NULL, \"revokedById\"=NULL, \"revokedByName\"=NULL WHERE \"id\"='UPB1-E1'" \
+  "already revoked"
+# ACT-1 -> ACT-2 was refused as a cycle while it stood. Withdrawn, it binds nothing.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  B1 precision: the reverse edge was refused after the original was revoked"; FAIL=1; }
+INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+VALUES ('UPB1-E2','p1','ACT-2','ACT-1','USER-1','Legacy PMC');
+SQL
+assert "B1 precision: with the original withdrawn, the reverse edge is an ordinary re-plan and is accepted" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\" WHERE \"revokedAt\" IS NULL;" \
+  "1"
+assert "B1: the withdrawn edge is still on the record beside its replacement" \
+  "SELECT COUNT(*)::text FROM \"ActivityDependency\";" \
+  "2"
 
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
