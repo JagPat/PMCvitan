@@ -110,10 +110,20 @@ export function replacementSource(body) {
  * A claimant that is still OPEN discharges nothing: work in flight is not work
  * merged, and fresh work must still wait. Only a dead link transfers the debt
  * forward.
+ *
+ * Every edge must also be provable from data no pull-request body can rewrite:
+ * a link must still have been alive when its source closed. Neither a higher
+ * number nor an exhaustion label is enough on its own.
  */
 function dischargedReplacements(requiredReplacements, replacementPullRequests) {
+  // Both lists carry the same server records, and an exhausted unit is not
+  // always among the candidates, so the source of an edge is looked up in
+  // either.
   const byNumber = new Map(
-    replacementPullRequests
+    [
+      ...requiredReplacements.map(({ pullRequest: source }) => source),
+      ...replacementPullRequests,
+    ]
       .filter((candidate) => Number.isInteger(candidate?.number))
       .map((candidate) => [candidate.number, candidate]),
   );
@@ -122,11 +132,42 @@ function dischargedReplacements(requiredReplacements, replacementPullRequests) {
   // edge let an edited historical body forge a backward hop — exhausted #354,
   // closed #100 naming it, merged #200 naming #100 — and discharge an obligation
   // no successor ever replaced. Bodies are editable, so that is a forgery path.
+  //
+  // Numbers alone order only the OPENING of two units, which is not proof of
+  // lineage. An unrelated unit opened after #354 can exhaust its OWN review
+  // rounds and close while #354 is still under review; its body — editable by
+  // anyone who can edit a pull request — is then changed to name #354, and a
+  // merged replacement of that unit would discharge scope it never carried.
+  //
+  // What no body can rewrite is when GitHub closed each unit. A replacement
+  // carries its source's unresolved scope forward, so it must still have been
+  // alive when the source closed. Usually it is opened afterwards (30 to 60
+  // seconds after, in #354 → #360, #360 → #361, #365 → #366, #371 → #372 and
+  // #367 → #373), but not always: #349 was opened while #344 was still under
+  // review and merged seven hours after #344 closed, which is a legitimate
+  // replacement and must stay one. Requiring only that the link outlive its
+  // source admits that history and still refuses the forgery, whose whole
+  // shape is a link that had already ended.
+  //
+  // A source with no recorded closure owes nothing yet, and a timestamp that
+  // cannot be read proves nothing; both are refused. That is a strictly
+  // narrower gate than the label alone, and an operator can still clear a
+  // label by hand.
+  const ended = (candidate) => Date.parse(candidate?.merged_at ?? candidate?.closed_at ?? '');
+  const outlived = (candidate, source) => {
+    const sourceEnded = ended(byNumber.get(source));
+    const candidateEnded = ended(candidate);
+    return Number.isFinite(sourceEnded)
+      && Number.isFinite(candidateEnded)
+      && candidateEnded > sourceEnded;
+  };
+
   const claimants = new Map();
   for (const candidate of replacementPullRequests) {
     const source = replacementSource(candidate?.body);
     if (source === null || !Number.isInteger(candidate?.number)) continue;
     if (candidate.number <= source) continue;
+    if (candidate.state === 'closed' && !outlived(candidate, source)) continue;
     if (!claimants.has(source)) claimants.set(source, []);
     claimants.get(source).push(candidate);
   }

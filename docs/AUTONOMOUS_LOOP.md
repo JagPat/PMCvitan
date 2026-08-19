@@ -81,11 +81,20 @@ This repository is designed to progress without the owner's laptop or technical 
   that later unit carries the unresolved scope of everything before it. A
   replacement still open discharges nothing; work in flight is not work merged.
   Every link is chronological — a replacement is opened after the unit it
-  replaces — and every link is itself an exhausted unit, because that is the only
-  way the gate could have authorised it as a replacement. Both conditions exist
-  because pull request bodies are editable: without them an unrelated closed PR
-  whose body names an exhausted unit becomes a link, and a merged PR naming
-  *that* discharges an obligation nothing ever replaced.
+  replaces — every link is itself an exhausted unit, because that is the only
+  way the gate could have authorised it as a replacement, and every closed link
+  OUTLIVED its source, because a replacement carries the source's unresolved
+  scope forward and so must still have been alive when the source closed. All
+  three conditions exist because pull request bodies are editable and the first
+  two are satisfiable by an unrelated unit: one opened after #354 can exhaust
+  its own rounds and close while #354 is still under review, and a body edited
+  afterwards to name #354 plus a merged replacement of *that* would discharge an
+  obligation nothing ever carried. Closure times are GitHub's, not the body's.
+  A replacement may be DRAFTED while its source is still open — #349 was, and
+  merged seven hours after #344 closed — so the check is on the closures, not
+  the openings; what it cannot admit is a link that had already ended. A link
+  closed in the same batch as its source proves nothing either way and is
+  refused: that chain is dead, and the source needs a fresh replacement.
   Without the transitive step the debt strands permanently: on 2026-08-18 #354
   reached the limit, #360 replaced it and reached the limit too, and #361
   replaced #360, so nothing would ever name #354 again. Every `Replaces: none`

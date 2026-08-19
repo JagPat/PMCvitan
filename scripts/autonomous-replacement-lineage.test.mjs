@@ -21,11 +21,28 @@ import assert from 'node:assert/strict';
 
 import { assessReplacementLineage } from './review-efficiency.mjs';
 
-function pr(number, { state = 'closed', merged = false, replaces = null, body = null } = {}) {
+// GitHub's own timestamps, which no pull-request body can edit. By default a
+// unit is opened `number` minutes into the day and closed thirty seconds later,
+// which is the ordinary shape of a chain here — #354 closed 04:08:59Z and #360
+// opened 04:09:53Z, #367 closed 13:35:51Z and #373 opened 13:38:36Z. Fixtures
+// that need a different history state it explicitly.
+const DAY = Date.parse('2026-08-18T00:00:00Z');
+const at = (minutes) => new Date(DAY + minutes * 60_000).toISOString();
+
+function pr(number, {
+  state = 'closed',
+  merged = false,
+  replaces = null,
+  body = null,
+  openedAt = at(number),
+  closedAt = state === 'closed' ? at(number + 0.5) : null,
+} = {}) {
   return {
     number,
     state,
-    merged_at: merged ? '2026-08-18T00:00:00Z' : null,
+    created_at: openedAt,
+    closed_at: closedAt,
+    merged_at: merged ? closedAt : null,
     body: body ?? `## Objective\n\nReplaces: ${replaces === null ? 'none' : `#${replaces}`}\n`,
   };
 }
@@ -206,4 +223,62 @@ test('R6: only an exhausted unit can carry an obligation forward', () => {
     lineage(fresh, [p354], [p354, pr(360, { replaces: 354, merged: true }), fresh]).allowed,
     true,
   );
+});
+
+test('R7: a link that had already ended never carries the obligation forward', () => {
+  // Exhaustion is not lineage. #360 opened while #354 was still under review,
+  // reached the round limit on its OWN scope, and closed before #354 did. Its
+  // body — editable by anyone who can edit a pull request — is later changed to
+  // `Replaces: #354`, and merged #361 already replaced #360. Nothing in the
+  // numbers, the bodies or the labels tells that apart from a real chain, so
+  // #354's unresolved scope would be discharged by work that never carried it.
+  //
+  // A replacement carries its source's unresolved scope forward, so it must
+  // still have been alive when the source closed. GitHub records both closures
+  // itself, and no body can rewrite them.
+  const p354 = pr(354, { openedAt: at(0), closedAt: at(360) });   // exhausted LAST
+  const unrelated = pr(360, {                                     // exhausted FIRST
+    replaces: 354,                                                // body edited later
+    openedAt: at(60),
+    closedAt: at(120),
+  });
+  const merged = pr(361, { replaces: 360, merged: true, openedAt: at(180), closedAt: at(240) });
+  const fresh = pr(400, { state: 'open', openedAt: at(600) });
+
+  assert.match(
+    lineage(fresh, [p354, unrelated], [p354, unrelated, merged, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'a unit that ended before #354 did cannot have carried #354 forward',
+  );
+
+  // The same shape with the link outliving #354 is the real chain, and still
+  // discharges — the guard proves lineage, it does not ban it.
+  const successor = pr(360, { replaces: 354, openedAt: at(361), closedAt: at(420) });
+  const after = pr(361, { replaces: 360, merged: true, openedAt: at(480), closedAt: at(540) });
+  assert.equal(
+    lineage(fresh, [p354, successor], [p354, successor, after, fresh]).allowed,
+    true,
+  );
+
+  // The merged edge is checked the same way: a merged body edited to name a unit
+  // that outlived it discharges nothing.
+  const forged = pr(390, { replaces: 354, merged: true, openedAt: at(90), closedAt: at(150) });
+  assert.match(
+    lineage(fresh, [p354], [p354, forged, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+  );
+});
+
+test('R8: a replacement drafted before its source closed still discharges it', () => {
+  // The rule the guard must not break, taken from this repository's own history:
+  // #349 was opened at 09:18:05Z while #344 was still under review, #344 closed
+  // at 09:46:58Z, and #349 merged at 17:02:42Z. Opening a replacement in
+  // parallel is legitimate — the gate refuses the DECLARATION until the source
+  // is closed, not the drafting — so ordering by opening time alone would strand
+  // an obligation a merged replacement really did discharge.
+  const p344 = pr(344, { openedAt: at(0), closedAt: at(120) });
+  const p349 = pr(349, { replaces: 344, merged: true, openedAt: at(60), closedAt: at(600) });
+  const fresh = pr(400, { state: 'open', openedAt: at(700) });
+
+  assert.equal(lineage(fresh, [p344], [p344, p349, fresh]).allowed, true);
 });

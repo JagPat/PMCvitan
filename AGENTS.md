@@ -107,7 +107,9 @@ so directly rather than framing it as a suggestion.
   naming a replacement that itself died unmerged, since it carries the same
   unresolved scope. A replacement still open discharges nothing. Without the
   transitive step a mid-chain death strands the original forever and blocks every
-  `Replaces: none` unit in the repository.
+  `Replaces: none` unit in the repository. A dead link only counts if it was
+  itself exhausted AND it outlived the unit it claims — a body naming an
+  exhausted unit is editable, but the closure times behind it are GitHub's.
 
 ## Out of a review's scope
 

@@ -294,8 +294,15 @@ test('replacement declarations must name a closed unit awaiting replacement', ()
 });
 
 test('a merged declared replacement fulfills its source requirement', () => {
+  // Timestamps as GitHub reports them: the replacement is opened after the
+  // exhausted unit is closed, which is what authorises it as a replacement.
   const source = {
-    pullRequest: { number: 346, state: 'closed' },
+    pullRequest: {
+      number: 346,
+      state: 'closed',
+      created_at: '2026-08-17T09:00:00Z',
+      closed_at: '2026-08-17T11:00:00Z',
+    },
     changedFiles: [],
   };
   const result = assessReviewScope(pullRequest({
@@ -309,6 +316,8 @@ test('a merged declared replacement fulfills its source requirement', () => {
     replacementPullRequests: [{
       number: 347,
       state: 'closed',
+      created_at: '2026-08-17T11:01:00Z',
+      closed_at: '2026-08-17T12:00:00Z',
       merged_at: '2026-08-17T12:00:00Z',
       body: '<!-- correction-owner: claude -->\nReplaces: #346',
     }],
