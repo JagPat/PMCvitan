@@ -111,7 +111,9 @@ This repository is designed to progress without the owner's laptop or technical 
   its declaration changed between the two runs. Such a unit is refused, and its
   merge settles NEITHER source: one merge cannot carry two units' unresolved
   scope, and refusing it at assessment is not enough because it may already have
-  merged.
+  merged. Its claims do not HOLD those sources either — a source that can neither
+  be settled nor claimed again would refuse every `Replaces: none` unit for good
+  — so the next unit that declares one takes it on.
 - Being built on current `main` is re-checked on every evaluation, not settled
   once at admission. `main` moves while CI runs and the review waits, and the
   last assessment before merge is the one that matters.

@@ -236,23 +236,48 @@ function admittedClaims(requiredReplacements) {
   return bySource;
 }
 
-/** The exhausted units whose claim chain reaches a merge. */
-function settledSources(claimsBySource, replacementPullRequests) {
-  const byNumber = new Map(replacementPullRequests
-    .filter((candidate) => Number.isInteger(candidate?.number))
-    .map((candidate) => [candidate.number, candidate]));
-  // A unit that ended up first-claimant on more than one source settles NEITHER.
-  // Refusing it at assessment is not enough — it may already have merged, and
-  // one merge cannot carry two units' unresolved scope. Both obligations stay
-  // owed until each has a replacement of its own.
+/**
+ * Units that ended up first-claimant on more than one source.
+ *
+ * Two runs can record claims for one unit against different sources if its
+ * declaration changed between them. Such a unit settles NEITHER: refusing it at
+ * assessment is not enough, because it may already have merged, and one merge
+ * cannot carry two units' unresolved scope.
+ */
+function overloadedClaimants(claimsBySource) {
   const overloaded = new Set();
-  const claimedBy = new Map();
-  for (const [source, claims] of claimsBySource) {
+  const claimedBy = new Set();
+  for (const [, claims] of claimsBySource) {
     const holder = claims[0]?.claimant;
     if (!Number.isInteger(holder)) continue;
     if (claimedBy.has(holder)) overloaded.add(holder);
-    claimedBy.set(holder, source);
+    claimedBy.add(holder);
   }
+  return overloaded;
+  // Read from the FIRST claim on each source, not the first viable one: a unit
+  // that raced itself into two sources is overloaded however those claims are
+  // later superseded, and it must never settle either.
+}
+
+/**
+ * The claim that currently holds a source, if any.
+ *
+ * A claim held by an overloaded claimant does NOT hold it. That unit can never
+ * settle the obligation, so treating its claim as binding would leave the source
+ * unclaimable and unsettleable at once — every `Replaces: none` unit in the
+ * repository refused for good, which is the failure this whole rule exists to
+ * prevent. The obligation is reclaimable, by the next unit that declares it.
+ */
+function holderOf(claimsBySource, source, overloaded) {
+  return (claimsBySource.get(source) ?? [])
+    .find((claim) => !overloaded.has(claim.claimant)) ?? null;
+}
+
+/** The exhausted units whose claim chain reaches a merge. */
+function settledSources(claimsBySource, replacementPullRequests, overloaded) {
+  const byNumber = new Map(replacementPullRequests
+    .filter((candidate) => Number.isInteger(candidate?.number))
+    .map((candidate) => [candidate.number, candidate]));
   const settled = new Map();
   // `walking` breaks a cycle: nothing stops a chain of claims from closing on
   // itself, and a walk that trusted the data would not return.
@@ -260,11 +285,10 @@ function settledSources(claimsBySource, replacementPullRequests) {
     if (settled.has(source)) return settled.get(source);
     if (walking.has(source)) return false;
     walking.add(source);
-    const [claim] = claimsBySource.get(source) ?? [];
+    const claim = holderOf(claimsBySource, source, overloaded);
     const claimant = claim ? byNumber.get(claim.claimant) : undefined;
     const result = (() => {
       if (!claimant) return false;
-      if (overloaded.has(claimant.number)) return false;
       if (claimant.merged_at) return true;
       // A claim still open owes the work itself; only one that died without
       // merging hands the obligation on to its own replacement.
@@ -299,7 +323,8 @@ export function assessReplacementLineage({
   }
 
   const claimsBySource = admittedClaims(requiredReplacements);
-  const settled = settledSources(claimsBySource, replacementPullRequests);
+  const overloaded = overloadedClaimants(claimsBySource);
+  const settled = settledSources(claimsBySource, replacementPullRequests, overloaded);
   const owed = ({ pullRequest: source }) => Number.isInteger(source?.number)
     && !source.merged_at
     && !LEGACY_SETTLED_OBLIGATIONS.has(source.number)
@@ -308,20 +333,22 @@ export function assessReplacementLineage({
     requirement?.pullRequest?.number !== pullRequest?.number && owed(requirement));
   // What this unit was already admitted to replace. The record names both ends,
   // so a body edited to name a different source changes nothing.
-  const holding = [...claimsBySource.entries()]
-    .filter(([, claims]) => claims[0]?.claimant === pullRequest?.number)
-    .map(([source]) => source);
+  const holding = [...claimsBySource.keys()]
+    .filter((source) => holderOf(claimsBySource, source, overloaded)?.claimant
+      === pullRequest?.number);
   const [claimed] = holding;
 
   // Two runs can record claims for one unit against DIFFERENT sources: one
   // re-reads it declaring #A, the declaration changes to #B, and a second
-  // head-specific run reads no claim yet and records #B. Reading only the first
-  // would then admit the unit on whichever source happened to be enumerated
-  // first, and merging it would appear to settle both.
-  if (holding.length > 1) {
+  // head-specific run reads no claim yet and records #B. Such a unit settles
+  // nothing, so it must not be admitted either — and the sources it raced itself
+  // into stay reclaimable by whoever declares them next.
+  if (overloaded.has(pullRequest?.number)) {
+    const raced = [...claimsBySource.keys()]
+      .filter((source) => (claimsBySource.get(source) ?? [])[0]?.claimant === pullRequest?.number);
     return {
       allowed: false,
-      detail: `PR #${pullRequest?.number} holds claims on ${holding.map((source) => `#${source}`).join(' and ')}; `
+      detail: `PR #${pullRequest?.number} holds claims on ${raced.map((source) => `#${source}`).join(' and ')}; `
         + 'one unit carries one obligation',
     };
   }
@@ -360,13 +387,16 @@ export function assessReplacementLineage({
     }
     // Admitted, but not first. Two runs can both write a claim; the earliest
     // recorded one is the claim and this unit is not a replacement.
-    const lost = [...claimsBySource.entries()].find(([, claims]) =>
-      claims.some((claim) => claim.claimant === pullRequest?.number)
-      && claims[0]?.claimant !== pullRequest?.number);
+    const lost = [...claimsBySource.keys()]
+      .map((source) => ({ source, holder: holderOf(claimsBySource, source, overloaded) }))
+      .find(({ source, holder }) => holder
+        && holder.claimant !== pullRequest?.number
+        && (claimsBySource.get(source) ?? []).some(
+          (claim) => claim.claimant === pullRequest?.number));
     if (lost) {
       return {
         allowed: false,
-        detail: `Replaces: #${lost[0]} was claimed first by PR #${lost[1][0].claimant}; `
+        detail: `Replaces: #${lost.source} was claimed first by PR #${lost.holder.claimant}; `
           + 'one obligation has one replacement',
       };
     }
@@ -386,7 +416,7 @@ export function assessReplacementLineage({
         detail: `Replaces: #${declaration.source} is not closed; close the exhausted unit before reviewing its replacement`,
       };
     }
-    const [existing] = claimsBySource.get(declaration.source) ?? [];
+    const existing = holderOf(claimsBySource, declaration.source, overloaded);
     if (existing) {
       return {
         allowed: false,

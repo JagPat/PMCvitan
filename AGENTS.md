@@ -109,7 +109,8 @@ so directly rather than framing it as a suggestion.
   label — a label anyone else wrote is not a claim, and removing one does not
   undo a claim the controller wrote — and among claims racing for one source the
   earliest recorded one wins, ties going to the timeline's order. A unit that
-  ends up holding two claims settles neither.
+  ends up holding two claims settles neither, and the sources it raced itself
+  into are reclaimable by the next unit that declares them.
 - Discharge follows those claims — a merged claimant settles its source, and so
   does a claimant that died unmerged and is itself settled — so a mid-chain
   death strands nothing, and an edited body settles nothing.

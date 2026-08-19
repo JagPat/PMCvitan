@@ -547,3 +547,31 @@ test('C3: claims recorded in the same second keep the timeline order', () => {
   assert.equal(loser.allowed, false);
   assert.match(loser.detail, /was claimed first by PR #361/u);
 });
+
+test('C4: an overloaded claimant does not lock its sources forever', () => {
+  // C2 makes a unit holding two claims settle neither — correctly, since one
+  // merge cannot carry two units' unresolved scope. But if its claims still HELD
+  // those sources, nobody else could claim them either: both obligations would
+  // be unsettleable and unclaimable at once, and every `Replaces: none` unit in
+  // the repository refused for good. That is the failure this whole rule exists
+  // to prevent, so a claim held by an overloaded claimant is reclaimable.
+  const first = pr(350);
+  const second = pr(354);
+  const overloaded = pr(360, { replaces: 354 });        // closed, holding both
+  const both = [exhausted(first, [360]), exhausted(second, [360])];
+
+  const claimant = pr(370, { state: 'open', replaces: 350, openedAt: at(370) });
+  const result = lineage(claimant, both, [first, second, overloaded]);
+  assert.equal(result.allowed, true, result.detail ?? '');
+  assert.equal(result.claimFor, 350, 'the obligation can be taken on again');
+
+  // And once that replacement merges, the source it reclaimed is settled while
+  // the other still waits for one of its own.
+  const merged = pr(370, { merged: true, replaces: 350 });
+  const settledOne = [exhausted(first, [360, 370]), exhausted(second, [360])];
+  const fresh = pr(400, { state: 'open' });
+  const blocked = lineage(fresh, settledOne, [first, second, overloaded, merged]);
+  assert.equal(blocked.allowed, false);
+  assert.match(blocked.detail, /exhausted PR #354 still requires a replacement/u);
+  assert.doesNotMatch(blocked.detail, /#350/u, '#350 was settled by its own replacement');
+});
