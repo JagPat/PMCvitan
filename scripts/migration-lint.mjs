@@ -5,19 +5,24 @@
  * across units, in a small set of shapes. Every check below is one of those shapes, and each cost a
  * full review round (push → CI → promote → review → correct, on the order of an hour) to be told.
  *
- * WHAT IT WILL AND WILL NOT DO. Every check here is meant to be PRECISE — it fires on a fact, not a
- * suspicion — because a linter that cries wolf is read once and disabled, and then it is worse than
- * nothing. Where a rule genuinely needs judgement it is ADVISORY and can be silenced in place with a
- * `-- lint-ok: <reason>` comment on the line above, which records the reason in the diff rather than
- * hiding it. It replaces no review; it removes the findings a reviewer should never have to spend a
- * round on.
+ * WHAT IT WILL AND WILL NOT DO. Every check here fires on a FACT, not a suspicion, because a linter
+ * that cries wolf is read once and disabled — after which it is worse than nothing. There is no
+ * waiver syntax, deliberately: a rule needing one would not have earned a place here. It replaces no
+ * review; it removes the findings a reviewer should never have to spend a round on.
  *
  * Checks
- *   C1  `CREATE TABLE IF NOT EXISTS` carrying INLINE constraints
- *   C2  a protective row trigger on a table with no BEFORE TRUNCATE seal
+ *   C1  `CREATE TABLE IF NOT EXISTS` carrying an INLINE CHECK
  *   C3  a CHECK that a NULL passes, because SQL is three-valued
- *   C4  drift between this migration's physical objects and `schema.prisma`
- *   C5  a trigger reading a row it does not lock (advisory)
+ *   C4  drift between this migration's physical objects and `schema.prisma`, scoped to the tables
+ *       this migration touches (unscoped it is useless — the ledger already carries ~205 entries)
+ *
+ * TWO MORE WERE WRITTEN AND REMOVED, which is worth recording because the reasoning is the whole
+ * design. "A protective row trigger with no BEFORE TRUNCATE seal" fired 75 times across the merged
+ * ledger, and "a trigger reading a row without locking it" fired 126. Both name real questions. But
+ * as GATES they assert a policy this repository has not adopted, and every one of those firings
+ * would have been noise on already-reviewed work. They are questions for a reviewer, not rules for
+ * a script, and they are deleted rather than left disabled — a checker that ships switched off is
+ * just a claim nobody tested.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -40,15 +45,7 @@ export function changedMigrations(baseRef = 'origin/main', cwd = process.cwd()) 
 
 /** Strip line comments so a rule never fires on prose describing it. */
 function code(sql) {
-  return sql.split('\n').map((l) => l.replace(/--(?!\s*lint-ok:).*$/u, '')).join('\n');
-}
-
-/** Lines carrying an explicit, reasoned waiver. */
-function waivers(sql) {
-  const set = new Set();
-  const lines = sql.split('\n');
-  lines.forEach((l, i) => { if (/--\s*lint-ok:\s*\S/u.test(l)) set.add(i + 2); });
-  return set;
+  return sql.split('\n').map((l) => l.replace(/--.*$/u, '')).join('\n');
 }
 
 function lineOf(sql, index) {
@@ -102,45 +99,6 @@ export function c1InlineConstraints(sql) {
   return findings;
 }
 
-// ── C2 ────────────────────────────────────────────────────────────────────────────────────────
-// TRUNCATE fires NO row-level trigger. A protective row trigger — one that RAISEs to refuse a write
-// — is therefore walked straight around by `TRUNCATE`, which needs its own statement-level seal.
-export function c2TruncateGap(sql, sealedTables = new Set()) {
-  const s = code(sql);
-  const guarded = new Map();          // table -> trigger name, for protective row triggers
-  const truncateSealed = new Set(sealedTables);
-
-  const fnRaises = new Set();
-  for (const m of s.matchAll(/CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([A-Za-z0-9_."]+)\s*\(/giu)) {
-    const start = m.index;
-    const end = s.indexOf('$$', s.indexOf('$$', start) + 2);
-    const body = s.slice(start, end > start ? end : s.length);
-    if (/RAISE\s+EXCEPTION/iu.test(body)) fnRaises.add(m[1].replace(/"/gu, '').split('.').pop());
-  }
-
-  const trigRe = /CREATE\s+(?:CONSTRAINT\s+)?TRIGGER\s+"([^"]+)"\s+(BEFORE|AFTER|INSTEAD\s+OF)\s+([\s\S]*?)\sON\s+"([^"]+)"([\s\S]*?)EXECUTE\s+(?:PROCEDURE|FUNCTION)\s+([A-Za-z0-9_."]+)/giu;
-  for (const m of s.matchAll(trigRe)) {
-    const [, name, timing, verbs, table, mid, fn] = m;
-    const isRow = /FOR\s+EACH\s+ROW/iu.test(mid);
-    const fname = fn.replace(/"/gu, '').split('.').pop();
-    if (/TRUNCATE/iu.test(verbs)) truncateSealed.add(table);
-    if (isRow && fnRaises.has(fname)) {
-      if (!guarded.has(table)) guarded.set(table, { name, line: lineOf(s, m.index) });
-    }
-    void timing;
-  }
-
-  return [...guarded.entries()]
-    .filter(([table]) => !truncateSealed.has(table))
-    .map(([table, { name, line }]) => ({
-      check: 'C2', line, table,
-      message: `"${table}" gains the protective row trigger "${name}", but nothing seals TRUNCATE `
-        + 'on it. TRUNCATE fires no row-level trigger, so it walks straight around that guard. Add '
-        + 'a statement-level BEFORE TRUNCATE seal, or waive with `-- lint-ok:` and say why the row '
-        + 'rule need not hold against truncation.',
-    }));
-}
-
 // ── C3 ────────────────────────────────────────────────────────────────────────────────────────
 // A CHECK PASSES when its expression is UNKNOWN, and `NULL !~ '...'` is UNKNOWN. So a bare regex or
 // comparison on a NULLABLE column is not a test at all for exactly the rows it is meant to catch.
@@ -173,34 +131,6 @@ export function c3NullPassesCheck(constraints) {
         + 'test. A CHECK passes when its expression is UNKNOWN, so this admits exactly the rows it '
         + `reads as absent. Definition: ${definition}`,
     }));
-}
-
-// ── C5 ────────────────────────────────────────────────────────────────────────────────────────
-// A trigger that reads a row to decide something, without locking it, decides on a value a
-// concurrent writer may already have changed. Advisory: plenty of reads are legitimately lock-free.
-export function c5UnlockedTriggerRead(sql) {
-  const s = code(sql);
-  const waived = waivers(sql);
-  const findings = [];
-  for (const m of s.matchAll(/CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([A-Za-z0-9_."]+)\s*\([\s\S]*?RETURNS\s+TRIGGER([\s\S]*?)\$\$[\s\S]*?\$\$/giu)) {
-    const body = m[0];
-    const fname = m[1].replace(/"/gu, '');
-    for (const sel of body.matchAll(/SELECT\s[\s\S]{0,400}?\sINTO\s[\s\S]{0,400}?;/giu)) {
-      const stmt = sel[0];
-      if (/FOR\s+(SHARE|UPDATE|NO\s+KEY\s+UPDATE|KEY\s+SHARE)/iu.test(stmt)) continue;
-      if (!/\bFROM\b/iu.test(stmt)) continue;                 // SELECT expr INTO v — reads no row
-      const line = lineOf(s, m.index + sel.index);
-      if (waived.has(line)) continue;
-      findings.push({
-        check: 'C5', line, table: null, advisory: true,
-        message: `${fname} reads a row with SELECT ... INTO and takes no row lock. If the value it `
-          + 'reads decides a refusal, a concurrent writer can change it between the read and the '
-          + 'commit. Add FOR SHARE / FOR UPDATE, or waive with `-- lint-ok:` stating why the read '
-          + 'cannot go stale.',
-      });
-    }
-  }
-  return findings;
 }
 
 export function formatFindings(findings) {
