@@ -25,9 +25,13 @@ import { createTwoProjectFixture, wipeDecisions, type TwoProjectFixture } from '
  *   P4  an option must say WHAT IT IS — it names a material, or it describes itself
  *   P5  the kind reference is real, and a kind in use cannot be deleted or re-keyed
  *   P6  a retired kind cannot be newly selected, and the DEFAULT kind cannot be retired
- *   P7  the retired-kind rule holds against a CONCURRENT retirement — two real sessions
+ *   P7  the retired-kind rule holds against a CONCURRENT retirement, in every ordering — the
+ *       retirement landing mid-transaction, still in flight at commit, and abandoned
  *   P8  the migration re-applies cleanly, and its guards land on a database that already has the
  *       table
+ *   P9  a kind INSERTED inactive concurrently cannot capture an option (the round-1 hole)
+ *   P10 the kind the column DEFAULTS to cannot be removed by DELETE, re-key or retirement
+ *   P11 the objects the migration creates carry the names schema.prisma implies
  */
 describe('A1-i — the option kind vocabulary (live PG)', () => {
   let t: TestApp;
@@ -212,7 +216,7 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     expect(await refusal(
       `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
        VALUES ('${id}','${d}','O','k1','Teak',0,'brown','no-such-kind')`,
-    )).toMatch(/kind_fkey/u);
+    )).toMatch(/kindCode_fkey/u);
 
     await t.prisma.$executeRawUnsafe(
       `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey") VALUES ('a1-x','other','option.kind.a1X')`);
@@ -221,9 +225,9 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
        VALUES ('${id}','${d}','O','k1','Teak',0,'brown','a1-x')`);
 
     // deleting or re-keying a kind an option carries would leave that option classified by nothing
-    expect(await refusal(`DELETE FROM "DecisionOptionKind" WHERE "code"='a1-x'`)).toMatch(/kind_fkey/u);
+    expect(await refusal(`DELETE FROM "DecisionOptionKind" WHERE "code"='a1-x'`)).toMatch(/kindCode_fkey/u);
     expect(await refusal(`UPDATE "DecisionOptionKind" SET "code"='a1-y' WHERE "code"='a1-x'`))
-      .toMatch(/kind_fkey/u);
+      .toMatch(/kindCode_fkey/u);
   });
 
   // ── P6 ──────────────────────────────────────────────────────────────────────────────────────
@@ -270,78 +274,216 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
       .toMatch(/column default/u);
   });
 
-  // ── P7 ──────────────────────────────────────────────────────────────────────────────────────
-  it('P7 the retired-kind rule holds against a CONCURRENT retirement', async () => {
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey") VALUES ('a1-race','other','option.kind.a1Race')`);
+  // ── P7 (Codex round 1, finding 1) ───────────────────────────────────────────────────────────
+  //
+  // The rule is enforced at COMMIT, so these probes are about what is true when the transaction
+  // LANDS rather than when the statement runs. Three orderings, because the interesting ones are
+  // exactly the two the round-1 BEFORE trigger could not see.
+  it('P7 the retired-kind rule holds against a CONCURRENT retirement, in every ordering', async () => {
     const d = await issue();
-    const id = `opt-a1-${run}-${seq++}`;
-    const marker = `a1race${run}`;
 
-    // Without a lock the classifying session reads `active = true`, the retirement commits, and the
-    // insert then passes the foreign key and commits carrying a kind the menu no longer offers —
-    // exactly the state the rule promises cannot exist.
-    //
-    // This probe is the experiment that decides the lock STRENGTH, and it fails if anyone weakens
-    // it. `FOR KEY SHARE` would not do: a plain `SET active = false` is a NON-key update and takes
-    // `FOR NO KEY UPDATE`, which does not conflict with `FOR KEY SHARE` — the retirement would sail
-    // past and `blocked` below would be false.
-    let signalReady!: () => void;
-    let signalFailed!: (e: unknown) => void;
-    let release!: () => void;
-    const ready = new Promise<void>((res, rej) => { signalReady = res; signalFailed = rej; });
-    const held = new Promise<void>((r) => { release = r; });
-    const holder = t.prisma.$transaction(async (tx) => {
-      try {
-        await tx.$executeRawUnsafe(
-          `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
-           VALUES ('${id}','${d}','Classified while the menu still offered it','k1','Teak',0,'brown','a1-race')`);
-      } catch (e) { signalFailed(e); throw e; }
-      signalReady();          // the FOR SHARE is HELD from here — a real acquisition barrier, not a sleep
-      await held;
-    }, { timeout: 30_000 }).then(() => undefined, (e) => { signalFailed(e); throw e; });
-    await ready;
+    /** Hold a transaction open at a REAL barrier — a promise resolved after its statement returns,
+     *  never a sleep, which on a loaded runner proves nothing about who got there first. */
+    const hold = (body: (tx: typeof t.prisma) => Promise<unknown>, db: PrismaClient) => {
+      let ready!: () => void; let failed!: (e: unknown) => void; let release!: () => void;
+      const onReady = new Promise<void>((res, rej) => { ready = res; failed = rej; });
+      const held = new Promise<void>((r) => { release = r; });
+      let settled: 'pending' | 'ok' | 'error' = 'pending';
+      let error: unknown = null;
+      const done = db.$transaction(async (tx) => {
+        try { await body(tx as unknown as typeof t.prisma); } catch (e) { failed(e); throw e; }
+        ready(); await held;
+      }, { timeout: 30_000 }).then(
+        () => { settled = 'ok'; }, (e) => { settled = 'error'; error = e; failed(e); });
+      return { onReady, release, done, state: () => settled, error: () => error };
+    };
 
-    // The retirement is DISPATCHED on the second connection (a Prisma raw promise is lazy, and an
-    // undispatched one starts nothing at all) and its outcome captured.
-    let retire: 'pending' | 'ok' | 'error' = 'pending';
-    const retirement = raceDb.$executeRawUnsafe(
-      `UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='a1-race' /* ${marker} */`,
-    ).then(() => { retire = 'ok'; }, () => { retire = 'error'; });
-
-    // Blocking is OBSERVED in `pg_stat_activity` rather than assumed after a delay: on a loaded
-    // runner a fixed sleep proves nothing about which session got there first.
-    const blocked = await (async () => {
-      const deadline = Date.now() + 5000;
+    /** Wait until SOME other backend is blocked inside COMMIT — which is where a deferred
+     *  constraint trigger takes its lock. Observed, not assumed after a delay. */
+    const someoneBlockedInCommit = async (ms = 5000): Promise<boolean> => {
+      const deadline = Date.now() + ms;
       while (Date.now() < deadline) {
-        const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        const rows = await raceDb.$queryRawUnsafe<Array<{ n: bigint }>>(
           `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity
-            WHERE query LIKE '%${marker}%' AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`);
+            WHERE query = 'COMMIT' AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`);
         if (Number(rows[0]?.n ?? 0) > 0) return true;
         await new Promise((r) => setTimeout(r, 50));
       }
       return false;
-    })();
-    expect(blocked, 'the retirement must WAIT for the classifying transaction').toBe(true);
-    expect(retire).toBe('pending');
+    };
 
-    release();
-    await holder;
-    await retirement;
-    expect(retire).toBe('ok');
-
-    // The coherent end state, and it is not "the retirement lost": the option classified while the
-    // menu still offered the kind keeps its classification, because retiring is not deleting…
-    const [kept] = await t.prisma.$queryRawUnsafe<Array<{ kindCode: string }>>(
-      `SELECT "kindCode" FROM "DecisionOption" WHERE "id"='${id}'`);
-    expect(kept.kindCode).toBe('a1-race');
-    // …and the very next selection, which arrives after the retirement is visible, is refused.
-    expect(await refusal(
+    const kind = async (code: string): Promise<void> => {
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey") VALUES ('${code}','other','option.kind.${code}')`);
+    };
+    const classify = (code: string, id: string) => (tx: typeof t.prisma) => tx.$executeRawUnsafe(
       `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
-       VALUES ('opt-a1-${run}-${seq++}','${d}','After','k2','Teak',0,'brown','a1-race')`,
-    )).toMatch(/has been retired/u);
+       VALUES ('${id}','${d}','O','k-${id}','Teak',0,'brown','${code}')`);
+
+    // ORDERING 1 — the retirement lands BETWEEN the option's insert and its commit.
+    // The round-1 BEFORE trigger read the menu at INSERT time and passed; this is the window that
+    // made its verdict stale. Nothing blocks here: the insert's own foreign-key check takes only
+    // FOR KEY SHARE, which does not conflict with the retirement's FOR NO KEY UPDATE.
+    await kind('a1-r1');
+    const h1 = hold(classify('a1-r1', `opt-a1-${run}-${seq++}`), t.prisma);
+    await h1.onReady;
+    await raceDb.$executeRawUnsafe(`UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='a1-r1'`);
+    h1.release();
+    await h1.done;
+    expect(h1.state(), 'a selection whose kind was retired before it committed must be refused').toBe('error');
+    expect(String(h1.error())).toMatch(/has been retired/u);
+
+    // ORDERING 2 — the retirement is STILL IN FLIGHT when the option commits.
+    // This is where the lock strength is decided, and the probe fails if anyone weakens it:
+    // `FOR KEY SHARE` does NOT conflict with the `FOR NO KEY UPDATE` a plain `SET active = false`
+    // takes, so the commit would sail through and `blocked` below would be false.
+    await kind('a1-r2');
+    const retire = hold((tx) => tx.$executeRawUnsafe(
+      `UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='a1-r2'`), raceDb);
+    await retire.onReady;
+    const h2 = hold(classify('a1-r2', `opt-a1-${run}-${seq++}`), t.prisma);
+    await h2.onReady;
+    h2.release();                       // the commit begins — and must WAIT for the retirement
+    const blocked = await someoneBlockedInCommit();
+    expect(blocked, 'the commit must WAIT for the in-flight retirement').toBe(true);
+    expect(h2.state()).toBe('pending');
+    retire.release();
+    await retire.done;
+    await h2.done;
+    expect(h2.state()).toBe('error');
+    expect(String(h2.error())).toMatch(/has been retired/u);
+
+    // ORDERING 3, PRECISION — the same wait, but the retirement ROLLS BACK. We wait for the real
+    // answer, not merely for the presence of a concurrent retirement, so this selection stands.
+    await kind('a1-r3');
+    const kept = `opt-a1-${run}-${seq++}`;
+    let abandon!: () => void;
+    const abandoned = new Promise<void>((r) => { abandon = r; });
+    const rolledBack = raceDb.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='a1-r3'`);
+      await abandoned;
+      throw new Error('deliberate rollback');       // the retirement never happened
+    }, { timeout: 30_000 }).catch(() => undefined);
+    const h3 = hold(classify('a1-r3', kept), t.prisma);
+    await h3.onReady;
+    h3.release();
+    expect(await someoneBlockedInCommit(), 'the commit must wait here too').toBe(true);
+    abandon();
+    await rolledBack;
+    await h3.done;
+    expect(h3.state(), 'an abandoned retirement must not refuse a legitimate selection').toBe('ok');
+    const [row] = await t.prisma.$queryRawUnsafe<Array<{ kindCode: string }>>(
+      `SELECT "kindCode" FROM "DecisionOption" WHERE "id"='${kept}'`);
+    expect(row.kindCode).toBe('a1-r3');
+    const stillActive = await one<{ active: boolean }>(
+      `SELECT "active" FROM "DecisionOptionKind" WHERE "code"='a1-r3'`);
+    expect(stillActive.active).toBe(true);
   });
 
+  // ── P9 (Codex round 1, finding 1 — the exact reproduction) ──────────────────────────────────
+  it('P9 a kind INSERTED inactive concurrently cannot capture an option', async () => {
+    const d = await issue();
+
+    // THE ROUND-1 HOLE, reproduced. Its mechanism is worth stating precisely, because the obvious
+    // reading is wrong: the foreign key does NOT block waiting for a concurrent inserter — a plain
+    // racing insert is refused in milliseconds. What leaked is the SNAPSHOT. The FK's check is an
+    // AFTER trigger that takes a FRESH snapshot at the END of the statement, so:
+    //
+    //   1. the option's BEFORE trigger read the menu and found nothing (kind still uncommitted),
+    //      and a missing row deliberately fell through so the FK could name an unknown code;
+    //   2. the kind committed, `active = false`;
+    //   3. the FK's fresh snapshot saw it and passed.
+    //
+    // The statement below stages exactly that: row 1 names the uncommitted kind, row 2 sleeps while
+    // the other session commits, and the FK checks fire afterwards for both.
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let ready!: () => void;
+    const onReady = new Promise<void>((r) => { ready = r; });
+    const inserter = raceDb.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","active")
+         VALUES ('a1-born-closed','other','option.kind.a1BornClosed',false)`);
+      ready();
+      await held;
+    }, { timeout: 30_000 });
+    await onReady;
+
+    const captured = `opt-a1-${run}-${seq++}`;
+    const filler = `opt-a1-${run}-${seq++}`;
+    const racing = t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
+       SELECT CASE WHEN i = 1 THEN '${captured}' ELSE '${filler}' END, '${d}', 'O', 'kbc' || i, 'Teak', 0,
+              CASE WHEN i = 2 THEN (SELECT 'brown' FROM (SELECT pg_sleep(3)) z) ELSE 'brown' END,
+              CASE WHEN i = 1 THEN 'a1-born-closed' ELSE 'material' END
+         FROM generate_series(1, 2) i`,
+    ).then(() => null, (e: unknown) => e);
+
+    // let the kind commit while that statement is still mid-flight, which is the whole point
+    await new Promise((r) => setTimeout(r, 500));
+    release();
+    await inserter;
+
+    const err = await racing;
+    expect(err, 'a kind that was never active must not capture an option').not.toBeNull();
+    expect(String(err)).toMatch(/has been retired/u);
+
+    // and NOTHING from that statement survived — the transaction is refused whole
+    const survivors = await one<{ n: bigint }>(
+      `SELECT COUNT(*) AS n FROM "DecisionOption" WHERE "id" IN ('${captured}','${filler}')`);
+    expect(Number(survivors.n)).toBe(0);
+
+    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOptionKind" WHERE "code"='a1-born-closed'`);
+  });
+
+  // ── P10 (Codex round 1, finding 3, and the sibling it implies) ──────────────────────────────
+  it('P10 the kind the column DEFAULTS to cannot be removed by any route', async () => {
+    // On a populated database the foreign key protects `material`. On an option-EMPTY one — a fresh
+    // install, exactly where it would go unnoticed — nothing did. Round 1 guarded only retirement
+    // and missed the two other ways to remove the same thing.
+    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOption" WHERE "id" LIKE 'opt-a1-%'`);
+
+    expect(await refusal(`DELETE FROM "DecisionOptionKind" WHERE "code"='material'`))
+      .toMatch(/column default/u);
+    expect(await refusal(`UPDATE "DecisionOptionKind" SET "code"='materials' WHERE "code"='material'`))
+      .toMatch(/column default/u);
+    expect(await refusal(`UPDATE "DecisionOptionKind" SET "active"=false WHERE "code"='material'`))
+      .toMatch(/column default/u);
+
+    // PRECISION — the guard is about the DEFAULT, not about menu rows in general: an ordinary
+    // unreferenced kind is still ordinary data and deletes plainly.
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey") VALUES ('a1-spare','other','option.kind.a1Spare')`);
+    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOptionKind" WHERE "code"='a1-spare'`);
+
+    // …and the default it protects is READ FROM THE COLUMN, not remembered: this is the value the
+    // running release actually takes, so the guard follows a later change instead of going stale.
+    const def = await one<{ d: string }>(
+      `SELECT pg_get_expr(a.adbin, a.adrelid) AS d FROM pg_attrdef a
+        JOIN pg_attribute c ON c.attrelid=a.adrelid AND c.attnum=a.adnum
+       WHERE a.adrelid='public."DecisionOption"'::regclass AND c.attname='kindCode'`);
+    expect(def.d).toMatch(/'material'/u);
+  });
+
+  // ── P11 (Codex round 1, finding 2) ──────────────────────────────────────────────────────────
+  it('P11 the objects this migration creates carry the names schema.prisma implies', async () => {
+    // `migrate diff` reported two entries for this unit: an index the model did not declare, and a
+    // foreign key whose name did not match Prisma's convention for the relation. Either one makes
+    // later migration generation emit corrective DDL for a schema that is actually fine. Both are
+    // pinned here so a rename cannot silently reintroduce the drift.
+    //
+    // Honest scope: the repository already carries this drift widely on merged tables (207 entries
+    // at this base). This does not clean that up — it only declines to add to it.
+    const objects = await t.prisma.$queryRawUnsafe<Array<{ name: string }>>(
+      `SELECT conname AS name FROM pg_constraint
+        WHERE conrelid='public."DecisionOption"'::regclass AND contype='f'
+          AND conname LIKE '%kind%'
+       UNION ALL
+       SELECT indexname AS name FROM pg_indexes
+        WHERE schemaname='public' AND tablename='DecisionOption' AND indexname LIKE '%kind%'`);
+    expect(new Set(objects.map((o) => o.name)))
+      .toEqual(new Set(['DecisionOption_kindCode_fkey', 'DecisionOption_kindCode_idx']));
+  });
   // ── P8 ──────────────────────────────────────────────────────────────────────────────────────
   it('P8 the migration re-applies cleanly, and its guards land on a table that already exists', async () => {
     const d = await issue();
@@ -358,7 +500,7 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     await t.prisma.$executeRawUnsafe(
       `ALTER TABLE "DecisionOption" DROP CONSTRAINT "DecisionOption_says_what_it_is_check"`);
     await t.prisma.$executeRawUnsafe(
-      `ALTER TABLE "DecisionOption" DROP CONSTRAINT "DecisionOption_kind_fkey"`);
+      `ALTER TABLE "DecisionOption" DROP CONSTRAINT "DecisionOption_kindCode_fkey"`);
 
     const migrationPath = join(__dirname, '..', '..', 'prisma', 'migrations',
                                '20270920000000_decision_option_kinds', 'migration.sql');
@@ -370,11 +512,11 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     const back = await t.prisma.$queryRawUnsafe<Array<{ conname: string }>>(
       `SELECT c."conname" FROM pg_constraint c
         WHERE c."conname" IN ('DecisionOptionKind_labelKey_check',
-                              'DecisionOption_says_what_it_is_check','DecisionOption_kind_fkey')
+                              'DecisionOption_says_what_it_is_check','DecisionOption_kindCode_fkey')
           AND c."convalidated"`);
     expect(new Set(back.map((r) => r.conname))).toEqual(new Set([
       'DecisionOptionKind_labelKey_check', 'DecisionOption_says_what_it_is_check',
-      'DecisionOption_kind_fkey',
+      'DecisionOption_kindCode_fkey',
     ]));
 
     // …and they are ENFORCING, not merely present

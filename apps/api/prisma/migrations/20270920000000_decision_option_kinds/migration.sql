@@ -107,9 +107,9 @@ ALTER TABLE "DecisionOption"
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint
-                  WHERE conname = 'DecisionOption_kind_fkey'
+                  WHERE conname = 'DecisionOption_kindCode_fkey'
                     AND conrelid = '"DecisionOption"'::regclass) THEN
-    ALTER TABLE "DecisionOption" ADD CONSTRAINT "DecisionOption_kind_fkey"
+    ALTER TABLE "DecisionOption" ADD CONSTRAINT "DecisionOption_kindCode_fkey"
       FOREIGN KEY ("kindCode") REFERENCES "DecisionOptionKind"("code")
       ON DELETE NO ACTION ON UPDATE NO ACTION;
   END IF;
@@ -148,62 +148,122 @@ CREATE INDEX IF NOT EXISTS "DecisionOption_kindCode_idx" ON "DecisionOption"("ki
 -- direct writer — keeps classifying new options with it. Existing references stay valid, which is
 -- the point of retiring rather than deleting; it is INSERTS and kind-CHANGES that must pick from
 -- what the server currently offers.
+--
+-- The check runs at COMMIT, as a DEFERRABLE INITIALLY DEFERRED constraint trigger, and that timing
+-- is the rule rather than a detail. Round 1 ran it BEFORE INSERT, which left a window this unit's
+-- own probe now closes:
+--
+--   1. the option's BEFORE trigger reads the menu and finds NO row, because the kind is being
+--      inserted `active = false` by another transaction that has not committed. A missing row
+--      deliberately falls through here, so the foreign key can report an unknown code as an unknown
+--      code rather than as a retirement.
+--   2. that transaction COMMITS.
+--   3. the foreign key's own check — an AFTER trigger taking a FRESH snapshot, not the statement's
+--      original one — now SEES the row and passes.
+--
+-- and the option commits permanently classified by a kind that was never active. Reproduced by
+-- execution before this was written, and it is worth being exact about the mechanism: the foreign
+-- key does NOT block waiting for the concurrent inserter (a plain racing insert is refused
+-- immediately, in milliseconds); the hole is the snapshot the FK check takes, not a wait.
+--
+-- At COMMIT there is no such window. Either the kind is visible — and its `active` is the committed
+-- truth — or the foreign key already refused the row. One rule, evaluated once, against what is
+-- actually true when the transaction lands.
 CREATE OR REPLACE FUNCTION decision_option_kind_selectable() RETURNS TRIGGER LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
 DECLARE v_active BOOLEAN;
 BEGIN
-  IF TG_OP = 'INSERT' OR NEW."kindCode" IS DISTINCT FROM OLD."kindCode" THEN
-    -- FOR SHARE, and the strength is not incidental.
-    --
-    -- Without a lock this reads `active = true`, a concurrent retirement commits, and the insert
-    -- then proceeds through the foreign key and commits carrying a kind the menu no longer offers —
-    -- exactly the state this rule promises cannot exist.
-    --
-    -- FOR KEY SHARE would NOT fix it: a plain `SET active = false` is a non-key update and takes
-    -- FOR NO KEY UPDATE, which does not conflict with FOR KEY SHARE. Verified by execution rather
-    -- than from the lock table: holding FOR KEY SHARE, the retirement proceeded; holding FOR SHARE,
-    -- it blocked. FOR SHARE conflicts with FOR NO KEY UPDATE, so whichever transaction arrives
-    -- second waits and then reads the other's committed answer.
-    SELECT k."active" INTO v_active
-      FROM public."DecisionOptionKind" k
-     WHERE k."code" = NEW."kindCode"
-       FOR SHARE;
+  -- FOR SHARE, and the strength is not incidental.
+  --
+  -- A retirement may still be in flight when this fires. Without the lock this reads the pre-
+  -- retirement `active = true`, the retirement commits, and the option lands on a kind the menu no
+  -- longer offers — exactly the state the rule promises cannot exist.
+  --
+  -- FOR KEY SHARE would NOT fix it: a plain `SET active = false` is a non-key update and takes
+  -- FOR NO KEY UPDATE, which does not conflict with FOR KEY SHARE. Verified by execution rather
+  -- than from the lock table: holding FOR KEY SHARE, the retirement proceeded; holding FOR SHARE,
+  -- it blocked. Whichever transaction arrives second waits and then reads the other's committed
+  -- answer — and a retirement that ROLLS BACK correctly leaves the selection standing.
+  SELECT k."active" INTO v_active
+    FROM public."DecisionOptionKind" k
+   WHERE k."code" = NEW."kindCode"
+     FOR SHARE;
 
-    -- Tested as FOUND-and-inactive rather than NOT-FOUND-or-inactive, so a code naming no kind at
-    -- all falls through to the foreign key and is reported as what it is. Calling a nonexistent kind
-    -- "retired" sends whoever hit it looking for a menu row that was never there.
-    IF FOUND AND NOT v_active THEN
-      RAISE EXCEPTION 'decisions: option kind % has been retired and cannot be selected for new options; choose one the menu still offers.', NEW."kindCode";
-    END IF;
+  -- Tested as FOUND-and-inactive rather than NOT-FOUND-or-inactive. By commit time the foreign key
+  -- has already passed, so a missing row is not reachable here; the shape is kept because it states
+  -- what the rule is about — a kind that exists and is closed — and because calling a code that
+  -- names no kind "retired" would send whoever hit it looking for a menu row that never existed.
+  IF FOUND AND NOT v_active THEN
+    RAISE EXCEPTION 'decisions: option kind % has been retired and cannot be selected for new options; choose one the menu still offers.', NEW."kindCode";
   END IF;
-  RETURN NEW;
+  RETURN NULL;
 END $$;
 
 DROP TRIGGER IF EXISTS "DecisionOption_kind_selectable" ON "DecisionOption";
-CREATE TRIGGER "DecisionOption_kind_selectable"
-  BEFORE INSERT OR UPDATE ON "DecisionOption"
+DROP TRIGGER IF EXISTS "DecisionOption_kind_selectable_ins" ON "DecisionOption";
+DROP TRIGGER IF EXISTS "DecisionOption_kind_selectable_upd" ON "DecisionOption";
+CREATE CONSTRAINT TRIGGER "DecisionOption_kind_selectable_ins"
+  AFTER INSERT ON "DecisionOption"
+  DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION decision_option_kind_selectable();
+-- Split from the insert arm only because a WHEN clause may reference OLD on an UPDATE trigger and
+-- not on one that also covers INSERT. Same function, same rule: an option already carrying a kind
+-- is undisturbed, and only a deliberate re-classification is judged.
+CREATE CONSTRAINT TRIGGER "DecisionOption_kind_selectable_upd"
+  AFTER UPDATE ON "DecisionOption"
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW WHEN (NEW."kindCode" IS DISTINCT FROM OLD."kindCode")
+  EXECUTE FUNCTION decision_option_kind_selectable();
 
--- ── 5. A kind's base classification is frozen once anything is classified by it ────────────────
+-- ── 5. What a menu row may not do once it is load-bearing ─────────────────────────────────────
+-- Two rules, both about a kind that something else already depends on.
+--
 -- `baseKind` is what downstream behaviour keys off. Re-pointing it after options already carry the
 -- code silently re-classifies every one of them — and no option row changes, so nothing that
 -- watches options would ever fire. Retiring the kind and adding a new one is the honest change, and
 -- it leaves the already-classified options saying what they always said.
+--
+-- The DEFAULT kind is load-bearing for a different reason: the currently serving release does not
+-- know `kindCode` exists, names no kind, and takes the column default on EVERY insert. Removing it
+-- takes that release down by a data edit. Round 1 guarded only the retirement of it and missed the
+-- two other ways to remove the same thing — DELETE, and re-keying it out from under the default —
+-- both of which succeed on an option-empty database where no foreign key stands in the way.
+--
+-- Which kind that is comes from the catalog, EVALUATED rather than string-matched, so the guard
+-- tracks the column instead of a memory of it: when a later unit changes or drops the default, this
+-- protection follows it without being remembered.
 CREATE OR REPLACE FUNCTION decision_option_kind_frozen() RETURNS TRIGGER LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
+DECLARE v_defexpr TEXT; v_default TEXT;
 BEGIN
+  SELECT pg_get_expr(d.adbin, d.adrelid) INTO v_defexpr
+    FROM pg_attrdef d
+    JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+   WHERE d.adrelid = 'public."DecisionOption"'::regclass
+     AND a.attname = 'kindCode';
+  IF v_defexpr IS NOT NULL THEN
+    EXECUTE format('SELECT (%s)::text', v_defexpr) INTO v_default;
+  END IF;
+
+  IF TG_OP = 'DELETE' THEN
+    IF v_default IS NOT NULL AND OLD."code" = v_default THEN
+      RAISE EXCEPTION 'decisions: option kind % is the column default the currently serving release relies on, and cannot be deleted while it is; a database with no options yet has no foreign key to stop this, which is exactly when it would go unnoticed.', OLD."code";
+    END IF;
+    RETURN OLD;
+  END IF;
+
   IF NEW."baseKind" IS DISTINCT FROM OLD."baseKind"
      AND EXISTS (SELECT 1 FROM public."DecisionOption" o WHERE o."kindCode" = OLD."code") THEN
     RAISE EXCEPTION 'decisions: option kind % already classifies at least one option, so its base kind is frozen — retire it (active = false) and add a new kind instead of re-pointing this one.', OLD."code";
   END IF;
 
-  -- `material` is the COLUMN DEFAULT, which is how the currently serving release — which does not
-  -- know `kindCode` exists — writes a valid option at all. Retiring it would make every insert from
-  -- that release fail the retired-kind rule above, taking the running application down by a data
-  -- edit. It stops being the default when a release that names its kind explicitly is the only one
-  -- serving, and it can be retired then.
-  IF OLD."code" = 'material' AND OLD."active" AND NOT NEW."active" THEN
-    RAISE EXCEPTION 'decisions: option kind "material" is the column default the currently serving release relies on, and cannot be retired while it is; retire it only once no release depends on the default.';
+  IF v_default IS NOT NULL AND OLD."code" = v_default THEN
+    IF OLD."active" AND NOT NEW."active" THEN
+      RAISE EXCEPTION 'decisions: option kind % is the column default the currently serving release relies on, and cannot be retired while it is; retire it only once no release depends on the default.', OLD."code";
+    END IF;
+    IF NEW."code" IS DISTINCT FROM OLD."code" THEN
+      RAISE EXCEPTION 'decisions: option kind % is the column default the currently serving release relies on, and cannot be re-keyed while it is; renaming it leaves the default naming a kind that no longer exists.', OLD."code";
+    END IF;
   END IF;
 
   RETURN NEW;
@@ -211,7 +271,7 @@ END $$;
 
 DROP TRIGGER IF EXISTS "DecisionOptionKind_frozen" ON "DecisionOptionKind";
 CREATE TRIGGER "DecisionOptionKind_frozen"
-  BEFORE UPDATE ON "DecisionOptionKind"
+  BEFORE UPDATE OR DELETE ON "DecisionOptionKind"
   FOR EACH ROW EXECUTE FUNCTION decision_option_kind_frozen();
 
 -- ── 6. Closing verification ───────────────────────────────────────────────────────────────────

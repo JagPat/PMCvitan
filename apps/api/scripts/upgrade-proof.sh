@@ -3739,7 +3739,7 @@ assert "A1-i rollout: an insert from the RUNNING RELEASE is classified and keeps
 
 assert_rejects "A1-i: an option classified by a kind that does not exist" \
   "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X3','DL-3','O','x3','Teak',0,'brown','no-such-kind')" \
-  "kind_fkey"
+  "kindCode_fkey"
 assert_rejects "A1-i: an option that names neither a material nor a description, and so says nothing" \
   "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-X4','DL-3','O','x4','   ',0,'brown')" \
   "says_what_it_is_check"
@@ -3751,9 +3751,6 @@ assert_rejects "A1-i: a whitespace-only description riding along on an option wh
 assert_rejects "A1-i: a menu row that does not say which label to look up" \
   "INSERT INTO \"DecisionOptionKind\"(\"code\",\"baseKind\",\"labelKey\") VALUES ('up-blank','other','  ')" \
   "labelKey_check"
-assert_rejects "A1-i: deleting a kind that options are already classified by" \
-  "DELETE FROM \"DecisionOptionKind\" WHERE \"code\"='material'" \
-  "kind_fkey"
 assert_rejects "A1-i: RE-POINTING a kind's base classification while options carry it, which would silently re-classify every one of them" \
   "UPDATE \"DecisionOptionKind\" SET \"baseKind\"='technology' WHERE \"code\"='material'" \
   "base kind is frozen"
@@ -3769,6 +3766,16 @@ SQL
 assert "A1-i precision: that option is stored as what it says it is" \
   "SELECT \"kindCode\" || '|' || (SELECT \"baseKind\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-sequencing') FROM \"DecisionOption\" WHERE \"id\"='UPA1-DESC';" \
   "up-sequencing|solution"
+# A kind something is classified by cannot be deleted or re-keyed. Tested on a NON-default kind
+# deliberately: `material` is additionally protected by the column-default rule, whose BEFORE DELETE
+# trigger fires ahead of the foreign key's check, so using it here would only prove which guard
+# answers first rather than that the reference itself is enforced.
+assert_rejects "A1-i: deleting a kind that options are already classified by" \
+  "DELETE FROM \"DecisionOptionKind\" WHERE \"code\"='up-sequencing'" \
+  "kindCode_fkey"
+assert_rejects "A1-i: re-keying a kind that options are already classified by" \
+  "UPDATE \"DecisionOptionKind\" SET \"code\"='up-seq' WHERE \"code\"='up-sequencing'" \
+  "kindCode_fkey"
 
 # Retiring a kind must actually retire it: the foreign key proves the code exists, not that the
 # menu still offers it.
@@ -3784,6 +3791,23 @@ assert_rejects "A1-i: MOVING an existing option onto a retired kind, which is th
 assert_rejects "A1-i: retiring the DEFAULT kind, which the still-serving release takes on every insert" \
   "UPDATE \"DecisionOptionKind\" SET \"active\" = false WHERE \"code\" = 'material'" \
   "column default"
+# …and the two OTHER ways to remove exactly that thing, which a populated database hides behind the
+# foreign key and an option-empty one does not stop at all.
+assert_rejects "A1-i: DELETING the default kind, which no foreign key protects on a fresh install" \
+  "DELETE FROM \"DecisionOptionKind\" WHERE \"code\" = 'material'" \
+  "column default"
+assert_rejects "A1-i: RE-KEYING the default kind, which leaves the column default naming nothing" \
+  "UPDATE \"DecisionOptionKind\" SET \"code\" = 'materials' WHERE \"code\" = 'material'" \
+  "column default"
+# A kind that was never active must not capture an option either — the check is authoritative at
+# COMMIT, so it does not matter whether the kind existed when the statement began.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: an inactive kind could not be created"; FAIL=1; }
+INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","active")
+VALUES ('up-born-closed','other','option.kind.upBornClosed',false);
+SQL
+assert_rejects "A1-i: classifying an option with a kind that was created already CLOSED" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X9','DL-3','O','x9','Teak',0,'brown','up-born-closed')" \
+  "has been retired"
 # PRECISION — retiring is not deleting: the option classified before retirement keeps its kind.
 assert "A1-i precision: an option classified before retirement still carries that classification" \
   "SELECT \"kindCode\" FROM \"DecisionOption\" WHERE \"id\"='UPA1-DESC';" \

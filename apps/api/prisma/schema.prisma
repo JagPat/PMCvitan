@@ -2119,6 +2119,9 @@ model DecisionOption {
   // the approval register (and requirement provenance behind it) pins an option by
   // (decisionId, optionKey) — the pair is a database-enforced candidate key
   @@unique([decisionId, optionKey])
+  // declared so `migrate diff` sees the index the A1-i migration really creates; an undeclared
+  // physical index makes every later migration generation want to drop it
+  @@index([kindCode])
 }
 
 // Phase 6 task 4a (round 13) — the per-transaction OPTION TOUCH NOTE behind the withdrawal
