@@ -198,7 +198,11 @@ describe('Phase 2 Task 4 — structurally-complete module boundary check', () =>
     // The Phase-3 Task-1 round-2 correction adds `decisionApprovalRevision` — the immutable approval register.
     // Phase 6 task 4a round 13 adds `decisionOptionTouch` — the per-transaction option touch
     // note behind the withdrawal entry seal (written only by DB trigger, read by no module).
-    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
+    // A1-i adds `decisionOptionKind` — the server-driven menu an option's kind is drawn from.
+    // It is decisions-owned and read-encapsulated for the same reason the option itself is:
+    // a kind's BASE classification is what downstream behaviour keys off, so another module
+    // reading the menu directly would be reading a decisions rule rather than asking for it.
+    expect(decisions?.readEncapsulated).toEqual(['decision', 'decisionOption', 'decisionOptionKind', 'decisionOptionTouch', 'decisionEvent', 'decisionApprovalRevision', 'changeRequest', 'decisionProjection']);
     // it declares the queries other modules reach it through, and depends on nothing
     expect(decisions?.queries.length).toBeGreaterThan(0);
     // and every module that reads decisions now declares the dependency
