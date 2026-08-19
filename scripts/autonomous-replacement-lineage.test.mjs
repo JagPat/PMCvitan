@@ -23,7 +23,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { assessReplacementLineage } from './review-efficiency.mjs';
+import { LEGACY_SETTLED_OBLIGATIONS, assessReplacementLineage } from './review-efficiency.mjs';
 import * as reviewGate from './autonomous-review-gate.mjs';
 
 function pr(number, { state = 'closed', merged = false, replaces = null } = {}) {
@@ -208,4 +208,44 @@ test('T8: a refused claim moves nothing', async () => {
   const result = await reviewGate.enforceReviewScope(client, oversized, head);
   assert.equal(result.allowed, false);
   assert.deepEqual(calls, []);
+});
+
+test('L1: the labels the previous rule left behind do not block the repository', () => {
+  // Under the rule this replaces, the label stayed on the exhausted unit and a
+  // merged pull request naming it discharged the debt. Reading a label as a live
+  // obligation without migrating that state blocks every `Replaces: none` unit
+  // for good: #344's replacement #349 MERGED, so nothing will ever transfer
+  // #344's label, and the merged unit cannot run the transfer path either.
+  const fresh = pr(400, { state: 'open' });
+  const legacy = [...LEGACY_SETTLED_OBLIGATIONS].map((number) => pr(number));
+
+  assert.equal(
+    lineage(fresh, legacy, [pr(349, { merged: true, replaces: 344 })]).allowed,
+    true,
+    'the migrated labels are history, not a live debt',
+  );
+
+  // The migration is those numbers and nothing else. A label this change did not
+  // inherit is a live obligation, whatever its body or its claimants say.
+  const current = lineage(fresh, [...legacy, pr(380)], [pr(381, { merged: true, replaces: 380 })]);
+  assert.equal(current.allowed, false);
+  assert.match(current.detail, /exhausted PR #380 still requires a replacement/u);
+});
+
+test('L2: a unit already owing scope cannot take on a second obligation', () => {
+  // #360 exhausted its own review rounds and holds the label for that. Editing
+  // its body to claim #354 as well would hand it a debt it is not carrying: the
+  // label is a boolean, both obligations collapse into it, and merging #360
+  // would discharge #354's unresolved scope along with its own.
+  const exhausted = pr(354);
+  const alreadyOwing = pr(360, { state: 'open', replaces: 354 });
+
+  const result = lineage(alreadyOwing, [exhausted, alreadyOwing], [exhausted]);
+  assert.equal(result.allowed, false);
+  assert.match(result.detail, /PR #360 already carries a replacement obligation/u);
+  assert.match(result.detail, /cannot also take on #354/u);
+
+  // The claimant that was HANDED #354's debt is the same shape minus the pending
+  // source, and it must still pass — that is T2, and this refusal must not eat it.
+  assert.equal(lineage(alreadyOwing, [alreadyOwing], [exhausted]).allowed, true);
 });

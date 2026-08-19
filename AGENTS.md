@@ -108,7 +108,10 @@ so directly rather than framing it as a suggestion.
   lineage — written by the controller when it admitted the claim, and not
   editable afterwards the way the `Replaces:` line that asked for it is. Only a
   MERGE settles the debt; a unit still holding the label refuses every
-  `Replaces: none` unit in the repository, open or closed.
+  `Replaces: none` unit in the repository, open or closed. One unit carries one
+  debt: a unit already holding an obligation cannot claim a second. The labels
+  the previous rule left behind are migrated by an explicit list
+  (`LEGACY_SETTLED_OBLIGATIONS`), which nothing adds to again.
 
 ## Out of a review's scope
 

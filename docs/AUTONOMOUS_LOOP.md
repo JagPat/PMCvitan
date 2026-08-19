@@ -86,6 +86,17 @@ This repository is designed to progress without the owner's laptop or technical 
   `Replaces: none` unit in the repository, whether it is open or closed: work in
   flight is not work merged, and a replacement that dies unmerged keeps the debt
   until its own replacement claims it. A merged unit's label is history.
+- ONE unit, ONE debt. A unit already holding an obligation cannot also claim a
+  different pending source: the label is a boolean, so absorbing a second would
+  collapse both into it and one merge would discharge scope that unit never
+  carried.
+- The labels the previous rule left behind are named in
+  `LEGACY_SETTLED_OBLIGATIONS` and are not live obligations — #344 and #357 were
+  discharged by merged replacements, and #367 and #373 are the chain the
+  transfer rule shipped in. That list is an explicit migration, not a rule that
+  keeps recognising such labels: any rule general enough to spot them would read
+  bodies and merge states, which is the forgery the transfer exists to remove.
+  Nothing is added to it again.
 - Neither of the rules this replaced can be made to work. Matching only a merge
   that names the exhausted unit strands the debt as soon as a replacement dies
   unmerged — on 2026-08-18 #354 exhausted, #360 replaced it and exhausted too,

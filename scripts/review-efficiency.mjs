@@ -12,6 +12,28 @@ export const STANDARD_MAX_FILES = 20;
 export const STANDARD_MAX_CHANGED_LINES = 1_500;
 export const REVIEW_RESET_AFTER_FINDING_HEADS = 2;
 export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
+/**
+ * The labels the PREVIOUS rule left behind, and why each is already settled.
+ *
+ * Until this change the label stayed on the exhausted unit and a merged pull
+ * request naming it discharged the debt. Reading a label as a live obligation
+ * without migrating that state would block every `Replaces: none` unit in the
+ * repository for good: a source whose replacement already merged still holds
+ * its label, and that merged replacement can never run the transfer path.
+ *
+ *   #344 — replaced by #349, merged 2026-08-17.
+ *   #357 — replaced by #358, merged 2026-08-18.
+ *   #367 — replaced by #373, which this change replaces in turn.
+ *   #373 — the unit this change replaces; its scope ships here.
+ *
+ * An explicit list rather than a rule, because every rule that could recognise
+ * these is the forgery this change exists to remove — pull request bodies and
+ * merge states are both reachable by anyone who can edit a pull request, so a
+ * "merged claimant settles it" clause would stay open forever. Four reviewed
+ * numbers cannot grow on their own, and nothing is added to this list again:
+ * from here the obligation is handed over when a claim is admitted.
+ */
+export const LEGACY_SETTLED_OBLIGATIONS = new Set([344, 357, 367, 373]);
 // Retained for the legacy convergence-evidence parser below. The trusted
 // controller now applies REVIEW_RESET_AFTER_FINDING_HEADS before that older
 // evidence shape can authorize another correction head.
@@ -137,7 +159,8 @@ export function assessReplacementLineage({
   }
 
   const owed = ({ pullRequest: source }) => Number.isInteger(source?.number)
-    && !source.merged_at;
+    && !source.merged_at
+    && !LEGACY_SETTLED_OBLIGATIONS.has(source.number);
   const pending = requiredReplacements.filter((requirement) =>
     requirement?.pullRequest?.number !== pullRequest?.number && owed(requirement));
   // This unit already holds an obligation: either it was handed one when its
@@ -158,6 +181,18 @@ export function assessReplacementLineage({
       return {
         allowed: false,
         detail: `Replaces: #${declaration.source} does not name a review unit awaiting replacement`,
+      };
+    }
+    if (holdsObligation) {
+      // One unit, one debt. This unit already owes an exhausted unit's
+      // unresolved scope — it either claimed one or exhausted its own rounds —
+      // and the label is a boolean, so absorbing a second obligation would
+      // collapse both into it: merging this unit would then discharge a source
+      // whose scope it never carried.
+      return {
+        allowed: false,
+        detail: `PR #${pullRequest?.number} already carries a replacement obligation; `
+          + `one unit cannot also take on #${declaration.source}`,
       };
     }
     if (requirement.pullRequest.state !== 'closed') {
