@@ -236,6 +236,12 @@ jobs:
         run: pnpm --filter api prisma:generate
       - name: Apply migrations to the test database
         run: pnpm --filter api prisma:migrate
+      # The migration lint runs HERE rather than in `pnpm check`, because two of its three checks
+      # read the live catalog and there is a database in this job. `--require-db` makes an
+      # unexaminable run a FAILURE: a clean result that examined nothing is the exact shape of
+      # false assurance this tool exists to remove.
+      - name: Migration lint (recurring review-finding classes)
+        run: pnpm lint:migrations --require-db
       - name: Unit tests
         run: pnpm --filter api test
       - name: Integration tests (real app over real PostgreSQL)
