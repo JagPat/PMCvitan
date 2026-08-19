@@ -117,10 +117,16 @@ function dischargedReplacements(requiredReplacements, replacementPullRequests) {
       .filter((candidate) => Number.isInteger(candidate?.number))
       .map((candidate) => [candidate.number, candidate]),
   );
+  // EVERY edge is chronological: a replacement is opened after the unit it
+  // replaces, so its number is higher. Enforcing that only on the final merged
+  // edge let an edited historical body forge a backward hop — exhausted #354,
+  // closed #100 naming it, merged #200 naming #100 — and discharge an obligation
+  // no successor ever replaced. Bodies are editable, so that is a forgery path.
   const claimants = new Map();
   for (const candidate of replacementPullRequests) {
     const source = replacementSource(candidate?.body);
-    if (source === null || candidate?.number === source) continue;
+    if (source === null || !Number.isInteger(candidate?.number)) continue;
+    if (candidate.number <= source) continue;
     if (!claimants.has(source)) claimants.set(source, []);
     claimants.get(source).push(candidate);
   }
@@ -133,7 +139,7 @@ function dischargedReplacements(requiredReplacements, replacementPullRequests) {
     if (walking.has(source)) return false;
     walking.add(source);
     const result = (claimants.get(source) ?? []).some((candidate) => {
-      if (candidate.merged_at) return candidate.number > source;
+      if (candidate.merged_at) return true;
       // A replacement still open owes the work itself; only one that died
       // without merging hands the obligation on to its own replacement.
       if (candidate.state !== 'closed') return false;

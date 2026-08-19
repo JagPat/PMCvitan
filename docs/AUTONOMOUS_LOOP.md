@@ -80,6 +80,9 @@ This repository is designed to progress without the owner's laptop or technical 
   merged pull request naming a replacement that was itself closed unmerged —
   that later unit carries the unresolved scope of everything before it. A
   replacement still open discharges nothing; work in flight is not work merged.
+  Every link is chronological — a replacement is opened after the unit it
+  replaces — so an edited historical body cannot forge a backward hop and
+  discharge an obligation no successor ever replaced.
   Without the transitive step the debt strands permanently: on 2026-08-18 #354
   reached the limit, #360 replaced it and reached the limit too, and #361
   replaced #360, so nothing would ever name #354 again. Every `Replaces: none`

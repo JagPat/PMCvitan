@@ -140,3 +140,35 @@ test('R4: a self-referential or circular claim terminates and blocks', () => {
     /exhausted PR #36[01] still requires a replacement/u,
   );
 });
+
+test('R5: a backward edge never discharges an obligation', () => {
+  // A replacement always has a HIGHER number than the unit it replaces — it is
+  // opened afterwards. The merged edge checked that; the recursive edge did not,
+  // so a closed historical body edited to name a newer exhausted unit forged a
+  // chain that discharged it. Bodies are editable by anyone who can edit a PR,
+  // so this is a forgery path, not a typo.
+  const p354 = pr(354);
+  const backward = pr(100, { replaces: 354 });   // opened long BEFORE #354
+  const merged = pr(200, { replaces: 100, merged: true });
+  const fresh = pr(400, { state: 'open' });
+
+  assert.match(
+    lineage(fresh, [p354], [p354, backward, merged, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'no successor ever replaced #354, so nothing discharges it',
+  );
+
+  // The ordering holds at every depth, not just the first hop.
+  const mid = pr(370, { replaces: 354 });
+  const older = pr(120, { replaces: 370 });
+  const endMerged = pr(380, { replaces: 120, merged: true });
+  assert.match(
+    lineage(fresh, [p354], [p354, mid, older, endMerged, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'a backward hop anywhere in the chain breaks it',
+  );
+
+  // And a genuine forward chain is unaffected.
+  const forward = [p354, pr(360, { replaces: 354 }), pr(361, { replaces: 360, merged: true })];
+  assert.equal(lineage(fresh, [p354], [...forward, fresh]).allowed, true);
+});
