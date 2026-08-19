@@ -2063,6 +2063,42 @@ model DecisionLegacyApproval {
   @@ignore
 }
 
+/// The base kinds downstream behaviour may key off. Deliberately closed and small: procurement and
+/// every other consumer branch on THESE, never on a menu label, so a new base kind is a code change
+/// rather than a data change.
+enum OptionBaseKind {
+  material
+  technology
+  solution
+  other
+}
+
+/// What is known about an option's cost. `pending` and a missing amount are NOT zero — an option
+/// nobody has priced must never read as free, which a bare rupee `delta` could not express.
+enum CostImpactState {
+  pending
+  none
+  estimated
+  confirmed
+}
+
+/// The server-driven menu of option kinds. `labelKey` is a localization key rather than a display
+/// string, so the frontend hardcodes no labels and retiring or reordering a kind is a data change.
+/// Platform-wide for now: per-organization vocabulary needs the option to carry an organization key
+/// so a composite key can contain the selection, and that denormalization is its own unit.
+model DecisionOptionKind {
+  code         String         @id
+  baseKind     OptionBaseKind
+  labelKey     String
+  displayOrder Int            @default(0)
+  active       Boolean        @default(true)
+  createdAt    DateTime       @default(now())
+
+  options DecisionOption[]
+
+  @@index([active, displayOrder])
+}
+
 model DecisionOption {
   id          String   @id @default(cuid())
   decision    Decision @relation(fields: [decisionId], references: [id])
@@ -2072,6 +2108,23 @@ model DecisionOption {
   material    String
   delta       Int // rupees
   swatch      String
+  /// What this option is, when the material does not say it. Nullable because the running release
+  /// does not send one and an option naming a material is already identified by it; the
+  /// `DecisionOption_says_what_it_is_check` CHECK is what makes it required for an option that
+  /// names nothing else.
+  description String?
+  /// Which kind of choice this option is. NOT NULL with a default, so the running release — which
+  /// does not know the column exists — keeps writing valid options and every pre-existing row was
+  /// classified truthfully when the column was added: in this unit an option still must name a
+  /// material.
+  kind        DecisionOptionKind @relation(fields: [kindCode], references: [code], onDelete: NoAction, onUpdate: NoAction)
+  kindCode    String             @default("material")
+  /// Cost is a STATE, not just a number. The amount is required exactly for `estimated` and
+  /// `confirmed` and forbidden otherwise, enforced by `DecisionOption_cost_impact_check`; a
+  /// `confirmed` cost freezes the option it is attached to, because a price agreed for one proposal
+  /// must not end up recorded against a different one.
+  costImpact  CostImpactState @default(pending)
+  costAmount  Int?
   photoUrl    String? // uploaded sample photo (media url); swatch is the fallback
   recommended Boolean  @default(false)
   order       Int      @default(0)

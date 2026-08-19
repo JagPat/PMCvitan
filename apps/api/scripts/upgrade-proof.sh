@@ -3696,6 +3696,96 @@ assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
   "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
   "0"
 
+# ---- Issue generalization A1-i — the option kind vocabulary and its cost state ---------------
+echo ""
+echo "=== A1-i: option kinds and cost state over a legacy database ==="
+
+# The menu is seeded by the migration itself, so it must be there and it must be a MENU — codes
+# with localization keys, not display strings a frontend would hardcode.
+assert "A1-i: the four platform kinds are seeded, ordered, and every base kind is reachable" \
+  "SELECT string_agg(\"code\", ',' ORDER BY \"displayOrder\")::text || '|' || COUNT(DISTINCT \"baseKind\")::text FROM \"DecisionOptionKind\" WHERE \"active\";" \
+  "material,technology,solution,other|4"
+assert "A1-i: the menu carries localization KEYS, so no display string is baked into the data" \
+  "SELECT (COUNT(*) FILTER (WHERE \"labelKey\" NOT LIKE 'option.kind.%'))::text FROM \"DecisionOptionKind\";" \
+  "0"
+
+# CLASSIFICATION. Every pre-existing option WAS a material choice — the columns left no other
+# possibility — so `material` is the truthful reading rather than a guess.
+assert "A1-i: every legacy option is classified, and as the thing it actually was" \
+  "SELECT (COUNT(*) FILTER (WHERE \"kindCode\" IS NULL))::text || '|' || (COUNT(*) FILTER (WHERE \"kindCode\" <> 'material'))::text FROM \"DecisionOption\";" \
+  "0|0"
+# COST. A legacy `delta` is a number a PMC really entered; nothing in the history says whether it
+# was final. `estimated` preserves the number and claims only that it is provisional. A stated ZERO
+# is an assessment, so it becomes `none` — and `pending` is what neither of them may become, because
+# an option nobody priced must never read the same as one priced at nothing.
+assert "A1-i: a legacy zero delta reads as an assessed 'none', not as an unpriced 'pending'" \
+  "SELECT \"costImpact\"::text || '|' || COALESCE(\"costAmount\"::text,'<null>') FROM \"DecisionOption\" WHERE \"id\"='OPT-31';" \
+  "none|<null>"
+assert "A1-i: a legacy non-zero delta keeps its number and is marked provisional, not final" \
+  "SELECT \"costImpact\"::text || '|' || \"costAmount\"::text || '|' || \"delta\"::text FROM \"DecisionOption\" WHERE \"id\"='OPT-32';" \
+  "estimated|500|500"
+assert "A1-i: the backfill asserted a finality NOBODY claimed on no option at all" \
+  "SELECT COUNT(*)::text FROM \"DecisionOption\" WHERE \"costImpact\"='confirmed';" \
+  "0"
+assert "A1-i: and it rewrote no legacy delta while re-expressing it" \
+  "SELECT (SELECT \"delta\" FROM \"DecisionOption\" WHERE \"id\"='OPT-42')::text;" \
+  "900"
+# The 4a seals the backfill crosses must be ARMED again, and the crossing must have fabricated no
+# evidence. A migration that quietly left a seal disabled would be far worse than one that fails.
+assert "A1-i: both task-4a option seals are armed again after the backfill crossed them" \
+  "SELECT (COUNT(*) FILTER (WHERE tgenabled = 'O'))::text FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='\"DecisionOption\"'::regclass AND tgname IN ('DecisionOption_t4a_frozen','DecisionOption_t4a_touch');" \
+  "2"
+
+# ROLLOUT. The release still serving writes only the legacy columns. Its inserts must keep meaning
+# the same thing on both sides of the deployment — this is the exact path that release takes.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i rollout: a legacy-shaped option insert was refused"; FAIL=1; }
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UPA1-OLDREL','DL-3','Written by the old release','zz','Birch ply',1750,'tan');
+SQL
+assert "A1-i rollout: an insert from the RUNNING RELEASE keeps its cost and is classified" \
+  "SELECT \"kindCode\" || '|' || \"costImpact\"::text || '|' || \"costAmount\"::text FROM \"DecisionOption\" WHERE \"id\"='UPA1-OLDREL';" \
+  "material|estimated|1750"
+
+assert_rejects "A1-i: an amount attached to a cost state that means nobody has priced it" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"costImpact\",\"costAmount\") VALUES ('UPA1-X1','DL-3','O','x1','Teak',0,'brown','pending',31500)" \
+  "cost_impact_check"
+assert_rejects "A1-i: a priced state with NO amount, which would read as free" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"costImpact\") VALUES ('UPA1-X2','DL-3','O','x2','Teak',0,'brown','estimated')" \
+  "cost_impact_check"
+assert_rejects "A1-i: an option classified by a kind that does not exist" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X3','DL-3','O','x3','Teak',0,'brown','no-such-kind')" \
+  "kind_fkey"
+assert_rejects "A1-i: an option that names neither a material nor a description, and so says nothing" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-X4','DL-3','O','x4','   ',0,'brown')" \
+  "says_what_it_is_check"
+assert_rejects "A1-i: deleting a kind that options are already classified by" \
+  "DELETE FROM \"DecisionOptionKind\" WHERE \"code\"='material'" \
+  "kind_fkey"
+assert_rejects "A1-i: RE-POINTING a kind's base classification while options carry it, which would silently re-classify every one of them" \
+  "UPDATE \"DecisionOptionKind\" SET \"baseKind\"='technology' WHERE \"code\"='material'" \
+  "base kind is frozen"
+
+# A CONFIRMED cost is a financial claim somebody stands behind, and freezing only the NUMBER leaves
+# the worse hole open: keep the trusted figure and rewrite what it was agreed FOR.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: a confirmed-cost option could not be recorded"; FAIL=1; }
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","description","costImpact","costAmount")
+VALUES ('UPA1-CONF','DL-3','Teak veneer','cf','Teak',31500,'brown','Veneered ply, matt finish','confirmed',31500);
+SQL
+assert_rejects "A1-i: rewriting the AMOUNT of a confirmed cost" \
+  "UPDATE \"DecisionOption\" SET \"costAmount\"=28000 WHERE \"id\"='UPA1-CONF'" \
+  "CONFIRMED cost"
+assert_rejects "A1-i: rewriting the PROPOSAL a confirmed cost was agreed for — the price would end up against a different thing" \
+  "UPDATE \"DecisionOption\" SET \"description\"='Solid walnut, oiled', \"material\"='Walnut' WHERE \"id\"='UPA1-CONF'" \
+  "CONFIRMED cost"
+# PRECISION — the freeze is about the CLAIM, not about the row: which option is recommended and what
+# order they read in assert nothing about the proposal, and stay editable.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i precision: the confirmed-cost freeze refused a presentational edit"; FAIL=1; }
+UPDATE "DecisionOption" SET "recommended"=true, "order"=2 WHERE "id"='UPA1-CONF';
+SQL
+assert "A1-i precision: the confirmed figure and its proposal both survive that edit intact" \
+  "SELECT \"costAmount\"::text || '|' || \"material\" || '|' || \"recommended\"::text FROM \"DecisionOption\" WHERE \"id\"='UPA1-CONF';" \
+  "31500|Teak|true"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
