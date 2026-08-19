@@ -102,6 +102,12 @@ so directly rather than framing it as a suggestion.
   carrying `Replaces: #<closed-pr>` in its body. Historical convergence packets
   or trailers do not reset the count. The replacement receives a fresh full
   review and all safety checks; nothing is dismissed or waived.
+- That obligation is discharged by a MERGE, and discharge follows the chain: a
+  merged PR naming the exhausted unit discharges it, and so does a merged PR
+  naming a replacement that itself died unmerged, since it carries the same
+  unresolved scope. A replacement still open discharges nothing. Without the
+  transitive step a mid-chain death strands the original forever and blocks every
+  `Replaces: none` unit in the repository.
 
 ## Out of a review's scope
 

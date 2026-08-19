@@ -92,6 +92,83 @@ export function replacementSource(body) {
   return declaration.kind === 'source' ? declaration.source : null;
 }
 
+/**
+ * The exhausted units whose replacement obligation has been DISCHARGED.
+ *
+ * Discharge follows the chain. A merged pull request naming an exhausted unit
+ * discharges it, and so does a merged pull request naming a replacement that was
+ * itself closed unmerged — because that later unit carries the unresolved scope
+ * of everything before it.
+ *
+ * Without the transitive step the obligation strands permanently, and this is
+ * not hypothetical: on 2026-08-18 #354 reached the review-round limit, its
+ * replacement #360 reached it too, and #361 replaced #360. Each replacement
+ * names only its immediate predecessor, so nothing would ever name #354 again —
+ * blocking every `Replaces: none` unit in the repository, including the fix for
+ * this defect, until the label was removed by hand.
+ *
+ * A claimant that is still OPEN discharges nothing: work in flight is not work
+ * merged, and fresh work must still wait. Only a dead link transfers the debt
+ * forward.
+ */
+function dischargedReplacements(requiredReplacements, replacementPullRequests) {
+  const byNumber = new Map(
+    replacementPullRequests
+      .filter((candidate) => Number.isInteger(candidate?.number))
+      .map((candidate) => [candidate.number, candidate]),
+  );
+  // EVERY edge is chronological: a replacement is opened after the unit it
+  // replaces, so its number is higher. Enforcing that only on the final merged
+  // edge let an edited historical body forge a backward hop — exhausted #354,
+  // closed #100 naming it, merged #200 naming #100 — and discharge an obligation
+  // no successor ever replaced. Bodies are editable, so that is a forgery path.
+  const claimants = new Map();
+  for (const candidate of replacementPullRequests) {
+    const source = replacementSource(candidate?.body);
+    if (source === null || !Number.isInteger(candidate?.number)) continue;
+    if (candidate.number <= source) continue;
+    if (!claimants.has(source)) claimants.set(source, []);
+    claimants.get(source).push(candidate);
+  }
+
+  // A dead link carries the debt forward ONLY if it was itself an exhausted
+  // unit. That is the only way the gate could have authorised it as a
+  // replacement, and without the check any closed pull request whose editable
+  // body names an exhausted unit becomes a link — so an unrelated #360 naming
+  // #354, plus a merged #361 naming #360, would discharge #354.
+  const exhausted = new Set(
+    requiredReplacements
+      .map(({ pullRequest: source }) => source?.number)
+      .filter((number) => Number.isInteger(number)),
+  );
+
+  const settled = new Map();
+  // `walking` breaks a cycle in the claim graph — nothing stops two bodies from
+  // naming each other, and a walk that trusted the data would not return.
+  const discharged = (source, walking) => {
+    if (settled.has(source)) return settled.get(source);
+    if (walking.has(source)) return false;
+    walking.add(source);
+    const result = (claimants.get(source) ?? []).some((candidate) => {
+      if (candidate.merged_at) return true;
+      // A replacement still open owes the work itself; only one that died
+      // without merging hands the obligation on to its own replacement.
+      if (candidate.state !== 'closed') return false;
+      if (!exhausted.has(candidate.number)) return false;
+      return discharged(candidate.number, walking);
+    });
+    walking.delete(source);
+    settled.set(source, result);
+    return result;
+  };
+
+  return new Set(
+    requiredReplacements
+      .map(({ pullRequest: source }) => source?.number)
+      .filter((number) => Number.isInteger(number) && discharged(number, new Set())),
+  );
+}
+
 export function assessReplacementLineage({
   pullRequest,
   requiredReplacements,
@@ -105,12 +182,10 @@ export function assessReplacementLineage({
     };
   }
 
-  const fulfilledSources = new Set(requiredReplacements
-    .filter(({ pullRequest: source }) => replacementPullRequests.some((candidate) =>
-      candidate?.merged_at
-      && candidate.number > source?.number
-      && replacementSource(candidate.body) === source?.number))
-    .map(({ pullRequest: source }) => source.number));
+  const fulfilledSources = dischargedReplacements(
+    requiredReplacements,
+    replacementPullRequests,
+  );
   const pending = requiredReplacements.filter(({ pullRequest: source }) =>
     source?.number !== pullRequest?.number
     && !fulfilledSources.has(source?.number));

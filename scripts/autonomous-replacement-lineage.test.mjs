@@ -1,0 +1,209 @@
+// The replacement LINEAGE gate: which exhausted review units still owe a
+// replacement, and therefore whether fresh work may start.
+//
+// The rule exists because a unit that reached the review-round limit must be
+// re-scoped rather than patched again, and nothing else in the loop remembers
+// that obligation. It gates EVERY pull request — a `Replaces: none` declaration
+// is refused while any exhausted unit is unreplaced — and until this file it had
+// no direct test at all.
+//
+// The defect it was written for is not hypothetical. On 2026-08-18 the
+// schedule-dependencies line burned three units: #354 reached the limit, its
+// replacement #360 reached the limit too, and #361 replaced #360 in turn.
+// Because discharge required a MERGED pull request naming the exhausted number
+// EXACTLY, and each replacement named only its immediate predecessor, #354's
+// obligation could never be discharged by anything — no future PR would ever
+// name it. Every `Replaces: none` unit in the repository was blocked
+// indefinitely, including the fix for this defect, and the repository owner had
+// to clear the label by hand three times in one night.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { assessReplacementLineage } from './review-efficiency.mjs';
+
+function pr(number, { state = 'closed', merged = false, replaces = null, body = null } = {}) {
+  return {
+    number,
+    state,
+    merged_at: merged ? '2026-08-18T00:00:00Z' : null,
+    body: body ?? `## Objective\n\nReplaces: ${replaces === null ? 'none' : `#${replaces}`}\n`,
+  };
+}
+
+function lineage(pullRequest, exhausted, all) {
+  return assessReplacementLineage({
+    pullRequest,
+    requiredReplacements: exhausted.map((source) => ({ pullRequest: source })),
+    replacementPullRequests: all,
+  });
+}
+
+test('R1: a replacement that dies unmerged does not strand its predecessor', () => {
+  // The live shape from 2026-08-18. #354 exhausted; #360 replaced it and was
+  // itself closed unmerged at the limit; #361 replaced #360 and merged.
+  const p354 = pr(354);
+  const p360 = pr(360, { replaces: 354 });
+  const p361 = pr(361, { replaces: 360, merged: true });
+  const fresh = pr(400, { state: 'open' });
+  const all = [p354, p360, p361, fresh];
+
+  // Merging the end of the chain discharges every unit in it: #361 carries
+  // #360's unresolved scope, which carried #354's.
+  assert.deepEqual(
+    lineage(fresh, [p354, p360], all),
+    { allowed: true, detail: null },
+    'fresh work is not blocked by an obligation the chain has already discharged',
+  );
+
+  // And a longer chain behaves the same way — the rule is transitive, not a
+  // special case for one link.
+  const p362 = pr(362, { replaces: 361 });
+  const p363 = pr(363, { replaces: 362, merged: true });
+  assert.equal(
+    lineage(fresh, [p354, p360, pr(361, { replaces: 360 }), p362], [
+      p354, p360, pr(361, { replaces: 360 }), p362, p363, fresh,
+    ]).allowed,
+    true,
+    'every ancestor of a merged replacement is discharged',
+  );
+});
+
+test('R2: an undischarged obligation still blocks fresh work', () => {
+  // The rule this unit must NOT weaken. An exhausted unit whose chain has not
+  // reached a merge is still owed, whether the chain is one link or three.
+  const p354 = pr(354);
+  const fresh = pr(400, { state: 'open' });
+
+  assert.match(
+    lineage(fresh, [p354], [p354, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'nothing has replaced it at all',
+  );
+
+  const openClaimant = pr(360, { state: 'open', replaces: 354 });
+  assert.match(
+    lineage(fresh, [p354], [p354, openClaimant, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'a replacement in flight is not a replacement merged',
+  );
+
+  const deadChain = [p354, pr(360, { replaces: 354 }), pr(361, { replaces: 360 })];
+  assert.match(
+    lineage(fresh, [p354], [...deadChain, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'a chain that died without merging discharges nothing',
+  );
+});
+
+test('R3: a numbered declaration reads the same discharge rule', () => {
+  const p354 = pr(354);
+  const p360 = pr(360, { replaces: 354 });
+  const p361 = pr(361, { state: 'open', replaces: 360 });
+
+  // #361 legitimately claims #360, which is closed and unreplaced.
+  assert.deepEqual(
+    lineage(p361, [p354, p360], [p354, p360, p361]),
+    { allowed: true, detail: null },
+  );
+
+  // Naming a source the chain has already discharged is refused, because it
+  // names no live obligation.
+  const merged361 = pr(361, { replaces: 360, merged: true });
+  const late = pr(400, { state: 'open', replaces: 354 });
+  assert.match(
+    lineage(late, [p354, p360], [p354, p360, merged361, late]).detail ?? '',
+    /does not name a review unit awaiting replacement/u,
+  );
+
+  // And two open units cannot claim the same exhausted source.
+  const competing = pr(401, { state: 'open', replaces: 360 });
+  assert.match(
+    lineage(competing, [p354, p360], [p354, p360, p361, competing]).detail ?? '',
+    /already claimed by open PR #361/u,
+  );
+});
+
+test('R4: a self-referential or circular claim terminates and blocks', () => {
+  // Nothing prevents a body from naming itself or a cycle, and a graph walk
+  // that trusted the data would not return. The obligation stays owed.
+  const selfClaim = pr(354, { replaces: 354 });
+  const a = pr(360, { replaces: 361 });
+  const b = pr(361, { replaces: 360 });
+  const fresh = pr(400, { state: 'open' });
+
+  assert.match(
+    lineage(fresh, [selfClaim], [selfClaim, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+  );
+  assert.match(
+    lineage(fresh, [a, b], [a, b, fresh]).detail ?? '',
+    /exhausted PR #36[01] still requires a replacement/u,
+  );
+});
+
+test('R5: a backward edge never discharges an obligation', () => {
+  // A replacement always has a HIGHER number than the unit it replaces — it is
+  // opened afterwards. The merged edge checked that; the recursive edge did not,
+  // so a closed historical body edited to name a newer exhausted unit forged a
+  // chain that discharged it. Bodies are editable by anyone who can edit a PR,
+  // so this is a forgery path, not a typo.
+  const p354 = pr(354);
+  const backward = pr(100, { replaces: 354 });   // opened long BEFORE #354
+  const merged = pr(200, { replaces: 100, merged: true });
+  const fresh = pr(400, { state: 'open' });
+
+  assert.match(
+    lineage(fresh, [p354], [p354, backward, merged, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'no successor ever replaced #354, so nothing discharges it',
+  );
+
+  // The ordering holds at every depth, not just the first hop.
+  const mid = pr(370, { replaces: 354 });
+  const older = pr(120, { replaces: 370 });
+  const endMerged = pr(380, { replaces: 120, merged: true });
+  assert.match(
+    lineage(fresh, [p354], [p354, mid, older, endMerged, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'a backward hop anywhere in the chain breaks it',
+  );
+
+  // And a genuine forward chain is unaffected. Its middle link is itself an
+  // exhausted unit, which is what a real chain looks like — a replacement only
+  // becomes a link by reaching the round limit in its turn (R6).
+  const mid360 = pr(360, { replaces: 354 });
+  const forward = [p354, mid360, pr(361, { replaces: 360, merged: true })];
+  assert.equal(lineage(fresh, [p354, mid360], [...forward, fresh]).allowed, true);
+});
+
+test('R6: only an exhausted unit can carry an obligation forward', () => {
+  // A dead link transfers the debt only if it was ITSELF an exhausted unit —
+  // that is the only way the gate could have authorised it as a replacement.
+  // Treating any closed PR as a link let an unrelated closed #360, whose
+  // editable body names #354, plus a merged #361 naming #360, discharge #354
+  // even though #360 never exhausted a review round.
+  const p354 = pr(354);
+  const unrelated = pr(360, { replaces: 354 });          // closed, never exhausted
+  const merged = pr(361, { replaces: 360, merged: true });
+  const fresh = pr(400, { state: 'open' });
+
+  assert.match(
+    lineage(fresh, [p354], [p354, unrelated, merged, fresh]).detail ?? '',
+    /exhausted PR #354 still requires a replacement/u,
+    'an unexhausted closed PR is not a link',
+  );
+
+  // The same shape WITH the link exhausted is the legitimate chain, and still
+  // discharges.
+  assert.equal(
+    lineage(fresh, [p354, unrelated], [p354, unrelated, merged, fresh]).allowed,
+    true,
+    'a genuinely exhausted link carries the obligation forward',
+  );
+
+  // A merged PR naming the exhausted unit directly needs no link at all.
+  assert.equal(
+    lineage(fresh, [p354], [p354, pr(360, { replaces: 354, merged: true }), fresh]).allowed,
+    true,
+  );
+});
