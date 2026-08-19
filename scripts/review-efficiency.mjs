@@ -163,24 +163,62 @@ export function assessReplacementLineage({
   // branch above, so `Replaces: #N` still reports the more useful "already claimed" refusal. If
   // the open replacement is closed without merging, its source becomes unaddressed again and
   // blocks once more — abandoning a replacement must not quietly discharge the obligation.
-  const claimedByOpen = new Set(replacementPullRequests
-    .filter((candidate) => candidate?.state === 'open')
-    .map((candidate) => replacementSource(candidate?.body))
-    .filter((number) => typeof number === 'number'));
-  const unaddressed = pending.filter(({ pullRequest: source }) => !claimedByOpen.has(source?.number));
+  //
+  // The walk follows the CHAIN, not one hop, because a replacement can reach its own round limit
+  // and be replaced in turn: #368 -> #369 (closed at its limit) -> #370 (open) is a live line of
+  // work in which only #369 is named by an open pull request. A one-hop check leaves #368 blocking
+  // the repository two supersessions after anyone stopped working on it, which is the same
+  // deadlock this branch exists to remove.
+  const claimants = new Map();
+  for (const candidate of replacementPullRequests) {
+    const source = replacementSource(candidate?.body);
+    if (typeof source !== 'number') continue;
+    if (!claimants.has(source)) claimants.set(source, []);
+    claimants.get(source).push(candidate);
+  }
 
-  if (unaddressed.length > 0) {
-    const source = unaddressed[0].pullRequest;
+  /**
+   * Walk forward from an exhausted unit through everything that claims it.
+   *
+   * Returns the pull request an author would have to replace to clear this obligation: `null` when
+   * the chain reaches something still OPEN (the work is live and nothing is owed), otherwise the
+   * furthest closed link — because that, not the root, is where the line of work actually stopped.
+   * `seen` makes a declaration cycle terminate rather than spin.
+   */
+  const abandonedTip = (start) => {
+    const seen = new Set([start]);
+    let tip = start;
+    const queue = [start];
+    while (queue.length > 0) {
+      const at = queue.shift();
+      for (const candidate of claimants.get(at) ?? []) {
+        if (candidate?.state === 'open') return null;
+        if (typeof candidate?.number !== 'number' || seen.has(candidate.number)) continue;
+        seen.add(candidate.number);
+        queue.push(candidate.number);
+        if (candidate.number > tip) tip = candidate.number;
+      }
+    }
+    return tip;
+  };
+
+  for (const { pullRequest: source } of pending) {
+    const tip = abandonedTip(source?.number);
+    if (tip === null) continue;
     // The remedy names BOTH legal moves, because the older wording named only one and it is the
     // wrong one for most of the units it refuses. Unrelated work cannot honestly declare itself
     // the replacement for a unit it has nothing to do with, so an author reading
     // `declare Replaces: #N` as the way past this gate is being told to misdeclare its lineage.
     // What actually clears it is somebody OPENING that unit's replacement — which is precisely the
     // state this branch is looking for.
+    // Name the TIP, because that is what an author has to replace — the root may be several
+    // supersessions old and re-opening it would be the wrong move. The root is still named when
+    // they differ, so the obligation being discharged is never guessed at.
+    const carried = tip === source?.number ? '' : ` (carrying #${source.number}'s obligation)`;
     return {
       allowed: false,
-      detail: `exhausted PR #${source.number} has no open replacement; open that replacement `
-        + `(declaring Replaces: #${source.number}) — or, if this pull request IS it, declare the `
+      detail: `exhausted PR #${tip}${carried} has no open replacement; open that replacement `
+        + `(declaring Replaces: #${tip}) — or, if this pull request IS it, declare the `
         + `lineage here. Unrelated work cannot declare a lineage it does not have.`,
     };
   }

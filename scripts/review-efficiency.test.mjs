@@ -1241,7 +1241,10 @@ test('abandoning a replacement does not discharge the obligation — a CLOSED on
     replacementPullRequests: [{ number: 349, state: 'closed', merged_at: null, body: 'Replaces: #344' }],
   });
   assert.equal(verdict.allowed, false);
-  assert.match(verdict.detail, /exhausted PR #344 has no open replacement/);
+  // It names #349 rather than #344, and that is the point of walking the chain: #349 is where this
+  // line of work actually stopped, so #349 is what somebody has to replace. #344 is still named so
+  // the obligation being discharged is stated rather than inferred.
+  assert.match(verdict.detail, /exhausted PR #349 \(carrying #344's obligation\) has no open replacement/);
 });
 
 test('naming a source another OPEN pull request already claims is still the clearer refusal', () => {
@@ -1252,6 +1255,50 @@ test('naming a source another OPEN pull request already claims is still the clea
   });
   assert.equal(verdict.allowed, false);
   assert.match(verdict.detail, /already claimed by open PR #349/);
+});
+
+// A unit that is replaced, and whose replacement is ITSELF replaced, is still being carried
+// forward — the obligation moved down the chain, it was not abandoned. Reached for real on
+// 2026-08-19: #368 exhausted -> #369 (closed at its own round limit) -> #370 (open). Only #369 is
+// named by an open pull request, so a direct one-hop check leaves #368 blocking the repository
+// even though its line of work is live and two hops away.
+test('an obligation carried down a CHAIN of replacements is addressed, not abandoned', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 371, body: 'Replaces: none' },
+    requiredReplacements: [...exhausted(368), ...exhausted(369)],
+    replacementPullRequests: [
+      { number: 369, state: 'closed', merged_at: null, body: 'Replaces: #368' },
+      { number: 370, state: 'open', merged_at: null, body: 'Replaces: #369' },
+    ],
+  });
+  assert.equal(verdict.allowed, true, verdict.detail ?? '');
+});
+
+test('a chain that DEAD-ENDS blocks again, and names the tip that needs replacing', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 371, body: 'Replaces: none' },
+    requiredReplacements: [...exhausted(368), ...exhausted(369)],
+    replacementPullRequests: [
+      { number: 369, state: 'closed', merged_at: null, body: 'Replaces: #368' },
+      { number: 370, state: 'closed', merged_at: null, body: 'Replaces: #369' },
+    ],
+  });
+  assert.equal(verdict.allowed, false);
+  // #370 is the end of the abandoned chain, so #370 is what somebody has to replace. Naming the
+  // ROOT (#368) would send an author to re-open a unit two supersessions old.
+  assert.match(verdict.detail, /exhausted PR #370 \(carrying #368's obligation\) has no open replacement/);
+});
+
+test('a replacement cycle cannot hang the walk', () => {
+  const verdict = assessReplacementLineage({
+    pullRequest: { number: 371, body: 'Replaces: none' },
+    requiredReplacements: exhausted(368),
+    replacementPullRequests: [
+      { number: 369, state: 'closed', merged_at: null, body: 'Replaces: #368' },
+      { number: 368, state: 'closed', merged_at: null, body: 'Replaces: #369' },
+    ],
+  });
+  assert.equal(verdict.allowed, false);
 });
 
 test('a MERGED replacement discharges the obligation, as it always did', () => {
