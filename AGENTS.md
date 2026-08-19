@@ -102,6 +102,13 @@ so directly rather than framing it as a suggestion.
   carrying `Replaces: #<closed-pr>` in its body. Historical convergence packets
   or trailers do not reset the count. The replacement receives a fresh full
   review and all safety checks; nothing is dismissed or waived.
+- The obligation MOVES with the claim: when the trusted controller admits a
+  `Replaces: #N` declaration it hands the `review-replacement-required` label to
+  the claiming unit and takes it off #N. That transfer is the record of the
+  lineage — written by the controller when it admitted the claim, and not
+  editable afterwards the way the `Replaces:` line that asked for it is. Only a
+  MERGE settles the debt; a unit still holding the label refuses every
+  `Replaces: none` unit in the repository, open or closed.
 
 ## Out of a review's scope
 

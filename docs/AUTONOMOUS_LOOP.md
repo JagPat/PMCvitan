@@ -75,6 +75,28 @@ This repository is designed to progress without the owner's laptop or technical 
 - The replacement receives a fresh comprehensive review and the full applicable
   CI battery. Resetting the PR bounds accumulated patch risk; it does not waive,
   dismiss, or downgrade any finding.
+- The obligation MOVES. `review-replacement-required` marks the unit that owes
+  the unresolved scope, and when the trusted controller ADMITS a `Replaces: #N`
+  declaration it puts that label on the claiming unit and takes it off #N. The
+  transfer is written by the controller at the moment it admits the claim — a
+  timeline event, not a line of prose — so nothing done to a pull request BODY
+  afterwards can move a debt. Exactly one live unit holds each obligation at any
+  moment, and it holds it because the controller put it there.
+- Only a MERGE settles it. A unit still holding the label refuses every
+  `Replaces: none` unit in the repository, whether it is open or closed: work in
+  flight is not work merged, and a replacement that dies unmerged keeps the debt
+  until its own replacement claims it. A merged unit's label is history.
+- Neither of the rules this replaced can be made to work. Matching only a merge
+  that names the exhausted unit strands the debt as soon as a replacement dies
+  unmerged — on 2026-08-18 #354 exhausted, #360 replaced it and exhausted too,
+  #361 replaced #360, nothing would ever name #354 again, and every fresh unit
+  in the repository was refused until the label was cleared by hand three times
+  in one night. Walking the chain instead reads pull request bodies, which
+  anyone who can edit a pull request can rewrite: an unrelated unit that
+  exhausted its own rounds can have `Replaces: #354` written into it afterwards,
+  and a merged replacement of THAT discharges scope it never carried. Ordering
+  by number or by closing time narrows the window and still proves nothing about
+  when the declaration was written.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 
