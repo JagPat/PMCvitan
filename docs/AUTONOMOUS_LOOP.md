@@ -100,7 +100,7 @@ This repository is designed to progress without the owner's laptop or technical 
   rather than on a guess.
 - The labels the previous rule left behind are named in
   `LEGACY_SETTLED_OBLIGATIONS` and are not live obligations — #344 and #357 were
-  discharged by merged replacements, and #367 and #373 are the chain the
+  discharged by merged replacements, and #367, #373 and #374 are the chain the
   transfer rule shipped in. That list is an explicit migration, not a rule that
   keeps recognising such labels: any rule general enough to spot them would read
   bodies and merge states, which is the forgery the transfer exists to remove.

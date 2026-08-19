@@ -23,17 +23,20 @@ export const REPLACEMENT_REQUIRED_LABEL = 'review-replacement-required';
  *
  *   #344 — replaced by #349, merged 2026-08-17.
  *   #357 — replaced by #358, merged 2026-08-18.
- *   #367 — replaced by #373, which this change replaces in turn.
- *   #373 — the unit this change replaces; its scope ships here.
+ *   #367 — replaced by #373, and #373 by #374, in turn replaced here.
+ *   #373 — as above; the chain's scope ships in this change.
+ *   #374 — the unit this change replaces; its scope ships here.
  *
  * An explicit list rather than a rule, because every rule that could recognise
  * these is the forgery this change exists to remove — pull request bodies and
  * merge states are both reachable by anyone who can edit a pull request, so a
  * "merged claimant settles it" clause would stay open forever. Four reviewed
- * numbers cannot grow on their own, and nothing is added to this list again:
- * from here the obligation is handed over when a claim is admitted.
+ * numbers cannot grow on their own. Every entry is a label the OLD controller
+ * applied — it still runs on `main` until this merges, so a unit closed under it
+ * joins the list — and once this is live the obligation is handed over when a
+ * claim is admitted, and nothing is added here again.
  */
-export const LEGACY_SETTLED_OBLIGATIONS = new Set([344, 357, 367, 373]);
+export const LEGACY_SETTLED_OBLIGATIONS = new Set([344, 357, 367, 373, 374]);
 // Retained for the legacy convergence-evidence parser below. The trusted
 // controller now applies REVIEW_RESET_AFTER_FINDING_HEADS before that older
 // evidence shape can authorize another correction head.
