@@ -57,37 +57,50 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
   // the options delete plainly. `wipeDecisions` is still the right way to remove the decisions
   // themselves: an APPROVED decision is permanent, and it disables exactly the named seals that
   // make it so, inside one transaction.
+  // Each step is attempted INDEPENDENTLY, and that is a correction rather than a style choice. A
+  // wipe that aborts on its first failing step leaves everything after it undone, and one stuck row
+  // then fails every later probe in the file — observed three times while writing this suite, each
+  // time presenting as a dozen unrelated failures rather than as one broken teardown. The last
+  // error is re-thrown so a genuinely broken reset is still loud.
   const wipe = async (): Promise<void> => {
-    // The approval register FIRST: it is immutable evidence pinning (decisionId, optionKey), so an
-    // option it names cannot be deleted under it. P13 creates one deliberately, and a wipe that
-    // cannot remove it does not merely fail itself — it leaves the row behind and every later probe
-    // in this file then fails on the same foreign key. (Observed: one stuck row turned 2 failures
-    // into 14.)
-    //
-    // `phase3_immutable_row` refuses DELETE on this table by design, and the repository's other
-    // suites get past that with `TRUNCATE ... CASCADE`. That is too wide a hammer for an afterEach:
-    // measured here, it cascades into THIRTEEN further tables — `WorkerAllocation`,
-    // `MaterialRequirementSpec`, `Measurement` and more — none of which this suite owns.
-    //
-    // So the narrower sanctioned form instead, the same one `wipeDecisionsVia` uses: disable the ONE
-    // named seal inside a single transaction and delete only this suite's rows. DDL is transactional
-    // in PostgreSQL, so a wipe that throws rolls the disable back with it, and the ACCESS EXCLUSIVE
-    // lock means no parallel probe ever observes the seal off.
-    await t.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(
-        'ALTER TABLE "DecisionApprovalRevision" DISABLE TRIGGER "DecisionApprovalRevision_append_only"');
-      await tx.$executeRawUnsafe(
-        `DELETE FROM "DecisionApprovalRevision" WHERE "decisionId" LIKE 'DL-a1-%'`);
-      await tx.$executeRawUnsafe(
-        'ALTER TABLE "DecisionApprovalRevision" ENABLE TRIGGER "DecisionApprovalRevision_append_only"');
-    }, { timeout: 60_000, maxWait: 30_000 });
-    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOption" WHERE "id" LIKE 'opt-a1-%'`);
-    await wipeDecisions(t.prisma, { id: { startsWith: 'DL-a1-' } });
-    // Re-arm what a probe may have retired, so a suite that runs after this one still sees the
-    // menu the migration seeded. `material` is guarded and can never be the row this repairs.
-    await t.prisma.$executeRawUnsafe(
-      `UPDATE "DecisionOptionKind" SET "active" = true WHERE "active" = false AND "code" NOT LIKE 'a1-%'`);
-    await t.prisma.$executeRawUnsafe(`DELETE FROM "DecisionOptionKind" WHERE "code" LIKE 'a1-%'`);
+    let firstError: unknown = null;
+    const step = async (what: string, run: () => Promise<unknown>): Promise<void> => {
+      try { await run(); } catch (e) {
+        firstError ??= new Error(`teardown step "${what}" failed: ${String(e)}`);
+      }
+    };
+    /** Disable ONE named seal for exactly this delete, inside a single transaction — the
+     *  repository's sanctioned destructive-reset contract (`wipeDecisionsVia` does the same).
+     *  PostgreSQL DDL is transactional, so a throw rolls the disable back with it. */
+    const sealed = (table: string, trigger: string, sql: string) => () =>
+      t.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`ALTER TABLE "${table}" DISABLE TRIGGER "${trigger}"`);
+        await tx.$executeRawUnsafe(sql);
+        await tx.$executeRawUnsafe(`ALTER TABLE "${table}" ENABLE TRIGGER "${trigger}"`);
+      }, { timeout: 60_000, maxWait: 30_000 });
+
+    // The approval register, the legacy stamp and the approval event are all immutable BY DESIGN —
+    // which is exactly why this suite plants real ones: an arm of the freeze that no probe can
+    // reach is a check nobody knows works.
+    await step('approval register', sealed('DecisionApprovalRevision',
+      'DecisionApprovalRevision_append_only',
+      `DELETE FROM "DecisionApprovalRevision" WHERE "decisionId" LIKE 'DL-a1-%'`));
+    await step('legacy approval stamps', sealed('DecisionLegacyApproval',
+      'DecisionLegacyApproval_sealed',
+      `DELETE FROM "DecisionLegacyApproval" WHERE "decisionId" LIKE 'DL-a1-%'`));
+    await step('approval events', sealed('DecisionEvent',
+      'DecisionEvent_no_withdrawn_approval',
+      `DELETE FROM "DecisionEvent" WHERE "decisionId" LIKE 'DL-a1-%'`));
+    await step('options', () => t.prisma.$executeRawUnsafe(
+      `DELETE FROM "DecisionOption" WHERE "id" LIKE 'opt-a1-%'`));
+    await step('decisions', () => wipeDecisions(t.prisma, { id: { startsWith: 'DL-a1-' } }));
+    // Re-arm what a probe may have retired, so a suite running after this one still sees the menu
+    // the migration seeded. `material` is guarded and can never be the row this repairs.
+    await step('re-arm the menu', () => t.prisma.$executeRawUnsafe(
+      `UPDATE "DecisionOptionKind" SET "active" = true WHERE "active" = false AND "code" NOT LIKE 'a1-%'`));
+    await step('suite kinds', () => t.prisma.$executeRawUnsafe(
+      `DELETE FROM "DecisionOptionKind" WHERE "code" LIKE 'a1-%'`));
+    if (firstError) throw firstError;
   };
   afterEach(wipe);
   afterAll(async () => {
@@ -606,40 +619,159 @@ describe('A1-i — the option kind vocabulary (live PG)', () => {
     }
   });
 
-  // ── P13 (Codex round 2, F2) ─────────────────────────────────────────────────────────────────
-  it('P13 an option’s kind is frozen once it is named by approval evidence', async () => {
-    const d = `DL-a1-${run}-${seq++}`;
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","authorId")
-       VALUES ('${d}','${f.projectA.id}','Which approach?','Hall','approved','stone','${f.memberUser.id}')`);
-    const id = `opt-a1-${run}-${seq++}`;
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
-       VALUES ('${id}','${d}','Teak veneer','ka','Teak',0,'brown')`);
+  // ── P13 (Codex round 2 F2; #370 round 1 F1/F2/F3) ──────────────────────────────────────────
+  it('P13 an option’s identity is frozen once its decision carries approval evidence', async () => {
+    const mk = async (status: string): Promise<{ d: string; id: string }> => {
+      const d = `DL-a1-${run}-${seq++}`;
+      const id = `opt-a1-${run}-${seq++}`;
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","authorId")
+         VALUES ('${d}','${f.projectA.id}','Which approach?','Hall','${status}','stone','${f.memberUser.id}')`);
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","description")
+         VALUES ('${id}','${d}','Teak veneer','ka','Teak',0,'brown','Veneered ply, matt finish')`);
+      return { d, id };
+    };
 
-    // before any approval evidence exists, re-classifying is ordinary editing
+    // while nothing has been approved, both columns are ordinary editable data
+    const pending = await mk('pending');
     await t.prisma.$executeRawUnsafe(
-      `UPDATE "DecisionOption" SET "kindCode"='technology' WHERE "id"='${id}'`);
+      `UPDATE "DecisionOption" SET "kindCode"='technology' WHERE "id"='${pending.id}'`);
     await t.prisma.$executeRawUnsafe(
-      `UPDATE "DecisionOption" SET "kindCode"='material' WHERE "id"='${id}'`);
+      `UPDATE "DecisionOption" SET "description"='A poured alternative' WHERE "id"='${pending.id}'`);
 
-    await t.prisma.$executeRawUnsafe(
-      `INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt")
-       VALUES ('rev-a1-${run}-${seq++}','${f.projectA.id}','${d}',1,'ka', now())`);
+    // BOTH identity columns are frozen, not just the kind — an option identified by its
+    // description has the same identity at stake as one identified by its kind.
+    const approved = await mk('approved');
+    expect(await refusal(`UPDATE "DecisionOption" SET "kindCode"='technology' WHERE "id"='${approved.id}'`))
+      .toMatch(/cannot be edited/u);
+    expect(await refusal(`UPDATE "DecisionOption" SET "description"='precast panels' WHERE "id"='${approved.id}'`))
+      .toMatch(/cannot be edited/u);
 
-    // …and once it is what somebody approved, it is evidence
-    expect(await refusal(`UPDATE "DecisionOption" SET "kindCode"='technology' WHERE "id"='${id}'`))
-      .toMatch(/its kind is now part of that evidence/u);
+    // EVERY durable approval signal counts, not only the newest register. An upgraded database can
+    // carry an approved decision with no revision row at all.
+    const legacy = await mk('pending');
+    // That stamp table is migration-owned and sealed against ordinary inserts, which is correct —
+    // so the fixture uses the repository's sanctioned bypass (disable the ONE named seal inside a
+    // single transaction). Planting it for real matters: an arm of the guard no probe can reach is
+    // a check nobody knows works, which is the failure this suite keeps guarding against.
+    await t.prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        'ALTER TABLE "DecisionLegacyApproval" DISABLE TRIGGER "DecisionLegacyApproval_sealed"');
+      await tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionLegacyApproval"("decisionId","stampedAt") VALUES ('${legacy.d}', now())`);
+      await tx.$executeRawUnsafe(
+        'ALTER TABLE "DecisionLegacyApproval" ENABLE TRIGGER "DecisionLegacyApproval_sealed"');
+    }, { timeout: 60_000, maxWait: 30_000 });
+    expect(await refusal(`UPDATE "DecisionOption" SET "kindCode"='technology' WHERE "id"='${legacy.id}'`))
+      .toMatch(/legacy approval stamp/u);
 
-    // PRECISION, and the honest boundary of this unit: `material` on that same approved option is
-    // STILL editable. That hole is pre-existing and belongs to the approval register's own unit —
-    // asserted here so the limit is recorded rather than assumed away.
+    const evented = await mk('pending');
     await t.prisma.$executeRawUnsafe(
-      `UPDATE "DecisionOption" SET "material"='Walnut' WHERE "id"='${id}'`);
+      `INSERT INTO "DecisionEvent"("id","decisionId","type","actor","at")
+       VALUES ('ev-a1-${run}-${seq++}','${evented.d}','approved','pmc', now())`);
+    expect(await refusal(`UPDATE "DecisionOption" SET "description"='changed' WHERE "id"='${evented.id}'`))
+      .toMatch(/recorded approval event/u);
+
+    // `change` means approved-then-questioned, NOT never-approved
+    const changed = await mk('change');
+    expect(await refusal(`UPDATE "DecisionOption" SET "kindCode"='solution' WHERE "id"='${changed.id}'`))
+      .toMatch(/decision is change/u);
+
+    // PRECISION, and the honest boundary of this unit: `material` on an approved option is STILL
+    // editable. That is pre-existing and belongs to the approval register's own unit — asserted
+    // here so the limit is recorded rather than assumed away.
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "DecisionOption" SET "material"='Walnut' WHERE "id"='${approved.id}'`);
     const row = await one<{ material: string; kindCode: string }>(
-      `SELECT "material","kindCode" FROM "DecisionOption" WHERE "id"='${id}'`);
+      `SELECT "material","kindCode" FROM "DecisionOption" WHERE "id"='${approved.id}'`);
     expect(row.material).toBe('Walnut');
     expect(row.kindCode).toBe('material');
+  });
+
+  // ── P13b (#370 round 1, F3) ─────────────────────────────────────────────────────────────────
+  it('P13b an approval landing concurrently cannot be outrun by a reclassification', async () => {
+    // Under READ COMMITTED a plain EXISTS cannot see an approval that has not committed, and the
+    // register's foreign key takes only KEY SHARE on the option — which does NOT conflict with the
+    // non-key UPDATE reclassifying it. Both would commit, and the evidence would then describe
+    // something the approver never chose. Locking the DECISION row is what makes them serialize,
+    // and it holds because every durable approval signal is ALREADY written under that same lock:
+    // `DecisionApprovalRevision_no_withdrawn` and `DecisionEvent_no_withdrawn_approval` each take
+    // `FOR UPDATE` on the parent before judging it. The serialization is therefore a property of
+    // the database rather than of a service being careful.
+    //
+    // Both approval routes are raced, because they take that lock for different reasons: the
+    // status UPDATE locks the row it is WRITING, while the register INSERT locks a row it only
+    // READS. The second is the shape the finding named, and the one that would be easy to get
+    // wrong by assuming the first covers it.
+    const raceAgainst = async (
+      approve: (tx: { $executeRawUnsafe: (sql: string) => Promise<unknown> }, d: string) => Promise<unknown>,
+      expected: RegExp,
+    ): Promise<void> => {
+      const d = `DL-a1-${run}-${seq++}`;
+      const id = `opt-a1-${run}-${seq++}`;
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "Decision"("id","projectId","title","room","status","photoSwatch","authorId")
+         VALUES ('${d}','${f.projectA.id}','Q','Hall','pending','stone','${f.memberUser.id}')`);
+      await t.prisma.$executeRawUnsafe(
+        `INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+         VALUES ('${id}','${d}','Teak','ka','Teak',0,'brown')`);
+
+      let ready!: () => void; let release!: () => void;
+      const onReady = new Promise<void>((r) => { ready = r; });
+      const held = new Promise<void>((r) => { release = r; });
+      const approving = raceDb.$transaction(async (tx) => {
+        await approve(tx, d);
+        ready();
+        await held;
+      }, { timeout: 30_000 });
+      await onReady;
+
+      let outcome: 'pending' | 'ok' | 'error' = 'pending';
+      let err: unknown = null;
+      const racing = t.prisma.$executeRawUnsafe(
+        `UPDATE "DecisionOption" SET "kindCode"='technology' WHERE "id"='${id}'`)
+        .then(() => { outcome = 'ok'; }, (e) => { outcome = 'error'; err = e; });
+
+      // it must BLOCK on the decision row rather than read a stale "nothing approved yet"
+      const blocked = await (async () => {
+        const deadline = Date.now() + 5000;
+        while (Date.now() < deadline) {
+          const rows = await raceDb.$queryRawUnsafe<Array<{ n: bigint }>>(
+            `SELECT COUNT(*)::bigint AS n FROM pg_stat_activity
+              WHERE query LIKE '%${id}%' AND query NOT LIKE '%pg_stat_activity%'
+                AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()`);
+          if (Number(rows[0]?.n ?? 0) > 0) return true;
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        return false;
+      })();
+      expect(blocked, 'the reclassification must wait for the in-flight approval').toBe(true);
+
+      release();
+      await approving;
+      await racing;
+      expect(outcome, 'and then be refused, because by commit time the approval IS there').toBe('error');
+      expect(String(err)).toMatch(expected);
+
+      const row = await one<{ kindCode: string }>(
+        `SELECT "kindCode" FROM "DecisionOption" WHERE "id"='${id}'`);
+      expect(row.kindCode).toBe('material');
+    };
+
+    // (a) the approval WRITES the decision row
+    await raceAgainst(
+      (tx, d) => tx.$executeRawUnsafe(`UPDATE "Decision" SET "status"='approved' WHERE "id"='${d}'`),
+      /decision is approved/u);
+
+    // (b) the approval writes only the REGISTER and leaves the decision's own status alone — the
+    // exact shape the finding named. Its entry seal reads the parent FOR UPDATE to judge
+    // withdrawal, so this transaction holds the same row lock without ever writing to it.
+    await raceAgainst(
+      (tx, d) => tx.$executeRawUnsafe(
+        `INSERT INTO "DecisionApprovalRevision"("id","projectId","decisionId","version","optionKey","approvedAt","approvedById")
+         VALUES ('ar-a1-${run}-${seq++}','${f.projectA.id}','${d}',1,'ka', now(),'${f.memberUser.id}')`),
+      /entry in the approval register/u);
   });
 
   // ── P14 (Codex round 2, F3) ─────────────────────────────────────────────────────────────────

@@ -3777,6 +3777,31 @@ assert_rejects "A1-i: re-keying a kind that options are already classified by" \
   "UPDATE \"DecisionOptionKind\" SET \"code\"='up-seq' WHERE \"code\"='up-sequencing'" \
   "kindCode_fkey"
 
+# An option's kind is part of what an approval APPROVED. `UPA1-OLDREL` hangs off DL-3, which the
+# legacy fixture publishes as approved, so re-classifying it must be refused — and the kind used
+# here is still ACTIVE precisely so the freeze is the only rule that can answer.
+assert_rejects "A1-i: RE-CLASSIFYING an option on a decision that carries approval evidence, whose kind is part of that evidence" \
+  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-OLDREL'" \
+  "cannot be edited"
+
+# Subjects for the retirement rules, on a decision NOBODY has approved. The freeze above is a
+# BEFORE UPDATE row trigger, so on an approved decision it answers ahead of every deferred rule —
+# an assertion about retirement written against DL-3 would silently be testing the freeze instead.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: the unapproved fixture was refused"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
+VALUES ('UPA1-DRAFT','p1','Formwork approach','Hall','pending','grey');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UPA1-DRAFTOK','UPA1-DRAFT','Panel system','a','Aluminium panel',0,'grey'),
+       ('UPA1-DRAFTMOVE','UPA1-DRAFT','Timber shutter','b','Birch ply',1750,'tan');
+SQL
+# PRECISION — the freeze is about APPROVAL, not about classification being immutable. An option
+# on an unapproved decision may still be re-classified onto a kind the menu offers.
+$PSQL -q -c "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-DRAFTOK';" >/dev/null \
+  || { echo "FAILED  A1-i precision: re-classifying an UNAPPROVED option was refused"; FAIL=1; }
+assert "A1-i precision: an unapproved option takes the new classification" \
+  "SELECT \"kindCode\" FROM \"DecisionOption\" WHERE \"id\"='UPA1-DRAFTOK';" \
+  "up-sequencing"
+
 # Retiring a kind must actually retire it: the foreign key proves the code exists, not that the
 # menu still offers it.
 $PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: a kind could not be retired"; FAIL=1; }
@@ -3786,7 +3811,7 @@ assert_rejects "A1-i: classifying a NEW option with a kind the menu has retired"
   "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X8','DL-3','O','x8','Teak',0,'brown','up-sequencing')" \
   "has been retired"
 assert_rejects "A1-i: MOVING an existing option onto a retired kind, which is the same act by another route" \
-  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-OLDREL'" \
+  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-DRAFTMOVE'" \
   "has been retired"
 assert_rejects "A1-i: retiring the DEFAULT kind, which the still-serving release takes on every insert" \
   "UPDATE \"DecisionOptionKind\" SET \"active\" = false WHERE \"code\" = 'material'" \

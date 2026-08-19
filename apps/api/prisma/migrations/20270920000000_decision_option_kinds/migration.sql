@@ -220,33 +220,80 @@ CREATE CONSTRAINT TRIGGER "DecisionOption_kind_selectable_upd"
   FOR EACH ROW WHEN (NEW."kindCode" IS DISTINCT FROM OLD."kindCode")
   EXECUTE FUNCTION decision_option_kind_selectable();
 
--- ── 4b. What was APPROVED cannot be silently re-classified ────────────────────────────
--- An approval register row pins a decision's chosen option by `optionKey`, and it is immutable.
--- The option it points at is not: re-classifying it leaves the evidence intact while changing what
--- the evidence MEANS — an approved material choice becomes a technology choice, and `baseKind` is
--- what downstream behaviour keys off, so that is a change in kind rather than in wording.
+-- ── 4b. What was APPROVED cannot be silently re-described ─────────────────────────────
+-- An approval is evidence about a CHOICE, and the option row is what says which choice that was.
+-- Editing what the option SAYS IT IS leaves the evidence intact while changing what it attests to.
 --
--- Scope, stated rather than hidden. This freezes `kindCode` ONLY. An approved option's `material`
--- is editable today — verified by execution on an approved decision, `SET "material" = 'Walnut'`
--- succeeds — so the wider hole is PRE-EXISTING, and this unit neither created nor repairs it. The
--- general rule (an approved option's identity is evidence and cannot be edited at all) belongs to
--- the approval register's own unit, where `material`, `label` and `delta` are in scope together.
--- What is closed here is the dimension this unit ADDS.
-CREATE OR REPLACE FUNCTION decision_option_kind_frozen_once_approved() RETURNS TRIGGER LANGUAGE plpgsql
+-- Round 1 of this PR froze `kindCode` against ONE approval table, and three review findings showed
+-- that a partial freeze is not a weaker version of the rule — it is a different, incoherent rule.
+-- So this states the invariant and derives from it, the same way the default-kind guard does:
+--
+--     an option belonging to a decision that carries durable approval evidence is itself
+--     evidence, and the columns saying WHAT IT IS cannot be edited
+--
+-- Three things follow, and each was a finding:
+--
+--   1. BOTH identity columns this unit owns are covered — `kindCode` AND `description`. An option
+--      may be identified by its description instead of its material (that is the point of adding
+--      it), so freezing only the kind leaves the other half of the same identity editable.
+--
+--   2. EVERY durable approval signal counts, not the newest register. An upgraded database can
+--      carry an approved decision with no `DecisionApprovalRevision` at all: the status itself,
+--      the legacy stamp table, and recorded approval events are each independently sufficient, and
+--      `change` counts because it means approved-then-questioned, not never-approved.
+--
+--   3. It is SERIALIZED. Under READ COMMITTED an approval committing concurrently is invisible to
+--      a plain EXISTS, and the register's foreign key takes only KEY SHARE on the option, which
+--      does not conflict with the non-key UPDATE reclassifying it — so both commit and the
+--      evidence ends up describing something else. Locking the DECISION row is the repository's
+--      established serialization point for exactly this (the task-4a seals do the same). It holds
+--      for a reason stronger than "the service updates that row too": EVERY durable approval
+--      signal is already written under that same lock — `DecisionApprovalRevision_no_withdrawn`
+--      and `DecisionEvent_no_withdrawn_approval` each take `FOR UPDATE` on the parent decision
+--      before judging it — so an approval recorded by RAW SQL, touching only the register and
+--      never the decision's own status, serializes here just as an ordinary approve does.
+--
+-- SCOPE, stated rather than hidden. This covers the columns this unit ADDS. `material`, `label` and
+-- `delta` on an approved option remain editable, which is PRE-EXISTING — verified by execution: on
+-- an approved decision `SET "material" = 'Walnut'` succeeds today. That wider rule is the approval
+-- register's own unit, where all of an option's identity is in scope together; this one does not
+-- widen the hole and does not pretend to close it.
+CREATE OR REPLACE FUNCTION decision_option_identity_frozen_once_approved() RETURNS TRIGGER LANGUAGE plpgsql
 SET search_path = pg_catalog, public AS $$
+DECLARE v_status TEXT; v_evidence TEXT;
 BEGIN
-  IF EXISTS (SELECT 1 FROM public."DecisionApprovalRevision" r
-              WHERE r."decisionId" = OLD."decisionId" AND r."optionKey" = OLD."optionKey") THEN
-    RAISE EXCEPTION 'decisions: option % was approved as a % choice and its kind is now part of that evidence; re-classifying it would leave the approval pointing at something the approver never chose.', OLD."optionKey", OLD."kindCode";
+  SELECT d."status"::text INTO v_status
+    FROM public."Decision" d
+   WHERE d."id" = OLD."decisionId"
+     FOR UPDATE;
+
+  IF v_status IN ('approved', 'change') THEN
+    v_evidence := 'the decision is ' || v_status;
+  ELSIF EXISTS (SELECT 1 FROM public."DecisionApprovalRevision" r
+                 WHERE r."decisionId" = OLD."decisionId") THEN
+    v_evidence := 'an entry in the approval register';
+  ELSIF EXISTS (SELECT 1 FROM public."DecisionLegacyApproval" l
+                 WHERE l."decisionId" = OLD."decisionId") THEN
+    v_evidence := 'a legacy approval stamp';
+  ELSIF EXISTS (SELECT 1 FROM public."DecisionEvent" e
+                 WHERE e."decisionId" = OLD."decisionId"
+                   AND e."type" IN ('approved', 'reapproved')) THEN
+    v_evidence := 'a recorded approval event';
+  END IF;
+
+  IF v_evidence IS NOT NULL THEN
+    RAISE EXCEPTION 'decisions: option % belongs to a decision carrying %, so what that option says it IS cannot be edited — its kind and description are part of the evidence.', OLD."optionKey", v_evidence;
   END IF;
   RETURN NEW;
 END $$;
 
 DROP TRIGGER IF EXISTS "DecisionOption_kind_frozen_once_approved" ON "DecisionOption";
-CREATE TRIGGER "DecisionOption_kind_frozen_once_approved"
+DROP TRIGGER IF EXISTS "DecisionOption_identity_frozen_once_approved" ON "DecisionOption";
+CREATE TRIGGER "DecisionOption_identity_frozen_once_approved"
   BEFORE UPDATE ON "DecisionOption"
-  FOR EACH ROW WHEN (NEW."kindCode" IS DISTINCT FROM OLD."kindCode")
-  EXECUTE FUNCTION decision_option_kind_frozen_once_approved();
+  FOR EACH ROW WHEN (NEW."kindCode" IS DISTINCT FROM OLD."kindCode"
+                     OR NEW."description" IS DISTINCT FROM OLD."description")
+  EXECUTE FUNCTION decision_option_identity_frozen_once_approved();
 
 -- ── 5. What a menu row may not do once it is load-bearing ─────────────────────────────────────
 -- Two rules, both about a kind that something else already depends on.
