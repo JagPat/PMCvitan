@@ -16,7 +16,10 @@ import {
   assessReviewScope,
   isRetryableReviewFailureDescription,
   codexFindingHeads,
+  claimsFromTimeline,
   PRE_REVIEW_ENFORCE_AFTER_PR,
+  replacementClaimLabel,
+  replacementSource,
   REPLACEMENT_REQUIRED_LABEL,
   REVIEW_RESET_AFTER_FINDING_HEADS,
   REVIEW_SCOPE_ENFORCE_AFTER_PR,
@@ -584,21 +587,24 @@ export class GitHubClient {
     );
   }
 
-  async ensureReplacementRequiredLabel() {
-    const path = `/repos/${this.repository}/labels/${encodeURIComponent(REPLACEMENT_REQUIRED_LABEL)}`;
+  async ensureLabel(name, { color, description }) {
+    const path = `/repos/${this.repository}/labels/${encodeURIComponent(name)}`;
     try {
       await this.request(path);
     } catch (error) {
       if (!(error instanceof Error) || !error.message.includes('(404)')) throw error;
       await this.request(`/repos/${this.repository}/labels`, {
         method: 'POST',
-        body: {
-          name: REPLACEMENT_REQUIRED_LABEL,
-          color: 'b60205',
-          description: 'Review-round limit reached; a declared replacement is required',
-        },
+        body: { name, color, description },
       });
     }
+  }
+
+  ensureReplacementRequiredLabel() {
+    return this.ensureLabel(REPLACEMENT_REQUIRED_LABEL, {
+      color: 'b60205',
+      description: 'Review-round limit reached; a declared replacement is required',
+    });
   }
 
   async markReplacementRequired(number) {
@@ -607,6 +613,54 @@ export class GitHubClient {
       method: 'POST',
       body: { labels: [REPLACEMENT_REQUIRED_LABEL] },
     });
+  }
+
+  // Record that this unit was admitted as the replacement for `source`.
+  //
+  // ONE write, and adding a label already present is a no-op, so a retried
+  // evaluation records the same claim once. Nothing is removed: the exhausted
+  // unit keeps its own marker, and the claim is what settles it.
+  async recordReplacementClaim(number, source) {
+    const label = replacementClaimLabel(number);
+    await this.ensureLabel(label, {
+      color: '0e8a16',
+      description: `Replaced by #${number}`,
+    });
+    // On the SOURCE: the exhausted units are the ones this controller
+    // enumerates, so a record there is always found again — including after
+    // somebody removes the label, since the timeline keeps the event.
+    await this.request(`/repos/${this.repository}/issues/${source}/labels`, {
+      method: 'POST',
+      body: { labels: [label] },
+    });
+  }
+
+  // WHO applied a label, and when. GitHub records both in the issue timeline and
+  // nothing can edit them afterwards, which is the only reason a label can be
+  // read as the controller's own record: the label set itself is writable by
+  // anyone who can manage a pull request here.
+  //
+  // A later removal does not undo a claim. The controller admitted it, and that
+  // is a fact about the past — otherwise deleting a label would release an
+  // obligation.
+  async verifiedClaims(number) {
+    return claimsFromTimeline(await this.paginated(
+      `/repos/${this.repository}/issues/${number}/timeline`,
+    ));
+  }
+
+  // Where a branch left the default branch. Targeting `main` is not the same as
+  // being cut from it: an old branch opened as a pull request today would
+  // otherwise look like a fresh replacement.
+  // Does `head` contain every commit on `base`? That is what "built on current
+  // `main`" means. The merge base's DATE cannot answer it: a source closing
+  // after the newest commit on `main` would make every valid replacement look
+  // stale, and the loop would strand until somebody else pushed to `main`.
+  async containsDefaultHead(base, head) {
+    const comparison = await this.request(
+      `/repos/${this.repository}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+    );
+    return comparison?.behind_by === 0;
   }
 
   async replacementLineage() {
@@ -620,12 +674,17 @@ export class GitHubClient {
     const pullsByNumber = new Map(
       pullRequests.map((pullRequest) => [pullRequest.number, pullRequest]),
     );
+    // Each exhausted unit's own timeline carries who was admitted to replace it.
+    // Reading it for every exhausted unit — a handful at any time — rather than
+    // following whatever claim labels currently exist means removing a label
+    // cannot erase an admitted lineage.
     const requiredReplacements = await Promise.all(
       issues
         .filter((issue) => issue.pull_request)
         .map(async (issue) => ({
           pullRequest: pullsByNumber.get(issue.number)
             ?? await this.pullRequest(issue.number),
+          claims: await this.verifiedClaims(issue.number),
         })),
     );
     return { requiredReplacements, replacementPullRequests: pullRequests };
@@ -1167,14 +1226,60 @@ export async function enforceReviewScope(client, pullRequest, expectedHead) {
       ? lineageResult.value
       : undefined;
   }
+  // Only a unit declaring a numbered replacement needs its fork point, so the
+  // comparison is fetched only then. An unreadable one is unproven, and unproven
+  // refuses.
+  let containsDefaultHead = null;
+  if (replacementSource(pullRequest.body) !== null) {
+    try {
+      containsDefaultHead = await client.containsDefaultHead(
+        pullRequest.base?.ref ?? 'main',
+        expectedHead,
+      );
+    } catch (error) {
+      console.warn(
+        `Could not compare #${pullRequest.number} against its base: ${error.message}`,
+      );
+    }
+  }
   const result = assessReviewScope(pullRequest, {
     changedFiles,
     requireChangedFiles: true,
     requireReplacementLineage: pullRequest.number > PRE_REVIEW_ENFORCE_AFTER_PR,
     requiredReplacements: lineage?.requiredReplacements,
     replacementPullRequests: lineage?.replacementPullRequests,
+    containsDefaultHead,
   });
-  if (result.allowed) return result;
+  if (result.allowed) {
+    // The claim is admitted, so it is recorded. This label is the lineage:
+    // written by the trusted controller at the moment it admitted the claim,
+    // naming WHICH obligation was taken on, and — unlike the `Replaces:` line
+    // that asked for it — not editable afterwards by anyone who can edit a pull
+    // request.
+    //
+    // The reads above are asynchronous, so the pull request is re-read first: a
+    // head pushed or a declaration edited while they were in flight would
+    // otherwise record a claim for scope this controller never assessed, and the
+    // recorded claim would then admit that unit on every later evaluation.
+    if (Number.isInteger(result.replacementClaimFor)) {
+      const live = await client.pullRequest(pullRequest.number);
+      const unchanged = live?.head?.sha === expectedHead
+        && replacementSource(live?.body) === result.replacementClaimFor
+        && live?.state === 'open';
+      if (!unchanged) {
+        console.log(
+          `#${pullRequest.number} changed while its scope was assessed; `
+          + 'the claim is not recorded and the new head is assessed on its own.',
+        );
+        return { ...result, superseded: true };
+      }
+      await client.recordReplacementClaim(
+        pullRequest.number,
+        result.replacementClaimFor,
+      );
+    }
+    return result;
+  }
 
   const live = await setDraftForCurrentHead(
     client,

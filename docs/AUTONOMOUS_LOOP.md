@@ -75,6 +75,70 @@ This repository is designed to progress without the owner's laptop or technical 
 - The replacement receives a fresh comprehensive review and the full applicable
   CI battery. Resetting the PR bounds accumulated patch risk; it does not waive,
   dismiss, or downgrade any finding.
+- `review-replacement-required` marks the exhausted unit and NEVER moves. What
+  settles it is a CLAIM: when the trusted controller admits a `Replaces: #N`
+  declaration it labels the EXHAUSTED unit `review-replaced-by-<claimant>`.
+- On the source, not the claimant, and read from the issue TIMELINE rather than
+  the label set. Labels carry no proof of who applied them and anyone who can
+  manage a pull request here can apply one; the timeline records the actor and
+  the time of every label event and nothing can edit it afterwards. The exhausted
+  units are the ones this controller enumerates, so a record there is always
+  found again — a claimant-side record could only be found by following the
+  labels that are currently present, and removing one would erase an admitted
+  lineage. A label the controller did not write is not a claim, and removing one
+  it did write does not undo the claim.
+- Discharge follows the claims, and every edge is one the controller wrote: a
+  MERGED unit claiming #N settles it, and so does a claiming unit that closed
+  unmerged and is itself settled. A claim still open settles nothing — work in
+  flight is not work merged — so an exhausted unit keeps refusing every
+  `Replaces: none` unit in the repository until its chain reaches a merge.
+- A claimant must BE a replacement: opened after the unit it replaces, opened
+  after that unit closed, and CONTAINING the current default-branch head —
+  targeting `main` is where a pull request is going, not what it is built on, and
+  a branch cut from a stale `main` would otherwise settle an obligation with
+  scope that never carried it. Containment is the check because a merge base's
+  commit DATE is the date of a commit on `main`, not the moment a branch was
+  cut: an exhausted unit closing after the newest commit on `main` would make
+  every valid replacement look stale and strand the loop until somebody else
+  pushed. A claimant that has fallen behind since clears it by merging `main`.
+- Two claims can be admitted at once: nothing in GitHub makes label writes
+  mutually exclusive, so both runs can read a state with no claim and write one.
+  The timeline orders them, the EARLIEST recorded claim is the claim, and the
+  rest are not — so both runs converge without having been serialised. Label
+  events are timestamped to the second, so a tie is broken by the order the
+  timeline gives them, never by the claimant's number.
+- The same race can leave ONE unit holding claims on two different sources, if
+  its declaration changed between the two runs. Such a unit is refused, and its
+  merge settles NEITHER source: one merge cannot carry two units' unresolved
+  scope, and refusing it at assessment is not enough because it may already have
+  merged.
+- Being built on current `main` is re-checked on every evaluation, not settled
+  once at admission. `main` moves while CI runs and the review waits, and the
+  last assessment before merge is the one that matters.
+- One unit, one claim. A unit whose claim is recorded cannot take on a second:
+  its label names the source, so a declaration edited to point elsewhere changes
+  nothing.
+- The claim is recorded only after the pull request is re-read. The scope, files
+  and lineage are read asynchronously, and a head pushed or a declaration edited
+  while they were in flight would otherwise record a claim for scope the
+  controller never assessed.
+- Three shapes this has already been through, and each one is pinned by a probe.
+  Deriving the chain from `Replaces:` PROSE let an unrelated exhausted unit have
+  a source written into it afterwards, so a merged replacement of it discharged
+  scope it never carried; ordering the edges by number, then by closing time,
+  narrowed the window without proving when the declaration was written. MOVING
+  one boolean label recorded that a debt was taken on but not which, and moving
+  it is two writes, so an interrupted move and a unit absorbing a second
+  obligation became the same state. Telling those apart by the claimant's own
+  review history cannot distinguish a half-finished transfer from a completed
+  transfer of a different source.
+- The labels the previous rule left behind are named in
+  `LEGACY_SETTLED_OBLIGATIONS` and are not live obligations — #344 and #357 were
+  discharged by merged replacements, and #367 through #376 are the chain
+  the claim rule shipped in. That list is an explicit migration, not a rule that
+  keeps recognising such labels: any rule general enough to spot them would read
+  bodies and merge states, which is the forgery the claim label removes. Nothing
+  is added to it again.
 
 No human approval is required. The owner may interrupt or redirect the loop, but is not a technical gate.
 
