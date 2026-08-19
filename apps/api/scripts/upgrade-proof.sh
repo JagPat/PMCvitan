@@ -3696,6 +3696,187 @@ assert "4b round 1 F2: the replay/redeploy cycle invented no legacy stamp" \
   "SELECT COUNT(*)::text FROM \"DecisionLegacyApproval\" WHERE \"decisionId\" IN ('UP4B-OLD','UP4B-ATTR','UP4B-UNPUB-ATTR','UP4B-UNPUB-OLD');" \
   "0"
 
+# ---- Issue generalization A1-i — the option kind vocabulary ----------------------------------
+echo ""
+echo "=== A1-i: option kinds over a legacy database ==="
+
+# The menu is seeded by the migration itself, so it must be there and it must be a MENU — codes
+# with localization keys, not display strings a frontend would hardcode.
+assert "A1-i: the four platform kinds are seeded, ordered, and every base kind is reachable" \
+  "SELECT string_agg(\"code\", ',' ORDER BY \"displayOrder\")::text || '|' || COUNT(DISTINCT \"baseKind\")::text FROM \"DecisionOptionKind\" WHERE \"active\";" \
+  "material,technology,solution,other|4"
+assert "A1-i: the menu carries localization KEYS, so no display string is baked into the data" \
+  "SELECT (COUNT(*) FILTER (WHERE \"labelKey\" NOT LIKE 'option.kind.%'))::text FROM \"DecisionOptionKind\";" \
+  "0"
+
+# CLASSIFICATION arrives by column DEFAULT, which is DDL: this migration writes to no existing row,
+# so it fires no row trigger and needs no backfill. Every pre-existing option WAS a material choice
+# — the columns left no other possibility — so `material` is the truthful reading, not a guess.
+assert "A1-i: every legacy option is classified, and as the thing it actually was" \
+  "SELECT (COUNT(*) FILTER (WHERE \"kindCode\" IS NULL))::text || '|' || (COUNT(*) FILTER (WHERE \"kindCode\" <> 'material'))::text FROM \"DecisionOption\";" \
+  "0|0"
+# …and it changed nothing else about them. A unit that classifies options must not also quietly
+# restate their cost: `delta` is untouched, and there is no second column claiming to hold it.
+assert "A1-i: no legacy option had any other column rewritten" \
+  "SELECT (SELECT \"delta\" FROM \"DecisionOption\" WHERE \"id\"='OPT-42')::text || '|' || (SELECT COUNT(*) FROM \"DecisionOption\" WHERE \"description\" IS NOT NULL)::text;" \
+  "900|0"
+# The two task-4a option seals must still be ARMED. This migration never disables them — it has no
+# backfill to run — and a migration that quietly left one off would be far worse than one that fails.
+assert "A1-i: both task-4a option seals are untouched and armed" \
+  "SELECT (COUNT(*) FILTER (WHERE tgenabled = 'O'))::text FROM pg_trigger WHERE NOT tgisinternal AND tgrelid='\"DecisionOption\"'::regclass AND tgname IN ('DecisionOption_t4a_frozen','DecisionOption_t4a_touch');" \
+  "2"
+
+# ROLLOUT. The release still serving writes only the legacy columns and never mentions `kindCode`.
+# Its inserts must keep meaning the same thing on both sides of the deployment — this is the exact
+# path that release takes.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i rollout: a legacy-shaped option insert was refused"; FAIL=1; }
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UPA1-OLDREL','DL-3','Written by the old release','zz','Birch ply',1750,'tan');
+SQL
+assert "A1-i rollout: an insert from the RUNNING RELEASE is classified and keeps its cost verbatim" \
+  "SELECT \"kindCode\" || '|' || \"delta\"::text FROM \"DecisionOption\" WHERE \"id\"='UPA1-OLDREL';" \
+  "material|1750"
+
+assert_rejects "A1-i: an option classified by a kind that does not exist" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X3','DL-3','O','x3','Teak',0,'brown','no-such-kind')" \
+  "kindCode_fkey"
+assert_rejects "A1-i: an option that names neither a material nor a description, and so says nothing" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\") VALUES ('UPA1-X4','DL-3','O','x4','   ',0,'brown')" \
+  "says_what_it_is_check"
+# A description that is PRESENT must say something, independently of the material — otherwise a
+# nullable column ends up with two ways to mean absent, and readers only ever test for one of them.
+assert_rejects "A1-i: a whitespace-only description riding along on an option whose material is fine" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"description\") VALUES ('UPA1-X7','DL-3','O','x7','Teak',0,'brown','   ')" \
+  "says_what_it_is_check"
+assert_rejects "A1-i: a menu row that does not say which label to look up" \
+  "INSERT INTO \"DecisionOptionKind\"(\"code\",\"baseKind\",\"labelKey\") VALUES ('up-blank','other','  ')" \
+  "labelKey_check"
+assert_rejects "A1-i: RE-POINTING a kind's base classification while options carry it, which would silently re-classify every one of them" \
+  "UPDATE \"DecisionOptionKind\" SET \"baseKind\"='technology' WHERE \"code\"='material'" \
+  "base kind is frozen"
+
+# PRECISION — an option identified by its DESCRIPTION rather than its material is already legal, so
+# the seals are precise rather than merely strict.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i precision: a described, non-material option was refused"; FAIL=1; }
+INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","displayOrder")
+VALUES ('up-sequencing','solution','option.kind.upSequencing',50);
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","description","kindCode")
+VALUES ('UPA1-DESC','DL-3','Pour in place',    'seq1',' ',0,'grey','A poured-in-place alternative to the panel system','up-sequencing');
+SQL
+assert "A1-i precision: that option is stored as what it says it is" \
+  "SELECT \"kindCode\" || '|' || (SELECT \"baseKind\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-sequencing') FROM \"DecisionOption\" WHERE \"id\"='UPA1-DESC';" \
+  "up-sequencing|solution"
+# A kind something is classified by cannot be deleted or re-keyed. Tested on a NON-default kind
+# deliberately: `material` is additionally protected by the column-default rule, whose BEFORE DELETE
+# trigger fires ahead of the foreign key's check, so using it here would only prove which guard
+# answers first rather than that the reference itself is enforced.
+assert_rejects "A1-i: deleting a kind that options are already classified by" \
+  "DELETE FROM \"DecisionOptionKind\" WHERE \"code\"='up-sequencing'" \
+  "kindCode_fkey"
+assert_rejects "A1-i: re-keying a kind that options are already classified by" \
+  "UPDATE \"DecisionOptionKind\" SET \"code\"='up-seq' WHERE \"code\"='up-sequencing'" \
+  "kindCode_fkey"
+
+# An option's kind is part of what an approval APPROVED. `UPA1-OLDREL` hangs off DL-3, which the
+# legacy fixture publishes as approved, so re-classifying it must be refused — and the kind used
+# here is still ACTIVE precisely so the freeze is the only rule that can answer.
+assert_rejects "A1-i: RE-CLASSIFYING an option on a decision that carries approval evidence, whose kind is part of that evidence" \
+  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-OLDREL'" \
+  "cannot be edited"
+
+# Subjects for the retirement rules, on a decision NOBODY has approved. The freeze above is a
+# BEFORE UPDATE row trigger, so on an approved decision it answers ahead of every deferred rule —
+# an assertion about retirement written against DL-3 would silently be testing the freeze instead.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: the unapproved fixture was refused"; FAIL=1; }
+INSERT INTO "Decision" ("id","projectId","title","room","status","photoSwatch")
+VALUES ('UPA1-DRAFT','p1','Formwork approach','Hall','pending','grey');
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch")
+VALUES ('UPA1-DRAFTOK','UPA1-DRAFT','Panel system','a','Aluminium panel',0,'grey'),
+       ('UPA1-DRAFTMOVE','UPA1-DRAFT','Timber shutter','b','Birch ply',1750,'tan');
+SQL
+# PRECISION — the freeze is about APPROVAL, not about classification being immutable. An option
+# on an unapproved decision may still be re-classified onto a kind the menu offers.
+$PSQL -q -c "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-DRAFTOK';" >/dev/null \
+  || { echo "FAILED  A1-i precision: re-classifying an UNAPPROVED option was refused"; FAIL=1; }
+assert "A1-i precision: an unapproved option takes the new classification" \
+  "SELECT \"kindCode\" FROM \"DecisionOption\" WHERE \"id\"='UPA1-DRAFTOK';" \
+  "up-sequencing"
+
+# Retiring a kind must actually retire it: the foreign key proves the code exists, not that the
+# menu still offers it.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: a kind could not be retired"; FAIL=1; }
+UPDATE "DecisionOptionKind" SET "active" = false WHERE "code" = 'up-sequencing';
+SQL
+assert_rejects "A1-i: classifying a NEW option with a kind the menu has retired" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X8','DL-3','O','x8','Teak',0,'brown','up-sequencing')" \
+  "has been retired"
+assert_rejects "A1-i: MOVING an existing option onto a retired kind, which is the same act by another route" \
+  "UPDATE \"DecisionOption\" SET \"kindCode\"='up-sequencing' WHERE \"id\"='UPA1-DRAFTMOVE'" \
+  "has been retired"
+assert_rejects "A1-i: retiring the DEFAULT kind, which the still-serving release takes on every insert" \
+  "UPDATE \"DecisionOptionKind\" SET \"active\" = false WHERE \"code\" = 'material'" \
+  "column default"
+# …and the two OTHER ways to remove exactly that thing, which a populated database hides behind the
+# foreign key and an option-empty one does not stop at all.
+assert_rejects "A1-i: DELETING the default kind, which no foreign key protects on a fresh install" \
+  "DELETE FROM \"DecisionOptionKind\" WHERE \"code\" = 'material'" \
+  "column default"
+assert_rejects "A1-i: RE-KEYING the default kind, which leaves the column default naming nothing" \
+  "UPDATE \"DecisionOptionKind\" SET \"code\" = 'materials' WHERE \"code\" = 'material'" \
+  "column default"
+# A kind that was never active must not capture an option either — the check is authoritative at
+# COMMIT, so it does not matter whether the kind existed when the statement began.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: an inactive kind could not be created"; FAIL=1; }
+INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","active")
+VALUES ('up-born-closed','other','option.kind.upBornClosed',false);
+SQL
+assert_rejects "A1-i: classifying an option with a kind that was created already CLOSED" \
+  "INSERT INTO \"DecisionOption\"(\"id\",\"decisionId\",\"label\",\"optionKey\",\"material\",\"delta\",\"swatch\",\"kindCode\") VALUES ('UPA1-X9','DL-3','O','x9','Teak',0,'brown','up-born-closed')" \
+  "has been retired"
+# PRECISION — retiring is not deleting: the option classified before retirement keeps its kind.
+assert "A1-i precision: an option classified before retirement still carries that classification" \
+  "SELECT \"kindCode\" FROM \"DecisionOption\" WHERE \"id\"='UPA1-DESC';" \
+  "up-sequencing"
+
+# The registry is the vocabulary EVERY option is classified by, and TRUNCATE fires no row trigger.
+# Measured on a populated database, `TRUNCATE ... CASCADE` here reaches the options, the approval
+# register, and through the requirement specs the labour and commercial tables — while the approved
+# decisions survive still saying `approved`. One statement, against a four-row lookup table.
+assert_rejects "A1-i: TRUNCATING the kind registry, which no row trigger would ever see" \
+  "TRUNCATE \"DecisionOptionKind\" CASCADE" \
+  "cannot be truncated"
+assert "A1-i precision: the registry survived that attempt intact" \
+  "SELECT COUNT(*)::text FROM \"DecisionOptionKind\" WHERE \"active\";" \
+  "4"
+
+# A constraint trigger is USER-deferrable, so the commit-time selectability rule can be discharged
+# early and the kind retired afterwards in the same transaction. The rule is armed on BOTH sides.
+$PSQL -q >/dev/null <<'SQL' || { echo "FAILED  A1-i: the same-transaction probe kind could not be created"; FAIL=1; }
+INSERT INTO "DecisionOptionKind"("code","baseKind","labelKey","displayOrder")
+VALUES ('up-samefx','other','option.kind.upSameTx',60);
+SQL
+if out=$($PSQL -q -v ON_ERROR_STOP=1 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO "DecisionOption"("id","decisionId","label","optionKey","material","delta","swatch","kindCode")
+VALUES ('UPA1-SAMETX','DL-3','O','stx','Teak',0,'brown','up-samefx');
+SET CONSTRAINTS "DecisionOption_kind_selectable_ins" IMMEDIATE;
+UPDATE "DecisionOptionKind" SET "active" = false WHERE "code" = 'up-samefx';
+COMMIT;
+SQL
+); then
+  echo "FAILED  A1-i: selecting a kind and retiring it in ONE transaction was ACCEPTED"
+  FAIL=1
+else
+  case "$out" in
+    *"was selected for an option in this transaction"*)
+      echo "ok      A1-i: selecting a kind and retiring it in the SAME transaction (rejected by PostgreSQL)" ;;
+    *) echo "FAILED  A1-i: the same-transaction retirement was rejected by the WRONG rule: $(printf '%s' "$out" | head -c 120)"; FAIL=1 ;;
+  esac
+fi
+assert "A1-i precision: neither the option nor the retirement landed" \
+  "SELECT (SELECT COUNT(*) FROM \"DecisionOption\" WHERE \"id\"='UPA1-SAMETX')::text || '|' || (SELECT \"active\"::text FROM \"DecisionOptionKind\" WHERE \"code\"='up-samefx');" \
+  "0|true"
+
 echo ""
 # a missing command anywhere above is a failed run, however far from here it happened — and it
 # names itself, because the handler's own output may have been redirected away by its caller
