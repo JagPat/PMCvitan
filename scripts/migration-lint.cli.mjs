@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import {
   changedMigrations, migrationSql, touchedTables,
-  c1InlineConstraints, c3NullPassesCheck,
+  c1InlineConstraints, c2TruncateSeal, c3NullPassesCheck,
   formatFindings,
 } from './migration-lint.mjs';
 
@@ -112,6 +112,7 @@ for (const dir of dirs) {
   const tables = touchedTables(sql);
   const findings = [
     ...c1InlineConstraints(sql),
+    ...c2TruncateSeal(sql),
     ...c3NullPassesCheck(constraintsFor(tables)),
     ...(all ? [] : scopedDrift(tables)),
   ];
@@ -122,7 +123,7 @@ for (const dir of dirs) {
   advisories += findings.filter((f) => f.advisory).length;
 }
 
-const ran = skipped.size === 0 ? 'C1, C3, C4' : 'C1 only';
+const ran = skipped.size === 0 ? 'C1, C2, C3, C4' : 'C1 and C2 only';
 console.log(`\n[migration-lint] ${dirs.length} migration(s) checked with ${ran} — `
   + `${failed} failing, ${advisories} advisory.`);
 if (skipped.size > 0) {

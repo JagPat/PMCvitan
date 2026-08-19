@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  c1InlineConstraints, c3NullPassesCheck, touchedTables,
+  c1InlineConstraints, c2TruncateSeal, c3NullPassesCheck, touchedTables,
 } from './migration-lint.mjs';
 
 /**
@@ -51,6 +51,47 @@ test('C1 ignores the word CHECK inside a comment', () => {
   const sql = `-- the CHECK ( below is prose about a constraint, not one
 CREATE TABLE IF NOT EXISTS "T" ("a" TEXT NOT NULL);`;
   assert.deepEqual(c1InlineConstraints(sql), []);
+});
+
+// ── C2 ────────────────────────────────────────────────────────────────────────────────────────
+// This check was deleted once for being noisy, and the deletion cost a P1 two hours later. The
+// fixture below is that exact defect: PR #371's `DecisionOptionKindSelection`, an evidence table
+// with a row-level guard and no statement-level seal, bypassed by `TRUNCATE` inside the very
+// transaction the guard exists to constrain.
+test('C2 flags a NEW table given a protective row trigger but no TRUNCATE seal', () => {
+  const sql = `CREATE TABLE IF NOT EXISTS "Note" ("k" TEXT NOT NULL, "txid" BIGINT NOT NULL);
+CREATE TRIGGER "Note_guard" BEFORE UPDATE OR DELETE ON "Note"
+  FOR EACH ROW EXECUTE FUNCTION note_guard();`;
+  const [f] = c2TruncateSeal(sql);
+  assert.equal(f?.check, 'C2');
+  assert.equal(f?.table, 'Note');
+  assert.equal(f?.advisory, true, 'it fires on 25 of 57 real migrations, so it must not block');
+});
+
+test('C2 is quiet once the statement-level seal is there', () => {
+  const sql = `CREATE TABLE IF NOT EXISTS "Note" ("k" TEXT NOT NULL);
+CREATE TRIGGER "Note_guard" BEFORE UPDATE OR DELETE ON "Note"
+  FOR EACH ROW EXECUTE FUNCTION note_guard();
+CREATE TRIGGER "Note_no_truncate" BEFORE TRUNCATE ON "Note"
+  FOR EACH STATEMENT EXECUTE FUNCTION note_no_truncate();`;
+  assert.deepEqual(c2TruncateSeal(sql), []);
+});
+
+test('C2 only judges tables THIS migration creates, which is what made it usable', () => {
+  // Unscoped it fired 75 times across the merged ledger — on work already reviewed and accepted,
+  // where the seal question belongs to a reviewer rather than to a script. A trigger added to a
+  // pre-existing table is that case.
+  const sql = `CREATE TRIGGER "Existing_guard" BEFORE DELETE ON "Existing"
+  FOR EACH ROW EXECUTE FUNCTION existing_guard();`;
+  assert.deepEqual(c2TruncateSeal(sql), []);
+});
+
+test('C2 does not mistake a plain audit trigger for a protective one it can judge', () => {
+  // AFTER INSERT with no refusal is a note-writer, not a guard; it is still flagged, because the
+  // check cannot read intent — what it must NOT do is miss the sealed case or judge foreign tables.
+  const sql = `CREATE TABLE "Log" ("a" TEXT);
+CREATE TRIGGER "Log_touch" AFTER INSERT ON "Log" FOR EACH ROW EXECUTE FUNCTION log_touch();`;
+  assert.equal(c2TruncateSeal(sql).length, 1);
 });
 
 // ── C3 ────────────────────────────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@
  *
  * Checks
  *   C1  `CREATE TABLE IF NOT EXISTS` carrying an INLINE CHECK
+ *   C2  a NEW table given a protective row trigger but no BEFORE TRUNCATE seal
  *   C3  a CHECK that a NULL passes, because SQL is three-valued
  *   C4  drift between this migration's physical objects and `schema.prisma`, scoped to the tables
  *       this migration touches (unscoped it is useless — the ledger already carries ~205 entries)
@@ -118,6 +119,59 @@ function guardsColumn(definition, column) {
     `COALESCE\\s*\\(\\s*${id}`
     + `|${id}\\s+IS\\s+(?:NOT\\s+)?NULL`
     + `|${id}\\s+IS\\s+(?:NOT\\s+)?DISTINCT\\s+FROM`, 'iu').test(definition);
+}
+
+// ── C2 ────────────────────────────────────────────────────────────────────────────────────────
+// TRUNCATE fires NO row-level trigger, so a table protected only by row triggers is walked straight
+// around by one statement. This check was written, measured at SEVENTY-FIVE hits across the merged
+// ledger, and DELETED as unusable noise.
+//
+// That deletion was the mistake, and it cost a P1 two hours later: PR #371 added
+// `DecisionOptionKindSelection` — an evidence table whose whole job is to be read by a retirement
+// guard — sealed against row-level DELETE and not against TRUNCATE. The bypass was
+// `TRUNCATE "DecisionOptionKindSelection"` inside the very transaction the guard exists to
+// constrain. In the SAME commit, one table over, I had added a TRUNCATE seal to the kind registry.
+//
+// The check was fine. The SCOPE was wrong: I judged it by its hit rate on code that had already
+// been reviewed and accepted, where the answer is "that is a question for a reviewer, not a rule".
+// On a table the migration CREATES there is no such history — the author is choosing the seals right
+// now, and a protective row trigger with no TRUNCATE seal is a decision they should have to make on
+// purpose.
+//
+// ADVISORY, not blocking, and the number is the reason: scoped this way it still fires on 25 of the
+// 57 migrations that create a table. Many of those are probably real latent gaps rather than false
+// positives, but "probably" is not good enough to fail a build on, and a check that blocks 44% of
+// legitimate work gets switched off within a week. As an advisory it costs the author one sentence —
+// add the seal, or say why this table does not need one — which is exactly the ten seconds that
+// would have caught `DecisionOptionKindSelection` while I was writing the very seal it was missing.
+export function c2TruncateSeal(sql) {
+  const c = code(sql);
+  // Only tables THIS migration creates. `IF NOT EXISTS` optional — both forms are a new table here.
+  const created = new Set();
+  for (const m of c.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([A-Za-z_][\w]*)"?/giu)) {
+    created.add(m[1]);
+  }
+  const sealed = new Set();
+  const protective = new Map();
+  for (const m of c.matchAll(
+    /CREATE\s+(?:CONSTRAINT\s+)?TRIGGER\s+"?([A-Za-z_][\w]*)"?\s+(BEFORE|AFTER)\s+([\s\S]*?)\s+ON\s+"?([A-Za-z_][\w]*)"?/giu)) {
+    const [, name, , verbs, table] = m;
+    if (!created.has(table)) continue;
+    if (/TRUNCATE/iu.test(verbs)) { sealed.add(table); continue; }
+    if (/INSERT|UPDATE|DELETE/iu.test(verbs)) {
+      if (!protective.has(table)) protective.set(table, { name, index: m.index });
+    }
+  }
+  return [...protective.entries()]
+    .filter(([table]) => !sealed.has(table))
+    .map(([table, { name, index }]) => ({
+      check: 'C2', line: lineOf(sql, index), table, advisory: true,
+      message: `this migration CREATES "${table}" and gives it the row trigger "${name}", but nothing `
+        + 'seals TRUNCATE on it. TRUNCATE fires no row-level trigger, so one statement walks straight '
+        + 'around that guard — and it is grantable separately from ownership, so it is a weaker '
+        + 'boundary than the trigger-disable every sanctioned bypass uses. Add a BEFORE TRUNCATE '
+        + 'seal, or state in a comment why this table does not need one.',
+    }));
 }
 
 export function c3NullPassesCheck(constraints) {
