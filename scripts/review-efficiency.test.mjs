@@ -28,6 +28,10 @@ function pullRequest(overrides = {}) {
     // lineage behaviour these fixtures exercise, but it is now a precondition of
     // every scope assessment, so omitting it would block on an unrelated axis.
     body: '<!-- correction-owner: claude -->',
+    // A `main` base by default, for the same reason the owner marker is defaulted:
+    // the base guard is now a precondition of every lineage assessment, so omitting
+    // it would block these fixtures on an unrelated axis.
+    base: { ref: 'main' },
     ...overrides,
   };
 }
@@ -227,6 +231,7 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
     pullRequest: {
       number: 346,
       state: 'closed',
+      base: { ref: 'main' },
       head: {
         ref: 'codex/review-round-reset',
         repo: { full_name: 'JagPat/PMCvitan' },
@@ -309,11 +314,167 @@ test('a merged declared replacement fulfills its source requirement', () => {
     replacementPullRequests: [{
       number: 347,
       state: 'closed',
+      base: { ref: 'main' },
       merged_at: '2026-08-17T12:00:00Z',
       body: '<!-- correction-owner: claude -->\nReplaces: #346',
     }],
   });
   assert.equal(result.allowed, true);
+});
+
+test('a replacement merged onto a non-main branch settles nothing', () => {
+  // Settlement asks whether the merge LANDED on `main`, read from the merge record —
+  // not whether the reviewed head is an ancestor of the current tip. `main` advances
+  // under an open unit constantly and a squash merge leaves the reviewed head off the
+  // post-merge history by construction, so an ancestry test would refuse ordinary
+  // valid work. What it must refuse is a merge that never touched `main`.
+  const source = {
+    pullRequest: { number: 346, state: 'closed' },
+    changedFiles: [],
+  };
+  const landedElsewhere = assessReviewScope(pullRequest({
+    number: 348,
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/next-unit.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 347,
+      state: 'closed',
+      base: { ref: 'release' },
+      merged_at: '2026-08-17T12:00:00Z',
+      body: '<!-- correction-owner: claude -->\nReplaces: #346',
+    }],
+  });
+  assert.equal(landedElsewhere.allowed, false);
+  assert.match(landedElsewhere.detail, /Replaces: #346/u);
+});
+
+test('an off-main PR claiming a source does not block a legitimate main claimant', () => {
+  // Tightening eligibility without tightening this scan deadlocks the loop: the
+  // off-`main` PR can never take the obligation (eligibility refuses it), but every
+  // legitimate `main` claimant is rejected as competing, and the pending obligation
+  // also blocks `Replaces: none`. Nothing moves until a human closes it by hand.
+  const source = {
+    pullRequest: { number: 377, state: 'closed', base: { ref: 'main' } },
+    changedFiles: [],
+  };
+  const result = assessReviewScope(pullRequest({
+    number: 396,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 390,
+      state: 'open',
+      base: { ref: 'release' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  assert.equal(result.allowed, true);
+
+  // A competitor that COULD legitimately claim still blocks.
+  const realCompetitor = assessReviewScope(pullRequest({
+    number: 396,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 390,
+      state: 'open',
+      base: { ref: 'main' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  assert.equal(realCompetitor.allowed, false);
+  assert.match(realCompetitor.detail, /#390 is the admitted claimant of #377/u);
+});
+
+test('two main claimants resolve to ONE admitted claimant, not mutual rejection', () => {
+  // The transition that deadlocks a symmetric "is anyone else here" check, and it
+  // needs nothing unusual to reach: A claims on `release` and is refused, B claims the
+  // same source on `main` and proceeds because A is not a claimant, then A follows the
+  // refusal notice and retargets to `main`. Symmetrically, A now sees B and B sees A,
+  // both are blocked, and the pending obligation also blocks every `Replaces: none`
+  // unit — so the whole repository stalls until a human closes one by hand.
+  const source = {
+    pullRequest: { number: 377, state: 'closed', base: { ref: 'main' } },
+    changedFiles: [],
+  };
+  const claim = (number) => ({
+    number,
+    state: 'open',
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+  });
+  const assess = (number, others) => assessReviewScope(pullRequest({
+    number,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: others,
+  });
+
+  // Both claimants now on `main`, each assessed against the other.
+  const earlier = assess(390, [claim(390), claim(396)]);
+  const later = assess(396, [claim(390), claim(396)]);
+
+  // EXACTLY ONE is admitted — the obligation can still be discharged.
+  assert.equal(earlier.allowed, true);
+  assert.equal(later.allowed, false);
+  assert.match(later.detail, /#390 is the admitted claimant/u);
+
+  // And the order does not depend on the order of the scan, nor on whether the scan
+  // happens to include the unit being assessed.
+  assert.equal(assess(390, [claim(396), claim(390)]).allowed, true);
+  assert.equal(assess(390, [claim(396)]).allowed, true);
+  assert.equal(assess(396, [claim(390)]).allowed, false);
+});
+
+test('a claimant that does not target main is refused at admission', () => {
+  const source = {
+    pullRequest: { number: 346, state: 'closed', base: { ref: 'main' } },
+    changedFiles: [],
+  };
+  const offMain = assessReviewScope(pullRequest({
+    number: 348,
+    base: { ref: 'release' },
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #346'),
+  }), {
+    changedFiles: [{ filename: 'scripts/next-unit.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [],
+  });
+  assert.equal(offMain.allowed, false);
+  assert.match(offMain.detail, /must target main/u);
+
+  // Fail closed when the base cannot be read at all, rather than admitting on silence.
+  const unreadable = assessReviewScope(pullRequest({
+    number: 349,
+    base: undefined,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #346'),
+  }), {
+    changedFiles: [{ filename: 'scripts/next-unit.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [],
+  });
+  assert.equal(unreadable.allowed, false);
+  assert.match(unreadable.detail, /unreadable base/u);
 });
 
 test('future scope assessment fails closed when the cumulative file list is unreadable', () => {
