@@ -5,15 +5,14 @@ that framing was withdrawn by owner directive on 2026-08-20, and the programme
 mandate is unchanged — autonomous, fail-closed convergence, with unresolved
 findings carried forward rather than released.
 
-**This unit replaces #381, and it discharges nothing else.** #381 was the record
-one link back and reached the two-finding-head limit; this unit carries its scope
-and its unresolved findings. It does **not** discharge #379 or #378, which hold
-the same record scope further back, and it does **not** discharge #377, which
-holds the lineage-repair *implementation* — a record of what remains undone is
-not the doing of it. All four keep their `review-replacement-required` labels,
-they discharge one per merge in that order, and no label is to be cleared by
-hand. §"Where things stand" states the same thing; if the two ever disagree, that
-section is authoritative and this paragraph is the stale one.
+**This unit replaces #383, and it discharges nothing else.** It does **not**
+discharge #379 or #378, which hold the same record scope further back, and it
+does **not** discharge #377, which holds the lineage-repair *implementation* — a
+record of what remains undone is not the doing of it. Every pending unit keeps
+its `review-replacement-required` label, they discharge one per merge, and no
+label is to be cleared by hand. §"Where things stand" states the same thing; if
+the two ever disagree, that section is authoritative and this paragraph is the
+stale one.
 
 Every claim below about how `main` behaves was checked by **executing**
 `assessReplacementLineage` and `assessReviewScope` at `5c2b739`, not by reading
@@ -79,28 +78,33 @@ entry costs one sequential review unit. The remedy is not a release valve. It is
 that a replacement must be able to carry more than one obligation, and that it
 should name what is still owed rather than only what it directly followed.
 
-**This document is itself the running data point.** #378 was the record of the
-repair and was exhausted; #379 replaced it and was exhausted; #381 replaced #379
-and was exhausted; this unit replaces #381. Each closure **at the round limit**
+**This document is itself the running data point.** #378 was the record and was
+exhausted; #379 replaced it and was exhausted; #381 replaced #379 and was
+exhausted; **#382 replaced #381 and MERGED** on 2026-08-20, which is how this
+text reached `main`; #383 then carried it forward and was exhausted in turn; this
+unit replaces #383. Each closure **at the round limit**
 added a label rather than moving one — and only those closures do. #380, a
 parallel replacement for #378 opened and closed the same minute without reaching
 the limit, left no label and added no obligation. The label marks an exhausted
 unit, not a closed one, and that distinction is what keeps the queue finite.
 
-Executed against the live rule with #377, #378, #379 and #381 all labelled: this
-unit declaring `Replaces: #381` is admitted, a fresh `Replaces: none` unit is
-refused naming #377, and **after this unit merges, #377, #378 and #379 are all
-still owed** — three further sequential units, for a chain whose entire subject
-is that this happens.
+Executed against the live rule after #383 closed: this unit declaring
+`Replaces: #383` is admitted, a fresh `Replaces: none` unit is refused naming
+#377, and #377, #378, #379 and #383 are all pending — while #381, still
+labelled, is settled by merged #382.
 
-**The queue is growing, and the reason is worth separating from the alarm.** Each
-record unit has drawn real findings and been closed at the limit, and each
-closure costs one obligation while each merge retires one. But the findings are
-converging: seven on #378, seven on #379, three on #381 — every round smaller
-than the last, and the last three were all consequences of correcting the round
-before it. The process is working; requirement 5 is what would make its cost
-proportionate. Nothing here is stuck, every entry is claimable today, and the
-queue drains one per merge.
+**The finding counts are not a straight line, and the shape is the useful part.**
+Seven on #378, seven on #379, three on #381, none on #382 — then one on #383's
+first head and four on its second. The rise is not a regression in the record; it
+is concentrated entirely in requirement 10, the migration cutover, which is the
+one requirement here that describes a *distributed* operation rather than a rule
+about a single body. Every earlier round found contradictions between sentences;
+that round found hazards in an operation — forgeable settlement evidence, a
+dropped ordering condition, an unfenced window between read and write, and
+in-flight claims the snapshot omits. Those are not fixed by writing the paragraph
+more carefully, which is why requirement 10 now names them as hazards and defers
+the protocol to the implementation, where each one is a probe. Nothing here is
+stuck; every entry is claimable, and the queue drains one per merge.
 
 ### 2. Lineage is read from text anyone can rewrite
 
@@ -256,22 +260,59 @@ further than these six did.
    that frozen value, never against the source's current body. A mismatched
    claimant is refused and settles nothing, and the source stays claimable by its
    own owner.
-10. **Migrate the obligations that already exist, atomically and retry-safely.**
-   #374 blocked the repository precisely here: it changed the representation and
-   left the existing labels unreadable. Any new record starts with live debts
-   against it, and switching assessment without a bootstrap either omits them
-   (admitting `Replaces: none` against real unresolved scope) or fails closed
-   forever, because no claim in the new format can exist for a unit that was
-   labelled before the format did.
+10. **The cutover is its own design problem, and these are the hazards it must
+   answer.** #374 blocked the repository precisely here: it changed the
+   representation and left the existing labels unreadable. Any new record starts
+   with live debts against it, and switching assessment without a bootstrap
+   either omits them (admitting `Replaces: none` against real unresolved scope)
+   or fails closed forever, because no claim in the new format can exist for a
+   unit labelled before the format did.
 
-   The bootstrap set is **every unit carrying `review-replacement-required` at
-   the moment the migration runs** — stated as a rule rather than a list, because
-   a list in this document goes stale on the next closure and has already done so
-   once. As of 2026-08-20 that set is #377, #378, #379 and #381, but the
-   enumeration is a snapshot for the reader and the rule is the authority; an
-   implementation that hardcodes today's numbers reproduces #374's failure with
-   different digits. The migration must be applied atomically and be safe to
-   re-run before the new assessment is enabled.
+   **Two attempts to state the bootstrap rule in this document were wrong, in
+   opposite directions**, and that is why this requirement now names hazards
+   instead of prescribing a protocol. The first said the set is every unit
+   carrying the label — which migrates discharged units as debts and blocks the
+   repository once the real queue drains. The second said it is every unit no
+   merged pull request has named — which drops the ordering condition the live
+   rule actually applies and silently waives obligations. Each read correctly on
+   its own. A cutover protocol written in prose, never executed, is exactly the
+   artefact this lineage has repeatedly proven wrong, so the protocol ships
+   **with the implementation and its probes**, where each hazard below is a
+   test rather than a sentence.
+
+   **H1 — Settlement evidence must be authenticated, or the bootstrap fails
+   closed.** Do not infer settlement from the merged pull request that currently
+   names a unit. §2 establishes that merged bodies stay editable, so a
+   collaborator can rewrite a higher merged unit to name a labelled one
+   immediately before migration, and the cutover would freeze that forged
+   discharge into the new representation permanently. This is requirement 3
+   applied to the bootstrap: the label set is the controller's, the body is not.
+
+   **H2 — Settlement must preserve the ordering condition.**
+   `assessReplacementLineage` requires `candidate.number > source.number`. A
+   definition that asks only whether *some* merged unit names the source
+   classifies an edited *older* merged unit as settling a *newer* labelled one —
+   waiving it at cutover although the live rule still holds it pending.
+
+   **H3 — Enumeration and cutover must be fenced, not merely atomic.** The
+   GitHub reads and the record writes cannot share a transaction, so
+   "atomically" does not cover the window between them. A unit enumerated as
+   pending can merge under the old evaluator before the snapshot is written, and
+   the new representation resurrects it; a unit labelled after enumeration is
+   omitted and its obligation waived. The cutover needs a generation fence with
+   revalidation behind it, or lineage mutations halted across bootstrap **and**
+   cutover.
+
+   **H4 — In-flight admitted claims are part of the state.** Pending and settled
+   are not the whole picture: at any cutover there are open units whose claims
+   the controller has already admitted. If the bootstrap writes only bare pending
+   records, a live claimant holds no claim in the new format — so another
+   claimant can win the recorded-order race, or the live one merges without
+   settling anything. Every valid open claim must be preserved or atomically
+   re-admitted inside the fence.
+
+   The migration must also be safe to re-run, and enabled only after it
+   completes.
 11. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`,
     not in the lineage function. A rewrite that touches only the lineage function
     must not assume it is inherited.
@@ -300,10 +341,11 @@ with the same hole.
 ## Where things stand
 
 - `main`'s rule is unchanged. All three defects above are live.
-- **#377, #378, #379 and #381 all carry `review-replacement-required`, and all
-  stay.** This unit replaces #381 and carries the record forward. #379's and
-  #378's obligations are discharged by later units carrying the same record
-  scope; #377's only by a merged unit carrying its implementation scope and its
+- **Pending: #377, #378, #379 and #383. Settled: #381, by merged #382** — which
+  still carries the label, because discharge is computed rather than un-marked.
+  This unit replaces #383 and carries the record forward. #379's and #378's
+  obligations are discharged by later units carrying the same record scope;
+  #377's only by a merged unit carrying its implementation scope and its
   unresolved findings.
 - Until those merge, `Replaces: none` work is refused. That is the rule working,
   not failing — the queue is long, not jammed, and every entry is claimable
