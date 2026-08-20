@@ -104,9 +104,11 @@ and is classified as such.
 **#389's second round ended the search for an authority: `statuses(head)` applies
 NO creator filter and requires a KNOWN SHA, so the commit status is
 collaborator-writable AND unenumerable — the FIFTH artifact refuted after the PR
-body, the head ref, the label and the committed file. The trust root is `main`'s
-protected history (`protected: true`, executed) and the content of a reviewed SHA,
-and nothing else.**
+body, the head ref, the label and the committed file. The only ESTABLISHED trust
+root is the content of a reviewed SHA; `main`'s protected history qualifies only
+CONDITIONALLY, once the branch's actual no-bypass and required-review rules are
+read — `protected: true` proves that SOME protection applies and excludes neither a
+bypass allowance nor a privileged direct push.**
 
 **#390 then refused the trade this lineage kept making.** Three heads shipped a
 bundle whose safety rested on a fail-open the same document disclosed a few
@@ -120,13 +122,17 @@ it changes this file and the lineage record, and it therefore SHIPS NO GATE
 BEHAVIOUR. An earlier head said it "ships" base revalidation, which a docs diff
 cannot do — and reading it that way would let a later handoff treat #377's live
 defect as delivered while this same file says #377 is pending. What the record
-carries are REQUIREMENTS FOR A LATER IMPLEMENTATION UNIT, and #377's two unresolved
-findings travel TOGETHER: base revalidation has no claim write to precede in the
-current tree (`assessReplacementLineage` reads live bodies every run), so it means
-something only alongside #377's timeline-claim mechanism — which treats the shared
-`github-actions[bot]` actor as sufficient provenance and is itself the other
-unresolved P1. Restoring one without the other either reintroduces that P1 or
-leaves the requirement guarding nothing.
+carries are REQUIREMENTS FOR A LATER IMPLEMENTATION UNIT. **Base revalidation is
+one of them and ships ON ITS OWN** — an earlier head claimed it was inseparable from
+#377's timeline-claim mechanism, and executing the gate refutes that:
+`isEligiblePullRequest` compares only repository names, neither `assessReviewScope`
+nor `assessReplacementLineage` reads a base ref or ancestry, and `base.ref` is only
+ever passed to `dispatchHandoff`. So a same-repo claimant targeting a non-`main`
+branch is admitted and, once merged THERE, settles its source — discharging
+current-`main` scope with a merge that never touched `main`. That hole is live now.
+#377's OTHER finding does travel with the mechanism: if the timeline claim is ever
+restored it needs authenticated provenance, since the shared `github-actions[bot]`
+actor is necessary and not sufficient.
 
 **THE LOOP IS NOT BLOCKED AND MUST NOT BE RECORDED AS BLOCKED.** An earlier head
 ended on "that choice is JagPat's, and the §1 objective is blocked on it" — a human
@@ -147,8 +153,12 @@ exhaustion nor what settlement an already-merged candidate performed. A unit
 treating the authority alone as sufficient would meet the legacy queue holding the
 choice this repair refuses: trust an editable body and risk a `claude` claimant
 discharging a `cursor`-owned unit, or fail closed on the legacy entries and deliver
-nothing for them. Both halves are computable — the pending set is what
-`assessReplacementLineage` already derives. **Consequence, stated rather than left
+nothing for them. **The drain half is NOT computable by today's gate** — the pending
+set `assessReplacementLineage` derives is read from EDITABLE bodies, so a
+collaborator editing any higher-numbered merged PR to read `Replaces: #377` makes it
+report the debt drained when the unit was never carried. The drain must be evidenced
+by the authority itself, each settlement authenticated as it happens, which means the
+queue has to drain UNDER the authority. **Consequence, stated rather than left
 for the implementer: the bundle can never drain the backlog it was designed for** —
 by the time it is safe to enable, that queue is empty; it would protect the NEXT
 accumulation, not this one. The prices are recorded so the choice is informed rather

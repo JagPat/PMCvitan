@@ -218,9 +218,11 @@ writable by a repository collaborator or unenumerable without the query it was
 supposed to bound. This document had already written the rule twice, in preserved
 item 3 and item 5: *what the repair is allowed to trust must be decided before any
 mechanism is chosen*. It then chose five mechanisms without deciding it. Answering
-the question takes one table and was executable from the first head — the trust
-root is `main`'s protected history and the content of a reviewed SHA, and nothing
-else in GitHub's collaborator-writable surface qualifies.
+the question takes one table and was executable from the first head — the only
+ESTABLISHED trust root is the content of a reviewed SHA, with `main`'s protected
+history qualifying conditionally, once the branch's actual no-bypass and
+required-review rules are read. Nothing else in GitHub's collaborator-writable
+surface qualifies at all.
 
 Stating the boundary is the durable part. What #390 did next was not: it still
 shipped the bundle, now described as fitting inside the trust root, and that
@@ -252,11 +254,15 @@ is an infrastructure decision named with its three shapes and their prices.
 **#391's first round then caught two mistakes in the refusal itself**, and both are
 worth keeping. The document claimed a docs-only unit "ships" base revalidation — a
 diff touching two markdown files cannot change a gate, and reading it that way could
-let a later handoff treat #377's live defect as delivered. And base revalidation
-turned out not to be independently deliverable at all: the reviewed tree has no
-claim write for it to precede, so it means something only alongside #377's
-timeline-claim mechanism, whose shared-bot provenance is the OTHER unresolved P1.
-Both #377 findings travel together or neither does.
+let a later handoff treat #377's live defect as delivered.
+
+Its second conclusion, that base revalidation was therefore not independently
+deliverable, was WRONG, and #392's review refuted it by executing the gate: nothing
+in the eligibility check, the scope check or the lineage function reads a base ref
+at all, so a claimant merged into a non-`main` branch settles a source without ever
+touching `main`. That defect is live, needs no claim record, and is fixed on its own
+— see the requirements section. Only #377's authenticated-provenance finding travels
+with the timeline-claim mechanism.
 
 **It also caught a human sign-off gate I had written into STATUS** — "that choice is
 the owner's, and §1 is blocked on it" — which this repository forbids. The
@@ -366,15 +372,21 @@ reason. The answer is short, and every row of it was executed rather than argued
 | label | **yes** | only via the label query itself | #375, #377 |
 | committed file | only through a reviewed pull request | yes | #389 — two external writes cannot be atomic; cannot authenticate what predates it; cannot bound its own bootstrap |
 | commit status | **yes** — executed: `GitHubClient.statuses(head)` applies no creator filter | **no** — executed: it requires a known SHA, so the set of SHAs still comes from the label query | #389 |
-| **`main`'s protected history** | **no** — executed: `protected: true` | yes | — |
+| **`main`'s protected history** | **not established** — `protected: true` was the only observation made, and it proves only that SOME protection applies; it excludes neither a bypass allowance nor a direct push by a privileged actor | yes | — |
 | **a reviewed commit SHA** | **no** — content is fixed by the hash | n/a | — |
 
-**So the trust root is exactly two things: `main`'s protected history, and the
-content of a reviewed head.** Anything a repository collaborator can write is not
-evidence, however official it looks. Five mechanisms failed because they were all
-on the wrong side of that line, and the line was verifiable from the first head.
+**So the trust root is ONE thing that is established — the content of a reviewed
+commit SHA — and a second that is only conditional.** `main`'s protected history
+qualifies exactly insofar as the branch's actual rules are read and shown to forbid
+bypass and to require review; `protected: true` does not show that, and an earlier
+head of this table treated it as though it did. Until those rules are verified, an
+implementation resting on protected history could accept an unreviewed bypass commit
+as authenticated owner or settlement evidence — the same failure as trusting a body,
+wearing better clothes. Anything a repository collaborator can write is not
+evidence, however official it looks. Five mechanisms failed because they were on the
+wrong side of that line, and the line was verifiable from the first head.
 
-## What a repair would require, and why none of it is buildable now
+## What a repair would require, and which parts of it are buildable
 
 **Nothing in this section ships in the unit that carries this document.** This is a
 record and a specification for a later implementation unit; merging it changes no
@@ -392,33 +404,49 @@ in protected evidence or fail closed*; *authenticate the owner, or do not enable
 cross-unit bundles.* Three heads shipped a bundle resting on a fail-open the same
 document disclosed a few paragraphs later. Disclosure is not consent.
 
-**And the one requirement that looked independent is not.** Base revalidation at
-the authorization boundary — #377's second unresolved finding — reads: check base
-identity and ancestry *before the claim write* and at every later evaluation. The
-reviewed tree has **no claim write to precede**: `assessReplacementLineage` reads
-live bodies on every evaluation, so a retarget is already caught the next time the
-gate runs. The requirement only means something alongside #377's timeline-claim
-mechanism, which records a claim that cannot be withdrawn.
+**Base revalidation IS independently deliverable, and an earlier head of this
+document argued the opposite.** #391's record claimed the requirement was
+meaningless without #377's timeline-claim mechanism, reasoning that
+`assessReplacementLineage` re-reads live bodies every run so a retarget is caught
+on the next evaluation. That reasoning is wrong, and executing the gate is what
+settles it:
 
-That mechanism cannot be restored as it stands. This document's own preserved item
-3 records why: it treats the timeline actor as sufficient provenance, and every
-workflow here shares one `github-actions[bot]` identity, so the actor filter is
-necessary and not sufficient. **Restoring it reintroduces that P1; omitting it
-leaves base revalidation with nothing to guard.** Both of #377's unresolved
-findings therefore travel together, and neither is separately deliverable:
+- `isEligiblePullRequest` compares `headRepository.nameWithOwner` against
+  `baseRepository.nameWithOwner` and nothing else — the base REF is never read;
+- neither `assessReviewScope` nor `assessReplacementLineage` looks at a base ref or
+  at ancestry; the lineage function's settlement test is `merged_at`, a number
+  comparison, and the body's declaration;
+- `base.ref` appears in the gate three times, each of them passing it to
+  `dispatchHandoff`, never validating it.
 
-1. **The claim record needs authenticated provenance** — a writer a claimant cannot
-   impersonate. The shared bot identity is not one.
-2. **The claimant must be revalidated whole at the authorization boundary, base
-   included** — before the irrevocable write and at every later evaluation, since a
-   claimant retargeted to another or stale base after its claim was recorded
-   otherwise satisfies every other check.
+So a same-repository claimant targeting any branch other than `main` is admitted,
+and once merged THERE its `merged_at` plus its `Replaces:` body settles the source —
+discharging unresolved current-`main` scope with a merge that never touched `main`.
+Re-reading live bodies cannot catch this, because the body is not the thing that is
+wrong.
 
-**What survives is one preservation note**, and it is stated because a
-reimplementation is likely to drop it by accident rather than by decision: the
-malformed-declaration refusal lives in `assessReviewScope`, not in the lineage
-function. A rewrite that touches only the lineage function must not assume it is
-inherited. That is not a repair; it is a fence around behaviour `main` already has.
+**The later implementation must therefore carry an independent base identity and
+ancestry guard** — on the claimant when it is admitted, and on the candidate whose
+merge is treated as settling a source. It needs no claim record, no enumeration and
+no authority, and it closes a hole that is live on `main` right now.
+
+**#377's OTHER unresolved finding is genuinely coupled**, and that part of the
+earlier reasoning survives. If the timeline-claim mechanism is ever restored, it
+needs authenticated provenance: this document's preserved item 3 records that it
+treats the timeline actor as sufficient, and every workflow here shares one
+`github-actions[bot]` identity, so the actor filter is necessary and not sufficient.
+That finding travels with the mechanism. Base revalidation does not travel with
+anything — it ships on its own.
+
+**And one preservation note travels with any rewrite**, stated because it is likely
+to be dropped by accident rather than by decision: the malformed-declaration refusal
+lives in `assessReviewScope`, not in the lineage function, so a rewrite touching only
+the lineage function must not assume it is inherited. That is not a repair; it is a
+fence around behaviour `main` already has.
+
+**So the buildable set is exactly two items** — the base identity and ancestry guard,
+and that fence. Everything else in this document needs a fact the trust root does not
+carry, and is recorded as not shipping rather than shipped with the gap disclosed.
 
 ## What §1 costs while this stands, and what the loop does about it
 
@@ -459,10 +487,21 @@ holding exactly the choice this repair refuses: trust an editable body and risk 
 entries and deliver nothing for them.
 
 So the remedy becomes buildable when an authority is observable **and** every
-obligation older than it has drained. Both halves are computable without asking
-anyone: the pending set is what `assessReplacementLineage` already derives, and
-"older than the authority" is a comparison against a fact the authority itself
-carries.
+obligation older than it has drained — but **the second half cannot be measured by
+today's gate**, and an earlier version of this section claimed it could. It proposed
+reading the pending set `assessReplacementLineage` derives. That set is computed
+from **editable bodies**: §2 above shows that a collaborator can edit any
+higher-numbered merged pull request to read `Replaces: #377`, after which the
+function treats #377 as settled. Deriving cutover readiness from it would report the
+pre-authority debt drained while the unresolved unit was never carried — enabling the
+bundle on precisely the forgery this repair exists to refuse.
+
+**The drain has to be evidenced by the authority itself**: each legacy obligation
+discharged by a unit whose settlement that authority can attest, rather than by a
+body read afterwards. For obligations closed before any authority existed, no such
+attestation can be manufactured — the same wall §1 hits, reached from the other
+side. In practice the queue must drain UNDER the authority, each settlement
+authenticated as it happens.
 
 **Which means the bundle can never drain the backlog it was designed for.** By the
 time it is safe to enable, the queue it was meant to clear is empty; what it would
@@ -545,9 +584,21 @@ unit to learn.
    purpose. Blocked-pending-evidence is a state with an exit; unclaimable-forever
    is not.
 
-   **And it must be written when the controller LABELS a unit exhausted** rather
-   than read when a claimant is admitted, since anything read later reads whatever
-   the body says by then.
+   **And capturing the owner must be ATOMIC with declaring the unit exhausted** —
+   which "write it when the controller labels" does not achieve, and an earlier head
+   of this list stated it as though it did. The record and the label are two writes,
+   so they interleave: the controller reads `claude` from the source body, the author
+   edits the marker to `cursor`, the controller then writes the record and applies
+   the label. The record freezes `claude` while the unit is Cursor-routed at the
+   moment it becomes exhausted, and a later `claude` claimant passes equality and
+   discharges Cursor-owned scope. Reading the body later is worse, not better, since
+   by then it says whatever it says.
+
+   Only two shapes close it: **one authorizing creation** that makes the owner and
+   the exhaustion the same act, or a **post-write comparison that REFUSES the label
+   if the owner moved** between the read and the write. The second is fail-closed and
+   is not the reread #389's review rejected — that one claimed a momentary match
+   established the truth, where this one only ever declines to proceed.
 
 ## On the automatic release valve that was sketched here
 
@@ -573,12 +624,13 @@ with the same hole.
 ## Where things stand
 
 - `main`'s rule is unchanged. All three defects above are live.
-- **Pending: #377, #378, #379, #383, #384, #385, #386, #387, #388, #389 and #390.
-  Settled: #381, by merged #382** — which still carries the label, because
-  discharge is computed rather than un-marked. This unit replaces #390 and carries
-  the record forward. The record
-  obligations are discharged by later units carrying the same scope; #377's only
-  by a merged unit carrying its implementation scope and its unresolved findings.
+- **Pending: #377, #378, #379, #383, #384, #385, #386, #387, #388, #389, #390 and
+  #391. Settled: #381, by merged #382** — which still carries the label, because
+  discharge is computed rather than un-marked. **#391 is in this set**: it closed at
+  the round limit while claiming #390, so the claim lapsed with the claimant and
+  both are now owed. This unit replaces #391 and carries the record forward.
+  Obligations are discharged by later units carrying the same scope; #377's only by
+  a merged unit carrying its implementation scope and its unresolved findings.
 - Until those merge, `Replaces: none` work is refused. That is the rule working,
   not failing — the queue is long, not jammed, and every entry is claimable
   today.
