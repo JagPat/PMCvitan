@@ -82,8 +82,9 @@ proposed re-running the equality check immediately before the label is applied;
 **#394's review refused it, and the refusal generalises**: reading a mutable value
 close in time to a write does not bind it, so the interval survives however narrow it
 gets. Only a single serialized authorizing operation — deciding the value and
-creating the obligation as one act — closes it, and the same applies to binding a
-source's base to `main`.
+creating the obligation as one act — closes it. (That was once said of binding a
+source's base to `main` as well; it no longer applies, because moving the base guard
+to eligibility removes the read-then-write pair rather than needing to serialize it.)
 
 **#389's FIRST round separated the two halves for good, and five of its six
 findings were one thing: A COMMITTED FILE CANNOT BE THE AUTHORITY.** It cannot be
@@ -143,13 +144,19 @@ nor `assessReplacementLineage` reads a base ref or ancestry, and `base.ref` is o
 ever passed to `dispatchHandoff`. So a same-repo claimant targeting a non-`main`
 branch is admitted and, once merged THERE, settles its source — discharging
 current-`main` scope with a merge that never touched `main`. That hole is live now.
-**The guard runs at THREE points, not two** — the claimant at admission, the candidate
-whose merge settles a source, and the moment an exhausted unit BECOMES a source
-(`enforceReviewConvergence` calls `markReplacementRequired` with no base inspection, so
-off-`main` work can manufacture an obligation that blocks every fresh `main` unit). At
-that third point the test is base REF IDENTITY ONLY, never ancestry: `main` advances
-under an open unit as a matter of course, and refusing the label because the head is no
-longer descended from current `main` would silently DROP a real obligation.
+**The guard belongs at ELIGIBILITY — before review — and each placement takes the test
+its own moment can answer.** Eligibility refuses a non-`main` base outright, so an
+off-`main` unit never enters the lifecycle and never reaches the point where an
+obligation would be created; admission checks the claimant's base ref; settlement
+checks that the candidate's merge LANDED on `main`, read from the merge record.
+**Exhaustion takes NO base test**: a unit the controller actually reviewed keeps its
+obligation regardless of base, because suppressing it there is a waiver path — a
+`release`-targeted unit could draw findings across two heads and have them neither
+fixed nor carried. **Never ancestry against the moving tip** at any placement: `main`
+advances under an open unit constantly, and a squash merge breaks it a second way, so
+ancestry refuses ordinary valid work. Siting the guard at eligibility also removes the
+read-then-write pair an earlier head found at exhaustion, so the serialized-operation
+primitive it wanted is not missing — it is not needed.
 #377's OTHER finding does travel with the mechanism: if the timeline claim is ever
 restored it needs authenticated provenance, since the shared `github-actions[bot]`
 actor is necessary and not sufficient. **OWNER EQUALITY IS ALSO A REQUIREMENT, for

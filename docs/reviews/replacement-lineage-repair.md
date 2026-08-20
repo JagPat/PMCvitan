@@ -321,10 +321,14 @@ the claimant's stayed an editable marker. In each case the half that survived is
 half the edit was thinking about, and the half that vanished is the one it was not.
 
 The fourth was the mirror image — a guard applied too widely rather than too narrowly.
-Requiring ancestry where only base identity belongs would have refused the exhaustion
-label for any unit whose `main` had moved on underneath it, silently dropping a real
-obligation. A rule can fail by covering less than it claims OR by covering more, and
-both failures read as thoroughness while you are writing them.
+Requiring ancestry where only base identity belongs would have refused ordinary valid
+work for no reason but that `main` had moved on underneath it. A rule can fail by
+covering less than it claims OR by covering more, and both failures read as
+thoroughness while you are writing them. **The base guard then failed a THIRD way,
+which neither category catches: it was in the wrong PLACE.** Put at exhaustion it
+created both a race and a waiver path; put at eligibility it needs neither, and the
+construction the previous head was reaching for stops being necessary. A rule can also
+be right and sited wrong.
 
 **So every requirement in this document that has two parts now states both parts
 explicitly, in the same breath**, rather than stating the rule and leaving its
@@ -497,47 +501,54 @@ discharging unresolved current-`main` scope with a merge that never touched `mai
 Re-reading live bodies cannot catch this, because the body is not the thing that is
 wrong.
 
-**The later implementation must therefore carry an independent base identity and
-ancestry guard, at THREE points and not two.** The obvious two are the claimant when
-it is admitted and the candidate whose merge is treated as settling a source. The
-third is the one an earlier head missed: **the moment an exhausted unit BECOMES a
-source.** Executed — `enforceReviewConvergence` counts finding heads, re-reads the
-live pull request through `setDraftForCurrentHead`, and calls
-`markReplacementRequired` without inspecting the base at any step. So a
-same-repository unit targeting a non-`main` branch — or retargeted while Codex is
-polling — can acquire the `review-replacement-required` label, and from then on the
-label query blocks every fresh `main` unit until some unrelated replacement carries
-off-`main` work. A guard on admission and settlement does not help: the obligation
-was already manufactured upstream of both.
+**The later implementation must therefore carry an independent base guard — and the
+placement an earlier head chose was wrong in both directions.** Executed:
+`isEligiblePullRequest` compares `headRepository.nameWithOwner` against
+`baseRepository.nameWithOwner` and nothing else, and neither `assessReviewScope` nor
+`assessReplacementLineage` reads a base ref. So a same-repository unit targeting any
+branch enters review, accumulates findings, and on exhaustion acquires the
+`review-replacement-required` label; the global label query then blocks every fresh
+`main` unit until something carries off-`main` work.
 
-**And proximity does not close it — an earlier head said "check the base immediately
-before the label is added", which is the same two-write race this document rejects
-elsewhere, written by the head that had just finished rejecting it.** The controller
-reads `base.ref === 'main'`, the author retargets the unchanged head to `release`,
-and `markReplacementRequired` then applies the label; the global label query treats
-that off-`main` unit as an obligation and blocks fresh `main` work — precisely what
-the guard claims to prevent. Reading a mutable value close in time to a write is not
-binding it, here or in the owner-capture case below.
+**The fix is at ELIGIBILITY, before review — not at exhaustion.** A non-`main` base
+is refused when the unit is first considered, so an off-`main` unit never enters the
+review lifecycle, never accumulates findings, and never reaches the point where an
+obligation would be created. That is one check on one value at one moment, with
+nothing to race.
 
-So the source binding needs **immutable evidence that the unit was based on `main`,
-or a single serialized authorizing operation** that decides the base and creates the
-obligation as one act. The guard at admission and at settlement is separate and does
-close a live hole with no claim record, enumeration or authority behind it; the
-source-creation point is the one that needs the stronger construction.
+**And an obligation is NEVER suppressed by a base test, which an earlier head got
+backwards.** It proposed checking the base at the moment the label is applied and
+withholding the obligation when the base was not `main`. That is a waiver path: a
+`release`-targeted unit can enter review under today's eligibility rule, draw
+findings across two heads, and then have its replacement obligation suppressed —
+after which a fresh `Replaces: none` unit is admitted while those findings were
+neither fixed nor carried. **Any unit the controller actually reviewed keeps its
+obligation regardless of base.** The findings were real; where the branch pointed
+does not unmake them.
 
-**But the source-creation check is BASE IDENTITY ONLY — not ancestry — and an
-earlier head got this wrong by applying the same test at all three points.** Ancestry
-against current `main` is the wrong question when an obligation is being created,
-because `main` moves underneath an open unit as a matter of course: a unit branches
-from `main` at M0, an unrelated unit advances `main` to M1 during its review, and the
-unit then reaches the finding-head limit with its head no longer descended from
-current `main`. Refusing the label there would drop a real obligation for unresolved
-scope — waiving exactly what this rule exists to preserve, and doing it silently.
+Moving the guard to eligibility also dissolves the construction the previous head
+was reaching for. With no base test at exhaustion there is no read-then-write pair
+to bind, so the "immutable evidence or a single serialized authorizing operation"
+requirement disappears rather than going unbuilt — the race was created by the
+placement, not by the check.
 
-So at source creation the test is that the base REF is `main`, and nothing more. An
-ordinary concurrent advance of `main` is not grounds to omit a replacement
-obligation. Ancestry belongs at admission and settlement, where the question is
-whether the claimant actually contains the current unresolved unit.
+**At admission and settlement the test is base IDENTITY and the merge record — never
+ancestry against the moving tip.** `main` advances under an open unit constantly, so
+ancestry against the current tip refuses ordinary valid work: admit claimant H while
+it descends from M0, let unrelated work move `main` to M1, and H no longer descends
+from the tip though nothing about H changed. A squash merge breaks it a second way,
+since the original head is not an ancestor of the post-merge `main` by construction.
+An earlier head applied ancestry at these two points for exactly the reason it had
+just rejected applying it at a third.
+
+So each placement takes the test that its own moment can answer:
+
+| Placement | Test |
+| --- | --- |
+| eligibility, before review | the base ref is `main` — else the unit is not reviewed at all |
+| admission of a claimant | the base ref is `main` |
+| settlement by a candidate | the candidate's merge LANDED on `main`, read from the merge record |
+| exhaustion / obligation creation | **no base test** — a reviewed unit's obligation always stands |
 
 **#377's OTHER unresolved finding is genuinely coupled**, and that part of the
 earlier reasoning survives. If the timeline-claim mechanism is ever restored, it
@@ -593,19 +604,17 @@ items, and ship a gate that lets one agent discharge another's scope.
 
 **So the document separates two things it previously conflated.** The REQUIREMENTS
 are everything above. What is BUILDABLE TODAY, needing no authority, no enumeration
-and no owner, is **two of the three base-guard placements plus the
-malformed-declaration fence** — and the third placement is explicitly NOT in that
-set.
+and no owner, is **the base guard in all three of its live placements — eligibility,
+admission and settlement — plus the malformed-declaration fence.** Each reads a value
+its own moment can answer: a base ref, a base ref, and a merge record.
 
-**The source-creation leg does not ship, and an earlier head listed it as though it
-did.** Two sections above, the same head established that a check cannot protect that
-point at all: the controller reads `base.ref`, the author retargets, the label lands,
-and proximity changed nothing. What it needs instead is immutable evidence of a
-`main` base or a single serialized authorizing operation, and this document does not
-identify either as available — no GitHub primitive here decides a base and creates an
-obligation as one act. Listing it as buildable would send the next implementer to
-write the very check that was just refuted, so it stays a requirement with its
-missing primitive named.
+**Nothing here waits on an unavailable primitive, and an earlier head thought
+otherwise.** It placed the guard at exhaustion, found the read-then-write race that
+placement creates, and concluded the leg needed immutable evidence or a single
+serialized authorizing operation that GitHub does not offer. Moving the guard to
+eligibility removes the pair entirely, so the primitive is not missing — it is not
+needed. The exhaustion point takes no base test at all, because a reviewed unit's
+obligation stands regardless of base.
 
 Everything else is a requirement waiting on evidence that does not yet exist — named,
 not dropped.
