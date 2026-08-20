@@ -268,25 +268,52 @@ further than these six did.
    or fails closed forever, because no claim in the new format can exist for a
    unit labelled before the format did.
 
-   **Two attempts to state the bootstrap rule in this document were wrong, in
-   opposite directions**, and that is why this requirement now names hazards
-   instead of prescribing a protocol. The first said the set is every unit
-   carrying the label — which migrates discharged units as debts and blocks the
-   repository once the real queue drains. The second said it is every unit no
-   merged pull request has named — which drops the ordering condition the live
-   rule actually applies and silently waives obligations. Each read correctly on
-   its own. A cutover protocol written in prose, never executed, is exactly the
-   artefact this lineage has repeatedly proven wrong, so the protocol ships
-   **with the implementation and its probes**, where each hazard below is a
-   test rather than a sentence.
+   **H0 — THE LEGACY STATE HAS NO AUTHENTICATED ROOT, AND THAT IS THE REAL
+   PROBLEM.** Four formulations of this requirement have now been written and
+   every one was found. Reading the findings together says why, and it is not a
+   wording failure: *every input a bootstrap could read is forgeable.* Labels are
+   writable by any collaborator (requirement 3). Bodies stay editable after merge
+   (§2). And the frozen owner of requirement 9 does not exist for any unit
+   exhausted before that rule did — which is all of them.
+
+   So a bootstrap reading today's state either trusts forgeable data or refuses
+   everything, and a mechanism cannot be chosen without first choosing what the
+   cutover is allowed to trust. **That is a decision, not a detail**, and the
+   candidates are worth naming because each has a real cost:
+
+   - **A one-time attestation.** An operator asserts the pending set at cutover,
+     and that assertion is the authenticated root; anything not in it fails
+     closed. Cheapest and honest, at the price of one manual act — the same act
+     the watchdog was removed for automating badly.
+   - **Timeline-derived provenance.** The issue timeline records who applied each
+     label and cannot be edited, so it can prove *a workflow* applied a label and
+     when. Better than the label set, and still not controller-specific
+     (requirement 3), so it narrows the trust rather than closing it — and it
+     offers nothing at all for the owner marker, which lives in a body.
+   - **Do not change the representation.** Requirement 5 — one unit carrying
+     several obligations — is what the accumulation defect actually needs, and it
+     may be reachable without a new store. If so this entire requirement
+     evaporates, which is the cheapest outcome available and the one worth
+     testing first.
+
+   Whichever is chosen, the bootstrap **fails closed on any obligation it cannot
+   authenticate**, and the choice is recorded before the protocol is written.
+
+   **An earlier draft of H1 said "the label set is the controller's, the body is
+   not." That is wrong and it contradicts requirement 3 of this same document.**
+   It is struck rather than softened: the label set is not authenticated either,
+   which is exactly what H0 now says.
 
    **H1 — Settlement evidence must be authenticated, or the bootstrap fails
    closed.** Do not infer settlement from the merged pull request that currently
    names a unit. §2 establishes that merged bodies stay editable, so a
    collaborator can rewrite a higher merged unit to name a labelled one
    immediately before migration, and the cutover would freeze that forged
-   discharge into the new representation permanently. This is requirement 3
-   applied to the bootstrap: the label set is the controller's, the body is not.
+   discharge into the new representation permanently. **And the obligation itself
+   needs the same treatment as its settlement**: a collaborator can add
+   `review-replacement-required` to an arbitrary closed unit before cutover, and a
+   bootstrap that trusts the label set freezes a fabricated debt in and blocks
+   fresh work permanently. Authenticate both, or fail closed on both.
 
    **H2 — Settlement must preserve the ordering condition.**
    `assessReplacementLineage` requires `candidate.number > source.number`. A
@@ -294,14 +321,21 @@ further than these six did.
    classifies an edited *older* merged unit as settling a *newer* labelled one —
    waiving it at cutover although the live rule still holds it pending.
 
-   **H3 — Enumeration and cutover must be fenced, not merely atomic.** The
-   GitHub reads and the record writes cannot share a transaction, so
-   "atomically" does not cover the window between them. A unit enumerated as
-   pending can merge under the old evaluator before the snapshot is written, and
-   the new representation resurrects it; a unit labelled after enumeration is
-   omitted and its obligation waived. The cutover needs a generation fence with
-   revalidation behind it, or lineage mutations halted across bootstrap **and**
-   cutover.
+   **H3 — Enumeration and cutover must be fenced, and a fence does not stop a
+   run already in flight.** The GitHub reads and the record writes cannot share a
+   transaction, so "atomically" does not cover the window between them. A unit
+   enumerated as pending can merge under the old evaluator before the snapshot is
+   written, and the new representation resurrects it; a unit labelled after
+   enumeration is omitted and its obligation waived.
+
+   Revalidation behind a generation fence is **not sufficient on its own**,
+   because an old evaluator can already be running when the fence goes up: the
+   `orchestrate` job in `.github/workflows/auto-merge.yml` checks out the
+   default-branch script once and may run for ninety minutes. It can start before
+   the fence, stay invisible to the final revalidation, and then apply a label or
+   merge an admitted claimant *after* the new representation is live — so the new
+   evaluator waives a late obligation or misses a settlement. Old runs must be
+   drained, or a fence-aware compatibility stage deployed before bootstrap.
 
    **H4 — In-flight admitted claims are part of the state.** Pending and settled
    are not the whole picture: at any cutover there are open units whose claims
