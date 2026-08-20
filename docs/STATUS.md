@@ -13,14 +13,34 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
-task_state: in_progress
+task_state: in_review
 work_item: none
 reviewed_merge: 44ceef9
-open_pr: 366
+open_pr: 380
 next_task: none
 blocking_directive: none
-updated: 2026-08-18
+updated: 2026-08-20
 ```
+
+**The open PR is #380 — the corrected record of what the replacement-lineage
+repair must do.** It replaces #379, which reached the two-finding-head limit;
+#379 had replaced #378, which reached it proposing to park the repair. That
+parking framing was withdrawn by owner directive on 2026-08-20 and the repair
+resumes.
+
+**Three obligations are live, and they discharge one per merge.** #377, #378 and
+#379 all carry `review-replacement-required`. #380 discharges #379; a later unit
+discharges #378; and #377 — the lineage-repair implementation with its
+unresolved findings — is discharged only by a merged unit carrying that
+implementation scope. No label is cleared by hand. This queue is itself the
+accumulation defect the record describes: long, not jammed, every entry
+claimable.
+
+**#363 (schedule B1) is parked at its green head** — `pnpm check` exit 0,
+`upgrade-proof` 676 assertions, integration 96 files / 1,243 tests, all 10
+checks green on the preceding head. It declares `Replaces: none` truthfully and
+is refused only because #377 is still owed. It is NOT to be edited to claim an
+obligation it does not carry; it resumes once #377 is genuinely discharged.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
@@ -84,12 +104,16 @@ rename alone, and `docs/reviews/pr-330-convergence.md` records what those
 rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
-**`work_item: none` with `task_state: in_progress` is deliberate.**
-`autonomous-status-state.test.mjs` pins two rules against this file: `work_item`
-is consulted ONLY from `task_state: merged`, and a `merged` block must CLEAR it.
-So an `in_progress` block that names a `work_item` silently resolves to the bare
-parent task and discards the named unit. With `work_item: none` the resolver
-returns `task:4`, which is this task.
+**`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
+`pr:380`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
+must CLEAR it — so naming a `work_item` from any other state is inert, and from
+`in_progress` it silently resolves to the bare parent task and discards the named
+unit. `open_pr` outranks the task branch outright: with `open_pr: 380` the
+resolver returns `pr:380` — "an open PR is the current work item until it merges
+or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
+The open unit is named in the prose above rather than in `work_item`, because
+that field would not be read here.
 
 **Nothing here waits on a human.** The owner's SCOPE decisions are recorded
 (the 2026-08-13 scheduling, the forward-authority amendment, and the Wave-0
