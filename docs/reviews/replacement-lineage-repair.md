@@ -93,8 +93,8 @@ unit, not a closed one, and that distinction is what keeps the queue finite.
 
 **Where the rounds actually went, because the shape is the finding.** Seven on
 #378, seven on #379, three on #381, none on #382 — then one and four on #383,
-three and two on #384, three and two on #385, and two and two on #386. The rise
-from #383 onward was
+three and two on #384, three and two on #385, two and two on #386, and five on
+#387's first head. The rise from #383 onward was
 **entirely requirement 10**, the migration cutover: five formulations of one rule,
 each found. Every other round in this lineage found contradictions between
 sentences; those rounds found hazards in an operation, and no amount of rewriting
@@ -114,10 +114,14 @@ body-and-git rule could be edited from a reviewed singleton into a bundle, then
 body settlement for single-source claims, "deliberately not improved" because
 changing it would un-discharge #381. Both were written as honest disclosures and
 both were live holes; the second review said so in as many words. The fixes were
-available and ordinary — settle from git alone, and put the change behind an
-enforcement boundary of the kind `scripts/review-efficiency.mjs` already uses
-twice (`REVIEW_SCOPE_ENFORCE_AFTER_PR = 246`, `PRE_REVIEW_ENFORCE_AFTER_PR = 345`)
-— so what stood in for the fix was the disclosure.
+available and ordinary — settle from git alone, and fence the change so it cannot
+un-discharge what is already settled — so what stood in for the fix was the
+disclosure. (The first fence written for it was by pull request number, on the
+model of `REVIEW_SCOPE_ENFORCE_AFTER_PR = 246` and
+`PRE_REVIEW_ENFORCE_AFTER_PR = 345`. #387's review found that wrong too: those
+fence behaviour applied to a pull request, where a number fits, while this fences
+evidence already written, where an unmerged lower-numbered unit like #363 walks
+straight through. The fence is merge state, in requirement 1.)
 
 **Root two — "cannot be authenticated" is not "cannot be used".** Owner equality
 was first read from an editable body and called preserved (#381 found it), then
@@ -125,14 +129,28 @@ derived from a `claude/**` head ref and failed closed elsewhere (#386 found that
 this repository had already refuted the derivation, and that failing closed jams
 the queue forever), then removed outright on the reasoning that forgeable evidence
 is no evidence — which #386's second round refuted in turn, because under bundles
-the removal lets one claimant discharge another agent's scope wholesale. The
-resolution is the smallest of the four: read the declared owner, refuse a bundle
-that mixes owners, bind nothing where no owner is declared, and say plainly that
-the check fails against an editor who could forge the claim anyway.
+the removal lets one claimant discharge another agent's scope wholesale. Then
+#387's round showed the fourth statement was wrong as well, for a reason the third
+had created. **The root is not that a forgeable check is worthless; it is that the
+document kept asserting how much the check was WORTH without re-measuring after
+the design around it changed.** Requirement 5 no longer claims a value it cannot
+demonstrate: it asks only that the repair not make cross-owner discharge cheaper
+than the live rule already makes it, and it names the authenticated record as the
+thing that would turn that into a real rule.
 
-Eight finding-bearing heads across four units bought those two sentences — #383,
-#384, #385 and #386, two apiece, which is the count the rounds line above adds up
-to. They are written down here so they are not paid for a third time.
+**#387's first round then found four more, and one is the sharpest observation in
+this lineage:** making settlement read git left the owner marker *cheaper to forge
+than settlement*, so the justification carried forward from the previous head —
+"the same capability already defeats settlement" — was falsified by the very change
+that shipped beside it. A repair that fixes one leg and reuses the old measurement
+for the other is measuring against a state it has just removed. The other three
+were a fence by pull request number that the still-open #363 walks straight
+through, a completeness check computed from the very enumeration it was meant to
+bound, and a competition rule that refuses every claimant and frees nobody.
+
+Nine finding-bearing heads across five units bought these roots — #383, #384,
+#385 and #386 at two apiece, and #387's first — which is the count the rounds line
+above adds up to. They are written down here so they are not paid a third time.
 
 Nothing here is stuck; every entry is claimable, and the queue drains one per
 merge.
@@ -215,14 +233,13 @@ rounds settled how each stands without one:
 
 | Requirement | Rests on | What it does not do |
 | --- | --- | --- |
-| **1** — the claim itself | `main`'s protected git history, for every candidate merged after a stated enforcement boundary | it does not settle from a body, at any size, after that boundary |
-| **5** — the source's correction owner | the owner declared in the source's body, which is available for every unit | it does not *authenticate* that owner, and it says so |
+| **1** — the claim itself | `main`'s protected git history, for every candidate that merges after the repair ships | it does not settle from a body, at any size, except for candidates already merged when it shipped |
+| **5** — cross-owner cost | the SHAPE of the rule: a bundle may not span declared owners | it does not authenticate an owner, and it does not preserve correction ownership |
 
-Neither is a store, a migration or a backfill. Requirement 1's boundary is a
-constant of the kind this repository already uses twice, and requirement 5 is a
-check whose evidence is forgeable by exactly the capability that already defeats
-settlement — so it adds no surface while stopping the case that would really
-occur.
+Neither is a store, a migration or a backfill. Requirement 1's fence is a fact
+about the repository at one instant — the already-merged set, which cannot gain a
+member — and requirement 5 asks only that the repair not make cross-owner
+discharge cheaper than the live rule already makes it.
 
 **What multi-obligation carry costs — two earlier claims here were wrong, and
 stay struck.**
@@ -272,19 +289,27 @@ reader would take again:
    rewritable trusted claim. The constraint was real; treating it as a reason to
    keep the hole was not, because the constraint has a standard answer.
 
-   **The answer is an enforcement boundary, and this repository already uses
-   one twice.** Executed in `scripts/review-efficiency.mjs`:
-   `REVIEW_SCOPE_ENFORCE_AFTER_PR = 246` and `PRE_REVIEW_ENFORCE_AFTER_PR = 345`,
-   each applied as a plain comparison on the pull request number. Settlement takes
-   the same shape:
+   **The fence is merge state at the cutover, not a pull request number.** An
+   earlier head of this requirement fenced by number, on the model of
+   `REVIEW_SCOPE_ENFORCE_AFTER_PR = 246` and `PRE_REVIEW_ENFORCE_AFTER_PR = 345`
+   in `scripts/review-efficiency.mjs`. Those two fence *behaviour applied to a pull
+   request*, where a number is exactly right. This fences *evidence already
+   written*, where it is wrong: a lower-numbered pull request that has not merged
+   yet can still merge later, and would then be on the body path permanently.
+   **#363 is that case sitting in the open right now** — parked, numbered below any
+   boundary this repair could pick, and expected to merge once the queue drains.
+   A closed lower-numbered unit can also be reopened. So:
 
-   - a candidate merged **after** the boundary settles from git, whatever its size
-     — one source or many;
-   - a candidate at or below it settles from its body, exactly as today.
+   - a candidate that had **already merged when the repair shipped** settles from
+     its body, exactly as today;
+   - **every other candidate settles from git** — merging later, whatever its
+     number.
 
-   That preserves every discharge already computed, #381's included, without
-   preserving the hole for anything new. It is a constant, not a data migration:
-   nothing is backfilled and no store is built.
+   That set is closed by construction: it cannot gain a member, because nothing
+   can retroactively become already-merged. It preserves every discharge already
+   computed, #381's among them, and it is a fact about the repository at one
+   instant rather than a list to maintain — which is the distinction #374 got
+   wrong when it hardcoded the numbers of the day.
 
    **Where the git evidence lives.** The declaration goes in a commit message on
    the claimant's branch, so it is inside the exact head the reviewer approved —
@@ -299,6 +324,22 @@ reader would take again:
    Requiring both closes the merge-time override as well: a merge that supplies an
    invented commit message disagrees with the pull request's own commits, and
    disagreement settles nothing.
+
+   **The second anchor must be CONSTRUCTED, not assumed, and both merge paths need
+   changing.** Executed in `scripts/autonomous-review-gate.mjs`: `enableAutoMerge`
+   passes only `mergeMethod: SQUASH` to `enablePullRequestAutoMerge`, and
+   `mergeExactHead` sends only `merge_method` and `sha` to the REST merge
+   endpoint. **Neither sets the squash commit body.** What `1449c82` contains is
+   therefore GitHub's default formatting under this repository's current settings —
+   an observation, not a guarantee, and a repair resting on it would rest on a
+   setting this design does not control.
+
+   Because settlement fails CLOSED, guessing wrong is not a silent loss but a jam:
+   an admitted replacement whose branch carries the declaration merges into a
+   commit that does not, settles nothing, and leaves its obligation pending with no
+   unit able to take it. **So the repair must make both paths compose the merge
+   commit message explicitly from the reviewed declaration**, rather than relying
+   on either default.
 
    **An earlier head had settlement read body AND git, and that was a P1.** It
    named the gap between the reviewed head and the merge as a window it did not
@@ -325,9 +366,9 @@ reader would take again:
    - **That merge commit's message carries zero line-anchored `Replaces:`
      declarations**, while #382's body carries exactly one — and the body is what
      discharged #381. So the evidence the live rule settles on exists *only* in
-     editable text, and git carries none of it today. This is also why the
-     boundary is necessary rather than merely convenient: applied retroactively,
-     a git-only rule would un-discharge #381.
+     editable text, and git carries none of it today. This is also why the fence
+     is necessary rather than merely convenient: applied retroactively, a git-only
+     rule would un-discharge #381.
    - The squash merge that produced `1449c82` put the pull request's title in the
      subject and its branch commit messages in the body, and did not carry the
      pull request body at all. The title is editable after review, which is why
@@ -340,8 +381,8 @@ reader would take again:
    | Today | **1** — executed |
    | A bundle read from the body | the whole backlog, in one edit |
    | A bundle read from body AND git | the whole backlog — the pre-merge edit above |
-   | Git, after the boundary | **0** |
-   | Git, with a pre-boundary candidate | **1** — a finite, non-growing set |
+   | Git, for a candidate merged after the repair | **0** |
+   | Git, with an already-merged legacy candidate | **1** — a closed set that cannot gain a member |
 
    A claim whose git evidence is missing must settle **nothing at all**. It must
    never fall back to its first entry, or to its body: either reintroduces a row
@@ -367,13 +408,51 @@ reader would take again:
    an obligation nobody carried. Both rules are needed, and the bundle boundary is
    what tells them apart.
 
-3. **Distinguish a dead chain from missing evidence, and treat an incomplete
-   enumeration as missing.** Unknown lineage must never admit work. `main` fails
-   closed only on a non-array (§3), so a repair that "keeps the current
-   behaviour" inherits the empty-response bypass. The repair needs an explicit
-   completeness check — an authenticated or independently-bounded enumeration,
-   or a recorded expected count — before an empty or partial result is treated as
-   authoritative.
+   **Overlapping claims need a WINNER, not a mutual refusal — the live rule
+   deadlocks.** Executed against `assessReplacementLineage`: with #378 labelled and
+   two open claimants #400 and #401 both declaring it, #400 is refused naming #401
+   and #401 is refused naming #400. A third claimant #402 is refused naming #400.
+   Nothing in the design frees #378: every claimant is blocked by another open one,
+   and no transition removes a blocker except somebody closing a pull request by
+   hand. "The source stays claimable" is not delivered by refusing everyone.
+
+   So competition must **resolve deterministically**: exactly one open claimant
+   holds a source and the rest are refused naming the holder. The order must not
+   depend on when an evaluator happened to run — the earliest recorded admission
+   where one exists, and otherwise the lowest-numbered open claimant, which every
+   evaluator computes identically from the same listing. A raced claim outside the
+   holder's bundle still settles nothing, which is the rule above; what changes is
+   that the obligation always has exactly one claimant able to discharge it. This
+   interleaving needs an explicit-barrier test asserting that one claimant is
+   admitted, the other refused, and the obligation conserved.
+
+3. **Distinguish a dead chain from missing evidence, and bound the enumeration
+   from OUTSIDE it.** Unknown lineage must never admit work. `main` fails closed
+   only on a non-array (§3), so a repair that "keeps the current behaviour"
+   inherits the empty-response bypass.
+
+   **A completeness check computed from the same query is worth nothing**, and an
+   earlier head of this requirement asked for one anyway. If a permissions change
+   or a wrong filter returns `200` with an empty page, then a count, a checksum or
+   an expected-size derived from that same page is empty too, agrees with itself,
+   and `Replaces: none` passes while obligations stand. The check must come from a
+   source that cannot go empty for the same reason.
+
+   **The repository already has one: git.** `docs/STATUS.md` is committed, names
+   the pending set in prose today, and every change to it passes through a
+   reviewed pull request. Making that enumeration machine-readable gives the gate
+   a second, independently-sourced list, and the rule is a comparison:
+
+   - the two agree → the enumeration is trusted;
+   - they disagree, in either direction → **refuse**, naming both, because one of
+     them is wrong and the gate cannot tell which;
+   - the committed list is unreadable → refuse, exactly as a non-array does today.
+
+   A hidden-label response now disagrees with a non-empty committed list and is
+   caught. This is not the authenticated record §2 needs — a pull request can edit
+   the committed list, and an attacker able to edit both stays ahead of it — but it
+   closes the *accidental* evidence-loss case, which is the one §3 is about, and
+   it costs a file this repository already maintains by hand.
 
 4. **Revalidate the whole claimant at the authorization boundary, base included.**
    #377 revalidated head, body and state but not base, and a claimant retargeted
@@ -390,47 +469,56 @@ reader would take again:
    exactly the window requirement 1 closes: the two requirements have to name the
    same evidence, or the later one quietly undoes the earlier.
 
-5. **The claim must preserve the source's correction owner, and a bundle may not
-   mix owners.** A replacement must not discharge an exhausted unit owned by
-   another agent: the repository routes a unit's corrections to its declared owner
-   alone, and no agent may act on another's behalf. Under bundles the stake rises
-   — one claimant could declare a mixed bundle and discharge a `cursor`-owned unit
-   alongside its own.
+5. **The repair must not make cross-owner discharge cheaper than the live rule
+   already makes it — and it must not claim to make it dearer.** A replacement
+   should not discharge an exhausted unit owned by another agent: the repository
+   routes a unit's corrections to its declared owner alone, and no agent may act on
+   another's behalf. Three heads tried to turn that into an authorization rule and
+   all three failed, each for a different reason. The fourth statement is not a
+   fourth attempt at the rule; it is the constraint that survives without one.
 
-   **Two earlier heads got this wrong in opposite directions, and the root is one
-   sentence.** The first read the owner from the source's body and called it
-   preserved; #381's review showed the body stays editable after the unit closes,
-   so the check reads a forged value and agrees with it. The second concluded that
-   because the owner cannot be *authenticated* it cannot be *used*, derived it
-   from a `claude/**` head ref instead, and failed closed on every other prefix —
-   which `scripts/correction-owner.mjs` refutes in its own header ("the branch
-   prefix does not carry it (both PRs were on `codex/**`)", #349 and #350 being
-   loop pull requests on one prefix with different owners), and which #386's
-   review showed would make a `cursor`-owned exhausted unit permanently
-   discharge-ineligible — the pending set never empties, every `Replaces: none`
-   unit refused for good, exactly the state requirement 2 forbids.
+   **What is available, and what each attempt got wrong.**
 
-   **"Cannot be authenticated" is not "cannot be used", and that conflation is the
-   error both times.** The rule is:
+   - Read the owner from the source's body — #381's review: the body stays
+     editable after the unit closes, so the check reads a forged value and agrees.
+   - Derive it from a `claude/**` head ref and fail closed elsewhere — #386's first
+     review: `scripts/correction-owner.mjs` refutes the derivation in its own
+     header (#349 and #350, both `codex/**`, different owners), and failing closed
+     makes every unresolvable source permanently unclaimable, jamming the queue.
+   - Remove the requirement — #386's second review: under bundles one claimant then
+     sweeps another agent's scope wholesale.
+   - Read the body again and call it costless — **#387's review, and it is right.**
+     That head argued the check "adds no forgery surface" because the same
+     capability already defeats settlement. Requirement 1 makes that FALSE in the
+     same document: once settlement reads git, a body editor can no longer rewrite
+     the settling claim, so the source's owner marker becomes the *cheapest*
+     remaining target rather than a redundant one. **Struck.** A repair that fixes
+     one leg and reuses the old justification for the other is measuring against a
+     state it has just removed.
 
-   - the owner of a source is what `parseCorrectionOwner` reads from its body —
-     available for every unit, and forgeable;
-   - a claimant may name only sources whose owner equals its own, so a **bundle
-     mixing owners is refused**; a claimant that owns both halves opens one unit
-     per owner;
-   - a source whose declaration is missing, invalid or contradictory — the units
-     predating the contract — **binds nothing**, and stays claimable by anyone.
-     That is today's behaviour and it is what keeps the rule from deadlocking.
+   **So the owner marker is not an authorization basis here, and the document must
+   not present it as one.** What can still be required is a property of the rule's
+   SHAPE, which no marker has to be trusted for:
 
-   **What this defends against, stated exactly.** It stops cross-owner discharge
-   by accident and by ordinary means, which is how it would actually happen. It
-   does not stop an attacker who can edit pull request bodies — but that attacker
-   can already rewrite the `Replaces:` claim itself, so the check **adds no
-   forgery surface**: the capability it fails against is the capability that
-   defeats settlement anyway. A forgeable check is worth more than no check when
-   it costs nothing, and the second head removed one on the reasoning that
-   imperfect evidence is no evidence. The preserved list below records what an
-   authenticated record would add here, which is authentication — not the check.
+   - **A bundle may not span declared owners.** A claim naming several sources is
+     refused unless every member's declared owner matches the claimant's. This is
+     not proof of ownership; it is a refusal to build a NEW instrument that
+     discharges several owners' scope at once.
+   - **A single claim is left exactly as the live rule leaves it.** Executed: the
+     live rule has no owner check at all, so a `claude` claimant discharges a
+     `cursor` source today with no forgery whatsoever. The repair neither fixes
+     that nor worsens it.
+
+   The measurable requirement is the comparison: **after the repair, discharging
+   another owner's scope must cost at least what it costs now.** Bundles would have
+   made it cheaper — one claim, many owners — and the mixed-owner refusal is what
+   keeps the cost where it was. Nothing here should be read as preserving
+   correction ownership, because it does not.
+
+   **Owner equality as authorization needs the authenticated record**, captured
+   when the controller labels a unit exhausted, and that is item 6 of the preserved
+   list. It is the largest thing this repair leaves undone, and it is undone
+   because every basis available without a record has now been tried and found.
 
 6. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`,
     not in the lineage function. A rewrite that touches only the lineage function
@@ -439,13 +527,14 @@ reader would take again:
 ## What this repair deliberately leaves undone
 
 **§2 is narrowed, not closed, and the remainder is stated precisely.** Settlement
-after requirement 1's boundary reads git, so the forgery that defines §2 — editing
-a merged body to discharge an obligation — stops working for anything merged from
-here on. What stays live is two things and no more: candidates merged at or below
-the boundary, a **finite set that cannot grow**, and every body read that is not
-settlement, admission among them. An earlier head said "§2 stays live" flatly and
-kept the singleton hole open on purpose; that was the wrong trade and #386's
-review said so.
+reads git for every candidate that merges after the repair ships, so the forgery
+that defines §2 — editing a merged body to discharge an obligation — stops working
+from here on. What stays live is two things and no more: the candidates already
+merged when the repair shipped, a **closed set that cannot gain a member**, and
+every body read that is not settlement — admission among them, and the owner
+marker requirement 5 explicitly declines to trust. An earlier head said "§2 stays
+live" flatly and kept the singleton hole open on purpose; that was the wrong trade
+and #386's review said so.
 
 **What is true here is narrower than the sentence that used to stand in this
 paragraph.** It said: "The exposure is unchanged from today, not increased: the
@@ -468,10 +557,12 @@ saw one obligation. Requirement 1 now settles a bundle from git ALONE, so the bo
 plays no part in settlement and the window has nothing to act on. Naming a hole is
 not closing it, and this document had done the former while claiming the latter.
 
-**Owner equality is kept, unauthenticated, and the gap is named where the
-requirement is.** What this repair gives up is not the check but its proof: a body
-edit can still misstate a source's owner. The preserved list records what an
-authenticated record adds there — authentication, not the rule.
+**Owner equality is the largest thing this repair leaves undone.** Requirement 5
+keeps cross-owner discharge no cheaper than it is today and says plainly that this
+is not the same as preserving ownership: a body edit still misstates a source's
+owner, and after requirement 1 that marker is the cheapest remaining target rather
+than a redundant one. Four heads tried to make it an authorization rule; the
+preserved list records what a record would have to provide.
 
 **§3 is addressed but not by a new store** — requirement 3 above is a completeness
 check on the enumeration the live rule already performs.
@@ -526,18 +617,24 @@ unit to learn.
    mechanism is chosen. That question is what five formulations failed to answer,
    and it is the first thing to settle if §2 is ever taken on.
 
-6. **Owner equality gets its proof.** Requirement 5 keeps the check without it:
-   the owner is read from the source's body, which is available for every unit and
-   forgeable by whoever can edit it. Nothing available today can do better — the
-   branch prefix demonstrably does not carry ownership
-   (`scripts/correction-owner.mjs` records #349 and #350, both on `codex/**`, with
-   different owners), and a label proves only that some workflow wrote it, by item
-   3 above. A record naming the owner at the moment a unit is labelled exhausted
-   is what would make the check hold against an editor, rather than only against
-   accident. Note what it must NOT do: fail closed on units whose owner it cannot
-   resolve. #386's review executed that consequence — those sources become
-   permanently unclaimable and the whole queue jams — so an authenticated record
-   has to carry an unrestricted state for units predating it.
+6. **Owner equality becomes an authorization rule instead of a cost comparison.**
+   Requirement 5 does not preserve correction ownership and says so; all it asks is
+   that the repair not make cross-owner discharge cheaper. Four heads tried to make
+   it a real rule and each hit a different wall: the source's body is editable
+   (#381); the branch prefix demonstrably does not carry ownership
+   (`scripts/correction-owner.mjs` records #349 and #350, both `codex/**`, with
+   different owners) and failing closed on the rest jams the queue (#386); removing
+   the rule lets a bundle sweep another agent's scope (#386); and reading the body
+   again is **cheaper to forge than settlement** once requirement 1 lands (#387).
+   A label proves only that some workflow wrote it, by item 3 above.
+
+   What is needed is the owner captured **when the controller labels the unit
+   exhausted** — before any claimant exists, by a writer a claimant cannot
+   impersonate. Two constraints on such a record, both learned the hard way: it
+   must NOT fail closed on units it cannot resolve, since #386's review executed
+   that consequence and the whole queue jams; and it must be written at labelling
+   rather than read at admission, since anything read later reads whatever the body
+   says by then.
 ### On the automatic release valve that was sketched here
 
 An earlier version of this document proposed a watchdog that **released** an

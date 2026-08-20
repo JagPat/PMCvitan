@@ -32,27 +32,32 @@ migration cutover — is REMOVED, not deferred: five formulations drew findings,
 the last two eliminated two of its three trust roots. #385's review then found the
 narrowed repair incoherent rather than smaller — two surviving requirements, the
 bundle and owner equality, still depended on the record the removal had deleted.
-**#386's four findings across two heads settled both, and neither needs the record
-restored.** **Requirement 1 — every claim settles from git**, not just a bundle:
-an enforcement boundary of the kind `scripts/review-efficiency.mjs` already uses
-twice (`REVIEW_SCOPE_ENFORCE_AFTER_PR = 246`, `PRE_REVIEW_ENFORCE_AFTER_PR = 345`)
-means candidates merged after it settle from `main`'s protected history and earlier
-ones keep body settlement, so #381's discharge survives without keeping the hole.
-Settlement never reads a body after the boundary, which also closes the pre-merge
-window an earlier head had merely DOCUMENTED. Executed 2026-08-20 at `main`
-`1449c82`: `main` is `protected: true`, and that merge commit carries zero
-line-anchored `Replaces:` declarations though #382's body carries the one that
-discharged #381. **Requirement 5 — owner equality is KEPT, unauthenticated.** Two
-heads got it wrong in opposite directions: one read the owner from an editable body
-and called it preserved, the next concluded that unauthenticatable meant unusable,
-derived it from a `claude/**` head ref (which `scripts/correction-owner.mjs`
-refutes in its own header — #349 and #350 both on `codex/**` with different
-owners) and then removed the requirement outright, which under bundles lets one
-claimant discharge another agent's scope wholesale. The rule now reads the DECLARED
-owner, refuses a bundle that MIXES owners, binds nothing where no owner is
-declared, and states plainly that it fails against an editor who could forge the
-claim anyway — so it adds no forgery surface while stopping the case that would
-really occur.
+**#386's four findings and #387's first five settled the shape.** **Requirement 1
+— every claim settles from git**, not just a bundle, fenced by MERGE STATE rather
+than by pull request number: a candidate already merged when the repair ships keeps
+body settlement (so #381's discharge survives), and everything that merges later
+settles from `main`'s protected history whatever its number. The number fence was
+#387's F1 — the still-open, lower-numbered #363 walks straight through it. Git
+settlement also closes the pre-merge window an earlier head had merely DOCUMENTED,
+and both merge paths must now COMPOSE the squash commit message explicitly:
+executed, `enableAutoMerge` passes only `mergeMethod: SQUASH` and `mergeExactHead`
+only `merge_method`/`sha`, so #382's commit shape is a repository default rather
+than a guarantee, and settlement fails closed if the merge commit lacks the set.
+**Requirement 5 — cross-owner discharge must not get CHEAPER, and nothing claims
+more than that.** Four heads tried to make owner equality an authorization rule:
+the source's body is editable (#381), the branch prefix does not carry ownership
+and failing closed jams the queue (#386), removing the rule lets a bundle sweep
+another agent's scope (#386), and — #387's F2, the sharpest of the lineage —
+reading the body again is CHEAPER to forge than settlement once requirement 1
+lands, which falsified the "adds no forgery surface" justification in the same
+document that made it false. The rule now refuses a bundle that MIXES declared
+owners and leaves the single-claim case exactly as the live rule leaves it, and it
+states that this does not preserve correction ownership. **Requirement 3** gains an
+INDEPENDENT bound — the live label enumeration is compared against a committed one
+and a disagreement refuses — because a completeness check derived from the same
+query is empty for the same reason the query is. **Requirement 2** gains a
+deterministic winner: executed, two open claimants for #378 refuse each other and a
+third is refused too, so "the source stays claimable" was not delivered.
 
 **A STATUS claim carried from the previous head is STRUCK.** It said the only
 barrier to one unit carrying several obligations is `replacementDeclaration`
