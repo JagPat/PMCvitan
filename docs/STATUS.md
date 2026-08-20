@@ -141,7 +141,17 @@ branch is admitted and, once merged THERE, settles its source — discharging
 current-`main` scope with a merge that never touched `main`. That hole is live now.
 #377's OTHER finding does travel with the mechanism: if the timeline claim is ever
 restored it needs authenticated provenance, since the shared `github-actions[bot]`
-actor is necessary and not sufficient.
+actor is necessary and not sufficient. **OWNER EQUALITY IS ALSO A REQUIREMENT, for
+every claim and not only the refused bundle** — executed, `assessReplacementLineage`'s
+source branch checks the source number, its closed state and competing claimants, and
+NEVER the owner, so a `claude` PR can declare `Replaces: #N` against a pending
+`cursor`-owned source and discharge scope it was never permitted to carry. The rule is
+owner equality with a fail-closed refusal when ownership cannot be authenticated; the
+cost of switching it on TODAY is total (no pending source has an authenticated owner,
+so it would refuse the whole queue — the #386 jam), which is why the authenticated
+legacy set has to land first. Recording it as optional would be worse: the next
+implementer reads the buildable list and ships a gate letting one agent discharge
+another's scope.
 
 **THE LOOP IS NOT BLOCKED AND MUST NOT BE RECORDED AS BLOCKED.** An earlier head
 ended on "that choice is JagPat's, and the §1 objective is blocked on it" — a human
@@ -160,8 +170,11 @@ verified-signature commits on `main` attributable to a controller-held key (expo
 by `git log --show-signature` and the GitHub API), or a controller-written record
 whose writer the gate can authenticate. SECOND, that no obligation predating that
 authority is still pending — an authority installed today authenticates only what is
-written after it, and can establish neither who owned #377 through #391 at
-exhaustion nor what settlement an already-merged candidate performed. A unit
+written after it, and can establish neither who owned any already-exhausted unit at
+exhaustion (today #377 through #392, and one more every time a unit closes at the
+round limit — a bootstrap pinned to a fixed range silently excludes whatever
+accumulates after it is typed) nor what settlement an already-merged candidate
+performed. A unit
 treating the authority alone as sufficient would meet the legacy queue holding the
 choice this repair refuses: trust an editable body and risk a `claude` claimant
 discharging a `cursor`-owned unit, or fail closed on the legacy entries and deliver

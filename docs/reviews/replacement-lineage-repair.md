@@ -458,9 +458,21 @@ Re-reading live bodies cannot catch this, because the body is not the thing that
 wrong.
 
 **The later implementation must therefore carry an independent base identity and
-ancestry guard** — on the claimant when it is admitted, and on the candidate whose
-merge is treated as settling a source. It needs no claim record, no enumeration and
-no authority, and it closes a hole that is live on `main` right now.
+ancestry guard, at THREE points and not two.** The obvious two are the claimant when
+it is admitted and the candidate whose merge is treated as settling a source. The
+third is the one an earlier head missed: **the moment an exhausted unit BECOMES a
+source.** Executed — `enforceReviewConvergence` counts finding heads, re-reads the
+live pull request through `setDraftForCurrentHead`, and calls
+`markReplacementRequired` without inspecting the base at any step. So a
+same-repository unit targeting a non-`main` branch — or retargeted while Codex is
+polling — can acquire the `review-replacement-required` label, and from then on the
+label query blocks every fresh `main` unit until some unrelated replacement carries
+off-`main` work. A guard on admission and settlement does not help: the obligation
+was already manufactured upstream of both.
+
+So the guard runs immediately before the label is added, as well as at admission and
+at settlement. It needs no claim record, no enumeration and no authority, and it
+closes a hole that is live on `main` right now.
 
 **#377's OTHER unresolved finding is genuinely coupled**, and that part of the
 earlier reasoning survives. If the timeline-claim mechanism is ever restored, it
@@ -476,9 +488,38 @@ lives in `assessReviewScope`, not in the lineage function, so a rewrite touching
 the lineage function must not assume it is inherited. That is not a repair; it is a
 fence around behaviour `main` already has.
 
-**So the buildable set is exactly two items** — the base identity and ancestry guard,
-and that fence. Everything else in this document needs a fact the trust root does not
-carry, and is recorded as not shipping rather than shipped with the gap disclosed.
+**Owner equality is a REQUIREMENT of this repair, for every claim and not only for
+the refused bundle.** An earlier head restricted the document to "the buildable set"
+and dropped it, which quietly converted *not shippable yet* into *not required* —
+and those are different things. The invariant stands whether or not a unit can
+implement it today.
+
+**The hole it names is live.** Executed: `assessReplacementLineage`'s source branch
+resolves the declaration to a pending requirement, checks the source is closed,
+checks no other open claimant names it, and returns `allowed` — with no owner check
+anywhere in the path. So a `claude`-owned pull request may declare `Replaces: #N`
+against a pending `cursor`-owned source, and on merge it discharges Cursor-owned
+unresolved scope that Claude was never permitted to carry. This is not a bundle
+hazard; it is the ordinary single-claim path on `main` today.
+
+**The rule is therefore: a claimant may name only a source whose declared owner
+equals its own, and a claim whose source ownership cannot be authenticated is
+REFUSED.** Fail closed, per the preserved record's first constraint.
+
+**And the cost of failing closed has to be stated with it, because today it is
+total.** No artifact in the trust root carries an authenticated owner for any
+pending source, so a fail-closed rule applied now refuses the entire queue — which
+is the #386 jam, not a fix. That is precisely why an authenticated legacy set and an
+authority to attest it must land BEFORE the refusal is switched on, and why this
+requirement is recorded here rather than shipped by the next unit. Recording it as
+optional would be worse: the next implementer would read the buildable list, see two
+items, and ship a gate that lets one agent discharge another's scope.
+
+**So the document separates two things it previously conflated.** The REQUIREMENTS
+are everything above. What is BUILDABLE TODAY, needing no authority, no enumeration
+and no owner, is exactly two: the three-point base identity and ancestry guard, and
+the malformed-declaration fence. Everything else is a requirement waiting on
+evidence that does not yet exist — named, not dropped.
 
 ## What §1 costs while this stands, and what the loop does about it
 
@@ -508,10 +549,14 @@ authority itself would be one of:
 - a controller-written record the gate can read and whose writer it can
   authenticate.
 
-**And it would have to cover every obligation predating itself.** An authority
-installed today authenticates only what is written from that point on.
-It cannot establish who owned #377 through #391 at the moment each was exhausted,
-and it cannot authenticate the settlement any already-merged candidate performed —
+**And it would have to cover every obligation predating itself — which means the
+WHOLE pending set at the moment it is installed, not a range copied from an earlier
+head.** An authority installed today authenticates only what is written from that
+point on. It cannot establish who owned any already-exhausted unit at the moment it
+was exhausted — today that is #377 through #392, and it grows by one every time a
+unit closes at the round limit, so a bootstrap written against a fixed range will
+silently exclude whatever accumulated after the range was typed. It equally cannot
+authenticate the settlement any already-merged candidate performed —
 the trust-root table above is the reason, and no later read recovers either fact. A
 unit that treated the authority by itself as sufficient would meet the legacy queue
 holding exactly the choice this repair refuses: trust an editable body and risk a
@@ -610,8 +655,9 @@ unit to learn.
    mechanism is chosen. That question is what five formulations failed to answer,
    and it is the first thing to settle if §2 is ever taken on.
 
-6. **The PRE-REPAIR owner gets evidence instead of an assumption.** After the
-   owner equality becomes possible at all. It is not in this repair: no artifact
+6. **The PRE-REPAIR owner gets evidence instead of an assumption** — which is what
+   makes owner equality enforceable at all. The RECORD is not in this repair (the
+   requirement is; see above): no artifact
    inside the trust root carries an authenticated owner, and #389 executed the last
    candidate — commit statuses accept a write from any collaborator. Six heads
    reached for it and none shipped. What a record would add is the one thing review
