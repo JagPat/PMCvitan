@@ -16,27 +16,45 @@ task: 4
 task_state: in_review
 work_item: none
 reviewed_merge: 44ceef9
-open_pr: 382
+open_pr: 385
 next_task: none
 blocking_directive: none
 updated: 2026-08-20
 ```
 
-**The open PR is the corrected record of what the replacement-lineage repair must
-do**, replacing #381 — which reached the two-finding-head limit, as #379 and #378
-did before it. #378's parking framing was withdrawn by owner directive on
-2026-08-20 and the repair resumes.
+**#382 MERGED at `main` `1449c82`**, putting
+`docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. #383,
+#384 and #385 each carried the record forward and each reached the
+two-finding-head limit. The open PR replaces #385.
 
-**Four obligations are live, and they discharge one per merge.** #377, #378, #379
-and #381 all carry `review-replacement-required`. The open unit discharges #381;
-later units discharge #379 then #378; and #377 — the lineage-repair
-implementation with its unresolved findings — is discharged only by a merged unit
-carrying that implementation scope. No label is cleared by hand.
+**THE OWNER'S SCOPE DECISION STANDS AND IS NOW COHERENT.** Requirement 10 — the
+migration cutover — is REMOVED, not deferred: five formulations drew findings, and
+the last two eliminated two of its three trust roots. #385's review then found the
+narrowed repair incoherent rather than smaller — two surviving requirements, the
+bundle and owner equality, still depended on the record the removal had deleted.
+The resolution keeps the decision and drops the dependency instead: a bundle
+settles from `main`'s protected git history, and a source's correction owner comes
+from its `claude/**` head ref. Neither is a store, neither needs a migration, and
+neither needs a backfill — executed 2026-08-20 at `main` `1449c82` (`main` is
+`protected: true`; that merge commit carries zero line-anchored `Replaces:`
+declarations though #382's body carries the one that discharged #381; all six
+labelled sources are `claude/**` branches).
 
-This queue is itself the accumulation defect the record describes: long, not
-jammed, every entry claimable. The finding counts are converging — seven on #378,
-seven on #379, three on #381 — so the cost per round is falling even as the queue
-lengthens.
+**A STATUS claim carried from the previous head is STRUCK.** It said the only
+barrier to one unit carrying several obligations is `replacementDeclaration`
+rejecting more than one `Replaces:` line. Executed, that is false: a two-line
+declaration makes `replacementSource` return `null`, and `assessReplacementLineage`
+uses scalar equality in both `fulfilledSources` and its competing-claim detection,
+so a parser-only change fulfils nothing. Four sites move together.
+
+**§2 (lineage read from editable text) stays live** for single-source settlement,
+and is NOT fixed by this repair.
+
+**Six obligations are pending, and they discharge one per merge.** #377, #378,
+#379, #383, #384 and #385. (#381 carries the label but is settled by merged #382 —
+discharge is computed, not un-marked.) #377 — the lineage-repair implementation
+with its two unresolved P1s — is discharged only by a merged unit carrying that
+implementation scope. No label is cleared by hand.
 
 **#363 (schedule B1) is parked at its green head** — `pnpm check` exit 0,
 `upgrade-proof` 676 assertions, integration 96 files / 1,243 tests, all 10
@@ -109,12 +127,12 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:382`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:385`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 382` the
-resolver returns `pr:382` — "an open PR is the current work item until it merges
+unit. `open_pr` outranks the task branch outright: with `open_pr: 385` the
+resolver returns `pr:385` — "an open PR is the current work item until it merges
 or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
 The open unit is named in the prose above rather than in `work_item`, because
 that field would not be read here.
