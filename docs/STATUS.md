@@ -13,14 +13,33 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
-task_state: in_progress
-work_item: none
+task_state: in_review
+work_item: replacement-lineage-record
 reviewed_merge: 44ceef9
-open_pr: 366
+open_pr: 379
 next_task: none
 blocking_directive: none
-updated: 2026-08-18
+updated: 2026-08-20
 ```
+
+**The open PR is #379 — the corrected record of what the replacement-lineage
+repair must do.** It replaces #378, which reached the two-finding-head limit
+proposing to park the repair; that framing was withdrawn by owner directive on
+2026-08-20 and the repair resumes.
+
+**Two obligations are live, and they are discharged in order.** #378 and #377
+both carry `review-replacement-required`. #379 discharges #378 — the record —
+and deliberately does NOT discharge #377, which carries the lineage-repair
+implementation and its unresolved findings. After #379 merges, the next unit is
+the implementation replacement declaring `Replaces: #377`, carrying every
+unresolved finding and reproduce-first probe from #377 and its convergence
+history. Neither label is cleared by hand.
+
+**#363 (schedule B1) is parked at its green head** — `pnpm check` exit 0,
+`upgrade-proof` 676 assertions, integration 96 files / 1,243 tests, all 10
+checks green on the preceding head. It declares `Replaces: none` truthfully and
+is refused only because #377 is still owed. It is NOT to be edited to claim an
+obligation it does not carry; it resumes once #377 is genuinely discharged.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
