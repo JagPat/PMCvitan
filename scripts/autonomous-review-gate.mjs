@@ -6,6 +6,7 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
   CORRECTION_STALLED,
@@ -1222,6 +1223,19 @@ export async function revalidateFinalReviewPolicy(
   // And at final admission, so a clean head is also measured — after the head is
   // confirmed current, so a superseded one is never reported on.
   const { advisory = null } = await reportReviewLifecycle(client, pullRequest) ?? {};
+
+  // A base is MUTABLE and retargeting leaves the head SHA untouched, so re-read it:
+  // eligibility checked it once, and lineage re-checks it only for a `Replaces: #N`
+  // claimant. Only the base — repo identity cannot change and open-state is already
+  // settled above. See docs/reviews/replacement-lineage-repair.md.
+  if (!isLineageBase(pullRequest.base?.ref)) {
+    return {
+      state: 'scope_required',
+      allowed: false,
+      detail: `this unit no longer targets ${LINEAGE_BASE_REF}; it targets `
+        + `${pullRequest.base?.ref ?? 'an unreadable base'}`,
+    };
+  }
 
   const scope = await enforceReviewScope(client, pullRequest, expectedHead);
   if (scope.superseded) return { ...scope, state: 'superseded' };

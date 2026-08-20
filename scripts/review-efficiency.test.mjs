@@ -352,6 +352,52 @@ test('a replacement merged onto a non-main branch settles nothing', () => {
   assert.match(landedElsewhere.detail, /Replaces: #346/u);
 });
 
+test('an off-main PR claiming a source does not block a legitimate main claimant', () => {
+  // Tightening eligibility without tightening this scan deadlocks the loop: the
+  // off-`main` PR can never take the obligation (eligibility refuses it), but every
+  // legitimate `main` claimant is rejected as competing, and the pending obligation
+  // also blocks `Replaces: none`. Nothing moves until a human closes it by hand.
+  const source = {
+    pullRequest: { number: 377, state: 'closed', base: { ref: 'main' } },
+    changedFiles: [],
+  };
+  const result = assessReviewScope(pullRequest({
+    number: 396,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 390,
+      state: 'open',
+      base: { ref: 'release' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  assert.equal(result.allowed, true);
+
+  // A competitor that COULD legitimately claim still blocks.
+  const realCompetitor = assessReviewScope(pullRequest({
+    number: 396,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 390,
+      state: 'open',
+      base: { ref: 'main' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  assert.equal(realCompetitor.allowed, false);
+  assert.match(realCompetitor.detail, /already claimed by open PR #390/u);
+});
+
 test('a claimant that does not target main is refused at admission', () => {
   const source = {
     pullRequest: { number: 346, state: 'closed', base: { ref: 'main' } },

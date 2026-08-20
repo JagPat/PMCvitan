@@ -25,7 +25,7 @@ updated: 2026-08-20
 **#382 MERGED at `main` `1449c82`**, putting
 `docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. #383,
 #384 through #390 each carried the record forward and each reached the
-two-finding-head limit. The open PR replaces #394.
+two-finding-head limit. The open PR replaces #377 — the IMPLEMENTATION obligation, not a record unit; #394 was settled by merged #395.
 
 **THE OWNER'S SCOPE DECISION STANDS AND IS NOW COHERENT.** Requirement 10 — the
 migration cutover — is REMOVED, not deferred: five formulations drew findings, and

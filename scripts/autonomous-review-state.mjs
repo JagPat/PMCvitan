@@ -1,11 +1,7 @@
+import { isLineageBase } from './lineage-policy.mjs';
+
 export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
-// The only base a lineage obligation may be created for, claimed from, or settled onto.
-// The guard reads a base REF, never ancestry: `main` advances under an open unit as a
-// matter of course, and a squash merge leaves the reviewed head off the post-merge
-// history by construction, so ancestry against the moving tip refuses ordinary valid
-// work. See docs/reviews/replacement-lineage-repair.md.
-export const LINEAGE_BASE_REF = 'main';
 
 function timestamp(value, field) {
   const parsed = Date.parse(value);
@@ -65,7 +61,7 @@ export function isEligiblePullRequest(pullRequest) {
     state === 'OPEN' &&
     typeof headRepository === 'string' &&
     headRepository === baseRepository &&
-    baseRefName === LINEAGE_BASE_REF
+    isLineageBase(baseRefName)
   );
 }
 

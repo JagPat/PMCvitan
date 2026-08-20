@@ -1416,6 +1416,7 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const sticky = [];
@@ -1460,6 +1461,7 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const client = {
@@ -1484,6 +1486,43 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
   assert.equal(statuses[0][1], 'failure');
 });
 
+test('final admission refuses a unit retargeted off main while Codex was polling', async () => {
+  // Eligibility checked the base once, at entry. A base is mutable and retargeting
+  // leaves the head SHA untouched, so a `Replaces: none` unit — never base-checked by
+  // the lineage rule, which only inspects a `Replaces: #N` claimant — would otherwise
+  // reach mergeExactHead and be merged into whatever branch it now targets.
+  const head = 'f'.repeat(40);
+  const retargeted = {
+    number: 401,
+    additions: 10,
+    deletions: 0,
+    changed_files: 1,
+    body: '<!-- review-size: standard -->',
+    state: 'open',
+    draft: false,
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/401',
+    head: { sha: head },
+    base: { ref: 'release' },
+  };
+  const client = {
+    async pullRequest() { return retargeted; },
+    async setDraft(live, draft) { return { ...live, draft }; },
+    async setStatus() {},
+    async updateStickyComment() {},
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired() {},
+    async commit() { return { commit: { message: 'chore: work' }, files: [] }; },
+  };
+
+  const result = await reviewGate.revalidateFinalReviewPolicy(
+    client, retargeted.number, head,
+  );
+  assert.equal(result.allowed, false);
+  assert.match(result.detail, /no longer targets main/u);
+  assert.match(result.detail, /release/u);
+});
+
 test('final admission revalidates live scope and the late review-round reset', async () => {
   const head = 'e'.repeat(40);
   const pullRequest = {
@@ -1496,6 +1535,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const sticky = [];
@@ -1631,6 +1671,7 @@ test('the second finding-bearing head requires replacement even when convergence
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const comments = [
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
