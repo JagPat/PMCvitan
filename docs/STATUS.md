@@ -81,6 +81,26 @@ polls — creating a source that ROUTES to Cursor while freezing `claude`. The
 equality check runs again immediately before the label is applied, and a mismatch
 refuses to create the obligation.
 
+**#389's FIRST round separated the two halves for good, and five of its six
+findings were one thing: A COMMITTED FILE CANNOT BE THE AUTHORITY.** It cannot be
+written atomically with a label (two external writes, no transaction, so a crash
+leaves either a waiver window or a jam); it cannot authenticate what happened
+before it existed; it cannot bound its own bootstrap; it cannot be kept current
+against writers that predate it; and the repair installing it cannot satisfy the
+rule it installs. **The authority is a COMMIT STATUS** — app-written, SHA-keyed,
+superseded rather than edited, unreachable by whoever edits the pull request, and
+already trusted here for `codex-current-head`. One write, which is what atomicity
+needed; and the read-then-write race closes by POST-WRITE verification (write the
+status, re-read the body, supersede with a refusal on disagreement) rather than by
+proximity. **The pre-repair half cannot be fixed and is now labelled honestly**: no
+status was written when #377–#388 were exhausted, the timeline actor is one shared
+bot identity, and the body has always been editable — so the baseline is a STATED
+ASSUMPTION reviewed on an exact head, its residual is one reviewed enumeration, and
+no available mechanism improves on it. The rollout must STOP old-version writers,
+drain in-flight runs, cancel or grandfather queued auto-merges, and reconcile the
+baseline last; the repair's own merge is by definition the last pre-repair merge
+and is classified as such.
+
 **A STATUS claim carried from the previous head is STRUCK.** It said the only
 barrier to one unit carrying several obligations is `replacementDeclaration`
 rejecting more than one `Replaces:` line. Executed, that is false: a two-line

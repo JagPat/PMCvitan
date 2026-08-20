@@ -94,7 +94,8 @@ unit, not a closed one, and that distinction is what keeps the queue finite.
 **Where the rounds actually went, because the shape is the finding.** Seven on
 #378, seven on #379, three on #381, none on #382 — then one and four on #383,
 three and two on #384, three and two on #385, two and two on #386, five and five
-on #387, and three and two on #388. The rise from #383 onward was
+on #387, three and two on #388, and six on #389's first head. The rise from #383
+onward was
 **entirely requirement 10**, the migration cutover: five formulations of one rule,
 each found. Every other round in this lineage found contradictions between
 sentences; those rounds found hazards in an operation, and no amount of rewriting
@@ -197,9 +198,31 @@ inside it. That is a different class of finding from the ones #385 to #387 drew,
 and it is the first sign in this lineage that the design is being tested rather
 than the idea of it.
 
-Twelve finding-bearing heads across six units bought all of this — #383 through
-#388 at two apiece — which is the count the rounds line above adds up to. It is
-written down here so it is not paid a third time.
+**#389's first round is where the two halves separated for good.** Six findings,
+and five of them were one thing: a committed file cannot be the authority. It
+cannot be written atomically with a label (two external writes, no transaction); it
+cannot authenticate what happened before it existed; it cannot bound its own
+bootstrap; it cannot be kept current against writers that predate it; and the
+repair that installs it cannot itself satisfy the rule it installs.
+
+**What broke the deadlock was an authority already in use and not looked at.** A
+commit status is app-written, keyed to an exact SHA, superseded rather than edited,
+and not reachable by whoever can edit the pull request — this repository has
+trusted it for `codex-current-head` throughout. Making the obligation record a
+status is one write, which is what atomicity needed, and closes the read-then-write
+race by post-write verification rather than by proximity.
+
+**And it separates cleanly from what cannot be fixed.** After the repair there is
+real evidence. Before it there is none, and the document now says so instead of
+manufacturing some: the re-baseline is a stated assumption reviewed on an exact
+head, its residual is one reviewed enumeration, and no mechanism available here
+improves on that. Six heads argued about which artifact could carry pre-repair
+truth; the answer is that none can, and the useful move was to stop looking and
+name the exposure.
+
+Thirteen finding-bearing heads across seven units bought all of this — #383
+through #388 at two apiece, and #389's first — which is the count the rounds line
+above adds up to. It is written down here so it is not paid a third time.
 
 Nothing here is stuck; every entry is claimable, and the queue drains one per
 merge.
@@ -285,8 +308,8 @@ the same breath, what it would take:
 
 | Requirement | Reads the pre-repair fact from | Reads the post-repair fact from |
 | --- | --- | --- |
-| **1** — the claim | the cutover snapshot, frozen at merge | a commit message inside the reviewed head |
-| **5** — the source's owner | the cutover snapshot, frozen at merge | that unit's own commit message |
+| **1** — the claim | the re-baseline, authored and reviewed in the repair's own diff | a commit message inside the reviewed head |
+| **5** — the source's owner | the re-baseline, with its limits stated | the obligation status the controller wrote at labelling |
 
 **The record was never the problem; the shape assumed for it was.** A store with a
 manual operator attestation is what the owner removed, and rightly. A file
@@ -326,32 +349,67 @@ executed:
 So the repair is now these, and only these. #387's review produced the missing
 piece and it belongs first, because four earlier heads failed for want of it.
 
-0. **A CUTOVER SNAPSHOT, committed to the repository in the repair's own diff.**
-   Every requirement below that needs a fact about a unit *as it stood before the
-   repair* reads it from here, and never from a pull request body. The snapshot
-   records, for the repository at the moment the repair merges:
+0. **THE OBLIGATION RECORD — a commit status for everything after the repair, and
+   an explicitly re-baselined snapshot for everything before it.** Requirements 1,
+   3 and 5 all need a fact about a unit that a pull request author cannot rewrite.
+   #389's review showed that a committed file cannot be that fact on its own, for
+   three separate reasons, and the two halves have to be separated because only one
+   of them can be made sound.
 
-   - **the settlement mapping of every already-merged candidate** — which
-     obligation it discharged, frozen; and
-   - **the declared correction owner of every currently-labelled source.**
+   **After the repair, the record is a COMMIT STATUS on the exhausted unit's head
+   SHA**, written by the controller at the moment it labels the unit. This
+   repository already trusts that mechanism — `codex-current-head` is a status,
+   written only by the app, keyed to an exact SHA, superseded by writing a newer
+   one with its history retained. It is not editable by whoever can edit the pull
+   request, which is the whole difficulty with bodies, and it is **one write**,
+   which is the whole difficulty with a committed file.
 
-   **This is not the migration cutover the owner removed.** That one needed a new
-   authenticated store, a one-time operator attestation — a manual act inside an
-   autonomous loop — and provenance that could recover an owner nobody had
-   recorded. This needs none of them. It is a file in the repository, written as
-   part of a reviewed change, on the exact head the review gate already pins.
-   Changing it later takes a pull request that passes the same review; changing a
-   pull request body takes nobody's approval at all, and that distance is the
-   whole point.
+   An earlier head of this requirement said the controller would record the
+   obligation in a committed file "atomically" with applying the label. That is not
+   available: a file commit and a label are two external writes, and running them in
+   one invocation does not make them atomic. Crash between them and the outcome is
+   either a waiver window (label written, record missing) or a fail-closed jam
+   (record written, label missing). Making the STATUS the record removes the
+   second write from the trust path entirely — the label becomes a convenience for
+   humans reading the pull request list, and carries no evidential weight.
 
-   **It is also small, which is why it was worth stopping to find.** Executed
-   against `main` `1449c82`: exactly ONE merged candidate settles anything today —
-   #382, discharging #381 — so the settlement half of the snapshot is a single row.
-   The owner half is the currently-labelled sources. Four heads argued about
-   whether a record was possible while the record needed was nine rows.
+   The status carries the obligation and its owner, and the owner it carries is the
+   value the controller validated. To close the read-then-write race, the
+   controller **re-reads after writing and supersedes with a refusal if the body
+   moved** — post-write verification rather than temporal proximity.
 
-   Anything created **after** the repair needs no snapshot: its declarations live
-   in commit messages inside its own reviewed head, per requirements 1 and 5.
+   **Before the repair, no such record exists and none can be manufactured.** This
+   is the part that must be stated plainly rather than engineered around:
+
+   - no status was written for #377, #378, #379, #383, #384, #385, #386, #387 or
+     #388 when they were exhausted, because nothing wrote one;
+   - the timeline actor cannot supply it — every workflow here shares one
+     `github-actions[bot]` identity, which the preserved list already records as
+     "a necessary filter, not sufficient evidence";
+   - the body has been editable throughout, so committing its **current** value
+     freezes whatever it says today, not what it said at exhaustion. If a
+     `cursor`-owned source were edited to `claude` before the snapshot is authored,
+     the snapshot would freeze the forgery and a `claude` claimant would pass
+     equality against it.
+
+   So the pre-repair half is a **RE-BASELINE, and it is labelled as one**: a stated
+   assumption about the repository's condition at a moment, authored in the repair's
+   own diff and reviewed on the exact head that installs it. Codex asked for
+   "authenticated historical evidence or an explicit trusted re-baseline"; the first
+   does not exist here, and the second is what this is. It is not the manual
+   operator attestation the owner removed — no human is asked to assert anything
+   outside the review that already happens on every head.
+
+   **What the re-baseline does not fix, stated exactly.** If the paginated label
+   enumeration is already lossy when the baseline is authored, the baseline inherits
+   the loss, and a later query with the same fault agrees with it. Review does not
+   make an incomplete enumeration complete. What is available reduces the exposure
+   without closing it: enumerate to exhaustion with the page count asserted rather
+   than assumed, cross-check the label query against the closed-pull-request
+   listing, and record the exact queries used so a disagreement later is
+   attributable. **The residual is that the repair's trust in the pre-repair world
+   is exactly as good as one reviewed enumeration, and no better.** Anyone who needs
+   better needs evidence that was never written.
 
 1. **A replacement must be able to carry more than one obligation, as one DECLARED
    bundle — and every claim, of any size, settles only against evidence a later
@@ -468,8 +526,8 @@ piece and it belongs first, because four earlier heads failed for want of it.
 
    **The bound is therefore monotone and one-directional:**
 
-   - the live query must contain **every unsettled entry the committed list knows
-     about**. One missing → evidence has been lost → **refuse**, naming it.
+   - the live query must contain **every unsettled entry the obligation record
+     knows about**. One missing → evidence has been lost → **refuse**, naming it.
    - the live query containing an entry the list does **not** know about means the
      bound is behind, and the entry must be **recorded before it is relied on**.
 
@@ -482,17 +540,18 @@ piece and it belongs first, because four earlier heads failed for want of it.
    observing an obligation and recording it is exactly the window §3 exists to
    close, and leaving it open reproduces the empty-response bypass on a delay.
 
-   So the bound is appended **atomically with the obligation's creation**: the
-   controller that labels a unit exhausted records it in the same operation, and
-   the labelling is not complete until the record exists. Until it is recorded, an
-   obligation the query alone knows about **blocks fresh `Replaces: none` work**
-   rather than being accepted on the query's word. That direction is fail-closed
-   and it does not jam, because the recording is an automatic step in the same run
-   rather than something a later unit has to remember.
+   So the bound is **the obligation record of requirement 0**, not a second list
+   kept in step with the first. After the repair an obligation exists exactly when
+   its status exists — one write, no interval between creating it and recording it,
+   because they are the same act. Before the repair it is the re-baseline. An
+   obligation the label query knows about and the record does not **blocks fresh
+   `Replaces: none` work** until a status exists for it, which is fail-closed and
+   is also the reconciliation path for anything a pre-repair writer left behind.
 
-   That leaves no interval in which only the live query knows an obligation exists,
-   and it catches the failure §3 is about — a query returning *fewer* obligations
-   than exist — from both sides.
+   That removes the window an earlier head left open — where a new obligation was
+   accepted on the query's word and a later truncated query could omit it and still
+   pass — and it catches the failure §3 is about, a query returning *fewer*
+   obligations than exist, from both sides.
 
 4. **Revalidate the whole claimant at the authorization boundary, base included.**
    #377 revalidated head, body and state but not base, and a claimant retargeted to
@@ -523,10 +582,13 @@ piece and it belongs first, because four earlier heads failed for want of it.
 
    **Requirement 0 supplies what all four lacked.** The owner of a source is:
 
-   - for a source labelled **before** the repair — the value in the snapshot,
-     frozen at cutover;
-   - for one labelled **after** it — its own declaration in a commit message inside
-     its reviewed head, immutable for the same reason its claim is.
+   - for a source labelled **before** the repair — the value in the re-baseline,
+     with the limits requirement 0 states;
+   - for one labelled **after** it — the value in its **obligation status**, which
+     the controller wrote at labelling from a commit-message declaration it had
+     verified equal to the body, and then confirmed by re-reading. The commit
+     message is the unit's declaration; the status is the record of it, and only
+     the record is consulted afterwards.
 
    **The commit declaration must be BOUND to the body declaration, or it authorizes
    the wrong thing.** The body marker is what routes corrections today: it is what
@@ -554,9 +616,18 @@ piece and it belongs first, because four earlier heads failed for want of it.
    `cursor` while Codex is still polling, and the obligation is then created for a
    source that ROUTES to Cursor while permanently freezing `claude` from its
    commit. Cursor could not replace it; a Claude claimant could discharge
-   Cursor-routed scope. The equality check must therefore run again immediately
-   before the replacement-required label is applied, and a mismatch must refuse to
-   create the obligation rather than freeze the wrong owner into it.
+   Cursor-routed scope.
+
+   **Re-checking just before the write is not enough either, and an earlier head
+   stopped there.** Read-then-write leaves its own window: the controller reads a
+   matching pair, the body is edited, and the controller writes the record it
+   already validated. Proximity is not exclusion. What closes it is
+   **post-write verification**: the obligation status is written with the validated
+   owner, the body is re-read afterwards, and a disagreement **supersedes the
+   status with a refusal** — so the only durable outcomes are a record that matches
+   routing, or no obligation at all. Requirement 0's record is what makes that
+   possible, because a status can be superseded and a label cannot be un-applied
+   with the same authority.
 
    A claimant may name only sources whose owner equals its own, for a single claim
    as much as a bundle, and a **bundle mixing owners is refused**. There is no
@@ -582,11 +653,26 @@ piece and it belongs first, because four earlier heads failed for want of it.
    classified post-cutover, settles nothing, and its obligation becomes permanently
    unsettleable.
 
-   So the rollout rule covers both: **drain or invalidate in-flight orchestrations,
-   AND cancel or grandfather every pre-cutover queued auto-merge, before
-   post-cutover classification begins** — or record the controller version that
-   authorized each merge and classify by that instead. What must not happen is the
-   fence switching on mid-flight and turning conforming work into an obligation.
+   So the rollout rule covers three things, not one: **stop old-version writers,
+   drain or invalidate in-flight orchestrations, and cancel or grandfather every
+   pre-cutover queued auto-merge — then reconcile the re-baseline immediately
+   before classification begins.** Draining alone is not enough: an old controller
+   can label a unit *after* the re-baseline head is authored and exit before
+   rollout, so it is neither in flight nor a queued auto-merge when the drain runs,
+   yet its unit is absent from the baseline and has no post-repair status. Stopping
+   the writers first and reconciling last is what leaves no unit in that gap.
+
+   **The repair's own merge is the boundary, not an exception to it.** The
+   activation pull request is merged by the pre-repair controller, through merge
+   paths that do not yet compose the squash body — so it cannot satisfy the rule it
+   installs. It does not have to: the fence classifies a candidate by whether it
+   merged before the repair did, and the repair's own merge is by definition the
+   last one that did. Any settlement it performs is a re-baseline entry authored in
+   the same diff. The alternative Codex offers — stage merge-message construction
+   in a unit that lands *before* the fence — is also sound, and is the safer order
+   if the two are ever separable; either way the activation merge must never be
+   classified as post-repair while lacking evidence the pre-repair controller could
+   not produce.
 
 7. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`, not
    in the lineage function. A rewrite that touches only the lineage function must
@@ -617,12 +703,15 @@ part changes, and this document kept carrying the old figure forward.** Where a
 value is claimed below it is claimed against the design as it now stands, and it
 is stated as something to re-measure rather than as a fact.
 
-**What is genuinely left undone is smaller than it was.** Requirement 0's snapshot
-is a reviewed file, not an authenticated store: a pull request can change it. That
-is a real difference from a signature, and it is also a real difference from a
-pull request body, which changes with no review at all. Anyone who wants the
-stronger property still needs the record the preserved list describes; what they no
-longer need is a manual attestation to get started.
+**What is genuinely left undone is the PRE-REPAIR world, and only that.** After the
+repair the record is a commit status: app-written, SHA-keyed, one write, not
+editable by whoever can edit the pull request. Before it, there is no such record
+and none can be manufactured — no status was written, the timeline actor is one
+shared bot identity, and the body has always been editable. The re-baseline is a
+stated assumption reviewed on an exact head, which is the strongest thing available
+and is weaker than evidence. Its residual is precise: **the repair's trust in the
+pre-repair world is exactly as good as one reviewed enumeration.** Anyone who needs
+better needs evidence nobody wrote.
 
 ### Preserved: what an authenticated record would have to satisfy
 
@@ -665,14 +754,14 @@ unit to learn.
    mechanism is chosen. That question is what five formulations failed to answer,
    and it is the first thing to settle if §2 is ever taken on.
 
-6. **Owner equality gets a signature rather than a review.** Requirement 5 now
-   reads a source's owner from the cutover snapshot (before the repair) or from
-   that unit's own commit message (after it), so the check is real rather than a
-   cost comparison. What a fuller record would add is a different property: the
-   snapshot is changeable by a reviewed pull request, and a signature would make it
-   changeable by nobody. Four heads reached for that stronger property first and
-   none of them shipped; the weaker one shipped and is worth more than the argument
-   was.
+6. **The PRE-REPAIR owner gets evidence instead of an assumption.** After the
+   repair, requirement 5 reads the owner from an app-written commit status and the
+   check is real. Before it, the value comes from a re-baseline — a stated
+   assumption, reviewed once, which cannot recover what a body said at exhaustion
+   because nothing recorded it. What a fuller record would add is exactly that
+   history, and it is the one thing review cannot substitute for. Five heads
+   reached for the stronger property first and none shipped; the honest weaker one
+   is what ships, with its limit written where the requirement is.
 
    Two constraints on any stronger record, both learned the hard way: it must NOT
    fail closed on units it cannot resolve, since #386's review executed that
