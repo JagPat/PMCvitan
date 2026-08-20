@@ -131,14 +131,20 @@ declaration makes `replacementSource` return `null`, and `assessReplacementLinea
 uses scalar equality in both `fulfilledSources` and its competing-claim detection,
 so a parser-only change fulfils nothing. Four sites move together.
 
-**§2's SETTLEMENT leg CLOSES; its admission leg does not.** Settlement reads git
-after the repair and the snapshot before it, so editing a merged body discharges
-nothing in either direction. What stays live is every body read that is NOT
-settlement — chiefly admission, where a post-admission edit changes nothing because
-nothing downstream consults it.
+**§2 IS NOT CLOSED, and an earlier version of this paragraph said otherwise.** It
+claimed settlement reads git after the repair and a snapshot before it — but the
+snapshot is REJECTED (see above) and an authenticated baseline is listed as not
+shipping, so an implementation following this file would have built evidence the
+repair says does not exist. What is true: the git anchor is an ADDITIONAL condition
+on claims made after it lands, and NO already-merged candidate is re-examined or
+re-classified. Legacy settlement therefore behaves exactly as `main` behaves today
+— editing a merged body still discharges an obligation — and that exposure is
+neither created, widened, nor endorsed by this repair. It is §2, live, recorded in
+the record's defect list, and closing it needs the authority named there.
 
 **Ten obligations are pending, and they discharge one per merge.** #377, #378,
-#379, #383, #384, #385, #386, #387, #388 and #389. (#381 carries the label but is settled by merged #382 —
+#379, #383, #384, #385, #386, #387, #388 and #389. (#381 carries the label but is
+settled by merged #382 —
 discharge is computed, not un-marked.) #377 — the lineage-repair implementation
 with its two unresolved P1s — is discharged only by a merged unit carrying that
 implementation scope. No label is cleared by hand.

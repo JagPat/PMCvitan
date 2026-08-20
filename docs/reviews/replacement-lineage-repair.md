@@ -93,8 +93,8 @@ unit, not a closed one, and that distinction is what keeps the queue finite.
 **Where the rounds actually went, because the shape is the finding.** Seven on
 #378, seven on #379, three on #381, none on #382 — then one and four on #383,
 three and two on #384, three and two on #385, two and two on #386, five and five
-on #387, three and two on #388, and six and three on #389. The rise from #383
-onward was
+on #387, three and two on #388, six and three on #389, and six on #390's first
+head. The rise from #383 onward was
 **entirely requirement 10**, the migration cutover: five formulations of one rule,
 each found. Every other round in this lineage found contradictions between
 sentences; those rounds found hazards in an operation, and no amount of rewriting
@@ -228,9 +228,26 @@ and names the ones that do not, with the fact each would need. What closing thos
 takes is an authority outside GitHub's collaborator-writable surface, and that is
 an infrastructure decision rather than another paragraph.
 
-Fourteen finding-bearing heads across seven units bought that table — #383 through
-#389 at two apiece — which is the count the rounds line above adds up to. It is
-written down here so the sixth mechanism is not proposed.
+**#390's first round tested the boundary rather than crossing it, and that is the
+first time.** Six findings, none of them proposing an artifact: a tiebreaker that
+the trust table in the same change refutes (an admission record is
+collaborator-writable, so ordering must be the immutable claimant number); a
+bundle restriction phrased as "no two sources disagreeing" that passes a `claude`
+claimant bundling one `cursor`-owned unit; a rollout reduced to unit ordering when
+a queued auto-merge has nothing to order behind it; a stale STATUS paragraph still
+describing the rejected snapshot; and two that refuse the document's own framing —
+**a repair may not describe a known fail-open as scope it chose to retain.** §3's
+enumeration and §2's legacy settlement are live defects of `main`, recorded where
+defects are recorded, untouched by this repair rather than adopted by it.
+
+That last one is the correction worth keeping. Writing "this stays live" reads as
+a decision when it is a limitation, and the difference matters to whoever builds
+from the document.
+
+Fifteen finding-bearing heads across eight units bought the table and its
+consequences — #383 through #389 at two apiece, and #390's first — which is the
+count the rounds line above adds up to. It is written down here so the sixth
+mechanism is not proposed.
 
 Nothing here is stuck; every entry is claimable, and the queue drains one per
 merge.
@@ -343,8 +360,19 @@ not shipping, with the reason, because the alternative is a ninth mechanism.
    loss, so the construction must land in a unit that merges **before** the fence
    is enabled.
 
-   **Legacy candidates keep body settlement**, unchanged. That is the live rule's
-   exposure, neither widened nor closed — see "what does not ship".
+   **The requirement applies to claims made after it lands, and re-classifies
+   nothing.** An earlier head said legacy candidates "keep body settlement", which
+   reads as a decision to retain a known fail-open — and #390's review named the
+   cost: an edit of merged #382 from `Replaces: #381` to `Replaces: #377` would have
+   the gate treat the implementation obligation as discharged by a record-only unit.
+
+   That defect is real and it is **§2 on `main` today**, recorded in "what is wrong
+   with it". What this requirement must not do is *adopt* it: the git anchor is an
+   ADDITIONAL condition on new claims, so a claim made after it lands must satisfy
+   it, and no already-merged candidate is re-examined, re-classified, or re-blessed
+   by this repair. The exposure that exists is neither created, widened, nor
+   endorsed here — it is untouched, and closing it needs the authority named at the
+   end of this section.
 
 2. **Conservation, and a winner over whole bundles.** A claim inside the admitted
    bundle settles on merge, atomically with its siblings; a claim outside it settles
@@ -354,9 +382,14 @@ not shipping, with the reason, because the alternative is a ninth mechanism.
    and #401 refuse each other and a third #402 is refused too, and nothing frees the
    source. A per-source winner is not enough either: `{#1,#2}` against `{#2,#3}`
    leaves the loser sole holder of #3, which all-or-none settlement can never
-   discharge. Ordering is the earliest recorded admission where one exists and
-   otherwise the lowest claimant number, which every evaluator computes identically.
-   This interleaving needs an explicit-barrier test.
+   discharge. **Ordering is the lowest claimant number, and nothing else.** An earlier head said
+   "the earliest recorded admission where one exists", which the table above
+   refutes in the same change: every admission record available here is
+   collaborator-writable, so a claimant who records first would win and force the
+   competing bundle to release every holding. A pull request number is assigned by
+   GitHub, immutable, and visible to every evaluator identically — it is the only
+   ordering the trust root supports. This interleaving needs an explicit-barrier
+   test.
 
 3. **Revalidate the whole claimant at the authorization boundary, base included.**
    #377 revalidated head, body and state but not base, so a claimant retargeted to
@@ -365,7 +398,23 @@ not shipping, with the reason, because the alternative is a ninth mechanism.
    every later evaluation, and the revalidated declaration is the **git** set, since
    that is what settles.
 
-4. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`, not
+4. **A claimant may name only sources whose declared owner equals its own.** Every
+   source, not merely "no two sources disagreeing with each other" — #390's review
+   showed the weaker phrasing passes a `claude` claimant bundling a single
+   `cursor`-owned unit. This is a **refusal and never an authorization**: it reads a
+   forgeable declaration, so it cannot establish that a discharge is legitimate, but
+   it can only ever refuse discharges the live rule admits today, since the live
+   rule has no owner check at all. Nothing relies on it to say yes.
+
+5. **The rollout must cancel, drain or grandfather every queued auto-merge before
+   the settlement requirement is enabled.** Ordering the units is not enough:
+   executed, the controller calls `enableAutoMerge` and immediately
+   `return 'queued'`, so a candidate can be waiting on GitHub with no orchestration
+   in flight to sequence behind, and it would squash-merge later with the old
+   default message and no git declaration. Merge-message construction lands first;
+   queued merges are cleared second; the requirement is enabled third.
+
+6. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`, not
    in the lineage function; a rewrite touching only the lineage function must not
    assume it is inherited.
 
@@ -382,17 +431,27 @@ listed so the next reader does not spend a unit rediscovering it.
 - **An independent completeness bound for the enumeration (§3).** Nothing
   enumerable sits outside the label query's failure mode: a committed list cannot be
   kept current without a second non-atomic write, and statuses are not enumerable at
-  all without already knowing every exhausted SHA. §3's fail-open therefore stays
-  live, exactly as it is on `main` today.
-- **Owner equality (§5).** No authenticated owner exists anywhere in the trust root.
-  The live rule has no owner check at all, so not adding one leaves the behaviour
-  unchanged rather than regressing it — but a bundle **may not span declared
-  owners**, so this repair does not create a new instrument that discharges several
-  owners' scope at once.
-- **A rollout fence beyond ordering the two units.** Draining runs and cancelling
-  queued auto-merges were needed to protect the baseline; with no baseline, what
-  remains is the sequencing already stated in requirement 1 — merge-message
-  construction first, the fence second.
+  all without already knowing every exhausted SHA.
+
+  **This is the sharpest thing the repair cannot do, and it must not be softened
+  into a choice.** #390's review put the cost concretely: a collaborator who removes
+  a pending label while `replacementLineage()` enumerates makes that source vanish
+  from `requiredReplacements`, and `Replaces: none` is admitted — an obligation
+  dismissed, silently. Codex's alternatives are an independent bound, or refusing an
+  unprovably complete enumeration. The first needs an artifact that does not exist.
+  The second is a permanent jam: no enumeration here is provably complete, so
+  refusing on that basis refuses everything, forever, which #386's review already
+  showed is the state requirement 2 forbids.
+
+  So the honest statement is not "§3 stays live because we chose to keep it". It is
+  that **§3 is a live defect of `main` which this repair does not touch and cannot
+  close**, recorded in "what is wrong with it" where it has been since the first
+  head. Nothing in this repair reads the enumeration in a new way or relies on it
+  more than the live rule already does. Closing it is the authority decision below,
+  and it is the single most valuable thing that decision would buy.
+- **Authenticated owner equality.** Requirement 4 is a refusal built on a forgeable
+  declaration, and it is not the same thing: nothing here can establish who owned a
+  source at exhaustion. That needs the authority below.
 
 **What §1 gets anyway, which is the point of the repair.** Bundles are git-anchored
 and can name the currently pending obligations, so the queue drains in one unit
