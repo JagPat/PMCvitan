@@ -49,11 +49,18 @@ export function isEligiblePullRequest(pullRequest) {
   const baseRepository = pullRequest?.baseRepository?.nameWithOwner;
 
   // Eligibility answers "is this unit ours to process at all", and its refusals are
-  // SILENT — a closed or forked pull request is skipped with nothing written. A base
-  // is policy, not ownership, so it is deliberately NOT checked here: skipping an
-  // off-`main` unit silently would leave any status already attached to its head
-  // standing, including a terminal success written while it still targeted `main`.
-  // The base is guarded at the merge boundary instead; see completeReviewedPullRequest.
+  // SILENT — a closed or forked pull request is skipped with nothing written.
+  //
+  // A base is policy, not ownership, so it is deliberately NOT checked here — but the
+  // reason is the SILENCE, not the timing. An off-`main` unit does have to be stopped
+  // before its review lifecycle begins, because two finding-bearing heads would create
+  // a repository-wide replacement obligation from work that was never eligible to
+  // land. Routing that through this predicate would skip it with any status already on
+  // its head left standing, including a terminal success written while it still
+  // targeted `main`. So the entry refusal lives in `run()`, where it can PERSIST the
+  // refusal and settle any obligation already earned first; see
+  // `refuseOffLineageBaseAtEntry`. The merge boundary guards it again, because a base
+  // can change after admission.
   return (
     state === 'OPEN' &&
     typeof headRepository === 'string' &&

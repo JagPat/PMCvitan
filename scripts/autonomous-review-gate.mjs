@@ -962,17 +962,18 @@ async function setDraftForCurrentHead(
     : null;
 }
 
-// COMPLETION is the only boundary where an off-`main` base does harm, so the guard
-// lives here and nowhere earlier — and "completion" means every path that ends this
-// unit, not the direct merge alone.
+// The shared refusal, used at BOTH boundaries where an off-`main` base does harm:
+// entry (see `refuseOffLineageBaseAtEntry`, which stops a lifecycle before it can
+// accrue findings) and completion (below, where a base that changed after admission
+// must not be merged or handed on).
 //
-// Reviewing an off-`main` unit is harmless, and an exhausted unit's replacement
-// obligation must stand REGARDLESS of base — suppressing it would waive findings that
-// were never fixed or carried. Two earlier placements were wrong for opposite reasons:
-// in the eligibility predicate the refusal was SILENT, leaving any status already on
-// that head standing, including a terminal success written while it still targeted
-// `main`; and on the shared refresh primitive a refusal was indistinguishable from
-// supersession, so a retarget arriving between the second finding and
+// An exhausted unit's replacement obligation must stand REGARDLESS of base —
+// suppressing it would waive findings that were never fixed or carried — so neither
+// boundary is allowed to cancel one. Two earlier placements got this wrong in opposite
+// directions: in the eligibility predicate the refusal was SILENT, leaving any status
+// already on that head standing, including a terminal success written while it still
+// targeted `main`; and on the shared refresh primitive a refusal was indistinguishable
+// from supersession, so a retarget arriving between the second finding and
 // `markReplacementRequired` cancelled the obligation entirely.
 //
 // A base is mutable and `mergeExactHead` constrains only the head SHA, so one check
@@ -1011,25 +1012,22 @@ async function refuseOffLineageBase(client, pullRequest, expectedHead, phase) {
   }
 }
 
-// EVERY completion path ends here, so no path can be given the check and another
-// forgotten. `enableAutoMerge` and the clean-status retry are completions too: the
-// first queues the reviewed head against whatever base is live at that moment, the
-// second merges outright, and both previously dispatched the handoff from a base ref
-// read before either had run.
+// EVERY path that MERGES ends here — the direct merge and the clean-status retry —
+// so neither can be given the check while the other is forgotten, and the ref handed
+// onward is by construction the one just read rather than a value read before the
+// merge ran.
 //
-// The verification is bound to the dispatch rather than sitting beside it, because
-// the dispatch is the act that hands this unit onward as a lineage participant. A
-// path that wants to complete has to come through here to do it.
-async function dispatchIfOnLineageBase(client, pullRequest, expectedHead, outcome) {
+// The queued path deliberately does NOT come through here: it has not completed
+// anything yet, so there is nothing to verify and nothing to hand on. See the comment
+// at the `enableAutoMerge` call.
+async function dispatchMergedOnLineageBase(client, pullRequest, expectedHead) {
   const landed = await client.pullRequest(pullRequest.number);
   if (!isLineageBase(landed?.base?.ref)) {
-    await refuseOffLineageBase(client, landed ?? pullRequest, expectedHead, outcome);
-    // A landed merge is IRREVERSIBLE and reported as such; a queue is merely
-    // refused, because the draft conversion above cancels it before it can run.
-    return outcome === 'merged' ? 'base_violated' : 'base_refused';
+    await refuseOffLineageBase(client, landed ?? pullRequest, expectedHead, 'merged');
+    return 'base_violated';
   }
   await client.dispatchHandoff(landed.base.ref, pullRequest.number);
-  return outcome;
+  return 'merged';
 }
 
 // What the sticky notice must SAY about each completion outcome.
@@ -1074,6 +1072,52 @@ export function completionNotice(completion) {
   }
 }
 
+// An off-`main` unit must never START a review lifecycle.
+//
+// Reviewing it is harmless in itself, but the lifecycle is not inert: two
+// finding-bearing heads make `enforceReviewConvergence` create a REPOSITORY-WIDE
+// replacement obligation, and that obligation blocks every `Replaces: none` unit
+// behind it. Work that was never eligible to land on `main` must not be able to add
+// to the queue every other unit is waiting on.
+//
+// TWO THINGS MUST BOTH HOLD, and an earlier attempt at this guard had only one.
+//
+//   PERSISTED, never a silent skip. The eligibility predicate answers "is this ours"
+//   and writes nothing when it refuses; a base refusal routed through it left any
+//   status already on the head standing — including a terminal success written while
+//   the unit still targeted `main` — with the gate no longer looking at it.
+//
+//   AND IT MUST NOT WAIVE AN OBLIGATION ALREADY EARNED. A unit admitted on `main`,
+//   reviewed to the round limit and retargeted afterwards still owes its replacement:
+//   the findings were real and are not un-found by moving the base. So convergence is
+//   settled FIRST, from the finding heads that already exist. If it marked the unit
+//   as requiring a replacement it has already drafted the PR and written its own,
+//   stronger record, and that record is left to stand rather than overwritten with a
+//   message about the base.
+export async function refuseOffLineageBaseAtEntry(client, pullRequest, expectedHead) {
+  const convergence = await enforceReviewConvergence(
+    client,
+    pullRequest,
+    expectedHead,
+  );
+  if (convergence.superseded) return;
+  if (convergence.required) return;
+
+  await refuseOffLineageBase(client, pullRequest, expectedHead, 'targets');
+  const notice = completionNotice('base_refused');
+  await client.updateStickyComment(
+    pullRequest.number,
+    statusBody({
+      state: notice.state,
+      head: expectedHead,
+      detail: `this unit targets \`${pullRequest?.base?.ref ?? 'an unreadable base'}\`; `
+        + `a reviewed unit merges only into \`${LINEAGE_BASE_REF}\``,
+      attempt: 0,
+      next: notice.next,
+    }),
+  );
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
@@ -1092,14 +1136,30 @@ export async function completeReviewedPullRequest(
     expectedHead,
   );
   if (direct?.merged) {
-    return dispatchIfOnLineageBase(client, pullRequest, expectedHead, 'merged');
+    return dispatchMergedOnLineageBase(client, pullRequest, expectedHead);
   }
 
   try {
     await client.enableAutoMerge(pullRequest, expectedHead);
-    return await dispatchIfOnLineageBase(
-      client, pullRequest, expectedHead, 'queued',
-    );
+    // NO handoff here, and that absence is the fix rather than an omission.
+    //
+    // Queuing is not completing. GitHub merges the head later — possibly much later —
+    // and a retarget in between would land it on another base, so ANY base read taken
+    // at queue time is a prediction rather than an observation. Dispatching the
+    // handoff here declared a completion that had not happened yet, and no later read
+    // in this process could withdraw it.
+    //
+    // The merge itself carries the authority instead, structurally rather than by
+    // another read: `autonomous-handoff.yml` triggers on push to `main` and on the
+    // pull request closing, with its hourly watchdog as the documented backstop for a
+    // token-suppressed event. A merge into any other base produces no push to `main`,
+    // so the handoff never fires for it — and settlement independently requires the
+    // merge to have LANDED on `main`, so it discharges nothing either.
+    //
+    // Honest about what this does NOT do: it cannot stop GitHub merging a queued head
+    // into a base that changed underneath. It ensures such a merge is never treated
+    // as a completion of this unit.
+    return 'queued';
   } catch (error) {
     if (
       !(error instanceof Error)
@@ -1112,8 +1172,8 @@ export async function completeReviewedPullRequest(
       expectedHead,
     );
     if (raced?.merged) {
-      return await dispatchIfOnLineageBase(
-        client, pullRequest, expectedHead, 'merged',
+      return await dispatchMergedOnLineageBase(
+        client, pullRequest, expectedHead,
       );
     }
     throw new Error(
@@ -1171,11 +1231,32 @@ export async function ensureTerminalReviewState(
         pullRequest.html_url,
       );
     }
-    await completeReviewedPullRequest(
+    const completion = await completeReviewedPullRequest(
       client,
       finalPolicy.pullRequest,
       expectedHead,
     );
+    // Silence is not neutral here. An earlier draft of this correction left the
+    // recovery caller alone, reasoning that it writes no sticky comment and therefore
+    // makes no false claim. That was wrong: the sticky comment PERSISTS. A recovery
+    // that refuses completion leaves the previous `review_clean` notice standing,
+    // still promising a merge, while the authoritative status now says the completion
+    // was refused. Only the refusal is published — the recovery path deliberately
+    // does not announce success, and that is left as it was.
+    const notice = completionNotice(completion);
+    if (notice.refused) {
+      await client.updateStickyComment(
+        pullRequest.number,
+        statusBody({
+          state: notice.state,
+          head: expectedHead,
+          detail: 'recovered a prior clean Codex result, then refused completion '
+            + `because this unit's base is not \`${LINEAGE_BASE_REF}\``,
+          attempt: 0,
+          next: notice.next,
+        }),
+      );
+    }
   } else {
     const latestStatus = statuses.find(
       (candidate) => candidate.context === STATUS_CONTEXT,
@@ -1628,6 +1709,13 @@ export async function run() {
   const mode = process.env.AUTONOMOUS_REVIEW_MODE ?? 'orchestrate';
   if (!assertCurrentHeadForContext(context, pullRequest.head.sha, mode)) {
     console.log('Workflow event was superseded by a newer pull-request head.');
+    return;
+  }
+
+  // Before the review lifecycle starts, and after the supersession check so no status
+  // is written onto a head that has already been replaced.
+  if (!isLineageBase(pullRequest?.base?.ref)) {
+    await refuseOffLineageBaseAtEntry(client, pullRequest, expectedHead);
     return;
   }
 

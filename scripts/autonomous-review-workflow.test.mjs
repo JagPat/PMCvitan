@@ -1807,10 +1807,14 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
     ),
     'queued',
   );
+  // NO handoff at queue time. Queuing is not completing: GitHub merges the head
+  // later, a retarget in between would land it on another base, and no read taken now
+  // can withdraw a handoff already dispatched. The merge itself carries the authority
+  // — `autonomous-handoff.yml` fires on push to `main` and on the pull request
+  // closing, so a merge into any other base produces no handoff at all.
   assert.deepEqual(calls, [
     ['merge', 230, expectedHead],
     ['auto-merge', 230, expectedHead],
-    ['handoff', 'main', 230],
   ]);
 });
 
@@ -2173,13 +2177,18 @@ test('a retarget racing the merge itself is DETECTED, not merely pre-checked', a
   assert.match(statusWrites[0].description, /merged into/u);
 });
 
-test('the AUTO-MERGE path detects a retarget and cancels the queue', async () => {
-  // The first attempt guarded only `if (direct?.merged)`. `enableAutoMerge` is a
-  // completion too: it queues the reviewed head against whatever base is live, and the
-  // handoff then dispatched from a base ref read BEFORE the queue existed. Drafting is
-  // what cancels the queue, so the refusal has to run here as well.
+test('the AUTO-MERGE path declares no completion and dispatches no handoff', async () => {
+  // Queuing is not completing. GitHub merges the head later, so a base read taken at
+  // queue time is a prediction; and a handoff dispatched here cannot be withdrawn by
+  // any later read. The earlier draft of this correction verified the base after
+  // enabling auto-merge and dispatched anyway, which still declared a completion that
+  // had not happened.
+  //
+  // The merge itself carries the authority instead, structurally:
+  // `autonomous-handoff.yml` fires on push to `main` and on the pull request closing,
+  // so a queued head that merges into any other base produces NO handoff at all, and
+  // settlement separately requires the merge to have landed on `main`.
   const expectedHead = 'a'.repeat(40);
-  let reads = 0;
   const pullRequest = {
     number: 514,
     state: 'open',
@@ -2191,12 +2200,14 @@ test('the AUTO-MERGE path detects a retarget and cancels the queue', async () =>
   const handoffs = [];
   const statusWrites = [];
   const draftTransitions = [];
+  let reads = 0;
   const client = {
     async pullRequest() {
       reads += 1;
+      // Even if the base moves the moment auto-merge is queued, nothing here may
+      // claim a completion — there is simply nothing to hand on yet.
       return { ...pullRequest, base: { ref: reads === 1 ? 'main' : 'release' } };
     },
-    // no direct merge — this is the queued path
     async mergeExactHead() { return { merged: false }; },
     async enableAutoMerge() {},
     async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
@@ -2206,15 +2217,142 @@ test('the AUTO-MERGE path detects a retarget and cancels the queue', async () =>
 
   assert.equal(
     await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
-    'base_refused',
+    'queued',
   );
-  // Never handed off, and the queue is cancelled by the draft conversion.
+  // The whole point: nothing was handed on, so a later wrong-base merge can never be
+  // recorded as this unit completing.
   assert.deepEqual(handoffs, []);
-  assert.deepEqual(draftTransitions, [true]);
+  // And queuing is not a refusal either — no status is rewritten and the pull request
+  // is left exactly as it was.
+  assert.deepEqual(statusWrites, []);
+  assert.deepEqual(draftTransitions, []);
+});
+
+test('an off-main unit is refused BEFORE its review lifecycle can owe a replacement', async () => {
+  // Reviewing an off-`main` unit is not inert: two finding-bearing heads make
+  // convergence create a REPOSITORY-WIDE replacement obligation, which blocks every
+  // `Replaces: none` unit behind it. Work that was never eligible to land on `main`
+  // must not be able to add to that queue.
+  //
+  // The refusal is PERSISTED — routing it through the eligibility predicate would skip
+  // the unit silently and leave any status already on its head standing.
+  const expectedHead = 'e'.repeat(40);
+  const pullRequest = {
+    number: 520,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'release' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/520',
+  };
+  const statusWrites = [];
+  const stickies = [];
+  const marked = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    // no finding heads yet: nothing is owed, so nothing must be marked
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async markReplacementRequired(number) { marked.push(number); },
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+    async updateStickyComment(number, body) { stickies.push(body); },
+  };
+
+  await reviewGate.refuseOffLineageBaseAtEntry(client, pullRequest, expectedHead);
+
   assert.equal(statusWrites.length, 1);
   assert.equal(statusWrites[0].state, 'failure');
   assert.match(statusWrites[0].description, /merges only into main/u);
   assert.match(statusWrites[0].description, /release/u);
+  // Nothing was owed, so no repository-wide obligation was created.
+  assert.deepEqual(marked, []);
+  // The refusal is announced, not silent.
+  assert.equal(stickies.length, 1);
+  assert.match(stickies[0], /blocked/u);
+  assert.match(stickies[0], /release/u);
+
+  // And it is WIRED before the lifecycle, not merely available: `run()` must refuse
+  // ahead of scope enforcement, which is the first step that can lead to review.
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const runBody = gate.slice(gate.indexOf('export async function run()'));
+  const refusal = runBody.indexOf('refuseOffLineageBaseAtEntry');
+  const scope = runBody.indexOf('enforceReviewScope');
+  assert.ok(refusal >= 0, 'run() must refuse an off-main unit at entry');
+  assert.ok(scope >= 0);
+  assert.ok(refusal < scope, 'the entry refusal must precede scope enforcement');
+});
+
+test('retargeting cannot escape a replacement the unit already owes', async () => {
+  // The other half, and the one an earlier attempt lost: a unit admitted on `main`,
+  // reviewed to the round limit and retargeted afterwards still owes its replacement.
+  // The findings were real and are not un-found by moving the base. Convergence is
+  // settled FIRST, and its stronger record is then left to stand.
+  const expectedHead = 'f'.repeat(40);
+  const pullRequest = {
+    number: 521,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'release' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/521',
+  };
+  const statusWrites = [];
+  const marked = [];
+  const findingHead = (sha) => ({
+    original_commit_id: sha,
+    path: 'scripts/x.mjs',
+    line: 1,
+    body: `finding on ${sha}`,
+    user: { login: 'chatgpt-codex-connector[bot]' },
+  });
+  const client = {
+    async pullRequest() { return pullRequest; },
+    // two distinct finding-bearing heads: the round limit was already reached
+    async reviewComments() { return [findingHead('1'.repeat(40)), findingHead('2'.repeat(40))]; },
+    async reviews() { return []; },
+    async markReplacementRequired(number) { marked.push(number); },
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+    async updateStickyComment() {},
+  };
+
+  await reviewGate.refuseOffLineageBaseAtEntry(client, pullRequest, expectedHead);
+
+  // The obligation is recorded despite the base having moved.
+  assert.deepEqual(marked, [521]);
+  // And convergence's own record stands rather than being overwritten by a message
+  // about the base — the replacement requirement is the stronger statement.
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.match(statusWrites[0].description, /review-round limit/u);
+  assert.doesNotMatch(statusWrites[0].description, /merges only into/u);
+});
+
+test('a recovery that refuses completion retracts the clean sticky notice', async () => {
+  // Silence is not neutral: the sticky comment PERSISTS. A recovery that refuses
+  // completion used to leave the previous `review_clean` notice standing, still
+  // promising a merge, while the authoritative status said completion was refused.
+  const refused = reviewGate.completionNotice('base_refused');
+  assert.equal(refused.refused, true);
+  assert.equal(refused.state, 'blocked');
+
+  // The recovery caller publishes the refusal through the same mapping the normal
+  // clean path uses, so the two surfaces cannot disagree.
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  const recovery = gate.slice(
+    gate.indexOf('export async function ensureTerminalReviewState'),
+    gate.indexOf('async function waitForRequiredChecks'),
+  );
+  assert.match(recovery, /completionNotice\(completion\)/u);
+  assert.match(recovery, /notice\.refused/u);
+  assert.match(recovery, /updateStickyComment/u);
 });
 
 test('the clean-status RETRY merge detects a retarget', async () => {
