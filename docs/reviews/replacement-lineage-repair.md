@@ -5,20 +5,21 @@ that framing was withdrawn by owner directive on 2026-08-20, and the programme
 mandate is unchanged — autonomous, fail-closed convergence, with unresolved
 findings carried forward rather than released.
 
-**This unit replaces #381, and it discharges nothing else.** #381 was the record
-one link back and reached the two-finding-head limit; this unit carries its scope
-and its unresolved findings. It does **not** discharge #379 or #378, which hold
-the same record scope further back, and it does **not** discharge #377, which
-holds the lineage-repair *implementation* — a record of what remains undone is
-not the doing of it. All four keep their `review-replacement-required` labels,
-they discharge one per merge in that order, and no label is to be cleared by
-hand. §"Where things stand" states the same thing; if the two ever disagree, that
-section is authoritative and this paragraph is the stale one.
+**This unit replaces #389, and it discharges nothing else.** It does **not**
+discharge #388, #387, #386, #385, #384, #383, #379 or #378, which hold the same
+record scope further back, and it does **not** discharge #377, which holds the
+lineage-repair *implementation*.
+Every pending unit keeps its `review-replacement-required` label, they discharge
+one per merge, and no label is to be cleared by hand. §"Where things stand"
+states the same thing; if the two ever disagree, that section is authoritative
+and this paragraph is the stale one.
 
 Every claim below about how `main` behaves was checked by **executing**
 `assessReplacementLineage` and `assessReviewScope` at `5c2b739`, not by reading
-them. Two claims made in earlier heads of this lineage did not survive that
-execution and are corrected in place, marked where they appear.
+them; the claims this head adds about git and pull-request metadata were checked
+against `main` at `1449c82` on 2026-08-20, and each says what was run. Claims made
+in earlier heads of this lineage that did not survive execution are corrected in
+place, marked where they appear.
 
 ## What the rule does today
 
@@ -79,28 +80,160 @@ entry costs one sequential review unit. The remedy is not a release valve. It is
 that a replacement must be able to carry more than one obligation, and that it
 should name what is still owed rather than only what it directly followed.
 
-**This document is itself the running data point.** #378 was the record of the
-repair and was exhausted; #379 replaced it and was exhausted; #381 replaced #379
-and was exhausted; this unit replaces #381. Each closure **at the round limit**
+**This document is itself the running data point.** #378 was the record and was
+exhausted; #379 replaced it and was exhausted; #381 replaced #379 and was
+exhausted; **#382 replaced #381 and MERGED** on 2026-08-20, which is how this
+text reached `main`; #383 carried it forward and was exhausted; #384 through #389
+each did the same; this unit replaces #389. Each closure **at the round limit**
 added a label rather than moving one — and only those closures do. #380, a
 parallel replacement for #378 opened and closed the same minute without reaching
 the limit, left no label and added no obligation. The label marks an exhausted
 unit, not a closed one, and that distinction is what keeps the queue finite.
 
-Executed against the live rule with #377, #378, #379 and #381 all labelled: this
-unit declaring `Replaces: #381` is admitted, a fresh `Replaces: none` unit is
-refused naming #377, and **after this unit merges, #377, #378 and #379 are all
-still owed** — three further sequential units, for a chain whose entire subject
-is that this happens.
+**Where the rounds actually went, because the shape is the finding.** Seven on
+#378, seven on #379, three on #381, none on #382 — then one and four on #383,
+three and two on #384, three and two on #385, two and two on #386, five and five
+on #387, three and two on #388, and six and three on #389. The rise from #383
+onward was
+**entirely requirement 10**, the migration cutover: five formulations of one rule,
+each found. Every other round in this lineage found contradictions between
+sentences; those rounds found hazards in an operation, and no amount of rewriting
+the paragraph closed them.
 
-**The queue is growing, and the reason is worth separating from the alarm.** Each
-record unit has drawn real findings and been closed at the limit, and each
-closure costs one obligation while each merge retires one. But the findings are
-converging: seven on #378, seven on #379, three on #381 — every round smaller
-than the last, and the last three were all consequences of correcting the round
-before it. The process is working; requirement 5 is what would make its cost
-proportionate. Nothing here is stuck, every entry is claimable today, and the
-queue drains one per merge.
+**Removing the requirement did not close them either**, and that is the part worth
+recording. #385's review established that two surviving requirements — the bundle,
+and owner equality — each depended on the record the removal had deleted, so the
+narrowed repair was incoherent rather than smaller.
+
+**#386's two rounds then settled both, and the four findings share two roots
+worth more than the fixes.**
+
+**Root one — naming a hole is not closing it.** Requirement 1 twice described an
+exposure it had decided to live with: first a pre-merge window in which a
+body-and-git rule could be edited from a reviewed singleton into a bundle, then
+body settlement for single-source claims, "deliberately not improved" because
+changing it would un-discharge #381. Both were written as honest disclosures and
+both were live holes; the second review said so in as many words. The fixes were
+available and ordinary — settle from git alone, and fence the change so it cannot
+un-discharge what is already settled — so what stood in for the fix was the
+disclosure. (The first fence written for it was by pull request number, on the
+model of `REVIEW_SCOPE_ENFORCE_AFTER_PR = 246` and
+`PRE_REVIEW_ENFORCE_AFTER_PR = 345`. #387's review found that wrong too: those
+fence behaviour applied to a pull request, where a number fits, while this fences
+evidence already written, where an unmerged lower-numbered unit like #363 walks
+straight through. The fence is merge state, in requirement 1.)
+
+**Root two — "cannot be authenticated" is not "cannot be used".** Owner equality
+was first read from an editable body and called preserved (#381 found it), then
+derived from a `claude/**` head ref and failed closed elsewhere (#386 found that
+this repository had already refuted the derivation, and that failing closed jams
+the queue forever), then removed outright on the reasoning that forgeable evidence
+is no evidence — which #386's second round refuted in turn, because under bundles
+the removal lets one claimant discharge another agent's scope wholesale. Then
+#387's round showed the fourth statement was wrong as well, for a reason the third
+had created. Then #387's second round refused the retreat as well: admitting a
+cross-owner single claim is not compatible with the workflow this repair exists to
+serve, whatever the live rule does today.
+
+**Two roots, and the second is the larger.** The first is that the document kept
+asserting how much a check was WORTH without re-measuring after the design around
+it changed. The second is that four heads treated "the owner removed the migration
+cutover" as "no recorded truth is available", and spent themselves deriving
+pre-repair facts from post-repair reads. What was removed was a STORE with a manual
+attestation. A file committed in the repair's own reviewed diff is neither, needs
+no attestation, and is nine rows at today's scale.
+
+**That reasoning was wrong too, and #389 is where it broke.** A file committed in a
+reviewed diff is better than a body, but it is still not evidence about a moment
+that predates it, it cannot be written atomically with the label that creates the
+obligation, and it cannot bound its own bootstrap. Nor could the commit status that
+replaced it: executed, statuses carry no creator filter and cannot be enumerated
+without already knowing every SHA. The record was never available; what was
+available was the trust root, and the table below states it.
+
+**#387's first round then found four more, and one is the sharpest observation in
+this lineage:** making settlement read git left the owner marker *cheaper to forge
+than settlement*, so the justification carried forward from the previous head —
+"the same capability already defeats settlement" — was falsified by the very change
+that shipped beside it. A repair that fixes one leg and reuses the old measurement
+for the other is measuring against a state it has just removed. The other three
+were a fence by pull request number that the still-open #363 walks straight
+through, a completeness check computed from the very enumeration it was meant to
+bound, and a competition rule that refuses every claimant and frees nobody.
+
+**#387's second round then found five more, and together they name the thing four
+heads had been walking around.** Two of them — owner evidence for every claim, and
+freezing the legacy settlement mappings — both terminate in the same place: a fact
+about a unit *as it stood before the repair*, which no later read can recover. Two
+more were ordinary and should not have needed a reviewer: the live rule's
+`candidate.number > source.number` ordering was dropped while settlement was being
+rewritten, and the new per-source winner deadlocks partially overlapping bundles.
+The fifth was the rollout — a controller run that started under the old rules can
+merge under the new ones and be classified as violating a policy that did not
+exist when it was admitted.
+
+**The root, which is the one worth keeping: "we cannot have a record" was never
+established — only "we cannot have a STORE".** The owner removed a migration with
+a manual operator attestation, and four heads read that as removing every form of
+recorded truth, then spent themselves trying to derive pre-repair facts from
+post-repair reads. A file committed in the repair's own reviewed diff was available
+the whole time, needs no attestation, and is **nine rows** at today's scale. The
+argument cost more than the artifact.
+
+**#388's first round then tested the snapshot rather than the idea of it, and all
+three findings were about its edges.** A frozen list cannot bound a growing set, so
+requirement 3's equality became a lower bound. A commit-message owner that nobody
+checks against the body marker freezes an owner that never routed anything, so
+admission now requires the two to agree on the reviewed head. And draining
+controller runs misses a queued auto-merge, because the controller calls
+`enableAutoMerge` and returns immediately — executed — leaving GitHub to merge with
+no orchestration in flight to drain.
+
+**#388's second round narrowed both of its own round-1 fixes by one step each, and
+the shape of that is worth noting.** The lower bound left an interval — while only
+the live query knows a new obligation, a later truncated query can omit it and
+still pass — so the bound is now appended atomically with the obligation's
+creation. And checking the owner declaration at review only was not enough, because
+`enforceReviewConvergence` re-reads the pull request and marks it
+replacement-required without re-running scope, so the body can change between the
+two; the check runs again at the moment the obligation is created.
+
+Neither finding was about whether the mechanism exists. Both were about an interval
+inside it. That is a different class of finding from the ones #385 to #387 drew,
+and it is the first sign in this lineage that the design is being tested rather
+than the idea of it.
+
+**#389 is where the search ended, and the ending is the finding.** Its first round
+killed the committed file five ways at once. Its second killed the commit status
+that replaced it — executed, `GitHubClient.statuses(head)` applies **no creator
+filter**, so any collaborator can write the obligation context or supersede a real
+one with a refusal, and it requires a **known SHA**, so the set of SHAs still comes
+from the label query it was meant to bound independently. It also refused the
+post-write reread: verification proves a momentary match and nothing more, since
+the body can be edited immediately afterwards.
+
+**Five artifacts, five different correct refutations, and one line running through
+all of them.** Body, head ref, label, committed file, commit status — every one is
+writable by a repository collaborator or unenumerable without the query it was
+supposed to bound. This document had already written the rule twice, in preserved
+item 3 and item 5: *what the repair is allowed to trust must be decided before any
+mechanism is chosen*. It then chose five mechanisms without deciding it. Answering
+the question takes one table and was executable from the first head — the trust
+root is `main`'s protected history and the content of a reviewed SHA, and nothing
+else in GitHub's collaborator-writable surface qualifies.
+
+So this head stops proposing mechanisms. It states the boundary, ships the
+requirements that fit inside it — which still gives §1 the bundle it asked for —
+and names the ones that do not, with the fact each would need. What closing those
+takes is an authority outside GitHub's collaborator-writable surface, and that is
+an infrastructure decision rather than another paragraph.
+
+Fourteen finding-bearing heads across seven units bought that table — #383 through
+#389 at two apiece — which is the count the rounds line above adds up to. It is
+written down here so the sixth mechanism is not proposed.
+
+Nothing here is stuck; every entry is claimable, and the queue drains one per
+merge.
 
 ### 2. Lineage is read from text anyone can rewrite
 
@@ -164,16 +297,129 @@ Two things carry forward more than the table:
   bugs in the fix — each fix creating the next one. That signals an intricate
   surface, not a wrong direction.
 
+## What this repository is allowed to trust
+
+This document asked itself the question twice — preserved item 3, and item 5's
+"every input such a bootstrap could read is forgeable, so what it is allowed to
+trust must be decided **before any mechanism is chosen**" — and then chose five
+mechanisms without answering it. Each was found, each for a different and correct
+reason. The answer is short, and every row of it was executed rather than argued.
+
+| Candidate | Writable by a repository collaborator? | Enumerable independently of the label query? | Where it failed |
+| --- | --- | --- | --- |
+| pull request body | **yes** — plain edit, no review | n/a | #381 |
+| head ref prefix | **yes** — the author picks the branch | n/a | #386; `scripts/correction-owner.mjs` already recorded #349/#350 on one prefix with different owners |
+| label | **yes** | only via the label query itself | #375, #377 |
+| committed file | only through a reviewed pull request | yes | #389 — two external writes cannot be atomic; cannot authenticate what predates it; cannot bound its own bootstrap |
+| commit status | **yes** — executed: `GitHubClient.statuses(head)` applies no creator filter | **no** — executed: it requires a known SHA, so the set of SHAs still comes from the label query | #389 |
+| **`main`'s protected history** | **no** — executed: `protected: true` | yes | — |
+| **a reviewed commit SHA** | **no** — content is fixed by the hash | n/a | — |
+
+**So the trust root is exactly two things: `main`'s protected history, and the
+content of a reviewed head.** Anything a repository collaborator can write is not
+evidence, however official it looks. Five mechanisms failed because they were all
+on the wrong side of that line, and the line was verifiable from the first head.
+
 ## What the repair must do
 
-The reviews converge on a set of requirements. Any design meeting them should get
-further than these six did.
+Only the requirements that fit inside the trust root ship. The rest are named as
+not shipping, with the reason, because the alternative is a ninth mechanism.
+
+1. **A replacement may carry more than one obligation, as one DECLARED bundle, and
+   every claim settles from git.** The declaration lives in a commit message on the
+   claimant's branch, inside the exact head the reviewer approved. It settles only
+   if it appears in a commit **belonging to the merged pull request** AND the
+   merged commit on `main` carries the same set — both verifiable from protected
+   history, neither reachable by a body edit. A claim whose git evidence is missing
+   settles **nothing**: never its first member, never its body.
+
+   The ordering invariant `candidate.number > source.number` is retained, exactly
+   as `main` enforces it today.
+
+   **Both merge paths must compose the squash message explicitly.** Executed:
+   `enableAutoMerge` passes only `mergeMethod: SQUASH` and `mergeExactHead` only
+   `merge_method` and `sha`, so today the squash body is a repository default. And
+   because settlement fails closed, guessing wrong is a jam rather than a silent
+   loss, so the construction must land in a unit that merges **before** the fence
+   is enabled.
+
+   **Legacy candidates keep body settlement**, unchanged. That is the live rule's
+   exposure, neither widened nor closed — see "what does not ship".
+
+2. **Conservation, and a winner over whole bundles.** A claim inside the admitted
+   bundle settles on merge, atomically with its siblings; a claim outside it settles
+   nothing and the unit holding it is refused. Competition resolves among complete
+   bundles: one is admitted whole, and a bundle that loses any member **releases
+   every holding it has**. Executed, the live rule instead refuses everyone — #400
+   and #401 refuse each other and a third #402 is refused too, and nothing frees the
+   source. A per-source winner is not enough either: `{#1,#2}` against `{#2,#3}`
+   leaves the loser sole holder of #3, which all-or-none settlement can never
+   discharge. Ordering is the earliest recorded admission where one exists and
+   otherwise the lowest claimant number, which every evaluator computes identically.
+   This interleaving needs an explicit-barrier test.
+
+3. **Revalidate the whole claimant at the authorization boundary, base included.**
+   #377 revalidated head, body and state but not base, so a claimant retargeted to
+   another or stale base after its claim was recorded still satisfied every other
+   check. Base identity and ancestry must be checked before the write and again at
+   every later evaluation, and the revalidated declaration is the **git** set, since
+   that is what settles.
+
+4. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`, not
+   in the lineage function; a rewrite touching only the lineage function must not
+   assume it is inherited.
+
+## What does NOT ship, and why
+
+Each of these needs a fact that no artifact inside the trust root carries. They are
+listed so the next reader does not spend a unit rediscovering it.
+
+- **An authenticated pre-repair baseline.** Nothing recorded who owned #377–#389 at
+  exhaustion, or which settlement each merged candidate performed. The body was
+  always editable, the timeline actor is one shared `github-actions[bot]` identity,
+  and no status was written. A file committed now freezes what the body says today,
+  not what it said then.
+- **An independent completeness bound for the enumeration (§3).** Nothing
+  enumerable sits outside the label query's failure mode: a committed list cannot be
+  kept current without a second non-atomic write, and statuses are not enumerable at
+  all without already knowing every exhausted SHA. §3's fail-open therefore stays
+  live, exactly as it is on `main` today.
+- **Owner equality (§5).** No authenticated owner exists anywhere in the trust root.
+  The live rule has no owner check at all, so not adding one leaves the behaviour
+  unchanged rather than regressing it — but a bundle **may not span declared
+  owners**, so this repair does not create a new instrument that discharges several
+  owners' scope at once.
+- **A rollout fence beyond ordering the two units.** Draining runs and cancelling
+  queued auto-merges were needed to protect the baseline; with no baseline, what
+  remains is the sequencing already stated in requirement 1 — merge-message
+  construction first, the fence second.
+
+**What §1 gets anyway, which is the point of the repair.** Bundles are git-anchored
+and can name the currently pending obligations, so the queue drains in one unit
+instead of one per entry. Pendingness is still read from the label query, exactly as
+`main` reads it — that exposure is unchanged. Settlement moves from an editable body
+to protected history, which is strictly better than today for every claim made after
+the repair.
+
+**What closing the rest would take** is an authority outside GitHub's
+collaborator-writable surface — a signed record, an external service, or an
+accepted attestation. That is an infrastructure decision, not a wording one, and it
+is the thing five mechanisms failed to substitute for.
+
+
+## Preserved: what an authenticated record would have to satisfy
+
+These are **not** requirements of the current repair. They apply only if the
+representation is ever changed, and they are recorded because each cost a review
+unit to learn.
 
 1. **The record must name both ends** — which obligation, and who took it on. A
    boolean cannot express an interrupted transfer versus a second obligation.
+
 2. **It must be written where the controller can always find it again**, not
    through whatever labels currently exist. The exhausted units are enumerable;
    claimants are not.
+
 3. **Provenance must be authenticated, and the timeline actor is not enough.**
    GitHub labels are writable by any collaborator, so the label set alone proves
    nothing; the issue timeline records the actor and cannot be edited, which
@@ -185,98 +431,44 @@ further than these six did.
    necessary filter, not sufficient evidence. (#377's implementation treats it as
    sufficient. That is one of its known gaps, and one of the findings its
    replacement must carry.)
+
 4. **Concurrency resolves by recorded order, not by locking.** Label writes cannot
    be made mutually exclusive; the earliest recorded claim wins, ties going to the
    timeline's order.
-5. **A replacement must be able to carry more than one obligation, as one
-   DECLARED bundle.** This is what §1 actually asks for, and no attempt so far
-   provides it. Today a unit declares at most one source, so an accumulated
-   backlog costs one sequential merged unit per entry. The bundle is the set the
-   claimant *declared* and the controller *admitted*, recorded in a single write;
-   on merge it settles exactly its members, all of them or none. **It must not be
-   implemented by waiving.** Discharge still requires a unit that carried the
-   scope; what changes is how many obligations one such unit may carry, never
-   whether an obligation can lapse unmet.
-6. **Conservation applies to claims the claimant never declared, and those are a
-   different thing from a bundle.** These two requirements are the ones most
-   easily written into contradiction — an earlier version of this document did
-   exactly that, saying in one breath that a unit holding two claims settles
-   neither and in the next that a unit must be able to discharge several. The
-   distinction that resolves it is *declaration*, not count:
 
-   - A claim **inside** the declared, admitted bundle is intended scope. It
-     settles on merge, atomically with its siblings.
-   - A claim **outside** it — acquired by a race, or by the declaration changing
-     between two controller runs — is not scope anyone carried. It settles
-     nothing, the unit holding it is refused, and **the source stays claimable**,
-     or it becomes permanently stuck, which is the accumulation defect made
-     permanent.
+5. **And the cutover into it is a design problem in its own right**, whose hazards
+   are: settlement evidence and the obligation itself are both forgeable and must
+   be authenticated or fail closed; settlement must preserve the
+   `candidate.number > source.number` ordering; enumeration and cutover must be
+   fenced, and a fence does not stop an evaluator already running (the
+   `orchestrate` job checks out its script once and may run ninety minutes);
+   in-flight admitted claims are part of the state and must be preserved or
+   re-admitted. Above all — **every input such a bootstrap could read is
+   forgeable**, so what it is allowed to trust must be decided before any
+   mechanism is chosen. That question is what five formulations failed to answer,
+   and it is the first thing to settle if §2 is ever taken on.
 
-   An implementation that enforces only the second rule leaves the backlog
-   exactly as it is; one that enforces only the first lets a raced claim discharge
-   an obligation nobody carried. Both rules are needed, and the bundle boundary is
-   what tells them apart.
-7. **Distinguish a dead chain from missing evidence, and treat an incomplete
-   enumeration as missing.** Unknown lineage must never admit work. `main` fails
-   closed only on a non-array (§3), so a repair that "keeps the current
-   behaviour" inherits the empty-response bypass. The repair needs an explicit
-   completeness check — an authenticated or independently-bounded enumeration,
-   or a recorded expected count — before an empty or partial result is treated as
-   authoritative.
-8. **Revalidate the whole claimant at the authorization boundary, base included.**
-   #377 revalidated head, body and state but not base, and a claimant retargeted
-   to another or stale base after its claim was recorded still satisfied every
-   other check — discharging its source with a replacement that does not contain
-   the current-`main` unresolved unit. A timeline claim cannot be withdrawn once
-   written, so base identity and ancestry must be checked *before* the write and
-   again at every later evaluation, alongside head, body and state.
-9. **The claim must preserve the source's correction owner.** Every pull request
-   here declares exactly one correction owner, and the repository routes a unit's
-   corrections to that owner alone — a `claude/**` branch may only declare
-   `claude`, and no agent may act on another's behalf. None of the requirements
-   above bind that, so a `claude`-owned replacement could satisfy all of them and
-   discharge a `cursor`-owned exhausted unit whose corrections Claude is
-   explicitly forbidden to make.
+6. **The PRE-REPAIR owner gets evidence instead of an assumption.** After the
+   owner equality becomes possible at all. It is not in this repair: no artifact
+   inside the trust root carries an authenticated owner, and #389 executed the last
+   candidate — commit statuses accept a write from any collaborator. Six heads
+   reached for it and none shipped. What a record would add is the one thing review
+   cannot substitute for: a fact about who owned a unit at the moment it was
+   exhausted, written by someone a claimant cannot impersonate.
 
-   **The owner must be FROZEN when the unit becomes exhausted, not read when a
-   claimant is admitted.** An earlier version of this requirement said "bound
-   into the claim at admission", and that preserves nothing: the owner marker
-   lives in the source's own body, which stays editable after it closes. A
-   `cursor`-owned source can have its marker rewritten to `claude` at any point,
-   after which a `claude` claimant passes owner equality at admission and at
-   every later revalidation — the check reads the forged value and agrees with
-   it. That is defect §2 applied one level in, and it was written into this
-   document by the same reflex the document exists to warn about: anything
-   derived from a body at read time is forgeable, including the evidence used to
-   decide who may forge.
+   Two constraints on any such record, both learned the hard way: it must NOT fail
+   closed on units it cannot resolve, since #386's review executed that consequence
+   and the whole queue jams; and it must be written when the controller LABELS a
+   unit exhausted rather than read when a claimant is admitted, since anything read
+   later reads whatever the body says by then.
 
-   So the controller must capture **authenticated owner evidence at the moment it
-   labels the unit exhausted** — the same trust basis as the claim itself, on the
-   timeline, where it cannot be edited — and every claimant is compared against
-   that frozen value, never against the source's current body. A mismatched
-   claimant is refused and settles nothing, and the source stays claimable by its
-   own owner.
-10. **Migrate the obligations that already exist, atomically and retry-safely.**
-   #374 blocked the repository precisely here: it changed the representation and
-   left the existing labels unreadable. Any new record starts with live debts
-   against it, and switching assessment without a bootstrap either omits them
-   (admitting `Replaces: none` against real unresolved scope) or fails closed
-   forever, because no claim in the new format can exist for a unit that was
-   labelled before the format did.
+   Two constraints on any stronger record, both learned the hard way: it must NOT
+   fail closed on units it cannot resolve, since #386's review executed that
+   consequence and the whole queue jams; and it must be written when the controller
+   LABELS a unit exhausted rather than read when a claimant is admitted, since
+   anything read later reads whatever the body says by then.
 
-   The bootstrap set is **every unit carrying `review-replacement-required` at
-   the moment the migration runs** — stated as a rule rather than a list, because
-   a list in this document goes stale on the next closure and has already done so
-   once. As of 2026-08-20 that set is #377, #378, #379 and #381, but the
-   enumeration is a snapshot for the reader and the rule is the authority; an
-   implementation that hardcodes today's numbers reproduces #374's failure with
-   different digits. The migration must be applied atomically and be safe to
-   re-run before the new assessment is enabled.
-11. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`,
-    not in the lineage function. A rewrite that touches only the lineage function
-    must not assume it is inherited.
-
-### On the automatic release valve that was sketched here
+## On the automatic release valve that was sketched here
 
 An earlier version of this document proposed a watchdog that **released** an
 obligation when no open unit claimed it and every unit that ever claimed it had
@@ -287,7 +479,7 @@ reasons, and it should not be reintroduced in either form.
   were neither fixed nor carried, and after the release a fresh `Replaces: none`
   unit passes. Making the release "loud" records the waiver; it does not preserve
   the work. Recovery would have to transfer or recreate the obligation, never
-  drop it — at which point it is requirement 6, not a release.
+  drop it — at which point it is requirement 1, not a release.
 - **It addresses a state that does not occur.** §1 shows by execution that a dead
   claimant blocks nothing and the source stays claimable. There is no permanently
   dead chain to recover from.
@@ -300,11 +492,12 @@ with the same hole.
 ## Where things stand
 
 - `main`'s rule is unchanged. All three defects above are live.
-- **#377, #378, #379 and #381 all carry `review-replacement-required`, and all
-  stay.** This unit replaces #381 and carries the record forward. #379's and
-  #378's obligations are discharged by later units carrying the same record
-  scope; #377's only by a merged unit carrying its implementation scope and its
-  unresolved findings.
+- **Pending: #377, #378, #379, #383, #384, #385, #386, #387, #388 and #389.
+  Settled: #381, by merged #382** — which still carries the label, because
+  discharge is computed rather than un-marked. This unit replaces #389 and carries
+  the record forward. The record
+  obligations are discharged by later units carrying the same scope; #377's only
+  by a merged unit carrying its implementation scope and its unresolved findings.
 - Until those merge, `Replaces: none` work is refused. That is the rule working,
   not failing — the queue is long, not jammed, and every entry is claimable
   today.
@@ -316,4 +509,4 @@ with the same hole.
 - The stale labels on #344, #357, #367, #373, #374, #375 and #376 were cleared by
   hand on 2026-08-19. That clearing is recorded here as history, and it is not a
   precedent: hand-clearing is waiving, and §1 shows the backlog it was used
-  against was long rather than stuck. Requirement 6 is the remedy.
+  against was long rather than stuck. Requirement 1 is the remedy.
