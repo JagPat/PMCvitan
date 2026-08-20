@@ -172,14 +172,38 @@ is a manual act inside an autonomous loop, and timeline provenance cannot recove
 the correction owner, which lives in an editable body. What remained was to not
 migrate at all, and that is the decision.
 
-**The accumulation defect does not need a new store.** Executed against the live
-parser: the only thing preventing one unit from carrying several obligations is
-`replacementDeclaration` returning `invalid` when `matches.length !== 1`, over a
-regex admitting a single `#\d+`. Two `Replaces:` lines parse `invalid` today;
-so does a comma form. That is one bounded change in one function — no new record,
-no bootstrap, no cutover, and therefore none of the legacy-authentication problem
-that consumed five rounds. It also adds no attack surface: reading N declarations
-from a body is exactly as forgeable as reading one.
+**What multi-obligation carry actually costs — two earlier claims here were
+wrong, and are struck.**
+
+An earlier version of this section said it was "one bounded change in one
+function" and that it "adds no attack surface". Both were asserted rather than
+executed, and both are false:
+
+- **It is four sites, not one.** `replacementDeclaration` must parse a set, but
+  `replacementSource` returns a scalar, and `assessReplacementLineage` uses scalar
+  equality in *both* `fulfilledSources` and its competing-claim detection.
+  Executed: a two-line declaration makes `replacementSource` return `null`, so a
+  parser-only change fulfils **nothing** and leaves the backlog exactly as blocked.
+  Admission, competition and settlement all need updating together.
+- **It multiplies the §2 bypass rather than leaving it unchanged.** Per
+  declaration the forgeability is identical, but the *blast radius* is not.
+  Executed against the live rule: today one edited merged body discharges exactly
+  one obligation, because only one `Replaces:` line parses. Under bundles, one
+  edited body could name the entire backlog and discharge all of it at once.
+  Conflating "as forgeable per line" with "no new attack surface" is the error,
+  and it was mine.
+
+**Bounding that amplification needs admission evidence** — something recording
+which bundle the controller actually admitted, so a body edited afterwards cannot
+enlarge it. That is not a full authenticated store, but it is the same territory,
+and it means requirement 1 does not escape the record question as cleanly as this
+document previously claimed.
+
+**And the legacy owner problem was relocated, not removed.** Every pending source
+was exhausted before any owner evidence was recorded, so requirement 5 can obtain
+their owner only from an editable body — permitting exactly the cross-owner
+substitution it prohibits — or must fail closed on them forever. Dropping the
+cutover did not answer that; it moved it from the bootstrap into requirement 5.
 
 So the repair is now these, and only these:
 
