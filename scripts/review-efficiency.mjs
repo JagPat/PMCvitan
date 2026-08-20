@@ -1,6 +1,7 @@
 // The deferral-phase check shares docs/STATUS.md's own state vocabulary rather than keeping
 // a second copy of it — see phaseHasOpenWork.
 import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
+import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 // Correction ownership is checked HERE, in the one assessment both the PR-side
 // `review-scope` job and the trusted controller's `enforceReviewScope` call, so
 // the cheap gate and the merge boundary cannot disagree about who owns a fix.
@@ -92,6 +93,27 @@ export function replacementSource(body) {
   return declaration.kind === 'source' ? declaration.source : null;
 }
 
+/**
+ * The pull request that DISCHARGED an obligation, or null.
+ *
+ * One definition, used at both boundaries that need it: the scope gate computes
+ * `fulfilledSources` from it, and the merge boundary asks it whether a claimant is
+ * about to become a second replacement for an obligation already settled. Two copies
+ * of this rule would eventually disagree, and a disagreement here means either a
+ * pending obligation nobody can discharge or a duplicate replacement that lands.
+ *
+ * A discharge is a MERGE, on `main`, numbered above the source it claims — the same
+ * three facts admission requires of a claimant, read from the merge record rather
+ * than predicted.
+ */
+export function settlementOf(source, replacementPullRequests = []) {
+  if (!Number.isInteger(source)) return null;
+  return replacementPullRequests.find((candidate) => candidate?.merged_at
+    && isLineageBase(candidate?.base?.ref)
+    && candidate.number > source
+    && replacementSource(candidate.body) === source) ?? null;
+}
+
 export function assessReplacementLineage({
   pullRequest,
   requiredReplacements,
@@ -106,16 +128,54 @@ export function assessReplacementLineage({
   }
 
   const fulfilledSources = new Set(requiredReplacements
-    .filter(({ pullRequest: source }) => replacementPullRequests.some((candidate) =>
-      candidate?.merged_at
-      && candidate.number > source?.number
-      && replacementSource(candidate.body) === source?.number))
+    .filter(({ pullRequest: source }) => Boolean(
+      settlementOf(source?.number, replacementPullRequests),
+    ))
     .map(({ pullRequest: source }) => source.number));
   const pending = requiredReplacements.filter(({ pullRequest: source }) =>
     source?.number !== pullRequest?.number
     && !fulfilledSources.has(source?.number));
 
+  // ONE-CLAIMANT EXCLUSIVITY IS NOT DECIDED HERE, and where it IS decided is named
+  // rather than left as a gap.
+  //
+  // The rule that used to live here asked "is any other claimant open" and refused if
+  // so. That question is symmetric, so it deadlocks the moment two claimants coexist:
+  // each sees the other, both refuse, and because a pending obligation also blocks
+  // every `Replaces: none` unit, nothing in the repository moves until a human closes
+  // one by hand.
+  //
+  // Replacing it with a total order — admit the lowest-numbered claimant — removed the
+  // deadlock and introduced a worse failure. Any winner recomputed from the CURRENT
+  // set is unstable, because the set changes underneath work that is already in
+  // flight: lowest-wins is displaced when an older claimant retargets onto `main`,
+  // highest-wins whenever someone opens a newer pull request. A displaced claimant
+  // that has already queued its merge is not actually revoked by being refused here,
+  // so both can land and one obligation gets two replacements.
+  //
+  // Deciding this correctly needs either persisted "who was admitted first" state or
+  // the ability to CANCEL the displaced claimant's queued merge. This function has
+  // neither: it is a pure assessment of one pull request, and `auto_merge` is not even
+  // among its inputs. Both remedies belong to the boundary that controls merging.
+  //
+  // So exclusivity is enforced at the MERGE-CONTROLLING BOUNDARY instead, where the
+  // question is answerable: `completeReviewedPullRequest` asks, immediately before it
+  // merges, whether this claimant's source has ALREADY been discharged, and refuses if
+  // so. That is an observation rather than a prediction — the merge either has landed
+  // or has not — and it uses `settlementOf` below, the SAME predicate this function
+  // uses to compute `fulfilledSources`, so the two boundaries cannot drift into
+  // disagreeing about what "already discharged" means.
+  //
+  // Omitting it here is therefore a placement decision, not a waiver.
   if (declaration.kind === 'source') {
+    const claimantBase = pullRequest?.base?.ref;
+    if (!isLineageBase(claimantBase)) {
+      return {
+        allowed: false,
+        detail: `a replacement must target ${LINEAGE_BASE_REF}; this unit targets `
+          + `${typeof claimantBase === 'string' && claimantBase.length > 0 ? claimantBase : 'an unreadable base'}`,
+      };
+    }
     const requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
     );
@@ -131,14 +191,20 @@ export function assessReplacementLineage({
         detail: `Replaces: #${declaration.source} is not closed; close the exhausted unit before reviewing its replacement`,
       };
     }
-    const competing = replacementPullRequests.find((candidate) =>
-      candidate?.number !== pullRequest?.number
-      && candidate?.state === 'open'
-      && replacementSource(candidate.body) === declaration.source);
-    if (competing) {
+    // A claimant must be numbered ABOVE its source, because settlement already
+    // requires exactly that — and admitting a claimant that settlement can never
+    // accept is worse than refusing it. An older pull request EDITED to declare
+    // `Replaces: #N` would otherwise be admitted, occupy the obligation, and never
+    // discharge it however far it got: the loop would review the wrong unit while the
+    // obligation stayed pending and kept blocking every `Replaces: none` unit.
+    //
+    // This is the missing half of the settlement rule rather than a new policy. The
+    // two are the same ordering, read at the two ends of one obligation.
+    if (!(pullRequest?.number > declaration.source)) {
       return {
         allowed: false,
-        detail: `Replaces: #${declaration.source} is already claimed by open PR #${competing.number}`,
+        detail: `a replacement must be numbered above the unit it replaces; #${pullRequest?.number} `
+          + `cannot replace #${declaration.source}, and settlement would never accept it`,
       };
     }
     return { allowed: true, detail: null };

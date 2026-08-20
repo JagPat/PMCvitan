@@ -16,6 +16,8 @@ import {
   assessReviewScope,
   isRetryableReviewFailureDescription,
   codexFindingHeads,
+  replacementDeclaration,
+  settlementOf,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
   REVIEW_RESET_AFTER_FINDING_HEADS,
@@ -961,11 +963,58 @@ async function setDraftForCurrentHead(
     : null;
 }
 
+// EXCLUSIVITY IS ENFORCED HERE, at the boundary that controls merging, because this
+// is the only place the question is answerable as an OBSERVATION rather than a
+// prediction: immediately before merging, has this claimant's source ALREADY been
+// discharged?
+//
+// The scope gate cannot answer it. Any "who is the admitted claimant" decided from the
+// current set of open pull requests is unstable — the set changes underneath work that
+// is already in flight, and refusing a claimant there does not revoke a merge it has
+// already queued. The two remedies that would work, holding admission state or
+// cancelling a queued merge, both need merge control. That is this boundary.
+//
+// It uses `settlementOf`, the SAME predicate the scope gate uses to compute which
+// obligations are already fulfilled, so the two cannot drift into disagreeing about
+// what "discharged" means.
+//
+// HONEST LIMIT: this closes the ordinary case — a second replacement attempting to
+// merge after the first has landed — and does NOT close a simultaneous double merge,
+// where two runs both observe an undischarged source and merge at once. Closing that
+// needs a lock this gate does not have. Refusing is a persisted stop, not a silent one.
+async function refuseSettledClaim(client, pullRequest, expectedHead, settledBy) {
+  const detail = `scope: #${settledBy.declaration} is already discharged by merged `
+    + `#${settledBy.number}; a second replacement for one obligation must not merge`;
+  console.log(`Refusing to complete #${pullRequest?.number}: ${detail}`);
+  await client.setStatus(expectedHead, 'failure', detail, pullRequest?.html_url);
+  if (!pullRequest?.merged && pullRequest?.state !== 'closed') {
+    await client.setDraft(pullRequest, true);
+  }
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
 ) {
+  const declaration = replacementDeclaration(pullRequest?.body);
+  if (declaration.kind === 'source') {
+    const lineage = await client.replacementLineage();
+    const settled = settlementOf(
+      declaration.source,
+      lineage?.replacementPullRequests ?? [],
+    );
+    if (settled) {
+      await refuseSettledClaim(
+        client,
+        pullRequest,
+        expectedHead,
+        { number: settled.number, declaration: declaration.source },
+      );
+      return 'claim_settled';
+    }
+  }
+
   const direct = await client.mergeExactHead(
     pullRequest.number,
     expectedHead,

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
 import * as reviewGate from './autonomous-review-gate.mjs';
+import { settlementOf } from './review-efficiency.mjs';
 
 const {
   hasTerminalReviewFailureAfterPending,
@@ -2070,4 +2071,161 @@ test('CI runs once per pull-request head', async () => {
 
   assert.match(ci, /pull_request:/);
   assert.doesNotMatch(ci, /push:/);
+});
+
+test('a second replacement for an already-discharged obligation is refused at the merge', async () => {
+  // Exclusivity, enforced where the question is answerable as an OBSERVATION rather
+  // than a prediction: immediately before merging, has this claimant's source already
+  // been discharged?
+  //
+  // The scope gate cannot answer it. Any "admitted claimant" decided from the current
+  // set of open pull requests is unstable — the set changes underneath work already in
+  // flight, and refusing a claimant there does not revoke a merge it has queued.
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = {
+    number: 401,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/401',
+  };
+  const merges = [];
+  const handoffs = [];
+  const statusWrites = [];
+  const draftTransitions = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async replacementLineage() {
+      return {
+        requiredReplacements: [],
+        replacementPullRequests: [{
+          // #377 was already discharged by a merge that landed on `main` above it
+          number: 396,
+          state: 'closed',
+          merged_at: '2026-08-20T00:00:00Z',
+          base: { ref: 'main' },
+          body: '<!-- correction-owner: claude -->\nReplaces: #377',
+        }],
+      };
+    },
+    async mergeExactHead(number, head) { merges.push([number, head]); return { merged: true }; },
+    async enableAutoMerge() { merges.push(['auto']); },
+    async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
+    async setDraft(current, draft) { draftTransitions.push(draft); return { ...current, draft }; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'claim_settled',
+  );
+  // Never merged, never queued, never handed off — and the refusal is on the record.
+  assert.deepEqual(merges, []);
+  assert.deepEqual(handoffs, []);
+  assert.deepEqual(draftTransitions, [true]);
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.match(statusWrites[0].description, /#377 is already discharged by merged #396/u);
+});
+
+test('an undischarged claim merges normally, and a settling merge must be on main above its source', async () => {
+  // The other half. Refusing every claimant would be a different bug, so the pass
+  // case is pinned too — and with it the three facts that make a merge a discharge.
+  const expectedHead = 'b'.repeat(40);
+  const pullRequest = {
+    number: 401,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/401',
+  };
+  const run = async (replacementPullRequests) => {
+    const merges = [];
+    const statusWrites = [];
+    const client = {
+      async pullRequest() { return pullRequest; },
+      async replacementLineage() {
+        return { requiredReplacements: [], replacementPullRequests };
+      },
+      async mergeExactHead(number, head) { merges.push([number, head]); return { merged: true }; },
+      async enableAutoMerge() {},
+      async dispatchHandoff() {},
+      async setDraft(current, draft) { return { ...current, draft }; },
+      async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+    };
+    const outcome = await reviewGate.completeReviewedPullRequest(
+      client, pullRequest, expectedHead,
+    );
+    return { outcome, merges, statusWrites };
+  };
+
+  // No claimant has settled #377 at all.
+  assert.equal((await run([])).outcome, 'merged');
+
+  const claim = (overrides) => [{
+    number: 396,
+    state: 'closed',
+    merged_at: '2026-08-20T00:00:00Z',
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    ...overrides,
+  }];
+
+  // Not merged at all — an open claimant discharges nothing.
+  assert.equal((await run(claim({ merged_at: null, state: 'open' }))).outcome, 'merged');
+  // Merged onto another base — settlement requires `main`.
+  assert.equal((await run(claim({ base: { ref: 'release' } }))).outcome, 'merged');
+  // Merged, on `main`, but numbered BELOW its source, which settlement never accepts.
+  assert.equal((await run(claim({ number: 350 }))).outcome, 'merged');
+
+  // And a `Replaces: none` unit is not a claimant, so it is never asked the question.
+  const noClaim = { ...pullRequest, body: '<!-- correction-owner: claude -->\nReplaces: none' };
+  let lineageReads = 0;
+  const client = {
+    async pullRequest() { return noClaim; },
+    async replacementLineage() { lineageReads += 1; return { replacementPullRequests: [] }; },
+    async mergeExactHead() { return { merged: true }; },
+    async enableAutoMerge() {},
+    async dispatchHandoff() {},
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus() {},
+  };
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, noClaim, expectedHead),
+    'merged',
+  );
+  assert.equal(lineageReads, 0);
+});
+
+test('the merge boundary and the scope gate share ONE definition of discharged', async () => {
+  // Two copies of this rule would eventually disagree, and a disagreement means either
+  // a pending obligation nobody can discharge or a duplicate replacement that lands.
+  const settling = {
+    number: 396,
+    state: 'closed',
+    merged_at: '2026-08-20T00:00:00Z',
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+  };
+  assert.equal(settlementOf(377, [settling])?.number, 396);
+  assert.equal(settlementOf(377, [{ ...settling, merged_at: null }]), null);
+  assert.equal(settlementOf(377, [{ ...settling, base: { ref: 'release' } }]), null);
+  assert.equal(settlementOf(377, [{ ...settling, number: 350 }]), null);
+  assert.equal(settlementOf(undefined, [settling]), null);
+
+  // The gate imports that same function rather than restating the rule.
+  const gate = await readFile(
+    new URL('./autonomous-review-gate.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(gate, /settlementOf/u);
+  assert.doesNotMatch(
+    gate.slice(gate.indexOf('async function refuseSettledClaim')),
+    /merged_at/u,
+    'the merge boundary must not restate the settlement rule',
+  );
 });
