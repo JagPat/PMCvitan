@@ -48,6 +48,12 @@ export function isEligiblePullRequest(pullRequest) {
   const headRepository = pullRequest?.headRepository?.nameWithOwner;
   const baseRepository = pullRequest?.baseRepository?.nameWithOwner;
 
+  // Eligibility answers "is this unit ours to process at all", and its refusals are
+  // SILENT — a closed or forked pull request is skipped with nothing written. A base
+  // is policy, not ownership, so it is deliberately NOT checked here: skipping an
+  // off-`main` unit silently would leave any status already attached to its head
+  // standing, including a terminal success written while it still targeted `main`.
+  // The base is guarded at the merge boundary instead; see completeReviewedPullRequest.
   return (
     state === 'OPEN' &&
     typeof headRepository === 'string' &&

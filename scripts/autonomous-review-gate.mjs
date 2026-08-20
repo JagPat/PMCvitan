@@ -6,6 +6,7 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
   CORRECTION_STALLED,
@@ -961,24 +962,144 @@ async function setDraftForCurrentHead(
     : null;
 }
 
+// COMPLETION is the only boundary where an off-`main` base does harm, so the guard
+// lives here and nowhere earlier — and "completion" means every path that ends this
+// unit, not the direct merge alone.
+//
+// Reviewing an off-`main` unit is harmless, and an exhausted unit's replacement
+// obligation must stand REGARDLESS of base — suppressing it would waive findings that
+// were never fixed or carried. Two earlier placements were wrong for opposite reasons:
+// in the eligibility predicate the refusal was SILENT, leaving any status already on
+// that head standing, including a terminal success written while it still targeted
+// `main`; and on the shared refresh primitive a refusal was indistinguishable from
+// supersession, so a retarget arriving between the second finding and
+// `markReplacementRequired` cancelled the obligation entirely.
+//
+// A base is mutable and `mergeExactHead` constrains only the head SHA, so one check
+// on entry is a snapshot rather than a guarantee. Completion is therefore a check AND
+// a detection: refuse before acting, then re-read and verify what the act actually did
+// before anything downstream treats this unit as handed on. The first attempt guarded
+// only the direct-merge branch and left the auto-merge and clean-status-retry branches
+// dispatching from a base ref read before either had run — so the detection now lives
+// on the dispatch itself, which every path must pass through.
+async function refuseOffLineageBase(client, pullRequest, expectedHead, phase) {
+  const target = typeof pullRequest?.base?.ref === 'string'
+    && pullRequest.base.ref.length > 0
+    ? pullRequest.base.ref
+    : 'an unreadable base';
+  const when = phase === 'merged' ? 'it merged into' : 'it targets';
+  console.log(`Refusing to complete #${pullRequest?.number}: ${when} ${target}.`);
+  // THE STATUS IS WRITTEN FIRST, and the ordering is load-bearing rather than
+  // stylistic. When a retarget races the merge itself the pull request is already
+  // merged and closed, and `convertPullRequestToDraft` cannot convert a merged pull
+  // request — so a draft-first refusal REJECTS before the durable record exists and
+  // leaves the preceding successful status standing, which is precisely the outcome
+  // this detection was added to prevent.
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `scope: a reviewed unit merges only into ${LINEAGE_BASE_REF}; ${when} ${target}`,
+    pullRequest?.html_url,
+  );
+  // Drafting is not decoration on the still-open paths: GitHub removes auto-merge
+  // and merge-queue membership when a pull request converts to a draft, so this is
+  // what CANCELS a queue raised against the wrong base. Once the merge has landed
+  // there is nothing left to cancel and nothing that can be drafted, so the failing
+  // status above is the whole of the record.
+  if (!pullRequest?.merged && pullRequest?.state !== 'closed') {
+    await client.setDraft(pullRequest, true);
+  }
+}
+
+// EVERY completion path ends here, so no path can be given the check and another
+// forgotten. `enableAutoMerge` and the clean-status retry are completions too: the
+// first queues the reviewed head against whatever base is live at that moment, the
+// second merges outright, and both previously dispatched the handoff from a base ref
+// read before either had run.
+//
+// The verification is bound to the dispatch rather than sitting beside it, because
+// the dispatch is the act that hands this unit onward as a lineage participant. A
+// path that wants to complete has to come through here to do it.
+async function dispatchIfOnLineageBase(client, pullRequest, expectedHead, outcome) {
+  const landed = await client.pullRequest(pullRequest.number);
+  if (!isLineageBase(landed?.base?.ref)) {
+    await refuseOffLineageBase(client, landed ?? pullRequest, expectedHead, outcome);
+    // A landed merge is IRREVERSIBLE and reported as such; a queue is merely
+    // refused, because the draft conversion above cancels it before it can run.
+    return outcome === 'merged' ? 'base_violated' : 'base_refused';
+  }
+  await client.dispatchHandoff(landed.base.ref, pullRequest.number);
+  return outcome;
+}
+
+// What the sticky notice must SAY about each completion outcome.
+//
+// Exported so the mapping can be asserted directly rather than inferred from the
+// notice text. Every outcome other than `merged` used to render as `clear` with
+// "GitHub auto-merge is queued behind branch protection" — so a base refusal told the
+// loop to wait for a merge that had just been refused, while the refusal helper had
+// drafted the pull request and written a FAILING status saying the opposite. The
+// sticky comment is the surface humans read; it cannot contradict the status that is
+// authoritative.
+export function completionNotice(completion) {
+  switch (completion) {
+    case 'base_violated':
+      return {
+        state: 'blocked',
+        refused: true,
+        next: `The merge landed on a base other than \`${LINEAGE_BASE_REF}\`. No handoff `
+          + 'was dispatched and the failing status on this head is the record; unwinding '
+          + 'a landed merge is a human decision.',
+      };
+    case 'base_refused':
+      return {
+        state: 'blocked',
+        refused: true,
+        next: 'Completion was refused and any queued auto-merge cancelled by the draft '
+          + `conversion. Retarget this pull request at \`${LINEAGE_BASE_REF}\` to have it `
+          + 'picked up again.',
+      };
+    case 'merged':
+      return {
+        state: 'clear',
+        refused: false,
+        next: 'GitHub squash-merged this exact reviewed head.',
+      };
+    default:
+      return {
+        state: 'clear',
+        refused: false,
+        next: 'GitHub auto-merge is queued behind branch protection.',
+      };
+  }
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
 ) {
+  // Re-read rather than trusting the object handed in: it may have been fetched
+  // several awaited operations ago.
+  const live = await client.pullRequest(pullRequest.number);
+  if (!isLineageBase(live?.base?.ref)) {
+    await refuseOffLineageBase(client, live ?? pullRequest, expectedHead, 'targets');
+    return 'base_refused';
+  }
+
   const direct = await client.mergeExactHead(
     pullRequest.number,
     expectedHead,
   );
   if (direct?.merged) {
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'merged';
+    return dispatchIfOnLineageBase(client, pullRequest, expectedHead, 'merged');
   }
 
   try {
     await client.enableAutoMerge(pullRequest, expectedHead);
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'queued';
+    return await dispatchIfOnLineageBase(
+      client, pullRequest, expectedHead, 'queued',
+    );
   } catch (error) {
     if (
       !(error instanceof Error)
@@ -991,8 +1112,9 @@ export async function completeReviewedPullRequest(
       expectedHead,
     );
     if (raced?.merged) {
-      await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-      return 'merged';
+      return await dispatchIfOnLineageBase(
+        client, pullRequest, expectedHead, 'merged',
+      );
     }
     throw new Error(
       `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
@@ -1903,16 +2025,18 @@ export async function run() {
         pullRequest,
         expectedHead,
       );
+      const notice = completionNotice(completion);
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
-          state: 'clear',
+          state: notice.state,
           head: expectedHead,
-          detail: `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
+          detail: notice.refused
+            ? `${result.detail}; completion refused because this unit's base is not `
+              + `\`${LINEAGE_BASE_REF}\``
+            : `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
           attempt,
-          next: completion === 'merged'
-            ? 'GitHub squash-merged this exact reviewed head.'
-            : 'GitHub auto-merge is queued behind branch protection.',
+          next: notice.next,
         }),
       );
       return;

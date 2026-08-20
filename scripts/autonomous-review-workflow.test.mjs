@@ -969,6 +969,7 @@ test('a buried current-head finding vetoes recovered clean state', async () => {
     state: 'open',
     draft: false,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -1013,6 +1014,7 @@ test('live current-head findings stop recovery before another ready transition',
     state: 'open',
     draft: true,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -1061,6 +1063,7 @@ test('a finding on the second distinct head publishes replacement_required immed
     state: 'open',
     draft: false,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
   };
   const sticky = [];
@@ -1416,6 +1419,7 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const sticky = [];
@@ -1460,6 +1464,7 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const client = {
@@ -1496,6 +1501,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const sticky = [];
@@ -1631,6 +1637,7 @@ test('the second finding-bearing head requires replacement even when convergence
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const comments = [
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
@@ -1717,8 +1724,12 @@ test('the clean verdict is published while the PR is still open', async () => {
   assert.ok(publishedClean >= 0);
   assert.ok(publishedSuccess > publishedClean);
   assert.ok(mergeCompletion > publishedClean);
-  // and the pre-merge update must precede the post-merge 'clear' update
-  const clearUpdate = clearBranch.lastIndexOf("state: 'clear'");
+  // and the pre-merge update must precede the post-merge completion update. That
+  // update's state is now DERIVED — a base refusal must not render as `clear` — so
+  // the anchor is the sticky update itself rather than the literal it used to carry.
+  // Removing the post-merge update entirely still fails here, because the only
+  // remaining match would be the `review_clean` call that precedes this index.
+  const clearUpdate = clearBranch.lastIndexOf('updateStickyComment');
   assert.ok(clearUpdate > publishedClean);
 });
 
@@ -1734,6 +1745,8 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
   };
   const calls = [];
   const client = {
+    // the live re-read the merge boundary takes before acting
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: true, sha: 'b'.repeat(40) };
@@ -1772,6 +1785,8 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
   };
   const calls = [];
   const client = {
+    // the live re-read the merge boundary takes before acting
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: false, message: 'Not ready to merge' };
@@ -1811,6 +1826,8 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
   };
   let mergeAttempts = 0;
   const client = {
+    // the live re-read the merge boundary takes before acting
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       assert.equal(number, 230);
       assert.equal(head, expectedHead);
@@ -2070,4 +2087,278 @@ test('CI runs once per pull-request head', async () => {
 
   assert.match(ci, /pull_request:/);
   assert.doesNotMatch(ci, /push:/);
+});
+
+test('a unit retargeted off main is refused at the merge boundary, persisted', async () => {
+  // The base is MUTABLE and retargeting leaves the head SHA untouched, so a check
+  // taken earlier and carried across awaits is a snapshot, not a guard. COMPLETION is
+  // the one boundary where an off-`main` base does harm, so the guard lives there —
+  // on every path that completes, not the direct merge alone — and the refusal is
+  // PERSISTED, because a terminal-success status
+  // written while the unit still targeted `main` would otherwise survive and leave it
+  // mergeable.
+  const expectedHead = 'f'.repeat(40);
+  const pullRequest = {
+    number: 512,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'release' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/512',
+  };
+  const draftTransitions = [];
+  const statusWrites = [];
+  const merges = [];
+  const handoffs = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async mergeExactHead(number, head) { merges.push([number, head]); return { merged: true }; },
+    async enableAutoMerge() { merges.push(['auto']); },
+    async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
+    async setDraft(current, draft) { draftTransitions.push(draft); current.draft = draft; return current; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'base_refused',
+  );
+  // Never merged, never handed off, and the refusal is on the record.
+  assert.deepEqual(merges, []);
+  assert.deepEqual(handoffs, []);
+  assert.deepEqual(draftTransitions, [true]);
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.equal(statusWrites[0].head, expectedHead);
+  assert.match(statusWrites[0].description, /merges only into main/u);
+  assert.match(statusWrites[0].description, /release/u);
+});
+
+test('a retarget racing the merge itself is DETECTED, not merely pre-checked', async () => {
+  // mergeExactHead pins only the head SHA, so the base can move between the check and
+  // the merge. Detection after the fact is what stops the handoff dispatching against
+  // a base the unit never had reviewed.
+  const expectedHead = 'f'.repeat(40);
+  let reads = 0;
+  const pullRequest = {
+    number: 513,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'main' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/513',
+  };
+  const handoffs = [];
+  const statusWrites = [];
+  const client = {
+    async pullRequest() {
+      reads += 1;
+      // main when checked; retargeted by the time the merge lands
+      return { ...pullRequest, base: { ref: reads === 1 ? 'main' : 'release' } };
+    },
+    async mergeExactHead() { return { merged: true }; },
+    async enableAutoMerge() {},
+    async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
+    async setDraft(current, draft) { current.draft = draft; return current; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'base_violated',
+  );
+  assert.deepEqual(handoffs, []);
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.match(statusWrites[0].description, /merged into/u);
+});
+
+test('the AUTO-MERGE path detects a retarget and cancels the queue', async () => {
+  // The first attempt guarded only `if (direct?.merged)`. `enableAutoMerge` is a
+  // completion too: it queues the reviewed head against whatever base is live, and the
+  // handoff then dispatched from a base ref read BEFORE the queue existed. Drafting is
+  // what cancels the queue, so the refusal has to run here as well.
+  const expectedHead = 'a'.repeat(40);
+  let reads = 0;
+  const pullRequest = {
+    number: 514,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'main' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/514',
+  };
+  const handoffs = [];
+  const statusWrites = [];
+  const draftTransitions = [];
+  const client = {
+    async pullRequest() {
+      reads += 1;
+      return { ...pullRequest, base: { ref: reads === 1 ? 'main' : 'release' } };
+    },
+    // no direct merge — this is the queued path
+    async mergeExactHead() { return { merged: false }; },
+    async enableAutoMerge() {},
+    async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
+    async setDraft(current, draft) { draftTransitions.push(draft); return { ...current, draft }; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'base_refused',
+  );
+  // Never handed off, and the queue is cancelled by the draft conversion.
+  assert.deepEqual(handoffs, []);
+  assert.deepEqual(draftTransitions, [true]);
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.match(statusWrites[0].description, /merges only into main/u);
+  assert.match(statusWrites[0].description, /release/u);
+});
+
+test('the clean-status RETRY merge detects a retarget', async () => {
+  // The other unguarded completion: `enableAutoMerge` rejects with "is in clean
+  // status", the retrying `mergeExactHead` merges outright, and that merge landed
+  // wherever the base then pointed.
+  const expectedHead = 'b'.repeat(40);
+  let reads = 0;
+  let merges = 0;
+  const pullRequest = {
+    number: 515,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'main' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/515',
+  };
+  const handoffs = [];
+  const statusWrites = [];
+  const client = {
+    async pullRequest() {
+      reads += 1;
+      return { ...pullRequest, base: { ref: reads === 1 ? 'main' : 'release' } };
+    },
+    async mergeExactHead() {
+      merges += 1;
+      // first call declines, the post-clean-status retry merges
+      return { merged: merges > 1 };
+    },
+    async enableAutoMerge() {
+      throw new Error('Pull request Pull request is in clean status');
+    },
+    async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'base_violated',
+  );
+  assert.deepEqual(handoffs, []);
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.match(statusWrites[0].description, /merged into/u);
+});
+
+test('a completed handoff dispatches the LANDED base, never the ref read on entry', async () => {
+  // The positive half: verification must not merely refuse, it must also be the thing
+  // that supplies the ref. A stale `pullRequest.base.ref` is exactly what the refused
+  // paths were dispatching.
+  const expectedHead = 'c'.repeat(40);
+  const pullRequest = {
+    number: 516,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    // deliberately stale on the handed-in object
+    base: { ref: 'stale-ref' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/516',
+  };
+  const handoffs = [];
+  const statusWrites = [];
+  const client = {
+    async pullRequest() { return { ...pullRequest, base: { ref: 'main' } }; },
+    async mergeExactHead() { return { merged: true }; },
+    async enableAutoMerge() {},
+    async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'merged',
+  );
+  assert.deepEqual(handoffs, [['main', 516]]);
+  assert.deepEqual(statusWrites, []);
+});
+
+test('a retarget racing the merge persists the failure BEFORE attempting a draft', async () => {
+  // A merged pull request cannot be converted to a draft. Drafting first therefore
+  // REJECTED before the failure status was written, leaving the preceding successful
+  // status standing — defeating the detection it was added to provide.
+  const expectedHead = 'd'.repeat(40);
+  let reads = 0;
+  const pullRequest = {
+    number: 517,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'main' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/517',
+  };
+  const order = [];
+  const client = {
+    async pullRequest() {
+      reads += 1;
+      return reads === 1
+        ? { ...pullRequest }
+        : { ...pullRequest, base: { ref: 'release' }, state: 'closed', merged: true };
+    },
+    async mergeExactHead() { return { merged: true }; },
+    async enableAutoMerge() {},
+    async dispatchHandoff() { order.push('dispatch'); },
+    async setDraft() {
+      order.push('draft');
+      throw new Error('Pull request is closed and cannot be converted to a draft');
+    },
+    async setStatus(head, state) { order.push(`status:${state}`); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'base_violated',
+  );
+  // The failure is durable, the draft is not even attempted on a merged pull request,
+  // and nothing was handed off.
+  assert.deepEqual(order, ['status:failure']);
+});
+
+test('the sticky notice records a base refusal instead of reporting it clear', async () => {
+  // Every outcome other than `merged` used to render as `clear` + "auto-merge is
+  // queued", which contradicted the failing status the refusal had just written.
+  const violated = reviewGate.completionNotice('base_violated');
+  assert.equal(violated.state, 'blocked');
+  assert.equal(violated.refused, true);
+  assert.match(violated.next, /landed on a base other than/u);
+  assert.doesNotMatch(violated.next, /queued behind branch protection/u);
+
+  const refused = reviewGate.completionNotice('base_refused');
+  assert.equal(refused.state, 'blocked');
+  assert.equal(refused.refused, true);
+  assert.match(refused.next, /Retarget this pull request at `main`/u);
+  assert.doesNotMatch(refused.next, /queued behind branch protection/u);
+
+  // The unchanged outcomes still read exactly as they did.
+  const merged = reviewGate.completionNotice('merged');
+  assert.equal(merged.state, 'clear');
+  assert.equal(merged.refused, false);
+  assert.equal(merged.next, 'GitHub squash-merged this exact reviewed head.');
+
+  const queued = reviewGate.completionNotice('queued');
+  assert.equal(queued.state, 'clear');
+  assert.equal(queued.refused, false);
+  assert.equal(queued.next, 'GitHub auto-merge is queued behind branch protection.');
 });

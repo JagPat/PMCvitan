@@ -44,6 +44,12 @@ test('accepts only open same-repository pull requests', () => {
     false,
   );
   assert.equal(isEligiblePullRequest({ ...eligible, state: 'CLOSED' }), false);
+
+  // The BASE is deliberately not consulted here. Eligibility refusals are silent, and
+  // skipping an off-`main` unit silently would leave any status already attached to
+  // its head standing — including a terminal success written while it still targeted
+  // `main`. The base is guarded at the merge boundary, where a refusal is persisted.
+  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: 'release' }), true);
 });
 
 test('classifies a fresh Codex thumbs-up as clear', () => {
