@@ -93,8 +93,11 @@ unit, not a closed one, and that distinction is what keeps the queue finite.
 **Where the rounds actually went, because the shape is the finding.** Seven on
 #378, seven on #379, three on #381, none on #382 — then one and four on #383,
 three and two on #384, three and two on #385, two and two on #386, five and five
-on #387, three and two on #388, six and three on #389, six and four on #390, and
-four on #391's first head. The rise from #383 onward was
+on #387, three and two on #388, six and three on #389, six and four on #390, four
+and two on #391, five and five on #392, and three and four on #393. That is eleven
+units at two heads each, which is where the twenty-two comes from and why the claim
+that every unit from #383 through #393 spent its whole allowance is checkable rather
+than asserted. The rise from #383 onward was
 **entirely requirement 10**, the migration cutover: five formulations of one rule,
 each found. Every other round in this lineage found contradictions between
 sentences; those rounds found hazards in an operation, and no amount of rewriting
@@ -507,9 +510,20 @@ label query blocks every fresh `main` unit until some unrelated replacement carr
 off-`main` work. A guard on admission and settlement does not help: the obligation
 was already manufactured upstream of both.
 
-So the guard runs immediately before the label is added, as well as at admission and
-at settlement. It needs no claim record, no enumeration and no authority, and it
-closes a hole that is live on `main` right now.
+**And proximity does not close it — an earlier head said "check the base immediately
+before the label is added", which is the same two-write race this document rejects
+elsewhere, written by the head that had just finished rejecting it.** The controller
+reads `base.ref === 'main'`, the author retargets the unchanged head to `release`,
+and `markReplacementRequired` then applies the label; the global label query treats
+that off-`main` unit as an obligation and blocks fresh `main` work — precisely what
+the guard claims to prevent. Reading a mutable value close in time to a write is not
+binding it, here or in the owner-capture case below.
+
+So the source binding needs **immutable evidence that the unit was based on `main`,
+or a single serialized authorizing operation** that decides the base and creates the
+obligation as one act. The guard at admission and at settlement is separate and does
+close a live hole with no claim record, enumeration or authority behind it; the
+source-creation point is the one that needs the stronger construction.
 
 **But the source-creation check is BASE IDENTITY ONLY — not ancestry — and an
 earlier head got this wrong by applying the same test at all three points.** Ancestry
@@ -615,9 +629,13 @@ authority itself would be one of:
 WHOLE pending set at the moment it is installed, not a range copied from an earlier
 head.** An authority installed today authenticates only what is written from that
 point on. It cannot establish who owned any already-exhausted unit at the moment it
-was exhausted — today that is #377 through #392, and it grows by one every time a
-unit closes at the round limit, so a bootstrap written against a fixed range will
-silently exclude whatever accumulated after the range was typed. It equally cannot
+was exhausted. **That set is NOT a contiguous range, and writing it as one is its own
+defect** — an earlier head wrote "#377 through #392", which sweeps in #380 (closed
+without ever reaching the limit, so never an obligation) and #381 (settled by merged
+#382), while omitting #393. A bootstrap reading a range would jam on debts that do
+not exist and waive scope that does. The authoritative list is the one under **Where
+things stand** below, which is enumerated rather than described, and it grows by one
+every time a unit closes at the round limit. It equally cannot
 authenticate the settlement any already-merged candidate performed —
 the trust-root table above is the reason, and no later read recovers either fact. A
 unit that treated the authority by itself as sufficient would meet the legacy queue
@@ -714,6 +732,15 @@ unit to learn.
    head dropped this rule while tightening the section around it — it is restored
    because the deadlock it prevents has no exit but manual closure, which is the
    accumulation defect wearing a different hat.
+
+   **And the winning side needs its own half, which the restoration also left out:
+   a merged winning bundle settles ALL AND ONLY its admitted members, in ONE
+   retry-safe operation.** Competition rules decide who is admitted and what a loser
+   releases; neither says what a success must do. Without it an implementation may
+   record `{#1,#2}` as settling #1, fail before #2, and leave a partially discharged
+   bundle — #2 still owed against a unit that already merged and can never be
+   re-run, which every other rule here assumes cannot happen. All-or-none is the
+   premise the surrounding reasoning rests on, so it is stated rather than inferred.
 
 5. **And the cutover into it is a design problem in its own right**, whose hazards
    are: settlement evidence and the obligation itself are both forgeable and must

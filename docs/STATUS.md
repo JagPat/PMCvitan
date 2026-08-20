@@ -77,9 +77,13 @@ the owner declaration at review only was not enough: executed,
 `enforceReviewConvergence` calls `setDraftForCurrentHead` and then
 `markReplacementRequired` with NO re-run of `assessReviewScope`, so a `claude`
 body/commit pair can pass scope and have its body edited to `cursor` while Codex
-polls — creating a source that ROUTES to Cursor while freezing `claude`. The
-equality check runs again immediately before the label is applied, and a mismatch
-refuses to create the obligation.
+polls — creating a source that ROUTES to Cursor while freezing `claude`. That head
+proposed re-running the equality check immediately before the label is applied;
+**#394's review refused it, and the refusal generalises**: reading a mutable value
+close in time to a write does not bind it, so the interval survives however narrow it
+gets. Only a single serialized authorizing operation — deciding the value and
+creating the obligation as one act — closes it, and the same applies to binding a
+source's base to `main`.
 
 **#389's FIRST round separated the two halves for good, and five of its six
 findings were one thing: A COMMITTED FILE CANNOT BE THE AUTHORITY.** It cannot be
@@ -182,10 +186,12 @@ by `git log --show-signature` and the GitHub API), or a controller-written recor
 whose writer the gate can authenticate. SECOND, that no obligation predating that
 authority is still pending — an authority installed today authenticates only what is
 written after it, and can establish neither who owned any already-exhausted unit at
-exhaustion (today #377 through #392, and one more every time a unit closes at the
-round limit — a bootstrap pinned to a fixed range silently excludes whatever
-accumulates after it is typed) nor what settlement an already-merged candidate
-performed. A unit
+exhaustion nor what settlement an already-merged candidate performed. **That legacy
+set is NOT a contiguous range** — writing it as "#377 through #392" sweeps in #380
+(closed without reaching the limit, never an obligation) and settled #381, and omits
+later entries; a bootstrap reading a range jams on debts that never existed and
+waives scope that does. The authoritative list is the enumerated pending set below,
+and it grows by one every time a unit closes at the round limit. A unit
 treating the authority alone as sufficient would meet the legacy queue holding the
 choice this repair refuses: trust an editable body and risk a `claude` claimant
 discharging a `cursor`-owned unit, or fail closed on the legacy entries and deliver
