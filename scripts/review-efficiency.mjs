@@ -1,6 +1,7 @@
 // The deferral-phase check shares docs/STATUS.md's own state vocabulary rather than keeping
 // a second copy of it — see phaseHasOpenWork.
 import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
+import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 // Correction ownership is checked HERE, in the one assessment both the PR-side
 // `review-scope` job and the trusted controller's `enforceReviewScope` call, so
 // the cheap gate and the merge boundary cannot disagree about who owns a fix.
@@ -108,6 +109,7 @@ export function assessReplacementLineage({
   const fulfilledSources = new Set(requiredReplacements
     .filter(({ pullRequest: source }) => replacementPullRequests.some((candidate) =>
       candidate?.merged_at
+      && isLineageBase(candidate?.base?.ref)
       && candidate.number > source?.number
       && replacementSource(candidate.body) === source?.number))
     .map(({ pullRequest: source }) => source.number));
@@ -116,6 +118,14 @@ export function assessReplacementLineage({
     && !fulfilledSources.has(source?.number));
 
   if (declaration.kind === 'source') {
+    const claimantBase = pullRequest?.base?.ref;
+    if (!isLineageBase(claimantBase)) {
+      return {
+        allowed: false,
+        detail: `a replacement must target ${LINEAGE_BASE_REF}; this unit targets `
+          + `${typeof claimantBase === 'string' && claimantBase.length > 0 ? claimantBase : 'an unreadable base'}`,
+      };
+    }
     const requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
     );
@@ -131,9 +141,15 @@ export function assessReplacementLineage({
         detail: `Replaces: #${declaration.source} is not closed; close the exhausted unit before reviewing its replacement`,
       };
     }
+    // Only a unit that could itself legitimately claim counts as competing. An
+    // off-`main` PR is refused at eligibility and can never take the obligation, so
+    // treating it as a competitor would reject every legitimate `main` claimant while
+    // the pending obligation also blocks `Replaces: none` — the loop would deadlock
+    // until someone closed the off-`main` PR by hand.
     const competing = replacementPullRequests.find((candidate) =>
       candidate?.number !== pullRequest?.number
       && candidate?.state === 'open'
+      && isLineageBase(candidate?.base?.ref)
       && replacementSource(candidate.body) === declaration.source);
     if (competing) {
       return {

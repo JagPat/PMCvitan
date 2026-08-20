@@ -969,6 +969,7 @@ test('a buried current-head finding vetoes recovered clean state', async () => {
     state: 'open',
     draft: false,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -1013,6 +1014,7 @@ test('live current-head findings stop recovery before another ready transition',
     state: 'open',
     draft: true,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/230',
   };
   const draftTransitions = [];
@@ -1061,6 +1063,7 @@ test('a finding on the second distinct head publishes replacement_required immed
     state: 'open',
     draft: false,
     head: { sha: expectedHead },
+    base: { ref: 'main' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
   };
   const sticky = [];
@@ -1416,6 +1419,7 @@ test('trusted scope enforcement rejects a spoofed green preflight', async () => 
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const sticky = [];
@@ -1460,6 +1464,7 @@ test('trusted scope enforcement reads the cumulative file list and rejects a mig
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/346',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const client = {
@@ -1496,6 +1501,7 @@ test('final admission revalidates live scope and the late review-round reset', a
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const statuses = [];
   const sticky = [];
@@ -1631,6 +1637,7 @@ test('the second finding-bearing head requires replacement even when convergence
     draft: false,
     html_url: 'https://github.com/JagPat/PMCvitan/pull/247',
     head: { sha: head },
+    base: { ref: 'main' },
   };
   const comments = [
     { user: { login: 'chatgpt-codex-connector[bot]' }, commit_id: 'a'.repeat(40) },
@@ -2070,4 +2077,58 @@ test('CI runs once per pull-request head', async () => {
 
   assert.match(ci, /pull_request:/);
   assert.doesNotMatch(ci, /push:/);
+});
+
+test('a unit retargeted off main is refused and the refusal is persisted', async () => {
+  // The base is MUTABLE and retargeting leaves the head SHA untouched, so a check
+  // taken once at eligibility is a snapshot rather than a guard. Every acting
+  // boundary re-reads the pull request through refreshCurrentHead, so the base is
+  // checked there — one site, and promotion, completion, final policy and terminal
+  // recovery all inherit it.
+  //
+  // Retargeting is NOT supersession: a superseded head is dropped silently because a
+  // newer head is already being processed, but nothing will pick up a retargeted
+  // unit. So the refusal must be PERSISTED, or a terminal-success status written
+  // while the unit still targeted main would survive and leave it mergeable.
+  const expectedHead = 'f'.repeat(40);
+  const pullRequest = {
+    number: 512,
+    state: 'open',
+    draft: false,
+    body: '<!-- correction-owner: claude -->',
+    head: { sha: expectedHead },
+    base: { ref: 'release' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/512',
+  };
+  const draftTransitions = [];
+  const statusWrites = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async setDraft(current, draft) {
+      draftTransitions.push(draft);
+      current.draft = draft;
+      return current;
+    },
+    async setStatus(head, state, description) {
+      statusWrites.push({ head, state, description });
+    },
+    async reviewComments() { return []; },
+    async reviews() { return []; },
+    async updateStickyComment() {},
+  };
+
+  const policy = await reviewGate.revalidateFinalReviewPolicy(
+    client,
+    pullRequest.number,
+    expectedHead,
+  );
+
+  assert.equal(policy.allowed, false);
+  // Drafted and failed, exactly as other final-policy rejections do — not a silent stop.
+  assert.deepEqual(draftTransitions, [true]);
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.equal(statusWrites[0].head, expectedHead);
+  assert.match(statusWrites[0].description, /must target main/u);
+  assert.match(statusWrites[0].description, /release/u);
 });

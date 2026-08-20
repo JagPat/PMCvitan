@@ -1,3 +1,5 @@
+import { isLineageBase } from './lineage-policy.mjs';
+
 export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
 
@@ -47,11 +49,19 @@ export function isEligiblePullRequest(pullRequest) {
   const state = String(pullRequest?.state ?? '').toUpperCase();
   const headRepository = pullRequest?.headRepository?.nameWithOwner;
   const baseRepository = pullRequest?.baseRepository?.nameWithOwner;
+  const baseRefName = pullRequest?.baseRefName;
 
+  // The base guard sits HERE, before review, and not at exhaustion. Refusing an
+  // off-`main` unit once it has already been reviewed would suppress a replacement
+  // obligation for findings that were never fixed or carried — a waiver path. Refusing
+  // it before review means such a unit never enters the lifecycle at all, so no
+  // obligation is ever created for it and there is nothing to suppress. One value,
+  // one moment, nothing to race.
   return (
     state === 'OPEN' &&
     typeof headRepository === 'string' &&
-    headRepository === baseRepository
+    headRepository === baseRepository &&
+    isLineageBase(baseRefName)
   );
 }
 

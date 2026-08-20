@@ -6,6 +6,7 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
   CORRECTION_STALLED,
@@ -804,6 +805,7 @@ function eligibleShape(pullRequest) {
   return {
     state: pullRequest.state,
     headRefName: pullRequest.head.ref,
+    baseRefName: pullRequest.base.ref,
     headRepository: { nameWithOwner: pullRequest.head.repo?.full_name },
     baseRepository: { nameWithOwner: pullRequest.base.repo?.full_name },
   };
@@ -942,6 +944,33 @@ async function refreshCurrentHead(client, number, expectedHead) {
   const pullRequest = await client.pullRequest(number);
   if (pullRequest.state !== 'open' || pullRequest.head.sha !== expectedHead) {
     console.log('Pull request closed or a newer head superseded this workflow.');
+    return null;
+  }
+  // THE BASE IS CHECKED HERE, and only here, because this is the one primitive every
+  // acting boundary already re-reads the pull request through: promotion, completion,
+  // final policy and terminal recovery all pass through it. A base is MUTABLE and
+  // retargeting leaves the head SHA untouched, so a check taken once and carried
+  // across awaits is a snapshot, not a guard — the placement is the fix, not another
+  // call site to remember.
+  //
+  // RETARGETING IS NOT SUPERSESSION. A superseded head is dropped silently because a
+  // newer head is already being processed; nothing will pick up a retargeted unit, so
+  // the refusal is PERSISTED before returning. Without that, a terminal-success status
+  // written while the unit still targeted `main` would survive and leave an off-base
+  // unit mergeable.
+  if (!isLineageBase(pullRequest.base?.ref)) {
+    const target = typeof pullRequest.base?.ref === 'string'
+      && pullRequest.base.ref.length > 0
+      ? pullRequest.base.ref
+      : 'an unreadable base';
+    console.log(`Pull request no longer targets ${LINEAGE_BASE_REF}: ${target}.`);
+    await client.setDraft(pullRequest, true);
+    await client.setStatus(
+      expectedHead,
+      'failure',
+      `scope: a reviewed unit must target ${LINEAGE_BASE_REF}; this unit targets ${target}`,
+      pullRequest.html_url,
+    );
     return null;
   }
   return pullRequest;
