@@ -40,14 +40,19 @@ must delete labels by hand or the whole repository stops accepting fresh work.
 
 ### 2. Lineage is read from text anyone can rewrite
 
-A pull request body is editable by anyone who can edit a pull request. Two
-consequences follow directly from the rule above:
+A pull request body is editable by anyone who can edit a pull request, and the
+rule above reads discharge out of exactly one of them: the body of a MERGED pull
+request. So the attack on `main` is direct — edit an already-merged body to say
+`Replaces: #<a currently-labelled unit>` and that unit is discharged outright,
+by work that never carried its scope.
 
-- An unrelated unit that exhausted its own review rounds can have
-  `Replaces: #354` written into it afterwards. If a merged pull request names
-  *that* unit, #354 is discharged by work that never carried its scope.
-- A MERGED pull request's body is editable too, so editing an old merged body to
-  name a currently-labelled unit discharges it outright.
+Note what is NOT an attack on `main`, because an earlier version of this document
+had it backwards. Editing an exhausted unit X to name #354 and merging something
+that names X discharges **X**, not #354: `fulfilledSources` compares each merged
+body directly against each labelled source and never follows a chain. That
+transitive shape is a real hazard for designs that DO follow the chain — it is
+what failed #367 — but describing it as live on `main` would hand a future repair
+the wrong threat model.
 
 **This surface exists on `main` today.** It is not introduced by anything that was
 attempted; the attempts were failed for not closing it, which is a different
@@ -106,9 +111,14 @@ should get further than these six did:
    claims must settle neither — *and* the sources it raced into must remain
    claimable, or they become permanently stuck, which is the original defect
    again.
-6. **Every gate must fail toward the loop continuing.** Four of the six units
-   introduced a state where the repository blocked itself. The rule exists to stop
-   obligations stranding; a rule that strands them differently is worse than none.
+6. **Distinguish a dead chain from missing evidence.** Four of the six units
+   introduced a state where the repository blocked itself, and a rule that strands
+   obligations differently is worse than none — so a provably dead chain must be
+   recoverable without a human. That is NOT a licence to fail open in general:
+   when the lineage evidence itself is unavailable, truncated or malformed,
+   nothing is proven and the gate must stay closed, exactly as `main` already
+   does (`required replacement lineage could not be read from GitHub`). Recover
+   from a state you can read and prove; refuse one you cannot.
 
 The last attempt's full implementation is on the closed pull requests, most
 completely at #377 head `1e7a7c0`, with 21 reproduce-first probes in
@@ -133,9 +143,13 @@ continuing to pay that price tonight.
 
 If the automatic recovery is built later, the reviews above suggest it does not
 need the lineage rewrite at all. The narrow version is a watchdog rule: when a
-labelled unit has no OPEN pull request claiming it and every unit that ever
-claimed it is closed unmerged, the obligation is released — with a comment
-recording which unit was released and why — rather than blocking the repository.
+labelled unit has been claimed AT LEAST ONCE, has no OPEN pull request claiming
+it now, and every unit that ever claimed it is closed unmerged, the obligation is
+released — with a comment recording which unit was released and why — rather than
+blocking the repository. The historical-claimant condition is not optional: a
+newly exhausted unit has no claimants at all, so without it the watchdog would
+release every obligation the moment it was created and the two-head rule would
+mean nothing.
 It fails forward, needs no chain derivation, and its weakness is stated plainly:
 a released obligation is unresolved scope that nobody is now tracking, so the
 release has to be loud. That trade is the owner's to make, not the gate's.
@@ -145,12 +159,19 @@ release has to be loud. That trade is the owner's to make, not the gate's.
 - `main`'s rule is unchanged: both defects above are live.
 - The stale `review-replacement-required` labels on #344, #357, #367, #373, #374,
   #375 and #376 were cleared by hand so the repository accepts fresh work.
-- **#377's obligation was not released.** It was cleared with the rest and the
-  owner restored it, which is the correct call: that unit's scope is the most
-  recent and the only one still live, and releasing it silently would have been
-  the same forgetting the rule exists to prevent. This document is its
-  replacement — it disposes of that scope by recording what remains undone and
-  why, rather than by building it — and declares `Replaces: #377` accordingly.
+- **#377's obligation is unresolved, and this record does not discharge it.** It
+  was cleared with the rest and the owner restored it, which was the correct
+  call: that unit's scope is the only one still live, and releasing it silently
+  would have been the same forgetting the rule exists to prevent. An earlier
+  version of this document declared `Replaces: #377`, which was wrong — a
+  documentation unit that records unfinished work does not carry it, and merging
+  one under that declaration would have waived the scope while leaving #377's two
+  findings and its implementation undone.
+- So the obligation stands, and with it the block on fresh `Replaces: none` work.
+  Resolving it takes a deliberate act, and there are only three: build the
+  remaining scope, release the obligation explicitly and record the release, or
+  leave it blocking. That choice belongs to the owner, and this document exists
+  to make it an informed one rather than a silent one.
 - When a replacement chain next dies mid-way, the labels will need clearing by
   hand again. That is the cost of parking, stated above with the objection to it.
   It is a known, bounded, manual step — but it is a manual step in a loop whose
