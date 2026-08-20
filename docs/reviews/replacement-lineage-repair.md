@@ -93,8 +93,8 @@ unit, not a closed one, and that distinction is what keeps the queue finite.
 **Where the rounds actually went, because the shape is the finding.** Seven on
 #378, seven on #379, three on #381, none on #382 — then one and four on #383,
 three and two on #384, three and two on #385, two and two on #386, five and five
-on #387, three and two on #388, six and three on #389, and six and four on #390.
-The rise from #383 onward was
+on #387, three and two on #388, six and three on #389, six and four on #390, and
+four on #391's first head. The rise from #383 onward was
 **entirely requirement 10**, the migration cutover: five formulations of one rule,
 each found. Every other round in this lineage found contradictions between
 sentences; those rounds found hazards in an operation, and no amount of rewriting
@@ -249,10 +249,28 @@ fixed — plus the malformed-declaration refusal a rewrite would otherwise drop.
 stays unfixed, its cost is stated rather than softened, and what would unblock it
 is an infrastructure decision named with its three shapes and their prices.
 
-Sixteen finding-bearing heads across eight units bought the table and its
-consequences — #383 through #390 at two apiece — which is the count the rounds line
-above adds up to. It is written down here so the sixth mechanism is not proposed,
-and so the trade that was refused three times is not offered a fourth.
+**#391's first round then caught two mistakes in the refusal itself**, and both are
+worth keeping. The document claimed a docs-only unit "ships" base revalidation — a
+diff touching two markdown files cannot change a gate, and reading it that way could
+let a later handoff treat #377's live defect as delivered. And base revalidation
+turned out not to be independently deliverable at all: the reviewed tree has no
+claim write for it to precede, so it means something only alongside #377's
+timeline-claim mechanism, whose shared-bot provenance is the OTHER unresolved P1.
+Both #377 findings travel together or neither does.
+
+**It also caught a human sign-off gate I had written into STATUS** — "that choice is
+the owner's, and §1 is blocked on it" — which this repository forbids. The
+correction is an autonomous default (the loop continues, the bundle stays disabled,
+the queue drains one per merge) plus a machine-observable unblock condition
+(verified-signature commits from a controller-held key, or a controller-written
+record whose writer the gate can authenticate). Naming a decision is useful;
+suspending the loop until someone makes it is not.
+
+Seventeen finding-bearing heads across nine units bought the table and its
+consequences — #383 through #390 at two apiece, and #391's first — which is the
+count the rounds line above adds up to. It is written down here so the sixth
+mechanism is not proposed, the trade refused three times is not offered a fourth,
+and the loop is never again recorded as waiting on a person.
 
 Nothing here is stuck; every entry is claimable, and the queue drains one per
 merge.
@@ -342,88 +360,88 @@ content of a reviewed head.** Anything a repository collaborator can write is no
 evidence, however official it looks. Five mechanisms failed because they were all
 on the wrong side of that line, and the line was verifiable from the first head.
 
-## What the repair must do
+## What a repair would require, and why none of it is buildable now
 
-**The bundle cannot be enabled, and that is the finding — not a scoping preference.**
+**Nothing in this section ships in the unit that carries this document.** This is a
+record and a specification for a later implementation unit; merging it changes no
+gate behaviour, adds no revalidation, and leaves every defect below live. An
+earlier head said the open unit "ships" base revalidation, which a docs-only diff
+cannot do — and reading it that way could let a later handoff treat #377's live
+defect as delivered while this same document says #377 is still pending.
 
-§1's remedy is a claim that carries several obligations. Enabling it requires three
-facts, and #390's review established, in one round, that each is unavailable and
-that shipping without it is not an option:
+**The bundle cannot be enabled.** §1's remedy is a claim carrying several
+obligations, and it needs three facts: a complete obligation enumeration,
+settlement evidence for already-merged candidates, and the owner a source had at
+exhaustion. None exists inside the trust root, and #390's review refused the trade
+three times over — *remain fail-closed rather than ship this waiver path*; *freeze
+in protected evidence or fail closed*; *authenticate the owner, or do not enable
+cross-unit bundles.* Three heads shipped a bundle resting on a fail-open the same
+document disclosed a few paragraphs later. Disclosure is not consent.
 
-| Fact the bundle needs | Why it is unavailable | What the review said to do instead |
-| --- | --- | --- |
-| a complete obligation enumeration | nothing enumerable sits outside the label query's own failure mode | "remain fail-closed rather than ship this waiver path" |
-| settlement evidence for already-merged candidates | no record was written; a body read today is not a fact about then | "freeze their settlement mapping in protected evidence or otherwise fail closed" |
-| the owner a source had at exhaustion | body and branch are both writable by a collaborator, and no artifact in the trust root carries it | "authenticate the owner frozen at exhaustion **or do not enable cross-unit bundles**" |
+**And the one requirement that looked independent is not.** Base revalidation at
+the authorization boundary — #377's second unresolved finding — reads: check base
+identity and ancestry *before the claim write* and at every later evaluation. The
+reviewed tree has **no claim write to precede**: `assessReplacementLineage` reads
+live bodies on every evaluation, so a retarget is already caught the next time the
+gate runs. The requirement only means something alongside #377's timeline-claim
+mechanism, which records a claim that cannot be withdrawn.
 
-Three earlier heads answered each of these with a limitation stated honestly and a
-bundle shipped anyway. That is the same trade three times, and it is refused three
-times. **A repair may not introduce a new capability whose safety depends on a
-fail-open it has itself documented.** Naming the exposure is not consent to it —
-which is the rule #390's first round put into this document, applied now to the
-document's own centrepiece.
+That mechanism cannot be restored as it stands. This document's own preserved item
+3 records why: it treats the timeline actor as sufficient provenance, and every
+workflow here shares one `github-actions[bot]` identity, so the actor filter is
+necessary and not sufficient. **Restoring it reintroduces that P1; omitting it
+leaves base revalidation with nothing to guard.** Both of #377's unresolved
+findings therefore travel together, and neither is separately deliverable:
 
-So the repair ships what needs none of the three:
+1. **The claim record needs authenticated provenance** — a writer a claimant cannot
+   impersonate. The shared bot identity is not one.
+2. **The claimant must be revalidated whole at the authorization boundary, base
+   included** — before the irrevocable write and at every later evaluation, since a
+   claimant retargeted to another or stale base after its claim was recorded
+   otherwise satisfies every other check.
 
-1. **Revalidate the whole claimant at the authorization boundary, base included.**
-   #377 revalidated head, body and state but not base, so a claimant retargeted to
-   another or stale base after its claim was recorded still satisfied every other
-   check — discharging its source with a replacement that does not contain the
-   current-`main` unresolved unit. A recorded claim cannot be withdrawn, so base
-   identity and ancestry must be checked *before* the write and again at every
-   later evaluation, alongside head, body and state.
+**What survives is one preservation note**, and it is stated because a
+reimplementation is likely to drop it by accident rather than by decision: the
+malformed-declaration refusal lives in `assessReviewScope`, not in the lineage
+function. A rewrite that touches only the lineage function must not assume it is
+inherited. That is not a repair; it is a fence around behaviour `main` already has.
 
-   This depends on no enumeration, no legacy evidence and no owner. It closes a
-   live defect that #377 found and nothing since has fixed.
+## What §1 costs while this stands, and what the loop does about it
 
-2. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`, not
-   in the lineage function, and a rewrite touching only the lineage function must
-   not assume it is inherited. Stated because it is the one thing a reimplementation
-   is most likely to drop by accident.
-
-**Nothing else in this document is buildable today.** Bundle settlement from git,
-whole-bundle competition, claimant-to-source owner equality and the rollout fence
-all exist to serve the bundle; with the bundle refused they have nothing to
-protect, and each carried its own finding when written as though it did.
-
-## What §1 costs while this stands
-
-The accumulation defect is unfixed. Each exhausted unit still takes one merged
-replacement to discharge, so a queue of N costs N sequential review units — and
+The accumulation defect is unfixed. Each exhausted unit takes one merged
+replacement to discharge, so a queue of N costs N sequential merged units — and
 this document's own lineage is the demonstration: nine record units, one obligation
-added per closure, the queue growing while the repair for its growth was being
-written.
+added per closure, the queue growing while the repair for its growth was written.
 
-That is a real operational cost and it is not a correctness failure. §1's own
-executed conclusion has been in this document since the first head: **the backlog
-is long, not stuck.** Every entry is claimable, every entry drains on merge, and no
-obligation is lost. What is missing is throughput, not integrity.
+**That is a throughput cost, not an integrity failure**, and §1's executed
+conclusion has stood since the first head: the backlog is **long, not stuck**.
+Every entry is claimable, every entry drains on merge, no obligation is lost.
 
-## What would unblock it
+**The autonomous default is therefore to continue.** The loop is not blocked and
+must not be recorded as blocked: with no authority available, the bundle stays
+disabled, the queue drains at one unit per merge, and every other objective
+proceeds normally. Nothing here waits on anyone. An earlier head ended on "that
+choice is the owner's and §1 is blocked on it", which is a human sign-off gate and
+this repository forbids one.
 
-An authority outside GitHub's collaborator-writable surface. Every candidate inside
-it has now been refuted by execution — body, head ref, label, committed file,
-commit status — and the trust root that remains carries facts about *content*, not
-about *events*. The bundle needs a fact about an event: what was owed, to whom, at
-the moment a unit was exhausted.
+**The machine-observable condition that changes it** is the presence of an
+authority the gate can verify without asking anybody:
 
-Three shapes could supply it, and choosing among them is an infrastructure decision
-rather than a design one:
+- verified-signature commits on `main` attributable to a controller-held key, which
+  `git log --show-signature` and the GitHub API both expose; or
+- a controller-written record the gate can read and whose writer it can
+  authenticate.
 
-- **Commits signed by a key only the controller holds.** Signature verification is
-  already a GitHub primitive and the result lands in protected history, which makes
-  it both authenticated and enumerable. It requires the repository to hold a
-  signing secret.
-- **An external record the controller writes and the gate reads.** Straightforward
-  and auditable; it adds a service and a credential to a loop that currently has
-  neither.
-- **An accepted attestation** — a stated, reviewed baseline treated as trusted by
-  decision rather than by proof. This is the cheapest, and it is exactly what the
-  owner removed on 2026-08-20 for a reason that still holds: a manual act inside an
-  autonomous loop.
+When either becomes observable, the three facts the bundle needs become obtainable
+and §1's remedy is buildable — by a unit that reads the condition rather than a
+person who announces it. Until then the default above holds, and no work stops.
 
-The first two add a credential. The third adds a human step. Both costs are real,
-and neither is a call this document can make.
+**The prices are real and are recorded so the choice is informed rather than
+blocking**: a signing key means the repository holds a secret; an external record
+means a service and a credential in a loop that has neither; an accepted
+attestation means a manual act inside an autonomous loop, which is what the owner
+removed on 2026-08-20 for that exact reason. None of these is a precondition for
+the loop to keep running.
 
 ## Preserved: what an authenticated record would have to satisfy
 
@@ -474,11 +492,28 @@ unit to learn.
    cannot substitute for: a fact about who owned a unit at the moment it was
    exhausted, written by someone a claimant cannot impersonate.
 
-   Two constraints on any such record, both learned the hard way: it must NOT fail
-   closed on units it cannot resolve, since #386's review executed that consequence
-   and the whole queue jams; and it must be written when the controller LABELS a
-   unit exhausted rather than read when a claimant is admitted, since anything read
-   later reads whatever the body says by then.
+   Two constraints on any such record, and the first was stated backwards in an
+   earlier head.
+
+   **It must REFUSE a claim whose source ownership it cannot authenticate**, even
+   though that leaves the obligation blocked until evidence for it exists. The
+   alternative is admitting a claimant without owner equality or inventing an
+   owner, and either lets a `claude` claimant discharge a `cursor`-owned unit —
+   which the repository forbids outright. An earlier head wrote "it must NOT fail
+   closed", citing #386.
+
+   **That citation confuses two different jams, and the difference is whether
+   there is a way out.** #386 refused a rule that derived the owner from a branch
+   prefix and failed closed on every other shape: those sources could never be
+   resolved by anything, so the queue jammed permanently with no exit. A record
+   that refuses *unauthenticated* ownership jams a source only until the record
+   carries evidence for it — and supplying that evidence is the record's whole
+   purpose. Blocked-pending-evidence is a state with an exit; unclaimable-forever
+   is not.
+
+   **And it must be written when the controller LABELS a unit exhausted** rather
+   than read when a claimant is admitted, since anything read later reads whatever
+   the body says by then.
 
    Two constraints on any stronger record, both learned the hard way: it must NOT
    fail closed on units it cannot resolve, since #386's review executed that

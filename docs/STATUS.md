@@ -115,22 +115,37 @@ the alternative: remain fail-closed rather than ship the waiver path; freeze leg
 settlement in protected evidence or fail closed; **authenticate the owner frozen at
 exhaustion, or do not enable cross-unit bundles.** Disclosure is not consent.
 
-**SO THE BUNDLE IS NOT BUILDABLE, AND §1 STAYS UNFIXED.** The open PR ships only
-what needs no enumeration, no legacy evidence and no owner: base revalidation at
-the authorization boundary (#377's unresolved P1, still live) and the
-malformed-declaration refusal in `assessReviewScope`. Bundle settlement,
-whole-bundle competition, owner equality and the rollout fence all existed to serve
-the bundle and go with it.
+**SO THE BUNDLE IS NOT BUILDABLE, AND §1 STAYS UNFIXED.** The open PR is DOCS-ONLY:
+it changes this file and the lineage record, and it therefore SHIPS NO GATE
+BEHAVIOUR. An earlier head said it "ships" base revalidation, which a docs diff
+cannot do — and reading it that way would let a later handoff treat #377's live
+defect as delivered while this same file says #377 is pending. What the record
+carries are REQUIREMENTS FOR A LATER IMPLEMENTATION UNIT, and #377's two unresolved
+findings travel TOGETHER: base revalidation has no claim write to precede in the
+current tree (`assessReplacementLineage` reads live bodies every run), so it means
+something only alongside #377's timeline-claim mechanism — which treats the shared
+`github-actions[bot]` actor as sufficient provenance and is itself the other
+unresolved P1. Restoring one without the other either reintroduces that P1 or
+leaves the requirement guarding nothing.
 
-**§1's cost is stated rather than softened:** the queue still drains one unit per
-merge, this lineage is the demonstration, and the defect is throughput rather than
-integrity — every entry stays claimable and none is lost. **Unblocking it needs an
-authority outside GitHub's collaborator-writable surface**, and the three shapes are
-named with their prices: commits signed by a controller-held key, an external record
-service, or an accepted attestation. The first two add a credential; the third adds
-a manual step inside an autonomous loop, which is what the owner removed on
-2026-08-20. **That choice is JagPat's, and the programme's §1 objective is blocked
-on it.**
+**THE LOOP IS NOT BLOCKED AND MUST NOT BE RECORDED AS BLOCKED.** An earlier head
+ended on "that choice is JagPat's, and the §1 objective is blocked on it" — a human
+sign-off gate, which this repository forbids. The autonomous default is to CONTINUE:
+with no authority available the bundle stays disabled, the queue drains at one unit
+per merge, and every other objective proceeds normally. §1's cost is throughput, not
+integrity — the backlog is LONG, NOT STUCK; every entry is claimable, every entry
+drains on merge, none is lost.
+
+**The MACHINE-OBSERVABLE condition that changes it**, requiring no announcement from
+anyone: verified-signature commits on `main` attributable to a controller-held key
+(exposed by `git log --show-signature` and the GitHub API), or a controller-written
+record whose writer the gate can authenticate. When either becomes observable the
+three facts the bundle needs become obtainable, and a unit that READS that condition
+can build §1's remedy. The prices are recorded so the choice is informed rather than
+blocking — a signing key means a repository secret; an external record means a
+service and a credential; an attestation means a manual act inside an autonomous
+loop, which is what the owner removed on 2026-08-20. None is a precondition for the
+loop to keep running.
 
 **A STATUS claim carried from the previous head is STRUCK.** It said the only
 barrier to one unit carrying several obligations is `replacementDeclaration`
