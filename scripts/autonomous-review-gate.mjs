@@ -805,7 +805,6 @@ function eligibleShape(pullRequest) {
   return {
     state: pullRequest.state,
     headRefName: pullRequest.head.ref,
-    baseRefName: pullRequest.base.ref,
     headRepository: { nameWithOwner: pullRequest.head.repo?.full_name },
     baseRepository: { nameWithOwner: pullRequest.base.repo?.full_name },
   };
@@ -946,33 +945,6 @@ async function refreshCurrentHead(client, number, expectedHead) {
     console.log('Pull request closed or a newer head superseded this workflow.');
     return null;
   }
-  // THE BASE IS CHECKED HERE, and only here, because this is the one primitive every
-  // acting boundary already re-reads the pull request through: promotion, completion,
-  // final policy and terminal recovery all pass through it. A base is MUTABLE and
-  // retargeting leaves the head SHA untouched, so a check taken once and carried
-  // across awaits is a snapshot, not a guard — the placement is the fix, not another
-  // call site to remember.
-  //
-  // RETARGETING IS NOT SUPERSESSION. A superseded head is dropped silently because a
-  // newer head is already being processed; nothing will pick up a retargeted unit, so
-  // the refusal is PERSISTED before returning. Without that, a terminal-success status
-  // written while the unit still targeted `main` would survive and leave an off-base
-  // unit mergeable.
-  if (!isLineageBase(pullRequest.base?.ref)) {
-    const target = typeof pullRequest.base?.ref === 'string'
-      && pullRequest.base.ref.length > 0
-      ? pullRequest.base.ref
-      : 'an unreadable base';
-    console.log(`Pull request no longer targets ${LINEAGE_BASE_REF}: ${target}.`);
-    await client.setDraft(pullRequest, true);
-    await client.setStatus(
-      expectedHead,
-      'failure',
-      `scope: a reviewed unit must target ${LINEAGE_BASE_REF}; this unit targets ${target}`,
-      pullRequest.html_url,
-    );
-    return null;
-  }
   return pullRequest;
 }
 
@@ -990,17 +962,64 @@ async function setDraftForCurrentHead(
     : null;
 }
 
+// The merge is the ONLY boundary where an off-`main` base does irreversible harm, so
+// the guard lives here and nowhere earlier.
+//
+// Reviewing an off-`main` unit is harmless, and an exhausted unit's replacement
+// obligation must stand REGARDLESS of base — suppressing it would waive findings that
+// were never fixed or carried. Two earlier placements were wrong for opposite reasons:
+// in the eligibility predicate the refusal was SILENT, leaving any status already on
+// that head standing, including a terminal success written while it still targeted
+// `main`; and on the shared refresh primitive a refusal was indistinguishable from
+// supersession, so a retarget arriving between the second finding and
+// `markReplacementRequired` cancelled the obligation entirely.
+//
+// A base is mutable and `mergeExactHead` constrains only the head SHA, so this is a
+// check AND a detection: refuse before merging, and verify what the merge actually
+// landed on before anything downstream treats it as done.
+async function refuseOffLineageBase(client, pullRequest, expectedHead, when) {
+  const target = typeof pullRequest?.base?.ref === 'string'
+    && pullRequest.base.ref.length > 0
+    ? pullRequest.base.ref
+    : 'an unreadable base';
+  console.log(`Refusing to complete #${pullRequest?.number}: ${when} ${target}.`);
+  await client.setDraft(pullRequest, true);
+  await client.setStatus(
+    expectedHead,
+    'failure',
+    `scope: a reviewed unit merges only into ${LINEAGE_BASE_REF}; ${when} ${target}`,
+    pullRequest?.html_url,
+  );
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
 ) {
+  // Re-read rather than trusting the object handed in: it may have been fetched
+  // several awaited operations ago.
+  const live = await client.pullRequest(pullRequest.number);
+  if (!isLineageBase(live?.base?.ref)) {
+    await refuseOffLineageBase(client, live ?? pullRequest, expectedHead, 'it targets');
+    return 'base_refused';
+  }
+
   const direct = await client.mergeExactHead(
     pullRequest.number,
     expectedHead,
   );
   if (direct?.merged) {
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+    // Detection, not merely a prior read: the retarget can land between the check
+    // above and the merge, and the merge request cannot pin a base.
+    const landed = await client.pullRequest(pullRequest.number);
+    if (!isLineageBase(landed?.base?.ref)) {
+      await refuseOffLineageBase(
+        client, landed ?? live, expectedHead, 'it merged into',
+      );
+      return 'base_violated';
+    }
+    await client.dispatchHandoff(landed.base.ref, pullRequest.number);
     return 'merged';
   }
 

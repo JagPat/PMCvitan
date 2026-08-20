@@ -1,5 +1,3 @@
-import { isLineageBase } from './lineage-policy.mjs';
-
 export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
 
@@ -49,19 +47,17 @@ export function isEligiblePullRequest(pullRequest) {
   const state = String(pullRequest?.state ?? '').toUpperCase();
   const headRepository = pullRequest?.headRepository?.nameWithOwner;
   const baseRepository = pullRequest?.baseRepository?.nameWithOwner;
-  const baseRefName = pullRequest?.baseRefName;
 
-  // The base guard sits HERE, before review, and not at exhaustion. Refusing an
-  // off-`main` unit once it has already been reviewed would suppress a replacement
-  // obligation for findings that were never fixed or carried — a waiver path. Refusing
-  // it before review means such a unit never enters the lifecycle at all, so no
-  // obligation is ever created for it and there is nothing to suppress. One value,
-  // one moment, nothing to race.
+  // Eligibility answers "is this unit ours to process at all", and its refusals are
+  // SILENT — a closed or forked pull request is skipped with nothing written. A base
+  // is policy, not ownership, so it is deliberately NOT checked here: skipping an
+  // off-`main` unit silently would leave any status already attached to its head
+  // standing, including a terminal success written while it still targeted `main`.
+  // The base is guarded at the merge boundary instead; see completeReviewedPullRequest.
   return (
     state === 'OPEN' &&
     typeof headRepository === 'string' &&
-    headRepository === baseRepository &&
-    isLineageBase(baseRefName)
+    headRepository === baseRepository
   );
 }
 

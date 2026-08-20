@@ -1741,6 +1741,8 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
   };
   const calls = [];
   const client = {
+    // the live re-read the merge boundary takes before acting
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: true, sha: 'b'.repeat(40) };
@@ -1779,6 +1781,8 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
   };
   const calls = [];
   const client = {
+    // the live re-read the merge boundary takes before acting
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: false, message: 'Not ready to merge' };
@@ -1818,6 +1822,8 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
   };
   let mergeAttempts = 0;
   const client = {
+    // the live re-read the merge boundary takes before acting
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       assert.equal(number, 230);
       assert.equal(head, expectedHead);
@@ -2079,56 +2085,85 @@ test('CI runs once per pull-request head', async () => {
   assert.doesNotMatch(ci, /push:/);
 });
 
-test('a unit retargeted off main is refused and the refusal is persisted', async () => {
+test('a unit retargeted off main is refused at the merge boundary, persisted', async () => {
   // The base is MUTABLE and retargeting leaves the head SHA untouched, so a check
-  // taken once at eligibility is a snapshot rather than a guard. Every acting
-  // boundary re-reads the pull request through refreshCurrentHead, so the base is
-  // checked there — one site, and promotion, completion, final policy and terminal
-  // recovery all inherit it.
-  //
-  // Retargeting is NOT supersession: a superseded head is dropped silently because a
-  // newer head is already being processed, but nothing will pick up a retargeted
-  // unit. So the refusal must be PERSISTED, or a terminal-success status written
-  // while the unit still targeted main would survive and leave it mergeable.
+  // taken earlier and carried across awaits is a snapshot, not a guard. The merge is
+  // the one boundary where an off-`main` base does irreversible harm, so the guard
+  // lives there — and the refusal is PERSISTED, because a terminal-success status
+  // written while the unit still targeted `main` would otherwise survive and leave it
+  // mergeable.
   const expectedHead = 'f'.repeat(40);
   const pullRequest = {
     number: 512,
     state: 'open',
     draft: false,
-    body: '<!-- correction-owner: claude -->',
     head: { sha: expectedHead },
     base: { ref: 'release' },
     html_url: 'https://github.com/JagPat/PMCvitan/pull/512',
   };
   const draftTransitions = [];
   const statusWrites = [];
+  const merges = [];
+  const handoffs = [];
   const client = {
     async pullRequest() { return pullRequest; },
-    async setDraft(current, draft) {
-      draftTransitions.push(draft);
-      current.draft = draft;
-      return current;
-    },
-    async setStatus(head, state, description) {
-      statusWrites.push({ head, state, description });
-    },
-    async reviewComments() { return []; },
-    async reviews() { return []; },
-    async updateStickyComment() {},
+    async mergeExactHead(number, head) { merges.push([number, head]); return { merged: true }; },
+    async enableAutoMerge() { merges.push(['auto']); },
+    async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
+    async setDraft(current, draft) { draftTransitions.push(draft); current.draft = draft; return current; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
   };
 
-  const policy = await reviewGate.revalidateFinalReviewPolicy(
-    client,
-    pullRequest.number,
-    expectedHead,
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'base_refused',
   );
-
-  assert.equal(policy.allowed, false);
-  // Drafted and failed, exactly as other final-policy rejections do — not a silent stop.
+  // Never merged, never handed off, and the refusal is on the record.
+  assert.deepEqual(merges, []);
+  assert.deepEqual(handoffs, []);
   assert.deepEqual(draftTransitions, [true]);
   assert.equal(statusWrites.length, 1);
   assert.equal(statusWrites[0].state, 'failure');
   assert.equal(statusWrites[0].head, expectedHead);
-  assert.match(statusWrites[0].description, /must target main/u);
+  assert.match(statusWrites[0].description, /merges only into main/u);
   assert.match(statusWrites[0].description, /release/u);
+});
+
+test('a retarget racing the merge itself is DETECTED, not merely pre-checked', async () => {
+  // mergeExactHead pins only the head SHA, so the base can move between the check and
+  // the merge. Detection after the fact is what stops the handoff dispatching against
+  // a base the unit never had reviewed.
+  const expectedHead = 'f'.repeat(40);
+  let reads = 0;
+  const pullRequest = {
+    number: 513,
+    state: 'open',
+    draft: false,
+    head: { sha: expectedHead },
+    base: { ref: 'main' },
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/513',
+  };
+  const handoffs = [];
+  const statusWrites = [];
+  const client = {
+    async pullRequest() {
+      reads += 1;
+      // main when checked; retargeted by the time the merge lands
+      return { ...pullRequest, base: { ref: reads === 1 ? 'main' : 'release' } };
+    },
+    async mergeExactHead() { return { merged: true }; },
+    async enableAutoMerge() {},
+    async dispatchHandoff(ref, number) { handoffs.push([ref, number]); },
+    async setDraft(current, draft) { current.draft = draft; return current; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'base_violated',
+  );
+  assert.deepEqual(handoffs, []);
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].state, 'failure');
+  assert.match(statusWrites[0].description, /merged into/u);
 });

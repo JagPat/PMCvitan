@@ -27,11 +27,10 @@ function input(overrides = {}) {
   };
 }
 
-test('accepts only open same-repository pull requests based on main', () => {
+test('accepts only open same-repository pull requests', () => {
   const eligible = {
     state: 'OPEN',
     headRefName: 'claude/fix-readiness',
-    baseRefName: 'main',
     headRepository: { nameWithOwner: 'JagPat/PMCvitan' },
     baseRepository: { nameWithOwner: 'JagPat/PMCvitan' },
   };
@@ -46,11 +45,11 @@ test('accepts only open same-repository pull requests based on main', () => {
   );
   assert.equal(isEligiblePullRequest({ ...eligible, state: 'CLOSED' }), false);
 
-  // The base guard sits before review so an off-`main` unit never enters the review
-  // lifecycle. Refusing it later — at exhaustion — would suppress a replacement
-  // obligation for findings that were never fixed or carried, which is a waiver path.
-  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: 'release' }), false);
-  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: undefined }), false);
+  // The BASE is deliberately not consulted here. Eligibility refusals are silent, and
+  // skipping an off-`main` unit silently would leave any status already attached to
+  // its head standing — including a terminal success written while it still targeted
+  // `main`. The base is guarded at the merge boundary, where a refusal is persisted.
+  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: 'release' }), true);
 });
 
 test('classifies a fresh Codex thumbs-up as clear', () => {
