@@ -144,7 +144,13 @@ release has to be loud. That trade is the owner's to make, not the gate's.
 
 - `main`'s rule is unchanged: both defects above are live.
 - The stale `review-replacement-required` labels on #344, #357, #367, #373, #374,
-  #375, #376 and #377 were cleared by hand so the repository accepts fresh work.
+  #375 and #376 were cleared by hand so the repository accepts fresh work.
+- **#377's obligation was not released.** It was cleared with the rest and the
+  owner restored it, which is the correct call: that unit's scope is the most
+  recent and the only one still live, and releasing it silently would have been
+  the same forgetting the rule exists to prevent. This document is its
+  replacement — it disposes of that scope by recording what remains undone and
+  why, rather than by building it — and declares `Replaces: #377` accordingly.
 - When a replacement chain next dies mid-way, the labels will need clearing by
   hand again. That is the cost of parking, stated above with the objection to it.
   It is a known, bounded, manual step — but it is a manual step in a loop whose
