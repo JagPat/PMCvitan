@@ -16,27 +16,62 @@ task: 4
 task_state: in_review
 work_item: none
 reviewed_merge: 44ceef9
-open_pr: 382
+open_pr: 386
 next_task: none
 blocking_directive: none
 updated: 2026-08-20
 ```
 
-**The open PR is the corrected record of what the replacement-lineage repair must
-do**, replacing #381 — which reached the two-finding-head limit, as #379 and #378
-did before it. #378's parking framing was withdrawn by owner directive on
-2026-08-20 and the repair resumes.
+**#382 MERGED at `main` `1449c82`**, putting
+`docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. #383,
+#384, #385 and #386 each carried the record forward and each reached the
+two-finding-head limit. The open PR replaces #386.
 
-**Four obligations are live, and they discharge one per merge.** #377, #378, #379
-and #381 all carry `review-replacement-required`. The open unit discharges #381;
-later units discharge #379 then #378; and #377 — the lineage-repair
-implementation with its unresolved findings — is discharged only by a merged unit
-carrying that implementation scope. No label is cleared by hand.
+**THE OWNER'S SCOPE DECISION STANDS AND IS NOW COHERENT.** Requirement 10 — the
+migration cutover — is REMOVED, not deferred: five formulations drew findings, and
+the last two eliminated two of its three trust roots. #385's review then found the
+narrowed repair incoherent rather than smaller — two surviving requirements, the
+bundle and owner equality, still depended on the record the removal had deleted.
+**#386's four findings across two heads settled both, and neither needs the record
+restored.** **Requirement 1 — every claim settles from git**, not just a bundle:
+an enforcement boundary of the kind `scripts/review-efficiency.mjs` already uses
+twice (`REVIEW_SCOPE_ENFORCE_AFTER_PR = 246`, `PRE_REVIEW_ENFORCE_AFTER_PR = 345`)
+means candidates merged after it settle from `main`'s protected history and earlier
+ones keep body settlement, so #381's discharge survives without keeping the hole.
+Settlement never reads a body after the boundary, which also closes the pre-merge
+window an earlier head had merely DOCUMENTED. Executed 2026-08-20 at `main`
+`1449c82`: `main` is `protected: true`, and that merge commit carries zero
+line-anchored `Replaces:` declarations though #382's body carries the one that
+discharged #381. **Requirement 5 — owner equality is KEPT, unauthenticated.** Two
+heads got it wrong in opposite directions: one read the owner from an editable body
+and called it preserved, the next concluded that unauthenticatable meant unusable,
+derived it from a `claude/**` head ref (which `scripts/correction-owner.mjs`
+refutes in its own header — #349 and #350 both on `codex/**` with different
+owners) and then removed the requirement outright, which under bundles lets one
+claimant discharge another agent's scope wholesale. The rule now reads the DECLARED
+owner, refuses a bundle that MIXES owners, binds nothing where no owner is
+declared, and states plainly that it fails against an editor who could forge the
+claim anyway — so it adds no forgery surface while stopping the case that would
+really occur.
 
-This queue is itself the accumulation defect the record describes: long, not
-jammed, every entry claimable. The finding counts are converging — seven on #378,
-seven on #379, three on #381 — so the cost per round is falling even as the queue
-lengthens.
+**A STATUS claim carried from the previous head is STRUCK.** It said the only
+barrier to one unit carrying several obligations is `replacementDeclaration`
+rejecting more than one `Replaces:` line. Executed, that is false: a two-line
+declaration makes `replacementSource` return `null`, and `assessReplacementLineage`
+uses scalar equality in both `fulfilledSources` and its competing-claim detection,
+so a parser-only change fulfils nothing. Four sites move together.
+
+**§2 (lineage read from editable text) is NARROWED, not closed.** After the
+boundary, settlement reads git, so the defining forgery stops working for anything
+merged from here on. What stays live is candidates merged at or below the boundary
+— a finite set that cannot grow — and every body read that is not settlement,
+admission among them.
+
+**Seven obligations are pending, and they discharge one per merge.** #377, #378,
+#379, #383, #384, #385 and #386. (#381 carries the label but is settled by merged #382 —
+discharge is computed, not un-marked.) #377 — the lineage-repair implementation
+with its two unresolved P1s — is discharged only by a merged unit carrying that
+implementation scope. No label is cleared by hand.
 
 **#363 (schedule B1) is parked at its green head** — `pnpm check` exit 0,
 `upgrade-proof` 676 assertions, integration 96 files / 1,243 tests, all 10
@@ -109,12 +144,12 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:382`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:386`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 382` the
-resolver returns `pr:382` — "an open PR is the current work item until it merges
+unit. `open_pr` outranks the task branch outright: with `open_pr: 386` the
+resolver returns `pr:386` — "an open PR is the current work item until it merges
 or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
 The open unit is named in the prose above rather than in `work_item`, because
 that field would not be read here.
