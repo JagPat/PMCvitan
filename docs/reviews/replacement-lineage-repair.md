@@ -14,8 +14,8 @@ one. Neither label is to be cleared by hand.
 
 Every claim below about how `main` behaves was checked by **executing**
 `assessReplacementLineage` and `assessReviewScope` at `5c2b739`, not by reading
-them. Where an earlier record asserted something the code does not do, the
-correction is marked and the executed result is given.
+them. Two claims in this document's first head did not survive that execution and
+are corrected in place, marked where they appear.
 
 ## What the rule does today
 
@@ -47,24 +47,34 @@ an admission.
 
 ## What is wrong with it
 
-### 1. A dead replacement strands the debt permanently
+### 1. Obligations accumulate faster than they can be discharged
 
-Discharge requires a merged pull request naming the exhausted number *exactly*,
-and each replacement names only its immediate predecessor. If a replacement dies
-unmerged, the original is named by nothing that will ever merge.
+**This section previously said a dead replacement strands its debt permanently.
+That is wrong, and the correction changes what the repair has to do.** Executed:
+after #354's only claimant #360 died unmerged, a new unit declaring
+`Replaces: #354` is **admitted** — `competing` blocks only on an OPEN claimant, so
+a dead one blocks nothing. It is still admitted after an intervening merge that
+named #360. No obligation in this repository has ever been unclaimable.
 
-This is not hypothetical. On 2026-08-18 #354 reached the limit, #360 replaced it
-and reached the limit too, and #361 replaced #360 — so nothing would ever name
-#354 again and every `Replaces: none` unit was refused. The label was cleared by
-hand three times that night. It happened again on 2026-08-19 at eight units, with
-unrelated work (#363, a different track) refused for 38 hours. It happened a third
-time on 2026-08-20: #377 was exhausted, #378 was opened to replace it, #378 was
-itself exhausted, and the repository blocked again — the record about the rule
-consumed by the rule.
+The real defect is arithmetic. Every replacement that is itself exhausted adds a
+second label, and **one merged unit can retire exactly one obligation**: two
+`Replaces:` lines parse as `invalid` and are refused outright, so a unit cannot
+name two sources however honestly it carries both. Clearing N accumulated labels
+therefore takes N sequential merged units, and the backlog grows whenever
+replacements are exhausted faster than they merge.
 
-**Operational consequence:** every time a replacement chain dies mid-way, the
-repository stops accepting fresh work until the chain is continued or an operator
-intervenes.
+That is what happened. On 2026-08-18 #354 was exhausted, #360 replaced it and was
+exhausted too, and #361 then declared `Replaces: #360` — discharging #360 and
+leaving #354 owed, because a replacement names its immediate predecessor rather
+than whatever is still outstanding. Executed: after #361 merges naming #360, a
+fresh `Replaces: none` unit is refused naming #354, and #354 is still claimable.
+The same shape recurred on 2026-08-19 at eight units, with unrelated work (#363)
+refused for 38 hours, and again on 2026-08-20 with #377 and #378.
+
+**Operational consequence:** the backlog is not stuck, it is *long*, and every
+entry costs one sequential review unit. The remedy is not a release valve. It is
+that a replacement must be able to carry more than one obligation, and that it
+should name what is still owed rather than only what it directly followed.
 
 ### 2. Lineage is read from text anyone can rewrite
 
@@ -73,26 +83,37 @@ consequence follows, and one that an earlier record claimed does not.
 
 **The real one.** A MERGED pull request's body is editable. Editing an old merged
 body to say `Replaces: #354` discharges #354 outright, with work that never
-carried its scope. Executed against the live rule: a labelled #354 plus a merged
-#372 whose body is edited to name it returns `allowed: true` for a fresh
-`Replaces: none` unit. Any merged pull request numbered above the target will do.
+carried its scope. Executed: a labelled #354 plus a merged #372 whose body is
+edited to name it returns `allowed: true` for a fresh `Replaces: none` unit. Any
+merged pull request numbered above the target will do.
 
 **The one that is not real, corrected.** #378 also claimed a transitive attack:
 edit an unrelated exhausted unit X to say `Replaces: #354`, then merge Y saying
 `Replaces: #X`, and #354 is discharged. **It is not.** `fulfilledSources` compares
-each candidate's declaration *directly* against each labelled source, so Y
-fulfils X and #354 stays pending. Executed: the fresh unit is still refused, with
-`exhausted PR #354 still requires a replacement`. The chain is never walked.
+each candidate's declaration *directly* against each labelled source, so Y fulfils
+X and #354 stays pending. Executed: the fresh unit is still refused. The chain is
+never walked.
 
 Recording the wrong attack is worse than recording none, because a future
-implementation would be built against a threat model the code does not have. That
-error was in #378 and is corrected here.
+implementation would be built against a threat model the code does not have.
 
-**This surface is live on `main` today.** It is not introduced by anything that
-was attempted; the attempts were failed for not closing it, which is a different
-thing. In a repository whose pull requests are authored by its owner and two
-agents the exposure is small — but it is real, and it is why a future attempt
-cannot re-derive lineage from bodies.
+### 3. An empty enumeration reads as "nothing is owed"
+
+**This document's first head claimed `main` already fails closed on truncated
+evidence. That is wrong.** `assessReplacementLineage` refuses only a *non-array*
+input — `requiredReplacements: null` returns `required replacement lineage could
+not be read from GitHub`. A successful but **incomplete** response does not:
+executed, `requiredReplacements: []` admits a fresh `Replaces: none` unit while
+#354 is still labelled in reality.
+
+Every ordinary evidence-loss shape lands in that gap — a paginated listing whose
+second page was not fetched, a label query filtered wrongly, a permissions change
+that hides issues, an API returning `200` with an empty page. None of them look
+like an error, and all of them read as an empty obligation set.
+
+**This surface is live on `main` today**, along with the editable-body one above.
+Neither is introduced by anything that was attempted; the attempts were failed for
+not closing them, which is a different thing.
 
 ## What was attempted, and what each review found
 
@@ -119,8 +140,8 @@ Two things carry forward more than the table:
 
 ## What the repair must do
 
-The reviews converge on a small set of requirements. Any design meeting them
-should get further than these six did.
+The reviews converge on a set of requirements. Any design meeting them should get
+further than these six did.
 
 1. **The record must name both ends** — which obligation, and who took it on. A
    boolean cannot express an interrupted transfer versus a second obligation.
@@ -136,53 +157,74 @@ should get further than these six did.
    `github-actions[bot]` identity, and any write-capable workflow added later
    would be indistinguishable from the controller. The timeline actor is a
    necessary filter, not sufficient evidence. (#377's implementation treats it as
-   sufficient. That is one of its known gaps, and it is one of the findings its
+   sufficient. That is one of its known gaps, and one of the findings its
    replacement must carry.)
 4. **Concurrency resolves by recorded order, not by locking.** Label writes cannot
    be made mutually exclusive; the earliest recorded claim wins, ties going to the
    timeline's order.
 5. **Conservation must hold in both directions.** A unit holding two claims must
    settle neither — *and* the sources it raced into must stay claimable, or they
-   become permanently stuck, which is the original defect again.
-6. **Separate a dead chain from missing evidence, and fail closed on the latter.**
-   An earlier version of this requirement said every gate must fail toward the
-   loop continuing. **That is wrong as written and is corrected here.** When the
-   timeline or label read is unavailable, truncated, or malformed, the lineage is
-   unknown — and admitting a unit on unknown lineage can merge it while an
-   exhausted obligation is still unresolved, which is the safety the gate exists
-   for. `main` already fails closed there: unreadable evidence returns `required
-   replacement lineage could not be read from GitHub`, executed and confirmed. A
-   repair must keep that. Only a *provably* dead chain — evidence read
-   successfully, and showing no live claimant — is a recoverable state.
-7. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`,
-   not in the lineage function (see above). A rewrite that touches only the
-   lineage function must not assume it is inherited.
+   become permanently stuck, which is the accumulation defect made permanent.
+6. **A replacement must be able to carry more than one obligation.** This is what
+   §1 actually asks for, and no attempt so far provides it. Today a unit declares
+   at most one source, so an accumulated backlog costs one sequential merged unit
+   per entry. A design that lets one unit genuinely carry several — and records
+   which, so the carrying is auditable rather than asserted — removes the
+   accumulation without releasing anything. **It must not be implemented by
+   waiving.** Discharge still requires a unit that carried the scope; what
+   changes is how many obligations one such unit may carry, never whether an
+   obligation can lapse unmet.
+7. **Distinguish a dead chain from missing evidence, and treat an incomplete
+   enumeration as missing.** Unknown lineage must never admit work. `main` fails
+   closed only on a non-array (§3), so a repair that "keeps the current
+   behaviour" inherits the empty-response bypass. The repair needs an explicit
+   completeness check — an authenticated or independently-bounded enumeration,
+   or a recorded expected count — before an empty or partial result is treated as
+   authoritative.
+8. **Revalidate the whole claimant at the authorization boundary, base included.**
+   #377 revalidated head, body and state but not base, and a claimant retargeted
+   to another or stale base after its claim was recorded still satisfied every
+   other check — discharging its source with a replacement that does not contain
+   the current-`main` unresolved unit. A timeline claim cannot be withdrawn once
+   written, so base identity and ancestry must be checked *before* the write and
+   again at every later evaluation, alongside head, body and state.
+9. **Migrate the obligations that already exist, atomically and retry-safely.**
+   #374 blocked the repository precisely here: it changed the representation and
+   left the existing labels unreadable. Any new record starts with live debts
+   against it — #377 and #378 today — and switching assessment without a bootstrap
+   either omits them (admitting `Replaces: none` against real unresolved scope) or
+   fails closed forever, because no claim in the new format can exist for a unit
+   that was labelled before the format did. The repair needs a migration or
+   read-compatibility path covering **every** already-labelled source, applied
+   atomically and safe to re-run, before the new assessment is enabled.
+10. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`,
+    not in the lineage function. A rewrite that touches only the lineage function
+    must not assume it is inherited.
 
-## If dead-chain recovery is built
+### On the automatic release valve that was sketched here
 
-The narrow version does not need the lineage rewrite at all. It is a watchdog: an
-obligation is released — loudly, with a comment naming the unit and why — when
+An earlier version of this document proposed a watchdog that **released** an
+obligation when no open unit claimed it and every unit that ever claimed it had
+closed unmerged. **It is removed rather than repaired**, for two independent
+reasons, and it should not be reintroduced in either form.
 
-- the evidence was read successfully (requirement 6: never on a failed read), and
-- **at least one unit has historically claimed it**, and
-- no OPEN pull request claims it, and
-- every unit that ever claimed it is closed unmerged.
+- **It waives unresolved scope.** A released obligation is scope whose findings
+  were neither fixed nor carried, and after the release a fresh `Replaces: none`
+  unit passes. Making the release "loud" records the waiver; it does not preserve
+  the work. Recovery would have to transfer or recreate the obligation, never
+  drop it — at which point it is requirement 6, not a release.
+- **It addresses a state that does not occur.** §1 shows by execution that a dead
+  claimant blocks nothing and the source stays claimable. There is no permanently
+  dead chain to recover from.
 
-**The historical-claimant condition is not optional.** Without it, a newly
-exhausted unit satisfies the rule the moment it is labelled: nothing has claimed
-it yet, so "every unit that ever claimed it is closed unmerged" is vacuously true
-over an empty set. The watchdog would release brand-new obligations before their
-replacement is even opened, bypassing the two-head replacement rule entirely
-rather than recovering a dead chain. An earlier sketch omitted this and is
-corrected here.
-
-Its weakness is stated plainly: a released obligation is unresolved scope that
-nobody is now tracking. That is why the release has to be loud, and why it is
-bounded to chains that are provably dead.
+An earlier sketch also omitted that the condition is vacuously true over an empty
+set — a unit satisfied it the moment it was labelled, before any replacement was
+opened. That is recorded here so the same rule is not re-derived and re-proposed
+with the same hole.
 
 ## Where things stand
 
-- `main`'s rule is unchanged. Both defects above are live.
+- `main`'s rule is unchanged. All three defects above are live.
 - **#377 and #378 both carry `review-replacement-required`, and both stay.** This
   unit replaces #378. #377's obligation is discharged only by a merged unit
   carrying its implementation scope and its unresolved findings — the separate
@@ -198,6 +240,6 @@ bounded to chains that are provably dead.
   scope with unrelated work, which is the failure this whole rule exists to
   prevent.
 - The stale labels on #344, #357, #367, #373, #374, #375 and #376 were cleared by
-  hand on 2026-08-19. That clearing is recorded here as history. It is not a
-  precedent: the remedy for a dead chain is the watchdog above, built and
-  reviewed, not an operator deleting labels.
+  hand on 2026-08-19. That clearing is recorded here as history, and it is not a
+  precedent: hand-clearing is waiving, and §1 shows the backlog it was used
+  against was long rather than stuck. Requirement 6 is the remedy.

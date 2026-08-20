@@ -14,7 +14,7 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_review
-work_item: replacement-lineage-record
+work_item: none
 reviewed_merge: 44ceef9
 open_pr: 379
 next_task: none
@@ -103,12 +103,16 @@ rename alone, and `docs/reviews/pr-330-convergence.md` records what those
 rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
-**`work_item: none` with `task_state: in_progress` is deliberate.**
-`autonomous-status-state.test.mjs` pins two rules against this file: `work_item`
-is consulted ONLY from `task_state: merged`, and a `merged` block must CLEAR it.
-So an `in_progress` block that names a `work_item` silently resolves to the bare
-parent task and discards the named unit. With `work_item: none` the resolver
-returns `task:4`, which is this task.
+**`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
+`pr:379`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
+must CLEAR it — so naming a `work_item` from any other state is inert, and from
+`in_progress` it silently resolves to the bare parent task and discards the named
+unit. `open_pr` outranks the task branch outright: with `open_pr: 379` the
+resolver returns `pr:379` — "an open PR is the current work item until it merges
+or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
+The open unit is named in the prose above rather than in `work_item`, because
+that field would not be read here.
 
 **Nothing here waits on a human.** The owner's SCOPE decisions are recorded
 (the 2026-08-13 scheduling, the forward-authority amendment, and the Wave-0
