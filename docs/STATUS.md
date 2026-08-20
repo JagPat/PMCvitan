@@ -16,27 +16,224 @@ task: 4
 task_state: in_review
 work_item: none
 reviewed_merge: 44ceef9
-open_pr: 382
+open_pr: 393
 next_task: none
 blocking_directive: none
 updated: 2026-08-20
 ```
 
-**The open PR is the corrected record of what the replacement-lineage repair must
-do**, replacing #381 — which reached the two-finding-head limit, as #379 and #378
-did before it. #378's parking framing was withdrawn by owner directive on
-2026-08-20 and the repair resumes.
+**#382 MERGED at `main` `1449c82`**, putting
+`docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. #383,
+#384 through #390 each carried the record forward and each reached the
+two-finding-head limit. The open PR replaces #393.
 
-**Four obligations are live, and they discharge one per merge.** #377, #378, #379
-and #381 all carry `review-replacement-required`. The open unit discharges #381;
-later units discharge #379 then #378; and #377 — the lineage-repair
-implementation with its unresolved findings — is discharged only by a merged unit
-carrying that implementation scope. No label is cleared by hand.
+**THE OWNER'S SCOPE DECISION STANDS AND IS NOW COHERENT.** Requirement 10 — the
+migration cutover — is REMOVED, not deferred: five formulations drew findings, and
+the last two eliminated two of its three trust roots. #385's review then found the
+narrowed repair incoherent rather than smaller — two surviving requirements, the
+bundle and owner equality, still depended on the record the removal had deleted.
+**#387's ten findings across two heads produced the piece four heads were missing,
+and it is smaller than the argument about it.** Requirements 1 and 5 each need a
+fact about a unit AS IT STOOD BEFORE the repair — which settlement it discharged,
+who owned it — and no post-repair read recovers either. Four heads tried: protected
+git history, a `claude/**` head ref, removing the rule, an editable body priced as
+costless. Each was found. **REQUIREMENT 0 is the answer: a CUTOVER SNAPSHOT
+committed in the repair's own reviewed diff.** It is not the migration the owner
+removed — no store, no operator attestation, no owner recovered from provenance
+nobody wrote — and executed at `main` `1449c82` it is NINE ROWS: exactly one merged
+candidate settles anything today (#382 → #381), plus the labelled sources' owners.
+Settlement then reads git after the repair and the snapshot before it, so §2's
+settlement leg CLOSES in both directions; requirement 5 reads the owner from the
+snapshot (before) or a commit message (after) and applies to SINGLE claims as well
+as bundles; requirement 3 bounds the label enumeration against the same committed
+list. Also from that round: the live `candidate.number > source.number` ordering
+was dropped while settlement was rewritten and is RESTORED; the per-source winner
+deadlocks partially overlapping bundles (`{#1,#2}` vs `{#2,#3}` strands #3), so
+competition resolves over WHOLE bundles and a losing bundle releases every holding;
+and a new requirement 6 drains in-flight controller runs before the fence switches
+on, since a run that started under the old rules can merge under the new ones.
 
-This queue is itself the accumulation defect the record describes: long, not
-jammed, every entry claimable. The finding counts are converging — seven on #378,
-seven on #379, three on #381 — so the cost per round is falling even as the queue
-lengthens.
+**#388's first round tested the snapshot's EDGES and found three.** (1) Requirement
+3's bound is now a LOWER bound, not an equality: the snapshot is frozen while the
+obligation set is not, so the first post-cutover unit to be labelled is in the label
+query and cannot be in the snapshot, and demanding equality would refuse every
+review after it. The query must contain every unsettled entry the list knows about;
+entries it does not know about are new obligations and are accepted. (2) A
+post-cutover source's commit-message owner must EQUAL its body owner, checked on
+the exact reviewed head before admission — otherwise the frozen owner is one that
+never routed a correction, and a unit carrying no marker at all becomes an
+obligation whose owner can never be established. (3) Requirement 6 now covers
+QUEUED AUTO-MERGES, which have no run to drain: executed, the controller calls
+`enableAutoMerge` and immediately returns `queued`, so GitHub merges later with no
+orchestration in flight.
+
+**#388's SECOND round narrowed both of those fixes by one step each.** (1) The
+lower bound left an INTERVAL: while only the live query knows a new obligation #N,
+a later truncated query can omit #N and still contain every entry the list knows,
+passing the bound and waiving #N. The bound is now appended ATOMICALLY with the
+obligation's creation, and an obligation only the query knows BLOCKS fresh
+`Replaces: none` work rather than being accepted on the query's word. (2) Checking
+the owner declaration at review only was not enough: executed,
+`enforceReviewConvergence` calls `setDraftForCurrentHead` and then
+`markReplacementRequired` with NO re-run of `assessReviewScope`, so a `claude`
+body/commit pair can pass scope and have its body edited to `cursor` while Codex
+polls — creating a source that ROUTES to Cursor while freezing `claude`. The
+equality check runs again immediately before the label is applied, and a mismatch
+refuses to create the obligation.
+
+**#389's FIRST round separated the two halves for good, and five of its six
+findings were one thing: A COMMITTED FILE CANNOT BE THE AUTHORITY.** It cannot be
+written atomically with a label (two external writes, no transaction, so a crash
+leaves either a waiver window or a jam); it cannot authenticate what happened
+before it existed; it cannot bound its own bootstrap; it cannot be kept current
+against writers that predate it; and the repair installing it cannot satisfy the
+rule it installs. **The authority is a COMMIT STATUS** — app-written, SHA-keyed,
+superseded rather than edited, unreachable by whoever edits the pull request, and
+already trusted here for `codex-current-head`. One write, which is what atomicity
+needed; and the read-then-write race was to close by POST-WRITE verification (write
+the status, re-read the body, supersede with a refusal on disagreement) rather than
+by proximity. **BOTH halves of that were later refused**: #389's second round killed
+the commit status (no creator filter, not enumerable), and #392's second round killed
+the post-write remedy — after the write and a successful comparison the author can
+still edit before the separate label write, so a reread narrows the window without
+closing it. Only a SINGLE authorizing creation, or equivalent true serialization,
+makes owner capture atomic with exhaustion. **The pre-repair half cannot be fixed and is now labelled honestly**: no
+status was written when #377–#388 were exhausted, the timeline actor is one shared
+bot identity, and the body has always been editable — so the baseline is a STATED
+ASSUMPTION reviewed on an exact head, its residual is one reviewed enumeration, and
+no available mechanism improves on it. The rollout must STOP old-version writers,
+drain in-flight runs, cancel or grandfather queued auto-merges, and reconcile the
+baseline last; the repair's own merge is by definition the last pre-repair merge
+and is classified as such.
+
+**#389's second round ended the search for an authority: `statuses(head)` applies
+NO creator filter and requires a KNOWN SHA, so the commit status is
+collaborator-writable AND unenumerable — the FIFTH artifact refuted after the PR
+body, the head ref, the label and the committed file. The only ESTABLISHED trust
+root is the content of a reviewed SHA; `main`'s protected history qualifies only
+CONDITIONALLY, once the branch's actual rules are read and shown to forbid bypass AND
+to require this repository's exact-SHA `codex-current-head` status — a generic
+required review is NOT equivalent, since a branch can forbid bypass and require an
+approval while never requiring `codex-current-head`, letting a merely human-approved
+commit enter `main` as evidence. `protected: true` proves that SOME protection
+applies and excludes neither a
+bypass allowance nor a privileged direct push.**
+
+**#390 then refused the trade this lineage kept making.** Three heads shipped a
+bundle whose safety rested on a fail-open the same document disclosed a few
+paragraphs later, and #390's two rounds refused it three times over, each naming
+the alternative: remain fail-closed rather than ship the waiver path; freeze legacy
+settlement in protected evidence or fail closed; **authenticate the owner frozen at
+exhaustion, or do not enable cross-unit bundles.** Disclosure is not consent.
+
+**SO THE BUNDLE IS NOT BUILDABLE, AND §1 STAYS UNFIXED.** The open PR is DOCS-ONLY:
+it changes this file and the lineage record, and it therefore SHIPS NO GATE
+BEHAVIOUR. An earlier head said it "ships" base revalidation, which a docs diff
+cannot do — and reading it that way would let a later handoff treat #377's live
+defect as delivered while this same file says #377 is pending. What the record
+carries are REQUIREMENTS FOR A LATER IMPLEMENTATION UNIT. **Base revalidation is
+one of them and ships ON ITS OWN** — an earlier head claimed it was inseparable from
+#377's timeline-claim mechanism, and executing the gate refutes that:
+`isEligiblePullRequest` compares only repository names, neither `assessReviewScope`
+nor `assessReplacementLineage` reads a base ref or ancestry, and `base.ref` is only
+ever passed to `dispatchHandoff`. So a same-repo claimant targeting a non-`main`
+branch is admitted and, once merged THERE, settles its source — discharging
+current-`main` scope with a merge that never touched `main`. That hole is live now.
+**The guard runs at THREE points, not two** — the claimant at admission, the candidate
+whose merge settles a source, and the moment an exhausted unit BECOMES a source
+(`enforceReviewConvergence` calls `markReplacementRequired` with no base inspection, so
+off-`main` work can manufacture an obligation that blocks every fresh `main` unit). At
+that third point the test is base REF IDENTITY ONLY, never ancestry: `main` advances
+under an open unit as a matter of course, and refusing the label because the head is no
+longer descended from current `main` would silently DROP a real obligation.
+#377's OTHER finding does travel with the mechanism: if the timeline claim is ever
+restored it needs authenticated provenance, since the shared `github-actions[bot]`
+actor is necessary and not sufficient. **OWNER EQUALITY IS ALSO A REQUIREMENT, for
+every claim and not only the refused bundle** — executed, `assessReplacementLineage`'s
+source branch checks the source number, its closed state and competing claimants, and
+NEVER the owner, so a `claude` PR can declare `Replaces: #N` against a pending
+`cursor`-owned source and discharge scope it was never permitted to carry. The rule is
+owner equality with a fail-closed refusal when EITHER owner cannot be authenticated —
+BOTH ends, since an earlier head authenticated the source and left the claimant's own
+owner as its editable body marker, so a `cursor` claimant could carry the corrections,
+have its marker edited to `claude` without the reviewed head changing, and compare
+equal against an authenticated `claude` source; the
+cost of switching it on TODAY is total (no pending source has an authenticated owner,
+so it would refuse the whole queue — the #386 jam), which is why the authenticated
+legacy set has to land first. Recording it as optional would be worse: the next
+implementer reads the buildable list and ships a gate letting one agent discharge
+another's scope.
+
+**THE LOOP IS NOT BLOCKED AND MUST NOT BE RECORDED AS BLOCKED.** An earlier head
+ended on "that choice is JagPat's, and the §1 objective is blocked on it" — a human
+sign-off gate, which this repository forbids. The autonomous default is to CONTINUE:
+with no authority available the bundle stays disabled, the queue drains at one unit
+per merge, and every other objective proceeds normally. §1's cost is throughput, not
+integrity — the backlog is LONG, NOT STUCK; every entry is claimable, every entry
+drains on merge, none is lost.
+
+**NO machine-observable unblock condition is stated, and that refusal is itself the
+finding** — two heads wrote one and each imported an unauthenticated input (first the
+editable body, then the collaborator-writable label). What an unblock would REQUIRE,
+stated as requirements rather than as anything the gate can evaluate today: first, an
+authority requiring no announcement from anyone —
+verified-signature commits on `main` attributable to a controller-held key (exposed
+by `git log --show-signature` and the GitHub API), or a controller-written record
+whose writer the gate can authenticate. SECOND, that no obligation predating that
+authority is still pending — an authority installed today authenticates only what is
+written after it, and can establish neither who owned any already-exhausted unit at
+exhaustion (today #377 through #392, and one more every time a unit closes at the
+round limit — a bootstrap pinned to a fixed range silently excludes whatever
+accumulates after it is typed) nor what settlement an already-merged candidate
+performed. A unit
+treating the authority alone as sufficient would meet the legacy queue holding the
+choice this repair refuses: trust an editable body and risk a `claude` claimant
+discharging a `cursor`-owned unit, or fail closed on the legacy entries and deliver
+nothing for them. **The drain half is NOT computable by today's gate** — the pending
+set `assessReplacementLineage` derives is read from EDITABLE bodies, so a
+collaborator editing any higher-numbered merged PR to read `Replaces: #377` makes it
+report the debt drained when the unit was never carried. **And authenticating each
+settlement is still not enough**, because nothing authenticates WHICH obligations are
+owed: the only enumeration is the collaborator-writable label query the trust table
+rejects and §3 records as an open fail-open. Strip #377's label before the authority
+starts recording and every VISIBLE entry drains honestly while #377 is never carried
+— a true attestation supporting a false conclusion. A fail-closed, independently
+bounded legacy set has to exist FIRST. **Consequence, stated rather than left
+for the implementer: the bundle can never drain the backlog it was designed for** —
+by the time it is safe to enable, that queue is empty; it would protect the NEXT
+accumulation, not this one. The prices are recorded so the choice is informed rather
+than blocking — a signing key means a repository secret; an external record means a
+service and a credential; an attestation means a manual act inside an autonomous
+loop, which is what the owner removed on 2026-08-20. None is a precondition for the
+loop to keep running.
+
+**A STATUS claim carried from the previous head is STRUCK.** It said the only
+barrier to one unit carrying several obligations is `replacementDeclaration`
+rejecting more than one `Replaces:` line. Executed, that is false: a two-line
+declaration makes `replacementSource` return `null`, and `assessReplacementLineage`
+uses scalar equality in both `fulfilledSources` and its competing-claim detection,
+so a parser-only change fulfils nothing. Four sites move together.
+
+**§2 IS NOT CLOSED, and an earlier version of this paragraph said otherwise.** It
+claimed settlement reads git after the repair and a snapshot before it — but the
+snapshot is REJECTED (see above) and an authenticated baseline is listed as not
+shipping, so an implementation following this file would have built evidence the
+repair says does not exist. What is true: the git anchor is an ADDITIONAL condition
+on claims made after it lands, and NO already-merged candidate is re-examined or
+re-classified. Legacy settlement therefore behaves exactly as `main` behaves today
+— editing a merged body still discharges an obligation — and that exposure is
+neither created, widened, nor endorsed by this repair. It is §2, live, recorded in
+the record's defect list, and closing it needs the authority named there.
+
+**Fourteen obligations are pending, and they discharge one per merge.** #377, #378,
+#379, #383, #384, #385, #386, #387, #388, #389, #390, #391, #392 and #393. (#381 carries the
+label but is settled by merged #382 —
+discharge is computed, not un-marked.) #391, #392 and #393 each joined the queue by
+closing at the round limit while claiming their predecessor, which is the accumulation defect
+running in the open: a claim lapses with its claimant, so both the source and the
+failed claimant are owed, and each replacement discharges only the one it names. #377 — the lineage-repair implementation
+with its two unresolved P1s — is discharged only by a merged unit carrying that
+implementation scope. No label is cleared by hand.
 
 **#363 (schedule B1) is parked at its green head** — `pnpm check` exit 0,
 `upgrade-proof` 676 assertions, integration 96 files / 1,243 tests, all 10
@@ -109,12 +306,12 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:382`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:393`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 382` the
-resolver returns `pr:382` — "an open PR is the current work item until it merges
+unit. `open_pr` outranks the task branch outright: with `open_pr: 393` the
+resolver returns `pr:393` — "an open PR is the current work item until it merges
 or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
 The open unit is named in the prose above rather than in `work_item`, because
 that field would not be read here.
