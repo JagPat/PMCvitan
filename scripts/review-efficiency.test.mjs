@@ -352,67 +352,28 @@ test('a replacement merged onto a non-main branch settles nothing', () => {
   assert.match(landedElsewhere.detail, /Replaces: #346/u);
 });
 
-test('an off-main PR claiming a source does not block a legitimate main claimant', () => {
-  // Tightening eligibility without tightening this scan deadlocks the loop: the
-  // off-`main` PR can never take the obligation (eligibility refuses it), but every
-  // legitimate `main` claimant is rejected as competing, and the pending obligation
-  // also blocks `Replaces: none`. Nothing moves until a human closes it by hand.
+test('coexisting claimants both proceed — no deadlock, and no preemption either', () => {
+  // Exclusivity is deliberately NOT decided here, and this probe pins the reasoning
+  // rather than merely the behaviour.
+  //
+  // The symmetric "is any other claimant open" rule deadlocked two coexisting
+  // claimants: each saw the other, both refused, and a pending obligation also blocks
+  // every `Replaces: none` unit, so nothing moved until a human intervened. Replacing
+  // it with a lowest-number order removed that deadlock and introduced a worse
+  // failure — a winner recomputed from the CURRENT set is unstable, so an older
+  // claimant retargeting onto `main` displaces a newer one that may already have
+  // queued its merge, and being refused here does not actually revoke that queue.
+  //
+  // Neither remedy (persisted admission state, or cancelling the displaced claimant's
+  // merge) is available to a pure assessment of one pull request.
   const source = {
     pullRequest: { number: 377, state: 'closed', base: { ref: 'main' } },
     changedFiles: [],
   };
-  const result = assessReviewScope(pullRequest({
-    number: 396,
-    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
-  }), {
-    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
-    requireChangedFiles: true,
-    requireReplacementLineage: true,
-    requiredReplacements: [source],
-    replacementPullRequests: [{
-      number: 390,
-      state: 'open',
-      base: { ref: 'release' },
-      body: '<!-- correction-owner: claude -->\nReplaces: #377',
-    }],
-  });
-  assert.equal(result.allowed, true);
-
-  // A competitor that COULD legitimately claim still blocks.
-  const realCompetitor = assessReviewScope(pullRequest({
-    number: 396,
-    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
-  }), {
-    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
-    requireChangedFiles: true,
-    requireReplacementLineage: true,
-    requiredReplacements: [source],
-    replacementPullRequests: [{
-      number: 390,
-      state: 'open',
-      base: { ref: 'main' },
-      body: '<!-- correction-owner: claude -->\nReplaces: #377',
-    }],
-  });
-  assert.equal(realCompetitor.allowed, false);
-  assert.match(realCompetitor.detail, /#390 is the admitted claimant of #377/u);
-});
-
-test('two main claimants resolve to ONE admitted claimant, not mutual rejection', () => {
-  // The transition that deadlocks a symmetric "is anyone else here" check, and it
-  // needs nothing unusual to reach: A claims on `release` and is refused, B claims the
-  // same source on `main` and proceeds because A is not a claimant, then A follows the
-  // refusal notice and retargets to `main`. Symmetrically, A now sees B and B sees A,
-  // both are blocked, and the pending obligation also blocks every `Replaces: none`
-  // unit — so the whole repository stalls until a human closes one by hand.
-  const source = {
-    pullRequest: { number: 377, state: 'closed', base: { ref: 'main' } },
-    changedFiles: [],
-  };
-  const claim = (number) => ({
+  const claim = (number, ref = 'main') => ({
     number,
     state: 'open',
-    base: { ref: 'main' },
+    base: { ref },
     body: '<!-- correction-owner: claude -->\nReplaces: #377',
   });
   const assess = (number, others) => assessReviewScope(pullRequest({
@@ -426,20 +387,83 @@ test('two main claimants resolve to ONE admitted claimant, not mutual rejection'
     replacementPullRequests: others,
   });
 
-  // Both claimants now on `main`, each assessed against the other.
-  const earlier = assess(390, [claim(390), claim(396)]);
-  const later = assess(396, [claim(390), claim(396)]);
+  // Two legitimate claimants on `main`: BOTH proceed. Neither is deadlocked, and
+  // neither is preempted after it may already be in flight.
+  assert.equal(assess(390, [claim(390), claim(396)]).allowed, true);
+  assert.equal(assess(396, [claim(390), claim(396)]).allowed, true);
 
-  // EXACTLY ONE is admitted — the obligation can still be discharged.
-  assert.equal(earlier.allowed, true);
-  assert.equal(later.allowed, false);
-  assert.match(later.detail, /#390 is the admitted claimant/u);
+  // An off-`main` claimant neither blocks nor is blocked — it simply cannot claim.
+  assert.equal(assess(396, [claim(390, 'release'), claim(396)]).allowed, true);
 
-  // And the order does not depend on the order of the scan, nor on whether the scan
-  // happens to include the unit being assessed.
-  assert.equal(assess(390, [claim(396), claim(390)]).allowed, true);
-  assert.equal(assess(390, [claim(396)]).allowed, true);
-  assert.equal(assess(396, [claim(390)]).allowed, false);
+  // The property that actually matters is SETTLEMENT, and it is unchanged: the
+  // obligation is discharged only by a merge that landed on `main` above its source.
+  const settledByMain = assessReviewScope(pullRequest({ number: 400, body: preReviewBody() }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 396,
+      state: 'closed',
+      merged_at: '2026-08-20T00:00:00Z',
+      base: { ref: 'main' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  // With #377 discharged, a fresh `Replaces: none` unit is admitted again.
+  assert.equal(settledByMain.allowed, true);
+
+  // The same merge onto another base settles nothing, so the obligation still blocks.
+  const notSettledOffMain = assessReviewScope(pullRequest({ number: 400, body: preReviewBody() }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 396,
+      state: 'closed',
+      merged_at: '2026-08-20T00:00:00Z',
+      base: { ref: 'release' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  assert.equal(notSettledOffMain.allowed, false);
+  assert.match(notSettledOffMain.detail, /still requires a replacement/u);
+});
+
+test('a claimant numbered at or below its source is refused at admission', () => {
+  // The missing half of the settlement rule. Settlement already requires
+  // `candidate.number > source.number`, so admitting a lower-numbered claimant lets it
+  // occupy an obligation it can NEVER discharge: an older pull request edited to
+  // declare `Replaces: #377` would be reviewed as the replacement while the obligation
+  // stayed pending, blocking every `Replaces: none` unit behind it indefinitely.
+  const source = {
+    pullRequest: { number: 377, state: 'closed', base: { ref: 'main' } },
+    changedFiles: [],
+  };
+  const assess = (number) => assessReviewScope(pullRequest({
+    number,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [],
+  });
+
+  // Numbered ABOVE the pre-review enforcement threshold (345) so the lineage rule is
+  // actually reached, and BELOW its source — the case that matters.
+  const older = assess(350);
+  assert.equal(older.allowed, false);
+  assert.match(older.detail, /numbered above the unit it replaces/u);
+  assert.match(older.detail, /#350 cannot replace #377/u);
+
+  // The boundary itself: a unit cannot replace itself.
+  assert.equal(assess(377).allowed, false);
+
+  // And a legitimate newer claimant is unaffected.
+  assert.equal(assess(396).allowed, true);
 });
 
 test('a claimant that does not target main is refused at admission', () => {

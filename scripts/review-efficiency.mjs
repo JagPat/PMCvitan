@@ -117,6 +117,34 @@ export function assessReplacementLineage({
     source?.number !== pullRequest?.number
     && !fulfilledSources.has(source?.number));
 
+  // ONE-CLAIMANT EXCLUSIVITY IS DELIBERATELY NOT DECIDED HERE, and its absence is a
+  // conclusion rather than an oversight.
+  //
+  // The rule that used to live here asked "is any other claimant open" and refused if
+  // so. That question is symmetric, so it deadlocks the moment two claimants coexist:
+  // each sees the other, both refuse, and because a pending obligation also blocks
+  // every `Replaces: none` unit, nothing in the repository moves until a human closes
+  // one by hand.
+  //
+  // Replacing it with a total order — admit the lowest-numbered claimant — removed the
+  // deadlock and introduced a worse failure. Any winner recomputed from the CURRENT
+  // set is unstable, because the set changes underneath work that is already in
+  // flight: lowest-wins is displaced when an older claimant retargets onto `main`,
+  // highest-wins whenever someone opens a newer pull request. A displaced claimant
+  // that has already queued its merge is not actually revoked by being refused here,
+  // so both can land and one obligation gets two replacements.
+  //
+  // Deciding this correctly needs either persisted "who was admitted first" state or
+  // the ability to CANCEL the displaced claimant's queued merge. This function has
+  // neither: it is a pure assessment of one pull request, and `auto_merge` is not even
+  // among its inputs. Both remedies belong to the boundary that controls merging.
+  //
+  // So exclusivity is not enforced, and the invariant that actually matters is left
+  // where it is already enforced: SETTLEMENT discharges an obligation exactly once,
+  // and only for a merge that landed on `main` above its source. Two claimants are
+  // duplicated effort, which is a cost; two settlements are impossible, which is the
+  // property. The exclusivity requirement is recorded as owed to the unit that can
+  // hold merge state.
   if (declaration.kind === 'source') {
     const claimantBase = pullRequest?.base?.ref;
     if (!isLineageBase(claimantBase)) {
@@ -141,44 +169,20 @@ export function assessReplacementLineage({
         detail: `Replaces: #${declaration.source} is not closed; close the exhausted unit before reviewing its replacement`,
       };
     }
-    // EXACTLY ONE claimant is admitted, and it is chosen by a total order over the
-    // claimants themselves rather than by asking "is anyone else here".
+    // A claimant must be numbered ABOVE its source, because settlement already
+    // requires exactly that — and admitting a claimant that settlement can never
+    // accept is worse than refusing it. An older pull request EDITED to declare
+    // `Replaces: #N` would otherwise be admitted, occupy the obligation, and never
+    // discharge it however far it got: the loop would review the wrong unit while the
+    // obligation stayed pending and kept blocking every `Replaces: none` unit.
     //
-    // The symmetric question deadlocks the moment two claimants coexist: each sees the
-    // other and both refuse. It is reachable without anyone doing anything unusual —
-    // A claims on `release` and is refused, B claims the same source on `main` and
-    // begins review, then A follows the refusal notice and retargets to `main`. Now
-    // each blocks the other, and because the pending obligation ALSO blocks every
-    // `Replaces: none` unit, nothing in the repository can move until a human closes
-    // one by hand.
-    //
-    // The order is the LOWEST pull-request number among open claimants that could
-    // themselves legitimately claim. It is readable from GitHub alone, it does not
-    // depend on stored state or on who arrived first, and it always names exactly one
-    // winner — so the retarget above resolves itself. An off-`main` unit is not a
-    // claimant at all (admission refuses it above), so it neither wins nor blocks; it
-    // simply joins the order when it retargets.
-    //
-    // The trade-off, stated rather than hidden: a later claimant admitted while an
-    // earlier one was ineligible LOSES the claim when that earlier one becomes
-    // eligible. It is refused by name, so the loop keeps moving through the admitted
-    // claimant rather than stalling on the tie.
-    const claimantNumbers = new Set(replacementPullRequests
-      .filter((candidate) => candidate?.state === 'open'
-        && isLineageBase(candidate?.base?.ref)
-        && replacementSource(candidate.body) === declaration.source)
-      .map((candidate) => candidate?.number));
-    // This unit is open and — checked immediately above — on `main`, so it is a
-    // claimant whether or not the scan happens to include it.
-    claimantNumbers.add(pullRequest?.number);
-    const admitted = [...claimantNumbers]
-      .filter((number) => Number.isInteger(number))
-      .sort((left, right) => left - right)[0];
-    if (Number.isInteger(admitted) && admitted !== pullRequest?.number) {
+    // This is the missing half of the settlement rule rather than a new policy. The
+    // two are the same ordering, read at the two ends of one obligation.
+    if (!(pullRequest?.number > declaration.source)) {
       return {
         allowed: false,
-        detail: `#${admitted} is the admitted claimant of #${declaration.source}; `
-          + `the lowest-numbered open ${LINEAGE_BASE_REF} claimant holds the obligation`,
+        detail: `a replacement must be numbered above the unit it replaces; #${pullRequest?.number} `
+          + `cannot replace #${declaration.source}, and settlement would never accept it`,
       };
     }
     return { allowed: true, detail: null };
