@@ -22,21 +22,21 @@ blocking_directive: none
 updated: 2026-08-20
 ```
 
-**The open PR is the corrected record of what the replacement-lineage repair must
-do**, replacing #381 — which reached the two-finding-head limit, as #379 and #378
-did before it. #378's parking framing was withdrawn by owner directive on
-2026-08-20 and the repair resumes.
+**#382 MERGED at `main` `1449c82`** with a clean exact-head Codex +1, putting
+`docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. The
+open PR carries that record forward and declares `Replaces: #379`.
 
-**Four obligations are live, and they discharge one per merge.** #377, #378, #379
-and #381 all carry `review-replacement-required`. The open unit discharges #381;
-later units discharge #379 then #378; and #377 — the lineage-repair
+**Three obligations remain, and they discharge one per merge.** #377, #378 and
+#379 are pending. (#381 still carries the label — discharge is computed from
+merged bodies, not by clearing marks — so the label set and the pending set are
+different things, and only the pending set gates anything.) The open unit
+discharges #379; a later one discharges #378; and #377 — the lineage-repair
 implementation with its unresolved findings — is discharged only by a merged unit
 carrying that implementation scope. No label is cleared by hand.
 
-This queue is itself the accumulation defect the record describes: long, not
-jammed, every entry claimable. The finding counts are converging — seven on #378,
-seven on #379, three on #381 — so the cost per round is falling even as the queue
-lengthens.
+The finding counts converged: seven on #378, seven on #379, three on #381, none
+on #382. The queue grew while the cost per round fell, which is what convergence
+looks like when the review limit is per-unit rather than per-lineage.
 
 **#363 (schedule B1) is parked at its green head** — `pnpm check` exit 0,
 `upgrade-proof` 676 assertions, integration 96 files / 1,243 tests, all 10

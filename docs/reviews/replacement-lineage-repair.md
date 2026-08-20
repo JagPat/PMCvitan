@@ -5,15 +5,25 @@ that framing was withdrawn by owner directive on 2026-08-20, and the programme
 mandate is unchanged — autonomous, fail-closed convergence, with unresolved
 findings carried forward rather than released.
 
-**This unit replaces #381, and it discharges nothing else.** #381 was the record
-one link back and reached the two-finding-head limit; this unit carries its scope
-and its unresolved findings. It does **not** discharge #379 or #378, which hold
-the same record scope further back, and it does **not** discharge #377, which
-holds the lineage-repair *implementation* — a record of what remains undone is
-not the doing of it. All four keep their `review-replacement-required` labels,
-they discharge one per merge in that order, and no label is to be cleared by
-hand. §"Where things stand" states the same thing; if the two ever disagree, that
-section is authoritative and this paragraph is the stale one.
+**This unit replaces #379, and it discharges nothing else.** It does **not**
+discharge #378, which holds the same record scope one link further back, and it
+does **not** discharge #377, which holds the lineage-repair *implementation* — a
+record of what remains undone is not the doing of it. All three keep their
+`review-replacement-required` labels, they discharge one per merge in that
+order, and no label is to be cleared by hand. §"Where things stand" states the
+same thing; if the two ever disagree, that section is authoritative and this
+paragraph is the stale one.
+
+**What this unit carries, stated plainly, because the answer is unusual.** #379's
+scope was *this record*, and the record is already on `main` — it landed with
+#382, which could name only one predecessor and named #381. So #379's substance
+is delivered; what remains owed is the label. This unit carries that same scope
+in its current form: keeping the record true as the queue it describes drains.
+That is not a formality — a record whose live-state section is stale is the
+precise defect the review caught twice in this lineage. It is also, exactly, the
+accumulation defect of §1 seen from the inside: one delivered scope, three labels,
+and a rule that can retire them only one merged unit at a time. Requirement 5 is
+what would let one unit name all three honestly.
 
 Every claim below about how `main` behaves was checked by **executing**
 `assessReplacementLineage` and `assessReviewScope` at `5c2b739`, not by reading
@@ -79,28 +89,34 @@ entry costs one sequential review unit. The remedy is not a release valve. It is
 that a replacement must be able to carry more than one obligation, and that it
 should name what is still owed rather than only what it directly followed.
 
-**This document is itself the running data point.** #378 was the record of the
-repair and was exhausted; #379 replaced it and was exhausted; #381 replaced #379
-and was exhausted; this unit replaces #381. Each closure **at the round limit**
-added a label rather than moving one — and only those closures do. #380, a
-parallel replacement for #378 opened and closed the same minute without reaching
-the limit, left no label and added no obligation. The label marks an exhausted
-unit, not a closed one, and that distinction is what keeps the queue finite.
+**This document is itself the running data point, and it has now completed one
+full cycle.** #378 was the record of the repair and was exhausted; #379 replaced
+it and was exhausted; #381 replaced #379 and was exhausted; **#382 replaced #381
+and MERGED**, on 2026-08-20, which is how this text reached `main`. Each closure
+**at the round limit** added a label rather than moving one — and only those
+closures do. #380, a parallel replacement for #378 opened and closed the same
+minute without reaching the limit, left no label and added no obligation. The
+label marks an exhausted unit, not a closed one, and that distinction is what
+keeps the queue finite.
 
-Executed against the live rule with #377, #378, #379 and #381 all labelled: this
-unit declaring `Replaces: #381` is admitted, a fresh `Replaces: none` unit is
-refused naming #377, and **after this unit merges, #377, #378 and #379 are all
-still owed** — three further sequential units, for a chain whose entire subject
-is that this happens.
+**The merge behaved exactly as this section predicted, which is the useful part.**
+Executed against the live rule immediately after #382 merged: a unit declaring
+`Replaces: #379` is admitted; a unit declaring `Replaces: #381` is refused with
+*"does not name a review unit awaiting replacement"*, because merged #382 named
+it; and a fresh `Replaces: none` unit is still refused naming #377. One merge,
+one obligation retired, three still owed. The labels on the retired units are not
+removed — discharge is computed from merged bodies, not by clearing marks — so
+the label set and the pending set are different things, and only the second one
+gates anything.
 
-**The queue is growing, and the reason is worth separating from the alarm.** Each
-record unit has drawn real findings and been closed at the limit, and each
-closure costs one obligation while each merge retires one. But the findings are
-converging: seven on #378, seven on #379, three on #381 — every round smaller
-than the last, and the last three were all consequences of correcting the round
-before it. The process is working; requirement 5 is what would make its cost
-proportionate. Nothing here is stuck, every entry is claimable today, and the
-queue drains one per merge.
+**The findings converged, and the numbers are worth keeping.** Seven on #378,
+seven on #379, three on #381, **none on #382** — every round smaller than the
+last, and the middle rounds were each consequences of correcting the round
+before. The queue grew while the cost per round fell, which is what convergence
+looks like when the limit is per-unit rather than per-lineage. Nothing here was
+ever stuck; every entry stayed claimable, and the queue drains one per merge.
+Requirement 5 is what would make that drain proportionate to the work actually
+outstanding.
 
 ### 2. Lineage is read from text anyone can rewrite
 
@@ -267,7 +283,9 @@ further than these six did.
    The bootstrap set is **every unit carrying `review-replacement-required` at
    the moment the migration runs** — stated as a rule rather than a list, because
    a list in this document goes stale on the next closure and has already done so
-   once. As of 2026-08-20 that set is #377, #378, #379 and #381, but the
+   once. As of 2026-08-20, after #382 merged, the units still PENDING are #377,
+   #378 and #379 — while #381 carries the label but is discharged, which is
+   itself why the rule must read the pending set and not the label set. The
    enumeration is a snapshot for the reader and the rule is the authority; an
    implementation that hardcodes today's numbers reproduces #374's failure with
    different digits. The migration must be applied atomically and be safe to
@@ -300,11 +318,12 @@ with the same hole.
 ## Where things stand
 
 - `main`'s rule is unchanged. All three defects above are live.
-- **#377, #378, #379 and #381 all carry `review-replacement-required`, and all
-  stay.** This unit replaces #381 and carries the record forward. #379's and
-  #378's obligations are discharged by later units carrying the same record
-  scope; #377's only by a merged unit carrying its implementation scope and its
-  unresolved findings.
+- **#377, #378 and #379 remain owed; #381 was discharged by merged #382.** All
+  four still carry the label — discharge is computed, not un-marked — but only
+  the first three are pending. This unit replaces #379 and carries the record
+  forward. #378's obligation is discharged by a later unit carrying the same
+  record scope; #377's only by a merged unit carrying its implementation scope
+  and its unresolved findings.
 - Until those merge, `Replaces: none` work is refused. That is the rule working,
   not failing — the queue is long, not jammed, and every entry is claimable
   today.
