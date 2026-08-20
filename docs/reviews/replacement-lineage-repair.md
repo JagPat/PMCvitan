@@ -222,11 +222,11 @@ the question takes one table and was executable from the first head — the trus
 root is `main`'s protected history and the content of a reviewed SHA, and nothing
 else in GitHub's collaborator-writable surface qualifies.
 
-So this head stops proposing mechanisms. It states the boundary, ships the
-requirements that fit inside it — which still gives §1 the bundle it asked for —
-and names the ones that do not, with the fact each would need. What closing those
-takes is an authority outside GitHub's collaborator-writable surface, and that is
-an infrastructure decision rather than another paragraph.
+Stating the boundary is the durable part. What #390 did next was not: it still
+shipped the bundle, now described as fitting inside the trust root, and that
+description is what its own second round took apart. What closing the rest takes is
+an authority outside GitHub's collaborator-writable surface, which is an
+infrastructure decision rather than another paragraph.
 
 **#390 is where the answer stopped moving.** Its first round tested the boundary
 rather than crossing it — six findings, none proposing an artifact, and two of them
