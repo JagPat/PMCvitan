@@ -804,6 +804,7 @@ function eligibleShape(pullRequest) {
   return {
     state: pullRequest.state,
     headRefName: pullRequest.head.ref,
+    baseRefName: pullRequest.base.ref,
     headRepository: { nameWithOwner: pullRequest.head.repo?.full_name },
     baseRepository: { nameWithOwner: pullRequest.base.repo?.full_name },
   };

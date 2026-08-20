@@ -1,6 +1,7 @@
 // The deferral-phase check shares docs/STATUS.md's own state vocabulary rather than keeping
 // a second copy of it — see phaseHasOpenWork.
 import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
+import { LINEAGE_BASE_REF } from './autonomous-review-state.mjs';
 // Correction ownership is checked HERE, in the one assessment both the PR-side
 // `review-scope` job and the trusted controller's `enforceReviewScope` call, so
 // the cheap gate and the merge boundary cannot disagree about who owns a fix.
@@ -108,6 +109,7 @@ export function assessReplacementLineage({
   const fulfilledSources = new Set(requiredReplacements
     .filter(({ pullRequest: source }) => replacementPullRequests.some((candidate) =>
       candidate?.merged_at
+      && candidate?.base?.ref === LINEAGE_BASE_REF
       && candidate.number > source?.number
       && replacementSource(candidate.body) === source?.number))
     .map(({ pullRequest: source }) => source.number));
@@ -116,6 +118,14 @@ export function assessReplacementLineage({
     && !fulfilledSources.has(source?.number));
 
   if (declaration.kind === 'source') {
+    const claimantBase = pullRequest?.base?.ref;
+    if (claimantBase !== LINEAGE_BASE_REF) {
+      return {
+        allowed: false,
+        detail: `a replacement must target ${LINEAGE_BASE_REF}; this unit targets `
+          + `${typeof claimantBase === 'string' && claimantBase.length > 0 ? claimantBase : 'an unreadable base'}`,
+      };
+    }
     const requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
     );

@@ -1,5 +1,11 @@
 export const CODEX_LOGIN = 'chatgpt-codex-connector[bot]';
 export const CODEX_GRAPHQL_LOGIN = 'chatgpt-codex-connector';
+// The only base a lineage obligation may be created for, claimed from, or settled onto.
+// The guard reads a base REF, never ancestry: `main` advances under an open unit as a
+// matter of course, and a squash merge leaves the reviewed head off the post-merge
+// history by construction, so ancestry against the moving tip refuses ordinary valid
+// work. See docs/reviews/replacement-lineage-repair.md.
+export const LINEAGE_BASE_REF = 'main';
 
 function timestamp(value, field) {
   const parsed = Date.parse(value);
@@ -47,11 +53,19 @@ export function isEligiblePullRequest(pullRequest) {
   const state = String(pullRequest?.state ?? '').toUpperCase();
   const headRepository = pullRequest?.headRepository?.nameWithOwner;
   const baseRepository = pullRequest?.baseRepository?.nameWithOwner;
+  const baseRefName = pullRequest?.baseRefName;
 
+  // The base guard sits HERE, before review, and not at exhaustion. Refusing an
+  // off-`main` unit once it has already been reviewed would suppress a replacement
+  // obligation for findings that were never fixed or carried — a waiver path. Refusing
+  // it before review means such a unit never enters the lifecycle at all, so no
+  // obligation is ever created for it and there is nothing to suppress. One value,
+  // one moment, nothing to race.
   return (
     state === 'OPEN' &&
     typeof headRepository === 'string' &&
-    headRepository === baseRepository
+    headRepository === baseRepository &&
+    baseRefName === LINEAGE_BASE_REF
   );
 }
 

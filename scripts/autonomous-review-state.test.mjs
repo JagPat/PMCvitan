@@ -27,10 +27,11 @@ function input(overrides = {}) {
   };
 }
 
-test('accepts only open same-repository pull requests', () => {
+test('accepts only open same-repository pull requests based on main', () => {
   const eligible = {
     state: 'OPEN',
     headRefName: 'claude/fix-readiness',
+    baseRefName: 'main',
     headRepository: { nameWithOwner: 'JagPat/PMCvitan' },
     baseRepository: { nameWithOwner: 'JagPat/PMCvitan' },
   };
@@ -44,6 +45,12 @@ test('accepts only open same-repository pull requests', () => {
     false,
   );
   assert.equal(isEligiblePullRequest({ ...eligible, state: 'CLOSED' }), false);
+
+  // The base guard sits before review so an off-`main` unit never enters the review
+  // lifecycle. Refusing it later — at exhaustion — would suppress a replacement
+  // obligation for findings that were never fixed or carried, which is a waiver path.
+  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: 'release' }), false);
+  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: undefined }), false);
 });
 
 test('classifies a fresh Codex thumbs-up as clear', () => {
