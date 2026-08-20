@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
-task_state: in_review
+task_state: in_progress
 work_item: none
-reviewed_merge: 44ceef9
-open_pr: 395
+reviewed_merge: f2a88c1
+open_pr: 396
 next_task: none
 blocking_directive: none
 updated: 2026-08-20
@@ -238,9 +238,9 @@ re-classified. Legacy settlement therefore behaves exactly as `main` behaves tod
 neither created, widened, nor endorsed by this repair. It is §2, live, recorded in
 the record's defect list, and closing it needs the authority named there.
 
-**Fifteen obligations are pending, and they discharge one per merge.** #377, #378,
-#379, #383, #384, #385, #386, #387, #388, #389, #390, #391, #392, #393 and #394. (#381 carries the
-label but is settled by merged #382 —
+**Fourteen obligations are pending, and they discharge one per merge.** #377, #378,
+#379, #383, #384, #385, #386, #387, #388, #389, #390, #391, #392 and #393. (#381 carries the
+label but is settled by merged #382, and #394 by merged #395 —
 discharge is computed, not un-marked.) #391, #392, #393 and #394 each joined the queue by
 closing at the round limit while claiming their predecessor, which is the accumulation defect
 running in the open: a claim lapses with its claimant, so both the source and the
@@ -319,12 +319,12 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:395`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:396`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 395` the
-resolver returns `pr:395` — "an open PR is the current work item until it merges
+unit. `open_pr` outranks the task branch outright: with `open_pr: 396` the
+resolver returns `pr:396` — "an open PR is the current work item until it merges
 or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
 The open unit is named in the prose above rather than in `work_item`, because
 that field would not be read here.
