@@ -92,7 +92,8 @@ unit, not a closed one, and that distinction is what keeps the queue finite.
 
 **Where the rounds actually went, because the shape is the finding.** Seven on
 #378, seven on #379, three on #381, none on #382 — then one and four on #383,
-three and two on #384, and three and two on #385. The rise from #383 onward was
+three and two on #384, three and two on #385, and two on #386's first head. The
+rise from #383 onward was
 **entirely requirement 10**, the migration cutover: five formulations of one rule,
 each found. Every other round in this lineage found contradictions between
 sentences; those rounds found hazards in an operation, and no amount of rewriting
@@ -101,14 +102,21 @@ the paragraph closed them.
 **Removing the requirement did not close them either**, and that is the part worth
 recording. #385's review established that two surviving requirements — the bundle,
 and owner equality — each depended on the record the removal had deleted, so the
-narrowed repair was incoherent rather than smaller. What closed it was neither
-writing the cutover again nor dropping the requirements: it was that the
-repository **already holds two artifacts nobody can rewrite through a pull
-request** — `main`'s protected history, and a unit's head ref — and both
-requirements can rest on those instead of on a store that would first have to be
-built and migrated into. Requirements 1 and 5 are written on that basis, each with
-what was executed to establish it. Six finding-bearing heads across three units
-bought that, and it is written down here so it is not paid twice.
+narrowed repair was incoherent rather than smaller.
+
+**They then resolved differently, and #386's first round is why.** A head of this
+document proposed resting both on artifacts a pull-request edit cannot reach:
+`main`'s protected history for the bundle, and the head ref for the owner. The
+first holds. The second does not — this repository had already executed the
+refutation, in `scripts/correction-owner.mjs`, where the branch prefix is recorded
+as *not* carrying ownership (#349 and #350, both `codex/**`, different owners) —
+and demanding it anyway would have made every non-`claude/**` obligation
+permanently unclaimable, deadlocking the repository. That same round also killed
+the bundle's "documented but unclosed" pre-merge window by executing it as an
+attack. So requirement 1 keeps its git basis and settles from git ALONE, and
+requirement 5 is removed with its reasoning kept. Seven finding-bearing heads
+across four units bought that, and it is written down here so it is not paid
+twice.
 
 Nothing here is stuck; every entry is claimable, and the queue drains one per
 merge.
@@ -184,19 +192,21 @@ eliminated two of its three possible trust roots: a one-time operator attestatio
 is a manual act inside an autonomous loop, and timeline provenance cannot recover
 the correction owner, which lives in an editable body.
 
-**That decision stands, and this head makes it coherent.** Removing the cutover
-left two requirements — the bundle, and owner equality — resting on a record that
-no longer existed, which is what #385's review found. The resolution is not to
-restore the store. It is that neither requirement needs one:
+**That decision stands, and the two requirements it stranded are resolved
+differently from each other.** Removing the cutover left the bundle and owner
+equality both resting on a record that no longer existed, which is what #385's
+review found. One of them turns out not to need a record. The other cannot be
+had without one, and #386's review proved that requiring it anyway deadlocks the
+repository:
 
-| Requirement | What it must not be forgeable from | What it rests on instead |
-| --- | --- | --- |
-| **1** — the admitted bundle | a body edited after the merge that settled it | the merged commit message, in `main`'s protected history |
-| **5** — the source's correction owner | a body edited after the source closed | the source's head ref, which is not body text |
+| Requirement | Outcome |
+| --- | --- |
+| **1** — the admitted bundle | **kept**, resting on `main`'s protected git history, which no pull-request edit reaches |
+| **5** — the source's correction owner | **REMOVED**, because no unforgeable source of it exists here and demanding one makes every non-`claude/**` obligation permanently unclaimable |
 
-Neither is a new store, neither needs a migration, and neither needs a backfill:
-requirement 1 constrains only units merged *after* the repair, and requirement 5
-is already satisfied by every unit in the queue.
+Requirement 1 needs no store, no migration and no backfill: it constrains only
+units merged *after* the repair. Requirement 5's removal is recorded in its own
+slot below rather than deleted, because the reasoning is the expensive part.
 
 **What multi-obligation carry costs — two earlier claims here were wrong, and
 stay struck.**
@@ -223,7 +233,9 @@ executed:
   and what was executed are in requirement 1; the struck sentence is not restored,
   because its reasoning was wrong even where its conclusion is now recoverable.
 
-So the repair is now these, and only these:
+So the repair is now these, and only these. Slot 5 is kept as a **removal** with
+its reasoning rather than deleted, because a later reader who re-derives owner
+equality from the branch will re-derive the deadlock with it:
 
 1. **A replacement must be able to carry more than one obligation, as one
    DECLARED bundle — and a bundle settles only against evidence a later edit
@@ -236,13 +248,45 @@ So the repair is now these, and only these:
    many obligations one such unit may carry, never whether an obligation can lapse
    unmet.
 
-   **A bundle's settlement evidence is git, not the pull request body.** A
-   declaration naming *one* source settles as it does today, from the merged body
-   — unchanged, and deliberately not improved, because changing it would
-   un-discharge settlements already computed that way, #381's among them. A
-   declaration naming *more than one* settles only if the same set also appears in
-   the history `main` reached for that merge: the merge commit's own message, or
-   the message of a commit the merge brought onto `main`.
+   **A bundle's settlement evidence is git, and ONLY git.** A declaration naming
+   *one* source settles as it does today, from the merged body — unchanged, and
+   deliberately not improved, because changing it would un-discharge settlements
+   already computed that way, #381's among them. A declaration naming *more than
+   one* is settled from git alone: **settlement never reads the body for a
+   bundle**, so no edit to a body, at any time, before or after the merge, can
+   change what a bundle discharges.
+
+   **An earlier head of this requirement had settlement read both, and that was a
+   P1.** It required the bundle in the body *and* in git, and named the gap
+   between the reviewed head and the merge as a window it did not close. Executed
+   as a threat rather than described: a claimant declares ONE source in its body,
+   carries the bundle in its commit message, is reviewed and admitted on the
+   singleton, and then edits the body to the bundle after the final policy check —
+   the head SHA and every status unchanged — at which point body and git agree and
+   the whole backlog settles on a review that only ever saw one obligation.
+   Documenting that window did not preserve the declared-and-admitted invariant;
+   it only described losing it. Settlement reading git alone removes the window
+   rather than narrowing it.
+
+   **What binds the bundle to the review, then, is the head SHA itself.** The
+   declaration lives in a commit message on the claimant's branch, so it is inside
+   the exact head the reviewer approved — there is no version of the bundle that
+   settles and was not reviewed. Two anchors, both required, because either alone
+   has a hole:
+
+   - the declaration appears in the message of a commit **belonging to the merged
+     pull request** — a SHA the reviewed head fixes; and
+   - the merged commit on `main` carries **the same set**, so what settles is also
+     what protected history holds.
+
+   Requiring both closes the merge-time override as well: a merge that supplies an
+   invented commit message disagrees with the pull request's own commits, and
+   disagreement settles nothing.
+
+   **Admission checks the two against each other.** At review time the body's
+   declared set must EQUAL the git set, so the reviewer is shown the claim that
+   will actually settle and a mismatch is refused outright. After admission the
+   body is simply not consulted again on this path.
 
    Executed on 2026-08-20 against `main` `1449c82`, the merge that discharged
    #381:
@@ -257,18 +301,20 @@ So the repair is now these, and only these:
    - **Therefore the claimant must write the declaration into a commit message**,
      not only into the body. The squash merge that produced `1449c82` put the
      pull request's title in the subject and its branch commit messages in the
-     body, and did not carry the pull request body at all.
+     body, and did not carry the pull request body at all. The title is editable
+     after review, which is the second reason the subject line is not the anchor.
 
    **The arithmetic, which is the whole point of the requirement:**
 
-   | Settlement evidence | Obligations one edited merged body can discharge |
+   | Settlement evidence | Obligations one edited body can discharge |
    | --- | --- |
    | Today, single source only | **1** — executed |
    | A bundle read from the body | the whole backlog, in one edit |
-   | A bundle read from git | **1** — unchanged from today |
+   | A bundle read from body AND git | the whole backlog — the pre-merge edit above |
+   | A bundle read from git alone | **1** — unchanged from today |
 
    A bundle whose git evidence is missing must settle **nothing at all**. It must
-   never fall back to its first entry: that reintroduces the middle row one
+   never fall back to its first entry: that reintroduces the second row one
    obligation at a time, which is the same defect at a slower rate.
 
 2. **Conservation applies to claims the claimant never declared, and those are a
@@ -307,52 +353,59 @@ So the repair is now these, and only these:
    written, so base identity and ancestry must be checked *before* the write and
    again at every later evaluation, alongside head, body and state.
 
-5. **The claim must preserve the source's correction owner, and that owner must
-   come from metadata rather than from a body.** Every pull request here declares
-   exactly one correction owner, and the repository routes a unit's corrections to
-   that owner alone — a `claude/**` branch may only declare `claude`, and no agent
-   may act on another's behalf. None of the requirements above bind that, so a
-   `claude`-owned replacement could satisfy all of them and discharge a
-   `cursor`-owned exhausted unit whose corrections Claude is explicitly forbidden
-   to make.
+   **For a bundle, the revalidated set is the git set.** Requirement 1 settles a
+   bundle from git alone, so what this revalidation must keep current is the git
+   declaration and its agreement with the body at admission — not the body on its
+   own. Revalidating only the body would re-open exactly the window requirement 1
+   closes: the two requirements have to name the same evidence, or the later one
+   quietly undoes the earlier.
 
-   **Reading the owner from the source's body preserves nothing.** An earlier
-   version of this requirement said "bound into the claim at admission": the owner
-   marker lives in the source's own body, which stays editable after it closes, so
-   a `cursor`-owned source can have its marker rewritten to `claude` at any point,
+5. **Owner equality — REMOVED, and the reasoning is why this slot is kept rather
+   than deleted.** The requirement said a claimant must preserve the source's
+   correction owner, so that a `claude`-owned replacement could not discharge a
+   `cursor`-owned exhausted unit whose corrections Claude is forbidden to make.
+   The risk is real. It is also not addressable here, and two heads of this
+   document proposed evidence for it that does not exist.
+
+   **Reading the owner from the source's body preserves nothing.** The marker
+   lives in the source's own body, which stays editable after it closes, so a
+   `cursor`-owned source can have its marker rewritten to `claude` at any point,
    after which a `claude` claimant passes owner equality at admission and at every
    later revalidation — the check reads the forged value and agrees with it. That
-   is defect §2 applied one level in, and it was written into this document by the
-   same reflex the document exists to warn about: anything derived from a body at
-   read time is forgeable, including the evidence used to decide who may forge.
+   is defect §2 applied one level in, and #381's review found it.
 
-   **The owner is recoverable without a record, from the head ref.** A pull
-   request's head ref is metadata, not body text — the pull-request body edit that
-   makes §2 possible does not reach it. The repository's own rule, that a
-   `claude/**` branch may only declare `claude`, makes the prefix authoritative
-   for exactly one owner. So:
+   **Reading it from the head ref preserves nothing either, and this repository
+   already executed that.** An earlier head of this requirement derived the owner
+   from a `claude/**` prefix and failed closed on anything else.
+   `scripts/correction-owner.mjs` records the refutation in its own header: "the
+   branch prefix does not carry it (both PRs were on `codex/**`)" — #349 and #350
+   were loop pull requests on the same prefix with *different* owners. The prefix
+   is used there for exactly one thing, a contradiction check that a `claude/**`
+   branch may not declare another owner, and it is not an owner derivation for any
+   other shape.
 
-   - source head ref matches `claude/**` → its owner is `claude`, and only a
-     `claude` claimant may discharge it;
-   - anything else → **the owner is not established and the unit is not
-     discharge-eligible**, until a rule pinning that prefix exists.
+   **And failing closed on the shapes it cannot derive deadlocks the repository.**
+   #386's review executed the consequence: a `cursor`-owned unit on `codex/**`
+   reaching the finding-head limit would be permanently discharge-ineligible, so
+   the pending set could never empty and every `Replaces: none` unit in the
+   repository would be refused for good. That is precisely the state requirement 2
+   forbids — "the accumulation defect made permanent" — reached by a rule written
+   two requirements later. Writing a correction adjacent to an existing rule
+   without reconciling the two is the failure this document repeats most, and this
+   was another instance of it.
 
-   That is fail-closed, and it costs nothing today. Executed on 2026-08-20, every
-   pending source is a `claude/**` branch: #377 and #378 on
-   `claude/owner-aware-correction-routing-ihcm26`, #379 on `claude/lineage-record`,
-   #383 on `claude/lineage-record-v4`, #384 on `claude/lineage-record-v5` and #385
-   on `claude/lineage-record-v6`. No attestation, backfill or cutover is needed to
-   know who owns any obligation in the queue. A mismatched claimant is refused and
-   settles nothing, and the source stays claimable by its own owner.
+   **So the requirement is removed, and what is lost is named.** Nothing here can
+   authenticate a source's owner: not the body, not the branch, and not a label —
+   the preserved section below records why the timeline actor is a necessary
+   filter and not sufficient evidence, since every workflow in this repository
+   shares one `github-actions[bot]` identity. Owner equality needs the
+   authenticated record the cutover would have built, and that cutover is removed
+   by owner decision.
 
-   **What this does not claim.** A head ref is weaker than a signature. It is
-   fixed against the edit §2 exploits, but it is chosen by whoever opens the unit,
-   so it binds an owner only because the repository's rule binds `claude/**` — it
-   is not a credential. It closes the specific hole #381 found, rewriting a
-   *closed* source's marker to flip its owner, and nothing wider. The symmetric
-   rule for any other agent prefix has to be written before a source on that
-   prefix becomes discharge-eligible; until then such a source fails closed, which
-   is the correct direction to fail.
+   **The live rule has no owner check at all today**, so removing this requirement
+   declines to add a protection rather than removing one. It is listed with the
+   other things an authenticated record would make possible, and it is the first
+   thing to reconsider if §2 is ever taken on.
 
 6. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`,
     not in the lineage function. A rewrite that touches only the lineage function
@@ -376,19 +429,31 @@ changed to make it so: a bundle settles from git, so the most one edited merged
 body can discharge is still one obligation. That is a property of the requirement,
 not of reading the same bodies.
 
-**The window requirement 1 does not close.** Its evidence is immutable *after* the
-merge. It says nothing about a body edited between the head a reviewer approved
-and the merge that follows, because the merge commit is written from the branch
-and title at merge time. That window is much smaller than §2 and it is not closed
-here.
+**The window an earlier head left open is now closed, not documented.** That head
+said requirement 1's evidence was immutable only *after* the merge, and named the
+gap between the reviewed head and the merge as something it did not close.
+#386's review showed what living with it costs: declare one source in the body,
+carry the bundle in the commit message, get admitted on the singleton, edit the
+body after the final policy check, and the whole backlog settles on a review that
+saw one obligation. Requirement 1 now settles a bundle from git ALONE, so the body
+plays no part in settlement and the window has nothing to act on. Naming a hole is
+not closing it, and this document had done the former while claiming the latter.
+
+**Owner equality is the scope this repair genuinely gives up**, and it is recorded
+in requirement 5's slot and in the preserved list below rather than quietly
+dropped.
 
 **§3 is addressed but not by a new store** — requirement 3 above is a completeness
 check on the enumeration the live rule already performs.
 
-Anyone later deciding to take on §2 needs an authenticated record, and five units
-established what such a record must satisfy before it can be built. That learning
-is preserved below rather than discarded with the cutover, because rediscovering
-it would cost what it cost the first time.
+Anyone later deciding to take on §2 needs an authenticated record. What such a
+record must satisfy was established by the six implementation attempts in the
+table above — items 1 to 5 below — and item 6 was added by #386's review of this
+document. (An earlier head said "five units" here; the number was carried from a
+different count and then incremented mechanically when an item was added, which
+is how a wrong number survives an edit. The list is the record, not its length.)
+That learning is preserved rather than discarded with the cutover, because
+rediscovering it would cost what it cost the first time.
 
 ### Preserved: what an authenticated record would have to satisfy
 
@@ -430,6 +495,17 @@ unit to learn.
    forgeable**, so what it is allowed to trust must be decided before any
    mechanism is chosen. That question is what five formulations failed to answer,
    and it is the first thing to settle if §2 is ever taken on.
+
+6. **Owner equality becomes possible, and it is not possible without this.** A
+   replacement must not discharge an exhausted unit owned by another agent, and
+   nothing available today can establish a source's owner unforgeably: the marker
+   is in an editable body, the branch prefix demonstrably does not carry it
+   (`scripts/correction-owner.mjs` records #349 and #350, both on `codex/**`, with
+   different owners), and a label proves only that some workflow wrote it, by
+   item 3 above. Demanding the check anyway makes every source it cannot resolve
+   permanently unclaimable, which #386's review showed deadlocks the repository.
+   A record that names the owner at the moment a unit is labelled exhausted is
+   what turns this from a deadlock into a rule.
 ### On the automatic release valve that was sketched here
 
 An earlier version of this document proposed a watchdog that **released** an

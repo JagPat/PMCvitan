@@ -32,13 +32,21 @@ migration cutover — is REMOVED, not deferred: five formulations drew findings,
 the last two eliminated two of its three trust roots. #385's review then found the
 narrowed repair incoherent rather than smaller — two surviving requirements, the
 bundle and owner equality, still depended on the record the removal had deleted.
-The resolution keeps the decision and drops the dependency instead: a bundle
-settles from `main`'s protected git history, and a source's correction owner comes
-from its `claude/**` head ref. Neither is a store, neither needs a migration, and
-neither needs a backfill — executed 2026-08-20 at `main` `1449c82` (`main` is
-`protected: true`; that merge commit carries zero line-anchored `Replaces:`
-declarations though #382's body carries the one that discharged #381; all six
-labelled sources are `claude/**` branches).
+The two stranded requirements then resolved DIFFERENTLY, and #386's first review
+round is why. **Requirement 1 is kept**: a bundle settles from `main`'s protected
+git history — and, after that round, from git ALONE, because reading body *and*
+git left a pre-merge window in which a singleton-reviewed unit could be edited
+into a bundle and discharge the whole backlog. Executed 2026-08-20 at `main`
+`1449c82`: `main` is `protected: true`, and that merge commit carries zero
+line-anchored `Replaces:` declarations though #382's body carries the one that
+discharged #381. **Requirement 5 (owner equality) is REMOVED**: an earlier head
+derived the owner from a `claude/**` head ref, which `scripts/correction-owner.mjs`
+already refutes in its own header (#349 and #350 were both on `codex/**` with
+different owners), and failing closed on every other prefix would make a
+`cursor`-owned exhausted unit permanently unclaimable — the pending set could
+never empty and every `Replaces: none` unit would be refused for good. The live
+rule has no owner check today, so removing it declines to add a protection rather
+than removing one; the reasoning is kept in the record's requirement-5 slot.
 
 **A STATUS claim carried from the previous head is STRUCK.** It said the only
 barrier to one unit carrying several obligations is `replacementDeclaration`
