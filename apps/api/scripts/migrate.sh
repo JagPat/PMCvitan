@@ -138,7 +138,11 @@ if echo "$out" | grep -q "P3005"; then
   # have run. These are decided statically, because they cannot have: a pre-baseline database
   # predates them. Leaving them pending costs nothing when they have somehow already been applied —
   # each is written idempotently and re-applies as a no-op.
-  ALWAYS_EXECUTE="20270920000000_decision_option_kinds"
+  # Both of these install raw CHECKs and triggers that `schema.prisma` cannot describe, so a
+  # baseline that records them as applied WITHOUT running them would claim guards that never
+  # existed — indistinguishable from success. Left pending so the deploy really executes them.
+  ALWAYS_EXECUTE="20270910000000_schedule_dependency_graph
+20270920000000_decision_option_kinds"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

@@ -53,18 +53,33 @@ async function main(): Promise<void> {
   // refuses to truncate a referenced table unless every referencing table truncates with it.
   // Phase 3 Task 6 — ApprovedSubstitution FKs onto ActivityRequirementRoot (projectId,id), so it
   // truncates in the same statement for exactly that reason.
-  await prisma.$executeRawUnsafe(
-    // Phase 4 Task 2 labour commercial chain (deepest children of ProjectVendor/Vendor/
-    // LabourRequirementSpec/LabourRequisition) — truncated in the SAME statement so their FKs
-    // never block the ProjectVendor/Vendor wipe below (PostgreSQL truncates a multi-table set
-    // atomically, so explicit listing is preferred here over CASCADE).
-    // Phase 4 Task 3 §C time-capacity facts — LabourWorkFact FKs WorkerAllocation, which FKs
-    // CapacityCommitment (§F bound 3) and LabourRequirementSpec, so they lead the same statement.
-    // Phase 4 Task 5 §E/§I — the append-only mismatch register (resolution FKs the observation)
-    // and the measured-output facts FK Worker/Activity/Media/CommandExecution, so they lead the
-    // statement for the same reason (deleteMany is blocked by their append-only triggers).
-    'TRUNCATE TABLE "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "Vendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
-  );
+  // Schedule B1 — "ActivityDependency" carries a statement-level BEFORE TRUNCATE seal, because it
+  // is the record of who imposed each sequencing constraint and who withdrew it, and a row-level
+  // DELETE seal alone does not fire for TRUNCATE. This seed is the sanctioned destructive reset
+  // (the same contract that lets the TRUNCATE above bypass the DomainEvent append-only trigger),
+  // so the seal is disabled BY NAME for exactly this wipe. Guarded: a pre-B1 database has no such
+  // trigger. ONE transaction, for the reason the 4a wipe below states — PG DDL is transactional,
+  // so a wipe that throws rolls the DISABLE back with it and no failure path leaves the seal off.
+  await prisma.$transaction([
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ActivityDependency_no_truncate') THEN EXECUTE 'ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_no_truncate"'; END IF; END $$;`,
+    ),
+    prisma.$executeRawUnsafe(
+      // Phase 4 Task 2 labour commercial chain (deepest children of ProjectVendor/Vendor/
+      // LabourRequirementSpec/LabourRequisition) — truncated in the SAME statement so their FKs
+      // never block the ProjectVendor/Vendor wipe below (PostgreSQL truncates a multi-table set
+      // atomically, so explicit listing is preferred here over CASCADE).
+      // Phase 4 Task 3 §C time-capacity facts — LabourWorkFact FKs WorkerAllocation, which FKs
+      // CapacityCommitment (§F bound 3) and LabourRequirementSpec, so they lead the same statement.
+      // Phase 4 Task 5 §E/§I — the append-only mismatch register (resolution FKs the observation)
+      // and the measured-output facts FK Worker/Activity/Media/CommandExecution, so they lead the
+      // statement for the same reason (deleteMany is blocked by their append-only triggers).
+      'TRUNCATE TABLE "ActivityDependency", "VendorAdvance", "PaymentReversal", "Payment", "PaymentApproval", "BillDeductionRelease", "BillDeduction", "SodException", "SodGrant", "CertifiedMeasurementConsumption", "CertifiedAcceptanceConsumption", "BillCertificate", "BillVerification", "VendorBillLine", "VendorBillVersion", "VendorBillRevision", "VendorBill", "Measurement", "BudgetException", "BudgetLine", "CommitmentAttribution", "CostHead", "LabourMismatchResolution", "LabourMismatch", "ActivityWorkOutput", "LabourWorkFact", "WorkerAllocation", "LabourAttendance", "ApprovedSkillSubstitution", "CapacityPromise", "CapacityCommitment", "LabourPurchaseOrderLine", "LabourPurchaseOrderVersion", "LabourPurchaseOrder", "LabourQuoteComparison", "SupplierLabourQuoteLine", "SupplierLabourQuote", "LabourRfq", "LabourRequisitionLine", "LabourRequisition", "VendorLabourProfile", "StockTransaction", "MaterialIssue", "StockLot", "DeliveryPromise", "DeliveryCommitment", "PurchaseOrderLine", "PurchaseOrderVersion", "PurchaseOrder", "VendorQuoteLine", "QuoteComparison", "VendorQuote", "Rfq", "RequisitionLine", "Requisition", "ProjectPartyVendorSource", "ProjectPartyCompanySource", "ProjectParty", "ProjectVendor", "Vendor", "ApprovedSubstitution", "LabourDemandSlice", "LabourRequirementSpec", "MaterialRequirementSpec", "ActivityRequirement", "ActivityRequirementRoot", "DecisionApprovalRevision"',
+    ),
+    prisma.$executeRawUnsafe(
+      `DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'ActivityDependency_no_truncate') THEN EXECUTE 'ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_no_truncate"'; END IF; END $$;`,
+    ),
+  ]);
   await prisma.projectCapability.deleteMany();
   await prisma.gateOverride.deleteMany();
   await prisma.drawingRecipient.deleteMany();

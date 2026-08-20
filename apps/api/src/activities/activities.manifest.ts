@@ -22,8 +22,12 @@ export const activitiesManifest: ModuleManifest = {
   // Task 10 (Module 4) — a fully-extracted module: it read-encapsulates every model it owns (incl. its
   // rebuildable projection), so no other module reads activity persistence directly — every cross-module
   // read routes through the ActivitiesQueryService contract (the boundary check enforces it).
-  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput'],
-  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput'],
+  // Schedule B1 — `activityDependency` is the finish-to-start edge between two activities of
+  // one project. Owned here because the graph is an ACTIVITY fact, and read-encapsulated with
+  // the rest: a foreign module reading the graph directly would bypass the schedule authority,
+  // and an owned-but-not-read-encapsulated model draws no boundary finding at all.
+  ownsModels: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput', 'activityDependency'],
+  readEncapsulated: ['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput', 'activityDependency'],
   // Task 8/10 — reads decisions + the drawing gate + the inspection-gate readiness/next-id via their query
   // contracts (the readiness BAKE consumes all three at read time). The reverse inspections→activities
   // edge is a workflow participant (cycle-exempt), so this dependsOn graph stays acyclic — which is also
