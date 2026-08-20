@@ -93,8 +93,8 @@ unit, not a closed one, and that distinction is what keeps the queue finite.
 
 **Where the rounds actually went, because the shape is the finding.** Seven on
 #378, seven on #379, three on #381, none on #382 — then one and four on #383,
-three and two on #384, three and two on #385, two and two on #386, and five and
-five on #387. The rise from #383 onward was
+three and two on #384, three and two on #385, two and two on #386, five and five
+on #387, and three on #388's first head. The rise from #383 onward was
 **entirely requirement 10**, the migration cutover: five formulations of one rule,
 each found. Every other round in this lineage found contradictions between
 sentences; those rounds found hazards in an operation, and no amount of rewriting
@@ -174,9 +174,19 @@ post-repair reads. A file committed in the repair's own reviewed diff was availa
 the whole time, needs no attestation, and is **nine rows** at today's scale. The
 argument cost more than the artifact.
 
-Ten finding-bearing heads across five units bought that — #383, #384, #385 and
-#386 at two apiece, and #387's two — which is the count the rounds line above adds
-up to. It is written down here so it is not paid a third time.
+**#388's first round then tested the snapshot rather than the idea of it, and all
+three findings were about its edges.** A frozen list cannot bound a growing set, so
+requirement 3's equality became a lower bound. A commit-message owner that nobody
+checks against the body marker freezes an owner that never routed anything, so
+admission now requires the two to agree on the reviewed head. And draining
+controller runs misses a queued auto-merge, because the controller calls
+`enableAutoMerge` and returns immediately — executed — leaving GitHub to merge with
+no orchestration in flight to drain.
+
+Eleven finding-bearing heads across six units bought all of this — #383, #384,
+#385 and #386 at two apiece, #387's two, and #388's first — which is the count the
+rounds line above adds up to. It is written down here so it is not paid a third
+time.
 
 Nothing here is stuck; every entry is claimable, and the queue drains one per
 merge.
@@ -271,7 +281,9 @@ committed in the repair's own reviewed diff is not that: no store, no migration,
 attestation, and no owner recovered from provenance nobody wrote. Executed, it is
 **nine rows** — one merged candidate settles anything today (#382 → #381), plus the
 labelled sources' owners. Requirement 0 states it; requirements 1, 3 and 5 read
-from it.
+from it — requirement 3 as a **lower** bound rather than an equality, because the
+snapshot is frozen while the obligation set is not, and #388's review showed that
+demanding equality jams the loop the first time a post-cutover unit is labelled.
 
 **What multi-obligation carry costs — two earlier claims here were wrong, and
 stay struck.**
@@ -423,19 +435,37 @@ piece and it belongs first, because four earlier heads failed for want of it.
    needs an explicit-barrier test asserting that one bundle is admitted, the other
    releases everything, and no obligation is lost or double-settled.
 
-3. **Distinguish a dead chain from missing evidence, and bound the enumeration from
-   OUTSIDE it.** Unknown lineage must never admit work. `main` fails closed only on
-   a non-array (§3), so a repair that "keeps the current behaviour" inherits the
-   empty-response bypass.
+3. **Distinguish a dead chain from missing evidence, and bound the enumeration
+   from OUTSIDE it — as a LOWER bound, never as an equality.** Unknown lineage must
+   never admit work. `main` fails closed only on a non-array (§3), so a repair that
+   "keeps the current behaviour" inherits the empty-response bypass.
 
    **A completeness check computed from the same query is worth nothing.** If a
    permissions change or a wrong filter returns `200` with an empty page, then a
    count or checksum over that page is empty too and agrees with itself. The bound
-   must come from a source that cannot go empty for the same reason — and
-   requirement 0's snapshot, extended to carry the outstanding set, is exactly
-   that: committed, reviewed, and independent of the label query. Agree and the
-   enumeration is trusted; disagree either way and **refuse**, naming both;
-   unreadable and refuse, as a non-array does today.
+   must come from a source that cannot go empty for the same reason.
+
+   **But an EQUALITY against a frozen list jams the loop**, and an earlier head of
+   this requirement asked for exactly that. The snapshot is fixed at cutover; the
+   obligation set is not. The first post-cutover unit to reach the round limit is
+   in the label query and cannot be in the snapshot, so equality reads that as
+   disagreement and refuses every review after it. Comparing only against snapshot
+   entries fails the other way — the query could silently drop a new obligation and
+   nothing would notice.
+
+   **The bound is therefore monotone and one-directional:**
+
+   - the live query must contain **every unsettled entry the committed list knows
+     about**. One missing → evidence has been lost → **refuse**, naming it.
+   - the live query containing entries the list does **not** know about is normal.
+     A new obligation is an addition, and additions only make the gate stricter, so
+     they are accepted and the list is brought up to date by the next unit that
+     touches it.
+
+   That catches precisely the failure §3 is about — a query returning *fewer*
+   obligations than exist — and it cannot jam, because the direction that grows is
+   the direction that is allowed. A stale list is a weaker lower bound, never a
+   wrong one.
 
 4. **Revalidate the whole claimant at the authorization boundary, base included.**
    #377 revalidated head, body and state but not base, and a claimant retargeted to
@@ -471,6 +501,24 @@ piece and it belongs first, because four earlier heads failed for want of it.
    - for one labelled **after** it — its own declaration in a commit message inside
      its reviewed head, immutable for the same reason its claim is.
 
+   **The commit declaration must be BOUND to the body declaration, or it authorizes
+   the wrong thing.** The body marker is what routes corrections today: it is what
+   `parseCorrectionOwner` reads and what every finding notice is derived from. A
+   commit message saying `claude` on a unit whose body says `cursor` would freeze an
+   owner that never controlled routing, and a `claude` claimant would then pass
+   equality against it and discharge Cursor-owned scope. So the rule is: **exactly
+   one owner declaration in the commit messages, equal to the body's owner, checked
+   on the exact reviewed head before admission.** Unequal, absent or duplicated —
+   refuse the unit at review, which is early enough that the question never becomes
+   an obligation.
+
+   **And that check must happen at REVIEW, not at claim time.** An earlier head put
+   the commit declaration in place with no requirement that anyone verify it, which
+   leaves the other failure mode open: an ordinary unit that carries no marker in
+   any commit becomes an obligation whose owner can never be established, and fails
+   closed forever. Requiring it while the unit is still reviewable is what stops a
+   source entering the queue without a resolvable owner.
+
    A claimant may name only sources whose owner equals its own, for a single claim
    as much as a bundle, and a **bundle mixing owners is refused**. There is no
    "leave the single case as the live rule leaves it" exemption: #387's review was
@@ -485,12 +533,21 @@ piece and it belongs first, because four earlier heads failed for want of it.
    the new rule it is post-cutover, settles nothing, and forces a replacement for a
    unit that obeyed the policy in force when it started.
 
-   So the fence needs a rollout rule as well as a cutover: **either drain or
-   invalidate in-flight orchestrations before post-cutover classification begins,
-   or record the controller version that authorized each merge and classify by
-   that.** Draining is the simpler of the two and the run is observable and
-   bounded. What must not happen is the fence switching on mid-flight and turning
-   conforming work into an obligation.
+   **A queued auto-merge is the same hazard with no run to drain, and it is the
+   harder half.** Executed in `scripts/autonomous-review-gate.mjs`: on the
+   auto-merge path the controller calls `enableAutoMerge` and immediately
+   `return 'queued'` — so it exits, no orchestration is in flight, and GitHub
+   performs the squash later when the protection conditions clear. A rollout that
+   drains only workflow runs sees nothing to drain and switches the fence on; the
+   queued candidate then merges without the newly required commit body, is
+   classified post-cutover, settles nothing, and its obligation becomes permanently
+   unsettleable.
+
+   So the rollout rule covers both: **drain or invalidate in-flight orchestrations,
+   AND cancel or grandfather every pre-cutover queued auto-merge, before
+   post-cutover classification begins** — or record the controller version that
+   authorized each merge and classify by that instead. What must not happen is the
+   fence switching on mid-flight and turning conforming work into an obligation.
 
 7. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`, not
    in the lineage function. A rewrite that touches only the lineage function must

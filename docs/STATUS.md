@@ -53,6 +53,20 @@ competition resolves over WHOLE bundles and a losing bundle releases every holdi
 and a new requirement 6 drains in-flight controller runs before the fence switches
 on, since a run that started under the old rules can merge under the new ones.
 
+**#388's first round tested the snapshot's EDGES and found three.** (1) Requirement
+3's bound is now a LOWER bound, not an equality: the snapshot is frozen while the
+obligation set is not, so the first post-cutover unit to be labelled is in the label
+query and cannot be in the snapshot, and demanding equality would refuse every
+review after it. The query must contain every unsettled entry the list knows about;
+entries it does not know about are new obligations and are accepted. (2) A
+post-cutover source's commit-message owner must EQUAL its body owner, checked on
+the exact reviewed head before admission — otherwise the frozen owner is one that
+never routed a correction, and a unit carrying no marker at all becomes an
+obligation whose owner can never be established. (3) Requirement 6 now covers
+QUEUED AUTO-MERGES, which have no run to drain: executed, the controller calls
+`enableAutoMerge` and immediately returns `queued`, so GitHub merges later with no
+orchestration in flight.
+
 **A STATUS claim carried from the previous head is STRUCK.** It said the only
 barrier to one unit carrying several obligations is `replacementDeclaration`
 rejecting more than one `Replaces:` line. Executed, that is false: a two-line
