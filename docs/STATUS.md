@@ -39,8 +39,10 @@ claimable.
 **#363 (schedule B1) is parked at its green head** — `pnpm check` exit 0,
 `upgrade-proof` 676 assertions, integration 96 files / 1,243 tests, all 10
 checks green on the preceding head. It declares `Replaces: none` truthfully and
-is refused only because #377 is still owed. It is NOT to be edited to claim an
-obligation it does not carry; it resumes once #377 is genuinely discharged.
+is refused because obligations are outstanding — the gate names #377, the lowest
+of the three, but ALL of #377, #378 and #379 must be discharged before any
+`Replaces: none` unit is admitted. It is NOT to be edited to claim an obligation
+it does not carry; it resumes when the queue is empty.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round

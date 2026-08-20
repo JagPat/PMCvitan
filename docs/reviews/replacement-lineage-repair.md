@@ -5,17 +5,20 @@ that framing was withdrawn by owner directive on 2026-08-20, and the programme
 mandate is unchanged — autonomous, fail-closed convergence, with unresolved
 findings carried forward rather than released.
 
-**This document does not discharge #377.** #377 carries the lineage-repair
-implementation and its unresolved findings. A record of what remains undone is
-not the doing of it. This unit replaces #378 — the record — and nothing else;
-#377 keeps its `review-replacement-required` label, and the implementation
-replacement that carries its scope is a separate review unit that follows this
-one. Neither label is to be cleared by hand.
+**This unit replaces #379, and it discharges nothing else.** #379 was the record
+one link back and reached the two-finding-head limit; this unit carries its scope
+and its unresolved findings. It does **not** discharge #378, which holds the same
+record scope one link further back, and it does **not** discharge #377, which
+holds the lineage-repair *implementation* — a record of what remains undone is
+not the doing of it. All three keep their `review-replacement-required` labels,
+they discharge one per merge in that order, and no label is to be cleared by
+hand. §"Where things stand" states the same thing; if the two ever disagree, that
+section is authoritative and this paragraph is the stale one.
 
 Every claim below about how `main` behaves was checked by **executing**
 `assessReplacementLineage` and `assessReviewScope` at `5c2b739`, not by reading
-them. Two claims in this document's first head did not survive that execution and
-are corrected in place, marked where they appear.
+them. Two claims made in earlier heads of this lineage did not survive that
+execution and are corrected in place, marked where they appear.
 
 ## What the rule does today
 
@@ -82,8 +85,10 @@ exhausted in turn; this unit replaces #379. Each closure **at the round limit**
 added a label rather than moving one — and only those closures do. #380, a
 parallel replacement for #378 opened and closed the same minute without reaching
 the limit, left no label and added no obligation. The label marks an exhausted
-unit, not a closed one, and that distinction is what keeps the queue finite. Executed against the live rule with #377, #378 and #379 all
-labelled: this unit declaring `Replaces: #379` is admitted, a fresh
+unit, not a closed one, and that distinction is what keeps the queue finite.
+
+Executed against the live rule with #377, #378 and #379 all labelled: this unit
+declaring `Replaces: #379` is admitted, a fresh
 `Replaces: none` unit is refused naming #377, and **after this unit merges #377
 and #378 are both still owed** — two further sequential units, for a chain whose
 entire subject is that this happens. Nothing here is stuck; the queue is three
