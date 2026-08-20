@@ -1,4 +1,4 @@
-# The replacement-lineage rule, and why seven attempts to fix it are parked
+# The replacement-lineage rule, and why six attempts to fix it are parked
 
 Status: **parked by owner decision on 2026-08-19.** Nothing here changes the
 gate. `main` behaves exactly as it did before the attempt began, and the record
@@ -57,7 +57,7 @@ it is the reason a future attempt cannot simply re-derive lineage from bodies.
 
 ## What was attempted, and what each review found
 
-Seven units, none merged. The design changed three times; the reviews are the
+Six units, none merged. The design changed three times; the reviews are the
 useful part.
 
 | Unit | Design | What the review found |
@@ -81,16 +81,24 @@ Two things are worth carrying forward more than the table:
 ## What a future attempt needs
 
 The reviews converge on a small set of requirements. Any design that meets them
-should get further than these seven did:
+should get further than these six did:
 
 1. **The record must name both ends** — which obligation, and who took it on. A
    boolean cannot express an interrupted transfer versus a second obligation.
 2. **It must be written where the controller can always find it again**, not
    through whatever labels currently exist. The exhausted units are enumerable;
    claimants are not.
-3. **Provenance must be authenticated.** GitHub labels are writable by any
-   collaborator; the issue timeline records the actor and cannot be edited, which
-   is the only reading of a label that proves the controller wrote it.
+3. **Provenance must be authenticated, and the timeline actor is not enough.**
+   GitHub labels are writable by any collaborator, so the label set alone proves
+   nothing; the issue timeline records the actor and cannot be edited, which
+   rules out a human's self-applied label. It does NOT identify the controller:
+   `auto-merge.yml` and `autonomous-handoff.yml` both run with the repository
+   `GITHUB_TOKEN` and `issues: write`, so every workflow in this repository
+   shares one `github-actions[bot]` identity, and any write-capable workflow
+   added later would be indistinguishable from the controller. The timeline
+   actor is a necessary filter, not sufficient evidence; controller-specific
+   evidence is still needed on top of it. (The parked implementation treats the
+   actor as sufficient. That is one of its known gaps.)
 4. **Concurrency resolves by recorded order, not by locking.** Label writes cannot
    be made mutually exclusive; the earliest recorded claim wins, ties going to the
    timeline's order.
@@ -98,7 +106,7 @@ should get further than these seven did:
    claims must settle neither — *and* the sources it raced into must remain
    claimable, or they become permanently stuck, which is the original defect
    again.
-6. **Every gate must fail toward the loop continuing.** Four of the seven units
+6. **Every gate must fail toward the loop continuing.** Four of the six units
    introduced a state where the repository blocked itself. The rule exists to stop
    obligations stranding; a rule that strands them differently is worse than none.
 
@@ -108,11 +116,36 @@ completely at #377 head `1e7a7c0`, with 21 reproduce-first probes in
 it stands — two known findings are open against it — but it is a working starting
 point rather than a blank page.
 
+## The objection to parking, and where it stands
+
+The review of this document raised one P1 against the decision itself, and it is
+recorded here rather than argued away: **parking leaves the loop with no
+autonomous recovery.** When a replacement chain next dies unmerged, the unchanged
+gate refuses every fresh `Replaces: none` unit, and the only remedy named here is
+a human deleting labels. With nobody standing by, unrelated work stalls
+indefinitely — which is what happened on 2026-08-19, for 38 hours, to a pull
+request on another track.
+
+That is correct, and the decision to park was made with it in view: six units
+spent trying to make the rule sound produced no merge and four repository-wide
+stalls of their own. The owner's call was that a bounded, known manual step beats
+continuing to pay that price tonight.
+
+If the automatic recovery is built later, the reviews above suggest it does not
+need the lineage rewrite at all. The narrow version is a watchdog rule: when a
+labelled unit has no OPEN pull request claiming it and every unit that ever
+claimed it is closed unmerged, the obligation is released — with a comment
+recording which unit was released and why — rather than blocking the repository.
+It fails forward, needs no chain derivation, and its weakness is stated plainly:
+a released obligation is unresolved scope that nobody is now tracking, so the
+release has to be loud. That trade is the owner's to make, not the gate's.
+
 ## What this leaves in place
 
 - `main`'s rule is unchanged: both defects above are live.
 - The stale `review-replacement-required` labels on #344, #357, #367, #373, #374,
   #375, #376 and #377 were cleared by hand so the repository accepts fresh work.
 - When a replacement chain next dies mid-way, the labels will need clearing by
-  hand again. That is the cost of parking, and it is a known, bounded, manual
-  step rather than an unbounded one.
+  hand again. That is the cost of parking, stated above with the objection to it.
+  It is a known, bounded, manual step — but it is a manual step in a loop whose
+  point is not to need one.
