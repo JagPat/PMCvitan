@@ -280,16 +280,31 @@ further than these six did.
    forever, because no claim in the new format can exist for a unit that was
    labelled before the format did.
 
-   The bootstrap set is **every unit carrying `review-replacement-required` at
-   the moment the migration runs** — stated as a rule rather than a list, because
-   a list in this document goes stale on the next closure and has already done so
-   once. As of 2026-08-20, after #382 merged, the units still PENDING are #377,
-   #378 and #379 — while #381 carries the label but is discharged, which is
-   itself why the rule must read the pending set and not the label set. The
-   enumeration is a snapshot for the reader and the rule is the authority; an
-   implementation that hardcodes today's numbers reproduces #374's failure with
-   different digits. The migration must be applied atomically and be safe to
-   re-run before the new assessment is enabled.
+   The bootstrap set is **every PENDING obligation at the moment the migration
+   runs** — a unit that carries `review-replacement-required` *and* that no merged
+   pull request has named. That is the single authoritative definition, and it is
+   stated as a rule rather than a list because a list in this document goes stale
+   on the next closure and has already done so twice.
+
+   **"Labelled" is not a synonym for "owed", and the bootstrap is where that
+   distinction becomes load-bearing.** Labels are never removed; discharge is
+   computed. So at any moment some labelled units are already settled, and a
+   migration that seeds itself from the label set **resurrects them as debts in
+   the new representation** — blocking every `Replaces: none` unit permanently,
+   once the real queue has drained and nothing remains that could ever name them.
+   That is #374's failure arriving from the opposite direction, and it is why an
+   earlier draft of this very requirement was wrong: it said "every unit carrying
+   the label", which is the set that must NOT be migrated as owed.
+
+   Discharged-but-labelled units still have to be migrated — dropping them loses
+   the audit trail — but they migrate as **settled**, carrying the merged unit
+   that named them, never as obligations.
+
+   As of 2026-08-20, after #382 merged: pending are #377, #378 and #379; #381 is
+   labelled and settled by merged #382. The enumeration is a snapshot for the
+   reader and the rule is the authority; an implementation that hardcodes today's
+   numbers reproduces #374's failure with different digits. The migration must be
+   applied atomically and be safe to re-run before the new assessment is enabled.
 11. **Keep the malformed-declaration refusal.** It lives in `assessReviewScope`,
     not in the lineage function. A rewrite that touches only the lineage function
     must not assume it is inherited.
