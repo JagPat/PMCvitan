@@ -78,8 +78,11 @@ should name what is still owed rather than only what it directly followed.
 
 **This document is itself the third data point, and the second in two days.**
 #378 was the record of the repair and was exhausted; #379 replaced it and was
-exhausted in turn; this unit replaces #379. Each closure added a label rather
-than moving one. Executed against the live rule with #377, #378 and #379 all
+exhausted in turn; this unit replaces #379. Each closure **at the round limit**
+added a label rather than moving one — and only those closures do. #380, a
+parallel replacement for #378 opened and closed the same minute without reaching
+the limit, left no label and added no obligation. The label marks an exhausted
+unit, not a closed one, and that distinction is what keeps the queue finite. Executed against the live rule with #377, #378 and #379 all
 labelled: this unit declaring `Replaces: #379` is admitted, a fresh
 `Replaces: none` unit is refused naming #377, and **after this unit merges #377
 and #378 are both still owed** — two further sequential units, for a chain whose
