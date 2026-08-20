@@ -5,7 +5,7 @@ that framing was withdrawn by owner directive on 2026-08-20, and the programme
 mandate is unchanged — autonomous, fail-closed convergence, with unresolved
 findings carried forward rather than released.
 
-**This unit replaces #393, and it discharges nothing else.** It does **not**
+**This unit replaces #394, and it discharges nothing else.** It does **not**
 discharge #389, #388, #387, #386, #385, #384, #383, #379 or #378, which hold the
 same record scope further back, and it does **not** discharge #377, which holds
 the lineage-repair *implementation*.
@@ -84,7 +84,7 @@ should name what is still owed rather than only what it directly followed.
 exhausted; #379 replaced it and was exhausted; #381 replaced #379 and was
 exhausted; **#382 replaced #381 and MERGED** on 2026-08-20, which is how this
 text reached `main`; #383 carried it forward and was exhausted; #384 through #390
-each did the same; this unit replaces #393. Each closure **at the round limit**
+each did the same; this unit replaces #394. Each closure **at the round limit**
 added a label rather than moving one — and only those closures do. #380, a
 parallel replacement for #378 opened and closed the same minute without reaching
 the limit, left no label and added no obligation. The label marks an exhausted
@@ -863,7 +863,7 @@ with the same hole.
   because discharge is computed rather than un-marked. **#391, #392, #393 and #394 are all in
   this set**: each closed at the round limit while claiming its predecessor, so the
   claim lapsed with the claimant and source and claimant are both owed. This unit
-  replaces #393 and carries the record forward.
+  replaces #394 and carries the record forward.
   Obligations are discharged by later units carrying the same scope; #377's only by
   a merged unit carrying its implementation scope and its unresolved findings.
 - Until those merge, `Replaces: none` work is refused. That is the rule working,
