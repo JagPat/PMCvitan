@@ -306,6 +306,132 @@ and review-comment webhooks are intentionally not orchestrator triggers. The Cod
 App's finding comments still wake the subscription-backed Claude Auto-fix session
 directly; GitHub Actions does not need an AI key or a second result writer.
 
+## Operating Hazards
+
+Each of these cost the loop a round or a cycle, and each was a case of trusting a
+signal that does not carry the thing it appears to carry. They are recorded so the
+next reader pays the cost once rather than again.
+
+### The round budget is gate state — read it at the moment of acting
+
+A Codex review comment arriving is **not** evidence that a correction round is
+available. The budget is `REVIEW_RESET_AFTER_FINDING_HEADS = 2` finding-bearing
+heads, and the gate's own `<!-- autonomous-review-state -->` comment plus the
+`codex-current-head` status on the exact SHA are what say where a unit stands.
+
+On PR #401 the gate recorded `replacement_required` at 02:08 and a third head was
+pushed at 02:18 in response to the review comments, described in a PR comment as
+"correction round 1". It was not — both heads had already drawn findings. The
+correct action was to close and open a replacement, which is what eventually
+happened, with a wasted head and a misleading comment in between.
+
+**Before acting on any finding, re-read the gate state.** Not what you concluded a
+turn earlier, and not what a scheduled check-in written earlier says: those are
+snapshots of a value that moves.
+
+### PR-body markers are invisible in every rendered view
+
+`<!-- review-size: … -->`, `<!-- migration-scope: … -->` and
+`<!-- correction-owner: … -->` are HTML comments, so they do not appear in the
+rendered PR page, and the MCP `pull_request_read` tool strips them as well (it also
+HTML-escapes apostrophes). A reader looking at the rendered body sees a large diff
+with no declaration and reasonably concludes the declaration is missing.
+
+This produced a false P1 on PR #371: the review asked for a `justified-large`
+marker and the six invariant rows that were both already present, on a head where
+`review-scope` — the check that validates exactly those markers and fails closed
+when they are absent — had passed.
+
+1. Judge marker state by the **`review-scope` outcome**, never by reading the body
+   back through a rendered view or through the MCP tool.
+2. When a unit is `justified-large`, also restate the size evidence in **visible
+   markdown**. The marker satisfies the gate; the visible line satisfies the reader.
+3. The class disappears entirely if `review-scope` maintains a visible line
+   reflecting what it validated. Until then, 1 and 2 are the workaround.
+
+### Verify the measurement, not just the value
+
+Two instances of one mistake — taking a reading from something that does not
+measure the thing.
+
+**An exit code through a pipe is the pipe's.** `cmd | tail` reports `tail`'s
+status, so a failing gate reads as passing. Capture `${PIPESTATUS[0]}`, or run the
+command without a pipe.
+
+**Elapsed time cannot be inferred from `sleep` calls.** A loop of `sleep` in the
+Bash tool that exceeds the 120s tool timeout is moved to the background and returns
+*immediately* saying it waited. Four such calls read as "eight minutes elapsed"
+while almost no time passed. On PR #369 that compounded into a ~20-minute
+overestimate, a conclusion that the `api` job was hung at 31 minutes when it was at
+13 — normal for that job — and a needlessly cancelled workflow run.
+
+**To know the time, read a clock:** `date -u`, or the `current-time` attribute on a
+wake event. Never infer duration from the mechanism used to wait, and never from
+how many tool calls have gone by.
+
+### A trailer git does not parse is a trailer that is not there
+
+`git interpret-trailers --parse` reads only the **last** block of the commit
+message, and every line in that block must be `Key: value`. A `Key: value` line
+written as its own paragraph above the `Co-Authored-By` block is prose to git, no
+matter how much it looks like a trailer to a reader.
+
+That cost a full gate cycle on PR #344 head `ecaf451`, where a since-retired
+protocol marker sat one blank line too high and the gate correctly reported the
+line present but unparsed. (The mechanism it belonged to was later removed
+outright rather than patched — this file deliberately does not name it, so nobody
+reintroduces retired vocabulary by reading a hazard note.)
+
+Put every trailer in the **same** final block as `Co-Authored-By` and
+`Claude-Session`, with no blank line between them, and verify with
+`git log -1 --format=%B | git interpret-trailers --parse` before pushing. Grep is
+not a substitute: grep finds exactly the line git is ignoring.
+
+### Resetting the shared test database does not stop a live run
+
+`DROP DATABASE … WITH (FORCE)` terminates the connections of a running integration
+suite, and **Prisma reconnects** to the recreated database. The two runs then
+truncate each other's fixtures.
+
+The symptom is a large, alarming, entirely fake failure set concentrated in
+whichever suites vitest schedules first — it orders by file size, so the biggest
+suites take the hit. On PR #344 round 8 that looked exactly like a 48-test product
+regression (`phase5-t6b-status-derivation` 11 failed,
+`phase5-t5b-certification` 37 failed) and both were 49/49 green in isolation at the
+same working tree. The cause was a background battery that survived a context
+compaction and whose reset ran seven seconds into the previous run.
+
+1. Before any battery that resets the shared database, **refuse to start** if
+   `pgrep -A -f "vitest.mjs run --config vitest.integration"` or
+   `pgrep -A -f test-api-e2e` matches. Print the offending processes and exit
+   non-zero.
+
+   **`-A` (`--ignore-ancestors`) is load-bearing, not decoration.** Run inline — the
+   way an agent runs it — the checking shell's own command line *contains the search
+   string*, and `-f` matches full command lines, so a plain `pgrep -f` reports the
+   process doing the checking. The guard then refuses every battery, including the
+   one it was meant to permit: a guard that fails closed on nothing at all is worse
+   than no guard, because it looks like protection.
+
+   This is easy to miss because **it behaves differently depending on where you run
+   it**. Inside a script file the pattern lives in the file rather than on a command
+   line, so plain `-f` does not self-match and the rule appears to work; typed
+   inline it always self-matches. Verified by execution both ways: inline, plain
+   `-f` matched its own shell with no suite running, and `-A -f` did not.
+
+   A `pgrep -f "vitest[.]mjs …"` bracket also avoids the self-match — but only when
+   nothing *else* on that command line carries the unbracketed string, which is a
+   property of the line rather than of the check. It fails the moment the guard is
+   run beside a plain-pattern command, which is how it was first measured here.
+   `-A` excludes ancestors structurally and does not care. It needs
+   procps-ng ≥ 3.3.16 (4.0.4 in this container).
+2. A mass failure concentrated in the first-scheduled suites, in modules the diff
+   does not touch, is an **environment** signal, not a product signal. Discriminate
+   by re-running one failing suite alone against a separate scratch database before
+   diagnosing anything.
+3. A scratch database name must contain `test` — `createTestApp` refuses any
+   `DATABASE_URL` without it.
+
 ## GitHub Enforcement
 
 After the autonomous workflow is merged **and PR #246 has merged or closed**, add

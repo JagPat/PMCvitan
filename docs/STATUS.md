@@ -15,8 +15,8 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: f2a88c1
-open_pr: 402
+reviewed_merge: aab8915
+open_pr: 403
 next_task: none
 blocking_directive: none
 updated: 2026-08-20
@@ -25,7 +25,7 @@ updated: 2026-08-20
 **#382 MERGED at `main` `1449c82`**, putting
 `docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. #383,
 #384 through #390 each carried the record forward and each reached the
-two-finding-head limit. The open PR replaces #401. #396 through #401 each closed at the round limit while claiming their predecessor. The unit is now ONE obligation rule read at TWO boundaries: at ADMISSION a review unit targets `main` — every unit, not only a claimant, evaluated in the scope assessment itself so the required `review-scope` check fails it — and a claimant is additionally numbered above what it replaces; at SETTLEMENT an obligation is discharged only by a merge that LANDED on `main` above its source. **ONE-CLAIMANT EXCLUSIVITY IS NOT ENFORCED, by an explicit owner decision of 2026-08-21.** Two open replacements for one obligation can both merge; the cost is duplicated effort, not a corrupted ledger, because settlement still discharges an obligation exactly once. Four mechanisms were built and each was refuted by review, and the merge-controlling boundary an earlier head added to enforce it is REMOVED — later work must not rely on that guarantee. The reasoning and the four refutations are recorded under "Accepted gaps" in `docs/reviews/replacement-lineage-repair.md`. Base-change invalidation of the review authorization remains deferred; #394 was settled by merged #395.
+two-finding-head limit. #402 MERGED at `main` `aab8915`, discharging #401 and putting the base rule on `main`. The open PR replaces #400 and is docs-only: it records the five operating hazards that have each cost this loop a round or a cycle. #396 through #401 each closed at the round limit while claiming their predecessor. The unit is now ONE obligation rule read at TWO boundaries: at ADMISSION a review unit targets `main` — every unit, not only a claimant, evaluated in the scope assessment itself so the required `review-scope` check fails it — and a claimant is additionally numbered above what it replaces; at SETTLEMENT an obligation is discharged only by a merge that LANDED on `main` above its source. **ONE-CLAIMANT EXCLUSIVITY IS NOT ENFORCED, by an explicit owner decision of 2026-08-21.** Two open replacements for one obligation can both merge; the cost is duplicated effort, not a corrupted ledger, because settlement still discharges an obligation exactly once. Four mechanisms were built and each was refuted by review, and the merge-controlling boundary an earlier head added to enforce it is REMOVED — later work must not rely on that guarantee. The reasoning and the four refutations are recorded under "Accepted gaps" in `docs/reviews/replacement-lineage-repair.md`. Base-change invalidation of the review authorization remains deferred; #394 was settled by merged #395.
 
 **THE OWNER'S SCOPE DECISION STANDS AND IS NOW COHERENT.** Requirement 10 — the
 migration cutover — is REMOVED, not deferred: five formulations drew findings, and
@@ -241,9 +241,10 @@ re-classified. Legacy settlement therefore behaves exactly as `main` behaves tod
 neither created, widened, nor endorsed by this repair. It is §2, live, recorded in
 the record's defect list, and closing it needs the authority named there.
 
-**Twenty obligations are pending, and they discharge one per merge.** #377, #378,
+**Nineteen obligations are pending, and they discharge one per merge.** #377, #378,
 #379, #383, #384, #385, #386, #387, #388, #389, #390, #391, #392, #393, #396, #397, #398,
-#399, #400 and #401. (#381 carries the label but is settled by merged #382, and #394 by merged #395 —
+#399 and #400. (#381 carries the label but is settled by merged #382, #394 by merged #395,
+and #401 by merged #402 —
 discharge is computed, not un-marked.) #391, #392, #393 and #394 each joined the queue by
 closing at the round limit while claiming their predecessor, which is the accumulation defect
 running in the open: a claim lapses with its claimant, so both the source and the
@@ -322,12 +323,12 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:402`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:403`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 402` the
-resolver returns `pr:402` — "an open PR is the current work item until it merges
+unit. `open_pr` outranks the task branch outright: with `open_pr: 403` the
+resolver returns `pr:403` — "an open PR is the current work item until it merges
 or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
 The open unit is named in the prose above rather than in `work_item`, because
 that field would not be read here.
