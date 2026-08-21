@@ -228,6 +228,71 @@ export function assessRunnerState(state, maintenanceQueue = []) {
   };
 }
 
+/**
+ * Does the STATUS a pull request COMMITS still give the runner a move once that
+ * pull request has merged?
+ *
+ * The loop folds the STATUS update into the work PR, so the committed block is
+ * written while the PR is still open — `open_pr` names it, as CLAUDE.md requires.
+ * That value is correct for exactly as long as the PR is open, and stale the
+ * instant it merges. Nothing failed a PR whose folded block was committed in the
+ * shape it has WHILE OPEN rather than the shape it needs AFTER merge, so the
+ * loop merged, re-read STATUS, and resolved to a pull request that no longer
+ * existed. The `handoff` job does not catch it: it orchestrates rather than
+ * validating the committed shape, and `buildPostMergeContinuation` runs only
+ * after the merge and only into a comment, by which time the runner has already
+ * re-entered the merged work item.
+ *
+ * So this simulates the merge before allowing it. The ONLY thing simulated is the
+ * one fact merging changes for certain: this pull request stops being open. That
+ * is deliberately narrow — a check that rewrote more of the block would be
+ * asserting a post-merge state nobody committed.
+ *
+ * It does NOT fight the drift shepherd. The shepherd reads the live value and
+ * wants `open_pr` to name the open PR; this reads the same value and asks what
+ * happens after. Both are satisfied by the same correct block, which is the point.
+ */
+export function assessPostMergeRunnerState(state, maintenanceQueue = [], pullNumber) {
+  if (!state || typeof state !== 'object') {
+    return {
+      allowed: false,
+      detail: 'docs/STATUS.md is changed but its Now block could not be parsed, so the '
+        + 'state the runner reads after this merge is unknown',
+    };
+  }
+
+  // Merging closes this pull request, so its own `open_pr` entry stops resolving.
+  // Any OTHER number is left exactly as committed: it names a different unit whose
+  // openness this merge does not change, and overriding it would invent a state.
+  //
+  // Clearing it IS the whole simulation, and that is why there is no second rule
+  // here checking whether the result still points at this PR: it cannot. An
+  // earlier draft carried exactly that branch and it was unreachable — a guard
+  // that never fires, which is the shape the operating-hazards note warns about.
+  // The one question worth asking is whether anything is left to do.
+  const namesThisPullRequest = Number.isInteger(pullNumber)
+    && String(state.open_pr ?? '').trim() === String(pullNumber);
+  const merged = namesThisPullRequest ? { ...state, open_pr: NONE } : state;
+
+  const resolved = assessRunnerState(merged, maintenanceQueue);
+
+  if (!resolved.actionable) {
+    return {
+      allowed: false,
+      detail: 'after this PR merges, docs/STATUS.md leaves the runner with no next step: '
+        + `${resolved.reason}`,
+      simulated: namesThisPullRequest,
+    };
+  }
+
+  return {
+    allowed: true,
+    detail: null,
+    nextStep: resolved.nextStep,
+    simulated: namesThisPullRequest,
+  };
+}
+
 export async function loadStatusDocument(path = new URL('../docs/STATUS.md', import.meta.url)) {
   const markdown = await readFile(path, 'utf8');
   return { now: parseStatusNow(markdown), maintenanceQueue: parseMaintenanceQueue(markdown) };

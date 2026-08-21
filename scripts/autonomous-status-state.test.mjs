@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
 import {
+  assessPostMergeRunnerState,
   assessRunnerState,
   loadStatusDocument,
   parseMaintenanceQueue,
   parseStatusNow,
 } from './autonomous-status-state.mjs';
+import { assessCommittedStatus } from './review-scope.mjs';
 
 // The Now blocks exactly as they stood on the two PR #248 finding heads.
 // These are committed literals, not git reads: CI checks out at fetch-depth 1,
@@ -832,4 +834,149 @@ test("the live STATUS's phase_plan resolves to a regular file in this tree", asy
       + 'the same PR as the STATUS that names it — a merged state must be complete in its '
       + 'own tree.',
   );
+});
+
+
+// ---------------------------------------------------------------------------
+// The folded STATUS must survive its own merge.
+//
+// These shapes are the ones the loop actually produced. The gap they close is
+// real rather than theoretical: head f9a4125 carried a block that resolved back
+// into the work item its own PR completed, and `handoff` reported success on it,
+// because that job orchestrates rather than validating the committed shape.
+// ---------------------------------------------------------------------------
+
+const STATUS_DOC = (now, queue = []) => [
+  '# Status', '', '## Now', '', '```yaml',
+  ...Object.entries(now).map(([key, value]) => `${key}: ${value}`),
+  '```', '',
+  ...(queue.length > 0
+    ? ['## Maintenance queue', '', ...queue.map((slug, index) => `${index + 1}. \`${slug}\``), '']
+    : []),
+].join('\n');
+
+test('a folded STATUS that resolves past its own merge is allowed', () => {
+  // The well-formed fold, and the one CLAUDE.md asks for: `open_pr` names this PR
+  // while it is open, and the task behind it is what the runner picks up after.
+  const now = {
+    task_state: 'in_progress', task: '4', work_item: 'none',
+    open_pr: '403', next_task: 'none', blocking_directive: 'none',
+  };
+  const verdict = assessPostMergeRunnerState(now, [], 403);
+  assert.equal(verdict.allowed, true, verdict.detail ?? '');
+  assert.equal(verdict.nextStep, 'task:4');
+  assert.equal(verdict.simulated, true, 'the self-naming open_pr must be the thing simulated away');
+});
+
+test('a folded STATUS that strands the runner after its own merge is refused', () => {
+  // `in_review` and `ready` are defined BY their open PR. Committed alongside an
+  // `open_pr` naming this PR they read as coherent — and the moment the PR merges
+  // the state defines itself by a pull request that no longer exists.
+  for (const taskState of ['in_review', 'ready']) {
+    const verdict = assessPostMergeRunnerState({
+      task_state: taskState, task: '4', work_item: 'none',
+      open_pr: '403', next_task: 'none', blocking_directive: 'none',
+    }, [], 403);
+    assert.equal(verdict.allowed, false, `${taskState} must not survive its own merge`);
+    assert.match(verdict.detail, /no next step/u);
+    assert.match(verdict.detail, /open_pr is none/u);
+  }
+
+  // The exhausted-handoff shape: merged, with nothing named and nothing queued.
+  const empty = assessPostMergeRunnerState({
+    task_state: 'merged', task: '4', work_item: 'none',
+    open_pr: '403', next_task: 'none', blocking_directive: 'none',
+  }, [], 403);
+  assert.equal(empty.allowed, false);
+  assert.match(empty.detail, /nothing it can start/u);
+
+  // ...and the same block is fine the moment the queue gives it somewhere to go,
+  // so the refusal is about the stall and not about `merged`.
+  const queued = assessPostMergeRunnerState({
+    task_state: 'merged', task: '4', work_item: 'none',
+    open_pr: '403', next_task: 'none', blocking_directive: 'none',
+  }, ['tidy-fixtures'], 403);
+  assert.equal(queued.allowed, true, queued.detail ?? '');
+  assert.equal(queued.nextStep, 'maintenance:tidy-fixtures');
+});
+
+test('another unit\'s open_pr is left exactly as committed', () => {
+  // Merging THIS pull request does not close a different one, so its entry still
+  // resolves. Clearing it would invent a state nobody committed — and would fail
+  // a correct block whose author was pointing at genuinely open work.
+  const now = {
+    task_state: 'in_review', task: '4', work_item: 'none',
+    open_pr: '363', next_task: 'none', blocking_directive: 'none',
+  };
+  const verdict = assessPostMergeRunnerState(now, [], 403);
+  assert.equal(verdict.allowed, true, verdict.detail ?? '');
+  assert.equal(verdict.nextStep, 'pr:363');
+  assert.equal(verdict.simulated, false);
+});
+
+test('an unparseable committed Now block is a refusal, not a skip', () => {
+  const verdict = assessPostMergeRunnerState(null, [], 403);
+  assert.equal(verdict.allowed, false);
+  assert.match(verdict.detail, /could not be parsed/u);
+});
+
+test('the committed-status check reads the PR tree, and only when the diff touches STATUS', async () => {
+  const pullRequest = { number: 403 };
+  const stranded = STATUS_DOC({
+    task_state: 'in_review', task: '4', work_item: 'none',
+    open_pr: '403', next_task: 'none', blocking_directive: 'none',
+  });
+
+  // Untouched STATUS: the check does not run at all, so every other unit pays nothing.
+  assert.equal(
+    await assessCommittedStatus(pullRequest, [{ filename: 'apps/api/src/thing.ts' }], async () => stranded),
+    null,
+  );
+
+  // Touched and stranded: refused.
+  const refused = await assessCommittedStatus(
+    pullRequest, [{ filename: 'docs/STATUS.md' }], async () => stranded,
+  );
+  assert.equal(refused.allowed, false);
+  assert.match(refused.detail, /no next step/u);
+
+  // Touched and coherent: allowed.
+  const allowed = await assessCommittedStatus(
+    pullRequest,
+    [{ filename: 'docs/STATUS.md' }],
+    async () => STATUS_DOC({
+      task_state: 'in_progress', task: '4', work_item: 'none',
+      open_pr: '403', next_task: 'none', blocking_directive: 'none',
+    }),
+  );
+  assert.equal(allowed.allowed, true, allowed.detail ?? '');
+  assert.equal(allowed.nextStep, 'task:4');
+
+  // Changed but unreadable is a REFUSAL. A skip here would let a PR edit STATUS
+  // into a shape the check cannot read and pass precisely because it cannot.
+  const unreadable = await assessCommittedStatus(
+    pullRequest, [{ filename: 'docs/STATUS.md' }],
+    async () => { throw new Error('ENOENT'); },
+  );
+  assert.equal(unreadable.allowed, false);
+  assert.match(unreadable.detail, /could not be read/u);
+
+  // A rename away from STATUS still counts as touching it.
+  const renamed = await assessCommittedStatus(
+    pullRequest,
+    [{ filename: 'docs/STATE.md', previous_filename: 'docs/STATUS.md' }],
+    async () => stranded,
+  );
+  assert.equal(renamed.allowed, false);
+});
+
+test('the live docs/STATUS.md survives the merge of the PR it names', async () => {
+  // The invariant applied to the file itself, so a future fold that strands the
+  // runner fails here as well as in the gate.
+  const { now, maintenanceQueue } = await loadStatusDocument();
+  const named = Number.parseInt(String(now.open_pr ?? ''), 10);
+  const verdict = assessPostMergeRunnerState(
+    now, maintenanceQueue, Number.isInteger(named) ? named : undefined,
+  );
+  assert.equal(verdict.allowed, true, verdict.detail ?? '');
 });
