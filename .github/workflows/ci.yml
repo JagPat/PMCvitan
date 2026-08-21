@@ -117,9 +117,31 @@ jobs:
       - name: Install Playwright Chromium
         # `--with-deps` runs `apt-get update`, and that fetch has no timeout of its own. When a
         # runner's Azure mirror Ign's and apt falls back to archive.ubuntu.com, it can stall
-        # indefinitely — 33 and 36 minutes on the two attempts of one job, against 84 seconds for
-        # the identical command on a healthy runner in the same workflow. Bounded here so a bad
+        # indefinitely — 33 and 36 minutes on the two attempts of one job (PR #370, 58b2d51),
+        # against seconds for the identical command on a healthy runner. Bounded here so a bad
         # mirror costs one fast retry instead of the review round.
+        #
+        # Two further optimizations look obvious and are REFUTED by measurement. Do not re-open
+        # either without new evidence. Measured on a healthy runner, PR #406 head 6d5fe1d,
+        # run 32451957869, this job:
+        #
+        #     apt phase           10.0s    0 upgraded, 9 newly installed
+        #     browser download     9.7s    293.5 MiB at 30.2 MiB/s
+        #     pnpm cache restore   2.4s    109.6 MiB at 46.1 MiB/s  (in-job control)
+        #
+        # 1. Dropping `--with-deps`. The premise is sound as far as it goes: all 26 Chromium
+        #    shared libraries are ALREADY on the ubuntu-latest image, every one reported
+        #    "already the newest version". But the 9 packages apt does install are FONTS —
+        #    fonts-ipafont-gothic, fonts-wqy-zenhei, fonts-unifont, fonts-tlwg-loma-otf,
+        #    xfonts-cyrillic and friends. Whether this suite renders correctly without them is
+        #    a question about fonts that the library premise does not answer, and the web app
+        #    ships en/hi/gu strings. The flag stays until a CI run answers it.
+        #
+        # 2. Caching ~/.cache/ms-playwright. apt and the download cost the same to within 3%
+        #    (ratio 1.03), so the download is not the dominant half either. Against the pnpm
+        #    store restored in the same job as the throughput control, a cache would save about
+        #    3.3s of the 9.7s while adding a ~300 MB entry to the repository's shared cache
+        #    budget that the pnpm store also draws on. Not worth it.
         timeout-minutes: 8
         run: pnpm --filter web exec playwright install --with-deps chromium
       - name: End-to-end tests
@@ -167,11 +189,10 @@ jobs:
       - name: Prisma generate
         run: pnpm --filter api prisma:generate
       - name: Install Playwright Chromium
-        # `--with-deps` runs `apt-get update`, and that fetch has no timeout of its own. When a
-        # runner's Azure mirror Ign's and apt falls back to archive.ubuntu.com, it can stall
-        # indefinitely — 33 and 36 minutes on the two attempts of one job, against 84 seconds for
-        # the identical command on a healthy runner in the same workflow. Bounded here so a bad
-        # mirror costs one fast retry instead of the review round.
+        # Bounded because `--with-deps` runs `apt-get update`, which has no timeout of its own
+        # and has stalled for 30+ minutes on a bad mirror. The measured cost breakdown, and why
+        # neither dropping `--with-deps` nor caching the browsers is worth taking, is recorded
+        # once at the `e2e` job's copy of this step.
         timeout-minutes: 8
         run: pnpm --filter web exec playwright install --with-deps chromium
       # PR C Task 5 — the acceptance suite runs in BOTH sender modes over PostgreSQL 16, each on a

@@ -432,6 +432,38 @@ compaction and whose reset ran seven seconds into the previous run.
 3. A scratch database name must contain `test` — `createTestApp` refuses any
    `DATABASE_URL` without it.
 
+### A plausible optimization is a hypothesis until a log says otherwise
+
+When a CI step is slow, the reason it is slow feels obvious, and the fix that
+follows from that reason feels safe. Both are guesses until something measures them.
+
+The concrete instance: `playwright install --with-deps` stalled 33 and 36 minutes on
+one job's two attempts, and the recorded remedy was to drop `--with-deps` (the
+runner image already carries Chromium's libraries) and cache `~/.cache/ms-playwright`
+(the download is not the slow part). PR #406 bounded the step in time and deferred
+both halves for want of runner evidence. The first green job log after it supplied
+that evidence and **refuted both**:
+
+- The libraries are indeed all present — and the 9 packages apt installs anyway are
+  **fonts**. The premise was true and the conclusion still did not follow.
+- apt and the download cost the same to within 3%, so "the download is not the slow
+  part" was simply false. It was stated in a merged PR body and commit message.
+
+Two rules follow.
+
+**Read the job log before spending a review round on a CI change.** The evidence
+already exists, in the logs of runs that have passed. It is cheaper than the round.
+
+**Deferring for want of evidence is the correct move, and it has to be finished.**
+PR #406 was right to bound the step and name what it was not doing. What made that
+deferral pay was going back for the evidence rather than leaving the guess standing
+in the record as a plan. A named "not done" that is never revisited becomes an
+instruction to a future reader who has less context than the person who deferred it.
+
+Correct such a claim **forward**, in a new commit that says what was wrong and what
+the measurement showed. Do not edit the merged PR body: the record of what was
+believed at the time is worth keeping next to the correction.
+
 ## GitHub Enforcement
 
 After the autonomous workflow is merged **and PR #246 has merged or closed**, add
