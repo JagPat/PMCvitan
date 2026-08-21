@@ -19,6 +19,12 @@ const PMC = 'pmc@vitan.in';
 const SECOND_PMC = 'test-pmc@vitan.in';
 const PILOT_NAME = 'T7 Commercial Pilot';
 const PLAIN_NAME = 'T7 Commercial Plain';
+
+// The project names this ATTEMPT works in. A first attempt uses the constants above, so a local
+// re-run still reuses one project instead of piling them up; a RETRY works in fresh ones. See the
+// retry-poison note in `beforeAll` for why a retry cannot reuse the first attempt's project.
+let pilotName = PILOT_NAME;
+let plainName = PLAIN_NAME;
 /** a 1×1 png, for the evidence an acceptance requires */
 const PX = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
@@ -168,12 +174,36 @@ async function claimAwaitingVerification(
   return { billId: bill.id as string, vendorId: vendor.id as string, headCode };
 }
 
-test.beforeAll(async ({ request }) => {
+test.beforeAll(async ({ request }, testInfo) => {
+  // RETRY POISON — a retry MUST NOT reuse the failed attempt's project.
+  //
+  // The activation plan below maps zero PO lines, which is true of a FRESH project and of nothing
+  // else. This chain creates live PO lines as it runs, so once an attempt has failed part-way, the
+  // project it was working in holds live lines that the empty plan does not name. `activate` is
+  // idempotent by RE-ASSERTING the plan rather than short-circuiting, so re-enabling then refuses —
+  // correctly — with "every LIVE purchase-order line must be attributed to a cost head".
+  //
+  // The effect was that the retry never reached the assertion it was retrying. It failed in
+  // `beforeAll`, for a DIFFERENT reason than the attempt it was meant to re-run, and the job burned
+  // both attempts without ever self-healing. Only a fresh Postgres service container cleared it,
+  // which costs a whole CI cycle.
+  //
+  // This is the hazard the file docstring already names for parallel workers — "§L refuses to
+  // enable `commercial` while any LIVE PO line is unattributed, and a parallel worker can create
+  // exactly that state" — met along the time axis instead of the worker axis. Serial mode closes
+  // the worker direction; this closes the retry direction.
+  //
+  // A retry therefore provisions its own project. That also makes the retry MEAN something: re-running
+  // the chain over a project the failed attempt already mutated would not be re-running the chain.
+  const attempt = testInfo.retry > 0 ? ` retry ${testInfo.retry}` : '';
+  pilotName = `${PILOT_NAME}${attempt}`;
+  plainName = `${PLAIN_NAME}${attempt}`;
+
   home = await login(request, PMC);
   const orgs = await get(request, home, '/me/orgs');
   orgId = orgs[0].id;
-  pilotId = await ensureProject(request, home, orgId, PILOT_NAME);
-  plainId = await ensureProject(request, home, orgId, PLAIN_NAME);
+  pilotId = await ensureProject(request, home, orgId, pilotName);
+  plainId = await ensureProject(request, home, orgId, plainName);
 
   // §D/§L — enabled on the PILOT project only, through the operator CLI (the sole path).
   // `commercial` activation is NOT a no-op: it must attribute every live PO line, so the CLI
@@ -226,7 +256,7 @@ test('PILOT §M chain: browser VERIFIES → CERTIFIES → WITHHOLDS → APPROVES
   const activityId = await createActivity(request, pmcPilot, pilotId, `Commercial ${tag}`);
   const { billId } = await claimAwaitingVerification(request, pmcPilot, pilotId, activityId, tag);
 
-  await signInToProject(page, PMC, PILOT_NAME);
+  await signInToProject(page, PMC, pilotName);
   await openCommercial(page);
 
   // open the claim this test provisioned — the list is newest-first but other tests add rows too
@@ -354,7 +384,7 @@ test('PILOT §M chain: browser VERIFIES → CERTIFIES → WITHHOLDS → APPROVES
 });
 
 test('NON-PILOT: the Commercial surface is ABSENT, and its reads 404', async ({ page, request }) => {
-  await signInToProject(page, PMC, PLAIN_NAME);
+  await signInToProject(page, PMC, plainName);
   await expect(
     page.getByRole('navigation').getByRole('button', { name: /Commercial|Money/ }),
     'no capability, no nav',
