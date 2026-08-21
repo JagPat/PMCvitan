@@ -24,6 +24,7 @@ on:
 jobs:
   review-scope:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
@@ -38,6 +39,7 @@ jobs:
   # read); no dependency install, no database. Fails toward running products.
   battery-plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       checks: read
@@ -57,6 +59,7 @@ jobs:
   automation:
     needs: [review-scope]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
@@ -74,6 +77,7 @@ jobs:
     needs: [review-scope, battery-plan]
     if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
@@ -99,6 +103,7 @@ jobs:
     needs: [review-scope, battery-plan]
     if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
@@ -110,6 +115,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install Playwright Chromium
+        # `--with-deps` runs `apt-get update`, and that fetch has no timeout of its own. When a
+        # runner's Azure mirror Ign's and apt falls back to archive.ubuntu.com, it can stall
+        # indefinitely — 33 and 36 minutes on the two attempts of one job, against 84 seconds for
+        # the identical command on a healthy runner in the same workflow. Bounded here so a bad
+        # mirror costs one fast retry instead of the review round.
+        timeout-minutes: 8
         run: pnpm --filter web exec playwright install --with-deps chromium
       - name: End-to-end tests
         run: pnpm --filter web test:e2e
@@ -122,6 +133,7 @@ jobs:
     needs: [review-scope, battery-plan]
     if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:16
@@ -155,6 +167,12 @@ jobs:
       - name: Prisma generate
         run: pnpm --filter api prisma:generate
       - name: Install Playwright Chromium
+        # `--with-deps` runs `apt-get update`, and that fetch has no timeout of its own. When a
+        # runner's Azure mirror Ign's and apt falls back to archive.ubuntu.com, it can stall
+        # indefinitely — 33 and 36 minutes on the two attempts of one job, against 84 seconds for
+        # the identical command on a healthy runner in the same workflow. Bounded here so a bad
+        # mirror costs one fast retry instead of the review round.
+        timeout-minutes: 8
         run: pnpm --filter web exec playwright install --with-deps chromium
       # PR C Task 5 — the acceptance suite runs in BOTH sender modes over PostgreSQL 16, each on a
       # freshly migrated + seeded disposable database, proving the same user-visible consequences.
@@ -178,6 +196,7 @@ jobs:
     needs: [review-scope, battery-plan]
     if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -201,6 +220,7 @@ jobs:
     needs: [review-scope, battery-plan]
     if: needs.battery-plan.outputs.run_products == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16
@@ -264,6 +284,7 @@ jobs:
       - api-e2e
       - upgrade-proof
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Summarize every required check into one verdict
