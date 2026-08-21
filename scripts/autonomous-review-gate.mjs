@@ -6,6 +6,7 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 import { observeReviewLifecycle, lifecycleAdvisory } from './review-lifecycle.mjs';
 import {
   CORRECTION_STALLED,
@@ -16,6 +17,8 @@ import {
   assessReviewScope,
   isRetryableReviewFailureDescription,
   codexFindingHeads,
+  replacementDeclaration,
+  settlementOf,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
   REVIEW_RESET_AFTER_FINDING_HEADS,
@@ -47,6 +50,9 @@ const STATUS_CONTEXT = 'codex-current-head';
 const RECOVERY_CONTEXT_PREFIX = 'codex-recovery-request/';
 const COMMENT_MARKER = '<!-- autonomous-review-state -->';
 const API_ROOT = 'https://api.github.com';
+// Where an exclusive claim on a replacement obligation is persisted. A ref, because
+// ref creation is the only atomic compare-and-set this gate can reach.
+const CLAIM_REF_PREFIX = 'lineage-claim';
 // The settle window must exceed the LONGEST required CI job. The api battery
 // runs ~11-13 minutes; a 10-minute window made every orchestrator instance
 // woken early (e.g. by a metadata-only `edited` CI run completing while the
@@ -693,6 +699,59 @@ export class GitHubClient {
     );
   }
 
+  // THE ONE ATOMIC PRIMITIVE GITHUB GIVES US.
+  //
+  // Creating a ref either succeeds or returns 422 because the ref already exists, and
+  // that decision is made by the server under its own lock. Nothing else available
+  // here is a compare-and-set: a label write, a status write and a comment all
+  // succeed unconditionally, so none of them can arbitrate between two runs.
+  //
+  // The ref is named for the OBLIGATION and points at the head that claimed it, so the
+  // holder is identifiable from git alone — the trust root this repair already relies
+  // on — without any stored state beside it.
+  async claimObligation(source, headSha) {
+    const response = await fetch(
+      `${API_ROOT}/repos/${this.repository}/git/refs`,
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        body: JSON.stringify({ ref: `refs/${CLAIM_REF_PREFIX}/${source}`, sha: headSha }),
+      },
+    );
+    // 422 is the lock refusing: another claimant created this ref first.
+    if (response.status === 422) return false;
+    if (!response.ok) {
+      throw new Error(
+        `Could not claim obligation #${source}: ${response.status} ${await response.text()}`,
+      );
+    }
+    return true;
+  }
+
+  async releaseObligation(source) {
+    const response = await fetch(
+      `${API_ROOT}/repos/${this.repository}/git/refs/${CLAIM_REF_PREFIX}/${source}`,
+      {
+        method: 'DELETE',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${this.token}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    );
+    // Already gone is the desired state, not an error.
+    if (response.status === 404 || response.ok) return;
+    throw new Error(
+      `Could not release obligation #${source}: ${response.status} ${await response.text()}`,
+    );
+  }
+
   async mergeExactHead(number, expectedHead) {
     const response = await fetch(
       `${API_ROOT}/repos/${this.repository}/pulls/${number}/merge`,
@@ -961,43 +1020,194 @@ async function setDraftForCurrentHead(
     : null;
 }
 
+// What the sticky notice must SAY about each completion outcome. Exported so the
+// mapping is asserted directly rather than inferred from rendered text: a caller that
+// treats every non-`merged` outcome as success publishes the opposite of the failing
+// status a refusal has just written.
+export function completionNotice(completion) {
+  if (completion === 'claim_settled') {
+    return {
+      state: 'blocked',
+      refused: true,
+      next: 'Completion was refused: this obligation is already discharged by an '
+        + 'earlier merged replacement. Close this unit, or re-declare it against an '
+        + 'obligation that is still pending.',
+    };
+  }
+  if (completion === 'claim_held') {
+    return {
+      state: 'blocked',
+      refused: true,
+      next: 'Completion was refused: another claimant holds the exclusive claim on '
+        + 'this obligation. This unit is retried once that claim resolves.',
+    };
+  }
+  if (completion === 'base_refused' || completion === 'base_violated') {
+    return {
+      state: 'blocked',
+      refused: true,
+      next: `Completion was refused: this unit is not on \`${LINEAGE_BASE_REF}\`. `
+        + `Retarget it at \`${LINEAGE_BASE_REF}\` to have it picked up again.`,
+    };
+  }
+  if (completion === 'not_ready') {
+    return {
+      state: 'clear',
+      refused: false,
+      next: 'The exact-head merge was not ready. This unit is retried on its next '
+        + 'event: a claimant does not queue auto-merge, because a queued merge fires '
+        + 'unattended and cannot hold an exclusive claim on the obligation.',
+    };
+  }
+  if (completion === 'merged') {
+    return {
+      state: 'clear',
+      refused: false,
+      next: 'GitHub squash-merged this exact reviewed head.',
+    };
+  }
+  return {
+    state: 'clear',
+    refused: false,
+    next: 'GitHub auto-merge is queued behind branch protection.',
+  };
+}
+
+async function refuseCompletion(client, pullRequest, expectedHead, detail) {
+  console.log(`Refusing to complete #${pullRequest?.number}: ${detail}`);
+  // The status goes to the head this refusal is ABOUT — head-addressed, so it lands
+  // harmlessly even if that head has since been superseded. The draft transition is
+  // NOT head-addressed: it mutates the pull request, so it goes through the exact-head
+  // guard and does nothing once the author has pushed a newer correction head.
+  await client.setStatus(expectedHead, 'failure', detail, pullRequest?.html_url);
+  await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+}
+
 export async function completeReviewedPullRequest(
   client,
   pullRequest,
   expectedHead,
 ) {
-  const direct = await client.mergeExactHead(
-    pullRequest.number,
-    expectedHead,
-  );
-  if (direct?.merged) {
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'merged';
+  const declaration = replacementDeclaration(pullRequest?.body);
+  let held = false;
+
+  if (declaration.kind === 'source') {
+    const lineage = await client.replacementLineage();
+    const settled = settlementOf(
+      declaration.source,
+      lineage?.replacementPullRequests ?? [],
+    );
+    if (settled) {
+      await refuseCompletion(
+        client,
+        pullRequest,
+        expectedHead,
+        `scope: #${declaration.source} is already discharged by merged #${settled.number}; `
+          + 'a second replacement for one obligation must not merge',
+      );
+      return 'claim_settled';
+    }
+
+    // EXCLUSIVE, AND ATOMICALLY SO. Reading that the obligation is undischarged is not
+    // enough: two runs can both read it undischarged and both proceed to merge. Ref
+    // creation is decided by the server under its own lock, so exactly one wins and the
+    // loser is told which claim it lost to.
+    held = await client.claimObligation(declaration.source, expectedHead);
+    if (!held) {
+      await refuseCompletion(
+        client,
+        pullRequest,
+        expectedHead,
+        `scope: another claimant holds the exclusive claim on #${declaration.source}; `
+          + 'one obligation admits one replacement',
+      );
+      return 'claim_held';
+    }
   }
 
   try {
-    await client.enableAutoMerge(pullRequest, expectedHead);
-    await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
-    return 'queued';
-  } catch (error) {
-    if (
-      !(error instanceof Error)
-      || !error.message.includes('is in clean status')
-    ) {
-      throw error;
+    // THE BASE IS BOUND AT THE MERGE, not at admission. Retargeting does not change the
+    // head SHA, so an exact-head merge cannot detect it and would merge into whatever
+    // base is live — after which the gate would report a successful replacement and
+    // dispatch a handoff from a stale snapshot, for a merge that settled nothing.
+    const live = await client.pullRequest(pullRequest.number);
+    if (!isLineageBase(live?.base?.ref)) {
+      await refuseCompletion(
+        client,
+        pullRequest,
+        expectedHead,
+        `scope: a reviewed unit merges only into ${LINEAGE_BASE_REF}; this unit targets `
+          + `${live?.base?.ref ?? 'an unreadable base'}`,
+      );
+      return 'base_refused';
     }
-    const raced = await client.mergeExactHead(
+
+    const direct = await client.mergeExactHead(
       pullRequest.number,
       expectedHead,
     );
-    if (raced?.merged) {
-      await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+    if (direct?.merged) {
+      // Detection as well as a check: the retarget can land between the read above and
+      // the merge, and the merge request pins only the head SHA.
+      const landed = await client.pullRequest(pullRequest.number);
+      if (!isLineageBase(landed?.base?.ref)) {
+        await refuseCompletion(
+          client,
+          pullRequest,
+          expectedHead,
+          `scope: a reviewed unit merges only into ${LINEAGE_BASE_REF}; this unit merged `
+            + `into ${landed?.base?.ref ?? 'an unreadable base'}`,
+        );
+        return 'base_violated';
+      }
+      // The merge IS the discharge, so the claim has done its work and is kept: the ref
+      // records which head discharged the obligation, and settlement reads the merge.
+      held = false;
+      await client.dispatchHandoff(landed.base.ref, pullRequest.number);
       return 'merged';
     }
-    throw new Error(
-      `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
-      { cause: error },
-    );
+
+    if (declaration.kind === 'source') {
+      // A CLAIMANT NEVER QUEUES. An auto-merge queue fires unattended, long after this
+      // function has returned. Queuing while holding the claim would pin the obligation
+      // against a merge that may never fire; queuing after releasing it would let the
+      // merge land with no claim held at all. Either way exclusivity would stop meaning
+      // anything, which is the defect this whole unit exists to close.
+      //
+      // So the claim is released in `finally` and the unit is simply retried on its
+      // next event, when the exact-head merge can be taken directly and atomically.
+      return 'not_ready';
+    }
+
+    try {
+      await client.enableAutoMerge(pullRequest, expectedHead);
+      await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+      return 'queued';
+    } catch (error) {
+      if (
+        !(error instanceof Error)
+        || !error.message.includes('is in clean status')
+      ) {
+        throw error;
+      }
+      const raced = await client.mergeExactHead(
+        pullRequest.number,
+        expectedHead,
+      );
+      if (raced?.merged) {
+        await client.dispatchHandoff(pullRequest.base.ref, pullRequest.number);
+        return 'merged';
+      }
+      throw new Error(
+        `GitHub reported a clean pull request but refused the exact-head merge: ${raced?.message ?? 'unknown reason'}`,
+        { cause: error },
+      );
+    }
+  } finally {
+    // The claim is released on every path that did NOT merge — including a thrown
+    // error. Holding it past a failed attempt would make one bad run lock the
+    // obligation permanently, which is a worse failure than the one being prevented.
+    if (held) await client.releaseObligation(declaration.source);
   }
 }
 
@@ -1903,16 +2113,17 @@ export async function run() {
         pullRequest,
         expectedHead,
       );
+      const notice = completionNotice(completion);
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
-          state: 'clear',
+          state: notice.state,
           head: expectedHead,
-          detail: `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
+          detail: notice.refused
+            ? `${result.detail}; completion was refused — see the failing status on this head`
+            : `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
           attempt,
-          next: completion === 'merged'
-            ? 'GitHub squash-merged this exact reviewed head.'
-            : 'GitHub auto-merge is queued behind branch protection.',
+          next: notice.next,
         }),
       );
       return;

@@ -1717,8 +1717,12 @@ test('the clean verdict is published while the PR is still open', async () => {
   assert.ok(publishedClean >= 0);
   assert.ok(publishedSuccess > publishedClean);
   assert.ok(mergeCompletion > publishedClean);
-  // and the pre-merge update must precede the post-merge 'clear' update
-  const clearUpdate = clearBranch.lastIndexOf("state: 'clear'");
+  // and the pre-merge update must precede the post-merge completion update. That
+  // update's state is now DERIVED — a refused completion must not render as `clear` —
+  // so the anchor is the sticky update itself rather than the literal it used to
+  // carry. Removing the post-merge update entirely still fails here, because the only
+  // remaining match would be the `review_clean` call that precedes this index.
+  const clearUpdate = clearBranch.lastIndexOf('updateStickyComment');
   assert.ok(clearUpdate > publishedClean);
 });
 
@@ -1734,6 +1738,10 @@ test('a clean reviewed head is squash-merged directly with exact SHA', async () 
   };
   const calls = [];
   const client = {
+    // the live re-read the completion boundary takes before acting; deliberately not
+    // recorded in `calls`, so the existing call-order assertions keep asserting what
+    // they were written to assert
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: true, sha: 'b'.repeat(40) };
@@ -1772,6 +1780,10 @@ test('a reviewed head still waiting on GitHub queues auto-merge', async () => {
   };
   const calls = [];
   const client = {
+    // the live re-read the completion boundary takes before acting; deliberately not
+    // recorded in `calls`, so the existing call-order assertions keep asserting what
+    // they were written to assert
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       calls.push(['merge', number, head]);
       return { merged: false, message: 'Not ready to merge' };
@@ -1811,6 +1823,10 @@ test('a clean-state auto-merge race retries the exact-SHA merge once', async () 
   };
   let mergeAttempts = 0;
   const client = {
+    // the live re-read the completion boundary takes before acting; deliberately not
+    // recorded in `calls`, so the existing call-order assertions keep asserting what
+    // they were written to assert
+    async pullRequest() { return pullRequest; },
     async mergeExactHead(number, head) {
       assert.equal(number, 230);
       assert.equal(head, expectedHead);
@@ -2070,4 +2086,223 @@ test('CI runs once per pull-request head', async () => {
 
   assert.match(ci, /pull_request:/);
   assert.doesNotMatch(ci, /push:/);
+});
+
+function claimant(overrides = {}) {
+  return {
+    number: 401,
+    state: 'open',
+    draft: false,
+    node_id: 'PR_401',
+    head: { sha: 'a'.repeat(40) },
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/401',
+    ...overrides,
+  };
+}
+
+function completionClient(overrides = {}) {
+  const pullRequest = overrides.pullRequest ?? claimant();
+  return {
+    calls: [],
+    async pullRequest() { return pullRequest; },
+    async replacementLineage() { return { requiredReplacements: [], replacementPullRequests: [] }; },
+    async claimObligation() { return true; },
+    async releaseObligation() {},
+    async mergeExactHead() { return { merged: true }; },
+    async enableAutoMerge() {},
+    async dispatchHandoff() {},
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus() {},
+    ...overrides.client,
+  };
+}
+
+test('exactly ONE of two simultaneous claimants merges — the claim is atomic', async () => {
+  // The defect this closes: two runs both read the obligation undischarged and both
+  // proceed to merge, so one exhausted unit gets two replacements. Reading is not
+  // enough; an exclusive claim has to be TAKEN, and taken atomically.
+  //
+  // Ref creation is the only compare-and-set this gate can reach — the server decides
+  // it under its own lock and returns 422 to the loser. A label, a status and a comment
+  // all succeed unconditionally, so none of them can arbitrate.
+  const expectedHead = 'a'.repeat(40);
+  let refsCreated = 0;
+  const merges = [];
+  const statuses = [];
+
+  // one shared "server": the first create wins, every later create is refused
+  const server = { async claim() { refsCreated += 1; return refsCreated === 1; } };
+
+  const run = async (number) => {
+    const pullRequest = claimant({ number, node_id: `PR_${number}` });
+    const client = completionClient({
+      pullRequest,
+      client: {
+        async claimObligation() { return server.claim(); },
+        async mergeExactHead(n) { merges.push(n); return { merged: true }; },
+        async setStatus(head, state, description) { statuses.push({ number, state, description }); },
+      },
+    });
+    return reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead);
+  };
+
+  const first = await run(401);
+  const second = await run(402);
+
+  assert.equal(first, 'merged');
+  assert.equal(second, 'claim_held');
+  // Only the winner merged.
+  assert.deepEqual(merges, [401]);
+  // And the loser's refusal is persisted, naming the obligation.
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].state, 'failure');
+  assert.match(statuses[0].description, /another claimant holds the exclusive claim on #377/u);
+});
+
+test('the claim is RELEASED whenever the merge does not happen', async () => {
+  // Holding a claim past a failed attempt would let one bad run lock an obligation
+  // permanently — a worse failure than the double merge it prevents. Release covers
+  // every non-merge exit, including a thrown error.
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = claimant();
+
+  const released = [];
+  const releasing = (clientOverrides) => completionClient({
+    pullRequest,
+    client: { async releaseObligation(source) { released.push(source); }, ...clientOverrides },
+  });
+
+  // not merge-ready: a claimant does not queue, so it releases and is retried later
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(
+      releasing({ async mergeExactHead() { return { merged: false }; } }),
+      pullRequest,
+      expectedHead,
+    ),
+    'not_ready',
+  );
+  assert.deepEqual(released, [377]);
+
+  // a thrown error still releases
+  released.length = 0;
+  await assert.rejects(() => reviewGate.completeReviewedPullRequest(
+    releasing({ async mergeExactHead() { throw new Error('boom'); } }),
+    pullRequest,
+    expectedHead,
+  ));
+  assert.deepEqual(released, [377]);
+
+  // a successful merge KEEPS the claim: the merge is the discharge, and the ref
+  // records which head made it
+  released.length = 0;
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(releasing({}), pullRequest, expectedHead),
+    'merged',
+  );
+  assert.deepEqual(released, []);
+});
+
+test('a claimant never queues auto-merge; a non-claimant still may', async () => {
+  // An auto-merge queue fires unattended, long after this function returns. Queuing
+  // while holding the claim would pin the obligation against a merge that may never
+  // fire; queuing after releasing it would let the merge land with no claim held.
+  const expectedHead = 'a'.repeat(40);
+  const notReady = { async mergeExactHead() { return { merged: false }; } };
+
+  const queued = [];
+  const claimantPr = claimant();
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(
+      completionClient({
+        pullRequest: claimantPr,
+        client: { ...notReady, async enableAutoMerge() { queued.push('claimant'); } },
+      }),
+      claimantPr,
+      expectedHead,
+    ),
+    'not_ready',
+  );
+  assert.deepEqual(queued, [], 'a claimant must not queue auto-merge');
+
+  // A `Replaces: none` unit holds no obligation, so the ordinary queue path is intact.
+  const freshPr = claimant({ body: '<!-- correction-owner: claude -->\nReplaces: none' });
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(
+      completionClient({
+        pullRequest: freshPr,
+        client: { ...notReady, async enableAutoMerge() { queued.push('fresh'); } },
+      }),
+      freshPr,
+      expectedHead,
+    ),
+    'queued',
+  );
+  assert.deepEqual(queued, ['fresh']);
+});
+
+test('the base is bound at the MERGE, before and after', async () => {
+  // Retargeting does not change the head SHA, so an exact-head merge cannot detect it.
+  // Without a live read the gate would merge into whatever base is live, then report a
+  // successful replacement and dispatch a handoff from a stale snapshot.
+  const expectedHead = 'a'.repeat(40);
+  const pullRequest = claimant();
+
+  // retargeted BEFORE the merge
+  const merges = [];
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(
+      completionClient({
+        pullRequest,
+        client: {
+          async pullRequest() { return { ...pullRequest, base: { ref: 'release' } }; },
+          async mergeExactHead(n) { merges.push(n); return { merged: true }; },
+        },
+      }),
+      pullRequest,
+      expectedHead,
+    ),
+    'base_refused',
+  );
+  assert.deepEqual(merges, [], 'a unit off main must not be merged');
+
+  // retargeted BETWEEN the read and the merge — detected afterwards, handoff withheld
+  let reads = 0;
+  const handoffs = [];
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(
+      completionClient({
+        pullRequest,
+        client: {
+          async pullRequest() {
+            reads += 1;
+            return { ...pullRequest, base: { ref: reads === 1 ? 'main' : 'release' } };
+          },
+          async dispatchHandoff(ref, n) { handoffs.push([ref, n]); },
+        },
+      }),
+      pullRequest,
+      expectedHead,
+    ),
+    'base_violated',
+  );
+  assert.deepEqual(handoffs, [], 'a merge that landed elsewhere hands nothing on');
+});
+
+test('every refusal outcome renders BLOCKED, never "auto-merge is queued"', async () => {
+  for (const outcome of ['claim_settled', 'claim_held', 'base_refused', 'base_violated']) {
+    const notice = reviewGate.completionNotice(outcome);
+    assert.equal(notice.state, 'blocked', `${outcome} must render blocked`);
+    assert.equal(notice.refused, true, `${outcome} must be marked refused`);
+    assert.doesNotMatch(notice.next, /queued behind branch protection/u);
+  }
+  // Waiting is not refusing: `not_ready` is honest about why and is not a failure.
+  const waiting = reviewGate.completionNotice('not_ready');
+  assert.equal(waiting.refused, false);
+  assert.match(waiting.next, /retried on its next event/u);
+
+  const merged = reviewGate.completionNotice('merged');
+  assert.equal(merged.refused, false);
+  assert.equal(merged.next, 'GitHub squash-merged this exact reviewed head.');
 });
