@@ -510,11 +510,38 @@ branch enters review, accumulates findings, and on exhaustion acquires the
 `review-replacement-required` label; the global label query then blocks every fresh
 `main` unit until something carries off-`main` work.
 
-**The fix is at ELIGIBILITY, before review — not at exhaustion.** A non-`main` base
-is refused when the unit is first considered, so an off-`main` unit never enters the
-review lifecycle, never accumulates findings, and never reaches the point where an
-obligation would be created. That is one check on one value at one moment, with
-nothing to race.
+**The fix is at ADMISSION — in the scope assessment, before review, and not at
+eligibility or at exhaustion.** This document previously said eligibility, and
+execution refuted it. `isEligiblePullRequest` answers "is this unit ours to process"
+and its refusals are SILENT: routing a base refusal through it skips the unit with
+whatever status is already on its head left standing, including a terminal success
+written while it still targeted `main`, and the gate then stops looking at it.
+
+The scope assessment is the placement that works, because its refusal is already
+PERSISTED — `review-scope` is a required check, so a refusal fails the pull request
+where everyone can see it. A non-`main` base is refused before review, so an off-`main`
+unit never accumulates findings and never reaches the point where an obligation would
+be created. That is one check on one value at one moment, with nothing to race.
+
+**And it is evaluated in `assessReviewScope` itself, NOT inside
+`assessReplacementLineage`.** An earlier head put it in the lineage assessment, which
+sounds like the same place and is not. That function runs only when a caller passes
+`requireReplacementLineage` AND supplies the two GitHub-fetched arrays it needs; the
+`review-scope` job supplies neither, because fetching a repository-wide obligation set
+is precisely the work a cheap preflight exists to avoid. So the required check passed
+an off-`main` unit, every dependent CI job ran, and the base was rejected only later by
+the trusted orchestrator — while this document claimed the refusal was persisted by
+`review-scope`. The rule reads `base.ref` and nothing else, so nesting it inside the
+lineage assessment gave a universal rule a data dependency it does not have. The
+placement is pinned by a probe that drives the CLI entry point rather than the
+assessment function, because the defect was exactly that the CLI path never reached
+the rule.
+
+**And the rule applies to EVERY review unit, not only to a declared claimant.**
+Scoping it to `Replaces: #N` leaves the worse case open: a `Replaces: none` unit on
+another branch passes, accumulates two finding-bearing heads, and earns the
+repository-wide label — after which every fresh `main` unit is blocked behind work
+that was never eligible to land.
 
 **And an obligation is NEVER suppressed by a base test, which an earlier head got
 backwards.** It proposed checking the base at the moment the label is applied and
@@ -545,10 +572,16 @@ So each placement takes the test that its own moment can answer:
 
 | Placement | Test |
 | --- | --- |
-| eligibility, before review | the base ref is `main` — else the unit is not reviewed at all |
-| admission of a claimant | the base ref is `main` |
-| settlement by a candidate | the candidate's merge LANDED on `main`, read from the merge record |
+| admission, in the scope assessment | the base ref is `main`, for EVERY unit — else the unit is not reviewed at all |
+| admission of a claimant | the base rule above already applies; a claimant takes ONE test more — it must be numbered ABOVE the unit it replaces, the same ordering settlement will require of it |
+| settlement by a candidate | the candidate's merge LANDED on `main`, above its source, read from the merge record |
 | exhaustion / obligation creation | **no base test** — a reviewed unit's obligation always stands |
+
+The claimant row is the missing half of the settlement row rather than a second
+policy. Admitting a claimant that settlement can never accept is worse than refusing
+it: an older pull request EDITED to declare `Replaces: #N` would occupy the obligation
+and never discharge it however far it got, so the loop would review the wrong unit
+while the obligation stayed pending and kept blocking every `Replaces: none` unit.
 
 **#377's OTHER unresolved finding is genuinely coupled**, and that part of the
 earlier reasoning survives. If the timeline-claim mechanism is ever restored, it
@@ -604,17 +637,22 @@ items, and ship a gate that lets one agent discharge another's scope.
 
 **So the document separates two things it previously conflated.** The REQUIREMENTS
 are everything above. What is BUILDABLE TODAY, needing no authority, no enumeration
-and no owner, is **the base guard in all three of its live placements — eligibility,
-admission and settlement — plus the malformed-declaration fence.** Each reads a value
-its own moment can answer: a base ref, a base ref, and a merge record.
+and no owner, is **the base guard at admission and at settlement, plus the
+malformed-declaration fence.** Each reads a value its own moment can answer: a base
+ref and a merge record. (An earlier revision of this document listed a third
+placement at eligibility. Execution removed it: eligibility refusals are silent, so a
+base test there skips the unit without recording anything.)
 
-**Nothing here waits on an unavailable primitive, and an earlier head thought
+**The base guard waits on no unavailable primitive, and an earlier head thought
 otherwise.** It placed the guard at exhaustion, found the read-then-write race that
 placement creates, and concluded the leg needed immutable evidence or a single
 serialized authorizing operation that GitHub does not offer. Moving the guard to
-eligibility removes the pair entirely, so the primitive is not missing — it is not
+admission removes the pair entirely, so the primitive is not missing — it is not
 needed. The exhaustion point takes no base test at all, because a reviewed unit's
 obligation stands regardless of base.
+
+**One-claimant exclusivity is a different story, and it IS blocked on a primitive.
+See the accepted gaps below.**
 
 Everything else is a requirement waiting on evidence that does not yet exist — named,
 not dropped.
@@ -733,6 +771,12 @@ unit to learn.
 4. **Concurrency resolves by recorded order, not by locking.** Label writes cannot
    be made mutually exclusive; the earliest recorded claim wins, ties going to the
    timeline's order.
+
+   **THIS REQUIREMENT IS NOT MET, BY AN EXPLICIT OWNER DECISION OF 2026-08-21 — see
+   the accepted gaps below.** Four mechanisms were built and each was refuted by
+   review. Recorded order is not available: nothing in the timeline is authenticated
+   per-agent, and every candidate for deciding it is either non-atomic or introduces
+   a worse failure than the one it prevents.
 
    **Conservation comes first, and it is the half most easily lost.** A claim
    INSIDE the admitted declaration is scope somebody carried, and settles on merge.
@@ -863,6 +907,53 @@ An earlier sketch also omitted that the condition is vacuously true over an empt
 set — a unit satisfied it the moment it was labelled, before any replacement was
 opened. That is recorded here so the same rule is not re-derived and re-proposed
 with the same hole.
+
+## Accepted gaps — an owner decision, not an oversight
+
+Two properties this document requires are **NOT enforced by the shipped gate**. Both
+were attempted, both were refuted by review, and on 2026-08-21 the owner decided to
+accept them rather than keep replacing units against them. They are recorded here so
+that a later reader finds a decision rather than a silence.
+
+### 1. One-claimant exclusivity is not enforced
+
+Two open claimants for one obligation can both merge. The result is duplicated
+effort — two replacements carrying the same scope — not a corrupted ledger:
+settlement still discharges an obligation exactly once, and only for a merge that
+landed on `main` above its source.
+
+Four mechanisms were built and each was refuted by executing it:
+
+| Mechanism | Why it failed |
+| --- | --- |
+| refuse if any other claimant is open | symmetric, so two coexisting claimants each refuse the other and a pending obligation blocks every `Replaces: none` unit — the loop stops until a human intervenes |
+| admit the lowest-numbered claimant | a winner recomputed from the CURRENT set is unstable: an older claimant retargeting onto `main` displaces a newer one that may already have queued its merge, and refusing it here does not revoke that queue |
+| check at the merge boundary whether the source is already discharged | not atomic with the merge; two runs both read it undischarged and both merge |
+| take an atomic claim ref before merging | closes the race, but a runner killed between creating the ref and releasing it deadlocks the obligation permanently, removing the claimant's auto-merge queue removes its only wake path, and a queue created by the previous release ignores the new ref during cutover |
+
+The root is that **reading cannot decide this and the one atomic primitive available
+brings worse failures than the defect.** Deciding it properly needs either persisted
+"who was admitted first" state or the ability to cancel another pull request's queued
+merge under a lock keyed on the replaced source. GitHub offers neither to this gate.
+
+**If this is ever revisited, it belongs outside the scope gate** — a merge queue, or a
+workflow serialized on the replaced source — not in a pure assessment of one pull
+request.
+
+### 2. A base change after admission is detected, not prevented
+
+A pull request can be retargeted after admission without changing its head SHA, and
+GitHub's merge API pins only the head. So a unit admitted on `main` can merge
+elsewhere, and the gate can observe that only afterwards.
+
+The consequence is bounded by settlement: such a merge **discharges nothing**, because
+settlement requires a merge that landed on `main`. What is lost is that the gate may
+report a completion for a merge that settled nothing.
+
+Preventing this needs a merge that can be pinned to a base as well as a head. That
+API does not exist. **Detection after the fact was rejected by review as insufficient,
+and it is not shipped** — the base is checked where it can be enforced, at admission
+and at settlement.
 
 ## Where things stand
 

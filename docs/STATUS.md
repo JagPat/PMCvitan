@@ -13,10 +13,10 @@ narrative and may lag behind reality.
 phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
-task_state: in_review
+task_state: in_progress
 work_item: none
-reviewed_merge: 44ceef9
-open_pr: 395
+reviewed_merge: f2a88c1
+open_pr: 401
 next_task: none
 blocking_directive: none
 updated: 2026-08-20
@@ -25,7 +25,7 @@ updated: 2026-08-20
 **#382 MERGED at `main` `1449c82`**, putting
 `docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. #383,
 #384 through #390 each carried the record forward and each reached the
-two-finding-head limit. The open PR replaces #394.
+two-finding-head limit. The open PR replaces #400. #396 through #399 each closed at the round limit while claiming their predecessor. The unit is now ONE obligation rule read at TWO boundaries: at ADMISSION a review unit targets `main` — every unit, not only a claimant, evaluated in the scope assessment itself so the required `review-scope` check fails it — and a claimant is additionally numbered above what it replaces; at SETTLEMENT an obligation is discharged only by a merge that LANDED on `main` above its source. **ONE-CLAIMANT EXCLUSIVITY IS NOT ENFORCED, by an explicit owner decision of 2026-08-21.** Two open replacements for one obligation can both merge; the cost is duplicated effort, not a corrupted ledger, because settlement still discharges an obligation exactly once. Four mechanisms were built and each was refuted by review, and the merge-controlling boundary an earlier head added to enforce it is REMOVED — later work must not rely on that guarantee. The reasoning and the four refutations are recorded under "Accepted gaps" in `docs/reviews/replacement-lineage-repair.md`. Base-change invalidation of the review authorization remains deferred; #394 was settled by merged #395.
 
 **THE OWNER'S SCOPE DECISION STANDS AND IS NOW COHERENT.** Requirement 10 — the
 migration cutover — is REMOVED, not deferred: five formulations drew findings, and
@@ -161,8 +161,8 @@ primitive it wanted is not missing — it is not needed.
 restored it needs authenticated provenance, since the shared `github-actions[bot]`
 actor is necessary and not sufficient. **OWNER EQUALITY IS ALSO A REQUIREMENT, for
 every claim and not only the refused bundle** — executed, `assessReplacementLineage`'s
-source branch checks the source number, its closed state and competing claimants, and
-NEVER the owner, so a `claude` PR can declare `Replaces: #N` against a pending
+source branch checks the source number, its closed state and its ordering against the
+claimant, and NEVER the owner, so a `claude` PR can declare `Replaces: #N` against a pending
 `cursor`-owned source and discharge scope it was never permitted to carry. The rule is
 owner equality with a fail-closed refusal when EITHER owner cannot be authenticated —
 BOTH ends, since an earlier head authenticated the source and left the claimant's own
@@ -223,9 +223,12 @@ loop to keep running.
 **A STATUS claim carried from the previous head is STRUCK.** It said the only
 barrier to one unit carrying several obligations is `replacementDeclaration`
 rejecting more than one `Replaces:` line. Executed, that is false: a two-line
-declaration makes `replacementSource` return `null`, and `assessReplacementLineage`
-uses scalar equality in both `fulfilledSources` and its competing-claim detection,
-so a parser-only change fulfils nothing. Four sites move together.
+declaration makes `replacementSource` return `null`, and every downstream site is
+scalar — `replacementSource`'s own return, `settlementOf`'s comparison, the
+`fulfilledSources` and `pending` filters, and the claimant's requirement lookup and
+ordering test — so a parser-only change fulfils nothing. They move together.
+(An earlier version of this paragraph also counted `assessReplacementLineage`'s
+competing-claim detection, which is now deleted.)
 
 **§2 IS NOT CLOSED, and an earlier version of this paragraph said otherwise.** It
 claimed settlement reads git after the repair and a snapshot before it — but the
@@ -238,9 +241,9 @@ re-classified. Legacy settlement therefore behaves exactly as `main` behaves tod
 neither created, widened, nor endorsed by this repair. It is §2, live, recorded in
 the record's defect list, and closing it needs the authority named there.
 
-**Fifteen obligations are pending, and they discharge one per merge.** #377, #378,
-#379, #383, #384, #385, #386, #387, #388, #389, #390, #391, #392, #393 and #394. (#381 carries the
-label but is settled by merged #382 —
+**Nineteen obligations are pending, and they discharge one per merge.** #377, #378,
+#379, #383, #384, #385, #386, #387, #388, #389, #390, #391, #392, #393, #396, #397, #398,
+#399 and #400. (#381 carries the label but is settled by merged #382, and #394 by merged #395 —
 discharge is computed, not un-marked.) #391, #392, #393 and #394 each joined the queue by
 closing at the round limit while claiming their predecessor, which is the accumulation defect
 running in the open: a claim lapses with its claimant, so both the source and the
@@ -319,12 +322,12 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:395`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:401`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 395` the
-resolver returns `pr:395` — "an open PR is the current work item until it merges
+unit. `open_pr` outranks the task branch outright: with `open_pr: 401` the
+resolver returns `pr:401` — "an open PR is the current work item until it merges
 or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
 The open unit is named in the prose above rather than in `work_item`, because
 that field would not be read here.
