@@ -1718,8 +1718,12 @@ test('the clean verdict is published while the PR is still open', async () => {
   assert.ok(publishedClean >= 0);
   assert.ok(publishedSuccess > publishedClean);
   assert.ok(mergeCompletion > publishedClean);
-  // and the pre-merge update must precede the post-merge 'clear' update
-  const clearUpdate = clearBranch.lastIndexOf("state: 'clear'");
+  // and the pre-merge update must precede the post-merge completion update. That
+  // update's state is now DERIVED — a refused completion must not render as `clear` —
+  // so the anchor is the sticky update itself rather than the literal it used to
+  // carry. Removing the post-merge update entirely still fails here, because the only
+  // remaining match would be the `review_clean` call that precedes this index.
+  const clearUpdate = clearBranch.lastIndexOf('updateStickyComment');
   assert.ok(clearUpdate > publishedClean);
 });
 
@@ -2228,4 +2232,154 @@ test('the merge boundary and the scope gate share ONE definition of discharged',
     /merged_at/u,
     'the merge boundary must not restate the settlement rule',
   );
+});
+
+test('a refused settled claim publishes BLOCKED, never "auto-merge is queued"', async () => {
+  // The caller treated every outcome other than `merged` as success, so a refusal
+  // published the exact opposite of the failing status it had just written and told
+  // the subscribed correction owner to wait for a merge that had been refused.
+  const settled = reviewGate.completionNotice('claim_settled');
+  assert.equal(settled.state, 'blocked');
+  assert.equal(settled.refused, true);
+  assert.match(settled.next, /already discharged by an earlier merged replacement/u);
+  assert.doesNotMatch(settled.next, /queued behind branch protection/u);
+
+  // The unchanged outcomes still read exactly as they did.
+  const merged = reviewGate.completionNotice('merged');
+  assert.equal(merged.state, 'clear');
+  assert.equal(merged.refused, false);
+  assert.equal(merged.next, 'GitHub squash-merged this exact reviewed head.');
+
+  const queued = reviewGate.completionNotice('queued');
+  assert.equal(queued.state, 'clear');
+  assert.equal(queued.refused, false);
+  assert.equal(queued.next, 'GitHub auto-merge is queued behind branch protection.');
+});
+
+test('a refused claimant is drafted through the EXACT-HEAD guard, not from a snapshot', async () => {
+  // `setStatus` is head-addressed and lands harmlessly on a superseded head. `setDraft`
+  // is not — it mutates the pull request itself. An author pushing H2 while the lineage
+  // read for H1 is in flight would otherwise have their new correction head drafted by
+  // a run that only ever examined H1.
+  const reviewedHead = 'a'.repeat(40);
+  const newerHead = 'b'.repeat(40);
+  const pullRequest = {
+    number: 401,
+    state: 'open',
+    draft: false,
+    node_id: 'PR_401',
+    head: { sha: reviewedHead },
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/401',
+  };
+  const draftTransitions = [];
+  const statusWrites = [];
+  const client = {
+    // the author has already pushed H2 by the time the refusal acts
+    async pullRequest() { return { ...pullRequest, head: { sha: newerHead } }; },
+    async replacementLineage() {
+      return {
+        requiredReplacements: [],
+        replacementPullRequests: [{
+          number: 396,
+          state: 'closed',
+          merged_at: '2026-08-20T00:00:00Z',
+          base: { ref: 'main' },
+          body: '<!-- correction-owner: claude -->\nReplaces: #377',
+        }],
+      };
+    },
+    async mergeExactHead() { throw new Error('must not merge a settled claim'); },
+    async enableAutoMerge() {},
+    async disableAutoMerge() {},
+    async dispatchHandoff() {},
+    async setDraft(current, draft) { draftTransitions.push(draft); return { ...current, draft }; },
+    async setStatus(head, state, description) { statusWrites.push({ head, state, description }); },
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, reviewedHead),
+    'claim_settled',
+  );
+  // The failure IS written, against the head the refusal is about.
+  assert.equal(statusWrites.length, 1);
+  assert.equal(statusWrites[0].head, reviewedHead);
+  assert.equal(statusWrites[0].state, 'failure');
+  // But the newer head is NOT drafted by this superseded run.
+  assert.deepEqual(draftTransitions, []);
+});
+
+test('a competing queued merge is revoked before this claimant merges', async () => {
+  // The settled check is not atomic with the merge, and the workflow concurrency group
+  // is per pull request rather than per replaced source. Two claimants can both read
+  // the obligation undischarged, both queue auto-merge, and after the first lands
+  // GitHub merges the ALREADY-QUEUED second without this code running again.
+  const expectedHead = 'c'.repeat(40);
+  const pullRequest = {
+    number: 401,
+    state: 'open',
+    draft: false,
+    node_id: 'PR_401',
+    head: { sha: expectedHead },
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    html_url: 'https://github.com/JagPat/PMCvitan/pull/401',
+  };
+  const revoked = [];
+  const order = [];
+  const client = {
+    async pullRequest() { return pullRequest; },
+    async replacementLineage() {
+      return {
+        requiredReplacements: [],
+        replacementPullRequests: [
+          // a competing claimant with a queue already armed
+          {
+            number: 398,
+            state: 'open',
+            node_id: 'PR_398',
+            auto_merge: { enabled_by: {} },
+            base: { ref: 'main' },
+            body: '<!-- correction-owner: claude -->\nReplaces: #377',
+          },
+          // an open competitor with NO queue — nothing to revoke
+          {
+            number: 399,
+            state: 'open',
+            node_id: 'PR_399',
+            auto_merge: null,
+            base: { ref: 'main' },
+            body: '<!-- correction-owner: claude -->\nReplaces: #377',
+          },
+          // a queued pull request claiming a DIFFERENT obligation — untouched
+          {
+            number: 397,
+            state: 'open',
+            node_id: 'PR_397',
+            auto_merge: { enabled_by: {} },
+            base: { ref: 'main' },
+            body: '<!-- correction-owner: claude -->\nReplaces: #350',
+          },
+          // this unit itself, queued — never revoked by its own run
+          { ...pullRequest, auto_merge: { enabled_by: {} } },
+        ],
+      };
+    },
+    async disableAutoMerge(candidate) { revoked.push(candidate.number); order.push('revoke'); },
+    async mergeExactHead() { order.push('merge'); return { merged: true }; },
+    async enableAutoMerge() {},
+    async dispatchHandoff() {},
+    async setDraft(current, draft) { return { ...current, draft }; },
+    async setStatus() {},
+  };
+
+  assert.equal(
+    await reviewGate.completeReviewedPullRequest(client, pullRequest, expectedHead),
+    'merged',
+  );
+  // Only the competing QUEUED claimant for THIS obligation is revoked.
+  assert.deepEqual(revoked, [398]);
+  // And the revocation happens BEFORE the merge — afterwards would leave the window open.
+  assert.deepEqual(order, ['revoke', 'merge']);
 });

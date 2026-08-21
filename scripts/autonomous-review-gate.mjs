@@ -17,6 +17,7 @@ import {
   isRetryableReviewFailureDescription,
   codexFindingHeads,
   replacementDeclaration,
+  replacementSource,
   settlementOf,
   PRE_REVIEW_ENFORCE_AFTER_PR,
   REPLACEMENT_REQUIRED_LABEL,
@@ -695,6 +696,18 @@ export class GitHubClient {
     );
   }
 
+  async disableAutoMerge(pullRequest) {
+    if (!pullRequest?.auto_merge) return;
+    await this.graphql(
+      `mutation($id: ID!) {
+        disablePullRequestAutoMerge(input: { pullRequestId: $id }) {
+          pullRequest { id autoMergeRequest { enabledAt } }
+        }
+      }`,
+      { id: pullRequest.node_id },
+    );
+  }
+
   async mergeExactHead(number, expectedHead) {
     const response = await fetch(
       `${API_ROOT}/repos/${this.repository}/pulls/${number}/merge`,
@@ -986,10 +999,77 @@ async function refuseSettledClaim(client, pullRequest, expectedHead, settledBy) 
   const detail = `scope: #${settledBy.declaration} is already discharged by merged `
     + `#${settledBy.number}; a second replacement for one obligation must not merge`;
   console.log(`Refusing to complete #${pullRequest?.number}: ${detail}`);
+  // The status is written FIRST, and against the head this refusal is ABOUT.
   await client.setStatus(expectedHead, 'failure', detail, pullRequest?.html_url);
-  if (!pullRequest?.merged && pullRequest?.state !== 'closed') {
-    await client.setDraft(pullRequest, true);
+  // The draft transition goes through the EXACT-HEAD guard rather than mutating the
+  // pull request from a snapshot. `setStatus` is head-addressed and lands harmlessly
+  // on a superseded head; `setDraft` is not — it mutates the pull request itself. An
+  // author pushing H2 while the lineage read for H1 is in flight would otherwise have
+  // their new correction head drafted by a run that only ever examined H1.
+  await setDraftForCurrentHead(client, pullRequest.number, expectedHead, true);
+}
+
+// REVOKE a competing queued merge before taking this one.
+//
+// The settled check above is not atomic with the merge, and `auto-merge.yml`'s
+// concurrency group is per pull request rather than per replaced source. That leaves a
+// mechanism the check alone cannot close: two claimants for one obligation both read
+// it undischarged, both queue auto-merge, the first lands, and GitHub then merges the
+// ALREADY-QUEUED second without this code running again. The second merge is
+// unattended and can arrive long afterwards.
+//
+// Revoking the competitors' queues closes that mechanism at its source — a queue that
+// does not exist cannot fire unattended, and a competitor that runs again re-reads the
+// lineage and refuses because this merge has landed.
+//
+// WHAT THIS DOES NOT CLOSE, stated rather than implied: two orchestrator runs that
+// reach the merge simultaneously can still both merge, because nothing here is a lock
+// and GitHub offers none keyed on the replaced source. Revocation removes the long,
+// unattended window; it does not make the pair atomic.
+async function revokeCompetingQueuedMerges(client, pullRequest, source, claimants) {
+  const competing = claimants.filter((candidate) => candidate?.number !== pullRequest?.number
+    && candidate?.state === 'open'
+    && Boolean(candidate?.auto_merge)
+    && replacementSource(candidate.body) === source);
+  for (const competitor of competing) {
+    console.log(
+      `Revoking queued auto-merge on #${competitor.number}: `
+        + `#${source} is being discharged by #${pullRequest?.number}.`,
+    );
+    await client.disableAutoMerge(competitor);
   }
+  return competing.map((candidate) => candidate.number);
+}
+
+// What the sticky notice must SAY about each completion outcome.
+//
+// Exported so the mapping is asserted directly rather than inferred from rendered
+// text. The caller previously treated EVERY outcome other than `merged` as success —
+// `clear`, "auto-merge is queued behind branch protection" — so a refusal published
+// the exact opposite of the failing status it had just written, and the subscribed
+// correction owner was told to wait for a merge that had been refused.
+export function completionNotice(completion) {
+  if (completion === 'claim_settled') {
+    return {
+      state: 'blocked',
+      refused: true,
+      next: 'Completion was refused: this obligation is already discharged by an '
+        + 'earlier merged replacement. Close this unit, or re-declare it against an '
+        + 'obligation that is still pending.',
+    };
+  }
+  if (completion === 'merged') {
+    return {
+      state: 'clear',
+      refused: false,
+      next: 'GitHub squash-merged this exact reviewed head.',
+    };
+  }
+  return {
+    state: 'clear',
+    refused: false,
+    next: 'GitHub auto-merge is queued behind branch protection.',
+  };
 }
 
 export async function completeReviewedPullRequest(
@@ -1000,10 +1080,8 @@ export async function completeReviewedPullRequest(
   const declaration = replacementDeclaration(pullRequest?.body);
   if (declaration.kind === 'source') {
     const lineage = await client.replacementLineage();
-    const settled = settlementOf(
-      declaration.source,
-      lineage?.replacementPullRequests ?? [],
-    );
+    const claimants = lineage?.replacementPullRequests ?? [];
+    const settled = settlementOf(declaration.source, claimants);
     if (settled) {
       await refuseSettledClaim(
         client,
@@ -1013,6 +1091,12 @@ export async function completeReviewedPullRequest(
       );
       return 'claim_settled';
     }
+    await revokeCompetingQueuedMerges(
+      client,
+      pullRequest,
+      declaration.source,
+      claimants,
+    );
   }
 
   const direct = await client.mergeExactHead(
@@ -1952,16 +2036,17 @@ export async function run() {
         pullRequest,
         expectedHead,
       );
+      const notice = completionNotice(completion);
       await client.updateStickyComment(
         pullRequest.number,
         statusBody({
-          state: 'clear',
+          state: notice.state,
           head: expectedHead,
-          detail: `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
+          detail: notice.refused
+            ? `${result.detail}; completion refused because this obligation is already discharged`
+            : `${result.detail}; resolved ${resolvedThreadCount} verified Codex thread${resolvedThreadCount === 1 ? '' : 's'}`,
           attempt,
-          next: completion === 'merged'
-            ? 'GitHub squash-merged this exact reviewed head.'
-            : 'GitHub auto-merge is queued behind branch protection.',
+          next: notice.next,
         }),
       );
       return;

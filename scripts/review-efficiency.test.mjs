@@ -1377,3 +1377,54 @@ test('the recorded next_task names a stop the deferral gate can resolve, or is d
   const unparseable = deferralPhases({ ...handed, next_task: 'phase-6-unit-6.1b' });
   assert.deepEqual(unparseable, [], 'a unit-style next_task must still be rejected by the gate');
 });
+
+test('EVERY review unit must target main, not only a declared claimant', () => {
+  // Scoping the base rule to `Replaces: #N` left the worse case open. A
+  // `Replaces: none` unit targeting another branch passed, could accumulate two
+  // finding-bearing heads, and was then labelled `review-replacement-required` — a
+  // REPOSITORY-WIDE obligation. Every fresh `main` unit is blocked behind it until some
+  // replacement carries work that was never eligible to land on `main` at all. A
+  // claimant merging off-`main` is the narrower failure; this one stops the loop.
+  const offMainFresh = assessReviewScope(pullRequest({
+    number: 401,
+    base: { ref: 'release' },
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [],
+    replacementPullRequests: [],
+  });
+  assert.equal(offMainFresh.allowed, false);
+  assert.match(offMainFresh.detail, /a review unit must target main/u);
+  assert.match(offMainFresh.detail, /release/u);
+
+  // An unreadable base fails closed with its own wording rather than passing.
+  const unreadable = assessReviewScope(pullRequest({
+    number: 401,
+    base: {},
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [],
+    replacementPullRequests: [],
+  });
+  assert.equal(unreadable.allowed, false);
+  assert.match(unreadable.detail, /an unreadable base/u);
+
+  // And the ordinary `main` unit is unaffected.
+  const onMain = assessReviewScope(pullRequest({
+    number: 401,
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [],
+    replacementPullRequests: [],
+  });
+  assert.equal(onMain.allowed, true);
+});

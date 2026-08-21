@@ -167,15 +167,24 @@ export function assessReplacementLineage({
   // disagreeing about what "already discharged" means.
   //
   // Omitting it here is therefore a placement decision, not a waiver.
+  // THE BASE RULE APPLIES TO EVERY REVIEW UNIT, not only to a declared claimant.
+  //
+  // Scoping it to `Replaces: #N` left the worse case open: a `Replaces: none` unit
+  // targeting another branch passes here, accumulates two finding-bearing heads, and
+  // is then labelled `review-replacement-required` — a REPOSITORY-WIDE obligation.
+  // Every fresh `main` unit is blocked behind it until some replacement carries work
+  // that was never eligible to land on `main` at all. A claimant merging off-`main` is
+  // the narrower failure; this is the one that stops the loop.
+  const unitBase = pullRequest?.base?.ref;
+  if (!isLineageBase(unitBase)) {
+    return {
+      allowed: false,
+      detail: `a review unit must target ${LINEAGE_BASE_REF}; this unit targets `
+        + `${typeof unitBase === 'string' && unitBase.length > 0 ? unitBase : 'an unreadable base'}`,
+    };
+  }
+
   if (declaration.kind === 'source') {
-    const claimantBase = pullRequest?.base?.ref;
-    if (!isLineageBase(claimantBase)) {
-      return {
-        allowed: false,
-        detail: `a replacement must target ${LINEAGE_BASE_REF}; this unit targets `
-          + `${typeof claimantBase === 'string' && claimantBase.length > 0 ? claimantBase : 'an unreadable base'}`,
-      };
-    }
     const requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
     );
