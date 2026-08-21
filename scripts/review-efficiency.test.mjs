@@ -12,6 +12,7 @@ import {
   isDocsOnlyDiff,
   PLAN_REVIEW_ROUND_CAP,
   REQUIRED_INVARIANTS,
+  settlementOf,
 } from './review-efficiency.mjs';
 import { OPEN_TASK_STATES, parseStatusNow } from './autonomous-status-state.mjs';
 import { run as runScope } from './review-scope.mjs';
@@ -429,6 +430,59 @@ test('coexisting claimants both proceed — no deadlock, and no preemption eithe
   });
   assert.equal(notSettledOffMain.allowed, false);
   assert.match(notSettledOffMain.detail, /still requires a replacement/u);
+
+  // And a merge onto `main` numbered BELOW its source settles nothing either. This is
+  // the same ordering admission enforces, read at the other end of the obligation: if
+  // settlement accepted it, an older pull request edited to declare `Replaces: #377`
+  // could discharge an obligation it was never admitted to claim.
+  const settledFromBelow = assessReviewScope(pullRequest({ number: 400, body: preReviewBody() }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 370,
+      state: 'closed',
+      merged_at: '2026-08-20T00:00:00Z',
+      base: { ref: 'main' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  assert.equal(settledFromBelow.allowed, false);
+  assert.match(settledFromBelow.detail, /still requires a replacement/u);
+});
+
+test('settlementOf discharges only a merge on main, numbered above its source', () => {
+  // The rule is exported as ONE definition so "discharged" means one thing wherever it
+  // is asked. Pinning it directly keeps all three of its clauses load-bearing: a
+  // mutation check found the ordering clause survived deletion when it was exercised
+  // only through the gate.
+  const candidate = (overrides) => ({
+    number: 396,
+    state: 'closed',
+    merged_at: '2026-08-20T00:00:00Z',
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    ...overrides,
+  });
+
+  assert.equal(settlementOf(377, [candidate({})])?.number, 396);
+
+  // Each clause, removed one at a time.
+  assert.equal(settlementOf(377, [candidate({ merged_at: null })]), null, 'an unmerged claimant settles nothing');
+  assert.equal(settlementOf(377, [candidate({ base: { ref: 'release' } })]), null, 'a merge off main settles nothing');
+  assert.equal(settlementOf(377, [candidate({ number: 370 })]), null, 'a merge below its source settles nothing');
+  assert.equal(settlementOf(377, [candidate({ number: 377 })]), null, 'a unit cannot settle itself');
+  assert.equal(
+    settlementOf(377, [candidate({ body: '<!-- correction-owner: claude -->\nReplaces: #378' })]),
+    null,
+    'a merge claiming a different source settles nothing',
+  );
+
+  // Fail closed on an unreadable base, and on a source that is not a number.
+  assert.equal(settlementOf(377, [candidate({ base: undefined })]), null);
+  assert.equal(settlementOf(null, [candidate({})]), null);
+  assert.equal(settlementOf(377, []), null);
 });
 
 test('a claimant numbered at or below its source is refused at admission', () => {
