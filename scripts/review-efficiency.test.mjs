@@ -12,6 +12,7 @@ import {
   isDocsOnlyDiff,
   PLAN_REVIEW_ROUND_CAP,
   REQUIRED_INVARIANTS,
+  settlementOf,
 } from './review-efficiency.mjs';
 import { OPEN_TASK_STATES, parseStatusNow } from './autonomous-status-state.mjs';
 import { run as runScope } from './review-scope.mjs';
@@ -28,6 +29,10 @@ function pullRequest(overrides = {}) {
     // lineage behaviour these fixtures exercise, but it is now a precondition of
     // every scope assessment, so omitting it would block on an unrelated axis.
     body: '<!-- correction-owner: claude -->',
+    // A `main` base by default, for the same reason the owner marker is defaulted:
+    // the base guard is now a precondition of every lineage assessment, so omitting
+    // it would block these fixtures on an unrelated axis.
+    base: { ref: 'main' },
     ...overrides,
   };
 }
@@ -227,6 +232,7 @@ test('an exhausted review unit cannot be bypassed by fresh work without declared
     pullRequest: {
       number: 346,
       state: 'closed',
+      base: { ref: 'main' },
       head: {
         ref: 'codex/review-round-reset',
         repo: { full_name: 'JagPat/PMCvitan' },
@@ -309,11 +315,308 @@ test('a merged declared replacement fulfills its source requirement', () => {
     replacementPullRequests: [{
       number: 347,
       state: 'closed',
+      base: { ref: 'main' },
       merged_at: '2026-08-17T12:00:00Z',
       body: '<!-- correction-owner: claude -->\nReplaces: #346',
     }],
   });
   assert.equal(result.allowed, true);
+});
+
+test('a replacement merged onto a non-main branch settles nothing', () => {
+  // Settlement asks whether the merge LANDED on `main`, read from the merge record —
+  // not whether the reviewed head is an ancestor of the current tip. `main` advances
+  // under an open unit constantly and a squash merge leaves the reviewed head off the
+  // post-merge history by construction, so an ancestry test would refuse ordinary
+  // valid work. What it must refuse is a merge that never touched `main`.
+  const source = {
+    pullRequest: { number: 346, state: 'closed' },
+    changedFiles: [],
+  };
+  const landedElsewhere = assessReviewScope(pullRequest({
+    number: 348,
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/next-unit.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 347,
+      state: 'closed',
+      base: { ref: 'release' },
+      merged_at: '2026-08-17T12:00:00Z',
+      body: '<!-- correction-owner: claude -->\nReplaces: #346',
+    }],
+  });
+  assert.equal(landedElsewhere.allowed, false);
+  assert.match(landedElsewhere.detail, /Replaces: #346/u);
+});
+
+test('coexisting claimants both proceed — no deadlock, and no preemption either', () => {
+  // Exclusivity is deliberately NOT decided here, and this probe pins the reasoning
+  // rather than merely the behaviour.
+  //
+  // The symmetric "is any other claimant open" rule deadlocked two coexisting
+  // claimants: each saw the other, both refused, and a pending obligation also blocks
+  // every `Replaces: none` unit, so nothing moved until a human intervened. Replacing
+  // it with a lowest-number order removed that deadlock and introduced a worse
+  // failure — a winner recomputed from the CURRENT set is unstable, so an older
+  // claimant retargeting onto `main` displaces a newer one that may already have
+  // queued its merge, and being refused here does not actually revoke that queue.
+  //
+  // Neither remedy (persisted admission state, or cancelling the displaced claimant's
+  // merge) is available to a pure assessment of one pull request.
+  const source = {
+    pullRequest: { number: 377, state: 'closed', base: { ref: 'main' } },
+    changedFiles: [],
+  };
+  const claim = (number, ref = 'main') => ({
+    number,
+    state: 'open',
+    base: { ref },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+  });
+  const assess = (number, others) => assessReviewScope(pullRequest({
+    number,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: others,
+  });
+
+  // Two legitimate claimants on `main`: BOTH proceed. Neither is deadlocked, and
+  // neither is preempted after it may already be in flight.
+  assert.equal(assess(390, [claim(390), claim(396)]).allowed, true);
+  assert.equal(assess(396, [claim(390), claim(396)]).allowed, true);
+
+  // An off-`main` claimant neither blocks nor is blocked — it simply cannot claim.
+  assert.equal(assess(396, [claim(390, 'release'), claim(396)]).allowed, true);
+
+  // The property that actually matters is SETTLEMENT, and it is unchanged: the
+  // obligation is discharged only by a merge that landed on `main` above its source.
+  const settledByMain = assessReviewScope(pullRequest({ number: 400, body: preReviewBody() }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 396,
+      state: 'closed',
+      merged_at: '2026-08-20T00:00:00Z',
+      base: { ref: 'main' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  // With #377 discharged, a fresh `Replaces: none` unit is admitted again.
+  assert.equal(settledByMain.allowed, true);
+
+  // The same merge onto another base settles nothing, so the obligation still blocks.
+  const notSettledOffMain = assessReviewScope(pullRequest({ number: 400, body: preReviewBody() }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 396,
+      state: 'closed',
+      merged_at: '2026-08-20T00:00:00Z',
+      base: { ref: 'release' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  assert.equal(notSettledOffMain.allowed, false);
+  assert.match(notSettledOffMain.detail, /still requires a replacement/u);
+
+  // And a merge onto `main` numbered BELOW its source settles nothing either. This is
+  // the same ordering admission enforces, read at the other end of the obligation: if
+  // settlement accepted it, an older pull request edited to declare `Replaces: #377`
+  // could discharge an obligation it was never admitted to claim.
+  const settledFromBelow = assessReviewScope(pullRequest({ number: 400, body: preReviewBody() }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [{
+      number: 370,
+      state: 'closed',
+      merged_at: '2026-08-20T00:00:00Z',
+      base: { ref: 'main' },
+      body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    }],
+  });
+  assert.equal(settledFromBelow.allowed, false);
+  assert.match(settledFromBelow.detail, /still requires a replacement/u);
+});
+
+test('settlementOf discharges only a merge on main, numbered above its source', () => {
+  // The rule is exported as ONE definition so "discharged" means one thing wherever it
+  // is asked. Pinning it directly keeps all three of its clauses load-bearing: a
+  // mutation check found the ordering clause survived deletion when it was exercised
+  // only through the gate.
+  const candidate = (overrides) => ({
+    number: 396,
+    state: 'closed',
+    merged_at: '2026-08-20T00:00:00Z',
+    base: { ref: 'main' },
+    body: '<!-- correction-owner: claude -->\nReplaces: #377',
+    ...overrides,
+  });
+
+  assert.equal(settlementOf(377, [candidate({})])?.number, 396);
+
+  // Each clause, removed one at a time.
+  assert.equal(settlementOf(377, [candidate({ merged_at: null })]), null, 'an unmerged claimant settles nothing');
+  assert.equal(settlementOf(377, [candidate({ base: { ref: 'release' } })]), null, 'a merge off main settles nothing');
+  assert.equal(settlementOf(377, [candidate({ number: 370 })]), null, 'a merge below its source settles nothing');
+  assert.equal(settlementOf(377, [candidate({ number: 377 })]), null, 'a unit cannot settle itself');
+  assert.equal(
+    settlementOf(377, [candidate({ body: '<!-- correction-owner: claude -->\nReplaces: #378' })]),
+    null,
+    'a merge claiming a different source settles nothing',
+  );
+
+  // Fail closed on an unreadable base, and on a source that is not a number.
+  assert.equal(settlementOf(377, [candidate({ base: undefined })]), null);
+  assert.equal(settlementOf(null, [candidate({})]), null);
+  assert.equal(settlementOf(377, []), null);
+});
+
+test('a claimant numbered at or below its source is refused at admission', () => {
+  // The missing half of the settlement rule. Settlement already requires
+  // `candidate.number > source.number`, so admitting a lower-numbered claimant lets it
+  // occupy an obligation it can NEVER discharge: an older pull request edited to
+  // declare `Replaces: #377` would be reviewed as the replacement while the obligation
+  // stayed pending, blocking every `Replaces: none` unit behind it indefinitely.
+  const source = {
+    pullRequest: { number: 377, state: 'closed', base: { ref: 'main' } },
+    changedFiles: [],
+  };
+  const assess = (number) => assessReviewScope(pullRequest({
+    number,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #377'),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [],
+  });
+
+  // Numbered ABOVE the pre-review enforcement threshold (345) so the lineage rule is
+  // actually reached, and BELOW its source — the case that matters.
+  const older = assess(350);
+  assert.equal(older.allowed, false);
+  assert.match(older.detail, /numbered above the unit it replaces/u);
+  assert.match(older.detail, /#350 cannot replace #377/u);
+
+  // The boundary itself: a unit cannot replace itself.
+  assert.equal(assess(377).allowed, false);
+
+  // And a legitimate newer claimant is unaffected.
+  assert.equal(assess(396).allowed, true);
+});
+
+test('the required scope CLI refuses an off-main unit with no lineage data', async () => {
+  // The placement probe. The base rule previously lived inside
+  // `assessReplacementLineage`, which runs only when a caller passes
+  // `requireReplacementLineage` AND the two GitHub-fetched arrays it needs. The
+  // `review-scope` job passes neither — fetching a repository-wide obligation set is
+  // the work the cheap preflight exists to avoid — so the required check SUCCEEDED
+  // for an off-`main` unit, every dependent CI job ran, and the base was rejected
+  // only later by the trusted orchestrator.
+  //
+  // This drives the real CLI entry point rather than `assessReviewScope` with
+  // lineage options supplied, because the defect was exactly that the CLI path never
+  // reached the rule. A probe that supplied the options would have passed at the
+  // defective head and proved nothing.
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-base-'));
+  const eventPath = join(directory, 'event.json');
+  const previousExitCode = process.exitCode;
+  // A readable, in-scope file list, so the ONLY thing separating the refusals below
+  // from the acceptance is the base ref. Without it every case would block on an
+  // unreadable cumulative file list and the probe would prove nothing about the base.
+  const options = {
+    eventPath,
+    token: 'test-token',
+    fetchImpl: async () => new Response(JSON.stringify([
+      { filename: 'scripts/review-efficiency.mjs' },
+    ])),
+  };
+  const writeUnit = async (overrides) => writeFile(eventPath, JSON.stringify({
+    repository: { full_name: 'JagPat/PMCvitan' },
+    pull_request: pullRequest({
+      number: 401,
+      changed_files: 1,
+      additions: 40,
+      deletions: 0,
+      body: preReviewBody(),
+      ...overrides,
+    }),
+  }));
+  try {
+    await writeUnit({ base: { ref: 'release' } });
+    const offMain = await runScope(options);
+    assert.equal(offMain.allowed, false, 'the required check must fail an off-main unit');
+    assert.match(offMain.detail, /must target main/u);
+    assert.match(offMain.detail, /targets release/u);
+    assert.equal(process.exitCode, 1);
+
+    // Fail closed when the base cannot be read at all, rather than passing on silence.
+    process.exitCode = previousExitCode;
+    await writeUnit({ base: undefined });
+    const unreadable = await runScope(options);
+    assert.equal(unreadable.allowed, false);
+    assert.match(unreadable.detail, /an unreadable base/u);
+
+    // The control: the same unit on `main` passes. Without this the two refusals
+    // above could be caused by anything else in the fixture.
+    process.exitCode = previousExitCode;
+    await writeUnit({});
+    const onMain = await runScope(options);
+    assert.equal(onMain.allowed, true, onMain.detail ?? 'expected the on-main unit to pass');
+  } finally {
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a claimant that does not target main is refused at admission', () => {
+  const source = {
+    pullRequest: { number: 346, state: 'closed', base: { ref: 'main' } },
+    changedFiles: [],
+  };
+  const offMain = assessReviewScope(pullRequest({
+    number: 348,
+    base: { ref: 'release' },
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #346'),
+  }), {
+    changedFiles: [{ filename: 'scripts/next-unit.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [],
+  });
+  assert.equal(offMain.allowed, false);
+  assert.match(offMain.detail, /must target main/u);
+
+  // Fail closed when the base cannot be read at all, rather than admitting on silence.
+  const unreadable = assessReviewScope(pullRequest({
+    number: 349,
+    base: undefined,
+    body: preReviewBody().replace('Replaces: none', 'Replaces: #346'),
+  }), {
+    changedFiles: [{ filename: 'scripts/next-unit.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [source],
+    replacementPullRequests: [],
+  });
+  assert.equal(unreadable.allowed, false);
+  assert.match(unreadable.detail, /unreadable base/u);
 });
 
 test('future scope assessment fails closed when the cumulative file list is unreadable', () => {
@@ -1191,4 +1494,55 @@ test('the recorded next_task names a stop the deferral gate can resolve, or is d
   // …and the guard is only worth having if it can fail: the shape #328 was caught with.
   const unparseable = deferralPhases({ ...handed, next_task: 'phase-6-unit-6.1b' });
   assert.deepEqual(unparseable, [], 'a unit-style next_task must still be rejected by the gate');
+});
+
+test('EVERY review unit must target main, not only a declared claimant', () => {
+  // Scoping the base rule to `Replaces: #N` left the worse case open. A
+  // `Replaces: none` unit targeting another branch passed, could accumulate two
+  // finding-bearing heads, and was then labelled `review-replacement-required` — a
+  // REPOSITORY-WIDE obligation. Every fresh `main` unit is blocked behind it until some
+  // replacement carries work that was never eligible to land on `main` at all. A
+  // claimant merging off-`main` is the narrower failure; this one stops the loop.
+  const offMainFresh = assessReviewScope(pullRequest({
+    number: 401,
+    base: { ref: 'release' },
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [],
+    replacementPullRequests: [],
+  });
+  assert.equal(offMainFresh.allowed, false);
+  assert.match(offMainFresh.detail, /a review unit must target main/u);
+  assert.match(offMainFresh.detail, /release/u);
+
+  // An unreadable base fails closed with its own wording rather than passing.
+  const unreadable = assessReviewScope(pullRequest({
+    number: 401,
+    base: {},
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [],
+    replacementPullRequests: [],
+  });
+  assert.equal(unreadable.allowed, false);
+  assert.match(unreadable.detail, /an unreadable base/u);
+
+  // And the ordinary `main` unit is unaffected.
+  const onMain = assessReviewScope(pullRequest({
+    number: 401,
+    body: preReviewBody(),
+  }), {
+    changedFiles: [{ filename: 'scripts/review-efficiency.mjs' }],
+    requireChangedFiles: true,
+    requireReplacementLineage: true,
+    requiredReplacements: [],
+    replacementPullRequests: [],
+  });
+  assert.equal(onMain.allowed, true);
 });

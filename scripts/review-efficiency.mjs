@@ -1,6 +1,7 @@
 // The deferral-phase check shares docs/STATUS.md's own state vocabulary rather than keeping
 // a second copy of it — see phaseHasOpenWork.
 import { OPEN_TASK_STATES } from './autonomous-status-state.mjs';
+import { LINEAGE_BASE_REF, isLineageBase } from './lineage-policy.mjs';
 // Correction ownership is checked HERE, in the one assessment both the PR-side
 // `review-scope` job and the trusted controller's `enforceReviewScope` call, so
 // the cheap gate and the merge boundary cannot disagree about who owns a fix.
@@ -92,6 +93,27 @@ export function replacementSource(body) {
   return declaration.kind === 'source' ? declaration.source : null;
 }
 
+/**
+ * The pull request that DISCHARGED an obligation, or null.
+ *
+ * One definition, so that "discharged" means one thing. `fulfilledSources` is computed
+ * from it, and anything that later needs the same question — inside this gate or
+ * outside it — asks this rather than restating the rule. A second copy would
+ * eventually disagree, and a disagreement here means either a pending obligation
+ * nobody can discharge or a duplicate replacement that lands.
+ *
+ * A discharge is a MERGE, on `main`, numbered above the source it claims — the same
+ * three facts admission requires of a claimant, read from the merge record rather
+ * than predicted.
+ */
+export function settlementOf(source, replacementPullRequests = []) {
+  if (!Number.isInteger(source)) return null;
+  return replacementPullRequests.find((candidate) => candidate?.merged_at
+    && isLineageBase(candidate?.base?.ref)
+    && candidate.number > source
+    && replacementSource(candidate.body) === source) ?? null;
+}
+
 export function assessReplacementLineage({
   pullRequest,
   requiredReplacements,
@@ -106,14 +128,39 @@ export function assessReplacementLineage({
   }
 
   const fulfilledSources = new Set(requiredReplacements
-    .filter(({ pullRequest: source }) => replacementPullRequests.some((candidate) =>
-      candidate?.merged_at
-      && candidate.number > source?.number
-      && replacementSource(candidate.body) === source?.number))
+    .filter(({ pullRequest: source }) => Boolean(
+      settlementOf(source?.number, replacementPullRequests),
+    ))
     .map(({ pullRequest: source }) => source.number));
   const pending = requiredReplacements.filter(({ pullRequest: source }) =>
     source?.number !== pullRequest?.number
     && !fulfilledSources.has(source?.number));
+
+  // ONE-CLAIMANT EXCLUSIVITY IS NOT ENFORCED AT ALL, by an explicit owner decision of
+  // 2026-08-21. Two open claimants for one obligation can both merge. The cost is
+  // duplicated effort — two replacements carrying the same scope — and NOT a corrupted
+  // ledger: settlement below discharges an obligation exactly once, and only for a
+  // merge that landed on `main` above its source.
+  //
+  // Four mechanisms were built and each was refuted by executing it. Refusing when any
+  // other claimant is open is symmetric, so two coexisting claimants each refuse the
+  // other and the loop stops until a human intervenes. Admitting the lowest-numbered
+  // claimant recomputes a winner from a set that changes underneath work already in
+  // flight. Checking at the merge boundary whether the source is discharged is not
+  // atomic with the merge. Taking an atomic claim ref closes the race but deadlocks the
+  // obligation permanently if a runner dies while holding it, and removes the
+  // claimant's only wake path.
+  //
+  // The root is that reading cannot decide this, and the one atomic primitive available
+  // brings worse failures than the defect. Deciding it properly needs persisted
+  // "who was admitted first" state, or the ability to cancel another pull request's
+  // queued merge under a lock keyed on the replaced source. GitHub offers neither to a
+  // pure assessment of one pull request, which is what this function is.
+  //
+  // If it is revisited it belongs OUTSIDE this gate — a merge queue, or a workflow
+  // serialized on the replaced source. Recorded as an accepted gap in
+  // docs/reviews/replacement-lineage-repair.md so a later reader finds a decision
+  // rather than a silence.
 
   if (declaration.kind === 'source') {
     const requirement = pending.find(
@@ -131,14 +178,20 @@ export function assessReplacementLineage({
         detail: `Replaces: #${declaration.source} is not closed; close the exhausted unit before reviewing its replacement`,
       };
     }
-    const competing = replacementPullRequests.find((candidate) =>
-      candidate?.number !== pullRequest?.number
-      && candidate?.state === 'open'
-      && replacementSource(candidate.body) === declaration.source);
-    if (competing) {
+    // A claimant must be numbered ABOVE its source, because settlement already
+    // requires exactly that — and admitting a claimant that settlement can never
+    // accept is worse than refusing it. An older pull request EDITED to declare
+    // `Replaces: #N` would otherwise be admitted, occupy the obligation, and never
+    // discharge it however far it got: the loop would review the wrong unit while the
+    // obligation stayed pending and kept blocking every `Replaces: none` unit.
+    //
+    // This is the missing half of the settlement rule rather than a new policy. The
+    // two are the same ordering, read at the two ends of one obligation.
+    if (!(pullRequest?.number > declaration.source)) {
       return {
         allowed: false,
-        detail: `Replaces: #${declaration.source} is already claimed by open PR #${competing.number}`,
+        detail: `a replacement must be numbered above the unit it replaces; #${pullRequest?.number} `
+          + `cannot replace #${declaration.source}, and settlement would never accept it`,
       };
     }
     return { allowed: true, detail: null };
@@ -203,6 +256,40 @@ export function assessReviewScope(
       .test(seam)
     && !/^[-?.]+$/u.test(seam)
     && !/^<[^>]+>$/u.test(seam);
+  // THE BASE RULE APPLIES TO EVERY REVIEW UNIT, and it is evaluated HERE rather
+  // than inside `assessReplacementLineage`.
+  //
+  // An earlier head put it there, and the placement was wrong in a way that made
+  // the rule unreachable from the one caller that matters. The lineage assessment
+  // runs only when a caller passes `requireReplacementLineage` AND supplies the two
+  // GitHub-fetched arrays it needs; the required `review-scope` job supplies
+  // neither, because fetching a repository-wide obligation set is exactly the work
+  // the cheap preflight exists to avoid. So an off-`main` unit passed the required
+  // check, every dependent CI job ran, and the base was rejected only later by the
+  // trusted orchestrator — while the record document claimed the refusal was
+  // persisted by `review-scope`.
+  //
+  // The rule reads `base.ref` and nothing else. Living inside the lineage
+  // assessment gave a universal rule a data dependency it does not have. Out here
+  // it runs for every caller, and the cheap preflight fails first, which is the
+  // whole point of putting the guard at admission.
+  //
+  // Scoping it to `Replaces: #N` would leave the worse case open anyway: a
+  // `Replaces: none` unit targeting another branch passes, accumulates two
+  // finding-bearing heads, and is then labelled `review-replacement-required` — a
+  // REPOSITORY-WIDE obligation. Every fresh `main` unit is blocked behind it until
+  // some replacement carries work that was never eligible to land on `main` at all.
+  // A claimant merging off-`main` is the narrower failure; this is the one that
+  // stops the loop.
+  //
+  // Gated on `preReviewRequired` like every other rule this repair introduced, so
+  // it governs exactly the units the protocol governs and never retroactively
+  // fails one that predates it.
+  const unitBase = pullRequest?.base?.ref;
+  const baseProblem = preReviewRequired && !isLineageBase(unitBase)
+    ? `a review unit must target ${LINEAGE_BASE_REF}; this unit targets `
+      + `${typeof unitBase === 'string' && unitBase.length > 0 ? unitBase : 'an unreadable base'}`
+    : null;
   const lineage = preReviewRequired && requireReplacementLineage
     ? assessReplacementLineage({
       pullRequest,
@@ -211,6 +298,7 @@ export function assessReviewScope(
     })
     : { allowed: true, detail: null };
   const preReviewProblems = [
+    ...(baseProblem ? [baseProblem] : []),
     ...(missingChecklist.length > 0
       ? [`pre-review checklist items: ${missingChecklist.join(', ')}`]
       : []),
