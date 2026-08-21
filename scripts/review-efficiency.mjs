@@ -96,11 +96,11 @@ export function replacementSource(body) {
 /**
  * The pull request that DISCHARGED an obligation, or null.
  *
- * One definition, used at both boundaries that need it: the scope gate computes
- * `fulfilledSources` from it, and the merge boundary asks it whether a claimant is
- * about to become a second replacement for an obligation already settled. Two copies
- * of this rule would eventually disagree, and a disagreement here means either a
- * pending obligation nobody can discharge or a duplicate replacement that lands.
+ * One definition, so that "discharged" means one thing. `fulfilledSources` is computed
+ * from it, and anything that later needs the same question — inside this gate or
+ * outside it — asks this rather than restating the rule. A second copy would
+ * eventually disagree, and a disagreement here means either a pending obligation
+ * nobody can discharge or a duplicate replacement that lands.
  *
  * A discharge is a MERGE, on `main`, numbered above the source it claims — the same
  * three facts admission requires of a claimant, read from the merge record rather
@@ -136,37 +136,32 @@ export function assessReplacementLineage({
     source?.number !== pullRequest?.number
     && !fulfilledSources.has(source?.number));
 
-  // ONE-CLAIMANT EXCLUSIVITY IS NOT DECIDED HERE, and where it IS decided is named
-  // rather than left as a gap.
+  // ONE-CLAIMANT EXCLUSIVITY IS NOT ENFORCED AT ALL, by an explicit owner decision of
+  // 2026-08-21. Two open claimants for one obligation can both merge. The cost is
+  // duplicated effort — two replacements carrying the same scope — and NOT a corrupted
+  // ledger: settlement below discharges an obligation exactly once, and only for a
+  // merge that landed on `main` above its source.
   //
-  // The rule that used to live here asked "is any other claimant open" and refused if
-  // so. That question is symmetric, so it deadlocks the moment two claimants coexist:
-  // each sees the other, both refuse, and because a pending obligation also blocks
-  // every `Replaces: none` unit, nothing in the repository moves until a human closes
-  // one by hand.
+  // Four mechanisms were built and each was refuted by executing it. Refusing when any
+  // other claimant is open is symmetric, so two coexisting claimants each refuse the
+  // other and the loop stops until a human intervenes. Admitting the lowest-numbered
+  // claimant recomputes a winner from a set that changes underneath work already in
+  // flight. Checking at the merge boundary whether the source is discharged is not
+  // atomic with the merge. Taking an atomic claim ref closes the race but deadlocks the
+  // obligation permanently if a runner dies while holding it, and removes the
+  // claimant's only wake path.
   //
-  // Replacing it with a total order — admit the lowest-numbered claimant — removed the
-  // deadlock and introduced a worse failure. Any winner recomputed from the CURRENT
-  // set is unstable, because the set changes underneath work that is already in
-  // flight: lowest-wins is displaced when an older claimant retargets onto `main`,
-  // highest-wins whenever someone opens a newer pull request. A displaced claimant
-  // that has already queued its merge is not actually revoked by being refused here,
-  // so both can land and one obligation gets two replacements.
+  // The root is that reading cannot decide this, and the one atomic primitive available
+  // brings worse failures than the defect. Deciding it properly needs persisted
+  // "who was admitted first" state, or the ability to cancel another pull request's
+  // queued merge under a lock keyed on the replaced source. GitHub offers neither to a
+  // pure assessment of one pull request, which is what this function is.
   //
-  // Deciding this correctly needs either persisted "who was admitted first" state or
-  // the ability to CANCEL the displaced claimant's queued merge. This function has
-  // neither: it is a pure assessment of one pull request, and `auto_merge` is not even
-  // among its inputs. Both remedies belong to the boundary that controls merging.
-  //
-  // So exclusivity is enforced at the MERGE-CONTROLLING BOUNDARY instead, where the
-  // question is answerable: `completeReviewedPullRequest` asks, immediately before it
-  // merges, whether this claimant's source has ALREADY been discharged, and refuses if
-  // so. That is an observation rather than a prediction — the merge either has landed
-  // or has not — and it uses `settlementOf` below, the SAME predicate this function
-  // uses to compute `fulfilledSources`, so the two boundaries cannot drift into
-  // disagreeing about what "already discharged" means.
-  //
-  // Omitting it here is therefore a placement decision, not a waiver.
+  // If it is revisited it belongs OUTSIDE this gate — a merge queue, or a workflow
+  // serialized on the replaced source. Recorded as an accepted gap in
+  // docs/reviews/replacement-lineage-repair.md so a later reader finds a decision
+  // rather than a silence.
+
   // THE BASE RULE APPLIES TO EVERY REVIEW UNIT, not only to a declared claimant.
   //
   // Scoping it to `Replaces: #N` left the worse case open: a `Replaces: none` unit
