@@ -402,8 +402,29 @@ same working tree. The cause was a background battery that survived a context
 compaction and whose reset ran seven seconds into the previous run.
 
 1. Before any battery that resets the shared database, **refuse to start** if
-   `pgrep -f "vitest.mjs run --config vitest.integration"` or `pgrep -f test-api-e2e`
-   matches. Print the offending processes and exit non-zero.
+   `pgrep -A -f "vitest.mjs run --config vitest.integration"` or
+   `pgrep -A -f test-api-e2e` matches. Print the offending processes and exit
+   non-zero.
+
+   **`-A` (`--ignore-ancestors`) is load-bearing, not decoration.** Run inline — the
+   way an agent runs it — the checking shell's own command line *contains the search
+   string*, and `-f` matches full command lines, so a plain `pgrep -f` reports the
+   process doing the checking. The guard then refuses every battery, including the
+   one it was meant to permit: a guard that fails closed on nothing at all is worse
+   than no guard, because it looks like protection.
+
+   This is easy to miss because **it behaves differently depending on where you run
+   it**. Inside a script file the pattern lives in the file rather than on a command
+   line, so plain `-f` does not self-match and the rule appears to work; typed
+   inline it always self-matches. Verified by execution both ways: inline, plain
+   `-f` matched its own shell with no suite running, and `-A -f` did not.
+
+   A `pgrep -f "vitest[.]mjs …"` bracket also avoids the self-match — but only when
+   nothing *else* on that command line carries the unbracketed string, which is a
+   property of the line rather than of the check. It fails the moment the guard is
+   run beside a plain-pattern command, which is how it was first measured here.
+   `-A` excludes ancestors structurally and does not care. It needs
+   procps-ng ≥ 3.3.16 (4.0.4 in this container).
 2. A mass failure concentrated in the first-scheduled suites, in modules the diff
    does not touch, is an **environment** signal, not a product signal. Discriminate
    by re-running one failing suite alone against a separate scratch database before
