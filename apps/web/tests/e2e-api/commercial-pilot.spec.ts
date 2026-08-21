@@ -4,6 +4,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { attemptName } from './attempt-name';
+
 /**
  * Phase 5 Task 7B-iv (§M) — the pilot COMMERCIAL acceptance chain: REAL browser, live PostgreSQL,
  * BOTH capability states. Each test provisions its own vendor/claim/counterparty under a unique
@@ -20,9 +22,9 @@ const SECOND_PMC = 'test-pmc@vitan.in';
 const PILOT_NAME = 'T7 Commercial Pilot';
 const PLAIN_NAME = 'T7 Commercial Plain';
 
-// The project names this ATTEMPT works in. A first attempt uses the constants above, so a local
-// re-run still reuses one project instead of piling them up; a RETRY works in fresh ones. See the
-// retry-poison note in `beforeAll` for why a retry cannot reuse the first attempt's project.
+// The names this attempt resolved to. `attemptName` is imported rather than restated so the spec,
+// the RETRY ISOLATION probe below and the unit coverage all exercise ONE derivation.
+// See the retry-poison note in `beforeAll`.
 let pilotName = PILOT_NAME;
 let plainName = PLAIN_NAME;
 /** a 1×1 png, for the evidence an acceptance requires */
@@ -99,6 +101,31 @@ async function createActivity(request: APIRequestContext, token: string, project
     plannedStartDate: '2026-08-20', plannedEndDate: '2026-12-30',
   });
   return (res.activities as Array<{ id: string; name: string }>).find((a) => a.name === name)!.id;
+}
+
+/** The operator CLI, exactly as §L specifies it — the sole activation path. */
+function enableMaterials(projectId: string): void {
+  execSync(
+    `pnpm --filter api capability:enable --project ${projectId} --capability materials `
+      + `--operator ci@vitan.in --reason "Task 7B-iv acceptance"`,
+    { stdio: 'pipe' },
+  );
+}
+
+/** `commercial` activation with a plan mapping ZERO PO lines — true of a FRESH project and of
+ *  nothing else. That is the whole point: it is what a retry over a used project cannot satisfy. */
+function enableCommercialWithEmptyPlan(projectId: string): void {
+  const planPath = join(mkdtempSync(join(tmpdir(), 'commercial-pilot-')), 'plan.json');
+  writeFileSync(planPath, JSON.stringify({
+    costHeads: [{ code: 'PILOT', name: 'Pilot works' }],
+    materialLines: [], labourLines: [],
+    reason: 'Task 7B-iv acceptance',
+  }));
+  execSync(
+    `pnpm --filter api capability:enable --project ${projectId} --capability commercial `
+      + `--operator ${PMC} --plan ${planPath} --reason "Task 7B-iv acceptance"`,
+    { stdio: 'pipe' },
+  );
 }
 
 /** FIXTURE (API-only): cost head, budget, a received-and-accepted material PO line, and a SUBMITTED
@@ -195,9 +222,8 @@ test.beforeAll(async ({ request }, testInfo) => {
   //
   // A retry therefore provisions its own project. That also makes the retry MEAN something: re-running
   // the chain over a project the failed attempt already mutated would not be re-running the chain.
-  const attempt = testInfo.retry > 0 ? ` retry ${testInfo.retry}` : '';
-  pilotName = `${PILOT_NAME}${attempt}`;
-  plainName = `${PLAIN_NAME}${attempt}`;
+  pilotName = attemptName(PILOT_NAME, testInfo.retry);
+  plainName = attemptName(PLAIN_NAME, testInfo.retry);
 
   home = await login(request, PMC);
   const orgs = await get(request, home, '/me/orgs');
@@ -213,23 +239,11 @@ test.beforeAll(async ({ request }, testInfo) => {
   // delivery (Phase 3's facts), and those routes are gated on that capability. The phase
   // dependency showing up in the operator's runbook, not a test detail.
   try {
-    execSync(
-      `pnpm --filter api capability:enable --project ${pilotId} --capability materials --operator ci@vitan.in --reason "Task 7B-iv acceptance"`,
-      { stdio: 'pipe' },
-    );
+    enableMaterials(pilotId);
   } catch { /* already enabled by a previous run of this suite */ }
 
-  const planPath = join(mkdtempSync(join(tmpdir(), 'commercial-pilot-')), 'plan.json');
-  writeFileSync(planPath, JSON.stringify({
-    costHeads: [{ code: 'PILOT', name: 'Pilot works' }],
-    materialLines: [], labourLines: [],
-    reason: 'Task 7B-iv acceptance',
-  }));
   try {
-    execSync(
-      `pnpm --filter api capability:enable --project ${pilotId} --capability commercial --operator ${PMC} --plan ${planPath} --reason "Task 7B-iv acceptance"`,
-      { stdio: 'pipe' },
-    );
+    enableCommercialWithEmptyPlan(pilotId);
   } catch (e: any) {
     // ALREADY ENABLED is the only tolerable failure: the project is REUSED by `ensureProject`, and
     // re-enabling is refused rather than silently re-attributing. Anything else must fail loudly —
@@ -394,4 +408,55 @@ test('NON-PILOT: the Commercial surface is ABSENT, and its reads 404', async ({ 
     const res = await request.get(`${API}/projects/${plainId}/${path}`, { headers: bearer(pmcPlain) });
     expect(res.status(), `${path} off-pilot`).toBe(404);
   }
+});
+
+test('RETRY ISOLATION: a used project refuses re-activation, and the next attempt gets its own', async ({ request }) => {
+  // The committed reproduce-first for the retry poison.
+  //
+  // The manual version of this was a throwaway: inject a failure, run with retries, read the log.
+  // That proved the fix worked ONCE and protected nothing — during an ordinary green run
+  // `testInfo.retry` stays 0, so the isolation branch is never taken and a regression in it would
+  // pass every run until an unrelated flake happened to recreate the double-attempt failure.
+  //
+  // So this drives BOTH attempts in one pass instead of relying on Playwright's retry machinery.
+  // It needs no deliberate failure, which matters: a test that always fails once would make
+  // "1 flaky" the normal result and destroy the signal the retry exists to give.
+  //
+  // Its own base is unique per run, so it never entangles with the suite's pilot project — what is
+  // under test is the DERIVATION and the isolation property, not the literal names.
+  const base = `T7 Retry Probe ${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const first = attemptName(base, 0);
+  const second = attemptName(base, 1);
+  expect(second, 'a retry must not resolve to the same project as the attempt it retries').not.toBe(first);
+
+  // ── attempt 0: a fresh project, so the zero-line plan is true and activation succeeds ──
+  const firstId = await ensureProject(request, home, orgId, first);
+  enableMaterials(firstId);
+  enableCommercialWithEmptyPlan(firstId);
+
+  // …and the chain leaves it holding a LIVE, unattributed PO line — the residue a failed attempt
+  // leaves behind. This is the state the retry used to inherit.
+  const firstToken = await scoped(request, home, firstId);
+  const tag = `retry-${Date.now().toString(36)}`;
+  const activityId = await createActivity(request, firstToken, firstId, `Retry probe ${tag}`);
+  await claimAwaitingVerification(request, firstToken, firstId, activityId, tag);
+
+  // ── the poison itself, proven rather than assumed ──
+  // Re-activating THIS project now fails, because `activate` re-asserts the plan and validates live
+  // lines before the capability upsert. If this ever stops failing, the isolation below is no longer
+  // load-bearing and this whole change should be revisited — so the probe asserts it explicitly.
+  let refusal = '';
+  try {
+    enableCommercialWithEmptyPlan(firstId);
+  } catch (e: any) {
+    refusal = `${e?.stderr ?? ''}${e?.stdout ?? ''}${e?.message ?? ''}`;
+  }
+  expect(refusal, 'a project holding a live unattributed PO line must refuse the zero-line plan')
+    .toMatch(/must be attributed to a cost head/iu);
+
+  // ── attempt 1: its own project, so the same plan is true again and activation SUCCEEDS ──
+  const secondId = await ensureProject(request, home, orgId, second);
+  expect(secondId, 'the retry must get a different project').not.toBe(firstId);
+  enableMaterials(secondId);
+  enableCommercialWithEmptyPlan(secondId); // throws if the poison reaches the retry — that is the fix
 });
