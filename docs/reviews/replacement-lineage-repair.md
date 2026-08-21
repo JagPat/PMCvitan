@@ -523,6 +523,20 @@ where everyone can see it. A non-`main` base is refused before review, so an off
 unit never accumulates findings and never reaches the point where an obligation would
 be created. That is one check on one value at one moment, with nothing to race.
 
+**And it is evaluated in `assessReviewScope` itself, NOT inside
+`assessReplacementLineage`.** An earlier head put it in the lineage assessment, which
+sounds like the same place and is not. That function runs only when a caller passes
+`requireReplacementLineage` AND supplies the two GitHub-fetched arrays it needs; the
+`review-scope` job supplies neither, because fetching a repository-wide obligation set
+is precisely the work a cheap preflight exists to avoid. So the required check passed
+an off-`main` unit, every dependent CI job ran, and the base was rejected only later by
+the trusted orchestrator — while this document claimed the refusal was persisted by
+`review-scope`. The rule reads `base.ref` and nothing else, so nesting it inside the
+lineage assessment gave a universal rule a data dependency it does not have. The
+placement is pinned by a probe that drives the CLI entry point rather than the
+assessment function, because the defect was exactly that the CLI path never reached
+the rule.
+
 **And the rule applies to EVERY review unit, not only to a declared claimant.**
 Scoping it to `Replaces: #N` leaves the worse case open: a `Replaces: none` unit on
 another branch passes, accumulates two finding-bearing heads, and earns the

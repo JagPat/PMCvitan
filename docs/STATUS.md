@@ -25,7 +25,7 @@ updated: 2026-08-20
 **#382 MERGED at `main` `1449c82`**, putting
 `docs/reviews/replacement-lineage-repair.md` on `main` and discharging #381. #383,
 #384 through #390 each carried the record forward and each reached the
-two-finding-head limit. The open PR replaces #400. #396 through #399 each closed at the round limit while claiming their predecessor. The unit is now ONE obligation rule read at three boundaries: a replacement targets `main`, is numbered above what it replaces, settles only by landing on `main`, and cannot merge as a SECOND replacement for an obligation already discharged — that last one enforced at the merge-controlling boundary, which is the only place it is an observation rather than a prediction. Base-change invalidation of the review authorization remains deferred; #394 was settled by merged #395.
+two-finding-head limit. The open PR replaces #400. #396 through #399 each closed at the round limit while claiming their predecessor. The unit is now ONE obligation rule read at TWO boundaries: at ADMISSION a review unit targets `main` — every unit, not only a claimant, evaluated in the scope assessment itself so the required `review-scope` check fails it — and a claimant is additionally numbered above what it replaces; at SETTLEMENT an obligation is discharged only by a merge that LANDED on `main` above its source. **ONE-CLAIMANT EXCLUSIVITY IS NOT ENFORCED, by an explicit owner decision of 2026-08-21.** Two open replacements for one obligation can both merge; the cost is duplicated effort, not a corrupted ledger, because settlement still discharges an obligation exactly once. Four mechanisms were built and each was refuted by review, and the merge-controlling boundary an earlier head added to enforce it is REMOVED — later work must not rely on that guarantee. The reasoning and the four refutations are recorded under "Accepted gaps" in `docs/reviews/replacement-lineage-repair.md`. Base-change invalidation of the review authorization remains deferred; #394 was settled by merged #395.
 
 **THE OWNER'S SCOPE DECISION STANDS AND IS NOW COHERENT.** Requirement 10 — the
 migration cutover — is REMOVED, not deferred: five formulations drew findings, and
@@ -161,8 +161,8 @@ primitive it wanted is not missing — it is not needed.
 restored it needs authenticated provenance, since the shared `github-actions[bot]`
 actor is necessary and not sufficient. **OWNER EQUALITY IS ALSO A REQUIREMENT, for
 every claim and not only the refused bundle** — executed, `assessReplacementLineage`'s
-source branch checks the source number, its closed state and competing claimants, and
-NEVER the owner, so a `claude` PR can declare `Replaces: #N` against a pending
+source branch checks the source number, its closed state and its ordering against the
+claimant, and NEVER the owner, so a `claude` PR can declare `Replaces: #N` against a pending
 `cursor`-owned source and discharge scope it was never permitted to carry. The rule is
 owner equality with a fail-closed refusal when EITHER owner cannot be authenticated —
 BOTH ends, since an earlier head authenticated the source and left the claimant's own
@@ -223,9 +223,12 @@ loop to keep running.
 **A STATUS claim carried from the previous head is STRUCK.** It said the only
 barrier to one unit carrying several obligations is `replacementDeclaration`
 rejecting more than one `Replaces:` line. Executed, that is false: a two-line
-declaration makes `replacementSource` return `null`, and `assessReplacementLineage`
-uses scalar equality in both `fulfilledSources` and its competing-claim detection,
-so a parser-only change fulfils nothing. Four sites move together.
+declaration makes `replacementSource` return `null`, and every downstream site is
+scalar — `replacementSource`'s own return, `settlementOf`'s comparison, the
+`fulfilledSources` and `pending` filters, and the claimant's requirement lookup and
+ordering test — so a parser-only change fulfils nothing. They move together.
+(An earlier version of this paragraph also counted `assessReplacementLineage`'s
+competing-claim detection, which is now deleted.)
 
 **§2 IS NOT CLOSED, and an earlier version of this paragraph said otherwise.** It
 claimed settlement reads git after the repair and a snapshot before it — but the

@@ -250,6 +250,11 @@ test('O2: review-scope rejects undeclared ownership before any expensive job', (
         deletions: 0,
         changed_files: 1,
         head: { ref },
+        // A `main` base, for the same reason the owner marker is supplied: the base
+        // rule is now a precondition of EVERY scope assessment rather than only of a
+        // lineage assessment, so a fixture omitting it would block on an axis this
+        // test is not about. A real pull request event always carries `base.ref`.
+        base: { ref: 'main' },
         body: declaration ? `${declaration}\n${CHECKLIST}` : CHECKLIST,
       },
       { changedFiles: [{ filename: 'scripts/a.mjs' }], requireChangedFiles: true },

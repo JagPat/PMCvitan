@@ -162,23 +162,6 @@ export function assessReplacementLineage({
   // docs/reviews/replacement-lineage-repair.md so a later reader finds a decision
   // rather than a silence.
 
-  // THE BASE RULE APPLIES TO EVERY REVIEW UNIT, not only to a declared claimant.
-  //
-  // Scoping it to `Replaces: #N` left the worse case open: a `Replaces: none` unit
-  // targeting another branch passes here, accumulates two finding-bearing heads, and
-  // is then labelled `review-replacement-required` — a REPOSITORY-WIDE obligation.
-  // Every fresh `main` unit is blocked behind it until some replacement carries work
-  // that was never eligible to land on `main` at all. A claimant merging off-`main` is
-  // the narrower failure; this is the one that stops the loop.
-  const unitBase = pullRequest?.base?.ref;
-  if (!isLineageBase(unitBase)) {
-    return {
-      allowed: false,
-      detail: `a review unit must target ${LINEAGE_BASE_REF}; this unit targets `
-        + `${typeof unitBase === 'string' && unitBase.length > 0 ? unitBase : 'an unreadable base'}`,
-    };
-  }
-
   if (declaration.kind === 'source') {
     const requirement = pending.find(
       ({ pullRequest: source }) => source?.number === declaration.source,
@@ -273,6 +256,40 @@ export function assessReviewScope(
       .test(seam)
     && !/^[-?.]+$/u.test(seam)
     && !/^<[^>]+>$/u.test(seam);
+  // THE BASE RULE APPLIES TO EVERY REVIEW UNIT, and it is evaluated HERE rather
+  // than inside `assessReplacementLineage`.
+  //
+  // An earlier head put it there, and the placement was wrong in a way that made
+  // the rule unreachable from the one caller that matters. The lineage assessment
+  // runs only when a caller passes `requireReplacementLineage` AND supplies the two
+  // GitHub-fetched arrays it needs; the required `review-scope` job supplies
+  // neither, because fetching a repository-wide obligation set is exactly the work
+  // the cheap preflight exists to avoid. So an off-`main` unit passed the required
+  // check, every dependent CI job ran, and the base was rejected only later by the
+  // trusted orchestrator — while the record document claimed the refusal was
+  // persisted by `review-scope`.
+  //
+  // The rule reads `base.ref` and nothing else. Living inside the lineage
+  // assessment gave a universal rule a data dependency it does not have. Out here
+  // it runs for every caller, and the cheap preflight fails first, which is the
+  // whole point of putting the guard at admission.
+  //
+  // Scoping it to `Replaces: #N` would leave the worse case open anyway: a
+  // `Replaces: none` unit targeting another branch passes, accumulates two
+  // finding-bearing heads, and is then labelled `review-replacement-required` — a
+  // REPOSITORY-WIDE obligation. Every fresh `main` unit is blocked behind it until
+  // some replacement carries work that was never eligible to land on `main` at all.
+  // A claimant merging off-`main` is the narrower failure; this is the one that
+  // stops the loop.
+  //
+  // Gated on `preReviewRequired` like every other rule this repair introduced, so
+  // it governs exactly the units the protocol governs and never retroactively
+  // fails one that predates it.
+  const unitBase = pullRequest?.base?.ref;
+  const baseProblem = preReviewRequired && !isLineageBase(unitBase)
+    ? `a review unit must target ${LINEAGE_BASE_REF}; this unit targets `
+      + `${typeof unitBase === 'string' && unitBase.length > 0 ? unitBase : 'an unreadable base'}`
+    : null;
   const lineage = preReviewRequired && requireReplacementLineage
     ? assessReplacementLineage({
       pullRequest,
@@ -281,6 +298,7 @@ export function assessReviewScope(
     })
     : { allowed: true, detail: null };
   const preReviewProblems = [
+    ...(baseProblem ? [baseProblem] : []),
     ...(missingChecklist.length > 0
       ? [`pre-review checklist items: ${missingChecklist.join(', ')}`]
       : []),

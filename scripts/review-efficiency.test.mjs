@@ -520,6 +520,70 @@ test('a claimant numbered at or below its source is refused at admission', () =>
   assert.equal(assess(396).allowed, true);
 });
 
+test('the required scope CLI refuses an off-main unit with no lineage data', async () => {
+  // The placement probe. The base rule previously lived inside
+  // `assessReplacementLineage`, which runs only when a caller passes
+  // `requireReplacementLineage` AND the two GitHub-fetched arrays it needs. The
+  // `review-scope` job passes neither — fetching a repository-wide obligation set is
+  // the work the cheap preflight exists to avoid — so the required check SUCCEEDED
+  // for an off-`main` unit, every dependent CI job ran, and the base was rejected
+  // only later by the trusted orchestrator.
+  //
+  // This drives the real CLI entry point rather than `assessReviewScope` with
+  // lineage options supplied, because the defect was exactly that the CLI path never
+  // reached the rule. A probe that supplied the options would have passed at the
+  // defective head and proved nothing.
+  const directory = await mkdtemp(join(tmpdir(), 'pmcvitan-review-base-'));
+  const eventPath = join(directory, 'event.json');
+  const previousExitCode = process.exitCode;
+  // A readable, in-scope file list, so the ONLY thing separating the refusals below
+  // from the acceptance is the base ref. Without it every case would block on an
+  // unreadable cumulative file list and the probe would prove nothing about the base.
+  const options = {
+    eventPath,
+    token: 'test-token',
+    fetchImpl: async () => new Response(JSON.stringify([
+      { filename: 'scripts/review-efficiency.mjs' },
+    ])),
+  };
+  const writeUnit = async (overrides) => writeFile(eventPath, JSON.stringify({
+    repository: { full_name: 'JagPat/PMCvitan' },
+    pull_request: pullRequest({
+      number: 401,
+      changed_files: 1,
+      additions: 40,
+      deletions: 0,
+      body: preReviewBody(),
+      ...overrides,
+    }),
+  }));
+  try {
+    await writeUnit({ base: { ref: 'release' } });
+    const offMain = await runScope(options);
+    assert.equal(offMain.allowed, false, 'the required check must fail an off-main unit');
+    assert.match(offMain.detail, /must target main/u);
+    assert.match(offMain.detail, /targets release/u);
+    assert.equal(process.exitCode, 1);
+
+    // Fail closed when the base cannot be read at all, rather than passing on silence.
+    process.exitCode = previousExitCode;
+    await writeUnit({ base: undefined });
+    const unreadable = await runScope(options);
+    assert.equal(unreadable.allowed, false);
+    assert.match(unreadable.detail, /an unreadable base/u);
+
+    // The control: the same unit on `main` passes. Without this the two refusals
+    // above could be caused by anything else in the fixture.
+    process.exitCode = previousExitCode;
+    await writeUnit({});
+    const onMain = await runScope(options);
+    assert.equal(onMain.allowed, true, onMain.detail ?? 'expected the on-main unit to pass');
+  } finally {
+    process.exitCode = previousExitCode;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('a claimant that does not target main is refused at admission', () => {
   const source = {
     pullRequest: { number: 346, state: 'closed', base: { ref: 'main' } },
