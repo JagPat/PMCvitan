@@ -14,12 +14,12 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
-work_item: none
-reviewed_merge: 0658e88
-open_pr: 407
+work_item: schedule-b1-dependency-graph
+reviewed_merge: 54ae560
+open_pr: 408
 next_task: none
 blocking_directive: none
-updated: 2026-08-21
+updated: 2026-08-23
 ```
 
 **#382 MERGED at `main` `1449c82`**, putting
@@ -253,13 +253,34 @@ failed claimant are owed, and each replacement discharges only the one it names.
 with its two unresolved P1s — is discharged only by a merged unit carrying that
 implementation scope. No label is cleared by hand.
 
-**#363 (schedule B1) is parked at its green head** — `pnpm check` exit 0,
-`upgrade-proof` 676 assertions, integration 96 files / 1,243 tests, all 10
-checks green on the preceding head. It declares `Replaces: none` truthfully and
-is refused because obligations are outstanding — the gate names #377, the lowest
-of them, but ALL currently-labelled units must be discharged before any
-`Replaces: none` unit is admitted. It is NOT to be edited to claim an obligation
-it does not carry; it resumes when the queue is empty.
+**#363 (schedule B1) IS CLOSED, and the open PR is its rebuild from current
+`main`.** The obligation queue that parked it is now EMPTY — zero pull requests
+carry `review-replacement-required`, verified at authoring time — so a
+`Replaces: none` unit is admissible again. #363 was closed by the owner on
+2026-08-23 because its branch went `mergeable_state: dirty`: GitHub could not
+produce `refs/pull/363/merge`, no `pull_request` workflow could run, and the
+exact-head gate could never evaluate it. It was closed WITHOUT a
+`review-replacement-required` label, so PR #408 declares `Replaces: none` and is
+NOT a claimant on it. The lineage #354 -> #360 -> #361 -> #363 is recorded here
+so a reader does not lose it.
+
+**The rebuild is not a re-push.** #363 carried two mechanisms that are each
+defensible alone and jointly guarantee failure: a `migrate.sh` ALWAYS_EXECUTE
+entry leaving the migration PENDING on the P3005 baseline path so its raw guards
+really apply, and a migration preflight that RAISEs when `ActivityDependency`
+exists and is not exactly what it installs. On precisely the `prisma db
+push`-shaped database the first exists to serve, the second fires, and the
+baseline path exits 1 — measured, by splicing that refusal back in and running
+the real `scripts/migrate.sh`. The cleared in-repo pattern
+(`20270920000000_decision_option_kinds`, already on `main` and in the same
+ALWAYS_EXECUTE list, and T45/T2C/T3C) is diagnostic-first over DATA and
+idempotent over OBJECTS. "Were these edges ever cycle-checked?" is the wrong
+question: what matters is whether the rows PASS, which is decidable in one
+query. Verification is not adoption. The rebuild installs every object
+unconditionally, idempotently and BY DEFINITION, and refuses only on data it
+cannot honestly interpret — which is also what closes the refuse-vs-repair
+dilemma four heads spent themselves on. Over a graph that already holds a loop,
+#363's file exits 0 and this one aborts naming the loop.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
