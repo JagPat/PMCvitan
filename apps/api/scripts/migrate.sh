@@ -138,7 +138,16 @@ if echo "$out" | grep -q "P3005"; then
   # have run. These are decided statically, because they cannot have: a pre-baseline database
   # predates them. Leaving them pending costs nothing when they have somehow already been applied —
   # each is written idempotently and re-applies as a no-op.
-  ALWAYS_EXECUTE="20270920000000_decision_option_kinds"
+  # Both of these install raw CHECKs and triggers that `schema.prisma` cannot describe, so a
+  # baseline that records them as applied WITHOUT running them would claim guards that never
+  # existed — indistinguishable from success. Left pending so the deploy really executes them.
+  #
+  # This only works because neither migration refuses a table it did not create. A `db push`-shaped
+  # database HAS the table (Prisma models it) and NOT the raw guards — the exact state this entry
+  # exists to fix — so a whole-table object refusal in either file would fire here and take the
+  # baseline down. Both are diagnostic-first over DATA and idempotent over OBJECTS instead.
+  ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
+20270920000000_decision_option_kinds"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
