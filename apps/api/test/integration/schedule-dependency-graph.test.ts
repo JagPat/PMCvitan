@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { PrismaClient } from '@prisma/client';
 import { createTestApp, type TestApp } from './test-app';
 import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
 
@@ -103,6 +104,22 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     }
   };
 
+  /**
+   * Wait for a live database CONDITION, never for a duration.
+   *
+   * A sleep encodes an assumption about machine speed, and when that assumption is wrong the test
+   * does not merely flake — it can pass the wrong way round, reporting a serialization that never
+   * happened. Every barrier below waits on `pg_locks`, which is the mechanism itself.
+   */
+  const waitFor = async (what: string, sql: string): Promise<void> => {
+    for (let i = 0; i < 400; i += 1) {
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(sql);
+      if (Number(rows[0]?.n ?? 0) > 0) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`barrier never satisfied after 10s: ${what}`);
+  };
+
   /** Every constraint / index OID on the table — identity, so a "no-op" can be proven to be one. */
   const objectIdentity = async (): Promise<string> => {
     const rows = await t.prisma.$queryRawUnsafe<Array<{ ids: string }>>(`
@@ -180,15 +197,68 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
   // ── P5 ─────────────────────────────────────────────────────────────────────────────────────
   it('P5 concurrency: two sessions each adding one legal edge cannot compose a cycle', async () => {
     const [a, b] = [await activity(), await activity()];
-    // Neither session is wrong on its own evidence — they touch different rows and conflict on
-    // nothing. The advisory lock is what makes the second one see the first one's edge.
-    const results = await Promise.allSettled([
-      t.prisma.$executeRawUnsafe(edge(a, b)),
-      t.prisma.$executeRawUnsafe(edge(b, a)),
-    ]);
-    const rejected = results.filter((r) => r.status === 'rejected');
-    expect(rejected).toHaveLength(1);
-    expect(String((rejected[0] as PromiseRejectedResult).reason)).toMatch(/dependency cycle/u);
+
+    // The hazard: two sessions each add an edge that is individually fine and jointly a loop.
+    //
+    //   T1: add a -> b   (asks: does b already reach a?  no)
+    //   T2: add b -> a   (asks: does a already reach b?  no)
+    //
+    // Neither is wrong on its own evidence. They touch different rows, conflict on nothing, and
+    // under READ COMMITTED neither can see the other's uncommitted row. Only the advisory lock —
+    // plus the fresh snapshot READ COMMITTED gives T2 after it waits — turns that into a refusal.
+    //
+    // FIRING BOTH INSERTS AS CONCURRENT PROMISES DOES NOT TEST THAT, and an earlier version of this
+    // probe did exactly that. The client pool is free to run one to completion before starting the
+    // other, and serial execution produces the same visible outcome — one edge accepted, one refused
+    // as an ordinary cycle — so the assertion passed without any interleaving at all, and would
+    // still pass with the serialization removed. A probe that cannot fail on the defect it names is
+    // not evidence.
+    //
+    // So the overlap is CONSTRUCTED: a second, independently-connected session holds its
+    // transaction open, and the first session's write is required to be genuinely BLOCKED on the
+    // project graph lock — asserted from `pg_locks`, not assumed after a sleep — before the holder
+    // is allowed to commit.
+    const holder = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let blocked: Promise<string> | null = null;
+
+    try {
+      const holderTx = holder.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(edge(a, b));   // takes the project graph lock, and keeps it
+        await held;                               // …until this test says otherwise
+      }, { timeout: 60_000, maxWait: 20_000 });
+
+      await waitFor('the holding session has taken the project graph lock',
+        `SELECT COUNT(*) AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND granted
+            AND classid = hashtext('vitan:schedule-graph')
+            AND objid = hashtext('${f.projectA.id}')::bigint::int`);
+
+      // the opposing edge, from THIS session — it must not get past the lock
+      blocked = t.prisma.$executeRawUnsafe(edge(b, a))
+        .then(() => 'COMMITTED', (e: unknown) => String(e));
+
+      await waitFor('the opposing writer is WAITING on that same lock',
+        `SELECT COUNT(*) AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND NOT granted
+            AND classid = hashtext('vitan:schedule-graph')
+            AND objid = hashtext('${f.projectA.id}')::bigint::int`);
+
+      // Only now — the two writes provably overlap, and the second is asleep on the lock the first
+      // holds. Letting the holder commit is what gives the second its fresh snapshot.
+      release();
+      await holderTx;
+
+      expect(await blocked, 'the second writer must be refused, not committed')
+        .toMatch(/dependency cycle/u);
+    } finally {
+      release();
+      await blocked?.catch(() => undefined);
+      await holder.$disconnect();
+    }
+
+    // the terminal invariant, which is the thing that actually matters
     expect(await edgeCount()).toBe(1);
   });
 

@@ -78,6 +78,25 @@ BEGIN
     RETURN;                                  -- fresh install; there are no rows to verify
   END IF;
 
+  -- LOCK BEFORE LOOKING, and hold it through the guard installation below.
+  --
+  -- Verifying a graph nobody is locked out of proves nothing about the graph that ends up guarded.
+  -- Every check in this block reads a snapshot; the guards that would refuse a bad row are installed
+  -- AFTERWARDS, and the acyclicity trigger fires on INSERT only, so it never judges a row that
+  -- arrived in between. On the `db push`-shaped database this file exists to serve — table present,
+  -- no triggers — a concurrent session can commit the opposing edge in exactly that window: the
+  -- CHECKs and foreign keys added below accept it (each edge is legal in isolation; only the PAIR is
+  -- a loop), and the migration commits a cycle with all five seals sitting on top of it, beyond the
+  -- reach of every guard forever. Measured before this line existed: the migration exited 0 over a
+  -- graph holding `A -> B` and `B -> A`.
+  --
+  -- ACCESS EXCLUSIVE, not a weaker mode: the writer to shut out is an ordinary INSERT, and only this
+  -- mode conflicts with the ROW EXCLUSIVE lock an INSERT takes. PostgreSQL holds it until COMMIT, so
+  -- the verification below and the objects installed after it see one another's world and nothing
+  -- can slip between them. The cost is bounded — this table holds no rows on any deployed database,
+  -- and section 3's ALTER TABLE takes the same lock a few statements later regardless.
+  LOCK TABLE public."ActivityDependency" IN ACCESS EXCLUSIVE MODE;
+
   -- The columns this block reasons about have to be there before it can reason. A table of this
   -- name without them is not this table, and no honest statement can be made about its rows — so
   -- name the missing columns rather than failing later on an unresolved identifier. A `db
