@@ -114,20 +114,70 @@ BEGIN
   -- and section 3's ALTER TABLE takes the same lock a few statements later regardless.
   LOCK TABLE public."ActivityDependency" IN ACCESS EXCLUSIVE MODE;
 
-  -- The columns this block reasons about have to be there before it can reason. A table of this
-  -- name without them is not this table, and no honest statement can be made about its rows — so
-  -- name the missing columns rather than failing later on an unresolved identifier. A `db
-  -- push`-shaped database, the realistic reason for the table to exist already, has all of them.
-  SELECT string_agg(c, ', ' ORDER BY c) INTO v_missing
-    FROM (VALUES ('id'), ('projectId'), ('predecessorId'), ('successorId'), ('lagWorkingDays'),
-                 ('createdAt'), ('createdById'), ('createdByName'),
-                 ('revokedAt'), ('revokedById'), ('revokedByName')) AS w(c)
-   WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns ic
-                      WHERE ic.table_schema = 'public'
-                        AND ic.table_name = 'ActivityDependency'
-                        AND ic.column_name = w.c);
+  -- THE PHYSICAL COLUMN CONTRACT, not merely the column NAMES.
+  --
+  -- Section 2's `CREATE TABLE IF NOT EXISTS` skips its whole definition when the table is already
+  -- there, so on the adopt path every column's type, nullability and default come from whatever
+  -- produced it — and a name test cannot tell a conforming column from a differently-shaped one
+  -- of the same name. That is section 3's name-versus-definition lesson applied one level down,
+  -- and the consequence is not cosmetic: a NULLABLE `predecessorId` would be adopted silently and
+  -- then accept a live edge with a null endpoint, because the composite foreign key is MATCH
+  -- SIMPLE (a row with any NULL key column is not checked at all), the self-dependency CHECK
+  -- evaluates to UNKNOWN and passes, and the reachability walk in section 8 matches no node. The
+  -- table would hold an edge no guard here can see.
+  --
+  -- So each column is compared against the contract section 2 would have created: nullability,
+  -- type, datetime precision and default. The comparison FAILS SAFE, like section 3's — anything
+  -- other than an exact match aborts and names the disagreement, so a future PostgreSQL that
+  -- renders `CURRENT_TIMESTAMP` differently costs a refusal an operator can read, never a silent
+  -- adoption. A `db push`-shaped database, the realistic reason for the table to exist already,
+  -- matches exactly, because Prisma builds it from the same model section 2 mirrors.
+  SELECT string_agg(w.c || ' (' || w.detail || ')', ', ' ORDER BY w.c) INTO v_missing FROM (
+    SELECT e.c AS c,
+           CASE WHEN ic.column_name IS NULL THEN 'absent'
+                ELSE 'is ' || ic.data_type || COALESCE('(' || ic.datetime_precision || ')', '')
+                     || ', nullable=' || ic.is_nullable
+                     || ', default=' || COALESCE(ic.column_default, 'none')
+                     || '; expected ' || e.typ || COALESCE('(' || e.prec || ')', '')
+                     || ', nullable=' || e.nullable
+                     || ', default=' || COALESCE(e.def, 'none')
+           END AS detail
+      FROM (VALUES
+              ('id',             'NO',  'text',                        NULL::INT, NULL::TEXT),
+              ('projectId',      'NO',  'text',                        NULL,      NULL),
+              ('predecessorId',  'NO',  'text',                        NULL,      NULL),
+              ('successorId',    'NO',  'text',                        NULL,      NULL),
+              ('lagWorkingDays', 'NO',  'integer',                     NULL,      '0'),
+              ('createdAt',      'NO',  'timestamp without time zone', 3,         'CURRENT_TIMESTAMP'),
+              ('createdById',    'NO',  'text',                        NULL,      NULL),
+              ('createdByName',  'NO',  'text',                        NULL,      NULL),
+              ('revokedAt',      'YES', 'timestamp without time zone', 3,         NULL),
+              ('revokedById',    'YES', 'text',                        NULL,      NULL),
+              ('revokedByName',  'YES', 'text',                        NULL,      NULL)
+           ) AS e(c, nullable, typ, prec, def)
+      LEFT JOIN information_schema.columns ic
+             ON ic.table_schema = 'public' AND ic.table_name = 'ActivityDependency'
+            AND ic.column_name = e.c
+     WHERE ic.column_name IS NULL
+        OR ic.is_nullable         IS DISTINCT FROM e.nullable
+        OR ic.data_type           IS DISTINCT FROM e.typ
+        OR ic.datetime_precision  IS DISTINCT FROM e.prec
+        OR ic.column_default      IS DISTINCT FROM e.def) w;
   IF v_missing IS NOT NULL THEN
-    RAISE EXCEPTION 'schedule B1: "ActivityDependency" exists but is missing the column(s) % this migration reasons about, so nothing honest can be said about the rows in it. Inspect that table; if it is not the dependency graph, rename or drop it, then re-run.', v_missing;
+    RAISE EXCEPTION 'schedule B1: "ActivityDependency" exists but does not match the column contract this migration installs and reasons about: %. Nothing honest can be said about the rows in it. Repair those columns, or — if it is not the dependency graph — rename or drop that table, then re-run.', v_missing;
+  END IF;
+
+  -- The PRIMARY KEY is part of the same contract and is not a column attribute, so it is asked
+  -- separately. Without it `id` is not an identity, and every diagnostic below that names a row by
+  -- id would be naming a set.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_index ix
+     WHERE ix.indrelid = 'public."ActivityDependency"'::regclass
+       AND ix.indisprimary AND ix.indisvalid AND ix.indnatts = 1
+       AND ix.indkey[0] = (SELECT a.attnum FROM pg_attribute a
+                            WHERE a.attrelid = 'public."ActivityDependency"'::regclass
+                              AND a.attname = 'id')) THEN
+    RAISE EXCEPTION 'schedule B1: "ActivityDependency" exists but its PRIMARY KEY is not ("id"), so an edge has no identity and every diagnostic in this migration would name a set rather than a row. Repair the primary key, then re-run.';
   END IF;
 
   -- ── 1a. STATE invariants over the rows already present ──────────────────────────────────────
@@ -150,7 +200,8 @@ BEGIN
   SELECT string_agg(q.id, ', ' ORDER BY q.id) INTO v_bad FROM (
     SELECT "id" FROM public."ActivityDependency"
      WHERE NOT (("revokedAt" IS NULL AND "revokedById" IS NULL AND "revokedByName" IS NULL)
-                OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL
+                OR ("revokedAt" IS NOT NULL
+                    AND "revokedById" IS NOT NULL AND "revokedById" !~ '^[[:space:]]*$'
                     AND "revokedByName" IS NOT NULL AND "revokedByName" !~ '^[[:space:]]*$'))
      ORDER BY "id" LIMIT 10) q;
   IF v_bad IS NOT NULL THEN
@@ -380,9 +431,16 @@ BEGIN
       -- arm accepts a withdrawal carrying a stamp and an id but NO NAME, which is the erasure the
       -- DELETE seal exists to prevent arriving through another door. Three-valued logic is this
       -- file's recurring trap; every test that can meet a NULL is written two-valued in full.
+      --
+      -- BOTH revocation identity columns are checked for blankness, not just the name. The
+      -- foreign key proves the id names a membership; it does not prove the id is legible, and a
+      -- writer able to create a whitespace-id user and membership could revoke through it. That
+      -- attribution is then permanent (section 7), which is exactly the asymmetry the creation
+      -- arm above already refuses on `createdById`. A withdrawal answers "who", or it is not a
+      -- withdrawal.
       ('ActivityDependency_revocation_check',
-       'CHECK (("revokedAt" IS NULL AND "revokedById" IS NULL AND "revokedByName" IS NULL) OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL AND "revokedByName" IS NOT NULL AND "revokedByName" !~ ''^[[:space:]]*$''))',
-       'CHECK (((("revokedAt" IS NULL) AND ("revokedById" IS NULL) AND ("revokedByName" IS NULL)) OR (("revokedAt" IS NOT NULL) AND ("revokedById" IS NOT NULL) AND ("revokedByName" IS NOT NULL) AND ("revokedByName" !~ ''^[[:space:]]*$''::text))))'),
+       'CHECK (("revokedAt" IS NULL AND "revokedById" IS NULL AND "revokedByName" IS NULL) OR ("revokedAt" IS NOT NULL AND "revokedById" IS NOT NULL AND "revokedById" !~ ''^[[:space:]]*$'' AND "revokedByName" IS NOT NULL AND "revokedByName" !~ ''^[[:space:]]*$''))',
+       'CHECK (((("revokedAt" IS NULL) AND ("revokedById" IS NULL) AND ("revokedByName" IS NULL)) OR (("revokedAt" IS NOT NULL) AND ("revokedById" IS NOT NULL) AND ("revokedById" !~ ''^[[:space:]]*$''::text) AND ("revokedByName" IS NOT NULL) AND ("revokedByName" !~ ''^[[:space:]]*$''::text))))'),
       -- An activity waiting for itself can never start. Cheap to state, so state it.
       ('ActivityDependency_no_self_check',
        'CHECK ("predecessorId" <> "successorId")',
@@ -454,6 +512,7 @@ DO $$
 DECLARE
   r          RECORD;
   v_existing TEXT;
+  v_owner    TEXT;
 BEGIN
   FOR r IN
     SELECT * FROM (VALUES
@@ -480,6 +539,28 @@ BEGIN
 
     CONTINUE WHEN v_existing IS NOT NULL
              AND v_existing = regexp_replace(r.canonical, '[[:space:]]+', ' ', 'g');
+
+    -- AN INDEX NAME IS UNIQUE PER SCHEMA, NOT PER TABLE, and the lookup above filters on
+    -- `indrelid` — so finding no matching definition does NOT mean the name is free. Unscoped,
+    -- the DROP below would then destroy an index of that name belonging to ANOTHER table: a
+    -- performance guard, or a standalone uniqueness rule, silently gone on any database where the
+    -- name collides. That is a strictly worse failure than the one this section exists to repair,
+    -- and it would happen on a retry or a reconciled database rather than on some exotic path.
+    --
+    -- This file may repair what belongs to "ActivityDependency". It must not RECLAIM what does
+    -- not, so a collision is data it cannot honestly interpret and it aborts naming both sides.
+    -- (Section 3 needs no counterpart: a constraint name is unique per TABLE and its DROP is
+    -- already scoped by `ALTER TABLE`.)
+    SELECT c2.relname INTO v_owner
+      FROM pg_class ci
+      JOIN pg_namespace ns ON ns.oid = ci.relnamespace
+      JOIN pg_index ix ON ix.indexrelid = ci.oid
+      JOIN pg_class c2 ON c2.oid = ix.indrelid
+     WHERE ci.relname = r.name AND ns.nspname = 'public'
+       AND ix.indrelid <> 'public."ActivityDependency"'::regclass;
+    IF v_owner IS NOT NULL THEN
+      RAISE EXCEPTION 'schedule B1: an index named "%" already exists in schema public on table "%", not on "ActivityDependency". This migration repairs its own objects and will not reclaim one it does not own — rename or drop that index deliberately, then re-run.', r.name, v_owner;
+    END IF;
 
     -- A UNIQUE CONSTRAINT of the same name owns its index, and `DROP INDEX` on it fails with
     -- "cannot drop index ... because constraint requires it" — an opaque abort in the middle of a

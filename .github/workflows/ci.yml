@@ -285,6 +285,21 @@ jobs:
         run: pnpm --filter api typecheck
       - name: Build
         run: pnpm --filter api build
+      # The ONLY job that executes the production `scripts/migrate.sh` P3005 baseline path.
+      #
+      # `upgrade-proof.sh` upgrades a LEDGER-BACKED database, which is a different path: it never
+      # reaches the ALWAYS_EXECUTE handling that leaves a migration pending so its raw CHECKs and
+      # triggers really run. Without this step a regression in that handling, or in applying
+      # `20270930000000_schedule_dependency_graph` over a `prisma db push`-shaped table, passes
+      # every required job while the reproduction it claims never executes.
+      #
+      # A step in this job rather than a job of its own, deliberately: `api` already carries the
+      # toolchain and the PostgreSQL service the proof needs and is already required by
+      # `quality-gate`, so this costs no new wiring in the autonomous-loop job pins. The proof
+      # builds its own scratch database and never touches `pmcvitan_test`.
+      - name: Schedule B1 baseline proof (the real migrate.sh over a pre-baseline database)
+        timeout-minutes: 15
+        run: bash apps/api/scripts/schedule-b1-baseline-proof.sh
 
   # The ONE required status.
   #

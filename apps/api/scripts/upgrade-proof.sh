@@ -3808,6 +3808,15 @@ assert_rejects "B1: a revocation with no one attached to it" \
 assert_rejects "B1: a revocation carrying a stamp and an id but NO NAME, which three-valued logic would wave through" \
   "UPDATE \"ActivityDependency\" SET \"revokedAt\"=now(), \"revokedById\"='USER-1', \"revokedByName\"=NULL WHERE \"id\"='UPB1-E1'" \
   "revocation_check"
+# The foreign key proves the revoker id names a membership; it does not prove the id is LEGIBLE.
+# A writer able to create a whitespace-id user and membership could revoke through it, and section 7
+# would freeze that unanswerable attribution permanently — the asymmetry the creation arm already
+# refuses on `createdById`.
+assert_rejects "B1: a revocation attributed to a BLANK id, through a membership that really exists" \
+  "INSERT INTO \"User\"(\"id\",\"projectId\",\"name\",\"email\",\"role\") VALUES ('   ','p1','Blank','blank-upb1@example.com','pmc');
+   INSERT INTO \"Membership\"(\"id\",\"projectId\",\"userId\",\"role\",\"status\") VALUES ('UPB1-MEMBLANK','p1','   ','pmc','active');
+   UPDATE \"ActivityDependency\" SET \"revokedAt\"=now(), \"revokedById\"='   ', \"revokedByName\"='Legacy PMC' WHERE \"id\"='UPB1-E1'" \
+  "revocation_check"
 assert_rejects "B1: TRUNCATE, which no row-level seal sees — one statement would erase every edge and both attributions" \
   "TRUNCATE TABLE \"ActivityDependency\"" \
   "never truncated"

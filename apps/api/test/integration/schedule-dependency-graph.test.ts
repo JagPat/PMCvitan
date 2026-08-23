@@ -718,4 +718,87 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     expect(applyMigration(), 'the abort clears when the transition becomes certifiable').toBeNull();
     expect(await edgeCount()).toBe(1);
   }, 60_000);
+
+  // ── P19 ────────────────────────────────────────────────────────────────────────────────────
+  it('P19 a withdrawal attributed to a BLANK id is refused, exactly as a blank author is', async () => {
+    // The foreign key proves the revoker id names a membership. It does not prove the id is
+    // legible, and a writer able to create a whitespace-id user and membership can revoke through
+    // it — permanently, because section 7 freezes the withdrawal. The creation arm already refuses
+    // this on `createdById`; the revoked arm has to refuse it on `revokedById` for the same reason.
+    const blank = '   ';
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "User"("id","projectId","name","email","role") VALUES ('${blank}','${f.projectA.id}','Blank','blank-b1@example.com','pmc')`);
+    await t.prisma.$executeRawUnsafe(
+      `INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('mem-b1-blank','${f.projectA.id}','${blank}','pmc','active')`);
+    try {
+      const [a, b] = [await activity(), await activity()];
+      await t.prisma.$executeRawUnsafe(edge(a, b));
+      const id = await onlyId();
+      // The membership really exists, so the FK is satisfied and only the CHECK can refuse this.
+      expect(await refusal(
+        `UPDATE "ActivityDependency" SET "revokedAt"=now(),"revokedById"='${blank}',"revokedByName"='PMC' WHERE "id"='${id}'`,
+      )).toMatch(/revocation_check/u);
+      // and the edge is still LIVE — a refused withdrawal withdraws nothing
+      const live = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*) AS n FROM "ActivityDependency" WHERE "id"='${id}' AND "revokedAt" IS NULL`);
+      expect(Number(live[0]!.n)).toBe(1);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DELETE FROM "Membership" WHERE "id"='mem-b1-blank'`);
+      await t.prisma.$executeRawUnsafe(`DELETE FROM "User" WHERE "id"='${blank}'`);
+    }
+  });
+
+  // ── P20 ────────────────────────────────────────────────────────────────────────────────────
+  it('P20 an adopted table is judged on its COLUMN CONTRACT, not on its column names', async () => {
+    // Section 2's `CREATE TABLE IF NOT EXISTS` skips its definition when the table is already
+    // there, so on the adopt path the shape is whatever produced it. A name test cannot tell a
+    // conforming column from a differently-shaped one, and a NULLABLE `predecessorId` is the case
+    // that matters: MATCH SIMPLE skips the composite FK entirely for a row with a NULL key column,
+    // the self-dependency CHECK evaluates to UNKNOWN and passes, and the walk matches no node.
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" ALTER COLUMN "predecessorId" DROP NOT NULL`);
+    try {
+      const err = applyMigration();
+      expect(err, 'a nullable endpoint must abort the migration').not.toBeNull();
+      expect(err).toMatch(/does not match the column contract/u);
+      expect(err, 'and must name the column and both shapes').toMatch(/predecessorId/u);
+      expect(err).toMatch(/nullable=YES.*nullable=NO/su);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ALTER COLUMN "predecessorId" SET NOT NULL`);
+    }
+    expect(applyMigration(), 'and applies once the contract is restored').toBeNull();
+  }, 60_000);
+
+  // ── P21 ────────────────────────────────────────────────────────────────────────────────────
+  it('P21 an index name owned by ANOTHER table is refused, never reclaimed', async () => {
+    // An index name is unique per SCHEMA, not per table. The definition lookup filters on
+    // `indrelid`, so a name held by another table reports "no matching definition" — and an
+    // unscoped DROP would then destroy that table's index. Reproduced by giving the name away.
+    const name = 'ActivityDependency_projectId_predecessorId_idx';
+    await t.prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS public."${name}"`);
+    await t.prisma.$executeRawUnsafe(`CREATE TABLE "b1_decoy_owner"("k" TEXT)`);
+    await t.prisma.$executeRawUnsafe(`CREATE INDEX "${name}" ON "b1_decoy_owner"("k")`);
+    try {
+      const err = applyMigration();
+      expect(err, 'a name owned by another table must abort the migration').not.toBeNull();
+      expect(err).toMatch(/will not reclaim one it does not own/u);
+      expect(err, 'and must name the table that really owns it').toMatch(/b1_decoy_owner/u);
+
+      // The whole point: the other table's index is STILL THERE. An unscoped drop would have
+      // taken it, and the migration would have reported success.
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*) AS n FROM pg_index ix JOIN pg_class ci ON ci.oid = ix.indexrelid
+          WHERE ci.relname = '${name}' AND ix.indrelid = '"b1_decoy_owner"'::regclass`);
+      expect(Number(rows[0]!.n), 'the decoy owner kept its index').toBe(1);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "b1_decoy_owner"`);
+    }
+    // Once the collision is gone the same file restores the index it does own.
+    expect(applyMigration(), 'and applies once the name is free').toBeNull();
+    const back = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT COUNT(*) AS n FROM pg_index ix JOIN pg_class ci ON ci.oid = ix.indexrelid
+        WHERE ci.relname = '${name}' AND ix.indrelid = '"ActivityDependency"'::regclass`);
+    expect(Number(back[0]!.n)).toBe(1);
+  }, 60_000);
 });
