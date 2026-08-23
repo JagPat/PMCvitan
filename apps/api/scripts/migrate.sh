@@ -137,8 +137,23 @@ if echo "$out" | grep -q "P3005"; then
   # The T3C entries above decide this from a live probe, because those migrations may or may not
   # have run. These are decided statically, because they cannot have: a pre-baseline database
   # predates them. Leaving them pending costs nothing when they have somehow already been applied —
-  # each is written idempotently and re-applies as a no-op.
-  ALWAYS_EXECUTE="20270920000000_decision_option_kinds"
+  # `20270920000000_decision_option_kinds` is written idempotently and re-applies as a no-op.
+  #
+  # `20270930000000_schedule_dependency_graph` behaves differently on that last point, and it is
+  # stated here rather than discovered in production. That file CREATES "ActivityDependency" and
+  # does not adopt one, so applying it to a database that already has that table ABORTS naming the
+  # table and docs/RUNBOOK.md section B1. That is the intended, documented, repairable outcome, not
+  # a dead end: the table is NEW, it exists in no released schema and no service writes it, so it
+  # holds ZERO ROWS everywhere and the repair the abort names — inspect it, drop it if it is not
+  # wanted, re-run — destroys nothing. `scripts/schedule-b1-baseline-proof.sh` runs THIS runner
+  # through both halves (install where the table is absent; abort-then-repair where it is present),
+  # and CI runs that proof in the required `api` job.
+  #
+  # The entry is still right. `schema.prisma` can describe neither a CHECK nor a trigger, so
+  # baselining that migration WITHOUT running it would record guards that never existed —
+  # indistinguishable from success. Left pending so the deploy really executes it.
+  ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
+20270920000000_decision_option_kinds"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?

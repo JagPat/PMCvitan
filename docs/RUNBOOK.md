@@ -1082,3 +1082,95 @@ cutover step 1 above). Keep it that way for the 4a rollout specifically: do NOT 
 post-4a application processes side by side. If a multi-instance rolling strategy is ever
 introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
 ships 4a — after that, every sender carries the pre-send re-check.
+
+## §B1. Schedule B1 — `prisma migrate deploy` aborts: `"ActivityDependency" already exists`
+
+`20270930000000_schedule_dependency_graph` CREATES `ActivityDependency`. It does not adopt one.
+Applied to a database that already has that table it aborts, in one transaction, having changed
+nothing:
+
+```
+schedule B1: table "ActivityDependency" already exists. This migration CREATES that table and
+does not adopt one — it can say nothing honest about columns, constraints, triggers or rows it
+did not install. Inspect the table (it holds no rows on any deployed database); if it is not
+wanted, drop it and re-run. Procedure: docs/RUNBOOK.md section B1.
+```
+
+**Why the migration refuses instead of adopting.** The table's guarantees are five triggers, four
+CHECKs, five composite foreign keys and one PARTIAL unique index. `schema.prisma` can express none
+of the triggers and none of the CHECKs, so a table produced by `prisma db push` or by a baseline
+reconciliation carries the columns and *none* of the rules. Adopting it would mean certifying a
+shape and a history this file never observed — and four review rounds on the closed PR #409 each
+found a new way that certification is unsound. Refusing is the honest answer, and it is cheap
+*here* specifically because the table is new: it exists in no released schema, no service writes
+it, and it holds **zero rows on every deployed database**. Nothing is lost by dropping it.
+
+This is unlike §T45, §P4T2C, §P4LC2 and §P4T3C3, which abort over real operational data and need a
+judgement. This one needs a look and a `DROP TABLE`.
+
+**When you will see it.** Only on a database whose schema was reconciled from `schema.prisma`
+without the migration ledger — the P3005 baseline path, where `scripts/migrate.sh` deliberately
+leaves this migration PENDING so its raw guards really execute. On an ordinary
+`prisma migrate deploy` over a ledger-backed database it cannot occur: the table does not exist
+until this migration creates it.
+
+### Procedure
+
+1. **Confirm the table is empty and is the schedule graph.** Anything other than `0` here stops
+   the procedure — that would be a database this runbook does not describe, and the rows would need
+   a decision before anything is dropped.
+
+   ```sql
+   SELECT COUNT(*) FROM "ActivityDependency";
+   \d+ "ActivityDependency"
+   ```
+
+2. **Confirm the migration is not recorded as applied.** The abort happens inside the migration's
+   transaction, so Prisma records it as failed, not applied.
+
+   ```sql
+   SELECT migration_name, started_at, finished_at, rolled_back_at
+     FROM _prisma_migrations
+    WHERE migration_name = '20270930000000_schedule_dependency_graph';
+   ```
+
+   A row with `finished_at IS NULL` is a failed attempt; resolve it as rolled back before
+   redeploying:
+
+   ```
+   npx prisma migrate resolve --rolled-back 20270930000000_schedule_dependency_graph
+   ```
+
+   No row at all (the P3005 baseline path aborting before the ledger records anything) needs
+   nothing here.
+
+3. **Drop the table.**
+
+   ```sql
+   DROP TABLE "ActivityDependency";
+   ```
+
+4. **Re-run the deploy** — `sh apps/api/scripts/migrate.sh` — and verify the guards are in force,
+   not merely recorded. Expect `4|1|5`: four validated CHECKs, the partial unique index, five armed
+   triggers.
+
+   ```sql
+   SELECT (SELECT COUNT(*) FROM pg_constraint
+            WHERE conrelid = '"ActivityDependency"'::regclass AND contype = 'c' AND convalidated)
+       || '|' || (SELECT COUNT(*) FROM pg_index ix JOIN pg_class ci ON ci.oid = ix.indexrelid
+                   WHERE ci.relname = 'ActivityDependency_projectId_successorId_predecessorId_key'
+                     AND ix.indisunique AND ix.indisvalid AND ix.indpred IS NOT NULL)
+       || '|' || (SELECT COUNT(*) FROM pg_trigger
+                   WHERE tgrelid = '"ActivityDependency"'::regclass
+                     AND NOT tgisinternal AND tgenabled = 'O');
+   ```
+
+**If step 1 finds rows**, do not continue. Real dependency edges predating this migration would be
+edges no guard ever judged — they may contain cycles, self-dependencies or unattributable
+authorship. Preserve them (`CREATE TABLE "ActivityDependency_preexisting" AS SELECT * FROM
+"ActivityDependency"`), raise it, and expect a dedicated reconciliation unit: deciding what may
+honestly be said about such rows is a design question, not a runbook step.
+
+**Proof.** `apps/api/scripts/schedule-b1-baseline-proof.sh` runs the real `scripts/migrate.sh`
+through both halves of this — the install on a pre-baseline database WITHOUT the table, and this
+abort-then-repair cycle on one WITH it — and CI runs that script in the required `api` job.

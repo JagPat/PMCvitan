@@ -261,6 +261,47 @@ of them, but ALL currently-labelled units must be discharged before any
 `Replaces: none` unit is admitted. It is NOT to be edited to claim an obligation
 it does not carry; it resumes when the queue is empty.
 
+**THE SCHEDULE B1 UNIT IS NOW SPLIT, and the split is the finding rather than a
+tactic.** That unit burned SEVEN heads — #354 → #360 → #361 → #363 → #408 → #409
+→ the open PR — and every finding across the last three landed in ONE place: the
+ADOPTION path, the branch that runs when `ActivityDependency` already exists.
+#408 R1 validated pre-existing rows without locking them; #408 R2 accepted a
+pre-existing REVOKED row because its tuple was complete; #409 R1 found the
+adopted table's physical column contract unchecked, an unscoped `DROP INDEX` able
+to delete another table's index, and whitespace accepted in `revokedById`; #409
+R2 found the "seals armed" exemption trusting trigger and FUNCTION NAMES rather
+than function BODIES, so a hollow same-named function let an unproven withdrawal
+through and the migration then froze it. Each round's fix produced the next
+round's finding in the same place. **The FRESH-INSTALL path drew no finding at
+all, in any round.**
+
+So the open PR is **unit A only: the fresh install.** The entire adoption
+apparatus is DELETED — the state-invariant verification over pre-existing rows,
+the forbidden-transition refusal and its seals-armed exemption, the
+definition-comparison and drop/recreate repair for constraints and indexes, and
+the physical-column-contract preflight — and replaced by ONE rule: **if
+`ActivityDependency` already exists, ABORT**, naming the table, saying this
+migration creates rather than adopts, and pointing at `docs/RUNBOOK.md` §B1 for
+the operator procedure. With no adopt path the table's columns, CHECKs, keys and
+primary key are declared INLINE in one unconditional `CREATE TABLE`, and the
+indexes and triggers are created unconditionally.
+
+**That abort is not #363's defect.** #363 was found (#408 F1) because its
+`migrate.sh` `ALWAYS_EXECUTE` entry left the migration pending so it would RUN on
+the P3005 baseline path, where it then refused — a deterministic dead end
+presented as if the path worked. The entry is KEPT, because its reasoning is
+right: `schema.prisma` can describe neither a CHECK nor a trigger, so baselining
+without running would record guards that never existed. What changes is that the
+abort is now DOCUMENTED, REPAIRABLE and INTENDED — safe precisely because
+`ActivityDependency` is a NEW table holding ZERO rows on every deployed database,
+so "drop it and re-run" destroys nothing.
+
+**Real adoption of a `db push`-shaped table is DEFERRED to a separate future
+unit, to be built if and when a database that needs it exists.** None does today.
+Four review rounds and roughly a thousand lines went into that shape for a state
+no deployed database is in; recording it as deferred rather than dropping it
+silently is the point.
+
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
 (the New Project modal learned to EXPRESS the room-anchor graft target the
