@@ -16,7 +16,7 @@ task: 4
 task_state: in_progress
 work_item: none
 reviewed_merge: 54ae560
-open_pr: 408
+open_pr: 409
 next_task: none
 blocking_directive: none
 updated: 2026-08-23
@@ -254,7 +254,7 @@ with its two unresolved P1s — is discharged only by a merged unit carrying tha
 implementation scope. No label is cleared by hand.
 
 **#363 (schedule B1) IS CLOSED; #408 rebuilt it and reached the review-round
-limit; the open PR REPLACES #408.** #363 was closed on 2026-08-23 because its
+limit; the open PR is #409, which REPLACES #408.** #363 was closed on 2026-08-23 because its
 branch went `mergeable_state: dirty`: GitHub could not produce
 `refs/pull/363/merge`, no `pull_request` workflow could run, and the exact-head
 gate could never evaluate it. It carries NO `review-replacement-required` label,
