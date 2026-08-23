@@ -53,12 +53,30 @@ SET LOCAL client_min_messages = warning;
 --
 -- Zero rows is trivially verified, which is the same reasoning section 6 applies to the TRUNCATE
 -- seal: a TRUNCATE that erases nothing erases nothing.
+--
+-- BUT "verify the data instead of refusing it" is only half a rule, and stating just that half is
+-- what let a fabricated withdrawal through. The guard set is not one kind of thing. Most of it is
+-- STATE invariants — predicates over a row as it stands, decidable from the row. The rest are
+-- TRANSITION invariants — born-live (5), the freeze (7), no-delete and no-truncate (6) — and a
+-- transition CANNOT be verified from a single state snapshot, however complete that snapshot is.
+-- So the rule this file applies, in full:
+--
+--   VERIFY every STATE invariant over the rows already present; REJECT any row whose existence
+--   would require a FORBIDDEN TRANSITION, because this migration cannot certify what it never
+--   observed.
+--
+-- Section 1b applies the second half and works the class through — including the two transitions
+-- that need no code, because being explicit that they need none is part of sweeping a class rather
+-- than patching an instance of it.
 
 -- ── 1. Diagnostic-first over the rows already present ─────────────────────────────────────────
 -- Every check below is a rule this file is about to install. A CHECK or a foreign key refuses a
 -- violating row on its own when it is added, but opaquely — `constraint ... is violated by some
 -- row` names neither the row nor the rule in terms an operator can act on. So each is asked
 -- first, with a bounded sample.
+--
+-- 1a verifies the STATE invariants, 1b rejects the rows that would require a forbidden TRANSITION,
+-- and 1c walks the graph.
 --
 -- ACYCLICITY IS THE ONE THAT ONLY THIS BLOCK CAN ASK. The trigger in section 8 fires on INSERT, so
 -- it says nothing about rows already present; installing it over a graph that already contains a
@@ -67,6 +85,7 @@ DO $$
 DECLARE
   v_missing TEXT;
   v_bad     TEXT;
+  v_sealed  BOOLEAN;
   v_proj    TEXT;
   v_alive   TEXT[];
   v_next    TEXT[];
@@ -81,14 +100,12 @@ BEGIN
   -- LOCK BEFORE LOOKING, and hold it through the guard installation below.
   --
   -- Verifying a graph nobody is locked out of proves nothing about the graph that ends up guarded.
-  -- Every check in this block reads a snapshot; the guards that would refuse a bad row are installed
-  -- AFTERWARDS, and the acyclicity trigger fires on INSERT only, so it never judges a row that
-  -- arrived in between. On the `db push`-shaped database this file exists to serve — table present,
-  -- no triggers — a concurrent session can commit the opposing edge in exactly that window: the
-  -- CHECKs and foreign keys added below accept it (each edge is legal in isolation; only the PAIR is
-  -- a loop), and the migration commits a cycle with all five seals sitting on top of it, beyond the
-  -- reach of every guard forever. Measured before this line existed: the migration exited 0 over a
-  -- graph holding `A -> B` and `B -> A`.
+  -- Every check in this block reads a snapshot and the guards are installed AFTERWARDS, so on the
+  -- `db push`-shaped database this file exists to serve a concurrent session can commit the opposing
+  -- edge in exactly that window: the CHECKs and foreign keys added below accept it (each edge is
+  -- legal in isolation; only the PAIR is a loop), and the migration commits a cycle with all five
+  -- seals sitting on top of it, beyond the reach of every guard forever. Measured before this line
+  -- existed: the migration exited 0 over a graph holding `A -> B` and `B -> A`.
   --
   -- ACCESS EXCLUSIVE, not a weaker mode: the writer to shut out is an ordinary INSERT, and only this
   -- mode conflicts with the ROW EXCLUSIVE lock an INSERT takes. PostgreSQL holds it until COMMIT, so
@@ -112,6 +129,12 @@ BEGIN
   IF v_missing IS NOT NULL THEN
     RAISE EXCEPTION 'schedule B1: "ActivityDependency" exists but is missing the column(s) % this migration reasons about, so nothing honest can be said about the rows in it. Inspect that table; if it is not the dependency graph, rename or drop it, then re-run.', v_missing;
   END IF;
+
+  -- ── 1a. STATE invariants over the rows already present ──────────────────────────────────────
+  -- Each of these is a predicate over one row as it stands, so a row either satisfies it or does
+  -- not, and the answer is decidable from the rows themselves. This is what "verification is not
+  -- adoption" buys, and it is why this file installs objects unconditionally rather than refusing
+  -- a table it did not create.
 
   -- Attribution that is present but not answerable. Section 7 freezes whatever is in these
   -- columns, so an unanswerable value is a permanent one.
@@ -184,10 +207,77 @@ BEGIN
     RAISE EXCEPTION 'schedule B1: dependency edge(s) % are attributed to someone who is not a member of the edge''s own project — cross-tenant attribution, written into a record this migration then freezes. Correct those rows, then re-run.', v_bad;
   END IF;
 
-  -- ACYCLICITY, by Kahn's peel, per project. Repeatedly discard every node with no LIVE incoming
-  -- edge from a node still standing. A DAG empties completely; whatever survives has in-degree at
-  -- least one within itself and is therefore on or downstream of a loop. This needs no starting
-  -- vertex, which is exactly why the reachability walk in section 8 cannot answer this question.
+  -- ── 1b. TRANSITION invariants: reject a row that would require a forbidden one ──────────────
+  --
+  -- The rule is stated in full at the top of this file. Worked through all four transitions here,
+  -- INCLUDING the two that need no code — saying so is part of sweeping the class rather than
+  -- patching an instance of it, and leaves no reader wondering whether they were considered.
+  --
+  --   born-live (5)   — ACTION REQUIRED, below. A row that is ALREADY WITHDRAWN is exactly such a
+  --                     row. Born-live says a withdrawal records a constraint that once STOOD, and
+  --                     nothing in a snapshot shows that this one ever did. Its revocation tuple is
+  --                     complete, so 1a waves it through — COMPLETENESS IS NOT PROVENANCE, and that
+  --                     is the defect. Section 5 lists what follows from letting one in: permanent,
+  --                     never judged, unlimited per ordered pair.
+  --   freeze (7)      — NO ACTION, and that is a decision rather than an omission. A row edited
+  --                     before the trigger existed is indistinguishable from one never edited, AND
+  --                     whatever it now says already satisfies every state invariant in 1a. So there
+  --                     is no observable residue and no harmful one: what would be preserved is a
+  --                     coherent edge, not a claim about an event that never happened.
+  --   no-delete (6)   — NO ACTION. A row destroyed before the seal existed is GONE and leaves
+  --                     nothing in the remaining state to reject. Refusing a table because
+  --                     something may once have been removed from it would refuse every database.
+  --   no-truncate (6) — NO ACTION, for the same reason at statement scale.
+  --
+  -- WHEN a pre-existing withdrawal IS admissible. Refusing every one outright would make the abort
+  -- in 1c UNREPAIRABLE: that diagnostic tells the operator to revoke an edge on the loop, and on a
+  -- database where this file has already run the rows are not deletable either (section 6). The
+  -- exemption is not a softening of the rule — without it the repair path does not exist.
+  --
+  -- The exemption is the only evidence a database can offer about a transition: PostgreSQL itself
+  -- was ARMED to enforce it. Both seals must be present ON THIS TABLE, ENABLED for ordinary origin
+  -- sessions, bound to the functions this file binds them to, and firing on exactly the events it
+  -- binds them to — `tgtype` 7 is BEFORE INSERT FOR EACH ROW, 19 is BEFORE UPDATE FOR EACH ROW.
+  --
+  -- Stated rather than implied, because a reader is owed the limit: this establishes that the
+  -- transition was ENFORCEABLE, not that it was enforced for any particular row. A role that can
+  -- disable a named trigger, or rebind that name to another function, defeats it — the same
+  -- boundary section 6 already states for the TRUNCATE seal, and the general limit on certifying
+  -- history from a snapshot. What it DOES exclude is the case that actually arises and that the
+  -- ALWAYS_EXECUTE entry exists to serve: a `prisma db push`-shaped table, which carries every
+  -- column and NO trigger, where an alternate writer can insert a complete withdrawal that 1a
+  -- alone accepts.
+  --
+  -- `COUNT(*) = 2` is never UNKNOWN, so this cannot be waved through by three-valued logic — the
+  -- recurring trap in this file.
+  SELECT COUNT(*) = 2 INTO v_sealed FROM (VALUES
+      ('ActivityDependency_born_live', 'activity_dependency_born_live',  7),
+      ('ActivityDependency_frozen',    'activity_dependency_frozen',    19)) AS e(name, fn, tt)
+   WHERE EXISTS (SELECT 1 FROM pg_trigger g
+                  WHERE g.tgname = e.name
+                    AND g.tgrelid = 'public."ActivityDependency"'::regclass
+                    AND NOT g.tgisinternal AND g.tgenabled IN ('O', 'A')
+                    AND g.tgfoid::regproc::text = e.fn AND g.tgtype = e.tt);
+
+  IF NOT v_sealed THEN
+    -- ANY revocation column set, not just a complete tuple: a partial withdrawal is also a row
+    -- whose existence requires the forbidden transition, so on an unsealed table this predicate is
+    -- strictly stronger than 1a's tuple check and subsumes it. (That check stays necessary for the
+    -- SEALED case, which this arm does not examine.)
+    SELECT string_agg(q.id, ', ' ORDER BY q.id) INTO v_bad FROM (
+      SELECT "id" FROM public."ActivityDependency"
+       WHERE "revokedAt" IS NOT NULL OR "revokedById" IS NOT NULL OR "revokedByName" IS NOT NULL
+       ORDER BY "id" LIMIT 10) q;
+    IF v_bad IS NOT NULL THEN
+      RAISE EXCEPTION 'schedule B1: dependency edge(s) % are already WITHDRAWN on a table that does not have BOTH the born-live and the freeze seals in force, so nothing here can show the edge ever STOOD — and this migration would freeze that withdrawal permanently. Decide from the site record whether each edge holds: clear all three revocation columns to keep it as a live edge, or remove the row. Then re-run.', v_bad;
+    END IF;
+  END IF;
+
+  -- ── 1c. ACYCLICITY, by Kahn's peel, per project ─────────────────────────────────────────────
+  -- Repeatedly discard every node with no LIVE incoming edge from a node still standing. A DAG
+  -- empties completely; whatever survives has in-degree at least one within itself and is therefore
+  -- on or downstream of a loop. This needs no starting vertex, which is exactly why the
+  -- reachability walk in section 8 cannot answer this question.
   FOR v_proj IN SELECT DISTINCT "projectId" FROM public."ActivityDependency"
                  WHERE "revokedAt" IS NULL ORDER BY 1 LOOP
     SELECT COALESCE(array_agg(DISTINCT n), ARRAY[]::TEXT[]) INTO v_alive FROM (

@@ -13,8 +13,10 @@
 # path the entry exists to serve. This proof runs the REAL production runner over the REAL shape
 # and requires the deploy to complete with the guards in force.
 #
-# Reproduce-first: step 3 runs the closed PR #363's recognition predicate against the same database
-# and requires it to RAISE, so the failure is demonstrated rather than described.
+# Reproduce-first: step 2 runs the closed PR #363's recognition predicate against the same database
+# and requires it to RAISE, so the failure is demonstrated rather than described. Step 2b does the
+# same for the TRANSITION-invariant defect — a withdrawal fabricated on this exact shape is shown
+# ACCEPTED AND FROZEN with the migration's section 1b removed, and refused with it present.
 #
 # DESTRUCTIVE for the scratch database only.
 set -u
@@ -130,6 +132,85 @@ case "$red" in
   *) bad "the object refusal did NOT fire — this proof would be vacuous. Output: $red" ;;
 esac
 
+say "2b. a FABRICATED pre-existing withdrawal, on the very shape that makes one possible"
+# The unit's reframing — install objects unconditionally, VERIFY the data rather than refuse it —
+# was stated over STATE invariants only. A TRANSITION invariant cannot be verified from a state
+# snapshot, and born-live is one: a withdrawal is the record of a constraint that once STOOD, and a
+# complete revocation tuple is not evidence that it ever did. On THIS database — table present, no
+# trigger — an alternate writer can insert exactly that row.
+$PSQL >/dev/null <<'FIXTURE' || { echo "the fabrication fixture did not build"; exit 1; }
+INSERT INTO "Org"("id","name","slug") VALUES ('b1-org','B1','b1-org');
+INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
+  VALUES ('b1-proj','b1-org','B1 Site','B1','','Planning','B1-01','01 Jan 2026','31 Dec 2026',0,0,0);
+INSERT INTO "User"("id","projectId","name","email","role") VALUES ('b1-user','b1-proj','B1 User','b1@example.com','pmc');
+INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('b1-mem','b1-proj','b1-user','pmc','active');
+INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd")
+  VALUES ('b1-a','b1-proj','A','Z',0,1),('b1-b','b1-proj','B','Z',0,1);
+-- Born revoked, and COMPLETE: when, by whom, under whose name. Every STATE invariant is satisfied.
+INSERT INTO "ActivityDependency"
+  ("id","projectId","predecessorId","successorId","createdById","createdByName","revokedAt","revokedById","revokedByName")
+  VALUES ('b1-fab','b1-proj','b1-a','b1-b','b1-user','B1 User',now(),'b1-user','B1 User');
+FIXTURE
+ok "planted 'b1-fab': a complete, well-formed withdrawal of an edge that never stood"
+
+# RED — the shipped file with section 1b REMOVED, which is what this unit carried before this fix.
+# Its COMMIT is replaced by an assertion and a ROLLBACK, so the step MEASURES the defect inside the
+# migration's own transaction and leaves the database exactly as it found it.
+RED=/tmp/b1-transition-red.sql
+sed '/── 1b\. TRANSITION invariants/,/── 1c\. ACYCLICITY/{/── 1c\. ACYCLICITY/!d;}' \
+    "prisma/migrations/$THIS/migration.sql" | sed '$ { /^COMMIT;$/d; }' > "$RED"
+grep -q '1b\. TRANSITION invariants' "$RED" && { bad "the splice did not remove section 1b — the RED step would be vacuous"; exit 1; }
+grep -q '^COMMIT;$' "$RED" && { bad "the splice did not remove the COMMIT — the RED step would not roll back"; exit 1; }
+cat >> "$RED" <<'PROBE'
+
+DO $probe$
+DECLARE v_frozen BOOLEAN := FALSE;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM "ActivityDependency" WHERE "id" = 'b1-fab' AND "revokedAt" IS NOT NULL) THEN
+    RAISE EXCEPTION 'RED-DID-NOT-REPRODUCE: the fabricated withdrawal is not there to be frozen';
+  END IF;
+  BEGIN
+    UPDATE "ActivityDependency" SET "revokedAt" = NULL, "revokedById" = NULL, "revokedByName" = NULL
+     WHERE "id" = 'b1-fab';
+  EXCEPTION WHEN OTHERS THEN v_frozen := TRUE;
+  END;
+  IF NOT v_frozen THEN
+    RAISE EXCEPTION 'RED-DID-NOT-REPRODUCE: the freeze did not bind, so permanence is unproven';
+  END IF;
+  RAISE WARNING 'RED-REPRODUCED: b1-fab accepted, and the freeze now makes it permanent';
+END $probe$;
+ROLLBACK;
+PROBE
+redout=$(psql -v ON_ERROR_STOP=1 -X -q "postgresql://$USER:$PGPASSWORD@$HOST:$PORT/$DB" -f "$RED" 2>&1); redrc=$?
+case "$redout" in
+  *RED-REPRODUCED*) ok "REPRODUCED: without 1b the migration ACCEPTS the fabrication and the freeze makes it permanent" ;;
+  *) bad "the RED step did not reproduce (rc=$redrc): $(printf '%s' "$redout" | tail -5)" ;;
+esac
+still=$($PSQL -tAc "SELECT COUNT(*) FROM pg_trigger WHERE tgrelid='public.\"ActivityDependency\"'::regclass AND NOT tgisinternal" | tr -d '[:space:]')
+[ "$still" = "0" ] && ok "and the RED run left nothing behind (non-internal triggers on the table: $still)" \
+                   || bad "the RED run committed objects it should have rolled back ($still triggers)"
+
+# GREEN — the shipped file. It aborts, names the row, and says what clears the abort.
+green=$(psql -v ON_ERROR_STOP=1 -X -q "postgresql://$USER:$PGPASSWORD@$HOST:$PORT/$DB" \
+             -f "prisma/migrations/$THIS/migration.sql" 2>&1)
+case "$green" in
+  *'are already WITHDRAWN'*) ok "the shipped file REFUSES it" ;;
+  *) bad "the shipped file did not refuse the fabrication: $(printf '%s' "$green" | tail -5)" ;;
+esac
+case "$green" in
+  *b1-fab*) ok "and names the offending row rather than reporting that one exists" ;;
+  *) bad "the abort does not name b1-fab" ;;
+esac
+case "$green" in
+  *'clear all three revocation columns'*) ok "and states the operator action that clears it" ;;
+  *) bad "the abort does not say what to do about it" ;;
+esac
+
+# Repaired the way the diagnostic instructs. Step 3 is the evidence that the SAME file then applies:
+# it runs the real runner over this database and requires the guards to end up in force.
+$PSQL -c "DELETE FROM \"ActivityDependency\" WHERE \"id\" = 'b1-fab'" >/dev/null
+ok "removed the unprovable row; step 3 applies the same file over the repaired database"
+
 say "3. the REAL production runner over that database"
 # migrate.sh runs three COMPILED preflights before Prisma, so the build has to exist — this is the
 # production path, not a stand-in for it.
@@ -164,15 +245,9 @@ recorded=$($PSQL -tAc "SELECT COUNT(*) FROM _prisma_migrations WHERE migration_n
 [ "$recorded" = "1" ] && ok "and the ledger records it as APPLIED because it ran, not because it was resolved" \
                       || bad "the migration is not recorded as applied ($recorded)"
 
-# A guard in the catalog is not a guard that binds. One hostile write proves the difference.
+# A guard in the catalog is not a guard that binds. One hostile write proves the difference. The
+# project, its member and both activities were created in step 2b; only the edge is new here.
 $PSQL >/dev/null 2>&1 <<'SQL'
-INSERT INTO "Org"("id","name","slug") VALUES ('b1-org','B1','b1-org');
-INSERT INTO "Project"("id","orgId","name","short","descriptor","stage","siteCode","projStart","projEnd","elapsedPct","todayDay","milestonePct")
-  VALUES ('b1-proj','b1-org','B1 Site','B1','','Planning','B1-01','01 Jan 2026','31 Dec 2026',0,0,0);
-INSERT INTO "User"("id","projectId","name","email","role") VALUES ('b1-user','b1-proj','B1 User','b1@example.com','pmc');
-INSERT INTO "Membership"("id","projectId","userId","role","status") VALUES ('b1-mem','b1-proj','b1-user','pmc','active');
-INSERT INTO "Activity"("id","projectId","name","zone","plannedStart","plannedEnd")
-  VALUES ('b1-a','b1-proj','A','Z',0,1),('b1-b','b1-proj','B','Z',0,1);
 INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
   VALUES ('b1-e1','b1-proj','b1-a','b1-b','b1-user','B1 User');
 SQL

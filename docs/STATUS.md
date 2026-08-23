@@ -14,7 +14,7 @@ phase: 6
 phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
-work_item: schedule-b1-dependency-graph
+work_item: none
 reviewed_merge: 54ae560
 open_pr: 408
 next_task: none
@@ -253,16 +253,17 @@ failed claimant are owed, and each replacement discharges only the one it names.
 with its two unresolved P1s — is discharged only by a merged unit carrying that
 implementation scope. No label is cleared by hand.
 
-**#363 (schedule B1) IS CLOSED, and the open PR is its rebuild from current
-`main`.** The obligation queue that parked it is now EMPTY — zero pull requests
-carry `review-replacement-required`, verified at authoring time — so a
-`Replaces: none` unit is admissible again. #363 was closed by the owner on
-2026-08-23 because its branch went `mergeable_state: dirty`: GitHub could not
-produce `refs/pull/363/merge`, no `pull_request` workflow could run, and the
-exact-head gate could never evaluate it. It was closed WITHOUT a
-`review-replacement-required` label, so PR #408 declares `Replaces: none` and is
-NOT a claimant on it. The lineage #354 -> #360 -> #361 -> #363 is recorded here
-so a reader does not lose it.
+**#363 (schedule B1) IS CLOSED; #408 rebuilt it and reached the review-round
+limit; the open PR REPLACES #408.** #363 was closed on 2026-08-23 because its
+branch went `mergeable_state: dirty`: GitHub could not produce
+`refs/pull/363/merge`, no `pull_request` workflow could run, and the exact-head
+gate could never evaluate it. It carries NO `review-replacement-required` label,
+so it created no obligation and #408 truthfully declared `Replaces: none` — the
+queue was empty when #408 was authored. #408 then drew findings on two heads
+(`e11b3d9`, 2; `d680909`, 1), hit the two-finding-head limit, and was CLOSED
+carrying the label. **So the queue is NOT empty now: #408 is an obligation, and
+this unit discharges it by declaring `Replaces: #408`.** The lineage is
+#354 -> #360 -> #361 -> #363, then #408, then this unit.
 
 **The rebuild is not a re-push.** #363 carried two mechanisms that are each
 defensible alone and jointly guarantee failure: a `migrate.sh` ALWAYS_EXECUTE
@@ -281,6 +282,26 @@ unconditionally, idempotently and BY DEFINITION, and refuses only on data it
 cannot honestly interpret — which is also what closes the refuse-vs-repair
 dilemma four heads spent themselves on. Over a graph that already holds a loop,
 #363's file exits 0 and this one aborts naming the loop.
+
+**#408's three findings are all carried forward, two of them already fixed on its
+final head and PRESERVED here unchanged:** the `LOCK TABLE ... IN ACCESS
+EXCLUSIVE MODE` taken before the migration inspects an existing graph and held
+through guard installation, and the P5 barrier that confirms the second session
+is genuinely BLOCKED from `pg_locks` rather than launching two promises and
+hoping they overlap. **The third was open, and it exposed a general defect in the
+reframing rather than one bad predicate.** "Install the objects, verify the
+DATA" was stated over STATE invariants only — the acyclicity walk and the CHECK
+predicates. The guard set also holds TRANSITION invariants (born-live, the
+freeze, no-delete, no-truncate), and a transition cannot be verified from a
+single state snapshot. The rule is now stated in the migration itself: VERIFY
+every state invariant over the rows already present; REJECT any row whose
+existence would require a FORBIDDEN transition. Swept across all four: born-live
+needs action (a pre-existing REVOKED row cannot be shown ever to have stood, and
+the freeze would make the fabrication permanent — so the migration aborts naming
+it, unless PostgreSQL was itself ARMED to enforce the transition, without which
+the acyclicity abort's own "revoke an edge on the loop" repair would be
+impossible); the freeze, no-delete and no-truncate need NONE, and the file says
+why for each rather than leaving a reader to wonder.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
@@ -344,16 +365,17 @@ rename alone, and `docs/reviews/pr-330-convergence.md` records what those
 rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
-**`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:406`.** `autonomous-status-state.test.mjs` pins two rules against this file:
-`work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
-must CLEAR it — so naming a `work_item` from any other state is inert, and from
-`in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 407` the
-resolver returns `pr:406` — "an open PR is the current work item until it merges
-or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
-The open unit is named in the prose above rather than in `work_item`, because
-that field would not be read here.
+**`work_item: none` alongside an `open_pr` is deliberate.**
+`autonomous-status-state.test.mjs` pins two rules against this file: `work_item`
+is consulted ONLY from `task_state: merged`, and a `merged` block must CLEAR it —
+so naming a `work_item` from any other state is inert, and from `in_progress` it
+silently resolves to the bare parent task and discards the named unit. (#408's
+head set one anyway; it is cleared here, because a field that is not read should
+not carry a claim.) `open_pr` outranks the task branch outright, so the resolver
+returns the open PR — "an open PR is the current work item until it merges or
+closes" — not `task:4`. Executed against `assessRunnerState`, not inferred. The
+open unit is named in the prose above rather than in `work_item`, because that
+field would not be read here.
 
 **Nothing here waits on a human.** The owner's SCOPE decisions are recorded
 (the 2026-08-13 scheduling, the forward-authority amendment, and the Wave-0

@@ -675,4 +675,47 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     expect(applyMigration(), 'and applies once the loop is withdrawn').toBeNull();
     expect(await edgeCount(), 'without touching the rows').toBe(3);
   }, 60_000);
+
+  // ── P18 (the TRANSITION-invariant rule) ────────────────────────────────────────────────────
+  it('P18 a withdrawal the seals could not have judged is refused; one they could have is kept', async () => {
+    // Section 1 verifies STATE over the rows already present. A TRANSITION cannot be verified from
+    // a state snapshot, so the migration REJECTS any row whose existence would require a forbidden
+    // one. Born-live is the transition with an observable residue: a row that is already withdrawn
+    // claims a constraint once stood, and a complete revocation tuple is not evidence that it did.
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    const id = await onlyId();
+    await t.prisma.$executeRawUnsafe(
+      `UPDATE "ActivityDependency" SET "revokedAt"=now(),"revokedById"='${f.memberUser.id}',"revokedByName"='PMC' WHERE "id"='${id}'`);
+
+    // SEALED — born-live and the freeze were armed for this row's whole life, so PostgreSQL itself
+    // enforced live -> revoked. The withdrawal is certifiable and a re-apply keeps it. Without this
+    // exemption P17's abort would be unrepairable: its own diagnostic says to revoke an edge on the
+    // loop, and on a sealed database the rows are not deletable either.
+    expect(applyMigration(), 'a certifiable withdrawal must survive a re-apply').toBeNull();
+    expect(await edgeCount(), 'and must not be disturbed').toBe(1);
+
+    // UNSEALED — the same row, byte for byte, on a table where neither seal is in force. This is
+    // the `prisma db push` shape the ALWAYS_EXECUTE entry exists to serve: every column, no
+    // trigger, so an alternate writer can insert a complete withdrawal that every STATE check
+    // accepts. The discriminator is the ARMED state, not anything about the row.
+    const seals = (verb: 'DISABLE' | 'ENABLE'): Promise<unknown> => t.prisma.$transaction([
+      t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" ${verb} TRIGGER "ActivityDependency_born_live"`),
+      t.prisma.$executeRawUnsafe(`ALTER TABLE "ActivityDependency" ${verb} TRIGGER "ActivityDependency_frozen"`),
+    ]);
+    await seals('DISABLE');
+    try {
+      const err = applyMigration();
+      expect(err, 'an uncertifiable withdrawal must abort the migration').not.toBeNull();
+      expect(err).toMatch(/are already WITHDRAWN/u);
+      expect(err, 'and must name the row, not just report that one exists').toMatch(new RegExp(id, 'u'));
+      expect(err, 'and must say what clears the abort').toMatch(/clear all three revocation columns/u);
+    } finally {
+      await seals('ENABLE');
+    }
+
+    // Re-arming the seals is enough on its own — nothing about the row changed.
+    expect(applyMigration(), 'the abort clears when the transition becomes certifiable').toBeNull();
+    expect(await edgeCount()).toBe(1);
+  }, 60_000);
 });
