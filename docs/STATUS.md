@@ -15,11 +15,11 @@ phase_plan: docs/superpowers/plans/2026-08-13-decision-workflow.md
 task: 4
 task_state: in_progress
 work_item: none
-reviewed_merge: 0658e88
-open_pr: 407
+reviewed_merge: 54ae560
+open_pr: 410
 next_task: none
 blocking_directive: none
-updated: 2026-08-21
+updated: 2026-08-23
 ```
 
 **#382 MERGED at `main` `1449c82`**, putting
@@ -275,7 +275,7 @@ through and the migration then froze it. Each round's fix produced the next
 round's finding in the same place. **The FRESH-INSTALL path drew no finding at
 all, in any round.**
 
-So the open PR is **unit A only: the fresh install.** The entire adoption
+So **PR #410 is unit A only: the fresh install.** The entire adoption
 apparatus is DELETED — the state-invariant verification over pre-existing rows,
 the forbidden-transition refusal and its seals-armed exemption, the
 definition-comparison and drop/recreate repair for constraints and indexes, and
@@ -365,13 +365,16 @@ rounds established so it is not rediscovered. The rename waits on the owner's
 go, behind this task — the gated table above is the machine record.
 
 **`work_item: none` alongside an `open_pr` is deliberate, and the resolution is
-`pr:406`.** `autonomous-status-state.test.mjs` pins two rules against this file:
+`pr:410`.** `autonomous-status-state.test.mjs` pins two rules against this file:
 `work_item` is consulted ONLY from `task_state: merged`, and a `merged` block
 must CLEAR it — so naming a `work_item` from any other state is inert, and from
 `in_progress` it silently resolves to the bare parent task and discards the named
-unit. `open_pr` outranks the task branch outright: with `open_pr: 407` the
-resolver returns `pr:406` — "an open PR is the current work item until it merges
-or closes" — not `task:4`. Executed against `assessRunnerState`, not inferred.
+unit. `open_pr` outranks the task branch outright: with `open_pr: 410`
+`assessRunnerState` returns `pr:410` — "an open PR is the current work item until
+it merges or closes" — not `task:4`. Executed against `parseStatusNow` +
+`assessRunnerState` on this file, not inferred. (A predecessor of this paragraph
+said `open_pr: 407` resolved to `pr:406`; that was a transcription slip — the
+resolver returns the open PR's own number, and it is corrected forward here.)
 The open unit is named in the prose above rather than in `work_item`, because
 that field would not be read here.
 
