@@ -1,5 +1,6 @@
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PrismaClient } from '@prisma/client';
@@ -29,10 +30,13 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  *         drop-and-recreate repair, which is deleted; the indexes are now created unconditionally
  *         over a table three statements old, so a colliding name simply fails the CREATE.
  *
- * P22 replaces all five with the one rule that survived them, asserted the same way: applying the
- * file to a database that already has the table ABORTS, names the table and docs/RUNBOOK.md §B1,
- * and changes nothing. The install-and-repair half runs against real pre-baseline databases in
- * `apps/api/scripts/schedule-b1-baseline-proof.sh`, which CI runs in the required `api` job.
+ * P22 and P23 replace all five with the two rules that survived them. P22: applying the file to a
+ * database whose table holds ROWS aborts, names the count and docs/RUNBOOK.md §B1, and changes
+ * nothing — rows written before any guard existed are the one thing this file will not destroy.
+ * P23: applying it after a PARTIAL APPLY left an EMPTY half-built table SUCCEEDS, rebuilding every
+ * guard — which is what AGENTS.md means by safe to re-run, and what the unconditional refusal this
+ * unit shipped with got wrong. The install-and-repair half runs against real pre-baseline
+ * databases in `apps/api/scripts/schedule-b1-baseline-proof.sh`, in the required `api` job.
  */
 describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () => {
   let t: TestApp;
@@ -122,6 +126,8 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
    * `prisma migrate deploy`, which is why it was removed — so the CALLER supplies the transaction.
    * Prisma does automatically; psql does only when asked. Without this flag a refused run could
    * leave half a table behind, and the "changed nothing" half of P22 would be measuring luck.
+   * That half-built state is not merely hypothetical — P23 CREATES it deliberately, through
+   * `applyPartial` below, and proves the next run recovers from it.
    */
   const applyMigration = (): string | null => {
     try {
@@ -131,6 +137,31 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
       return null;
     } catch (e: unknown) {
       return String((e as { stderr?: string }).stderr ?? e);
+    }
+  };
+
+  /**
+   * Apply only this file's PREFIX — through the end of `CREATE TABLE` — with NO wrapping
+   * transaction, which is precisely the partial apply the migration must be able to recover from.
+   *
+   * Both halves are deliberate. The prefix is derived from the file's own text rather than pinned
+   * to a line number, so it cannot rot as the file moves; and `--single-transaction` is OMITTED,
+   * because a caller that supplies a transaction is exactly the caller that never leaves a table
+   * behind. `psql -f` without it is how a file is applied by hand.
+   */
+  const applyPartial = (): void => {
+    const sql = readFileSync(migrationPath, 'utf8').split('\n');
+    const start = sql.findIndex((l) => l.startsWith('CREATE TABLE "ActivityDependency" ('));
+    expect(start, 'the CREATE TABLE statement must be findable').toBeGreaterThan(-1);
+    const end = sql.findIndex((l, i) => i > start && l.trim() === ');');
+    expect(end, 'and its closing paren must be findable').toBeGreaterThan(start);
+    const prefix = join(tmpdir(), `b1-partial-${process.pid}.sql`);
+    writeFileSync(prefix, sql.slice(0, end + 1).join('\n'));
+    try {
+      execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '-q', '-d', psqlUrl(), '-f', prefix],
+                   { encoding: 'utf8', stdio: 'pipe' });
+    } finally {
+      rmSync(prefix, { force: true });
     }
   };
 
@@ -644,22 +675,23 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
   });
 
   // ── P22 ────────────────────────────────────────────────────────────────────────────────────
-  it('P22 the migration CREATES the table and refuses to adopt one, changing nothing when it does', async () => {
-    // This unit's whole policy toward a pre-existing "ActivityDependency" is one rule: abort.
-    // There is no state verification, no definition comparison, no drop-and-recreate repair and no
-    // column-contract preflight, because there is no adopt path for any of them to serve.
+  it('P22 a table holding ROWS aborts the migration, and the refused run changes nothing', async () => {
+    // This unit does not adopt: every column, CHECK, key, index and trigger comes from the file's
+    // own text, and nothing pre-existing is inspected, compared or repaired. What that policy must
+    // NOT mean is that a retry is impossible (P23 covers the retry) — so the refusal is narrowed
+    // to the one state the file genuinely cannot speak for: a table holding ROWS written before
+    // any of its guards existed. Those are not dropped, and the operator is sent to §B1.
     //
-    // The database this suite runs against HAS the table — the migration created it — so applying
-    // the file again is exactly the refused case, and it is asserted here rather than described.
+    // The database this suite runs against HAS the table, and the edge inserted below puts a row
+    // in it, so applying the file again is exactly the refused case — asserted, not described.
     const sql = readFileSync(migrationPath, 'utf8');
 
-    // ONE TRANSACTION is what makes the file re-runnable now that nothing is idempotent by object
-    // guards: a run that fails for any reason leaves no table, no function and no trigger, so the
-    // next run is a fresh install again. The transaction comes from the CALLER, and the file must
-    // NOT open one of its own — measured: with `BEGIN;`/`COMMIT;` in the file, `migrate deploy`
-    // reports `current transaction is aborted, commands ignored…` and the section 1 diagnostic is
-    // discarded; without them it reports that message verbatim. Pinned here so the next person to
-    // reach for the obvious `BEGIN;` fails a test instead of costing an operator their diagnostic.
+    // The file must NOT open a transaction of its own — measured: with `BEGIN;`/`COMMIT;` in the
+    // file, `migrate deploy` reports `current transaction is aborted, commands ignored…` and the
+    // section 1 diagnostic is discarded; without them it reports that message verbatim. Pinned
+    // here so the next person to reach for the obvious `BEGIN;` fails a test instead of costing an
+    // operator their diagnostic. (The caller's transaction is a second line of defence, not the
+    // recovery mechanism — section 1 is, which is what P23 proves.)
     const statements = sql.split('\n').map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith('--'));
     expect(statements, 'the file must not open its own transaction').not.toContain('BEGIN;');
@@ -679,12 +711,17 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     const before = await objectIdentity();
 
     const err = applyMigration();
-    expect(err, 'a pre-existing table must abort the migration').not.toBeNull();
+    expect(err, 'a table holding rows must abort the migration').not.toBeNull();
     expect(err, 'and must name the table').toMatch(/table "ActivityDependency" already exists/u);
+    expect(err, 'and must name how many rows stopped it — the reason it refused')
+      .toMatch(/holds 1 row\(s\)/u);
     expect(err, 'and must say what this migration does instead of adopting')
       .toMatch(/CREATES that table and does not adopt one/u);
+    expect(err, 'and must promise not to destroy them').toMatch(/will not drop them/u);
     expect(err, 'and must point at the operator procedure')
       .toMatch(/docs\/RUNBOOK\.md section B1/u);
+    expect(err, 'and must say that an EMPTY table is not this error, so nobody drops one needlessly')
+      .toMatch(/An EMPTY table here is not an error/u);
 
     // The abort is inside the file's own transaction, so it is not merely a refusal — it changes
     // nothing at all. "It errored" is a much weaker claim than this.
@@ -694,5 +731,68 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
       `SELECT COUNT(*) AS n FROM "ActivityDependency" WHERE "revokedAt" IS NULL`);
     expect(Number(live[0]!.n), 'and the graph still binds').toBe(1);
     expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);
+  }, 60_000);
+
+  // ── P23 ────────────────────────────────────────────────────────────────────────────────────
+  it('P23 a PARTIAL APPLY is recovered by the next run, which rebuilds every guard', async () => {
+    // The finding this probe exists for. AGENTS.md requires a new migration to be safe to re-run
+    // so that a partial apply can be retried, and this file opens no transaction of its own — so a
+    // caller that supplies none (`psql -f` without `--single-transaction`, which is how a file is
+    // applied by hand) can die after `CREATE TABLE` and leave the table behind. The unit shipped
+    // with section 1 refusing ANY pre-existing table, which made that state permanent: every
+    // retry stopped, and the only exit was a destructive DROP by hand.
+    //
+    // Measured before the fix, on this database: the prefix leaves the table with its 4 inline
+    // CHECKs, ZERO triggers and no partial unique index — a writable dependency table with no
+    // acyclicity guard — and the retry then aborted. Both halves are asserted below.
+    await t.prisma.$executeRawUnsafe('DROP TABLE "ActivityDependency"');
+    applyPartial();
+
+    const guards = async (): Promise<{ checks: number; triggers: number; indexes: number }> => {
+      const [row] = await t.prisma.$queryRawUnsafe<Array<{ c: bigint; t: bigint; i: bigint }>>(`
+        SELECT (SELECT COUNT(*) FROM pg_constraint
+                 WHERE conrelid = 'public."ActivityDependency"'::regclass AND contype = 'c') AS c,
+               (SELECT COUNT(*) FROM pg_trigger
+                 WHERE tgrelid = 'public."ActivityDependency"'::regclass AND NOT tgisinternal) AS t,
+               (SELECT COUNT(*) FROM pg_indexes WHERE tablename = 'ActivityDependency') AS i`);
+      return { checks: Number(row!.c), triggers: Number(row!.t), indexes: Number(row!.i) };
+    };
+
+    // The half-built state is real, and it is dangerous — which is why refusing to recover from it
+    // was the wrong answer rather than a conservative one.
+    const half = await guards();
+    expect(half.triggers, 'a partial apply leaves the table with NO triggers').toBe(0);
+    expect(half.checks, 'though the inline CHECKs did land with the CREATE').toBe(4);
+
+    // The retry: it must SUCCEED, not abort.
+    //
+    // Applied through psql rather than the shared helper because the recovery must not be SILENT —
+    // dropping a table is worth saying out loud, even an empty one — and psql relays the notice.
+    // (`prisma migrate deploy` does not, which is why the baseline proof asserts the rebuilt guards
+    // rather than the message.)
+    // `spawnSync`, because a NOTICE arrives on STDERR and a successful `execFileSync` returns only
+    // stdout — the message would be invisible and the assertion would pass on an empty string.
+    const run = spawnSync('psql', ['-v', 'ON_ERROR_STOP=1', '--single-transaction', '-q',
+                                   '-d', psqlUrl(), '-f', migrationPath], { encoding: 'utf8' });
+    expect(run.status, 'the retry after a partial apply must succeed').toBe(0);
+    const out = `${run.stdout}${run.stderr}`;
+    expect(out, 'the rebuild must announce itself rather than dropping a table silently')
+      .toMatch(/an EMPTY "ActivityDependency" is already present — dropping it and rebuilding/u);
+    expect(out, 'and must say why this is expected, not alarming')
+      .toMatch(/expected outcome of retrying a partial apply/u);
+
+    const whole = await guards();
+    expect(whole.triggers, 'and must install every trigger').toBe(5);
+    expect(whole.checks, 'every CHECK').toBe(4);
+    expect(whole.indexes, 'and every index, including the partial unique').toBe(4);
+
+    // Rebuilt, not adopted: the guards must actually BIND, which is the claim that matters. A
+    // recovered table that merely LOOKS complete is what the deleted adopt path kept getting wrong.
+    const [a, b] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await refusal(edge(b, a)), 'the acyclicity guard binds on the rebuilt table')
+      .toMatch(/dependency cycle/u);
+    expect(await refusal(`DELETE FROM "ActivityDependency" WHERE "id"='${await onlyId()}'`),
+           'as does the no-delete seal').toMatch(/not deletable/u);
   }, 60_000);
 });

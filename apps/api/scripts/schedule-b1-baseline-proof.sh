@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Schedule B1 — the migration must behave correctly on the P3005 BASELINE PATH it is left pending
-# for, in BOTH of the two states that path can present.
+# for, in ALL THREE of the states that path can present.
 #
 # `scripts/migrate.sh` lists `20270930000000_schedule_dependency_graph` in ALWAYS_EXECUTE, so on a
 # pre-baseline database — one with no `_prisma_migrations` table — every OTHER migration is
@@ -8,16 +8,21 @@
 # really execute. `schema.prisma` cannot describe a CHECK or a trigger, so recording it as applied
 # would claim guards that never existed.
 #
-# The migration CREATES "ActivityDependency" and does not adopt one, so that path has two states
-# and this proof executes both against the REAL production runner:
+# The migration CREATES "ActivityDependency" and does not adopt one — but not adopting is not the
+# same as not RETRYING, so that path has THREE states and this proof executes all three against the
+# REAL production runner:
 #
 #   A. the table is ABSENT — every deployed database. migrate.sh must install the guards, record
 #      the migration as applied because it RAN, leave them binding, and be re-runnable.
-#   B. the table is PRESENT (a `prisma db push`-shaped reconciliation). migrate.sh must ABORT,
-#      naming the table and docs/RUNBOOK.md section B1, WITHOUT recording the migration as
-#      applied — and the documented repair (drop the empty table) must let the same runner deploy.
+#   B. the table is PRESENT and EMPTY (a `prisma db push`-shaped reconciliation, and also what a
+#      partial apply leaves behind). migrate.sh must SUCCEED, dropping the unguarded table and
+#      rebuilding every column, CHECK, index and trigger from the migration — no operator, no
+#      manual DROP. This is what AGENTS.md means by safe to re-run.
+#   C. the table is PRESENT and HOLDS A ROW. migrate.sh must ABORT, naming the row count and
+#      docs/RUNBOOK.md section B1, WITHOUT recording the migration as applied and WITHOUT
+#      destroying the row — and the documented repair must let the same runner deploy afterwards.
 #
-# COUPLING is proven rather than asserted (step 5): with the ALWAYS_EXECUTE entry removed from a
+# COUPLING is proven rather than asserted (step 6): with the ALWAYS_EXECUTE entry removed from a
 # copy of migrate.sh, state A's guards do not arrive. So a mutation to the baseline path fails this
 # script, and this script runs in the required `api` job — the wiring itself is pinned by
 # `scripts/ci-baseline-proof-wiring.test.mjs`, which is in `pnpm test:automation`.
@@ -148,11 +153,13 @@ OUT2="$(DATABASE_URL="$URL" sh scripts/migrate.sh 2>&1)"; RC2=$?
 edges=$($PSQL -tAc "SELECT COUNT(*) FROM \"ActivityDependency\"" | tr -d '[:space:]')
 [ "$edges" = "1" ] && ok "and left the one legitimate edge untouched" || bad "the re-run disturbed the rows ($edges)"
 
-# ══ STATE B — the table is PRESENT, the `db push` shape ═══════════════════════════════════════
-say "4. a PRE-BASELINE database that ALREADY HAS the table: abort, then the documented repair"
+# ══ STATE B — the table is PRESENT and EMPTY: rebuild, no operator ════════════════════════════
+say "4. a PRE-BASELINE database that ALREADY HAS an EMPTY table: rebuilt, not refused"
 prebaseline "$DB2" "$URL2" "$BARE2" || exit 1
 # Exactly what `schema.prisma` models, and nothing it cannot express: the columns, the primary key,
-# the foreign keys and the two modelled indexes — no CHECK, no partial unique, no trigger.
+# the foreign keys and the two modelled indexes — no CHECK, no partial unique, no trigger. This is
+# the `prisma db push` shape, and it is also the shape a partial apply of the migration leaves:
+# a writable dependency table with no acyclicity guard.
 $PSQL2 >/dev/null <<'SQL' || { bad "the db-push-shaped fixture did not build"; exit 1; }
 CREATE TABLE "ActivityDependency" (
   "id" TEXT NOT NULL, "projectId" TEXT NOT NULL, "predecessorId" TEXT NOT NULL,
@@ -180,16 +187,62 @@ shape=$($PSQL2 -tAc "SELECT (to_regclass('public.\"ActivityDependency\"') IS NOT
   || bad "unexpected state-B shape: $shape (expected true/0/0)"
 
 OUT3="$(DATABASE_URL="$URL2" sh scripts/migrate.sh 2>&1)"; RC3=$?
-[ "$RC3" != "0" ] && ok "migrate.sh REFUSES this database (exit $RC3) rather than baselining over it" \
-                  || bad "migrate.sh exited 0 over a table it did not create"
-case "$OUT3" in
-  *'CREATES that table and does not adopt one'*) ok "and says so in terms an operator can act on" ;;
-  *) bad "the abort message is not the B1 refusal: $(printf '%s' "$OUT3" | tail -5)" ;;
+[ "$RC3" = "0" ] \
+  && ok "migrate.sh SUCCEEDS (exit 0): an empty table is recovered, not refused" \
+  || { bad "migrate.sh failed over an EMPTY pre-existing table: exit $RC3"; printf '%s\n' "$OUT3" | tail -20; }
+# The rebuild ANNOUNCES itself with a `RAISE NOTICE`, but not here: `prisma migrate deploy` does
+# not relay PostgreSQL notices, so this runner cannot see it and asserting it here would be
+# asserting nothing. That claim is made where notices are actually visible — P23 in
+# `schedule-dependency-graph.test.ts` applies the file through psql and matches the message.
+# The point of the rebuild: the guards the db-push shape LACKED are now present and binding, and
+# they came from the migration rather than from anything the other tool left behind.
+rebuilt=$($PSQL2 -tAc "SELECT (SELECT COUNT(*) FROM pg_constraint
+                                WHERE conrelid='public.\"ActivityDependency\"'::regclass AND contype='c' AND convalidated)::text
+                          || '/' || (SELECT COUNT(*) FROM pg_trigger
+                                      WHERE tgrelid='public.\"ActivityDependency\"'::regclass AND NOT tgisinternal AND tgenabled='O')::text
+                          || '/' || (SELECT COUNT(*) FROM pg_indexes WHERE tablename='ActivityDependency')::text" | tr -d '[:space:]')
+[ "$rebuilt" = "4/5/4" ] \
+  && ok "with every CHECK, trigger and index rebuilt from the migration ($rebuilt)" \
+  || bad "the rebuild did not install the guards: $rebuilt (expected 4/5/4)"
+applied2=$($PSQL2 -tAc "SELECT COUNT(*) FROM _prisma_migrations WHERE migration_name='$THIS' AND finished_at IS NOT NULL" | tr -d '[:space:]')
+[ "$applied2" = "1" ] && ok "and the ledger records it applied, because it RAN" \
+                      || bad "the ledger does not record the migration as applied ($applied2)"
+
+# ══ STATE C — the table is PRESENT and HOLDS A ROW: refuse, preserve, repair ══════════════════
+say "5. a PRE-BASELINE database whose table HOLDS A ROW: refused, and the row survives"
+prebaseline "$DB2" "$URL2" "$BARE2" || exit 1
+# A table this migration did not create, holding a row it cannot speak for. No foreign keys: the
+# shape of a table another tool left is whatever that tool chose, and what matters here is the row.
+$PSQL2 >/dev/null <<'SQL' || { bad "the populated fixture did not build"; exit 1; }
+CREATE TABLE "ActivityDependency" (
+  "id" TEXT NOT NULL, "projectId" TEXT NOT NULL, "predecessorId" TEXT NOT NULL,
+  "successorId" TEXT NOT NULL, "lagWorkingDays" INTEGER NOT NULL DEFAULT 0,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdById" TEXT NOT NULL, "createdByName" TEXT NOT NULL,
+  "revokedAt" TIMESTAMP(3), "revokedById" TEXT, "revokedByName" TEXT,
+  CONSTRAINT "ActivityDependency_pkey" PRIMARY KEY ("id"));
+INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+  VALUES ('legacy-edge-1','p-legacy','act-a','act-b','u-legacy','Legacy Writer');
+SQL
+OUT5="$(DATABASE_URL="$URL2" sh scripts/migrate.sh 2>&1)"; RC5=$?
+[ "$RC5" != "0" ] && ok "migrate.sh REFUSES this database (exit $RC5) rather than baselining over it" \
+                  || bad "migrate.sh exited 0 over a table holding rows it did not write"
+case "$OUT5" in
+  *'holds 1 row(s)'*) ok "naming how many rows stopped it — the reason it refused" ;;
+  *) bad "the abort does not name the row count: $(printf '%s' "$OUT5" | tail -5)" ;;
 esac
-case "$OUT3" in
+case "$OUT5" in
+  *'CREATES that table and does not adopt one'*) ok "and says so in terms an operator can act on" ;;
+  *) bad "the abort message is not the B1 refusal: $(printf '%s' "$OUT5" | tail -5)" ;;
+esac
+case "$OUT5" in
   *'docs/RUNBOOK.md section B1'*) ok "and names the runbook section carrying the procedure" ;;
   *) bad "the abort does not name the runbook section" ;;
 esac
+# The row is the whole reason for the refusal, so its survival is the assertion that matters most.
+surv=$($PSQL2 -tAc "SELECT COUNT(*) FROM \"ActivityDependency\"" | tr -d '[:space:]')
+[ "$surv" = "1" ] && ok "and the row it refused to speak for is still there, untouched" \
+                  || bad "the refused run did not preserve the row (count=$surv)"
 # The abort is inside the caller's transaction, so nothing partial is left and the ledger does not
 # claim the migration succeeded. Both matter: a recorded-but-unrun migration is the exact failure
 # the ALWAYS_EXECUTE entry exists to prevent. What the ledger DOES hold is a started-and-failed
@@ -201,11 +254,13 @@ left=$($PSQL2 -tAc "SELECT (SELECT COUNT(*) FROM pg_trigger WHERE tgrelid='publi
   && ok "the aborted run installed nothing, recorded nothing as applied, and left one failed attempt ($left)" \
   || bad "unexpected post-abort state: $left (expected 0/0/1 — triggers/applied/failed-attempt)"
 
-# The documented repair, run exactly as docs/RUNBOOK.md section B1 states it: confirm the table is
-# empty (it is, on every deployed database), resolve the failed attempt, drop the table, re-run.
-rows=$($PSQL2 -tAc "SELECT COUNT(*) FROM \"ActivityDependency\"" | tr -d '[:space:]')
-[ "$rows" = "0" ] && ok "the pre-existing table holds no rows, which is why the repair is a DROP" \
-                  || bad "the fixture table unexpectedly holds $rows rows"
+# The documented repair, run exactly as docs/RUNBOOK.md section B1 states it: the operator decides
+# what becomes of the rows — this proof preserves them elsewhere, which is the decision B1 asks for
+# — then resolves the failed attempt, clears the table, and re-runs.
+$PSQL2 -c 'CREATE TABLE "ActivityDependency_preserved_b1" AS SELECT * FROM "ActivityDependency"' >/dev/null
+kept=$($PSQL2 -tAc 'SELECT COUNT(*) FROM "ActivityDependency_preserved_b1"' | tr -d '[:space:]')
+[ "$kept" = "1" ] && ok "RUNBOOK B1 step 1: the rows are preserved before anything is dropped" \
+                  || bad "the preservation step did not copy the rows (count=$kept)"
 DATABASE_URL="$URL2" npx prisma migrate resolve --rolled-back "$THIS" >/tmp/b1-resolve.log 2>&1 \
   && ok "RUNBOOK B1 step 2: the failed attempt resolves as rolled back" \
   || { bad "migrate resolve --rolled-back failed"; tail -10 /tmp/b1-resolve.log; }
@@ -220,8 +275,9 @@ after2=$($PSQL2 -tAc "SELECT (SELECT COUNT(*) FROM pg_constraint
 [ "$after2" = "4/5" ] && ok "with every guard in force ($after2)" \
                       || bad "the repaired deploy did not install the guards: $after2 (expected 4/5)"
 
+
 # ══ COUPLING — a mutation to the baseline path must fail this proof ═══════════════════════════
-say "5. the coupling: without the ALWAYS_EXECUTE entry, state A's guards do not arrive"
+say "6. the coupling: without the ALWAYS_EXECUTE entry, state A's guards do not arrive"
 # Evidence that cannot fail is not evidence. This mutates the thing under test — migrate.sh's
 # baseline path — on a COPY, and requires the outcome step 2 asserts to stop holding. Because this
 # script runs in the required `api` job, that mutation turns a required job red.

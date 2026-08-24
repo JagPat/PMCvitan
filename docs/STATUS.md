@@ -279,28 +279,51 @@ So **PR #410 is unit A only: the fresh install.** The entire adoption
 apparatus is DELETED — the state-invariant verification over pre-existing rows,
 the forbidden-transition refusal and its seals-armed exemption, the
 definition-comparison and drop/recreate repair for constraints and indexes, and
-the physical-column-contract preflight — and replaced by ONE rule: **if
-`ActivityDependency` already exists, ABORT**, naming the table, saying this
-migration creates rather than adopts, and pointing at `docs/RUNBOOK.md` §B1 for
-the operator procedure. With no adopt path the table's columns, CHECKs, keys and
-primary key are declared INLINE in one unconditional `CREATE TABLE`, and the
-indexes and triggers are created unconditionally.
+the physical-column-contract preflight. Nothing pre-existing is inspected,
+compared or trusted: the table's columns, CHECKs, keys and primary key are
+declared INLINE in one unconditional `CREATE TABLE`, and the indexes and triggers
+are created unconditionally, so every guard comes from the migration's own text.
+
+**Round 1 (Codex, head `f00460b2`) found the one thing that deletion got wrong,
+and it is fixed on this head.** The replacement rule shipped as *"if
+`ActivityDependency` already exists, ABORT"* — which violates AGENTS.md L30-32,
+requiring a new migration to be safe to re-run so a PARTIAL APPLY can be retried.
+The file opens no transaction of its own (an explicit one destroys the diagnostic
+under `migrate deploy`), so a caller supplying none — `psql -f` without
+`--single-transaction`, how a file is applied by hand — can die after
+`CREATE TABLE`. REPRODUCED: that leaves a table with its 4 inline CHECKs, ZERO
+triggers and no partial unique index — **a writable dependency table with no
+acyclicity guard** — and every retry then aborted, the only exit a destructive
+manual `DROP`.
+
+The refusal is now NARROWED to the one state the file genuinely cannot speak for:
+**absent → fresh install; present and EMPTY → dropped and rebuilt; present with
+ROWS → abort**, naming the count, refusing to destroy them, and pointing at
+`docs/RUNBOOK.md` §B1. The drop is bounded to a table proven empty one statement
+earlier under a lock held until it drops it (`LOCK`, `count(*)` and `DROP` share
+one `DO` block, so they are atomic even when the caller supplies no transaction),
+and it is RESTRICT rather than CASCADE, so a database with objects depending on
+the table stops loudly instead of being quietly demolished. This is destructive
+DDL and is called out as AGENTS.md requires — it needs no backfill because a
+table with rows never reaches it.
 
 **That abort is not #363's defect.** #363 was found (#408 F1) because its
 `migrate.sh` `ALWAYS_EXECUTE` entry left the migration pending so it would RUN on
 the P3005 baseline path, where it then refused — a deterministic dead end
 presented as if the path worked. The entry is KEPT, because its reasoning is
 right: `schema.prisma` can describe neither a CHECK nor a trigger, so baselining
-without running would record guards that never existed. What changes is that the
-abort is now DOCUMENTED, REPAIRABLE and INTENDED — safe precisely because
-`ActivityDependency` is a NEW table holding ZERO rows on every deployed database,
-so "drop it and re-run" destroys nothing.
+without running would record guards that never existed. What changes is that
+#363's dead end is gone twice over: the shape it died on — a table present and
+EMPTY, which is what `db push` and a partial apply both leave — now REBUILDS with
+no operator at all, and the remaining refusal is DOCUMENTED, REPAIRABLE and
+INTENDED.
 
-**Real adoption of a `db push`-shaped table is DEFERRED to a separate future
-unit, to be built if and when a database that needs it exists.** None does today.
-Four review rounds and roughly a thousand lines went into that shape for a state
-no deployed database is in; recording it as deferred rather than dropping it
-silently is the point.
+**Real adoption of a POPULATED table is DEFERRED to a separate future unit, to be
+built if and when a database that needs it exists.** None does today: the table
+is new, so every deployed database has it absent, and an empty one is now handled
+rather than deferred. Four review rounds and roughly a thousand lines went into
+that shape for a state no deployed database is in; recording it as deferred
+rather than dropping it silently is the point.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round

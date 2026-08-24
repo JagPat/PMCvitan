@@ -1083,47 +1083,71 @@ post-4a application processes side by side. If a multi-instance rolling strategy
 introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
 ships 4a — after that, every sender carries the pre-send re-check.
 
-## §B1. Schedule B1 — `prisma migrate deploy` aborts: `"ActivityDependency" already exists`
+## §B1. Schedule B1 — `prisma migrate deploy` aborts: `"ActivityDependency" ... holds N row(s)`
 
-`20270930000000_schedule_dependency_graph` CREATES `ActivityDependency`. It does not adopt one.
-Applied to a database that already has that table it aborts, in one transaction, having changed
-nothing:
+`20270930000000_schedule_dependency_graph` CREATES `ActivityDependency`. It does not adopt one —
+every column, CHECK, key, index and trigger comes from the migration's own text, and nothing
+pre-existing is inspected or trusted.
+
+**In most cases there is nothing to do here, and that is deliberate.** A table that is already
+present and **EMPTY** — what `prisma db push` leaves, and what a partial apply of this migration
+leaves — is DROPPED AND REBUILT automatically, and the deploy succeeds. You will see this notice
+and no error:
 
 ```
-schedule B1: table "ActivityDependency" already exists. This migration CREATES that table and
-does not adopt one — it can say nothing honest about columns, constraints, triggers or rows it
-did not install. Inspect the table (it holds no rows on any deployed database); if it is not
-wanted, drop it and re-run. Procedure: docs/RUNBOOK.md section B1.
+NOTICE: schedule B1: an EMPTY "ActivityDependency" is already present — dropping it and
+rebuilding, so that every column, CHECK, index and trigger below comes from this migration.
+This is the expected outcome of retrying a partial apply.
 ```
 
-**Why the migration refuses instead of adopting.** The table's guarantees are five triggers, four
-CHECKs, five composite foreign keys and one PARTIAL unique index. `schema.prisma` can express none
-of the triggers and none of the CHECKs, so a table produced by `prisma db push` or by a baseline
-reconciliation carries the columns and *none* of the rules. Adopting it would mean certifying a
-shape and a history this file never observed — and four review rounds on the closed PR #409 each
-found a new way that certification is unsound. Refusing is the honest answer, and it is cheap
-*here* specifically because the table is new: it exists in no released schema, no service writes
-it, and it holds **zero rows on every deployed database**. Nothing is lost by dropping it.
+Nothing is lost: an empty table records nothing, and the rebuild is what makes the migration safe
+to re-run after a partial apply — the state a caller that supplies no transaction (`psql -f`
+without `--single-transaction`) leaves behind if it dies after `CREATE TABLE`. That state is
+genuinely dangerous to leave in place: it is a writable dependency table with its CHECKs but with
+**no triggers at all**, so no acyclicity guard.
 
-This is unlike §T45, §P4T2C, §P4LC2 and §P4T3C3, which abort over real operational data and need a
-judgement. This one needs a look and a `DROP TABLE`.
+**This section is for the one state that does stop the deploy — a table holding ROWS:**
 
-**When you will see it.** Only on a database whose schema was reconciled from `schema.prisma`
+```
+schedule B1: table "ActivityDependency" already exists and holds N row(s). This migration CREATES
+that table and does not adopt one — it can say nothing honest about rows written before any of its
+guards existed, and it will not drop them. Preserve them and follow docs/RUNBOOK.md section B1;
+adopting a populated table is a separate unit.
+```
+
+**Why it refuses rather than adopting.** The table's guarantees are five triggers, four CHECKs,
+five composite foreign keys and one PARTIAL unique index. `schema.prisma` can express none of the
+triggers and none of the CHECKs, so a table produced by `prisma db push` or by a baseline
+reconciliation carries the columns and *none* of the rules. Rows written into it were judged by
+nothing: they may contain cycles, self-dependencies or unattributable authorship. Certifying them
+is a design question — four review rounds on the closed PR #409 each found a new way that
+certification is unsound — so the migration stops and hands the decision to a person.
+
+Like §T45, §P4T2C, §P4LC2 and §P4T3C3, this abort is over data and needs a judgement. Unlike them,
+it should never occur: `ActivityDependency` is new, so every deployed database has it ABSENT, and
+the empty case no longer stops anything.
+
+**When you could see it.** Only on a database whose schema was reconciled from `schema.prisma`
 without the migration ledger — the P3005 baseline path, where `scripts/migrate.sh` deliberately
-leaves this migration PENDING so its raw guards really execute. On an ordinary
-`prisma migrate deploy` over a ledger-backed database it cannot occur: the table does not exist
-until this migration creates it.
+leaves this migration PENDING so its raw guards really execute — AND into which something wrote
+dependency rows. On an ordinary `prisma migrate deploy` over a ledger-backed database it cannot
+occur: the table does not exist until this migration creates it.
 
 ### Procedure
 
-1. **Confirm the table is empty and is the schedule graph.** Anything other than `0` here stops
-   the procedure — that would be a database this runbook does not describe, and the rows would need
-   a decision before anything is dropped.
+1. **Preserve the rows before anything else, and look at them.** They are the reason the migration
+   stopped, and nothing below is reversible for them.
 
    ```sql
+   CREATE TABLE "ActivityDependency_preexisting" AS SELECT * FROM "ActivityDependency";
    SELECT COUNT(*) FROM "ActivityDependency";
    \d+ "ActivityDependency"
    ```
+
+   **Do not continue past this point on your own judgement.** Edges predating this migration were
+   judged by no guard. Raise it, and expect a dedicated reconciliation unit: deciding what may
+   honestly be said about such rows is a design question, not a runbook step. The remaining steps
+   describe the deploy only once that decision has been made and the rows are dealt with.
 
 2. **Confirm the migration is not recorded as applied.** The abort happens inside the migration's
    transaction, so Prisma records it as failed, not applied.
@@ -1144,10 +1168,11 @@ until this migration creates it.
    No row at all (the P3005 baseline path aborting before the ledger records anything) needs
    nothing here.
 
-3. **Drop the table.**
+3. **Clear the table**, once step 1's decision says the rows may go. Emptying it is enough — the
+   migration rebuilds an empty table by itself — but dropping it is equivalent and just as safe.
 
    ```sql
-   DROP TABLE "ActivityDependency";
+   DELETE FROM "ActivityDependency";   -- or: DROP TABLE "ActivityDependency";
    ```
 
 4. **Re-run the deploy** — `sh apps/api/scripts/migrate.sh` — and verify the guards are in force,
@@ -1165,12 +1190,7 @@ until this migration creates it.
                      AND NOT tgisinternal AND tgenabled = 'O');
    ```
 
-**If step 1 finds rows**, do not continue. Real dependency edges predating this migration would be
-edges no guard ever judged — they may contain cycles, self-dependencies or unattributable
-authorship. Preserve them (`CREATE TABLE "ActivityDependency_preexisting" AS SELECT * FROM
-"ActivityDependency"`), raise it, and expect a dedicated reconciliation unit: deciding what may
-honestly be said about such rows is a design question, not a runbook step.
-
 **Proof.** `apps/api/scripts/schedule-b1-baseline-proof.sh` runs the real `scripts/migrate.sh`
-through both halves of this — the install on a pre-baseline database WITHOUT the table, and this
-abort-then-repair cycle on one WITH it — and CI runs that script in the required `api` job.
+through all three states — the install on a pre-baseline database WITHOUT the table, the automatic
+REBUILD on one with an empty table, and this abort-preserve-repair cycle on one whose table holds a
+row — and CI runs that script in the required `api` job.

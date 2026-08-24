@@ -9,17 +9,26 @@
 
 -- ══ THIS MIGRATION CREATES "ActivityDependency". IT DOES NOT ADOPT ONE. ════════════════════════
 --
--- That is the whole of its policy toward a table that is already there: section 1 ABORTS, names
--- the table, and states the one action that clears it. There is no verification of pre-existing
--- rows, no definition comparison, no drop-and-recreate repair, and no column-contract preflight,
--- because there is no adopt path for any of them to serve.
+-- Every column, CHECK, key, index and trigger below is written from this file's own text. Nothing
+-- pre-existing is inspected, compared, trusted or repaired: there is no verification of
+-- pre-existing rows, no definition comparison, no column-contract preflight. A path that rebuilds
+-- cannot hold the defects an adopt path kept producing across four review rounds — a name trusted
+-- instead of a definition, a hollow same-named function, an unvalidated column contract, rows
+-- validated without a lock.
 --
--- WHY REFUSING IS SAFE HERE, stated as a fact about the deployed estate rather than asserted as a
--- principle: `ActivityDependency` is a NEW table. It exists in no released schema, no service
--- writes it, and it therefore holds ZERO ROWS on every deployed database. "Inspect the table, drop
--- it if it is not wanted, re-run" destroys nothing — which is exactly what is NOT true of the
+-- NOT ADOPTING IS NOT THE SAME AS NOT RETRYING, and section 1 is where the difference lives. A
+-- table that is already there and EMPTY is dropped and rebuilt — that is the half-built table a
+-- partial apply leaves behind, and recovering it is what AGENTS.md means by "safe to re-run". Only
+-- a table holding ROWS stops this migration, because rows written before any guard existed are the
+-- one thing it cannot speak for and will not destroy.
+--
+-- WHY REBUILDING IS SAFE HERE, stated as a fact about the deployed estate rather than asserted as
+-- a principle: `ActivityDependency` is a NEW table. It exists in no released schema, no service
+-- writes it, and it therefore holds ZERO ROWS on every deployed database. The drop in section 1 is
+-- bounded to an empty table and destroys nothing — which is exactly what is NOT true of the
 -- diagnostic-first migrations elsewhere in this repository (§T45, §P4T2C, §P4LC2, §P4T3C3), each
--- of which aborts over real operational data and needs a judgement to repair.
+-- of which aborts over real operational data and needs a judgement to repair. This one aborts on
+-- that same principle, and only there.
 --
 -- WHY THIS IS NOT THE DEFECT PR #363 WAS CLOSED FOR. #363 also refused a pre-existing table, and
 -- that refusal was found (PR #408 F1) — but the finding was about the COMBINATION, not the
@@ -28,25 +37,32 @@
 -- a deterministic dead end presented as if the path worked. The ALWAYS_EXECUTE entry is KEPT,
 -- because its reasoning is right — `schema.prisma` can describe neither a CHECK nor a trigger, so
 -- baselining this migration WITHOUT running it would record guards that never existed. What
--- changes is that the abort is now a DOCUMENTED, REPAIRABLE, INTENDED outcome: the message names
--- `docs/RUNBOOK.md` §B1, that section carries the operator procedure, and
--- `scripts/schedule-b1-baseline-proof.sh` runs the real production runner through both halves —
--- the install on a database without the table, and the abort-then-repair on one with it.
+-- changes is that #363's dead end is gone twice over. The shape it died on — a table present and
+-- EMPTY, which is what `prisma db push` and a partial apply both leave — now REBUILDS and the
+-- deploy succeeds, so the common case needs no operator at all. What remains refusable is a table
+-- holding ROWS, and that outcome is DOCUMENTED and INTENDED: the message names `docs/RUNBOOK.md`
+-- §B1, that section carries the procedure, and `scripts/schedule-b1-baseline-proof.sh` runs the
+-- real production runner through all three states — the table absent, the table present and empty,
+-- and the table present with a row.
 --
--- DEFERRED, and named rather than silently dropped: real adoption of a `prisma db push`-shaped
--- table — reconciling its column contract, its constraints and its indexes, and deciding what may
--- honestly be said about rows written before any guard existed — is a SEPARATE future unit, to be
--- built if and when a database that needs it exists. None does today.
+-- DEFERRED, and named rather than silently dropped: real adoption of a POPULATED table —
+-- reconciling its column contract, its constraints and its indexes, and deciding what may honestly
+-- be said about rows written before any guard existed — is a SEPARATE future unit, to be built if
+-- and when a database that needs it exists. None does today: the table is new, so every deployed
+-- database has it absent, and an empty one is handled here rather than deferred.
 
 -- ONE TRANSACTION, PROVIDED BY THE CALLER — this file deliberately carries NO `BEGIN;`/`COMMIT;`,
 -- and that is a correctness decision rather than a style one. Do not add them back.
 --
--- The transaction itself is what makes this file re-runnable now that there is no adopt path.
--- Every statement below either all commits or all rolls back, so a run that fails for any reason —
--- the section 1 abort, a lost connection, a fixture that violates a constraint — leaves the
--- database with no table, no function and no trigger. The next run is therefore a FRESH INSTALL
--- again, which is the only shape this file knows how to be. Idempotence by object-level guards is
--- what an adopt path needs; a transaction is what a create-only path needs, and it is stronger.
+-- The transaction is the SECOND of two things that make this file re-runnable, and it is the one
+-- the file cannot guarantee — which is why it is no longer the one relied on. When the caller does
+-- supply it, every statement below either all commits or all rolls back, so a failed run leaves no
+-- table, no function and no trigger and the next run is a fresh install. When the caller does NOT
+-- — `psql -f` without `--single-transaction`, which is how a file gets applied by hand — a failure
+-- after `CREATE TABLE` leaves the table behind, and no amount of care in this file's ordering
+-- changes that. Section 1 is what makes the retry work in BOTH cases: it drops an EMPTY table and
+-- rebuilds, so a half-built table is recovered rather than refused, and only rows it cannot speak
+-- for stop it. Read section 1 for the full argument; it is where the recovery lives.
 --
 -- Both callers supply it:
 --   * `prisma migrate deploy` runs each migration in ONE transaction. MEASURED, not assumed: a
@@ -75,23 +91,78 @@
 -- into the connection the deploy goes on to use.
 SET LOCAL search_path = public;
 
--- ── 1. A table that is already there is not this one ──────────────────────────────────────────
--- `CREATE TABLE` without `IF NOT EXISTS` would refuse on its own, but with `relation
--- "ActivityDependency" already exists` — which names neither what this file expected nor what an
--- operator should do about it. So the refusal is asked first, in terms someone can act on.
+-- ── 1. Clear the ground, or refuse to ────────────────────────────────────────────────────────
+-- This file CREATES the dependency graph. It does not adopt one, and it does not read one: every
+-- column, CHECK, key, index and trigger below is written from this file's own text, so nothing
+-- pre-existing is ever inspected, trusted or repaired. That is deliberate — the four review rounds
+-- behind this unit each found the same class of defect in an adopt path (a name trusted instead of
+-- a definition, a hollow same-named function, an unvalidated column contract, rows validated
+-- without a lock), and a path that rebuilds cannot hold any of them.
+--
+-- But "does not adopt" must not mean "cannot be retried". AGENTS.md requires a new migration to be
+-- safe to re-run so a PARTIAL APPLY can be retried, and the caller's transaction is not enough to
+-- guarantee that: this file opens none of its own (see the header — an explicit one destroys the
+-- diagnostic under `migrate deploy`), so a caller that supplies no transaction — `psql -f` without
+-- `--single-transaction`, which is exactly how an operator applies a file by hand — can die after
+-- `CREATE TABLE` and leave the table behind. MEASURED, not hypothesised: applying this file's
+-- first 170 lines that way leaves a table with its 4 CHECKs, ZERO triggers and no partial unique
+-- index — a writable dependency table with no acyclicity guard — and before this section was
+-- rewritten, every retry then stopped here and the only exit was a destructive DROP by hand.
+--
+-- So the ground is cleared rather than refused, on the one condition that makes clearing it
+-- honest — THE TABLE IS EMPTY:
+--
+--   * absent            → a fresh install, the ordinary path on every deployed database.
+--   * present, 0 rows   → DROP and rebuild. This is the half-built table a partial apply leaves,
+--                         and it is also the shape `prisma db push` leaves. Nothing is lost that
+--                         a row could record, and everything below is rebuilt from this file.
+--   * present, ≥1 row   → ABORT, naming the count. Rows written before any guard existed are
+--                         exactly what this file cannot honestly speak for, and dropping them is
+--                         not this migration's decision to make. `docs/RUNBOOK.md` §B1 carries the
+--                         procedure: preserve them, and expect the dedicated adoption unit.
+--
+-- DESTRUCTIVE DDL, CALLED OUT AS AGENTS.md REQUIRES: the `DROP TABLE` below is real, and it is
+-- bounded to a table proven EMPTY one statement earlier under a lock it holds until it drops it.
+-- It needs no backfill because there is nothing to back up: no released schema declares
+-- `ActivityDependency`, no service writes it, and it therefore holds zero rows on every deployed
+-- database. On a database that DOES hold rows this statement is unreachable — the abort above
+-- fires first.
+--
+-- The LOCK is what makes the count authoritative rather than a guess. `LOCK`, `SELECT count(*)`
+-- and `DROP` are all inside ONE `DO` block, which is a single statement and therefore its own
+-- transaction even when the caller supplies none — so no session can insert the first row between
+-- the count that found none and the drop that relies on it.
+--
+-- `DROP TABLE` is RESTRICT, not CASCADE, on purpose. The table's own indexes and triggers go with
+-- it either way; what RESTRICT refuses is a drop that would take something ELSE down with it — a
+-- view or a foreign key some other table owns. That is a database this file does not understand,
+-- and it should stop rather than quietly demolish part of it.
 DO $$
+DECLARE
+  existing_rows bigint;
 BEGIN
-  IF to_regclass('public."ActivityDependency"') IS NOT NULL THEN
-    RAISE EXCEPTION 'schedule B1: table "ActivityDependency" already exists. This migration CREATES that table and does not adopt one — it can say nothing honest about columns, constraints, triggers or rows it did not install. Inspect the table (it holds no rows on any deployed database); if it is not wanted, drop it and re-run. Procedure: docs/RUNBOOK.md section B1.';
+  IF to_regclass('public."ActivityDependency"') IS NULL THEN
+    RETURN;
   END IF;
+
+  EXECUTE 'LOCK TABLE public."ActivityDependency" IN ACCESS EXCLUSIVE MODE';
+  EXECUTE 'SELECT count(*) FROM public."ActivityDependency"' INTO existing_rows;
+
+  IF existing_rows > 0 THEN
+    RAISE EXCEPTION 'schedule B1: table "ActivityDependency" already exists and holds % row(s). This migration CREATES that table and does not adopt one — it can say nothing honest about rows written before any of its guards existed, and it will not drop them. Preserve them and follow docs/RUNBOOK.md section B1; adopting a populated table is a separate unit. (An EMPTY table here is not an error: it is dropped and rebuilt, so a partial apply can simply be re-run.)', existing_rows;
+  END IF;
+
+  RAISE NOTICE 'schedule B1: an EMPTY "ActivityDependency" is already present — dropping it and rebuilding, so that every column, CHECK, index and trigger below comes from this migration. This is the expected outcome of retrying a partial apply.';
+  EXECUTE 'DROP TABLE public."ActivityDependency"';
 END $$;
 
 -- ── 2. The table, with its keys and its CHECKs declared INLINE ────────────────────────────────
--- Inline is possible precisely because section 1 refuses an existing table: `CREATE TABLE` here is
--- unconditional, so nothing in this definition can be skipped. (The predecessor of this file wrote
--- every constraint as a separate guarded ALTER, because `CREATE TABLE IF NOT EXISTS` is skipped
--- WHOLESALE when the table is present — which would have left the CHECKs silently absent on
--- exactly the databases that most needed them. With no adopt path that hazard does not exist.)
+-- Inline is possible precisely because section 1 guarantees no table is present when we reach
+-- here: `CREATE TABLE` is unconditional, so nothing in this definition can be skipped. (The
+-- predecessor of this file wrote every constraint as a separate guarded ALTER, because
+-- `CREATE TABLE IF NOT EXISTS` is skipped WHOLESALE when the table is present — which would have
+-- left the CHECKs silently absent on exactly the databases that most needed them. Rebuilding from
+-- empty means that hazard does not exist.)
 CREATE TABLE "ActivityDependency" (
   "id"             TEXT NOT NULL,
   "projectId"      TEXT NOT NULL,
