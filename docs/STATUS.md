@@ -276,31 +276,58 @@ round's finding in the same place. **The FRESH-INSTALL path drew no finding at
 all, in any round.**
 
 So **PR #410 is unit A only: the fresh install.** The entire adoption
-apparatus is DELETED — the state-invariant verification over pre-existing rows,
+apparatus was DELETED — the state-invariant verification over pre-existing rows,
 the forbidden-transition refusal and its seals-armed exemption, the
 definition-comparison and drop/recreate repair for constraints and indexes, and
-the physical-column-contract preflight — and replaced by ONE rule: **if
-`ActivityDependency` already exists, ABORT**, naming the table, saying this
-migration creates rather than adopts, and pointing at `docs/RUNBOOK.md` §B1 for
-the operator procedure. With no adopt path the table's columns, CHECKs, keys and
-primary key are declared INLINE in one unconditional `CREATE TABLE`, and the
-indexes and triggers are created unconditionally.
+the physical-column-contract preflight.
 
-**That abort is not #363's defect.** #363 was found (#408 F1) because its
-`migrate.sh` `ALWAYS_EXECUTE` entry left the migration pending so it would RUN on
-the P3005 baseline path, where it then refused — a deterministic dead end
-presented as if the path worked. The entry is KEPT, because its reasoning is
-right: `schema.prisma` can describe neither a CHECK nor a trigger, so baselining
-without running would record guards that never existed. What changes is that the
-abort is now DOCUMENTED, REPAIRABLE and INTENDED — safe precisely because
-`ActivityDependency` is a NEW table holding ZERO rows on every deployed database,
-so "drop it and re-run" destroys nothing.
+**#410's FIRST HEAD replaced all of it with ONE rule — if `ActivityDependency`
+already exists, ABORT — and Codex REFUTED that rule (one P1 on `f00460b`).** The
+reasoning behind the split was wrong on one point: `AGENTS.md` requires a new
+migration to tolerate PARTIAL APPLICATION and be safe to re-run, and satisfying
+that REQUIRES handling a table that already exists. A caller that wraps the file
+in no transaction and fails anywhere after `CREATE TABLE` leaves the table
+behind; every retry then stopped at the refusal, and a complete, correct re-run
+stopped there too, with the destructive runbook `DROP TABLE` as the only way
+forward. The finding is correct and the unconditional abort is gone.
 
-**Real adoption of a `db push`-shaped table is DEFERRED to a separate future
-unit, to be built if and when a database that needs it exists.** None does today.
-Four review rounds and roughly a thousand lines went into that shape for a state
-no deployed database is in; recording it as deferred rather than dropping it
-silently is the point.
+**The correction round replaces it with ONE RULE STATED AS A RULE, not as a
+list** — because the four preceding rounds each patched one instance of a class.
+For EVERY object this file installs (the table, each column, each CHECK, the
+primary key, each composite FK, each index, each function, each trigger):
+**absent → create it; present AND definition-identical → skip it, this is the
+resumed apply; present AND different → ABORT, naming the object and both
+definitions.** For ROWS: a partially-applied fresh install cannot hold any —
+nothing can write the table between its creation and its seals — so any row
+means this is not our partial install and the file refuses. Comparison is by
+DEFINITION and never by name: constraints through `pg_get_constraintdef` +
+`convalidated`, indexes through `pg_get_indexdef` + `indisunique`/`indisvalid`,
+triggers through `pg_get_triggerdef` + `tgenabled`, and FUNCTIONS through their
+BODY (`prosrc`) — the last because `CREATE OR REPLACE FUNCTION` preserves
+identity, so a hollowed same-named body reads as present, which is the exact
+defect that closed #409. Every check and every repair is scoped to THIS table:
+index names are schema-scoped in PostgreSQL, so a same-named index owned by
+another relation ABORTS and is never dropped or reclaimed.
+
+**Both halves of the transaction question hold at once, measured rather than
+assumed.** Idempotence comes from the object guards (which is what the finding
+asked for); atomicity comes from the CALLER, and the file still carries NO
+`BEGIN;`/`COMMIT;` of its own — with them, `prisma migrate deploy` reported
+`current transaction is aborted, commands ignored until end of transaction
+block` and DISCARDED the named diagnostic on exactly the path it exists for.
+P22 keeps pinning their absence.
+
+**The destructive `DROP TABLE` is no longer the routine answer.** `RUNBOOK.md`
+§B1 now leads with re-running the deploy — which completes a partial apply and
+needs nothing else — and reaches for the drop only when the migration NAMES a
+disagreement it cannot honestly resolve, over a table it did not install.
+
+**Real adoption of a `db push`-shaped table — reconciling a differing column
+contract, installing constraints it never had, and deciding what may honestly be
+said about rows written before any guard existed — remains DEFERRED to a separate
+future unit, to be built if and when a database that needs it exists.** None does
+today. That deferral is what the refusal arms above protect: refusing is honest,
+adopting would be certifying a shape and a history this file never observed.
 
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round

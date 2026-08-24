@@ -1083,42 +1083,55 @@ post-4a application processes side by side. If a multi-instance rolling strategy
 introduced, the exposure is bounded to pushes leased by old senders during the one rollout that
 ships 4a — after that, every sender carries the pre-send re-check.
 
-## §B1. Schedule B1 — `prisma migrate deploy` aborts: `"ActivityDependency" already exists`
+## §B1. Schedule B1 — `prisma migrate deploy` aborts on `ActivityDependency`
 
-`20270930000000_schedule_dependency_graph` CREATES `ActivityDependency`. It does not adopt one.
-Applied to a database that already has that table it aborts, in one transaction, having changed
-nothing:
+`20270930000000_schedule_dependency_graph` COMPLETES ITS OWN INSTALL of `ActivityDependency` and
+adopts nothing else. Applied twice, or applied after a run that died part-way, it finishes the job
+and exits 0 — **the first thing to try is simply re-running the deploy**, and on a partial apply
+that is the whole procedure. It aborts only when it meets an object it did not install, and the
+abort NAMES that object and both definitions.
+
+### First: re-run the deploy
 
 ```
-schedule B1: table "ActivityDependency" already exists. This migration CREATES that table and
-does not adopt one — it can say nothing honest about columns, constraints, triggers or rows it
-did not install. Inspect the table (it holds no rows on any deployed database); if it is not
-wanted, drop it and re-run. Procedure: docs/RUNBOOK.md section B1.
+sh apps/api/scripts/migrate.sh
 ```
 
-**Why the migration refuses instead of adopting.** The table's guarantees are five triggers, four
-CHECKs, five composite foreign keys and one PARTIAL unique index. `schema.prisma` can express none
-of the triggers and none of the CHECKs, so a table produced by `prisma db push` or by a baseline
-reconciliation carries the columns and *none* of the rules. Adopting it would mean certifying a
-shape and a history this file never observed — and four review rounds on the closed PR #409 each
-found a new way that certification is unsound. Refusing is the honest answer, and it is cheap
-*here* specifically because the table is new: it exists in no released schema, no service writes
-it, and it holds **zero rows on every deployed database**. Nothing is lost by dropping it.
+A partial apply — the table created, some or all of the indexes, functions and triggers missing —
+is completed by this and needs nothing else. If it exits 0, verify the guards are in force (step 4
+below) and stop here.
 
-This is unlike §T45, §P4T2C, §P4LC2 and §P4T3C3, which abort over real operational data and need a
-judgement. This one needs a look and a `DROP TABLE`.
+### If it aborts, read what it names
 
-**When you will see it.** Only on a database whose schema was reconciled from `schema.prisma`
-without the migration ledger — the P3005 baseline path, where `scripts/migrate.sh` deliberately
-leaves this migration PENDING so its raw guards really execute. On an ordinary
-`prisma migrate deploy` over a ledger-backed database it cannot occur: the table does not exist
-until this migration creates it.
+The message is one of five, and each says which object disagrees:
 
-### Procedure
+| Abort names | What it means |
+| --- | --- |
+| `already exists and holds N row(s)` | The table is populated. Nothing can write it between its creation and its seals, so those rows were written by something else, under rules this migration never installed. |
+| `does not match the column contract` | The columns are not the ones this migration reasons about — a nullable endpoint, a wrong type, a missing default. It names the column and both shapes. |
+| `its constraint "<name>" is ABSENT` / `is present as <definition>` | A CHECK or key this migration declares INLINE with the table. `CREATE TABLE` installs all ten atomically, so this migration's own partial apply always carries them; one missing or altered means another tool built this table. |
+| `index "<name>" exists … with a definition this migration did not install` or `already exists in schema public on table "<other>"` | A same-named index that is not the one printed in the message — or one owned by an entirely different relation. Index names are schema-scoped in PostgreSQL, so a collision elsewhere in `public` also lands here. |
+| `function public.<name>() already exists with a definition this migration did not install` / `trigger "<name>" already exists …` | A seal of the right name and the wrong body, or one left `DISABLED`. Compared by body and by `tgenabled`, because `CREATE OR REPLACE FUNCTION` preserves identity and a hollowed body reads as present. |
 
-1. **Confirm the table is empty and is the schedule graph.** Anything other than `0` here stops
-   the procedure — that would be a database this runbook does not describe, and the rows would need
-   a decision before anything is dropped.
+**None of these is repaired automatically, deliberately.** Installing a rule over a table this
+migration did not build would mean certifying a shape and a history it never observed.
+
+**The realistic cause is a schema reconciled from `schema.prisma` without the migration ledger** —
+the P3005 baseline path, where `scripts/migrate.sh` deliberately leaves this migration PENDING so
+its raw guards really execute. `schema.prisma` can express neither a CHECK nor a trigger, so
+`prisma db push` produces the columns, the primary key, the modelled foreign keys and the two
+modelled indexes, and none of the four CHECKs, the two `Membership` keys, the partial unique index
+or the five seals — which is why the abort you see is usually a missing CHECK.
+
+### Last resort: drop the table and let the migration build it
+
+This is the last resort, not the routine answer. It is cheap *here* specifically because the table
+is new: `ActivityDependency` exists in no released schema, no service writes it, and it holds
+**zero rows on every deployed database**. It is unlike §T45, §P4T2C, §P4LC2 and §P4T3C3, which
+abort over real operational data and need a judgement.
+
+1. **Confirm the table is empty and is the schedule graph.** Anything other than `0` here stops the
+   procedure — see "If step 1 finds rows" below.
 
    ```sql
    SELECT COUNT(*) FROM "ActivityDependency";
@@ -1144,7 +1157,9 @@ until this migration creates it.
    No row at all (the P3005 baseline path aborting before the ledger records anything) needs
    nothing here.
 
-3. **Drop the table.**
+3. **Drop the table.** If the abort named an index owned by ANOTHER relation, drop or rename that
+   index instead — this migration will not reclaim a name it does not own, and neither should you
+   without knowing what the other index is for.
 
    ```sql
    DROP TABLE "ActivityDependency";
@@ -1172,5 +1187,6 @@ authorship. Preserve them (`CREATE TABLE "ActivityDependency_preexisting" AS SEL
 honestly be said about such rows is a design question, not a runbook step.
 
 **Proof.** `apps/api/scripts/schedule-b1-baseline-proof.sh` runs the real `scripts/migrate.sh`
-through both halves of this — the install on a pre-baseline database WITHOUT the table, and this
-abort-then-repair cycle on one WITH it — and CI runs that script in the required `api` job.
+through all three states of this — the install on a pre-baseline database WITHOUT the table, the
+abort-then-repair cycle on one carrying a table this migration did not build, and the COMPLETION of
+a genuine partial apply — and CI runs that script in the required `api` job.

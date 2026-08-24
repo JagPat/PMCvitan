@@ -7,92 +7,325 @@
 --
 -- Additive: one new table, no existing table altered.
 
--- ══ THIS MIGRATION CREATES "ActivityDependency". IT DOES NOT ADOPT ONE. ════════════════════════
+-- ══ THIS MIGRATION COMPLETES ITS OWN INSTALL. IT ADOPTS NOTHING ELSE. ═════════════════════════
 --
--- That is the whole of its policy toward a table that is already there: section 1 ABORTS, names
--- the table, and states the one action that clears it. There is no verification of pre-existing
--- rows, no definition comparison, no drop-and-recreate repair, and no column-contract preflight,
--- because there is no adopt path for any of them to serve.
+-- One rule, applied to every object below — the table, each column, each CHECK, the primary key,
+-- each composite foreign key, each index, each function, each trigger:
 --
--- WHY REFUSING IS SAFE HERE, stated as a fact about the deployed estate rather than asserted as a
--- principle: `ActivityDependency` is a NEW table. It exists in no released schema, no service
--- writes it, and it therefore holds ZERO ROWS on every deployed database. "Inspect the table, drop
--- it if it is not wanted, re-run" destroys nothing — which is exactly what is NOT true of the
--- diagnostic-first migrations elsewhere in this repository (§T45, §P4T2C, §P4LC2, §P4T3C3), each
--- of which aborts over real operational data and needs a judgement to repair.
+--     absent                                        -> create it;
+--     present AND identical to what this file installs -> leave it, this is the resumed apply;
+--     present AND different                         -> ABORT, naming the object and BOTH
+--                                                      definitions.
 --
--- WHY THIS IS NOT THE DEFECT PR #363 WAS CLOSED FOR. #363 also refused a pre-existing table, and
--- that refusal was found (PR #408 F1) — but the finding was about the COMBINATION, not the
--- refusal. `scripts/migrate.sh` lists this migration in ALWAYS_EXECUTE, which leaves it PENDING on
--- the P3005 baseline path so its raw guards really execute; #363's file then refused and exited 1,
--- a deterministic dead end presented as if the path worked. The ALWAYS_EXECUTE entry is KEPT,
--- because its reasoning is right — `schema.prisma` can describe neither a CHECK nor a trigger, so
--- baselining this migration WITHOUT running it would record guards that never existed. What
--- changes is that the abort is now a DOCUMENTED, REPAIRABLE, INTENDED outcome: the message names
--- `docs/RUNBOOK.md` §B1, that section carries the operator procedure, and
--- `scripts/schedule-b1-baseline-proof.sh` runs the real production runner through both halves —
--- the install on a database without the table, and the abort-then-repair on one with it.
+-- And for ROWS: a partially-applied FRESH install cannot hold any. Nothing can write this table
+-- between the `CREATE TABLE` that makes it and the seals a few statements later, because that
+-- CREATE takes ACCESS EXCLUSIVE and holds it to COMMIT. So a table holding even one row is not
+-- this file's unfinished work, and section 1 aborts rather than adopting it.
 --
--- DEFERRED, and named rather than silently dropped: real adoption of a `prisma db push`-shaped
--- table — reconciling its column contract, its constraints and its indexes, and deciding what may
+-- WHY THIS SHAPE, rather than the unconditional refusal this file carried before. `AGENTS.md`
+-- requires a new migration to tolerate PARTIAL APPLICATION and to be safe to re-run. Refusing an
+-- existing table satisfies neither: a caller that does not wrap the file in a transaction, having
+-- failed anywhere after `CREATE TABLE`, leaves the table behind — and every retry from then on
+-- stops at the refusal, including a complete and otherwise correct re-run, with a destructive
+-- `DROP TABLE` as the only way forward. Completing the install is the retry-safe answer, and
+-- comparing by DEFINITION is what keeps it from being adoption.
+--
+-- COMPARE BY DEFINITION, NEVER BY NAME. A name test cannot tell a rule from its impersonation: a
+-- hollow `CHECK (TRUE)`, a foreign key pointing at `User` instead of `Membership`, a `NOT VALID`
+-- constraint that judges nothing already present, a non-unique index called `..._key`, a unique
+-- index missing its partial predicate, an `indisvalid = false` leftover, a disabled trigger, or a
+-- same-named function whose body has been hollowed out — each reads as PRESENT to a name test, so
+-- the guarded create is skipped and this file reports success over a rule that is not there. The
+-- function case is the one that closed PR #409 specifically: `CREATE OR REPLACE FUNCTION`
+-- preserves the function's identity, so a hollowed body of the right name survives every check
+-- short of reading `prosrc`. So constraints are compared through `pg_get_constraintdef` plus
+-- `convalidated`, indexes through `pg_get_indexdef` plus `indisunique`/`indisvalid`, triggers
+-- through `pg_get_triggerdef` plus `tgenabled`, and functions through their BODY.
+--
+-- SCOPE EVERY CHECK TO THIS TABLE. Index names are schema-scoped in PostgreSQL, not table-scoped,
+-- so a same-named index on ANOTHER relation both hides itself from a table-scoped lookup and
+-- silences `CREATE INDEX IF NOT EXISTS`. Section 1a asks that question first and ABORTS; it never
+-- drops or reclaims an object owned elsewhere.
+--
+-- WHAT THIS STILL REFUSES, and it is the case the runbook's `DROP TABLE` now exists for: a table
+-- this file did not install. The realistic one is a `prisma db push` or baseline reconciliation
+-- shape — `schema.prisma` can express neither a CHECK nor a trigger, so it produces the columns,
+-- the primary key, the modelled foreign keys and the two modelled indexes, and NONE of the four
+-- CHECKs, the two `Membership` keys, the partial unique index or the five seals. Section 2 creates
+-- every CHECK and key INLINE with the table, atomically, so on this file's own partial apply they
+-- are all present; a table missing any of them was made by something else, and section 1 says so
+-- and stops. That is the last resort, not the routine answer: `docs/RUNBOOK.md` section B1 leads
+-- with re-running the deploy and reaches for the DROP only when the migration names a
+-- disagreement it cannot honestly resolve.
+--
+-- DEFERRED, and named rather than silently dropped: real ADOPTION of a `db push`-shaped table —
+-- reconciling its column contract, installing the constraints it never had, and deciding what may
 -- honestly be said about rows written before any guard existed — is a SEPARATE future unit, to be
--- built if and when a database that needs it exists. None does today.
+-- built if and when a database that needs it exists. None does today: `ActivityDependency` exists
+-- in no released schema and no service writes it.
 
--- ONE TRANSACTION, PROVIDED BY THE CALLER — this file deliberately carries NO `BEGIN;`/`COMMIT;`,
--- and that is a correctness decision rather than a style one. Do not add them back.
+-- THE TRANSACTION, AND WHY THIS FILE STILL CARRIES NO `BEGIN;`/`COMMIT;` OF ITS OWN.
 --
--- The transaction itself is what makes this file re-runnable now that there is no adopt path.
--- Every statement below either all commits or all rolls back, so a run that fails for any reason —
--- the section 1 abort, a lost connection, a fixture that violates a constraint — leaves the
--- database with no table, no function and no trigger. The next run is therefore a FRESH INSTALL
--- again, which is the only shape this file knows how to be. Idempotence by object-level guards is
--- what an adopt path needs; a transaction is what a create-only path needs, and it is stronger.
+-- Both facts hold at once, and they are independent:
 --
--- Both callers supply it:
---   * `prisma migrate deploy` runs each migration in ONE transaction. MEASURED, not assumed: a
---     two-statement variant of this file whose SECOND statement raised left the table its FIRST
---     statement created absent afterwards. (The standing indirect evidence is that
---     `CREATE INDEX CONCURRENTLY` cannot be used in a Prisma migration at all.)
---   * every psql caller passes `--single-transaction` — the probe suite's `applyMigration`, and
---     anyone applying this file by hand.
+--   * IDEMPOTENCE comes from the guards above and below — every object is created only if absent,
+--     and only after being compared by definition when present. That is what makes a retry work
+--     for a caller that supplies NO transaction, which is the caller `AGENTS.md` requires this
+--     file to tolerate and the one the unconditional refusal failed.
+--   * ATOMICITY comes from the CALLER, and both real callers supply it: `prisma migrate deploy`
+--     runs each migration in one transaction (MEASURED, not assumed: a two-statement variant of
+--     this file whose SECOND statement raised left the table its FIRST statement created absent
+--     afterwards), and every psql caller passes `--single-transaction` — the probe suite's
+--     `applyMigration`, and anyone applying this file by hand.
 --
--- WHY AN EXPLICIT `BEGIN;` HERE WOULD BE ACTIVELY HARMFUL, since the obvious instinct is to write
--- one: the schema engine sends this script to a connection that is ALREADY in a transaction and
--- sends its statements one at a time. An explicit `BEGIN` is then a no-op warning, section 1's
--- RAISE aborts the transaction, and every remaining statement fails with `current transaction is
+-- Idempotence is what the finding asked for; atomicity is a bonus the ordinary path gets. Neither
+-- is bought at the other's expense.
+--
+-- AN EXPLICIT `BEGIN;` HERE WOULD BE ACTIVELY HARMFUL, since the obvious instinct is to write one.
+-- The schema engine sends this script to a connection that is ALREADY in a transaction and sends
+-- its statements one at a time. An explicit `BEGIN` is then a no-op warning; section 1's RAISE
+-- aborts the transaction, and every remaining statement fails with `current transaction is
 -- aborted` — so the error the engine reports is the LAST one, and the named diagnostic an operator
 -- needs is discarded. Measured: with `BEGIN;`/`COMMIT;` present, `migrate deploy` printed
 -- `ERROR: current transaction is aborted, commands ignored until end of transaction block`;
--- without them it printed the section 1 message verbatim, RUNBOOK pointer and all.
--- `scripts/schedule-b1-baseline-proof.sh` asserts that message through the real production runner,
--- so re-introducing the explicit transaction fails a required CI job rather than quietly costing
--- the next operator their diagnostic.
+-- without them it printed the section 1 message verbatim, RUNBOOK pointer and all. That
+-- measurement stands, `scripts/schedule-b1-baseline-proof.sh` asserts the message through the real
+-- production runner, and probe P22 pins the absence — so re-introducing the explicit transaction
+-- fails a required CI job rather than quietly costing the next operator their diagnostic.
 --
--- The schema is still pinned. Without it psql takes the caller's search path — so under a role
--- whose path names a per-user or temporary schema first, every unqualified CREATE below would
--- build the whole graph somewhere else and commit successfully, while the application's `public`
--- schema still has no table. `SET LOCAL` scopes it to the caller's transaction, so it cannot leak
--- into the connection the deploy goes on to use.
+-- THE SCHEMA IS PINNED TWICE, and the second pin is the load-bearing one.
+--
+-- Under a role whose search path names a per-user or temporary schema first, an unqualified CREATE
+-- would build the whole graph somewhere else and commit successfully, while the application's
+-- `public` schema still has no table — and section 1, which qualifies its lookups, would keep
+-- reporting a fresh install forever. So EVERY object this file creates is written `public.`-
+-- qualified, which makes the outcome independent of the caller's path.
+--
+-- `SET LOCAL search_path = public` stays as defence in depth for anything that resolves a name
+-- this file does not qualify (the foreign-key targets), and because LOCAL cannot leak into the
+-- connection the deploy goes on to use. It is only a WARNING outside a transaction block, not an
+-- error — which is exactly why it cannot be the only pin.
 SET LOCAL search_path = public;
 
--- ── 1. A table that is already there is not this one ──────────────────────────────────────────
--- `CREATE TABLE` without `IF NOT EXISTS` would refuse on its own, but with `relation
--- "ActivityDependency" already exists` — which names neither what this file expected nor what an
--- operator should do about it. So the refusal is asked first, in terms someone can act on.
+-- ── 1. Resume this file's own install; refuse anything it did not install ─────────────────────
 DO $$
+DECLARE
+  r          RECORD;
+  v_owner    TEXT;
+  v_existing TEXT;
+  v_bad      TEXT;
+  v_rows     BIGINT;
 BEGIN
-  IF to_regclass('public."ActivityDependency"') IS NOT NULL THEN
-    RAISE EXCEPTION 'schedule B1: table "ActivityDependency" already exists. This migration CREATES that table and does not adopt one — it can say nothing honest about columns, constraints, triggers or rows it did not install. Inspect the table (it holds no rows on any deployed database); if it is not wanted, drop it and re-run. Procedure: docs/RUNBOOK.md section B1.';
+  -- ── 1a. Index NAMES, asked BEFORE anything else and asked whether or not the table exists ───
+  -- An index name is unique per SCHEMA, not per table. Two consequences, and both are silent:
+  -- section 3's `CREATE INDEX IF NOT EXISTS` skips on a name owned by ANOTHER relation, leaving
+  -- this table without the index it reports having created; and a table-scoped definition lookup
+  -- finds nothing, so the definition check below would call the same name absent. This file
+  -- repairs what belongs to "ActivityDependency" and does not RECLAIM what does not, so a
+  -- collision is data it cannot honestly interpret: it names both sides and stops.
+  FOR r IN SELECT * FROM (VALUES
+      ('ActivityDependency_projectId_successorId_predecessorId_key'),
+      ('ActivityDependency_projectId_predecessorId_idx'),
+      ('ActivityDependency_projectId_successorId_idx')
+    ) AS i(name)
+  LOOP
+    SELECT c2.relname INTO v_owner
+      FROM pg_class ci
+      JOIN pg_namespace ns ON ns.oid = ci.relnamespace
+      JOIN pg_index ix ON ix.indexrelid = ci.oid
+      JOIN pg_class c2 ON c2.oid = ix.indrelid
+     WHERE ci.relname = r.name AND ns.nspname = 'public'
+       AND ix.indrelid IS DISTINCT FROM to_regclass('public."ActivityDependency"');
+    IF v_owner IS NOT NULL THEN
+      RAISE EXCEPTION 'schedule B1: an index named "%" already exists in schema public on table "%", not on "ActivityDependency". Index names are schema-scoped, so the guarded CREATE below would silently skip and leave this table unindexed — and this migration will not drop or reclaim an object it does not own. Rename or drop that index deliberately, then re-run.',
+        r.name, v_owner;
+    END IF;
+  END LOOP;
+
+  IF to_regclass('public."ActivityDependency"') IS NULL THEN
+    RETURN;                        -- nothing installed yet; sections 2..8 install all of it
   END IF;
+
+  -- ── 1b. LOCK BEFORE LOOKING, and hold it to COMMIT ──────────────────────────────────────────
+  -- Everything below reads a snapshot, and the objects that act on those reads are installed
+  -- AFTERWARDS. Without this lock a concurrent session can write between the two: the row check
+  -- passes on an empty table, an INSERT commits, and the seals go on top of a row no guard here
+  -- ever judged. Installing a trigger validates nothing already in the table, so an unserialized
+  -- inspection proves nothing about the table that ends up sealed.
+  --
+  -- ACCESS EXCLUSIVE, not a weaker mode: the writer to shut out is an ordinary INSERT, and only
+  -- this mode conflicts with the ROW EXCLUSIVE lock an INSERT takes. PostgreSQL holds it until
+  -- COMMIT, so the verification here and the objects installed after it see one another's world.
+  -- Taken only when the table exists — `LOCK TABLE` on a missing relation is an error, and there
+  -- is nothing to serialize against until section 2's CREATE takes the same lock itself.
+  LOCK TABLE public."ActivityDependency" IN ACCESS EXCLUSIVE MODE;
+
+  -- ── 1c. ROWS mean this is not this file's partial apply ─────────────────────────────────────
+  -- Section 2 creates the table and takes ACCESS EXCLUSIVE on it in the same statement, and holds
+  -- that lock to COMMIT; the seals are installed inside that same window. So on this file's own
+  -- interrupted run there is no instant at which any session could have inserted an edge, and a
+  -- table holding even one row is somebody else's table. Refusing is the honest answer — the rows
+  -- were written under whatever rules that writer had, and this file can say nothing about them.
+  SELECT COUNT(*) INTO v_rows FROM public."ActivityDependency";
+  IF v_rows > 0 THEN
+    RAISE EXCEPTION 'schedule B1: "ActivityDependency" already exists and holds % row(s). This migration CREATES that table, and nothing can write it between its creation and its seals — so a populated table is not this migration''s unfinished work and will not be adopted: it can say nothing honest about rows written under rules it never installed. Procedure: docs/RUNBOOK.md section B1.',
+      v_rows;
+  END IF;
+
+  -- ── 1d. THE PHYSICAL COLUMN CONTRACT, not merely the column NAMES ───────────────────────────
+  -- Section 2's `CREATE TABLE IF NOT EXISTS` skips its whole definition when the table is already
+  -- there, so on the resume path every column's type, nullability and default come from whatever
+  -- produced it — and a name test cannot tell a conforming column from a differently-shaped one
+  -- of the same name. The consequence is not cosmetic: a NULLABLE `predecessorId` would be adopted
+  -- silently and then accept a live edge with a null endpoint, because the composite foreign key
+  -- is MATCH SIMPLE (a row with any NULL key column is not checked at all), the self-dependency
+  -- CHECK evaluates to UNKNOWN and passes, and the reachability walk in section 7 matches no node.
+  -- The table would hold an edge no guard here can see.
+  --
+  -- Each column is compared against the contract section 2 would have created: nullability, type,
+  -- datetime precision and default. The comparison FAILS SAFE — anything other than an exact match
+  -- aborts and names the disagreement, so a future PostgreSQL that renders `CURRENT_TIMESTAMP`
+  -- differently costs a refusal an operator can read, never a silent adoption.
+  SELECT string_agg(w.c || ' (' || w.detail || ')', ', ' ORDER BY w.c) INTO v_bad FROM (
+    SELECT e.c AS c,
+           CASE WHEN ic.column_name IS NULL THEN 'absent'
+                ELSE 'is ' || ic.data_type || COALESCE('(' || ic.datetime_precision || ')', '')
+                     || ', nullable=' || ic.is_nullable
+                     || ', default=' || COALESCE(ic.column_default, 'none')
+                     || '; expected ' || e.typ || COALESCE('(' || e.prec || ')', '')
+                     || ', nullable=' || e.nullable
+                     || ', default=' || COALESCE(e.def, 'none')
+           END AS detail
+      FROM (VALUES
+              ('id',             'NO',  'text',                        NULL::INT, NULL::TEXT),
+              ('projectId',      'NO',  'text',                        NULL,      NULL),
+              ('predecessorId',  'NO',  'text',                        NULL,      NULL),
+              ('successorId',    'NO',  'text',                        NULL,      NULL),
+              ('lagWorkingDays', 'NO',  'integer',                     NULL,      '0'),
+              ('createdAt',      'NO',  'timestamp without time zone', 3,         'CURRENT_TIMESTAMP'),
+              ('createdById',    'NO',  'text',                        NULL,      NULL),
+              ('createdByName',  'NO',  'text',                        NULL,      NULL),
+              ('revokedAt',      'YES', 'timestamp without time zone', 3,         NULL),
+              ('revokedById',    'YES', 'text',                        NULL,      NULL),
+              ('revokedByName',  'YES', 'text',                        NULL,      NULL)
+           ) AS e(c, nullable, typ, prec, def)
+      LEFT JOIN information_schema.columns ic
+             ON ic.table_schema = 'public' AND ic.table_name = 'ActivityDependency'
+            AND ic.column_name = e.c
+     WHERE ic.column_name IS NULL
+        OR ic.is_nullable         IS DISTINCT FROM e.nullable
+        OR ic.data_type           IS DISTINCT FROM e.typ
+        OR ic.datetime_precision  IS DISTINCT FROM e.prec
+        OR ic.column_default      IS DISTINCT FROM e.def) w;
+  IF v_bad IS NOT NULL THEN
+    RAISE EXCEPTION 'schedule B1: "ActivityDependency" exists but does not match the column contract this migration installs and reasons about: %. This is not this migration''s partial apply, and nothing honest can be said about it. Repair those columns, or — if it is not the dependency graph — rename or drop that table, then re-run. Procedure: docs/RUNBOOK.md section B1.',
+      v_bad;
+  END IF;
+
+  -- ── 1e. The PRIMARY KEY, the four CHECKs and the five composite keys ────────────────────────
+  -- Section 2 declares all ten INLINE, so `CREATE TABLE` installs them ATOMICALLY with the table:
+  -- on this file's own partial apply, a table that exists has every one of them. That is why
+  -- ABSENT is refused here rather than repaired — a table missing a CHECK is a table something
+  -- else built, most plausibly a `db push` or baseline reconciliation, which produces the columns
+  -- and the modelled keys and NONE of the CHECKs. Adding them would be adoption: this file would
+  -- be certifying rules over a shape and a history it never observed.
+  --
+  -- DIFFERENT is refused for the reason a name test cannot see: `pg_get_constraintdef` is how
+  -- PostgreSQL itself deparses the rule, and `convalidated` is the difference between a rule that
+  -- judges the table and a `NOT VALID` one that judges only what arrives next. Both sides of the
+  -- disagreement are printed, because "it differs" is not something an operator can act on.
+  FOR r IN
+    SELECT * FROM (VALUES
+      ('ActivityDependency_pkey',
+       'PRIMARY KEY (id)'),
+      ('ActivityDependency_attribution_check',
+       'CHECK ((("createdById" !~ ''^[[:space:]]*$''::text) AND ("createdByName" !~ ''^[[:space:]]*$''::text)))'),
+      ('ActivityDependency_revocation_check',
+       'CHECK (((("revokedAt" IS NULL) AND ("revokedById" IS NULL) AND ("revokedByName" IS NULL)) OR (("revokedAt" IS NOT NULL) AND ("revokedById" IS NOT NULL) AND ("revokedById" !~ ''^[[:space:]]*$''::text) AND ("revokedByName" IS NOT NULL) AND ("revokedByName" !~ ''^[[:space:]]*$''::text))))'),
+      ('ActivityDependency_no_self_check',
+       'CHECK (("predecessorId" <> "successorId"))'),
+      ('ActivityDependency_lag_nonneg_check',
+       'CHECK (("lagWorkingDays" >= 0))'),
+      ('ActivityDependency_projectId_fkey',
+       'FOREIGN KEY ("projectId") REFERENCES "Project"(id) ON UPDATE CASCADE ON DELETE RESTRICT'),
+      ('ActivityDependency_projectId_predecessorId_fkey',
+       'FOREIGN KEY ("projectId", "predecessorId") REFERENCES "Activity"("projectId", id)'),
+      ('ActivityDependency_projectId_successorId_fkey',
+       'FOREIGN KEY ("projectId", "successorId") REFERENCES "Activity"("projectId", id)'),
+      ('ActivityDependency_createdBy_fkey',
+       'FOREIGN KEY ("projectId", "createdById") REFERENCES "Membership"("projectId", "userId")'),
+      ('ActivityDependency_revokedBy_fkey',
+       'FOREIGN KEY ("projectId", "revokedById") REFERENCES "Membership"("projectId", "userId")')
+    ) AS c(name, canonical)
+  LOOP
+    SELECT regexp_replace(pg_get_constraintdef(k.oid), '[[:space:]]+', ' ', 'g')
+           || CASE WHEN k.convalidated THEN '' ELSE ' [NOT VALID]' END
+      INTO v_existing
+      FROM pg_constraint k
+     WHERE k.conname = r.name
+       AND k.conrelid = 'public."ActivityDependency"'::regclass;
+
+    CONTINUE WHEN v_existing IS NOT NULL
+             AND v_existing = regexp_replace(r.canonical, '[[:space:]]+', ' ', 'g');
+
+    RAISE EXCEPTION 'schedule B1: "ActivityDependency" exists but its constraint "%" is %. This migration declares that constraint INLINE with the table, so its own partial apply always carries it — a table without it, or with a different one, was built by something else and will not be adopted. Expected: %. Procedure: docs/RUNBOOK.md section B1.',
+      r.name,
+      COALESCE('present as ' || v_existing, 'ABSENT'),
+      regexp_replace(r.canonical, '[[:space:]]+', ' ', 'g');
+  END LOOP;
+
+  -- ── 1f. Indexes that ARE there must be the ones this file installs ──────────────────────────
+  -- Unlike the constraints above, the three indexes are separate statements, so this file's own
+  -- partial apply CAN legitimately be missing them — absent is the resumable case and section 3
+  -- creates them. What must not pass is a same-named index on this table with a different
+  -- definition, because section 3's `IF NOT EXISTS` matches on the NAME and would skip it: a plain
+  -- non-unique index called `..._key`, a unique index WITHOUT the partial predicate, or one left
+  -- `indisvalid = false` by a failed concurrent build each leaves the ordered pair unconstrained
+  -- forever while this file reports success. `pg_get_indexdef` renders UNIQUE, the columns and the
+  -- WHERE predicate; `indisvalid` is not in that text and is asked separately.
+  FOR r IN
+    SELECT * FROM (VALUES
+      ('ActivityDependency_projectId_successorId_predecessorId_key',
+       'CREATE UNIQUE INDEX "ActivityDependency_projectId_successorId_predecessorId_key" ON public."ActivityDependency" USING btree ("projectId", "successorId", "predecessorId") WHERE ("revokedAt" IS NULL)'),
+      ('ActivityDependency_projectId_predecessorId_idx',
+       'CREATE INDEX "ActivityDependency_projectId_predecessorId_idx" ON public."ActivityDependency" USING btree ("projectId", "predecessorId")'),
+      ('ActivityDependency_projectId_successorId_idx',
+       'CREATE INDEX "ActivityDependency_projectId_successorId_idx" ON public."ActivityDependency" USING btree ("projectId", "successorId")')
+    ) AS i(name, canonical)
+  LOOP
+    SELECT regexp_replace(pg_get_indexdef(ci.oid), '[[:space:]]+', ' ', 'g')
+           || CASE WHEN ix.indisvalid THEN '' ELSE ' [INVALID]' END
+      INTO v_existing
+      FROM pg_class ci
+      JOIN pg_namespace ns ON ns.oid = ci.relnamespace
+      JOIN pg_index ix ON ix.indexrelid = ci.oid
+     WHERE ci.relname = r.name AND ns.nspname = 'public'
+       AND ix.indrelid = 'public."ActivityDependency"'::regclass;
+
+    CONTINUE WHEN v_existing IS NULL;                     -- absent: section 3 creates it
+    CONTINUE WHEN v_existing = regexp_replace(r.canonical, '[[:space:]]+', ' ', 'g');
+
+    RAISE EXCEPTION 'schedule B1: index "%" exists on "ActivityDependency" with a definition this migration did not install, and the guarded CREATE below matches on the name alone — so it would be skipped and the rule left absent. Found: %. Expected: %. Procedure: docs/RUNBOOK.md section B1.',
+      r.name, v_existing, regexp_replace(r.canonical, '[[:space:]]+', ' ', 'g');
+  END LOOP;
+
+  -- The five functions and the five triggers are verified the same way, at the point each is
+  -- installed (sections 4 to 8) — a function is compared against the BODY this file installs, and
+  -- that body is only in scope where it is written.
 END $$;
 
 -- ── 2. The table, with its keys and its CHECKs declared INLINE ────────────────────────────────
--- Inline is possible precisely because section 1 refuses an existing table: `CREATE TABLE` here is
--- unconditional, so nothing in this definition can be skipped. (The predecessor of this file wrote
--- every constraint as a separate guarded ALTER, because `CREATE TABLE IF NOT EXISTS` is skipped
--- WHOLESALE when the table is present — which would have left the CHECKs silently absent on
--- exactly the databases that most needed them. With no adopt path that hazard does not exist.)
-CREATE TABLE "ActivityDependency" (
+-- `IF NOT EXISTS` is what makes the resume path possible, and section 1 is what makes it safe.
+-- The guard matches on the table's NAME, so on a table that is already there this whole
+-- definition — every column, every CHECK, every key — is skipped WHOLESALE. Left on its own that
+-- would silently report success over a table carrying none of these rules. Section 1d and 1e ran
+-- first precisely to remove that possibility: past them, a table that exists has exactly these
+-- columns and exactly these ten constraints, so skipping the definition skips nothing.
+--
+-- Declaring them INLINE rather than as separate guarded ALTERs is then the stronger choice, and
+-- deliberately so: `CREATE TABLE` installs the table and all ten ATOMICALLY, which is what lets
+-- section 1e treat an ABSENT CHECK as proof that some other tool built this table.
+CREATE TABLE IF NOT EXISTS public."ActivityDependency" (
   "id"             TEXT NOT NULL,
   "projectId"      TEXT NOT NULL,
   "predecessorId"  TEXT NOT NULL,
@@ -171,34 +404,50 @@ CREATE TABLE "ActivityDependency" (
 
 -- NOTHING MAY WRITE THIS TABLE BETWEEN ITS CREATION AND ITS SEALS.
 --
--- On this path the statement is REDUNDANT and is kept deliberately rather than left implicit: the
--- `CREATE TABLE` above already took ACCESS EXCLUSIVE and PostgreSQL holds it until COMMIT, so no
--- other session can so much as see the table before every guard below is in place. Stating the
--- requirement as a statement rather than as a comment means the invariant is asserted where it is
--- relied on, and costs one lock acquisition the transaction already owns.
+-- On both paths through this file the lock is ALREADY HELD by the time this runs — on a fresh
+-- install by the `CREATE TABLE` above, on a resume by section 1b — and PostgreSQL holds it until
+-- COMMIT. It is stated anyway rather than left implicit: asserting the requirement where it is
+-- relied on does not depend on which branch got here, and it costs one lock acquisition the
+-- transaction already owns.
+--
+-- WRAPPED IN A `DO` BLOCK, and that is the point rather than a style choice. A bare
+-- `LOCK TABLE` is an ERROR outside a transaction block — `LOCK TABLE can only be used in
+-- transaction blocks` — so as a top-level statement it makes this file UNRUNNABLE for a caller in
+-- autocommit: the `CREATE TABLE` above commits, this fails, the table is left behind, and every
+-- retry fails here again. That is the same dead end the unconditional refusal produced, one
+-- statement further down. Inside a `DO` block the statement always has a transaction — the
+-- caller's if there is one, an implicit single-statement one if there is not.
+--
+-- What autocommit cannot have is the lock HELD ACROSS statements, and no rewriting of this file
+-- changes that: the seals below then go on in separate transactions and a writer could reach the
+-- table between them. That is a property of the caller, not of this file, which is why both real
+-- callers supply a transaction and the header says so.
 --
 -- ACCESS EXCLUSIVE, not a weaker mode: the writer to shut out is an ordinary INSERT, and only this
 -- mode conflicts with the ROW EXCLUSIVE lock an INSERT takes.
-LOCK TABLE "ActivityDependency" IN ACCESS EXCLUSIVE MODE;
+DO $$ BEGIN LOCK TABLE public."ActivityDependency" IN ACCESS EXCLUSIVE MODE; END $$;
 
 -- ── 3. Indexes ────────────────────────────────────────────────────────────────────────────────
--- Created unconditionally, like everything else here: the table was created three statements ago
--- and has no indexes but its primary key, so there is nothing to detect and nothing to repair.
+-- Separate statements, so unlike the inline constraints these CAN legitimately be missing from
+-- this file's own interrupted run — which is why they are guarded and the constraints are not.
+-- `IF NOT EXISTS` matches on the NAME alone; section 1a proved no other relation owns any of
+-- these names, and section 1f proved that any index of these names ON THIS TABLE is the one
+-- printed here. Past those two, the name is a safe stand-in for the definition.
 --
 -- The unique index is PARTIAL because a revoked edge stays on the record: re-imposing a constraint
 -- withdrawn earlier is an ordinary re-plan, and what must not be allowed is two LIVE edges for one
 -- ordered pair. It is also the candidate key an EDGE-SCOPED dependency override must reference —
 -- an override attached to the successor alone would excuse every predecessor at once. Prisma
 -- cannot express a partial unique, which is why it is raw SQL and why `schema.prisma` says so.
-CREATE UNIQUE INDEX "ActivityDependency_projectId_successorId_predecessorId_key"
-  ON "ActivityDependency" ("projectId", "successorId", "predecessorId")
+CREATE UNIQUE INDEX IF NOT EXISTS "ActivityDependency_projectId_successorId_predecessorId_key"
+  ON public."ActivityDependency" ("projectId", "successorId", "predecessorId")
   WHERE "revokedAt" IS NULL;
 
-CREATE INDEX "ActivityDependency_projectId_predecessorId_idx"
-  ON "ActivityDependency" ("projectId", "predecessorId");
+CREATE INDEX IF NOT EXISTS "ActivityDependency_projectId_predecessorId_idx"
+  ON public."ActivityDependency" ("projectId", "predecessorId");
 
-CREATE INDEX "ActivityDependency_projectId_successorId_idx"
-  ON "ActivityDependency" ("projectId", "successorId");
+CREATE INDEX IF NOT EXISTS "ActivityDependency_projectId_successorId_idx"
+  ON public."ActivityDependency" ("projectId", "successorId");
 
 -- ── 4. An edge is BORN LIVE ───────────────────────────────────────────────────────────────────
 -- The revocation CHECK says the three revocation columns move together. It cannot say WHEN they
@@ -211,8 +460,15 @@ CREATE INDEX "ActivityDependency_projectId_successorId_idx"
 --
 -- A trigger can tell an INSERT from an UPDATE, so the rule lives here — written two-valued in
 -- full, never a comparison that could evaluate to UNKNOWN and be waved through.
-CREATE OR REPLACE FUNCTION activity_dependency_born_live() RETURNS TRIGGER LANGUAGE plpgsql
-SET search_path = pg_catalog, public AS $$
+--
+-- The body is held in a variable and the function is created FROM that variable, so the text this
+-- file installs and the text it compares against are the SAME string — there is no second copy to
+-- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
+-- Signature, language and `search_path` travel with it, because a body of the right shape attached
+-- to the wrong return type or with the search-path pin removed is a different function.
+DO $install$
+DECLARE
+  v_body TEXT := $body$
 BEGIN
   IF NEW."revokedAt"        IS NOT NULL
      OR NEW."revokedById"   IS NOT NULL
@@ -220,11 +476,27 @@ BEGIN
     RAISE EXCEPTION 'schedule: dependency edge % cannot be created already revoked — a withdrawal is the record of a constraint that once stood, and this one never did. Insert the edge live, then revoke it.', NEW."id";
   END IF;
   RETURN NEW;
-END $$;
-
-CREATE TRIGGER "ActivityDependency_born_live"
-  BEFORE INSERT ON "ActivityDependency"
-  FOR EACH ROW EXECUTE FUNCTION activity_dependency_born_live();
+END $body$;
+  v_want TEXT;
+  v_found TEXT;
+BEGIN
+  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
+    INTO v_found
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_language  l ON l.oid = p.prolang
+   WHERE n.nspname = 'public' AND p.proname = 'activity_dependency_born_live' AND p.pronargs = 0;
+  IF v_found IS NOT NULL AND v_found <> v_want THEN
+    RAISE EXCEPTION 'schedule B1: function public.activity_dependency_born_live() already exists with a definition this migration did not install, so this is not this migration''s partial apply and the function will not be adopted or overwritten. Expected: %. Found: %. Procedure: docs/RUNBOOK.md section B1.',
+      v_want, v_found;
+  END IF;
+  IF v_found IS NULL THEN
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+                   'activity_dependency_born_live', v_body);
+  END IF;
+END $install$;
 
 -- ── 5. Removal must not launder attribution ───────────────────────────────────────────────────
 -- Section 6 makes the record permanent against UPDATE. It has nothing to hold on to against
@@ -233,15 +505,38 @@ CREATE TRIGGER "ActivityDependency_born_live"
 -- a disputed sequence is what the attribution exists to answer, the supported way to remove an
 -- edge is to REVOKE it — the row stays, both attributions stay, and the partial unique index lets
 -- the pair be re-imposed afterwards.
-CREATE OR REPLACE FUNCTION activity_dependency_no_delete() RETURNS TRIGGER LANGUAGE plpgsql
-SET search_path = pg_catalog, public AS $$
+--
+-- The body is held in a variable and the function is created FROM that variable, so the text this
+-- file installs and the text it compares against are the SAME string — there is no second copy to
+-- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
+-- Signature, language and `search_path` travel with it, because a body of the right shape attached
+-- to the wrong return type or with the search-path pin removed is a different function.
+DO $install$
+DECLARE
+  v_body TEXT := $body$
 BEGIN
   RAISE EXCEPTION 'schedule: dependency edge % is not deletable — who imposed this sequencing constraint, and who withdrew it, are both part of the record. Revoke it instead (set revokedAt/revokedById/revokedByName).', OLD."id";
-END $$;
-
-CREATE TRIGGER "ActivityDependency_no_delete"
-  BEFORE DELETE ON "ActivityDependency"
-  FOR EACH ROW EXECUTE FUNCTION activity_dependency_no_delete();
+END $body$;
+  v_want TEXT;
+  v_found TEXT;
+BEGIN
+  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
+    INTO v_found
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_language  l ON l.oid = p.prolang
+   WHERE n.nspname = 'public' AND p.proname = 'activity_dependency_no_delete' AND p.pronargs = 0;
+  IF v_found IS NOT NULL AND v_found <> v_want THEN
+    RAISE EXCEPTION 'schedule B1: function public.activity_dependency_no_delete() already exists with a definition this migration did not install, so this is not this migration''s partial apply and the function will not be adopted or overwritten. Expected: %. Found: %. Procedure: docs/RUNBOOK.md section B1.',
+      v_want, v_found;
+  END IF;
+  IF v_found IS NULL THEN
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+                   'activity_dependency_no_delete', v_body);
+  END IF;
+END $install$;
 
 -- A ROW trigger does not fire for TRUNCATE. TRUNCATE is a separate, statement-level event, and
 -- without this seal one statement erases every edge and every attribution the DELETE seal was
@@ -256,8 +551,15 @@ CREATE TRIGGER "ActivityDependency_no_delete"
 -- `T3CRepairAction` because that table is the before-image evidence a repair path depends on. This
 -- table is not in that position: it holds no rows on any deployed database, no service writes it
 -- yet, and a dropped table is caught as drift by the next migration rather than read as a schedule.
-CREATE OR REPLACE FUNCTION activity_dependency_no_truncate() RETURNS TRIGGER LANGUAGE plpgsql
-SET search_path = pg_catalog, public AS $$
+--
+-- The body is held in a variable and the function is created FROM that variable, so the text this
+-- file installs and the text it compares against are the SAME string — there is no second copy to
+-- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
+-- Signature, language and `search_path` travel with it, because a body of the right shape attached
+-- to the wrong return type or with the search-path pin removed is a different function.
+DO $install$
+DECLARE
+  v_body TEXT := $body$
 BEGIN
   -- A TRUNCATE that erases NOTHING erases nothing, and it is permitted.
   --
@@ -274,11 +576,27 @@ BEGIN
     RETURN NULL;
   END IF;
   RAISE EXCEPTION 'schedule: "ActivityDependency" holds the sequencing record — who imposed each constraint and who withdrew it — and is never truncated. Revoke edges individually; a sanctioned destructive reset disables "ActivityDependency_no_truncate" by name for the duration of the reset.';
-END $$;
-
-CREATE TRIGGER "ActivityDependency_no_truncate"
-  BEFORE TRUNCATE ON "ActivityDependency"
-  FOR EACH STATEMENT EXECUTE FUNCTION activity_dependency_no_truncate();
+END $body$;
+  v_want TEXT;
+  v_found TEXT;
+BEGIN
+  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
+    INTO v_found
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_language  l ON l.oid = p.prolang
+   WHERE n.nspname = 'public' AND p.proname = 'activity_dependency_no_truncate' AND p.pronargs = 0;
+  IF v_found IS NOT NULL AND v_found <> v_want THEN
+    RAISE EXCEPTION 'schedule B1: function public.activity_dependency_no_truncate() already exists with a definition this migration did not install, so this is not this migration''s partial apply and the function will not be adopted or overwritten. Expected: %. Found: %. Procedure: docs/RUNBOOK.md section B1.',
+      v_want, v_found;
+  END IF;
+  IF v_found IS NULL THEN
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+                   'activity_dependency_no_truncate', v_body);
+  END IF;
+END $install$;
 
 -- ── 6. The row is frozen; the ONE permitted transition is live → revoked ──────────────────────
 --   NOTHING about an edge changes, ever, except that a LIVE edge may be REVOKED, ONCE.
@@ -299,8 +617,15 @@ CREATE TRIGGER "ActivityDependency_no_truncate"
 -- The frozen half is compared as JSONB with the three revocation keys removed, rather than as a
 -- list of column comparisons, so a column added to this table later is frozen BY DEFAULT: the next
 -- person to widen the row cannot create a fourth mutable field by forgetting a list entry.
-CREATE OR REPLACE FUNCTION activity_dependency_frozen() RETURNS TRIGGER LANGUAGE plpgsql
-SET search_path = pg_catalog, public AS $$
+--
+-- The body is held in a variable and the function is created FROM that variable, so the text this
+-- file installs and the text it compares against are the SAME string — there is no second copy to
+-- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
+-- Signature, language and `search_path` travel with it, because a body of the right shape attached
+-- to the wrong return type or with the search-path pin removed is a different function.
+DO $install$
+DECLARE
+  v_body TEXT := $body$
 BEGIN
   IF to_jsonb(NEW) - 'revokedAt' - 'revokedById' - 'revokedByName'
      IS DISTINCT FROM
@@ -314,11 +639,27 @@ BEGIN
   END IF;
 
   RETURN NEW;
-END $$;
-
-CREATE TRIGGER "ActivityDependency_frozen"
-  BEFORE UPDATE ON "ActivityDependency"
-  FOR EACH ROW EXECUTE FUNCTION activity_dependency_frozen();
+END $body$;
+  v_want TEXT;
+  v_found TEXT;
+BEGIN
+  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
+    INTO v_found
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_language  l ON l.oid = p.prolang
+   WHERE n.nspname = 'public' AND p.proname = 'activity_dependency_frozen' AND p.pronargs = 0;
+  IF v_found IS NOT NULL AND v_found <> v_want THEN
+    RAISE EXCEPTION 'schedule B1: function public.activity_dependency_frozen() already exists with a definition this migration did not install, so this is not this migration''s partial apply and the function will not be adopted or overwritten. Expected: %. Found: %. Procedure: docs/RUNBOOK.md section B1.',
+      v_want, v_found;
+  END IF;
+  IF v_found IS NULL THEN
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+                   'activity_dependency_frozen', v_body);
+  END IF;
+END $install$;
 
 -- ── 7. No cycles, and no cycles UNDER CONCURRENCY ─────────────────────────────────────────────
 -- The reachability test is the easy half. The hard half is that two sessions can each add one edge
@@ -349,8 +690,15 @@ CREATE TRIGGER "ActivityDependency_frozen"
 -- holding the ordinary TEMP privilege could create a temporary table of that name, and the walk
 -- would traverse it, finding nothing, while the row landed in the real table. Pinning the path and
 -- qualifying the relation means the trigger reads the same table the insert writes.
-CREATE OR REPLACE FUNCTION activity_dependency_acyclic() RETURNS TRIGGER LANGUAGE plpgsql
-SET search_path = pg_catalog, public AS $$
+--
+-- The body is held in a variable and the function is created FROM that variable, so the text this
+-- file installs and the text it compares against are the SAME string — there is no second copy to
+-- drift. `prosrc` stores exactly what the `AS` literal contained, so the comparison is exact.
+-- Signature, language and `search_path` travel with it, because a body of the right shape attached
+-- to the wrong return type or with the search-path pin removed is a different function.
+DO $install$
+DECLARE
+  v_body TEXT := $body$
 DECLARE
   v_path TEXT; v_closes_loop BOOLEAN; v_scope INT; v_key INT; v_isolation TEXT;
   v_frontier TEXT[]; v_next TEXT[]; v_parent JSONB; v_level JSONB; v_node TEXT;
@@ -486,8 +834,94 @@ BEGIN
   END IF;
 
   RETURN NEW;
-END $$;
+END $body$;
+  v_want TEXT;
+  v_found TEXT;
+BEGIN
+  v_want := 'plpgsql/trigger/{"search_path=pg_catalog, public"}' || v_body;
+  SELECT l.lanname || '/' || pg_catalog.format_type(p.prorettype, NULL) || '/'
+         || COALESCE(p.proconfig::TEXT, '{}') || p.prosrc
+    INTO v_found
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_language  l ON l.oid = p.prolang
+   WHERE n.nspname = 'public' AND p.proname = 'activity_dependency_acyclic' AND p.pronargs = 0;
+  IF v_found IS NOT NULL AND v_found <> v_want THEN
+    RAISE EXCEPTION 'schedule B1: function public.activity_dependency_acyclic() already exists with a definition this migration did not install, so this is not this migration''s partial apply and the function will not be adopted or overwritten. Expected: %. Found: %. Procedure: docs/RUNBOOK.md section B1.',
+      v_want, v_found;
+  END IF;
+  IF v_found IS NULL THEN
+    EXECUTE format('CREATE FUNCTION public.%I() RETURNS TRIGGER LANGUAGE plpgsql SET search_path = pg_catalog, public AS %L',
+                   'activity_dependency_acyclic', v_body);
+  END IF;
+END $install$;
 
-CREATE TRIGGER "ActivityDependency_acyclic"
-  BEFORE INSERT ON "ActivityDependency"
-  FOR EACH ROW EXECUTE FUNCTION activity_dependency_acyclic();
+-- ── 8. Arm the five seals ─────────────────────────────────────────────────────────────────────
+-- The functions above are the RULES; a rule nothing invokes is a comment. These five triggers are
+-- what bind them to the table, and they are installed here, together, for one reason: a trigger is
+-- the last object of the set, so if this file is interrupted the seals are the most likely thing
+-- to be missing — and grouping them makes "are the seals armed?" one question with one answer.
+--
+-- `CREATE TRIGGER` has no `IF NOT EXISTS`, and PostgreSQL 14's `CREATE OR REPLACE TRIGGER` would
+-- be worse than none here: it would overwrite whatever is there, which is exactly the adoption
+-- this file refuses. So each is compared first.
+--
+-- COMPARED BY DEFINITION, four properties deep, because each is separately forgeable and each
+-- failure is silent:
+--   `pg_get_triggerdef`  covers the timing, the event, the FOR EACH level and the function bound —
+--                        that is `tgtype` and `tgfoid` rendered as text, and it prints the table,
+--                        so `tgrelid` is in it too. A `no_delete` trigger pointed at the
+--                        `born_live` function, or an AFTER trigger where a BEFORE one is required,
+--                        differs here and nowhere else.
+--   `tgenabled`          is NOT in that text. `ALTER TABLE ... DISABLE TRIGGER` leaves a trigger
+--                        that reads as present and fires for nobody, and the sanctioned test and
+--                        seed resets in this repository disable seals by name — so a reset that
+--                        died before re-enabling would otherwise be adopted as correct. 'O' is
+--                        "enabled, origin", which is what a plain CREATE produces.
+--   the lookup itself    is scoped by `tgrelid` and `NOT tgisinternal`: a trigger name is unique
+--                        per TABLE in PostgreSQL, so unlike an index name there is nothing to
+--                        reclaim, but the internal triggers backing the five foreign keys share
+--                        this relation and are none of this file's business.
+DO $install$
+DECLARE
+  r         RECORD;
+  v_def     TEXT;
+  v_enabled TEXT;
+BEGIN
+  FOR r IN
+    SELECT * FROM (VALUES
+      ('ActivityDependency_born_live',
+       'CREATE TRIGGER "ActivityDependency_born_live" BEFORE INSERT ON public."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION activity_dependency_born_live()',
+       'CREATE TRIGGER "ActivityDependency_born_live" BEFORE INSERT ON public."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION activity_dependency_born_live()'),
+      ('ActivityDependency_no_delete',
+       'CREATE TRIGGER "ActivityDependency_no_delete" BEFORE DELETE ON public."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION activity_dependency_no_delete()',
+       'CREATE TRIGGER "ActivityDependency_no_delete" BEFORE DELETE ON public."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION activity_dependency_no_delete()'),
+      ('ActivityDependency_no_truncate',
+       'CREATE TRIGGER "ActivityDependency_no_truncate" BEFORE TRUNCATE ON public."ActivityDependency" FOR EACH STATEMENT EXECUTE FUNCTION activity_dependency_no_truncate()',
+       'CREATE TRIGGER "ActivityDependency_no_truncate" BEFORE TRUNCATE ON public."ActivityDependency" FOR EACH STATEMENT EXECUTE FUNCTION activity_dependency_no_truncate()'),
+      ('ActivityDependency_frozen',
+       'CREATE TRIGGER "ActivityDependency_frozen" BEFORE UPDATE ON public."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION activity_dependency_frozen()',
+       'CREATE TRIGGER "ActivityDependency_frozen" BEFORE UPDATE ON public."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION activity_dependency_frozen()'),
+      ('ActivityDependency_acyclic',
+       'CREATE TRIGGER "ActivityDependency_acyclic" BEFORE INSERT ON public."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION activity_dependency_acyclic()',
+       'CREATE TRIGGER "ActivityDependency_acyclic" BEFORE INSERT ON public."ActivityDependency" FOR EACH ROW EXECUTE FUNCTION activity_dependency_acyclic()')
+    ) AS t(name, ddl, canonical)
+  LOOP
+    SELECT regexp_replace(pg_get_triggerdef(g.oid), '[[:space:]]+', ' ', 'g'), g.tgenabled::TEXT
+      INTO v_def, v_enabled
+      FROM pg_trigger g
+     WHERE g.tgrelid = 'public."ActivityDependency"'::regclass
+       AND g.tgname = r.name AND NOT g.tgisinternal;
+
+    IF v_def IS NULL THEN
+      EXECUTE r.ddl;                                       -- absent: this is the resumable case
+      CONTINUE;
+    END IF;
+
+    CONTINUE WHEN v_def = regexp_replace(r.canonical, '[[:space:]]+', ' ', 'g')
+             AND v_enabled = 'O';
+
+    RAISE EXCEPTION 'schedule B1: trigger "%" already exists on "ActivityDependency" with a definition this migration did not install, and it will not be adopted or overwritten. Found: % (tgenabled=%). Expected: % (tgenabled=O). Procedure: docs/RUNBOOK.md section B1.',
+      r.name, v_def, v_enabled, regexp_replace(r.canonical, '[[:space:]]+', ' ', 'g');
+  END LOOP;
+END $install$;

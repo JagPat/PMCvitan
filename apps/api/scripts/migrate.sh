@@ -139,15 +139,18 @@ if echo "$out" | grep -q "P3005"; then
   # predates them. Leaving them pending costs nothing when they have somehow already been applied —
   # `20270920000000_decision_option_kinds` is written idempotently and re-applies as a no-op.
   #
-  # `20270930000000_schedule_dependency_graph` behaves differently on that last point, and it is
-  # stated here rather than discovered in production. That file CREATES "ActivityDependency" and
-  # does not adopt one, so applying it to a database that already has that table ABORTS naming the
-  # table and docs/RUNBOOK.md section B1. That is the intended, documented, repairable outcome, not
-  # a dead end: the table is NEW, it exists in no released schema and no service writes it, so it
-  # holds ZERO ROWS everywhere and the repair the abort names — inspect it, drop it if it is not
-  # wanted, re-run — destroys nothing. `scripts/schedule-b1-baseline-proof.sh` runs THIS runner
-  # through both halves (install where the table is absent; abort-then-repair where it is present),
-  # and CI runs that proof in the required `api` job.
+  # `20270930000000_schedule_dependency_graph` is written to be re-run, and it is stated here
+  # rather than discovered in production. That file COMPLETES ITS OWN INSTALL of
+  # "ActivityDependency": every object is created only if absent, and an object that is present is
+  # compared by DEFINITION first — so a run that died part-way is finished by the next one, which
+  # is what re-running this script does. It ABORTS only over an object it did not install (a table
+  # with rows, a column contract that differs, a missing or altered CHECK, a same-named index or
+  # seal with another definition), and the abort NAMES that object and points at
+  # docs/RUNBOOK.md section B1. The last-resort repair there is cheap because the table is NEW: it
+  # exists in no released schema, no service writes it, and it holds ZERO ROWS everywhere.
+  # `scripts/schedule-b1-baseline-proof.sh` runs THIS runner through all three states (install
+  # where the table is absent; abort-then-repair over a table this migration did not build;
+  # COMPLETION of a genuine partial apply), and CI runs that proof in the required `api` job.
   #
   # The entry is still right. `schema.prisma` can describe neither a CHECK nor a trigger, so
   # baselining that migration WITHOUT running it would record guards that never existed —

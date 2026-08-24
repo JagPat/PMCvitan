@@ -13,25 +13,21 @@ import { createTwoProjectFixture, type TwoProjectFixture } from './fixtures';
  * direct SQL is the only writer the table can have, and a guarantee that only holds when the
  * application cooperates is not a guarantee.
  *
- * THE NUMBERING HAS GAPS, DELIBERATELY. This unit is the FRESH-INSTALL half of the schedule B1
- * work: the migration creates "ActivityDependency" and refuses to adopt one, so the probes that
- * only ever exercised the deleted adoption path are gone rather than renumbered — a stable probe
- * number keeps the earlier review records readable, and a gap says "deleted" where a shifted
- * number would say nothing. What went, and why each was purely about adopting:
+ * THE NUMBERING HAS GAPS, DELIBERATELY. A stable probe number keeps the earlier review records
+ * readable, and a gap says "deleted" where a shifted number would say nothing. Two are gone:
  *
- *   P15 — a re-apply is a no-op, and objects are recognized by DEFINITION not by name. Both halves
- *         only mean something when the file may meet objects it did not create. It does not.
- *   P17 — rows the guards would refuse are named before any object is installed. There are no
- *         pre-existing rows to name: a table that already exists is refused outright.
- *   P18 — a withdrawal the seals could not have judged is refused. Same: no pre-existing rows.
- *   P20 — an adopted table is judged on its COLUMN CONTRACT. There is no adopted table.
- *   P21 — an index name owned by ANOTHER table is refused, never reclaimed. The hazard was the
- *         drop-and-recreate repair, which is deleted; the indexes are now created unconditionally
- *         over a table three statements old, so a colliding name simply fails the CREATE.
+ *   P17 - rows the guards would refuse are named before any object is installed.
+ *   P18 - a withdrawal the seals could not have judged is refused.
  *
- * P22 replaces all five with the one rule that survived them, asserted the same way: applying the
- * file to a database that already has the table ABORTS, names the table and docs/RUNBOOK.md §B1,
- * and changes nothing. The install-and-repair half runs against real pre-baseline databases in
+ * Both only mean something when the migration ADOPTS a populated table, and it does not: nothing
+ * can write "ActivityDependency" between the CREATE TABLE that makes it and the seals a few
+ * statements later, so a table holding any row is not this file's partial apply and section 1c
+ * refuses it outright (P22). P15, P20 and P21 are back, and they now assert REFUSAL where they
+ * once asserted repair - the migration completes its OWN install and adopts nothing else.
+ *
+ * P23 is the retry-safety probe the whole shape exists for: a partial apply is left behind, the
+ * refusal this file used to carry is shown to dead-end on it, and the file as it stands completes
+ * the install. The install-and-repair half runs against real pre-baseline databases in
  * `apps/api/scripts/schedule-b1-baseline-proof.sh`, which CI runs in the required `api` job.
  */
 describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () => {
@@ -117,15 +113,22 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
   /**
    * Apply the migration through psql, returning stderr on failure and null on success.
    *
-   * `--single-transaction` is load-bearing, not tidiness. The file carries no `BEGIN;`/`COMMIT;` of
-   * its own — an explicit transaction inside it masks the section 1 diagnostic under
-   * `prisma migrate deploy`, which is why it was removed — so the CALLER supplies the transaction.
-   * Prisma does automatically; psql does only when asked. Without this flag a refused run could
-   * leave half a table behind, and the "changed nothing" half of P22 would be measuring luck.
+   * `--single-transaction` is what the ORDINARY caller supplies. The file carries no
+   * `BEGIN;`/`COMMIT;` of its own — an explicit transaction inside it masks section 1's named
+   * diagnostics under `prisma migrate deploy`, which is why it was removed — so the CALLER
+   * supplies it. Prisma does automatically; psql does only when asked. It is passed here so the
+   * "changed nothing at all" assertions in P15 and P22 measure the refusal rather than luck.
+   *
+   * It is NOT what makes the file re-runnable. That comes from the object guards, and P23 proves
+   * it by leaving a partial apply behind and letting the file finish over it.
    */
-  const applyMigration = (): string | null => {
+  const applyMigration = (opts: { autocommit?: boolean } = {}): string | null => {
+    // AUTOCOMMIT is the caller the repository requires this file to tolerate, and the reason it is
+    // an option here rather than an aside: `psql` without `--single-transaction` commits every
+    // statement on its own, so a failure part-way leaves whatever ran behind. P23 uses it.
+    const tx = opts.autocommit ? [] : ['--single-transaction'];
     try {
-      execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', '--single-transaction', '-q',
+      execFileSync('psql', ['-v', 'ON_ERROR_STOP=1', ...tx, '-q',
                             '-d', psqlUrl(), '-f', migrationPath],
                    { encoding: 'utf8', stdio: 'pipe' });
       return null;
@@ -643,23 +646,165 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     }
   });
 
+  /** Every installed object, by KIND and COUNT — "the install is complete" as one readable string. */
+  const installed = async (): Promise<string> => (await t.prisma.$queryRawUnsafe<Array<{ s: string }>>(`
+    SELECT (SELECT COUNT(*) FROM pg_constraint
+             WHERE conrelid = '"ActivityDependency"'::regclass AND contype = 'c' AND convalidated)
+        || '/' || (SELECT COUNT(*) FROM pg_constraint
+                    WHERE conrelid = '"ActivityDependency"'::regclass AND contype = 'f')
+        || '/' || (SELECT COUNT(*) FROM pg_index WHERE indrelid = '"ActivityDependency"'::regclass)
+        || '/' || (SELECT COUNT(*) FROM pg_trigger
+                    WHERE tgrelid = '"ActivityDependency"'::regclass
+                      AND NOT tgisinternal AND tgenabled = 'O')
+        || '/' || (SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                    WHERE n.nspname = 'public' AND p.proname LIKE 'activity\\_dependency%') AS s`))[0]!.s;
+
+  /** checks/foreign keys/indexes/armed triggers/functions, when every object this file installs is present. */
+  const COMPLETE = '4/5/4/5/5';
+
+  // ── P15 ────────────────────────────────────────────────────────────────────────────────────
+  it('P15 a complete re-apply is a no-op, and a same-named WRONG definition is REFUSED, not adopted', async () => {
+    // Half of retry-safety is that a repeated apply over a finished install does nothing at all.
+    // "It did not error" is a much weaker claim than this: the object IDENTITIES are compared, so a
+    // drop-and-recreate would fail here even though the end state would look right.
+    expect(await installed(), 'the suite database carries the finished install').toBe(COMPLETE);
+    const before = await objectIdentity();
+    expect(applyMigration(), 'a re-apply over a complete install must succeed').toBeNull();
+    expect(await objectIdentity(), 'and must not recreate a single object').toBe(before);
+
+    // THIS ALSO PINS THE CANONICAL LIST AGAINST DRIFT, which is worth naming because it is the one
+    // hazard of writing a definition down twice. Section 1 compares the installed objects against
+    // canonical `pg_get_*def` texts spelled out in the file; if someone later edits a CHECK inline
+    // in section 2 and forgets its entry in section 1e, a FRESH install still succeeds — and this
+    // assertion is what fails, because the next apply over that install would then abort. The two
+    // copies cannot diverge without turning this red.
+
+    // The other half is that PRESENT is decided by DEFINITION, never by name. Each forgery below
+    // satisfies a name test — which is exactly why a name test is not enough — and each is REFUSED
+    // rather than repaired: this file completes its own install and adopts nothing else. The
+    // function case is the one that closed PR #409: `CREATE OR REPLACE FUNCTION` preserves the
+    // function's identity, so a hollowed body of the right name survives everything short of
+    // reading `prosrc`.
+    const forgeries: Array<{ what: string; forge: string[]; expect: RegExp; restore: string[] }> = [
+      { what: 'a hollow CHECK (TRUE) that judges nothing',
+        forge: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_no_self_check"`,
+                `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_no_self_check" CHECK (TRUE)`],
+        expect: /constraint "ActivityDependency_no_self_check" is present as CHECK \(true\)/u,
+        restore: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_no_self_check"`,
+                  `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_no_self_check" CHECK ("predecessorId" <> "successorId")`] },
+      { what: 'a NOT VALID constraint, which judges nothing already in the table',
+        forge: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_lag_nonneg_check"`,
+                `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check" CHECK ("lagWorkingDays" >= 0) NOT VALID`],
+        expect: /"ActivityDependency_lag_nonneg_check" is present as .*\[NOT VALID\]/u,
+        restore: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_lag_nonneg_check"`,
+                  `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_lag_nonneg_check" CHECK ("lagWorkingDays" >= 0)`] },
+      { what: 'a foreign key to the global "User", losing the project half of the identity',
+        forge: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_createdBy_fkey"`,
+                `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdBy_fkey" FOREIGN KEY ("createdById") REFERENCES "User"("id")`],
+        expect: /"ActivityDependency_createdBy_fkey" is present as FOREIGN KEY \("createdById"\) REFERENCES "User"/u,
+        restore: [`ALTER TABLE "ActivityDependency" DROP CONSTRAINT "ActivityDependency_createdBy_fkey"`,
+                  `ALTER TABLE "ActivityDependency" ADD CONSTRAINT "ActivityDependency_createdBy_fkey" FOREIGN KEY ("projectId", "createdById") REFERENCES "Membership"("projectId", "userId")`] },
+      { what: 'a plain NON-UNIQUE index wearing the partial-unique name',
+        forge: [`DROP INDEX "ActivityDependency_projectId_successorId_predecessorId_key"`,
+                `CREATE INDEX "ActivityDependency_projectId_successorId_predecessorId_key" ON "ActivityDependency"("projectId","successorId","predecessorId")`],
+        expect: /index "ActivityDependency_projectId_successorId_predecessorId_key" exists .* with a definition this migration did not install/su,
+        restore: [`DROP INDEX "ActivityDependency_projectId_successorId_predecessorId_key"`] },
+      { what: 'a same-named function whose body has been hollowed out',
+        forge: [`CREATE OR REPLACE FUNCTION activity_dependency_acyclic() RETURNS TRIGGER LANGUAGE plpgsql
+                 SET search_path = pg_catalog, public AS $hollow$ BEGIN RETURN NEW; END $hollow$`],
+        expect: /function public\.activity_dependency_acyclic\(\) already exists with a definition this migration did not install/u,
+        restore: [`DROP TRIGGER "ActivityDependency_acyclic" ON "ActivityDependency"`,
+                  `DROP FUNCTION activity_dependency_acyclic()`] },
+      { what: 'a seal that is present but DISABLED, so it reads as installed and fires for nobody',
+        forge: [`ALTER TABLE "ActivityDependency" DISABLE TRIGGER "ActivityDependency_frozen"`],
+        expect: /trigger "ActivityDependency_frozen" .*tgenabled=D/su,
+        restore: [`ALTER TABLE "ActivityDependency" ENABLE TRIGGER "ActivityDependency_frozen"`] },
+    ];
+
+    for (const g of forgeries) {
+      for (const s of g.forge) await t.prisma.$executeRawUnsafe(s);
+      try {
+        const err = applyMigration();
+        expect(err, `must refuse: ${g.what}`).not.toBeNull();
+        expect(err, `must name the object and both definitions: ${g.what}`).toMatch(g.expect);
+        expect(err, 'and must point at the operator procedure').toMatch(/docs\/RUNBOOK\.md section B1/u);
+      } finally {
+        for (const s of g.restore) await t.prisma.$executeRawUnsafe(s);
+      }
+      // Refusal is not the end of the road: with the forgery removed, the SAME file finishes the
+      // install. That is the difference between a guard and a dead end.
+      expect(applyMigration(), `and applies once removed: ${g.what}`).toBeNull();
+      expect(await installed(), `restoring the full install: ${g.what}`).toBe(COMPLETE);
+    }
+
+    // The restored rules really BIND, which the catalog alone does not prove.
+    const [a, b] = [await activity(), await activity()];
+    expect(await refusal(edge(a, a))).toMatch(/cannot depend on itself/u);
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);
+    expect(await refusal(edge(a, b))).toMatch(/already exists|unique/u);
+  }, 120_000);
+
+  // ── P20 ────────────────────────────────────────────────────────────────────────────────────
+  it('P20 the table is judged on its COLUMN CONTRACT, not on its column names', async () => {
+    // Section 2's `CREATE TABLE IF NOT EXISTS` skips its definition when the table is already
+    // there, so on the resume path the shape is whatever produced it. A name test cannot tell a
+    // conforming column from a differently-shaped one, and a NULLABLE `predecessorId` is the case
+    // that matters: MATCH SIMPLE skips the composite FK entirely for a row with a NULL key column,
+    // the self-dependency CHECK evaluates to UNKNOWN and passes, and the walk matches no node.
+    await t.prisma.$executeRawUnsafe(
+      `ALTER TABLE "ActivityDependency" ALTER COLUMN "predecessorId" DROP NOT NULL`);
+    try {
+      const err = applyMigration();
+      expect(err, 'a nullable endpoint must abort the migration').not.toBeNull();
+      expect(err).toMatch(/does not match the column contract/u);
+      expect(err, 'and must name the column and both shapes').toMatch(/predecessorId/u);
+      expect(err).toMatch(/nullable=YES.*nullable=NO/su);
+    } finally {
+      await t.prisma.$executeRawUnsafe(
+        `ALTER TABLE "ActivityDependency" ALTER COLUMN "predecessorId" SET NOT NULL`);
+    }
+    expect(applyMigration(), 'and applies once the contract is restored').toBeNull();
+  }, 60_000);
+
+  // ── P21 ────────────────────────────────────────────────────────────────────────────────────
+  it('P21 an index name owned by ANOTHER table is refused, never reclaimed', async () => {
+    // An index name is unique per SCHEMA, not per table. Two silent failures follow from that: a
+    // table-scoped definition lookup reports "absent", and `CREATE INDEX IF NOT EXISTS` skips on
+    // the name — so the migration would report success over a table that never got the index.
+    const name = 'ActivityDependency_projectId_predecessorId_idx';
+    await t.prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS public."${name}"`);
+    await t.prisma.$executeRawUnsafe(`CREATE TABLE "b1_decoy_owner"("k" TEXT)`);
+    await t.prisma.$executeRawUnsafe(`CREATE INDEX "${name}" ON "b1_decoy_owner"("k")`);
+    try {
+      const err = applyMigration();
+      expect(err, 'a name owned by another table must abort the migration').not.toBeNull();
+      expect(err).toMatch(/will not drop or reclaim an object it does not own/u);
+      expect(err, 'and must name the table that really owns it').toMatch(/b1_decoy_owner/u);
+
+      // The whole point: the other table's index is STILL THERE. An unscoped drop would have taken
+      // it, and the migration would have reported success.
+      const rows = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+        `SELECT COUNT(*) AS n FROM pg_index ix JOIN pg_class ci ON ci.oid = ix.indexrelid
+          WHERE ci.relname = '${name}' AND ix.indrelid = '"b1_decoy_owner"'::regclass`);
+      expect(Number(rows[0]!.n), 'the decoy owner kept its index').toBe(1);
+    } finally {
+      await t.prisma.$executeRawUnsafe(`DROP TABLE IF EXISTS "b1_decoy_owner"`);
+    }
+    expect(applyMigration(), 'and applies once the name is free').toBeNull();
+    expect(await installed(), 'restoring the index it does own').toBe(COMPLETE);
+  }, 60_000);
+
   // ── P22 ────────────────────────────────────────────────────────────────────────────────────
-  it('P22 the migration CREATES the table and refuses to adopt one, changing nothing when it does', async () => {
-    // This unit's whole policy toward a pre-existing "ActivityDependency" is one rule: abort.
-    // There is no state verification, no definition comparison, no drop-and-recreate repair and no
-    // column-contract preflight, because there is no adopt path for any of them to serve.
-    //
-    // The database this suite runs against HAS the table — the migration created it — so applying
-    // the file again is exactly the refused case, and it is asserted here rather than described.
+  it('P22 the file supplies no transaction of its own, and refuses a table that holds rows', async () => {
     const sql = readFileSync(migrationPath, 'utf8');
 
-    // ONE TRANSACTION is what makes the file re-runnable now that nothing is idempotent by object
-    // guards: a run that fails for any reason leaves no table, no function and no trigger, so the
-    // next run is a fresh install again. The transaction comes from the CALLER, and the file must
-    // NOT open one of its own — measured: with `BEGIN;`/`COMMIT;` in the file, `migrate deploy`
-    // reports `current transaction is aborted, commands ignored…` and the section 1 diagnostic is
-    // discarded; without them it reports that message verbatim. Pinned here so the next person to
-    // reach for the obvious `BEGIN;` fails a test instead of costing an operator their diagnostic.
+    // THE TRANSACTION CONTRACT, pinned rather than described. The file must NOT open one of its
+    // own — measured: with `BEGIN;`/`COMMIT;` in the file, `migrate deploy` reports `current
+    // transaction is aborted, commands ignored…` and every named diagnostic in section 1 is
+    // discarded; without them it reports the message verbatim. That measurement is what makes the
+    // aborts in P15/P20/P21 readable at all, so the next person to reach for the obvious `BEGIN;`
+    // fails a test instead of costing an operator their diagnostic.
     const statements = sql.split('\n').map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith('--'));
     expect(statements, 'the file must not open its own transaction').not.toContain('BEGIN;');
@@ -667,32 +812,134 @@ describe('Schedule B1 — the acyclic activity dependency graph (live PG)', () =
     expect(statements[0], 'the first statement must pin the schema, since psql takes the caller path')
       .toBe('SET LOCAL search_path = public;');
 
-    // The CREATE is UNCONDITIONAL. `IF NOT EXISTS` would skip the definition wholesale on a table
-    // that already existed — silently leaving the CHECKs and the keys declared inline here absent
-    // on exactly the database that most needed them, which is what forced the deleted apparatus.
-    expect(sql).toMatch(/^CREATE TABLE "ActivityDependency" \($/mu);
-    expect(sql, 'the table must not be created conditionally')
-      .not.toMatch(/CREATE TABLE IF NOT EXISTS "ActivityDependency"/u);
+    // Retry-safety is by OBJECT GUARDS, not by the caller's transaction: the table is created only
+    // if absent, and section 1 has already established that a table which IS present is this
+    // file's own unfinished install.
+    expect(sql, 'the table must be created conditionally')
+      .toMatch(/^CREATE TABLE IF NOT EXISTS public\."ActivityDependency" \($/mu);
 
+    // EVERY object is created SCHEMA-QUALIFIED. `SET LOCAL search_path` is only a WARNING outside
+    // a transaction block, so for the autocommit caller it does nothing at all — and an
+    // unqualified CREATE under a role whose path names `pg_temp` first would build the whole graph
+    // somewhere else and commit, while section 1's qualified lookups kept reporting a fresh
+    // install forever. Qualification is what makes the outcome independent of the caller's path.
+    for (const unqualified of sql.split('\n')
+           .filter((l) => /^\s*(CREATE (UNIQUE )?INDEX|CREATE TABLE|LOCK TABLE|\s*ON) /u.test(l))
+           .filter((l) => /"ActivityDependency"/u.test(l))
+           .filter((l) => !/public\."ActivityDependency"/u.test(l))) {
+      expect.unreachable(`every created object must be schema-qualified: ${unqualified.trim()}`);
+    }
+
+    // And no LOCK may be a top-level statement: a bare `LOCK TABLE` is an ERROR outside a
+    // transaction block, so it would dead-end the autocommit caller one statement past the CREATE.
+    // (matched at column 0: every top-level statement in this file is unindented, and the two
+    // locks that ARE legitimate live indented inside `DO` blocks.)
+    expect(sql, 'every lock must be inside a DO block').not.toMatch(/^LOCK TABLE/mu);
+
+    // ROWS are where the resume stops. Nothing can write this table between the CREATE TABLE that
+    // makes it and the seals a few statements later — that CREATE holds ACCESS EXCLUSIVE to COMMIT
+    // — so a populated table is not this file's partial apply, and adopting it would mean
+    // certifying rows written under rules this file never installed.
     const [a, b] = [await activity(), await activity()];
     await t.prisma.$executeRawUnsafe(edge(a, b));
     const before = await objectIdentity();
 
     const err = applyMigration();
-    expect(err, 'a pre-existing table must abort the migration').not.toBeNull();
-    expect(err, 'and must name the table').toMatch(/table "ActivityDependency" already exists/u);
-    expect(err, 'and must say what this migration does instead of adopting')
-      .toMatch(/CREATES that table and does not adopt one/u);
-    expect(err, 'and must point at the operator procedure')
-      .toMatch(/docs\/RUNBOOK\.md section B1/u);
+    expect(err, 'a populated table must abort the migration').not.toBeNull();
+    expect(err, 'and must say how many rows it found').toMatch(/already exists and holds 1 row\(s\)/u);
+    expect(err, 'and must point at the operator procedure').toMatch(/docs\/RUNBOOK\.md section B1/u);
 
-    // The abort is inside the file's own transaction, so it is not merely a refusal — it changes
-    // nothing at all. "It errored" is a much weaker claim than this.
+    // The abort is inside the caller's transaction, so it is not merely a refusal — it changes
+    // nothing at all.
     expect(await objectIdentity(), 'the refused run must not touch a single object').toBe(before);
     expect(await edgeCount(), 'nor a single row').toBe(1);
-    const live = await t.prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
-      `SELECT COUNT(*) AS n FROM "ActivityDependency" WHERE "revokedAt" IS NULL`);
-    expect(Number(live[0]!.n), 'and the graph still binds').toBe(1);
     expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);
   }, 60_000);
+
+  // ── P23 ────────────────────────────────────────────────────────────────────────────────────
+  it('P23 the migration COMPLETES its own partial apply, where the old refusal dead-ended', async () => {
+    // THE FINDING, reproduced. A caller that wraps this file in no transaction — which `AGENTS.md`
+    // requires it to tolerate — and fails anywhere after `CREATE TABLE` leaves the table behind
+    // with some of its objects installed and some not. Simulated exactly: the table and the ten
+    // constraints `CREATE TABLE` installs atomically survive; the indexes, functions and triggers
+    // that come after it do not.
+    for (const s of [
+      `DROP INDEX "ActivityDependency_projectId_successorId_predecessorId_key"`,
+      `DROP INDEX "ActivityDependency_projectId_predecessorId_idx"`,
+      `DROP INDEX "ActivityDependency_projectId_successorId_idx"`,
+      `DROP TRIGGER "ActivityDependency_born_live" ON "ActivityDependency"`,
+      `DROP TRIGGER "ActivityDependency_no_delete" ON "ActivityDependency"`,
+      `DROP TRIGGER "ActivityDependency_no_truncate" ON "ActivityDependency"`,
+      `DROP TRIGGER "ActivityDependency_frozen" ON "ActivityDependency"`,
+      `DROP TRIGGER "ActivityDependency_acyclic" ON "ActivityDependency"`,
+      `DROP FUNCTION activity_dependency_born_live(), activity_dependency_no_delete(),
+                     activity_dependency_no_truncate(), activity_dependency_frozen(),
+                     activity_dependency_acyclic()`,
+    ]) await t.prisma.$executeRawUnsafe(s);
+    // 4 CHECKs and 5 keys survive with the table; every index but the primary key, every trigger
+    // and every function is gone.
+    expect(await installed(), 'the partial-apply state').toBe('4/5/1/0/0');
+
+    // RED: the shape this file used to carry — an unconditional refusal of any existing table —
+    // dead-ends here. It is asserted rather than described, because a retry that can never succeed
+    // is the whole defect: the only way forward was the destructive runbook DROP.
+    const oldRefusal = `DO $$ BEGIN
+      IF to_regclass('public."ActivityDependency"') IS NOT NULL THEN
+        RAISE EXCEPTION 'schedule B1: table "ActivityDependency" already exists. This migration CREATES that table and does not adopt one.';
+      END IF; END $$`;
+    expect(await refusal(oldRefusal), 'the unconditional refusal cannot complete a partial apply')
+      .toMatch(/already exists\. This migration CREATES that table and does not adopt one/u);
+
+    // GREEN: the file as it stands finishes the job, over the same database, in one run.
+    expect(applyMigration(), 'the migration must complete its own partial apply').toBeNull();
+    expect(await installed(), 'every object installed').toBe(COMPLETE);
+
+    // And a catalog full of objects is not a table full of rules. Each seal is exercised.
+    const [a, b] = [await activity(), await activity()];
+    expect(await refusal(edge(a, a))).toMatch(/cannot depend on itself/u);
+    await t.prisma.$executeRawUnsafe(edge(a, b));
+    expect(await refusal(edge(b, a))).toMatch(/dependency cycle/u);        // acyclic
+    expect(await refusal(edge(a, b))).toMatch(/already exists|unique/u);   // partial unique index
+    const id = await onlyId();
+    expect(await refusal(`DELETE FROM "ActivityDependency" WHERE "id"='${id}'`))
+      .toMatch(/not deletable/u);                                          // no_delete
+    expect(await refusal(`TRUNCATE TABLE "ActivityDependency"`)).toMatch(/never truncated/u);
+    expect(await refusal(`UPDATE "ActivityDependency" SET "lagWorkingDays"=9 WHERE "id"='${id}'`))
+      .toMatch(/is frozen/u);                                              // frozen
+    // A FRESH pair for the born-live probe: triggers fire in name order, so `..._acyclic` runs
+    // before `..._born_live` and a reversed pair would be refused as a cycle before born-live is
+    // ever consulted — which would leave that seal untested while the assertion still passed.
+    const [c, d] = [await activity(), await activity()];
+    expect(await refusal(
+      `INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName","revokedAt","revokedById","revokedByName")
+       VALUES ('dep-b1-born-${run}','${f.projectA.id}','${c}','${d}','${f.memberUser.id}','PMC',now(),'${f.memberUser.id}','PMC')`))
+      .toMatch(/cannot be created already revoked/u);                      // born_live
+
+    // AND THE SAME THING FOR THE CALLER THE FINDING IS ACTUALLY ABOUT: psql with no
+    // `--single-transaction`, which commits every statement on its own. That caller is the one
+    // that can leave a partial apply behind at all, and it also cannot execute a bare
+    // `LOCK TABLE` — `LOCK TABLE can only be used in transaction blocks` — so a top-level lock
+    // statement would dead-end this file one statement past `CREATE TABLE`, on every retry
+    // forever. Every lock this file takes is inside a `DO` block for that reason.
+    await wipe();
+    for (const s of [
+      `DROP TRIGGER "ActivityDependency_acyclic" ON "ActivityDependency"`,
+      `DROP FUNCTION activity_dependency_acyclic()`,
+      `DROP INDEX "ActivityDependency_projectId_successorId_idx"`,
+    ]) await t.prisma.$executeRawUnsafe(s);
+    expect(applyMigration({ autocommit: true }),
+           'an autocommit caller must be able to finish the install').toBeNull();
+    expect(await installed(), 'and must finish it completely').toBe(COMPLETE);
+    const [e, g] = [await activity(), await activity()];
+    await t.prisma.$executeRawUnsafe(edge(e, g));
+    expect(await refusal(edge(g, e)), 'with the seals really armed').toMatch(/dependency cycle/u);
+
+    // Finally: a SECOND complete run over the finished install is still a no-op, under either
+    // caller — so the resume path does not trade retry-safety for idempotence.
+    await wipe();
+    const objects = await objectIdentity();
+    expect(applyMigration(), 'and re-running once complete changes nothing').toBeNull();
+    expect(applyMigration({ autocommit: true }), 'under autocommit too').toBeNull();
+    expect(await objectIdentity()).toBe(objects);
+  }, 120_000);
 });
