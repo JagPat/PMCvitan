@@ -8,6 +8,7 @@ import {
   classifyCodexState,
   isEligiblePullRequest,
 } from './autonomous-review-state.mjs';
+import { eligibleShape } from './autonomous-review-gate.mjs';
 
 const HEAD = 'a'.repeat(40);
 const OLD_HEAD = 'b'.repeat(40);
@@ -27,10 +28,11 @@ function input(overrides = {}) {
   };
 }
 
-test('accepts only open same-repository pull requests', () => {
+test('accepts only open same-repository pull requests that target main', () => {
   const eligible = {
     state: 'OPEN',
     headRefName: 'claude/fix-readiness',
+    baseRefName: 'main',
     headRepository: { nameWithOwner: 'JagPat/PMCvitan' },
     baseRepository: { nameWithOwner: 'JagPat/PMCvitan' },
   };
@@ -44,6 +46,39 @@ test('accepts only open same-repository pull requests', () => {
     false,
   );
   assert.equal(isEligiblePullRequest({ ...eligible, state: 'CLOSED' }), false);
+
+  // THE BASE REF, which is the third placement of the lineage base rule. #402 sited it at
+  // admission and settlement; neither keeps an off-`main` unit OUT of the lifecycle, and
+  // exhaustion deliberately takes no base test — so before this guard a `release`-targeted
+  // unit could be labelled `review-replacement-required` and its repository-wide obligation
+  // then refused every fresh `main` unit.
+  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: 'release' }), false);
+  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: 'claude/other-unit' }), false);
+  // Unreadable is refused too: eligibility only ever decides NOT to act, so an absent base
+  // is fail-closed rather than assumed to be `main`.
+  assert.equal(isEligiblePullRequest({ ...eligible, baseRefName: undefined }), false);
+});
+
+test('the eligibility base rule reaches the orchestrator, which is the placement that matters', () => {
+  // The rule was unreachable here before because `eligibleShape` did not project the base
+  // ref at all. Asserting the PROJECTION as well as the predicate is what stops a later
+  // edit from dropping the field and silently restoring the hole: the predicate would keep
+  // passing its own unit tests while every real pull request became ineligible.
+  const projected = eligibleShape({
+    state: 'OPEN',
+    head: { ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'release', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  assert.equal(projected.baseRefName, 'release',
+    'eligibleShape must carry the base ref, or the guard cannot see it');
+  assert.equal(isEligiblePullRequest(projected), false);
+
+  const onMain = eligibleShape({
+    state: 'OPEN',
+    head: { ref: 'claude/x', repo: { full_name: 'JagPat/PMCvitan' } },
+    base: { ref: 'main', repo: { full_name: 'JagPat/PMCvitan' } },
+  });
+  assert.equal(isEligiblePullRequest(onMain), true);
 });
 
 test('classifies a fresh Codex thumbs-up as clear', () => {

@@ -800,10 +800,15 @@ export class GitHubClient {
   }
 }
 
-function eligibleShape(pullRequest) {
+// `baseRefName` is projected because eligibility ASKS about it: an off-`main` unit must
+// never enter the lifecycle, since exhaustion takes no base test and would mint a
+// repository-wide obligation for work that could not land on `main`. The projection was the
+// reason the rule could not be sited here before — the shape simply did not carry the base.
+export function eligibleShape(pullRequest) {
   return {
     state: pullRequest.state,
     headRefName: pullRequest.head.ref,
+    baseRefName: pullRequest.base.ref,
     headRepository: { nameWithOwner: pullRequest.head.repo?.full_name },
     baseRepository: { nameWithOwner: pullRequest.base.repo?.full_name },
   };
