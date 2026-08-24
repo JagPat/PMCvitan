@@ -8,8 +8,8 @@
 # really execute. `schema.prisma` cannot describe a CHECK or a trigger, so recording it as applied
 # would claim guards that never existed.
 #
-# The migration COMPLETES ITS OWN INSTALL and adopts nothing else, so that path has three states
-# and this proof executes all three against the REAL production runner:
+# The migration COMPLETES ITS OWN INSTALL and adopts nothing else, so that path has four states
+# and this proof executes all four against the REAL production runner:
 #
 #   A. the table is ABSENT — every deployed database. migrate.sh must install the guards, record
 #      the migration as applied because it RAN, leave them binding, and be re-runnable.
@@ -23,8 +23,11 @@
 #      behind. migrate.sh must COMPLETE the install and exit 0, with every guard binding. This is
 #      the state the unconditional refusal dead-ended on, and it is the reason this file is
 #      definition-aware rather than absolute.
+#   D. the table is PRESENT and HOLDS A ROW. A row cannot be this migration's partial apply, so it
+#      was written under rules this file never installed: migrate.sh must REFUSE, say how many rows
+#      it found, and LEAVE THE ROW ALONE — neither adopting it nor destroying it.
 #
-# COUPLING is proven rather than asserted (step 6): with the ALWAYS_EXECUTE entry removed from a
+# COUPLING is proven rather than asserted (step 7): with the ALWAYS_EXECUTE entry removed from a
 # copy of migrate.sh, state A's guards do not arrive. So a mutation to the baseline path fails this
 # script, and this script runs in the required `api` job — the wiring itself is pinned by
 # `scripts/ci-baseline-proof-wiring.test.mjs`, which is in `pnpm test:automation`.
@@ -295,8 +298,39 @@ case "$cyc5" in
 esac
 rm -f "$PARTIAL"
 
+
+# ══ STATE D — the table is PRESENT and HOLDS A ROW ════════════════════════════════════════════
+say "6. a PRE-BASELINE database whose table HOLDS A ROW: refused, and the row survives"
+# The one state where refusing protects something real. A row cannot be this migration's partial
+# apply — nothing can write the table between its creation and its seals — so it was written under
+# rules this file never installed, and the file will neither adopt it nor destroy it. Asserted
+# through the REAL runner rather than through psql, because "the production deploy leaves your data
+# alone" is the claim an operator actually needs.
+prebaseline "$DB2" "$URL2" "$BARE2" || exit 1
+$PSQL2 >/dev/null <<'SQL' || { bad "the populated-table fixture did not build"; exit 1; }
+CREATE TABLE "ActivityDependency" (
+  "id" TEXT NOT NULL, "projectId" TEXT NOT NULL, "predecessorId" TEXT NOT NULL,
+  "successorId" TEXT NOT NULL, "lagWorkingDays" INTEGER NOT NULL DEFAULT 0,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "createdById" TEXT NOT NULL, "createdByName" TEXT NOT NULL,
+  "revokedAt" TIMESTAMP(3), "revokedById" TEXT, "revokedByName" TEXT,
+  CONSTRAINT "ActivityDependency_pkey" PRIMARY KEY ("id"));
+INSERT INTO "ActivityDependency"("id","projectId","predecessorId","successorId","createdById","createdByName")
+  VALUES ('legacy-edge','some-project','some-pred','some-succ','someone','Someone');
+SQL
+OUT6="$(DATABASE_URL="$URL2" sh scripts/migrate.sh 2>&1)"; RC6=$?
+[ "$RC6" != "0" ] && ok "migrate.sh REFUSES a populated table (exit $RC6)" \
+                  || bad "migrate.sh exited 0 over a table holding rows"
+case "$OUT6" in
+  *'already exists and holds 1 row(s)'*) ok "and says how many rows it found, before anything else" ;;
+  *) bad "the abort does not name the row count: $(printf '%s' "$OUT6" | tail -5)" ;;
+esac
+survived=$($PSQL2 -tAc "SELECT COUNT(*)::text FROM \"ActivityDependency\" WHERE \"id\"='legacy-edge'" | tr -d '[:space:]')
+[ "$survived" = "1" ] && ok "and THE ROW SURVIVES — the refusal neither adopts it nor destroys it" \
+                      || bad "the row did not survive the refusal ($survived)"
+
 # ══ COUPLING — a mutation to the baseline path must fail this proof ═══════════════════════════
-say "6. the coupling: without the ALWAYS_EXECUTE entry, state A's guards do not arrive"
+say "7. the coupling: without the ALWAYS_EXECUTE entry, state A's guards do not arrive"
 # Evidence that cannot fail is not evidence. This mutates the thing under test — migrate.sh's
 # baseline path — on a COPY, and requires the outcome step 2 asserts to stop holding. Because this
 # script runs in the required `api` job, that mutation turns a required job red.
