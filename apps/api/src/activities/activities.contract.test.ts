@@ -28,7 +28,8 @@ describe('Task 10 — the activities module implements its shared command/query 
     expect(activitiesManifest.readEncapsulated).toEqual(activitiesManifest.ownsModels);
     // the activity spine owns EXACTLY its canonical models + the rebuildable projection table — no other
     // module reads any of them directly (the boundary check enforces it).
-    expect(activitiesManifest.ownsModels).toEqual(['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput']);
+    // Schedule B1 adds `activityDependency` — the finish-to-start edge, an activity fact.
+    expect(activitiesManifest.ownsModels).toEqual(['activity', 'gateOverride', 'phase', 'activitiesProjection', 'activityRequirement', 'activityRequirementRoot', 'materialRequirementSpec', 'approvedSubstitution', 'materialReadinessProjection', 'activityWorkOutput', 'activityDependency']);
   });
 
   it('the manifest publishes the activity/phase lifecycle + the participant signal events', () => {
