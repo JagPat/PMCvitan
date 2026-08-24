@@ -396,6 +396,49 @@ future unit, to be built if and when a database that needs it exists.** None doe
 today. That deferral is what the refusal arms above protect: refusing is honest,
 adopting would be certifying a shape and a history this file never observed.
 
+**ROUND 1 ON #411 RETURNED THREE MORE P1s, AND THEY ARE ONE FINDING WEARING THREE
+FACES.** F1: the five foreign-key TARGETS were unqualified, so under an autocommit
+caller with `search_path=b1decoy,public` they bound to same-named decoys — measured
+against `f87e5a7`, exit 0 with all five keys pointing into `b1decoy` and no
+containment whatsoever, invisible to section 1e because `pg_get_constraintdef`
+renders the target relative to that same path. F2: the resume path never asked what
+KIND of relation it was adopting — measured, `ALTER TABLE ... SET UNLOGGED`, re-run,
+exit 0, still UNLOGGED, over an append-only evidence register PostgreSQL truncates
+after any crash. F3: the function identity omitted `provolatile` — measured, a
+`STABLE` clone of the identical body accepted, and DRIVEN: under that clone the
+advisory-lock protocol stops working entirely, because a STABLE function reuses the
+CALLING STATEMENT's snapshot, so the second writer waits for the first, wakes, and
+re-reads a graph that predates the wait. The probe commits the cycle.
+
+**THE CORRECTION IS THE CLASS, NOT THE THREE ATTRIBUTES, and that is deliberate.**
+The finding history of this unit reads: recognise by NAME, then by DEFINITION, then
+by function BODY, then by COLUMN CONTRACT, then by relation PERSISTENCE and function
+VOLATILITY; qualify the FUNCTION targets, then the FK targets. Every round has been
+"you verified N attributes; N+1 also matters". So the identity attribute set is now
+DERIVED FROM THE CATALOG and written into the migration as an enumeration: for each
+object kind — relation, column, constraint, index, function, trigger — every
+`pg_catalog` column that can differ while the object still passes, with an explicit
+verdict of CHECKED, COVERED BY (something already deparsed), or EXCLUDED WITH ITS
+REASON. A later finding then either lands on a recorded exclusion, which is a
+judgement to argue with, or proves the enumeration incomplete, which is a fact. The
+sweep produced two corrections nobody asked for: a rewrite RULE bypasses every
+trigger and is now refused, and `relhassubclass` is a HINT PostgreSQL never clears
+when the last child is dropped, so inheritance is asked through `pg_inherits`
+instead — checking the hint would have made a table that once had a child
+permanently un-migratable.
+
+**QUALIFICATION IS THE SAME CLASS ASKED OF NAMES.** The inert `SET LOCAL
+search_path = public` is replaced by a plain `SET search_path = pg_catalog` that
+works for BOTH callers, with the caller's own path stashed in a custom GUC and
+handed back by the last statement in the file; every foreign-key target is written
+`public.`-qualified; and each target is then verified BY `confrelid` OID — in
+section 1e' on the resume path and again in section 9 over the finished install,
+where a disagreement means the install barrier is never lifted and the table stays
+unwritable rather than uncontained. Types and operators are the one class that
+needed no change and the enumeration says why: `pg_catalog` is searched FIRST unless
+a caller explicitly demotes it, so `text`, `integer` and `!~` cannot be captured
+from in front of `public` — section 9 asserts every column's type namespace anyway.
+
 **Task 2 is DELIVERED AND CLEARED.** The implementation merged as PR #333
 (`main` `7a688e3`) with a fresh exact-head Codex +1 after ONE correction round
 (the New Project modal learned to EXPRESS the room-anchor graft target the

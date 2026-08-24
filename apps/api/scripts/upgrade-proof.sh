@@ -3731,6 +3731,26 @@ assert "B1: the cycle guard serializes on the project schedule-graph advisory lo
 assert "B1: the cycle check resolves its table through a pinned search path" \
   "SELECT COALESCE(array_to_string(proconfig, ','), '<none>') FROM pg_proc WHERE proname='activity_dependency_acyclic';" \
   "search_path=pg_catalog, public"
+# THE FIVE FOREIGN-KEY TARGETS, BY OID. A foreign-key target is resolved through the search path of
+# whoever created it, and `pg_get_constraintdef` renders that target relative to the READER's path —
+# so a same-named table in a schema ahead of `public` binds AND prints identically to the real one.
+# The namespace is therefore read from `pg_namespace`, not from a rendered `regclass`.
+assert "B1: every containment and attribution key references the real table in public, not a same-named decoy" \
+  "SELECT string_agg(k.conname || '=' || n.nspname, ',' ORDER BY k.conname) FROM pg_constraint k JOIN pg_class c ON c.oid=k.confrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE k.conrelid='\"ActivityDependency\"'::regclass AND k.contype='f';" \
+  "ActivityDependency_createdBy_fkey=public,ActivityDependency_projectId_fkey=public,ActivityDependency_projectId_predecessorId_fkey=public,ActivityDependency_projectId_successorId_fkey=public,ActivityDependency_revokedBy_fkey=public"
+# AN ORDINARY, PERMANENT TABLE. PostgreSQL TRUNCATES an UNLOGGED table after a crash or an unclean
+# shutdown, so an append-only evidence register built on one silently empties with every seal above
+# it still armed. Asked here because a legacy upgrade is exactly where the wrong kind of relation
+# could be adopted.
+assert "B1: the evidence register is an ordinary permanent table, so a crash cannot empty it" \
+  "SELECT relkind::text || relpersistence::text FROM pg_class WHERE oid='\"ActivityDependency\"'::regclass;" \
+  "rp"
+# VOLATILE, and this is load-bearing rather than cosmetic. A STABLE or IMMUTABLE function reuses the
+# CALLING STATEMENT's snapshot, so the advisory-lock protocol above stops working: the second writer
+# waits for the first, wakes, and re-reads a graph that predates the wait.
+assert "B1: all five seals are VOLATILE SECURITY INVOKER functions, so waiting on the lock buys a fresh snapshot" \
+  "SELECT COUNT(*)::text FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname LIKE 'activity\\_dependency%' AND p.provolatile='v' AND NOT p.prosecdef AND NOT p.proretset AND p.prokind='f';" \
+  "5"
 
 # Two extra fixture activities and a real member of the OTHER project — the identity a cross-tenant
 # attribution would use. Both probes below need pairs legal in every OTHER respect, so that the
