@@ -86,6 +86,25 @@ else
   exit 1
 fi
 
+# ── B1 seal verifier (schedule dependency graph) — declared here, RUN AFTER the deploy ──────────
+# Not a preflight. `20270930000000_schedule_dependency_graph` completes its own install and proves
+# every object before it lifts its write barrier, so there is nothing useful to ask BEFORE Prisma
+# runs. The question this answers is the one a complete ledger cannot: are those guards still there
+# and still firing on a database that has been in service? A failed restore's
+# `ALTER TABLE ... DISABLE TRIGGER ALL`, or a `CREATE OR REPLACE FUNCTION` that kept a seal's
+# identity and hollowed its body, leaves every migration applied and nothing to re-run — MEASURED:
+# with `ActivityDependency_frozen` and `ActivityDependency_no_delete` disabled this runner exited 0,
+# after which an UPDATE and a DELETE against the immutable evidence row both committed.
+# It re-executes the MIGRATION'S OWN inventory, extracted from the file, so there is no second list
+# to drift. A missing artifact means a broken build — fail closed, as with the three preflights; and
+# so does a `prisma/migrations` tree the verifier cannot read, since `prisma migrate deploy` needs
+# that tree anyway and a verifier that cannot find its question must not answer "sealed".
+B1_SEALS="dist/activities/b1/b1.cli.js"
+if [ ! -f "$B1_SEALS" ]; then
+  echo "[migrate] ERROR: compiled B1 seal verifier ($B1_SEALS) is missing — the build is incomplete; refusing to deploy."
+  exit 1
+fi
+
 out=$(npx prisma migrate deploy 2>&1)
 code=$?
 echo "$out"
@@ -101,6 +120,14 @@ if [ $code -eq 0 ]; then
   if ! node "$T3C_PREFLIGHT" seals; then
     echo "[migrate] ERROR: 'prisma migrate deploy' succeeded but the T3C seal verification FAILED — the ledger is complete while a physical guard is missing, disabled or not the canonical body."
     echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md §P4T3C3, then redeploy."
+    exit 1
+  fi
+  # The same question for the schedule dependency graph. Exit 4 ("no ActivityDependency") is a
+  # failure HERE too and not a pass: after a successful deploy that table must exist, so its absence
+  # means the deploy did not do what the ledger now claims it did.
+  if ! node "$B1_SEALS" seals; then
+    echo "[migrate] ERROR: 'prisma migrate deploy' succeeded but the schedule B1 seal verification FAILED — the ledger is complete while a dependency-graph guard is missing, disabled, hollowed or unowned."
+    echo "[migrate] This deploy is NOT good. Repair per docs/RUNBOOK.md section B1, then redeploy."
     exit 1
   fi
   exit 0
@@ -137,8 +164,29 @@ if echo "$out" | grep -q "P3005"; then
   # The T3C entries above decide this from a live probe, because those migrations may or may not
   # have run. These are decided statically, because they cannot have: a pre-baseline database
   # predates them. Leaving them pending costs nothing when they have somehow already been applied —
-  # each is written idempotently and re-applies as a no-op.
-  ALWAYS_EXECUTE="20270920000000_decision_option_kinds"
+  # `20270920000000_decision_option_kinds` is written idempotently and re-applies as a no-op.
+  #
+  # `20270930000000_schedule_dependency_graph` is written to be re-run, and it is stated here
+  # rather than discovered in production. That file COMPLETES ITS OWN INSTALL of
+  # "ActivityDependency": every object is created only if absent, and an object that is present is
+  # compared by DEFINITION first — so a run that died part-way is finished by the next one, which
+  # is what re-running this script does. It ABORTS only over an object it did not install (a column
+  # contract that differs, a missing or altered CHECK, a same-named index or seal with another
+  # definition, or an INCOMPLETE install whose table already holds rows), and the abort NAMES that
+  # object and points at docs/RUNBOOK.md section B1. ROWS ALONE ARE NOT A REFUSAL: a COMPLETE
+  # install that has been in service replays as a no-op, which is the only populated state a real
+  # re-deploy meets. The last-resort repair is cheap because the table is NEW: it exists in no
+  # released schema, no service writes it, and it holds ZERO ROWS everywhere.
+  # `scripts/schedule-b1-baseline-proof.sh` runs THIS runner through all five states (install where
+  # the table is absent; abort-then-repair over a table this migration did not build; COMPLETION of
+  # a genuine partial apply; refusal over a populated INCOMPLETE table; and a no-op replay over a
+  # populated COMPLETE one), and CI runs that proof in the required `api` job.
+  #
+  # The entry is still right. `schema.prisma` can describe neither a CHECK nor a trigger, so
+  # baselining that migration WITHOUT running it would record guards that never existed —
+  # indistinguishable from success. Left pending so the deploy really executes it.
+  ALWAYS_EXECUTE="20270930000000_schedule_dependency_graph
+20270920000000_decision_option_kinds"
   if [ -f "$T3C_PREFLIGHT" ]; then
     SEALS_OUT=$(node "$T3C_PREFLIGHT" seals 2>&1)
     seals_code=$?
@@ -242,6 +290,11 @@ if echo "$out" | grep -q "P3005"; then
   # means the deploy did not do what the ledger now claims it did.
   if ! node "$T3C_PREFLIGHT" seals; then
     echo "[migrate] ERROR: T3C correction-3 seals are not installed and enforcing after baseline + deploy — refusing to start."
+    exit 1
+  fi
+  if ! node "$B1_SEALS" seals; then
+    echo "[migrate] ERROR: the schedule B1 guards are not installed and enforcing after baseline + deploy — refusing to start."
+    echo "[migrate] See docs/RUNBOOK.md section B1."
     exit 1
   fi
   exit 0

@@ -32,7 +32,8 @@
     "t3c:seals": "tsx src/labour/t3c/t3c.cli.ts seals",
     "t3c:plan": "tsx src/labour/t3c/t3c.cli.ts plan",
     "t3c:migration-state": "tsx src/labour/t3c/t3c.cli.ts migration-state",
-    "t3c:repair": "tsx src/labour/t3c/t3c.cli.ts repair"
+    "t3c:repair": "tsx src/labour/t3c/t3c.cli.ts repair",
+    "b1:seals": "tsx src/activities/b1/b1.cli.ts seals"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
